@@ -26,9 +26,6 @@ use std::{
     },
 };
 
-/// Branches kept per source, so tracks on different branches do not evict each other.
-pub const CACHED_BRANCHES: usize = 4;
-
 /// A relation's identity: its countries' (slot, id) and its start hour.
 type RelationStart = ((u32, u32), (u32, u32), i32);
 
@@ -329,34 +326,29 @@ impl Scan {
     }
 }
 
+/// Each branch's scan, kept for this source revision.
+#[derive(Default)]
+struct Scans(BTreeMap<u64, Arc<Scan>>);
+
 pub fn scanned_branch(
     source: &Source,
     branch: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<Scan>> {
-    let state = source.state::<Vec<(u64, Arc<Scan>)>>();
-    let cached = {
-        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        state
-            .iter()
-            .position(|(cached, _)| *cached == branch)
-            .map(|index| {
-                let cached = state.remove(index);
-                let scan = Arc::clone(&cached.1);
-                state.insert(0, cached);
-                scan
-            })
-    };
+    let state = source.state::<Scans>();
+    let cached = state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .0
+        .get(&branch)
+        .map(Arc::clone);
     // Scan outside the lock, so requests for other branches are not held up.
     let scan = match cached {
         Some(scan) => scan,
         None => {
             let scan = Arc::new(scan_branch(&source.replay(), branch, cancelled)?);
             let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-            state.retain(|(cached, _)| *cached != branch);
-            state.insert(0, (branch, Arc::clone(&scan)));
-            state.truncate(CACHED_BRANCHES);
-            scan
+            Arc::clone(state.0.entry(branch).or_insert(scan))
         }
     };
     Ok(scan)

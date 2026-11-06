@@ -255,17 +255,17 @@ fn game_score_known_absent_empty_unreadable_and_missing_wings_are_distinct() {
     let multipliers = multipliers(Some(&multiplier_row()), "not read");
     let mut row = input(9001);
     assert_eq!(
-        air_score(&base, &row, 7, &multipliers.air, None, None).value(),
+        air_score(HourFrame::from(&base), &row, 7, &multipliers.air, None, None).unwrap().value(),
         Some(0)
     );
     row.air_state = CountryGameScoreInputRow::AIR_PRESENT;
     assert_eq!(
-        air_score(&base, &row, 7, &multipliers.air, None, None).value(),
+        air_score(HourFrame::from(&base), &row, 7, &multipliers.air, None, None).unwrap().value(),
         Some(0)
     );
     row.air_state = CountryGameScoreInputRow::AIR_UNKNOWN;
     row.air_error = b"strategic-air manager unreadable".to_vec();
-    let missing = air_score(&base, &row, 7, &multipliers.air, None, None);
+    let missing = air_score(HourFrame::from(&base), &row, 7, &multipliers.air, None, None).unwrap();
     assert_eq!(missing.value(), None);
     assert_eq!(
         missing.missing.unwrap().reason,
@@ -286,7 +286,15 @@ fn game_score_known_absent_empty_unreadable_and_missing_wings_are_distinct() {
         ..Default::default()
     };
     let registrations = std::slice::from_ref(&registration);
-    let missing = air_score(&base, &row, 7, &multipliers.air, None, Some(registrations));
+    let missing = air_score(
+        HourFrame::from(&base),
+        &row,
+        7,
+        &multipliers.air,
+        None,
+        Some(Rowset::Decoded(registrations)),
+    )
+    .unwrap();
     assert_eq!(missing.value(), None);
     assert!(
         missing
@@ -298,7 +306,15 @@ fn game_score_known_absent_empty_unreadable_and_missing_wings_are_distinct() {
     row.first_sites[0].access = GameScoreAirSite::ACCESS_UNKNOWN;
     row.first_sites[0].error = b"air access unreadable".to_vec();
     assert_eq!(
-        air_score(&base, &row, 7, &multipliers.air, None, Some(registrations))
+        air_score(
+        HourFrame::from(&base),
+        &row,
+        7,
+        &multipliers.air,
+        None,
+        Some(Rowset::Decoded(registrations)),
+    )
+    .unwrap()
             .missing
             .unwrap()
             .reason,
@@ -312,13 +328,14 @@ fn game_score_total_excludes_industry_and_land_and_preserves_native_overflow() {
     let first = frame(100);
     let multipliers = multipliers(Some(&multiplier_row()), "not read");
     let values = ScoreContext {
-        frame: &first,
+        frame: HourFrame::from(&first),
         multipliers: &multipliers,
         input_refusal: None,
         wings: None,
         registrations: None,
     }
-    .scores(Some(&input(9001)), 7, Some(&factories(9001)));
+    .scores(Some(&input(9001)), 7, Some(&factories(9001)))
+    .unwrap();
     assert_eq!(values.army.value(), Some(2 * Q));
     assert_eq!(values.navy.value(), Some(3 * Q));
     assert_eq!(values.industry.value(), Some(6 * Q));
@@ -1051,13 +1068,14 @@ fn game_score_faction_name_failures_keep_stable_recording_and_content_reasons() 
     // A known template still needs the localisation content; no key-as-name guess.
     let frame = faction_frame(104, b"", Some((17, b"demo")));
     let names = faction_names_at(
-        &frame,
+        HourFrame::from(&frame),
         None,
         &localisation,
         "english",
         Ok(templates.as_ref()),
-        &FactionLexical::new(&frame),
+        &FactionLexical::new(ScoreHour::decoded(&frame)),
     )
+    .unwrap()
     .unwrap();
     assert_eq!(
         names[&88].1.as_ref().unwrap().kind,
@@ -1153,17 +1171,17 @@ fn game_score_names_are_read_again_only_for_changed_operands_or_slot_zero() {
     let mut first = frame(100);
     identity_tables(&mut first, 9001, b"");
     let countries = first.complete::<tables::Countries>().unwrap();
-    let names = HourNames::read(&first, countries, &localisation);
+    let names = HourNames::read(ScoreHour::decoded(&first), countries, &localisation);
     let mut balance = first.clone();
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *balance.tables[TableId::Countries.index()]
     {
         rows[0].political_power_raw = Some(2);
     }
-    assert!(names.agrees(&balance));
+    assert!(names.agrees(ScoreHour::decoded(&balance)));
     let mut cosmetic = first.clone();
     identity_tables(&mut cosmetic, 9001, b"COS");
-    assert!(!names.agrees(&cosmetic));
+    assert!(!names.agrees(ScoreHour::decoded(&cosmetic)));
     // Slot zero's refusal names its hour, so its subject's name is read every hour.
     let mut subject = first.clone();
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
@@ -1177,8 +1195,8 @@ fn game_score_names_are_read_again_only_for_changed_operands_or_slot_zero() {
         rows[0].overlord = 11;
     }
     let countries = subject.complete::<tables::Countries>().unwrap();
-    let names = HourNames::read(&subject, countries, &localisation);
-    assert!(!names.agrees(&subject));
+    let names = HourNames::read(ScoreHour::decoded(&subject), countries, &localisation);
+    assert!(!names.agrees(ScoreHour::decoded(&subject)));
 }
 
 pub(super) fn scale_score_frame(count: u32) -> DecodedFrame {
@@ -1318,12 +1336,12 @@ fn game_score_table_missing_reasons_do_not_depend_on_hour_or_truncation_count() 
             };
         }
         assert_eq!(
-            table_missing_reason(&first, table),
+            missing_reason(HourFrame::from(&first), table),
             Some(format!("{table:?} is truncated"))
         );
         assert_eq!(
-            table_missing_reason(&first, table),
-            table_missing_reason(&later, table)
+            missing_reason(HourFrame::from(&first), table),
+            missing_reason(HourFrame::from(&later), table)
         );
         for frame in [&mut first, &mut later] {
             *frame.tables[table.index()] = TableView::Unavailable {
@@ -1331,12 +1349,12 @@ fn game_score_table_missing_reasons_do_not_depend_on_hour_or_truncation_count() 
             };
         }
         assert_eq!(
-            table_missing_reason(&first, table),
+            missing_reason(HourFrame::from(&first), table),
             Some(format!("{table:?} baseline missing"))
         );
         assert_eq!(
-            table_missing_reason(&first, table),
-            table_missing_reason(&later, table)
+            missing_reason(HourFrame::from(&first), table),
+            missing_reason(HourFrame::from(&later), table)
         );
         for (frame, missing) in [(&mut first, 1), (&mut later, 20)] {
             *frame.tables[table.index()] = TableView::Unavailable {
@@ -1344,12 +1362,12 @@ fn game_score_table_missing_reasons_do_not_depend_on_hour_or_truncation_count() 
             };
         }
         assert_eq!(
-            table_missing_reason(&first, table),
+            missing_reason(HourFrame::from(&first), table),
             Some(format!("{table:?} is truncated"))
         );
         assert_eq!(
-            table_missing_reason(&first, table),
-            table_missing_reason(&later, table)
+            missing_reason(HourFrame::from(&first), table),
+            missing_reason(HourFrame::from(&later), table)
         );
         for frame in [&mut first, &mut later] {
             *frame.tables[table.index()] = TableView::Unavailable {
@@ -1357,12 +1375,12 @@ fn game_score_table_missing_reasons_do_not_depend_on_hour_or_truncation_count() 
             };
         }
         assert_eq!(
-            table_missing_reason(&first, table).as_deref(),
+            missing_reason(HourFrame::from(&first), table).as_deref(),
             Some(replay_data::format::GAME_SCORE_DISABLED_REASON)
         );
         assert_eq!(
-            table_missing_reason(&first, table),
-            table_missing_reason(&later, table)
+            missing_reason(HourFrame::from(&first), table),
+            missing_reason(HourFrame::from(&later), table)
         );
     }
 }

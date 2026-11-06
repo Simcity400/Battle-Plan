@@ -21,7 +21,8 @@ use installed_content_core::{
     unit_leader::SubUnits,
 };
 use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::TableId;
+use replay_frame::frame::{DecodedFrame, HourFrame};
 
 use crate::table_access::rows;
 use crate::table_access::{TokenNames, fold_token};
@@ -714,11 +715,37 @@ impl<'a> Sources<'a> {
         })
     }
 
+    /// [`Self::read`] of any frame's tables, a walk's views among them.
+    pub fn read_in(frame: HourFrame<'a>) -> io::Result<Self> {
+        if let Some(decoded) = frame.decoded() {
+            return Self::read(decoded.decoded_frame());
+        }
+        let tokens = TokenNames::new_in(frame)?;
+        Ok(Self {
+            tokens,
+            index: Arc::new(SourceIndex::read_in(frame)?),
+        })
+    }
+
+    /// [`Self::reuse`] of any frame's tables, a walk's views among them.
+    pub fn reuse_in(frame: HourFrame<'a>, index: Arc<SourceIndex>) -> io::Result<Self> {
+        if let Some(decoded) = frame.decoded() {
+            return Self::reuse(decoded.decoded_frame(), index);
+        }
+        Ok(Self {
+            tokens: TokenNames::new_in(frame)?,
+            index,
+        })
+    }
+
     /// Its links and overrides, kept for [`Self::reuse`].
     pub fn index(&self) -> &Arc<SourceIndex> {
         &self.index
     }
 }
+
+/// The CountryLinks fields the links are read by.
+const LINK: u64 = replay_data::rows::mask::<replay_data::rows::CountryLinkRow>(&["canonical_slot"]);
 
 impl SourceIndex {
     fn read(frame: &DecodedFrame) -> io::Result<Self> {
@@ -728,8 +755,36 @@ impl SourceIndex {
             .map(|row| (row.id, row.canonical_slot))
             .collect();
         let local_rows = rows::<tables::CountryLocalSubunits>(frame)?;
+        Self::index(
+            links,
+            local_rows.rows().iter().map(|row| Ok(std::borrow::Cow::Borrowed(row))),
+            local_rows.is_complete(),
+        )
+    }
+
+    /// [`Self::read`] of a walk's views: its local sub-units are a truncated table's read
+    /// rows, as a decoded frame's are.
+    fn read_in(frame: HourFrame<'_>) -> io::Result<Self> {
+        let mut links = BTreeMap::new();
+        for row in frame.complete::<tables::CountryLinks>(LINK)?.iter() {
+            let row = row?;
+            links.insert(row.id, row.canonical_slot);
+        }
+        let table = TableId::CountryLocalSubunits;
+        let local = frame.held::<tables::CountryLocalSubunits>(u64::MAX);
+        Self::index(links, local.iter(), frame.status(table).is_complete())
+    }
+
+    fn index<'r>(
+        links: BTreeMap<u32, u32>,
+        local_rows: impl Iterator<
+            Item = io::Result<std::borrow::Cow<'r, replay_data::rows::CountryLocalSubunitRow>>,
+        >,
+        local_complete: bool,
+    ) -> io::Result<Self> {
         let mut local = BTreeMap::new();
-        for row in local_rows.rows() {
+        for row in local_rows {
+            let row = row?;
             let country = *links.get(&row.country).ok_or_else(|| {
                 invalid(format!(
                     "local sub-unit country {} has no CountryLinks row",
@@ -751,7 +806,7 @@ impl SourceIndex {
         Ok(Self {
             links,
             local,
-            local_complete: local_rows.is_complete(),
+            local_complete,
         })
     }
 }

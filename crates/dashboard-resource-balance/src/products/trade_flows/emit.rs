@@ -166,12 +166,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place, decimals: u8) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place, decimals: u8) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, decimals), Some(DOMAIN))
     }
 
-    fn known_key(&mut self, writer: &mut Writer<'_>) -> io::Result<KeyHandle> {
+    fn known_key(&mut self, writer: &mut Writer) -> io::Result<KeyHandle> {
         if let Some(key) = self.known_key {
             return Ok(key);
         }
@@ -204,7 +204,7 @@ impl Emit {
     }
 
     /// The flow actor of `key`, its keys and first aliases catalogued at `hour` when it is new.
-    fn flow(&mut self, writer: &mut Writer<'_>, key: FlowKey, hour: i32) -> io::Result<u64> {
+    fn flow(&mut self, writer: &mut Writer, key: FlowKey, hour: i32) -> io::Result<u64> {
         if let Some(&actor) = self.by_key.get(&key) {
             return Ok(actor);
         }
@@ -249,7 +249,7 @@ impl Emit {
     }
 
     /// The id of `group`, with its key, catalogued when it is new.
-    fn group(&mut self, writer: &mut Writer<'_>, group: Group) -> io::Result<u64> {
+    fn group(&mut self, writer: &mut Writer, group: Group) -> io::Result<u64> {
         if let Some(&id) = self.group_ids.get(&group) {
             return Ok(id);
         }
@@ -285,7 +285,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("trade.emit", None);
         let at = hour.hour;
         let adjacent = match self.last {
@@ -326,7 +326,7 @@ impl Emit {
     }
 
     /// An hour whose read cannot say who trades what: every run ends.
-    fn unknown(&mut self, writer: &mut Writer<'_>, at: i32, known: KeyHandle) -> io::Result<()> {
+    fn unknown(&mut self, writer: &mut Writer, at: i32, known: KeyHandle) -> io::Result<()> {
         for actor in std::mem::take(&mut self.active) {
             self.end(writer, at, actor)?;
         }
@@ -341,7 +341,7 @@ impl Emit {
     }
 
     /// Ends `actor`'s run before `at`; it no longer names its slots.
-    fn end(&mut self, writer: &mut Writer<'_>, at: i32, actor: u64) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, at: i32, actor: u64) -> io::Result<()> {
         let flow = &mut self.flows[actor as usize];
         if let Some(run) = &mut flow.run {
             run.last = Some(at - 1);
@@ -372,7 +372,7 @@ impl Emit {
         }
     }
 
-    fn retire(&mut self, writer: &mut Writer<'_>, at: i32, actor: u64) -> io::Result<()> {
+    fn retire(&mut self, writer: &mut Writer, at: i32, actor: u64) -> io::Result<()> {
         if self.active.remove(&actor) {
             self.end(writer, at, actor)?;
             self.unname(actor);
@@ -384,7 +384,7 @@ impl Emit {
     /// the same terms the hour before; else a run starts.
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         terms: Terms,
@@ -449,7 +449,7 @@ impl Emit {
     /// A known read.
     fn known_read(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         adjacent: bool,
         known: KeyHandle,
@@ -554,7 +554,7 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for actor in std::mem::take(&mut self.active) {
             if let Some(run) = &mut self.flows[actor as usize].run {
@@ -569,7 +569,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

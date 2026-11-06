@@ -13,7 +13,6 @@ pub mod prepared;
 pub mod prepared_focus;
 pub mod products;
 pub mod readiness;
-pub mod reply_cache;
 mod reply_dto;
 pub mod service;
 
@@ -99,7 +98,6 @@ pub fn typescript_contract() -> String {
         map_settings::RecordedMod::decl(),
         protocol::ResolvedMapSettings::decl(),
         map_settings::Reply::decl(),
-        transport::HistoryCacheReply::decl(),
         transport::SourceReply::decl(),
         prepared::State::decl(),
         prepared::PauseReason::decl(),

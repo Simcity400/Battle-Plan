@@ -10,14 +10,16 @@
 //! holds them by the fields they read ([`dashboard_world`]), and the projection keeps the
 //! hour's views until the next hour that moves them, to name its census as its build did.
 //!
-//! A walk starts only where the divisions and their removal witnesses were read whole
-//! ([`Operator::starts_at`]), so the census and witnesses before its first hour are the
-//! restart's, and goes on into its branch's later runs, carrying them as the row path's scan
-//! carries them across, resident or written whole ([`Operator::save`]). What only the hours
+//! A walk starts only where the divisions were read whole and the removal witnesses' last
+//! complete read is the run's own ([`Operator::starts_at`]): a census only an earlier read holds
+//! would be named by operands that may have moved since. The census before its first hour is the
+//! restart's, and the witnesses their last complete read ([`columns::last_complete`]). It goes on
+//! into its branch's later runs, which start from empty tables, carrying them as the row path's
+//! scan carries them across, resident or written whole ([`Operator::save`]). What only the hours
 //! before a walk know is left for the ordered scan: the template read hour is dated
-//! [`super::INHERITED`], and the presentations named from the restart's census are
-//! marked with the hour that census is taken to have been built, for the ordered scan to name
-//! again when it was built earlier ([`Hour::names`]).
+//! [`super::INHERITED`], and the presentations named from the restart's census are marked with
+//! the hour that census is taken to have been built, for the ordered scan to name again when it
+//! was built earlier ([`Hour::names`]).
 
 use super::{
     ArmyName, DivisionLogKind, Event, IDENTITY_UNAVAILABLE, INHERITED, Presentation, TemplateName,
@@ -26,10 +28,10 @@ use super::{
 use dashboard_text::metadata::{
     CountryKeys, LinkProjection, LinkTags, country_tables, link_slots, slot_read,
 };
-use dashboard_world::{Hold, Needs, World};
+use dashboard_world::{Copies, Hold, Needs, World};
 use replay::{
     columnar_frames::{Views, frame_heap_bytes, metrics},
-    columns::{self, Status},
+    columns::{self, Paged, Status, Table},
     segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{
@@ -294,22 +296,22 @@ fn mask(table: TableId, fields: &[&str]) -> io::Result<u64> {
 
 /// The Divisions columns an hour reads, by slot.
 struct Divisions<'a> {
-    reveal_skip: &'a [u8],
-    province: &'a [u32],
-    template: &'a [u64],
-    roster: &'a [u32],
-    expeditionary: &'a [u32],
+    reveal_skip: &'a Paged<u8>,
+    province: &'a Paged<u32>,
+    template: &'a Paged<u64>,
+    roster: &'a Paged<u32>,
+    expeditionary: &'a Paged<u32>,
 }
 
 impl<'a> Divisions<'a> {
-    fn new(state: &'a State, fields: &Fields) -> io::Result<Self> {
-        let table = columns::table(state, TableId::Divisions)?;
+    /// The columns of `table`, a Divisions state the walk holds.
+    fn new(table: &'a Table, fields: &Fields) -> io::Result<Self> {
         Ok(Self {
-            reveal_skip: columns::plain(table, fields.reveal_skip)?,
-            province: columns::plain(table, fields.province)?,
-            template: columns::plain(table, fields.template)?,
-            roster: columns::plain(table, fields.owners[0])?,
-            expeditionary: columns::plain(table, fields.owners[1])?,
+            reveal_skip: columns::plain::<u8>(table, fields.reveal_skip)?,
+            province: columns::plain::<u32>(table, fields.province)?,
+            template: columns::plain::<u64>(table, fields.template)?,
+            roster: columns::plain::<u32>(table, fields.owners[0])?,
+            expeditionary: columns::plain::<u32>(table, fields.owners[1])?,
         })
     }
 
@@ -410,6 +412,8 @@ pub struct Projector {
     fields: Fields,
     /// The naming tables as the last hour that moved them left them, dated as they name.
     named: Option<DecodedFrame>,
+    /// The projection's own copies of the naming tables, in the fields it reads.
+    copies: Copies,
     built: Option<Built>,
     links: LinkTags,
     /// Whether the link tags were last read from complete country tables.
@@ -453,6 +457,7 @@ impl Projector {
                 naming: naming()?,
             },
             named: None,
+            copies: Copies::new(naming()?)?,
             built: None,
             links: LinkTags::default(),
             linked: false,
@@ -520,13 +525,13 @@ impl Projector {
         }
     }
 
-    /// Every Divisions row's operands now.
+    /// Every row's operands of `table`, a Divisions state the walk holds, named now.
     fn operands(
         &mut self,
         state: &State,
+        table: &Table,
         divisions: &Divisions<'_>,
     ) -> io::Result<HashMap<u64, Operands>> {
-        let table = columns::table(state, TableId::Divisions)?;
         let mut operands = HashMap::with_capacity(table.live().count());
         for slot in table.live().ones() {
             if let Some(id) = table.key(slot).map(|key| key as u64) {
@@ -654,7 +659,7 @@ impl Projector {
                 }
                 operands
             }
-            None => self.operands(state, divisions)?,
+            None => self.operands(state, columns::table(state, TableId::Divisions)?, divisions)?,
         };
         self.built = Some(Built {
             hour: at,
@@ -873,9 +878,13 @@ impl Operator<World> for Projector {
 
     fn starts_at(&self, start: Start<'_>) -> bool {
         match start {
+            // Witnesses its run never read whole are an earlier run's, which the carry holds.
             Start::Restart(state) => {
                 columns::complete(state, TableId::Divisions)
-                    && columns::complete(state, TableId::DivisionEquipmentDeletions)
+                    && matches!(
+                        columns::last_complete(state, TableId::DivisionEquipmentDeletions),
+                        Ok(Some(_))
+                    )
             }
             Start::Run { continues } => !continues,
         }
@@ -893,9 +902,13 @@ impl Operator<World> for Projector {
             .checked_sub(1)
             .ok_or_else(|| invalid("A walk starts at no hour"))?;
         self.previous_hour = Some(before);
-        // The restart's census and removal witnesses, read whole ([`Operator::starts_at`]).
-        let divisions = Divisions::new(state, &self.fields)?;
+        // The restart's naming tables name its census: read once, before the walk's hours.
+        self.copies.clear();
+        self.named =
+            Some(Views::new(&NAMING, self.format, self.mode)?.restored(state, branch, before)?);
+        // The restart's census, read whole ([`Operator::starts_at`]), built the hour before.
         let table = columns::table(state, TableId::Divisions)?;
+        let divisions = Divisions::new(table, &self.fields)?;
         for slot in table.live().ones() {
             if let Some(id) = table.key(slot).map(|key| key as u64)
                 && divisions.shown(slot)
@@ -904,10 +917,7 @@ impl Operator<World> for Projector {
             }
         }
         self.census_hour = Some(before);
-        // The restart's naming tables name its census: read once, before the walk's hours.
-        self.named =
-            Some(Views::new(&NAMING, self.format, self.mode)?.restored(state, branch, before)?);
-        let operands = self.operands(state, &divisions)?;
+        let operands = self.operands(state, table, &divisions)?;
         self.built = Some(Built {
             hour: before,
             kept: None,
@@ -916,19 +926,29 @@ impl Operator<World> for Projector {
             drifted: false,
             restored: Some(before),
         });
-        for row in every::<DivisionEquipmentDeletionRow>(
-            state,
-            TableId::DivisionEquipmentDeletions,
-            self.format.version(),
-        )? {
-            self.deletions
-                .insert(row.division_handle, deletion_signature(&row));
+        // The removal witnesses are the restart's last complete read of them.
+        if let Some((table, _)) =
+            columns::last_complete(state, TableId::DivisionEquipmentDeletions)?
+        {
+            let format = self.format.version();
+            for slot in table.live().ones() {
+                let row: DivisionEquipmentDeletionRow = columns::row_in(
+                    state,
+                    table,
+                    TableId::DivisionEquipmentDeletions,
+                    slot,
+                    format,
+                )?;
+                self.deletions
+                    .insert(row.division_handle, deletion_signature(&row));
+            }
         }
         Ok(())
     }
 
     fn cross(&mut self, first: i32) -> io::Result<()> {
         // The walker's tables start empty: the census and naming tables are read whole again.
+        self.copies.clear();
         if let Some(built) = &mut self.built {
             built.drifted = true;
         }
@@ -996,7 +1016,11 @@ impl Operator<World> for Projector {
             self.keep_naming();
         }
         if moves.contains(&true) {
-            self.named = Some(hour.world.frame_held(state, &self.fields.naming)?);
+            if unread || hour.opens {
+                self.copies.clear();
+            }
+            self.copies.hour(hour.world, state)?;
+            self.named = Some(self.copies.frame().clone());
         }
         let labels = columns::complete(state, TableId::Countries)
             && columns::complete(state, TableId::CountryLinks);
@@ -1031,8 +1055,8 @@ impl Operator<World> for Projector {
 
         let cpu = ::replay_frame::cpu::scope("division log census", None);
         let mut events = Vec::new();
-        let divisions = Divisions::new(state, &self.fields)?;
         let table = columns::table(state, TableId::Divisions)?;
+        let divisions = Divisions::new(table, &self.fields)?;
         let mut lost = Vec::new();
         if census && changed[DIVISIONS] {
             let (gained, gone) = self.census(state, at, hour.starts, &divisions)?;
@@ -1407,6 +1431,7 @@ impl Operator<World> for Projector {
         self.built = built;
         self.pending = pending;
         self.named = None;
+        self.copies.clear();
         Ok(())
     }
 }

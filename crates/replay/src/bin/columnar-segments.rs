@@ -6,7 +6,7 @@
 //! last restart included, every string of its dictionary too.
 //! `columnar-segments <file.h4col> [--threads <n>] [--check]`
 
-use replay::columnar_frames::{Limits, Recording, Segment, Walker, schema};
+use replay::columnar_frames::{Recording, Segment, Walker, schema};
 use replay_columnar::walk::{Dictionary, State};
 use serde_json::json;
 use std::{
@@ -14,7 +14,7 @@ use std::{
     path::PathBuf,
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -149,7 +149,7 @@ fn main() -> io::Result<()> {
             _ => return Err(usage()),
         }
     }
-    let mut file = Recording::open_path(&path, Limits::default())?;
+    let mut file = Recording::open_path(&path)?;
     // A check also holds every hour to the pages' hour digest chain.
     file.verify(check);
     let file = file;
@@ -162,7 +162,7 @@ fn main() -> io::Result<()> {
     }
     let segments = file.segments();
     let workers = threads.min(segments.len());
-    let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let next = AtomicUsize::new(0);
     let totals = Mutex::new((0_u64, 0_u64, 0_u64, 0_u64));
     let begin = Instant::now();
     print!("{{\"per_segment\":[");
@@ -171,7 +171,7 @@ fn main() -> io::Result<()> {
             .map(|_| {
                 scope.spawn(|| -> io::Result<()> {
                     // A worker's walker keeps its buffers from segment to segment.
-                    let mut walker = Walker::new(&file, &stop)?;
+                    let mut walker = Walker::new(&file)?;
                     loop {
                         let at = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&segment) = segments.get(at) else {

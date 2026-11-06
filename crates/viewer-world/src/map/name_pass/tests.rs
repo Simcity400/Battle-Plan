@@ -391,40 +391,28 @@ fn placed_name(text: &str, glyphs: usize) -> WorldName {
 }
 
 #[test]
-fn a_placed_area_is_reused_until_the_byte_bound_evicts_the_oldest() {
+fn a_placed_area_is_reused_while_the_last_placement_shows_it() {
     let key = |area: u32| ("GER".to_owned(), "Germany".to_owned(), vec![area], false);
-    let one = area_bytes(&key(1), Some(&placed_name("Germany", 7)));
-    // Room for three areas; an overflow evicts down to three quarters.
-    let placed = PlacedAreas::with_limit(one * 3);
+    let placed = PlacedAreas::default();
     let builds = Cell::new(0);
-    let place = |area| {
+    let place = |areas: &[u32]| {
         let generation = placed.begin();
-        placed.place(generation, key(area), || {
-            builds.set(builds.get() + 1);
-            Some(placed_name("Germany", 7))
-        })
+        for &area in areas {
+            placed.place(generation, key(area), || {
+                builds.set(builds.get() + 1);
+                Some(placed_name("Germany", 7))
+            });
+        }
+        placed.end(generation);
     };
-    place(2);
-    place(1);
-    assert!(place(1).is_some());
+    place(&[1, 2]);
+    place(&[1, 2]);
     assert_eq!(builds.get(), 2, "an area is placed once");
-    place(3);
-    // Area 1 is used again, then a fourth area overflows the bound:
-    // the least recently used areas, 2 then 3, go.
-    place(1);
-    place(4);
-    assert_eq!(builds.get(), 4);
-    assert!(placed.lock().bytes <= one * 3);
-    place(1);
-    place(4);
-    assert_eq!(builds.get(), 4, "the recently used areas were kept");
-    place(2);
-    place(3);
-    assert_eq!(
-        builds.get(),
-        6,
-        "the least recently used areas were evicted"
-    );
+    place(&[1, 3]);
+    assert_eq!(builds.get(), 3);
+    assert_eq!(placed.lock().placed.len(), 2, "only what the last placement showed is kept");
+    place(&[2]);
+    assert_eq!(builds.get(), 4, "an area no longer shown is placed again");
 }
 
 fn name_frame(controllers: [u32; 2]) -> DecodedFrame {

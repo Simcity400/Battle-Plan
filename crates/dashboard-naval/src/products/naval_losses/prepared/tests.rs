@@ -1,6 +1,6 @@
 use super::*;
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     memory::{Memory, publish},
 };
 use replay_data::{
@@ -8,9 +8,6 @@ use replay_data::{
     rows::TableId, rows::TableRows, rows::tables,
 };
 use replay_frame::frame::TableView;
-
-/// Decoded pages the harness's publications share.
-static BUDGET: Budget = Budget::new(64 << 20);
 
 fn identity() -> dashboard_series::Identity {
     dashboard_series::Identity {
@@ -23,9 +20,8 @@ fn identity() -> dashboard_series::Identity {
 
 /// Naval losses published on a series held in memory, cut where the family cuts a batch.
 pub(in crate::products::naval_losses::prepared) struct Harness {
-    cache: Cache<'static>,
     pages: Memory,
-    writer: Writer<'static>,
+    writer: Writer,
     emit: emit::Emit,
     root: Option<u64>,
     generation: u64,
@@ -35,9 +31,8 @@ pub(in crate::products::naval_losses::prepared) struct Harness {
 impl Harness {
     pub(in crate::products::naval_losses::prepared) fn new(first: i32) -> Self {
         Self {
-            cache: Cache::new(&BUDGET),
             pages: Memory::default(),
-            writer: Writer::new(&BUDGET, identity(), first).unwrap(),
+            writer: Writer::new(identity(), first).unwrap(),
             emit: emit::Emit::default(),
             root: None,
             generation: 0,
@@ -75,7 +70,6 @@ impl Harness {
             publish(
                 &mut self.writer,
                 &mut self.pages,
-                &self.cache,
                 Publication {
                     generation: self.generation,
                     segment: self.generation - 1,
@@ -97,7 +91,7 @@ impl Harness {
     ) -> T {
         let root = self.root.expect("a publication");
         let mut snapshot =
-            Snapshot::open(self.pages.clone(), &self.cache, root, identity()).unwrap();
+            Snapshot::open(self.pages.clone(), root, identity()).unwrap();
         let directory =
             dashboard_series::family::Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
         let emit::Catalogue { actors, metadata } = emit::catalogue(&directory).unwrap().unwrap();

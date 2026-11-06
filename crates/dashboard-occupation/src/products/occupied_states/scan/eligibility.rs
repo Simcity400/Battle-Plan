@@ -2,19 +2,9 @@ use super::*;
 use dashboard_text::triggers::inputs::{
     self, Resolution, Since, TableChange, TableChanges, TableRead,
 };
+use replay_frame::frame::HourFrame;
 
-type Key = (String, u32, u32);
-
-/// The frames a law's trigger world is read from: the hour's, holding the
-/// tables `holds` accepts, and one holding every trigger table, built when
-/// first asked for.
-#[derive(Clone, Copy)]
-pub(super) struct Frames<'w> {
-    pub(super) hour: &'w DecodedFrame,
-    pub(super) holds: &'w dyn Fn(TableId) -> bool,
-    pub(super) every: &'w dyn Fn() -> Result<&'w DecodedFrame, String>,
-    pub(super) built: &'w dyn Fn() -> bool,
-}
+pub(super) type Key = (String, u32, u32);
 
 /// A law's answer, what it read, and what its content calls noted.
 type Evaluated = (
@@ -23,10 +13,10 @@ type Evaluated = (
 );
 
 fn evaluated<'w>(
-    frame: &'w DecodedFrame,
-    evaluate: &impl Fn(&'w DecodedFrame) -> Result<bool, String>,
+    frame: HourFrame<'w>,
+    evaluate: &impl Fn(HourFrame<'w>) -> Result<bool, String>,
 ) -> Evaluated {
-    catalogue::capture_isolated(|| inputs::capture(frame, || evaluate(frame)))
+    catalogue::capture_isolated(|| inputs::capture_in(frame, || evaluate(frame)))
 }
 
 #[derive(Default)]
@@ -101,7 +91,7 @@ impl Ranges {
 
     fn reached(
         &self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         changed: &[replay_data::rows::DeltaRow],
         deleted: &[u128],
     ) -> HashSet<TableRead> {
@@ -147,6 +137,8 @@ struct Evaluation {
     reads: Vec<TableRead>,
     dirty: bool,
     states: BTreeSet<u32>,
+    /// Which evaluation of its runtime it is.
+    generation: u64,
 }
 
 #[derive(Default)]
@@ -158,11 +150,41 @@ pub(super) struct Runtime {
     volatile: BTreeSet<Key>,
     states: HashMap<u32, Key>,
     at: Option<(u64, i32)>,
+    /// Evaluations made, never reset: a generation names one evaluation only.
+    generations: u64,
 }
 
 impl Runtime {
     pub(super) fn clear(&mut self) {
+        let generations = self.generations;
         *self = Self::default();
+        self.generations = generations;
+    }
+
+    /// The evaluation `state`'s law read last, and its generation.
+    pub(super) fn read_by(&self, state: u32) -> Option<(Key, u64)> {
+        let key = self.states.get(&state)?;
+        Some((key.clone(), self.values.get(key)?.generation))
+    }
+
+    /// Whether `key`'s answer is still that of evaluation `generation`, and none of its reads
+    /// changed since: reading it again would remember it.
+    pub(super) fn current(&self, key: &Key, generation: u64) -> bool {
+        !inputs::check_reuse()
+            && self
+                .values
+                .get(key)
+                .is_some_and(|value| !value.dirty && value.generation == generation)
+    }
+
+    /// What remembering `key`'s answer for `state` does ([`Self::evaluate`]) once it is
+    /// [`Self::current`]: `state` reads it, and what its content calls noted is credited.
+    pub(super) fn remember(&mut self, state: u32, key: &Key) {
+        self.forget_state(state);
+        self.states.insert(state, key.clone());
+        let value = self.values.get_mut(key).expect("a current law evaluation");
+        value.states.insert(state);
+        catalogue::credit(&value.own);
     }
 
     pub(super) fn forget_state(&mut self, state: u32) {
@@ -175,20 +197,22 @@ impl Runtime {
 
     pub(super) fn step(
         &mut self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         changes: &dyn TableChanges,
     ) -> BTreeSet<u128> {
-        if self.at.is_some_and(|(branch, hour)| {
-            branch != frame.branch || hour.checked_add(1) != Some(frame.hour)
-        }) {
+        let at = (frame.branch(), frame.hour());
+        if self
+            .at
+            .is_some_and(|(branch, hour)| branch != at.0 || hour.checked_add(1) != Some(at.1))
+        {
             let states = self.states.keys().map(|&id| u128::from(id)).collect();
             self.clear();
-            self.at = Some((frame.branch, frame.hour));
+            self.at = Some(at);
             return states;
         }
-        self.at = Some((frame.branch, frame.hour));
+        self.at = Some(at);
         let mut dirty = self.volatile.clone();
-        if let Some(since) = Since::hour_before(frame, changes) {
+        if let Some(since) = Since::hour_before_in(frame, changes) {
             for (&table, reads) in &self.watches {
                 if matches!(changes.table(table), TableChange::Same)
                     && !self.ending.contains(&table)
@@ -234,34 +258,26 @@ impl Runtime {
         states
     }
 
-    /// The tables a remembered law reads.
-    pub(super) fn watched(&self) -> impl Iterator<Item = TableId> + '_ {
-        self.watches.keys().copied()
-    }
-
     /// The law `token`'s eligibility for `controller` over `occupied`, which
-    /// `evaluate` decides from a trigger world read from one of `frames`: the
-    /// remembered answer while none of its declared reads changed, else read
-    /// from the hour's frame when it holds every table the law declares.
-    /// Check mode evaluates a remembered answer, and one the hour's frame
-    /// gave, anyway from every trigger table, and a change is a missed
-    /// declaration ([`inputs::missed_reuse`]).
+    /// `evaluate` decides from a trigger world read from `frame`, holding every trigger
+    /// table: the remembered answer while none of its declared reads changed. Check mode
+    /// evaluates a remembered answer anyway, and a change is a missed declaration
+    /// ([`inputs::missed_reuse_at`]).
     pub(super) fn evaluate<'w>(
         &mut self,
-        frames: Frames<'w>,
+        frame: HourFrame<'w>,
         state: u32,
         token: &str,
         controller: u32,
         occupied: u32,
-        evaluate: impl Fn(&'w DecodedFrame) -> Result<bool, String>,
+        evaluate: impl Fn(HourFrame<'w>) -> Result<bool, String>,
     ) -> Result<bool, String> {
         let key = (token.to_owned(), controller, occupied);
         if let Some(value) = self.values.get(&key).filter(|value| !value.dirty) {
             if inputs::check_reuse() {
-                let every = (frames.every)()?;
-                let ((checked, _), _) = evaluated(every, &evaluate);
+                let ((checked, _), _) = evaluated(frame, &evaluate);
                 if checked != value.value {
-                    inputs::missed_reuse(&("occupation law", &key), every);
+                    inputs::missed_reuse_at(&("occupation law", &key), frame.hour());
                 }
             }
         } else {
@@ -286,34 +302,7 @@ impl Runtime {
                 }
                 self.volatile.remove(&key);
             }
-            let first = if (frames.built)() {
-                (frames.every)()?
-            } else {
-                frames.hour
-            };
-            let mut found = evaluated(first, &evaluate);
-            if std::ptr::eq(first, frames.hour) {
-                let held = found
-                    .0
-                    .1
-                    .declared()
-                    .is_some_and(|reads| reads.iter().all(|read| (frames.holds)(read.table)));
-                if !held || inputs::check_reuse() {
-                    let every = (frames.every)()?;
-                    if !std::ptr::eq(every, frames.hour) {
-                        let whole = evaluated(every, &evaluate);
-                        if !held {
-                            found = whole;
-                        } else if whole.0.0 != found.0.0 {
-                            inputs::missed_reuse(
-                                &("occupation law on the hour's tables", &key),
-                                every,
-                            );
-                        }
-                    }
-                }
-            }
-            let ((value, inputs), own) = found;
+            let ((value, inputs), own) = evaluated(frame, &evaluate);
             let volatile = inputs.declared().is_none();
             let mut reads = inputs.declared().unwrap_or_default().to_vec();
             if reads.iter().any(|read| read.owner.is_some()) {
@@ -337,6 +326,7 @@ impl Runtime {
             if volatile {
                 self.volatile.insert(key.clone());
             }
+            self.generations += 1;
             self.values.insert(
                 key.clone(),
                 Evaluation {
@@ -345,6 +335,7 @@ impl Runtime {
                     reads,
                     dirty: false,
                     states,
+                    generation: self.generations,
                 },
             );
         }

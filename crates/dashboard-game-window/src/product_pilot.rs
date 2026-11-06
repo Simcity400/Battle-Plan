@@ -26,8 +26,8 @@ impl Pilot {
         content.prepare_display_content()?;
         Ok(Self {
             content,
-            fog: FogMemos::new(8),
-            snow: map_products::display::SnowMemo::new(8),
+            fog: FogMemos::new(),
+            snow: map_products::display::SnowMemo::new(),
         })
     }
 

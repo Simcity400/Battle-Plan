@@ -223,17 +223,28 @@ pub struct WarsHourly {
 /// A walk's only warning that is not an hour it refused.
 const CAPITULATIONS_UNOBSERVED: &str =
     "Capitulations whose country identity at the event hour is unobserved are omitted.";
-/// Replies kept for the most recently requested viewpoints.
+/// What a reply was asked for and read with; a selection of identities stands for its view.
 #[cfg(any(test, feature = "test-support"))]
-const CACHED_REPLIES: usize = 4;
-#[cfg(any(test, feature = "test-support"))]
-struct Cache {
-    branch: u64,
+struct ReplyKey {
     view: Option<String>,
     identities: Option<HashSet<(u32, u32)>>,
     catalogue: Option<Arc<Catalogue>>,
-    reply: Arc<WarsReply>,
 }
+#[cfg(any(test, feature = "test-support"))]
+impl PartialEq for ReplyKey {
+    fn eq(&self, other: &Self) -> bool {
+        (self.identities.is_some() || self.view == other.view)
+            && self.identities == other.identities
+            && match (&self.catalogue, &other.catalogue) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+/// Each branch's latest reply; an earlier one lives only while a request holds it.
+#[cfg(any(test, feature = "test-support"))]
+type Cache = dashboard_base::latest::BranchLatest<ReplyKey, WarsReply>;
 impl Product for Wars {
     const KEY: &'static str = "wars";
     const CONTENT_DEPENDENT: bool = true;
@@ -292,21 +303,15 @@ impl Wars {
             .as_ref()
             .map(|options| catalogue::catalogue(source, options))
             .transpose()?;
-        let state = source.state::<Vec<Cache>>();
+        let key = ReplyKey {
+            view: p.viewpoint_tag.clone(),
+            identities: identities.cloned(),
+            catalogue: cat,
+        };
+        let state = source.state::<Cache>();
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(hit) = state.iter().position(|c| {
-            c.branch == branch
-                && (identities.is_some() || c.view == p.viewpoint_tag)
-                && c.identities.as_ref() == identities
-                && match (&c.catalogue, &cat) {
-                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                    (None, None) => true,
-                    _ => false,
-                }
-        }) {
-            // The most recently requested first.
-            state[..=hit].rotate_right(1);
-            return Ok(state[0].reply.clone());
+        if let Some(reply) = state.get(branch, &key) {
+            return Ok(reply);
         }
         let reply = Arc::new(if let Some(identities) = identities {
             scan_selected(
@@ -314,7 +319,7 @@ impl Wars {
                 branch,
                 p.viewpoint_tag.as_deref(),
                 Some(identities),
-                cat.as_deref(),
+                key.catalogue.as_deref(),
                 cancelled,
             )?
         } else {
@@ -322,26 +327,11 @@ impl Wars {
                 &source.replay(),
                 branch,
                 p.viewpoint_tag.as_deref(),
-                cat.as_deref(),
+                key.catalogue.as_deref(),
                 cancelled,
             )?
         });
-        state.retain(|c| {
-            c.branch != branch
-                || c.identities.as_ref() != identities
-                || identities.is_none() && c.view != p.viewpoint_tag
-        });
-        state.insert(
-            0,
-            Cache {
-                branch,
-                view: p.viewpoint_tag.clone(),
-                identities: identities.cloned(),
-                catalogue: cat,
-                reply: reply.clone(),
-            },
-        );
-        state.truncate(CACHED_REPLIES);
+        state.put(branch, key, &reply);
         Ok(reply)
     }
 }

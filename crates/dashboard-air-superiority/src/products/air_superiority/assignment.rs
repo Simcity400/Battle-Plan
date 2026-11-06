@@ -254,21 +254,6 @@ impl GroupIndex {
             runs: Stab::new(runs),
         }
     }
-
-    pub fn bytes(&self) -> usize {
-        self.runs.ends.capacity() * size_of::<i32>()
-            + self.runs.runs.capacity() * size_of::<(i32, i32, Active)>()
-            + self
-                .runs
-                .runs
-                .iter()
-                .map(|(_, _, run)| match run {
-                    Active::Unknown => 0,
-                    Active::Member(_, tag) | Active::Leader(_, _, tag) => tag.capacity(),
-                    Active::War(first, second) => first.capacity() + second.capacity(),
-                })
-                .sum::<usize>()
-    }
 }
 
 /// [`native_roster`], reading only the group runs active at `hour`.
@@ -437,15 +422,6 @@ impl PresentAnchors {
             historical,
             present,
         }
-    }
-
-    /// What its counts hold: each anchor's text and count, with its tree node.
-    pub fn bytes(&self) -> usize {
-        self.historical
-            .keys()
-            .chain(self.present.keys())
-            .map(|anchor| anchor.capacity() + size_of::<(String, usize)>() + 16)
-            .sum()
     }
 
     /// Whether a lone country of `identity` is the only present country of

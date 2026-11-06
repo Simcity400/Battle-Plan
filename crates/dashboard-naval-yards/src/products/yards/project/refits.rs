@@ -54,11 +54,16 @@ pub(super) struct Refits {
 }
 
 impl Refits {
-    pub(super) fn build(cx: &mut Cx<'_, '_>, ships: &mut Ships, dirty: &mut Dirty) -> Self {
+    pub(super) fn build<F: Tables + ?Sized>(
+        cx: &mut Cx<'_, '_, F>,
+        ships: &mut Ships,
+        dirty: &mut Dirty,
+    ) -> Self {
         let mut refits = Self::default();
-        let links: Vec<(u64, u64)> = cx
-            .frame
+        let frame = cx.frame;
+        let links: Vec<(u64, u64)> = frame
             .complete::<tables::NavalRefitShips>()
+            .map(|rows| frame.each(rows.iter()))
             .unwrap_or_default()
             .iter()
             .filter(|link| link.line != 0)
@@ -77,7 +82,12 @@ impl Refits {
     }
 
     /// The link of `ship`, now to `line`, resolved again; the lines it left and joined.
-    fn link(&mut self, cx: &mut Cx<'_, '_>, ship: u64, line: Option<u64>) -> [Option<u64>; 2] {
+    fn link<F: Tables + ?Sized>(
+        &mut self,
+        cx: &mut Cx<'_, '_, F>,
+        ship: u64,
+        line: Option<u64>,
+    ) -> [Option<u64>; 2] {
         let old = self.links.remove(&ship);
         if let Some(old) = &old {
             remove(&mut self.by_line, old.line, ship);
@@ -86,11 +96,10 @@ impl Refits {
             }
         }
         let frame = cx.frame;
-        let row = find(frame.complete::<tables::Ships>().ok(), ship, |row| row.id);
-        let task = row.map(|row| row.task_force);
+        let task = frame.get::<tables::Ships>(ship).map(|row| row.task_force);
         let now = line.map(|line| {
             let owner = task
-                .and_then(|task| find(frame.complete::<tables::TaskForces>().ok(), task, |row| row.id))
+                .and_then(|task| frame.get::<tables::TaskForces>(task))
                 .and_then(|task| cx.owner(task.roster_owner));
             Link { line, task, owner }
         });
@@ -108,15 +117,19 @@ impl Refits {
     }
 
     /// Every owner's line of handle `handle` projected again, and what that changes.
-    fn line(&mut self, cx: &mut Cx<'_, '_>, ships: &mut Ships, dirty: &mut Dirty, handle: u64) {
+    fn line<F: Tables + ?Sized>(
+        &mut self,
+        cx: &mut Cx<'_, '_, F>,
+        ships: &mut Ships,
+        dirty: &mut Dirty,
+        handle: u64,
+    ) {
         let frame = cx.frame;
-        let progress = frame.complete::<tables::NavalRefitProgress>().ok();
-        let amount = progress.and_then(|rows| find(Some(rows), handle, |row| row.line));
+        let progress = frame.complete::<tables::NavalRefitProgress>();
+        let amount = progress.and_then(|rows| frame.found(rows.get(u128::from(handle))));
         let live = progress.map(|_| amount.is_some());
-        let metadata = frame
-            .complete::<tables::ProductionLines>()
-            .ok()
-            .and_then(|rows| find(Some(rows), handle, |row| row.handle));
+        let metadata = frame.get::<tables::ProductionLines>(handle);
+        let (amount, metadata) = (amount.as_deref(), metadata.as_deref());
         // A stale carried link is not an active or queued ship row.
         let mut owners: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
         let mut unowned = 0;
@@ -172,21 +185,21 @@ impl Refits {
     }
 
     /// Whether the census of live refits is complete.
-    fn census(&self, cx: &Cx<'_, '_>) -> bool {
+    fn census<F: Tables + ?Sized>(&self, cx: &Cx<'_, '_, F>) -> bool {
         let frame = cx.frame;
-        let progress = frame.complete::<tables::NavalRefitProgress>().ok();
-        let recorded = progress.is_some_and(<[_]>::is_empty)
+        let progress = frame.complete::<tables::NavalRefitProgress>();
+        let recorded = progress.is_some_and(|rows| rows.is_empty())
             || (progress.is_some()
-                && frame.complete::<tables::NavalRefitShips>().is_ok()
-                && frame.complete::<tables::Ships>().is_ok()
-                && frame.complete::<tables::TaskForces>().is_ok());
+                && frame.complete::<tables::NavalRefitShips>().is_some()
+                && frame.complete::<tables::Ships>().is_some()
+                && frame.complete::<tables::TaskForces>().is_some());
         recorded && self.unowned.is_empty()
     }
 
     /// The hour's changes to the lines, through `touched`; `variants` those whose names changed.
-    pub(super) fn hour(
+    pub(super) fn hour<F: Tables + ?Sized>(
         &mut self,
-        cx: &mut Cx<'_, '_>,
+        cx: &mut Cx<'_, '_, F>,
         ships: &mut Ships,
         dirty: &mut Dirty,
         touched: &Touched,
@@ -212,13 +225,10 @@ impl Refits {
         }
         for ship in relinked.iter().chain(resolved.difference(&relinked)) {
             let line = if relinked.contains(ship) {
-                find(
-                    frame.complete::<tables::NavalRefitShips>().ok(),
-                    *ship,
-                    |row| row.ship,
-                )
-                .map(|link| link.line)
-                .filter(|&line| line != 0)
+                frame
+                    .get::<tables::NavalRefitShips>(*ship)
+                    .map(|link| link.line)
+                    .filter(|&line| line != 0)
             } else {
                 self.links.get(ship).map(|link| link.line)
             };
@@ -241,9 +251,9 @@ impl Refits {
     }
 
     /// `owner`'s totals row at the hour, and the refusals it counts there.
-    pub(super) fn totals(
+    pub(super) fn totals<F: Tables + ?Sized>(
         &mut self,
-        cx: &mut Cx<'_, '_>,
+        cx: &mut Cx<'_, '_, F>,
         dirty: &mut Dirty,
         owner: u32,
     ) -> Option<Box<[Spelled]>> {
@@ -302,8 +312,8 @@ fn refused(line: &Option<Line>) -> &[(u32, u64)] {
 }
 
 /// One owner's line of `progress` and `metadata`, holding its `linked` ships, ascending.
-fn project(
-    cx: &mut Cx<'_, '_>,
+fn project<F: Tables + ?Sized>(
+    cx: &mut Cx<'_, '_, F>,
     (progress, metadata): (Option<&rows::NavalRefitProgressRow>, Option<&rows::ProductionLineRow>),
     linked: Vec<u64>,
 ) -> Line {

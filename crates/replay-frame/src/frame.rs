@@ -12,6 +12,10 @@ use std::{
 };
 
 pub(crate) mod checkpoint;
+mod columns;
+pub use columns::{ColumnFrame, ColumnView, Columns, Orders, wire};
+mod tables;
+pub use tables::{HourFrame, Rowset, RowsetIter, Tables};
 mod decoder;
 mod hour_input;
 pub use hour_input::{ChangeDiscontinuity, HourChanges, HourInput, TableChanges};
@@ -397,11 +401,14 @@ impl std::ops::Deref for SharedView {
 /// reuse a computation's result while every view it read is unchanged.
 pub mod view_reads {
     use super::{SharedView, ViewIdentity};
+    use crate::rows::TableId;
     use std::cell::{Cell, RefCell};
 
     thread_local! {
         pub(super) static RECORDING: Cell<bool> = const { Cell::new(false) };
         static READS: RefCell<Vec<ViewIdentity>> = const { RefCell::new(Vec::new()) };
+        /// The tables read through a columnar walk's views, which have no identity.
+        static WALKED: RefCell<Vec<TableId>> = const { RefCell::new(Vec::new()) };
     }
 
     pub(super) fn note(view: &SharedView) {
@@ -411,6 +418,56 @@ pub mod view_reads {
                 reads.push(view.identity());
             }
         });
+    }
+
+    /// Notes a read of `table` through a walk's views, while this thread records.
+    pub(crate) fn note_walked(table: TableId) {
+        if RECORDING.with(Cell::get) {
+            WALKED.with(|walked| {
+                let mut walked = walked.borrow_mut();
+                if !walked.contains(&table) {
+                    walked.push(table);
+                }
+            });
+        }
+    }
+
+    /// Note `tables`, read through a walk's views on a helper thread, for this thread's
+    /// recording.
+    pub fn credit_walked(tables: &[TableId]) {
+        for &table in tables {
+            note_walked(table);
+        }
+    }
+
+    /// [`record`], with the tables `compute` read through a walk's views, each once.
+    pub fn record_walked<T>(
+        compute: impl FnOnce() -> T,
+    ) -> (T, Vec<ViewIdentity>, Vec<TableId>) {
+        let outer = WALKED.with(|walked| std::mem::take(&mut *walked.borrow_mut()));
+        // Restore the enclosing recording's tables even when `compute` unwinds.
+        struct Restore(Option<Vec<TableId>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(outer) = self.0.take() {
+                    WALKED.with(|walked| *walked.borrow_mut() = outer);
+                }
+            }
+        }
+        let mut restore = Restore(Some(outer));
+        let was = recording();
+        let (value, views) = record_views(compute);
+        let inner = WALKED.with(|walked| std::mem::take(&mut *walked.borrow_mut()));
+        let mut outer = restore.0.take().unwrap_or_default();
+        if was {
+            for &table in &inner {
+                if !outer.contains(&table) {
+                    outer.push(table);
+                }
+            }
+        }
+        WALKED.with(|walked| *walked.borrow_mut() = outer);
+        (value, views, inner)
     }
 
     /// Run `compute` without recording the views it reads: a caller that
@@ -450,6 +507,11 @@ pub mod view_reads {
     /// Run `compute`, returning the views it read, each once. Recording
     /// nests: an enclosing recording also holds the views read inside.
     pub fn record<T>(compute: impl FnOnce() -> T) -> (T, Vec<ViewIdentity>) {
+        let (value, views, _) = record_walked(compute);
+        (value, views)
+    }
+
+    fn record_views<T>(compute: impl FnOnce() -> T) -> (T, Vec<ViewIdentity>) {
         let outer = READS.with(|reads| std::mem::take(&mut *reads.borrow_mut()));
         let was = RECORDING.with(|recording| recording.replace(true));
         // Restore the enclosing recording even when `compute` unwinds.

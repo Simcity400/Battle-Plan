@@ -3,6 +3,8 @@
 use super::*;
 use installed_content_core::{parser::c_string, tokens::Token};
 
+const TECHNOLOGY_ID: u64 = mask::<replay_data::rows::TechnologyDefinitionRow>(&["id"]);
+
 impl Renderer<'_, '_, '_> {
     pub(in crate::effect_description) fn bound_technology_effect(
         &mut self,
@@ -23,20 +25,18 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         let world = self.context.world()?;
-        let frame = self.context.text.frame();
-        let definition = frame
-            .complete::<tables::TechnologyDefinitions>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)))
-            .ok_or("TechnologyDefinitions lacks bound technology identity")?;
-        let status = frame
-            .complete::<tables::ResearchTechnologies>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .any(|row| {
-                row.database_index == definition.database_index
-                    && world.slot(row.country) == Some(country)
+        let definition = find(
+            self.complete::<tables::TechnologyDefinitions>(TECHNOLOGY_ID)?,
+            |row| c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)),
+        )?
+        .ok_or("TechnologyDefinitions lacks bound technology identity")?;
+        // The key is the country, then the database index.
+        let status = self
+            .complete::<tables::ResearchTechnologies>(0)?
+            .keys()
+            .any(|key| {
+                key as u32 as i32 == definition.database_index
+                    && world.slot((key >> 32) as u32) == Some(country)
             });
         if !status {
             return Err("ResearchTechnologies lacks bound country's technology status".into());
@@ -145,13 +145,9 @@ impl Renderer<'_, '_, '_> {
             };
             let definition = &catalog.equipment.equipment[index];
             if catalog.equipment.category(definition) & 0x200 != 0 {
-                let features = self
-                    .context
-                    .text
-                    .frame()
-                    .complete::<tables::SimulationFeatures>()
-                    .map_err(|why| why.to_string())?
-                    .first()
+                let features = each(self.complete::<tables::SimulationFeatures>(DLC_MASK)?)
+                    .next()
+                    .transpose()?
                     .ok_or("SimulationFeatures absent")?;
                 if features.dlc_mask & 0x80 == 0 {
                     continue;

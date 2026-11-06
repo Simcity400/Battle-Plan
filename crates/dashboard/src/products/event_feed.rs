@@ -18,8 +18,6 @@ use crate::{
 #[cfg(test)]
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use std::collections::VecDeque;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -403,10 +401,11 @@ pub struct EventFeedReply {
     pub warnings: Vec<String>,
 }
 
+/// Each branch's feed, built against the catalogue it holds; another catalogue replaces it.
 #[derive(Default)]
 #[cfg(test)]
 struct Cache {
-    branches: VecDeque<(u64, CachedBranch)>,
+    branches: BTreeMap<u64, CachedBranch>,
 }
 #[derive(Clone)]
 #[cfg(test)]
@@ -416,31 +415,19 @@ struct CachedBranch {
 }
 #[cfg(test)]
 impl Cache {
-    fn get(&mut self, branch: u64, catalogue: &Option<Arc<Catalogue>>) -> Option<CachedBranch> {
-        let index = self.branches.iter().position(|(id, _)| *id == branch)?;
-        let (_, cached) = self.branches.remove(index)?;
+    fn get(&self, branch: u64, catalogue: &Option<Arc<Catalogue>>) -> Option<CachedBranch> {
+        let cached = self.branches.get(&branch)?;
         let matches = match (&cached.catalogue, catalogue) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         };
-        if !matches {
-            return None;
-        }
-        self.branches.push_back((branch, cached.clone()));
-        Some(cached)
+        matches.then(|| cached.clone())
     }
     fn put(&mut self, branch: u64, cached: CachedBranch) {
-        self.branches.retain(|(id, _)| *id != branch);
-        self.branches.push_back((branch, cached));
-        while self.branches.len() > CACHED_BRANCHES {
-            self.branches.pop_front();
-        }
+        self.branches.insert(branch, cached);
     }
 }
-// Cache eviction only; never a limit on recorded branch facts.
-#[cfg(test)]
-const CACHED_BRANCHES: usize = 4;
 type UnavailableKey = (String, String, Option<String>, bool);
 
 #[derive(Serialize, Deserialize)]
@@ -812,31 +799,32 @@ fn script_events(catalogue: &Catalogue) -> Arc<installed_content_events::events:
     }))
 }
 
-/// The world an occurrence's text is expanded in: that of its naming hour, the walk's frame of
-/// [`columnar::presentation`] when it is the hour that read it, else sought in the recording.
-/// Each is read once, when first asked.
+/// The world an occurrence's text is expanded in: that of its naming hour, the walk's views of
+/// [`columnar::presentation`] when it is the hour that read it, else sought in the recording,
+/// once, when first asked.
 pub(crate) struct HourTexts<'a> {
+    /// The hour that read the occurrences, and its tables, if at hand.
     hour: i32,
-    read: &'a dyn Fn() -> io::Result<replay_frame::frame::DecodedFrame>,
+    read: Option<replay_frame::frame::HourFrame<'a>>,
     seek: Option<&'a dyn Fn(i32) -> io::Result<replay::container::SeekResult>>,
-    frames: std::cell::RefCell<BTreeMap<i32, Result<std::rc::Rc<replay_frame::frame::DecodedFrame>, String>>>,
+    sought: std::cell::RefCell<BTreeMap<i32, Result<std::rc::Rc<replay_frame::frame::DecodedFrame>, String>>>,
     /// A failed read fails the hour's preparation.
     failure: std::cell::RefCell<Option<io::Error>>,
 }
 
 impl<'a> HourTexts<'a> {
-    /// Texts of occurrences read at `hour`, whose world `read` gives; those named at another
+    /// Texts of occurrences read at `hour`, whose tables `read` holds; those named at another
     /// hour have theirs sought by `seek`, or none without it.
     pub(crate) fn new(
         hour: i32,
-        read: &'a dyn Fn() -> io::Result<replay_frame::frame::DecodedFrame>,
+        read: Option<replay_frame::frame::HourFrame<'a>>,
         seek: Option<&'a dyn Fn(i32) -> io::Result<replay::container::SeekResult>>,
     ) -> Self {
         Self {
             hour,
             read,
             seek,
-            frames: Default::default(),
+            sought: Default::default(),
             failure: Default::default(),
         }
     }
@@ -846,22 +834,32 @@ impl<'a> HourTexts<'a> {
         self.failure.borrow_mut().take().map_or(Ok(()), Err)
     }
 
-    fn frame(&self, hour: i32) -> Result<std::rc::Rc<replay_frame::frame::DecodedFrame>, String> {
-        if let Some(held) = self.frames.borrow().get(&hour) {
+    /// `read` of `hour`'s world: the hour's own tables, or those sought.
+    fn with_frame<T>(
+        &self,
+        hour: i32,
+        read: impl FnOnce(replay_frame::frame::HourFrame<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if hour == self.hour
+            && let Some(frame) = self.read
+        {
+            return read(frame);
+        }
+        let frame = self.sought(hour)?;
+        read(replay_frame::frame::HourFrame::from(&*frame))
+    }
+
+    fn sought(&self, hour: i32) -> Result<std::rc::Rc<replay_frame::frame::DecodedFrame>, String> {
+        if let Some(held) = self.sought.borrow().get(&hour) {
             return held.clone();
         }
-        let read = if hour == self.hour {
-            let _phase = replay_frame::cpu::scope_phase("ef-w:present-frame");
-            (self.read)().map(Ok)
-        } else {
-            let _phase = replay_frame::cpu::scope_phase("ef-w:present-seek");
-            match self.seek {
-                Some(seek) => seek(hour).map(|found| match found {
-                    replay::container::SeekResult::Frame(frame) => Ok(*frame),
-                    replay::container::SeekResult::Gap { reason, .. } => Err(reason),
-                }),
-                None => Ok(Err("its naming hour's world is not at hand".into())),
-            }
+        let _phase = replay_frame::cpu::scope_phase("ef-w:present-seek");
+        let read = match self.seek {
+            Some(seek) => seek(hour).map(|found| match found {
+                replay::container::SeekResult::Frame(frame) => Ok(*frame),
+                replay::container::SeekResult::Gap { reason, .. } => Err(reason),
+            }),
+            None => Ok(Err("its naming hour's world is not at hand".into())),
         };
         let held = match read {
             Ok(read) => read.map(std::rc::Rc::new),
@@ -871,7 +869,7 @@ impl<'a> HourTexts<'a> {
                 Err(reason)
             }
         };
-        self.frames.borrow_mut().insert(hour, held.clone());
+        self.sought.borrow_mut().insert(hour, held.clone());
         held
     }
 
@@ -882,7 +880,9 @@ impl<'a> HourTexts<'a> {
         hour: i32,
         key: &str,
     ) -> Result<String, String> {
-        script_effects::scoped_text(catalogue, inputs, &*self.frame(hour)?, key)
+        self.with_frame(hour, |frame| {
+            script_effects::scoped_text(catalogue, inputs, frame, key)
+        })
     }
 
     /// A decision's title, and why any scripted text in it is elided.
@@ -893,13 +893,23 @@ impl<'a> HourTexts<'a> {
         hour: i32,
         token: &str,
     ) -> Result<(String, Option<String>), String> {
-        let frame = self.frame(hour)?;
-        let (key, name, scoped) = script_effects::decision_name(catalogue, inputs, &*frame, token)?;
+        self.with_frame(hour, |frame| {
+            Self::decision_name_in(catalogue, inputs, frame, token)
+        })
+    }
+
+    fn decision_name_in(
+        catalogue: &Catalogue,
+        inputs: &script_effects::Inputs,
+        frame: replay_frame::frame::HourFrame<'_>,
+        token: &str,
+    ) -> Result<(String, Option<String>), String> {
+        let (key, name, scoped) = script_effects::decision_name(catalogue, inputs, frame, token)?;
         if !name.contains('[') {
             return Ok((name, None));
         }
         let expanded = if scoped {
-            script_effects::decision_title_text(catalogue, inputs, &*frame, &key)
+            script_effects::decision_title_text(catalogue, inputs, frame, &key)
         } else {
             Err("it names a highlighted state the recording does not hold".into())
         };

@@ -386,18 +386,6 @@ impl Provenance {
         Ok(builder.finish(block.last_hour))
     }
 
-    fn bytes(&self) -> usize {
-        self.covered
-            .values()
-            .map(|(_, rows)| {
-                std::mem::size_of::<((u32, Entry), (i32, Option<Vec<CombatLogEquipmentRow>>))>()
-                    + rows.as_ref().map_or(0, |rows| std::mem::size_of_val(rows.as_slice()))
-            })
-            .sum::<usize>()
-            + std::mem::size_of_val(self.unread.as_slice())
-            + std::mem::size_of::<Self>()
-    }
-
     /// The spans of the block's hours that were not read.
     pub fn unread_hours(&self) -> &[(i32, i32)] {
         &self.unread
@@ -512,8 +500,7 @@ impl<'a> Recorded<'a> {
         let build = || Provenance::stream(source, block, block.last_hour, full_start, None, cancelled);
         match &self.binding {
             Some(binding) => observations::scope(source, "army-losses-provenance", Some(binding))
-                .working_set(64)
-                .get(block, &(), cancelled, Provenance::bytes, build),
+                .get(block, &(), cancelled, build),
             None => build().map(Arc::new),
         }
     }

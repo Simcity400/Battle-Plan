@@ -430,7 +430,6 @@ pub(crate) fn tokens<P: PageRead>(
         &(),
         &published,
         cancelled,
-        |tokens: &BTreeMap<u64, String>| 64 + tokens.values().map(|spelling| 64 + spelling.capacity()).sum::<usize>(),
         || spellings(snapshot, directory),
     )
 }

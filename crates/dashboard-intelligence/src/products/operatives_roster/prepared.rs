@@ -9,6 +9,8 @@ use dashboard_text::metadata::check_cancel;
 
 const OPERATIONS: u64 = 0;
 const ABSENT: u64 = 1;
+/// The hour of the last membership read: every open roster was read there.
+const MEMBERSHIP: u64 = 2;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
@@ -25,6 +27,30 @@ pub struct Prepared {
     clocks: BTreeMap<i32, BTreeSet<usize>>,
     #[serde(skip)]
     scheduled: BTreeMap<usize, i32>,
+    /// Each current country's history by its canonical slot.
+    #[serde(skip)]
+    by_slot: HashMap<u32, Vec<usize>>,
+    /// The current histories not open: a membership read joining afresh may open each.
+    #[serde(skip)]
+    closed: BTreeSet<usize>,
+    /// The histories holding a captured operative, whose status names its captor.
+    #[serde(skip)]
+    captives: BTreeSet<usize>,
+    /// The histories holding an operative on an operation, which its definition names.
+    #[serde(skip)]
+    operational: BTreeSet<usize>,
+    /// Whether the memberships were complete at the last hour.
+    #[serde(skip)]
+    memberships: Option<bool>,
+    /// The slots the census handed on changed since the last membership read joining afresh,
+    /// or all of them.
+    #[serde(skip)]
+    pending: BTreeSet<u32>,
+    #[serde(skip)]
+    pending_all: bool,
+    /// Every history has been observed since this state was made or read back.
+    #[serde(skip)]
+    bound: bool,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
@@ -33,10 +59,17 @@ pub struct Prepared {
     test_countries: super::super::operative_rows::CountryInputs,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct Episode {
     country: CountryIdentity,
     entry: OperativeRosterEntry,
+}
+
+/// An [`Episode`] as written, its entry borrowed.
+#[derive(Serialize)]
+struct Written<'a> {
+    country: CountryIdentity,
+    entry: &'a OperativeRosterEntry,
 }
 
 #[derive(Deserialize)]
@@ -69,10 +102,19 @@ const MEMBERSHIP_INPUTS: [TableId; 5] = [
 /// Tables whose change makes the next operations read name operations afresh.
 const OPERATION_INPUTS: [TableId; 2] = [TableId::Operations, TableId::LexicalTokens];
 
+/// The tables a captor's name is read from beside the countries.
+const CAPTOR_NAMING: [TableId; 5] = [
+    TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+];
+
 fn key(keys: &mut BTreeMap<String, u64>, name: String) -> io::Result<u64> {
     let next = u64::try_from(keys.len())
         .ok()
-        .and_then(|n| n.checked_add(2))
+        .and_then(|n| n.checked_add(3))
         .ok_or_else(|| dashboard_core::invalid("Too many prepared operative keys"))?;
     Ok(*keys.entry(name).or_insert(next))
 }
@@ -114,7 +156,8 @@ impl Prepared {
         self.membership_dirty |= MEMBERSHIP_INPUTS.iter().any(|&table| rebuilt(table));
     }
 
-    /// Observes `frame` of the row path, reading what its hour needs of it.
+    /// Observes `frame` of the row path, reading what its hour needs of it: every current
+    /// history is observed at an hour changing what the roster reads.
     pub fn observe_bound(
         &mut self,
         frame: &replay_frame::frame::DecodedFrame,
@@ -132,10 +175,13 @@ impl Prepared {
             changes,
             countries,
             content,
+            None,
         )
     }
 
-    /// Observes `hour`, whose change facts are `changes`, from the roster's `read` of it.
+    /// Observes `hour`, whose change facts are `changes`, from the roster's `read` of it, of
+    /// whose census `touched` names what the hour changed.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe_read(
         &mut self,
         hour: i32,
@@ -147,10 +193,72 @@ impl Prepared {
             Option<std::sync::Arc<super::super::operative_content::OperativeContent>>,
             String,
         >,
+        touched: &MembersTouched,
     ) -> io::Result<()> {
-        self.observe_given(hour, flags, Given::Read(read), changes, countries, content)
+        self.observe_given(
+            hour,
+            flags,
+            Given::Read(read),
+            changes,
+            countries,
+            content,
+            Some(touched),
+        )
     }
 
+    /// Indexes the current histories by slot and notes which are closed, captive or on
+    /// operations.
+    fn index(&mut self) {
+        let Some(scan) = &self.scan else {
+            return;
+        };
+        self.by_slot.clear();
+        self.closed.clear();
+        self.captives.clear();
+        self.operational.clear();
+        for &index in &self.current {
+            let history = &scan.histories[index];
+            if let Some(country) = history.country {
+                self.by_slot.entry(country.slot).or_default().push(index);
+            }
+        }
+        let indices: Vec<usize> = (0..scan.histories.len()).collect();
+        self.note(&indices);
+    }
+
+    /// Notes whether each of `indices` is closed, captive or on operations, as observed.
+    fn note(&mut self, indices: &[usize]) {
+        let Some(scan) = &self.scan else {
+            return;
+        };
+        for &index in indices {
+            let history = &scan.histories[index];
+            let mark = |set: &mut BTreeSet<usize>, on: bool| {
+                if on {
+                    set.insert(index);
+                } else {
+                    set.remove(&index);
+                }
+            };
+            mark(
+                &mut self.closed,
+                self.current.contains(&index) && !history.open,
+            );
+            mark(
+                &mut self.captives,
+                history
+                    .held
+                    .values()
+                    .any(|held| held.value.captured == Some(true)),
+            );
+            mark(
+                &mut self.operational,
+                history.held.values().any(|held| held.operation.is_some()),
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn observe_given(
         &mut self,
         hour: i32,
@@ -162,6 +270,7 @@ impl Prepared {
             Option<std::sync::Arc<super::super::operative_content::OperativeContent>>,
             String,
         >,
+        touched: Option<&MembersTouched>,
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("intelligence:roster");
         let bound = content.as_ref().ok().and_then(|content| content.as_deref());
@@ -207,24 +316,54 @@ impl Prepared {
             }
         }
         let read = flags.membership_read && flags.memberships;
+        let read_now = read && self.membership_dirty;
         let operations_read = flags.operations_read && flags.operations;
+        let naming = bound.is_some()
+            && CAPTOR_NAMING
+                .iter()
+                .any(|table| changes.rows_changed[table.index()]);
         let inputs_changed = identity_changed
-            || (read && self.membership_dirty)
+            || read_now
             || (operations_read && self.operations_dirty)
             || changes.rows_changed[TableId::Operations.index()]
             || changes.rows_changed[TableId::OperativeMemberships.index()]
-            || (bound.is_some()
-                && [
-                    TableId::CountryAppearance,
-                    TableId::ReservedCountryNaming,
-                    TableId::Politics,
-                    TableId::PoliticalParties,
-                    TableId::Autonomy,
-                ]
-                .iter()
-                .any(|table| changes.rows_changed[table.index()]));
-        if inputs_changed {
+            || naming;
+        if let Some(touched) = touched {
+            self.pending_all |= touched.all || !self.bound;
+            self.pending.extend(touched.slots.iter().copied());
+        }
+        // Every current history where the countries, the hours or the census may not go on;
+        // else those whose census, captor's name or operation's definition the hour changed.
+        let all = match touched {
+            None => inputs_changed,
+            Some(touched) => {
+                identity_changed
+                    || touched.all
+                    || !self.bound
+                    || self.memberships != Some(flags.memberships)
+                    || (read_now && self.pending_all)
+            }
+        };
+        self.bound = true;
+        self.memberships = Some(flags.memberships);
+        if all {
             indices.extend(self.current.iter().copied());
+        } else if touched.is_some() {
+            if read_now {
+                for slot in &self.pending {
+                    indices.extend(self.by_slot.get(slot).into_iter().flatten().copied());
+                }
+                indices.extend(self.closed.iter().copied());
+            }
+            if bound.is_some() && (read_now || naming) {
+                indices.extend(self.captives.iter().copied());
+            }
+            // A definition read afresh, or none read any longer, renames each operation held.
+            if (operations_read && self.operations_dirty)
+                || (scan.operation_read_hour.is_some() && !flags.operations)
+            {
+                indices.extend(self.operational.iter().copied());
+            }
         }
         while let Some((&due, _)) = self
             .clocks
@@ -234,29 +373,6 @@ impl Prepared {
             indices.extend(self.clocks.remove(&due).expect("roster clock"));
         }
         self.values.advance(hour)?;
-        // Equal fresh reads date the already authenticated census without another
-        // country/operative join. Empty known rosters get the same read proof.
-        if read && !self.membership_dirty {
-            for &index in &self.current {
-                let history = &mut scan.histories[index];
-                if !history.open {
-                    continue;
-                }
-                history.read_hour = hour;
-                history.reply.observed.clear();
-                history.reply.observed.push(OperativeRosterObservation {
-                    first_hour: hour,
-                    last_hour: hour,
-                    read_hour: hour,
-                });
-                let read_key = key(
-                    &mut self.keys,
-                    series::field_key(&history.reply.tag, "observed"),
-                )?;
-                self.values
-                    .observe(read_key, hour, Some(i128::from(hour)), false);
-            }
-        }
         if !indices.is_empty() || inputs_changed {
             if let Some(previous) = previous {
                 for &index in &indices {
@@ -311,8 +427,15 @@ impl Prepared {
                 span.last_hour = hour;
             }
         }
+        if read_now {
+            self.pending.clear();
+            self.pending_all = false;
+        }
         if read {
             self.membership_dirty = false;
+            // Every open roster is read here, or was opened by this read.
+            self.values
+                .observe(MEMBERSHIP, hour, Some(i128::from(hour)), false);
         }
         if operations_read {
             self.operations_dirty = false;
@@ -344,8 +467,8 @@ impl Prepared {
                 &mut self.keys,
                 series::field_key(&history.reply.tag, "observed"),
             )?;
-            let observed = history.open.then_some(i128::from(history.read_hour));
-            self.values.observe(read_key, hour, observed, false);
+            self.values
+                .observe(read_key, hour, history.open.then_some(1), false);
             let changed = std::mem::take(&mut history.changed);
             for entry_index in changed {
                 let entry = &mut history.reply.operatives[entry_index];
@@ -379,14 +502,8 @@ impl Prepared {
                 })?;
                 #[cfg(test)]
                 super::super::intelligence_prepared::work(|work| work.emitted += 1);
-                self.values.event(
-                    episode_key,
-                    hour,
-                    &Episode {
-                        country,
-                        entry: entry.clone(),
-                    },
-                )?;
+                self.values
+                    .event(episode_key, hour, &Written { country, entry })?;
                 if let Some(run) = run.filter(|run| {
                     run.value.captured == Some(true) && run.value.captured_hour.is_some()
                 }) && entry.runs.iter().rev().nth(1).is_none_or(|previous| {
@@ -476,6 +593,12 @@ impl Prepared {
         }
         if scan.agency_absent.len() > 1 {
             scan.agency_absent.drain(..scan.agency_absent.len() - 1);
+        }
+        if all {
+            self.index();
+        } else {
+            let indices: Vec<usize> = indices.into_iter().collect();
+            self.note(&indices);
         }
         Ok(())
     }
@@ -716,7 +839,8 @@ fn query_history(
     for &(first, _) in &intervals.clone() {
         for tag in &tags {
             if let Some(&key) = keys.get(&series::field_key(tag, "observed"))
-                && let Some(run) = reader.value_at(key, first)?
+                && reader.value_at(key, first)?.is_some()
+                && let Some(run) = reader.value_at(MEMBERSHIP, first)?
             {
                 let read = i32::try_from(run.value)
                     .map_err(|_| dashboard_core::invalid("Invalid operative census date"))?;
@@ -759,6 +883,35 @@ fn query_history(
         }
         Ok(result)
     }
+    /// The hours `key` holds a roster open within `intervals`, each dated by the membership read
+    /// supplying it.
+    fn opened(
+        reader: &mut Reader<'_>,
+        key: u64,
+        intervals: &[(i32, i32)],
+    ) -> io::Result<Vec<OperativeRosterObservation>> {
+        let mut result = Vec::new();
+        for &(first, last) in intervals {
+            let open = reader.runs(key, first, last)?;
+            if open.is_empty() {
+                continue;
+            }
+            let reads = reader.runs(MEMBERSHIP, first, last)?;
+            for run in &open {
+                for read in reads.iter().filter(|read| {
+                    read.last_hour >= run.first_hour && read.first_hour <= run.last_hour
+                }) {
+                    result.push(OperativeRosterObservation {
+                        first_hour: run.first_hour.max(read.first_hour),
+                        last_hour: run.last_hour.min(read.last_hour),
+                        read_hour: i32::try_from(read.value)
+                            .map_err(|_| dashboard_core::invalid("Invalid operative read date"))?,
+                    });
+                }
+            }
+        }
+        Ok(result)
+    }
     scan.operations = observations(&mut reader, OPERATIONS, &merged)?;
     scan.agency_absent = reader
         .runs(ABSENT, first, last)?
@@ -770,7 +923,7 @@ fn query_history(
         .collect();
     for country in &mut scan.histories {
         if let Some(&key) = keys.get(&series::field_key(&country.reply.tag, "observed")) {
-            country.reply.observed = observations(&mut reader, key, &merged)?
+            country.reply.observed = opened(&mut reader, key, &merged)?
                 .into_iter()
                 .flat_map(|read| {
                     country

@@ -20,9 +20,42 @@
 //! products and sums, truncating division, the fixed-point division guard that stores
 //! `0xFFFFFFFF`, and the date functions' 32-bit arithmetic.
 
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
-use crate::rows::{Recorded, TemperatureRecord, WeatherProvinceRow};
+use crate::rows::{
+    ProvinceTemperature, Recorded, TemperaturePass, TemperatureRecord, WeatherProvinceRow,
+};
+
+/// The WeatherProvinces rows a derivation reads, by position in key order: each row's id and
+/// temperature words, and the first row's temperature pass. Decoded rows read as they are; a
+/// columnar walk's read from its columns.
+pub trait ProvinceRows {
+    fn len(&self) -> usize;
+    /// The id and temperature words of the row at `at`; None past the rows.
+    fn row(&self, at: usize) -> Result<Option<(u32, ProvinceTemperature)>, String>;
+    /// The position of the row with id `id`.
+    fn find(&self, id: u32) -> Option<usize>;
+    /// The first row's temperature pass; None without rows.
+    fn pass(&self) -> Result<Option<Cow<'_, Recorded<Option<TemperaturePass>>>>, String>;
+}
+
+impl ProvinceRows for [WeatherProvinceRow] {
+    fn len(&self) -> usize {
+        <[WeatherProvinceRow]>::len(self)
+    }
+
+    fn row(&self, at: usize) -> Result<Option<(u32, ProvinceTemperature)>, String> {
+        Ok(self.get(at).map(|row| (row.id, row.temperature)))
+    }
+
+    fn find(&self, id: u32) -> Option<usize> {
+        self.binary_search_by_key(&id, |row| row.id).ok()
+    }
+
+    fn pass(&self) -> Result<Option<Cow<'_, Recorded<Option<TemperaturePass>>>>, String> {
+        Ok(self.first().map(|row| Cow::Borrowed(&row.temperature_pass)))
+    }
+}
 
 /// `fixed5` scale.
 pub const SCALE: i64 = 100_000;
@@ -736,7 +769,6 @@ pub struct Memo {
     /// Derivations of the kept pass, at most one per hour; always empty unless holding.
     held: Vec<Simulation>,
     changed: Vec<(u32, i64, i64)>,
-    changed_credit: Option<engine_allocation::credit::Credit>,
     incremental: bool,
     /// The window an update stages, kept between hours.
     staged: Vec<(u32, State, bool)>,
@@ -745,19 +777,8 @@ pub struct Memo {
 }
 
 impl Memo {
-    /// Admit the native update window before any committed edit can be appended.
-    pub fn admit_changes(&mut self, content: &Content) -> std::io::Result<()> {
-        self.admit_changes_in(
-            content,
-            &engine_allocation::credit::MemoryBudget::preparation(),
-        )
-    }
-
-    fn admit_changes_in(
-        &mut self,
-        content: &Content,
-        budget: &engine_allocation::credit::MemoryBudget,
-    ) -> std::io::Result<()> {
+    /// Reserves the native update window before any committed edit can be appended.
+    pub fn reserve_changes(&mut self, content: &Content) -> std::io::Result<()> {
         let count = window_capacity(
             content.settings.provinces_per_update,
             content.provinces.len(),
@@ -765,17 +786,9 @@ impl Memo {
         if count <= self.changed.capacity() {
             return Ok(());
         }
-        let bytes = engine_allocation::mul(count, size_of::<(u32, i64, i64)>())?;
-        let credit = budget.admit(bytes).map_err(|error| {
-            std::io::Error::new(
-                error.kind(),
-                format!("regional-weather temperature change capacity: {error}"),
-            )
-        })?;
         let mut changed = Vec::new();
         engine_allocation::reserve_exact(&mut changed, count)?;
         self.changed = changed;
-        self.changed_credit = Some(credit);
         Ok(())
     }
 
@@ -814,31 +827,33 @@ impl Memo {
     }
 
     /// `changed` certifies exactly the changed/deleted keys since this memo's last successful hour.
-    pub fn states_changed<P: Pass + ?Sized>(
+    pub fn states_changed<P: Pass + ?Sized, R: ProvinceRows + ?Sized>(
         &mut self,
         branch: u64,
         hour: i32,
-        rows: &[WeatherProvinceRow],
+        rows: &R,
         content: Result<&P, &str>,
         changed: Option<&[u128]>,
     ) -> Result<&[State], String> {
         self.incremental = false;
         self.changed.clear();
-        let pass = rows.first().and_then(|row| match &row.temperature_pass {
+        let first = rows.pass()?;
+        let pass = first.as_deref().and_then(|pass| match pass {
             Recorded::Value(Some(pass)) => Some(pass),
             _ => None,
         });
+        let count = rows.len();
         let same_anchor = changed.is_some_and(|changed| {
             self.branch == branch
                 && pass.is_some_and(|pass| self.anchor == Some((pass.anchor, pass.cursor)))
-                && rows.len() == self.anchored.len()
-                && !rows.is_empty()
+                && count == self.anchored.len()
+                && count != 0
                 && changed.iter().all(|&key| {
                     usize::try_from(key).ok().and_then(|slot| {
-                        let row = rows.get(slot)?;
+                        let (id, temperature) = rows.row(slot).ok().flatten()?;
                         Some(
-                            row.id as usize == slot
-                                && row.temperature.record().ok()
+                            id as usize == slot
+                                && temperature.record().ok()
                                     == Some(TemperatureRecord::Anchored(self.anchored[slot])),
                         )
                     }) == Some(true)
@@ -849,11 +864,14 @@ impl Memo {
         } else {
             let mut anchored = Vec::new();
             let mut recorded = Vec::new();
-            for (slot, row) in rows.iter().enumerate() {
-                if row.id as usize != slot {
+            for slot in 0..count {
+                let (id, temperature) = rows
+                    .row(slot)?
+                    .ok_or("WeatherProvinces holds fewer rows than it counts")?;
+                if id as usize != slot {
                     return Err("WeatherProvinces slots are not dense".into());
                 }
-                match row.temperature.record()? {
+                match temperature.record()? {
                     TemperatureRecord::Anchored(state) => anchored.push(state),
                     TemperatureRecord::AtHour(temperature) => recorded.push(State {
                         temperature,
@@ -879,7 +897,7 @@ impl Memo {
             branch,
             hour,
             anchored,
-            rows.first().map(|row| &row.temperature_pass),
+            first.as_deref(),
             content,
             changed.is_some(),
         )
@@ -984,7 +1002,7 @@ impl Memo {
             && continued
             && self.simulation.as_ref().unwrap().hour.checked_add(1) == Some(hour);
         if incremental {
-            self.admit_changes(content.content())
+            self.reserve_changes(content.content())
                 .map_err(|error| error.to_string())?;
         }
         for at in from..reach {

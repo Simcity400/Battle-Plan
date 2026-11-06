@@ -113,7 +113,58 @@ use crate::{
 };
 use installed_content_core::{parser::Item, scope::Keyword, scope::Scope as Parsed};
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
-use replay_data::{rows::GlobalSavedEventTargetRow, rows::StateRow, rows::tables};
+use replay_data::rows::{
+    GlobalSavedEventTargetRow, PoliticalPartyRow, RowCodec, StateResistanceRow, StateRow,
+    TableSchema, mask, tables,
+};
+use replay_frame::frame::{HourFrame, Rowset};
+use std::borrow::Cow;
+
+/// The fields of a States row [`Renderer::valid_state`] lends.
+const STATE_COUNTRIES: u64 = mask::<StateRow>(&["owner", "controller"]);
+const PARTY_SELECTION: u64 = mask::<PoliticalPartyRow>(&[
+    "token",
+    "tag",
+    "name_default",
+    "name",
+    "long_name",
+]);
+const RESISTANCE_COUNTRY: u64 = mask::<StateResistanceRow>(&["country"]);
+pub(crate) const DLC_MASK: u64 = mask::<replay_data::rows::SimulationFeatureRow>(&["dlc_mask"]);
+
+/// A walked row's failure to build, refused where it is reached.
+pub(crate) fn built(why: std::io::Error) -> String {
+    why.to_string()
+}
+
+/// Each row of `rows`, a walked row's failure to build refused.
+pub(crate) fn each<'r, R: RowCodec + Clone + 'r>(
+    rows: Rowset<'r, R>,
+) -> impl DoubleEndedIterator<Item = Result<Cow<'r, R>, String>> + 'r {
+    rows.iter().map(|row| row.map_err(built))
+}
+
+/// The row of `rows` keyed `key`.
+pub(crate) fn keyed<'r, R: RowCodec + Clone>(
+    rows: &Rowset<'r, R>,
+    key: u128,
+) -> Result<Option<Cow<'r, R>>, String> {
+    rows.get(key).map_err(built)
+}
+
+/// The first row of `rows` passing `keep`, in key order.
+pub(crate) fn find<'r, R: RowCodec + Clone + 'r>(
+    rows: Rowset<'r, R>,
+    mut keep: impl FnMut(&R) -> bool,
+) -> Result<Option<Cow<'r, R>>, String> {
+    for row in each(rows) {
+        let row = row?;
+        if keep(&row) {
+            return Ok(Some(row));
+        }
+    }
+    Ok(None)
+}
 
 mod ability;
 mod characters;
@@ -782,7 +833,7 @@ fn selector_scope(selector: Selector) -> Option<Parsed> {
 
 enum EffectSavedTarget<'a> {
     Graph(EventObject),
-    Recorded(&'a GlobalSavedEventTargetRow),
+    Recorded(Cow<'a, GlobalSavedEventTargetRow>),
 }
 
 fn scalar_operand(item: &Item) -> Result<&[u8], String> {
@@ -812,21 +863,21 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         country: u32,
         ideology: &[u8],
     ) -> Result<String, String> {
-        let party = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::PoliticalParties>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| {
-                self.context.text.recorded().slot(row.country) == Some(country)
-                    && row.token.eq_ignore_ascii_case(ideology)
-            })
-            .ok_or("PoliticalParties lacks the party selected by ideology")?;
+        let parties = self.complete::<tables::PoliticalParties>(PARTY_SELECTION)?;
+        let mut party = None;
+        for row in parties.keyed(|key| {
+            self.context.text.recorded().slot((key >> 32) as u32) == Some(country)
+        }) {
+            let row = row.map_err(built)?;
+            if row.token.eq_ignore_ascii_case(ideology) {
+                party = Some(row);
+                break;
+            }
+        }
+        let party = party.ok_or("PoliticalParties lacks the party selected by ideology")?;
         self.context
             .text
-            .party_name(party, self.tag(country)?, false)
+            .party_name(&party, self.tag(country)?, false)
     }
 
     pub(super) fn country_target(
@@ -886,15 +937,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     return Ok(None);
                 }
                 // state resistance is recorded unchanged, even inactive.
-                let rows = self
-                    .context
-                    .text
-                    .frame()
-                    .complete::<tables::StateResistance>()
-                    .map_err(|why| why.to_string())?;
-                let raw = rows
-                    .iter()
-                    .find(|row| row.state == state)
+                let rows = self.complete::<tables::StateResistance>(RESISTANCE_COUNTRY)?;
+                let raw = keyed(&rows, u128::from(state))?
                     .ok_or_else(|| format!("StateResistance lacks country for state {state}"))?
                     .country;
                 if raw == 0 {
@@ -1103,7 +1147,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         // independent, unlike a context projection.
         let recorded = self.context.text.recorded();
         match recorded.saved_target(name).map_err(|why| why.to_string())? {
-            Some(row) if crate::scope::valid_saved_target(row) => {
+            Some(row) if crate::scope::valid_saved_target(&row) => {
                 Ok(Some(EffectSavedTarget::Recorded(row)))
             }
             _ => Ok(None),
@@ -1168,15 +1212,48 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    fn valid_state(&self, id: u32) -> Result<Option<&StateRow>, String> {
-        Ok(self
-            .context
-            .text
-            .frame()
-            .complete::<tables::States>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| (id as i32) > 0 && row.id == id))
+    /// The hour's tables, a decoded frame's or a walk's views.
+    pub(super) fn tables(&self) -> HourFrame<'f> {
+        self.context.text.tables()
+    }
+
+    /// `T`'s rows when complete, a walked row holding the fields `mask` names.
+    pub(super) fn complete<T: TableSchema>(&self, mask: u64) -> Result<Rowset<'f, T::Row>, String> {
+        self.tables()
+            .complete::<T>(mask)
+            .map_err(|why| why.to_string())
+    }
+
+    /// The hour's one SimulationFeatures row, holding the fields `mask` names; None where the
+    /// complete table holds another count.
+    pub(super) fn features(
+        &self,
+        mask: u64,
+    ) -> Result<Option<Cow<'f, replay_data::rows::SimulationFeatureRow>>, String> {
+        let rows = self.complete::<tables::SimulationFeatures>(mask)?;
+        if rows.len() != 1 {
+            return Ok(None);
+        }
+        each(rows).next().transpose()
+    }
+
+    /// The hour's Clock random seed, as the recorded source reads it.
+    pub(super) fn clock_seed(&self) -> Result<Option<i32>, String> {
+        const SEED: u64 = mask::<replay_data::rows::ClockRow>(&["seed"]);
+        match self.complete::<tables::Clock>(SEED)?.iter().next() {
+            Some(row) => Ok(Some(row.map_err(built)?.seed)),
+            None => Ok(None),
+        }
+    }
+
+    /// The States row of a positive `id`, holding its owner and controller.
+    fn valid_state(&self, id: u32) -> Result<Option<Cow<'f, StateRow>>, String> {
+        let states = self.complete::<tables::States>(STATE_COUNTRIES)?;
+        if (id as i32) > 0 {
+            keyed(&states, u128::from(id))
+        } else {
+            Ok(None)
+        }
     }
 
     pub(super) fn line(

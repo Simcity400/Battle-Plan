@@ -1,8 +1,8 @@
 //! Doctrine mastery's keeper on a native recording's segment: at each hour the observer
 //! observes, the rows the hour changed of each table it reads, in the fields it reads, or every
 //! row where the hour restated the table; of the dictionary, its print and the spellings of the
-//! tokens those rows reference. The world's views are never kept: a table that is not complete
-//! keeps a copy of its view where the hour lent another.
+//! tokens those rows reference. Every part is read from the walk's views, by slot: a table that
+//! is not complete keeps a copy of its view where its status moved, or every hour it is truncated.
 
 use super::observer::DoctrineMasteryObserver as Observer;
 use dashboard_base::prepared::prepass::HeldBytes;
@@ -18,11 +18,15 @@ use replay_data::{
     format::FormatVersion,
     rows::{
         CountryLinkRow, CountryRow, DoctrineCountryRow, DoctrineFolderRow, DoctrineTrackRow,
-        RowCodec, TableId, TableSchema, tables,
+        LexicalTokenRow, TableId, TableSchema, column, mask, tables,
     },
 };
-use replay_frame::frame::{DecodedFrame, SharedView, ViewIdentity};
+use replay_frame::frame::{ColumnFrame, ColumnView, Columns, SharedView};
 use std::{collections::HashSet, io};
+
+fn invalid(what: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, what)
+}
 
 /// A doctrine slot's status: its country, and its observed expiry occurrences.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,13 +207,21 @@ impl Kept {
 trait Table: TableSchema {
     type Key: Copy;
     type Fields;
+    /// The fields [`Self::fields`] reads.
+    const READ: u64;
     fn key(key: u128) -> Self::Key;
     fn fields(row: &Self::Row) -> Self::Fields;
+}
+
+/// The fields `T` reads of the row at `slot`, built of those fields alone.
+fn fields_at<T: Table>(rows: Columns<'_>, slot: u32) -> io::Result<T::Fields> {
+    Ok(T::fields(&rows.row::<T::Row>(slot, T::READ)?))
 }
 
 impl Table for tables::DoctrineCountries {
     type Key = u32;
     type Fields = Status;
+    const READ: u64 = mask::<DoctrineCountryRow>(&["country", "expiry_events"]);
     fn key(key: u128) -> u32 {
         key as u32
     }
@@ -224,6 +236,8 @@ impl Table for tables::DoctrineCountries {
 impl Table for tables::DoctrineFolders {
     type Key = FolderKey;
     type Fields = Folder;
+    const READ: u64 =
+        mask::<DoctrineFolderRow>(&["folder", "grand_doctrine", "completed_subdoctrines"]);
     fn key(key: u128) -> FolderKey {
         ((key >> 32) as u32, key as u32)
     }
@@ -239,6 +253,14 @@ impl Table for tables::DoctrineFolders {
 impl Table for tables::DoctrineTracks {
     type Key = TrackKey;
     type Fields = Track;
+    const READ: u64 = mask::<DoctrineTrackRow>(&[
+        "sub_doctrine",
+        "rewards",
+        "mastery",
+        "mastery_bank",
+        "daily_mastery",
+        "effective_daily_mastery",
+    ]);
     fn key(key: u128) -> TrackKey {
         ((key >> 64) as u32, (key >> 32) as u32, key as u32)
     }
@@ -257,6 +279,7 @@ impl Table for tables::DoctrineTracks {
 impl Table for tables::CountryLinks {
     type Key = u32;
     type Fields = u32;
+    const READ: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
     fn key(key: u128) -> u32 {
         key as u32
     }
@@ -268,6 +291,7 @@ impl Table for tables::CountryLinks {
 impl Table for tables::Countries {
     type Key = u32;
     type Fields = Country;
+    const READ: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
     fn key(key: u128) -> u32 {
         key as u32
     }
@@ -279,14 +303,45 @@ impl Table for tables::Countries {
     }
 }
 
-/// The dictionary's table index among the keeper's lent views.
+/// The dictionary's place among the keeper's tables.
 const DICTIONARY: usize = 5;
+
+/// A table that is not complete, as its last missing part copied it: a truncated table is read
+/// anew every hour, a table unavailable or not recorded only when its status moves.
+#[derive(Clone, PartialEq, Eq)]
+enum Copied {
+    NotRecorded,
+    Unavailable(Box<str>),
+    Truncated,
+}
+
+impl Copied {
+    fn of(view: ColumnView<'_>) -> Option<Self> {
+        match view {
+            ColumnView::Complete(_) => None,
+            ColumnView::Truncated { .. } => Some(Self::Truncated),
+            ColumnView::Unavailable { reason } => Some(Self::Unavailable(reason.into())),
+            ColumnView::NotRecorded { .. } => Some(Self::NotRecorded),
+        }
+    }
+
+    /// Whether `view` is the one `copied` copied.
+    fn holds(copied: &Option<Self>, view: ColumnView<'_>) -> bool {
+        match (copied, view) {
+            (Some(Self::NotRecorded), ColumnView::NotRecorded { .. }) => true,
+            (Some(Self::Unavailable(held)), ColumnView::Unavailable { reason }) => {
+                **held == *reason
+            }
+            _ => false,
+        }
+    }
+}
 
 /// A segment's keeper, given the hours the observer observes in order from the segment's first.
 #[derive(Default)]
 pub(super) struct Keeper {
     /// The view each table's last missing part copied, while the table is not complete.
-    copied: [Option<ViewIdentity>; 6],
+    copied: [Option<Copied>; 6],
     /// Each dictionary row's print, by token, while the dictionary is complete.
     prints: Vec<(u32, u128)>,
     /// Their sum.
@@ -295,33 +350,39 @@ pub(super) struct Keeper {
     referenced: HashSet<u32>,
 }
 
+/// A copy of `view`, not complete, as a missing part holds it.
+fn missing(view: ColumnView<'_>, table: TableId, why: String) -> io::Result<Box<Missing>> {
+    Ok(Box::new(Missing {
+        view: SharedView::from(view.to_table_view(table.full_mask())?),
+        why,
+    }))
+}
+
 /// What an hour gave of `T`, its view's last missing copy `copied`.
 fn part<T: Table>(
-    frame: &DecodedFrame,
+    frame: &ColumnFrame<'_>,
     touch: &Touch,
-    copied: &mut Option<ViewIdentity>,
-) -> Part<T::Key, T::Fields> {
-    let view = &frame.tables[T::ID.index()];
-    let Ok(rows) = frame.complete::<T>() else {
-        if !touch.restated && copied.as_ref().is_some_and(|known| known.is(view)) {
-            return Part::Same;
+    copied: &mut Option<Copied>,
+) -> io::Result<Part<T::Key, T::Fields>> {
+    let view = frame.view(T::ID);
+    let ColumnView::Complete(rows) = view else {
+        if !touch.restated && Copied::holds(copied, view) {
+            return Ok(Part::Same);
         }
-        *copied = Some(view.identity());
-        return Part::Missing(Box::new(Missing {
-            view: SharedView::from((**view).clone()),
-            why: dashboard_base::products::table_missing_reason(frame, T::ID).unwrap_or_default(),
-        }));
+        *copied = Copied::of(view);
+        let why = dashboard_base::products::view_missing_reason(view, T::ID).unwrap_or_default();
+        return Ok(Part::Missing(missing(view, T::ID, why)?));
     };
     *copied = None;
     if touch.restated {
-        return Part::Whole(
-            rows.iter()
-                .map(|row| (T::key(row.key()), T::fields(row)))
-                .collect(),
-        );
+        let mut whole = Vec::with_capacity(rows.len());
+        for &slot in rows.slots() {
+            whole.push((T::key(rows.key(slot)), fields_at::<T>(rows, slot)?));
+        }
+        return Ok(Part::Whole(whole));
     }
     if touch.written.is_empty() && touch.deleted.is_empty() {
-        return Part::Same;
+        return Ok(Part::Same);
     }
     // Written and deleted keys are each ascending and never shared.
     let mut changed = Vec::with_capacity(touch.written.len() + touch.deleted.len());
@@ -332,10 +393,10 @@ fn part<T: Table>(
         match (write, delete) {
             (Some(key), delete) if delete.is_none_or(|delete| key < delete) => {
                 written += 1;
-                let row = rows
-                    .binary_search_by_key(&key, RowCodec::key)
-                    .ok()
-                    .map(|at| T::fields(&rows[at]));
+                let row = match rows.find(key) {
+                    Some(slot) => Some(fields_at::<T>(rows, slot)?),
+                    None => None,
+                };
                 changed.push((T::key(key), row));
             }
             (_, Some(key)) => {
@@ -345,7 +406,7 @@ fn part<T: Table>(
             _ => break,
         }
     }
-    Part::Changed(changed)
+    Ok(Part::Changed(changed))
 }
 
 /// A dictionary row's print: two 64-bit hashes of its token and literal, which a complete
@@ -371,47 +432,68 @@ fn mix(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
+const LITERAL: usize = column::<LexicalTokenRow>("literal");
+
+/// The literal the dictionary's row at `slot` spells.
+fn literal<'a>(rows: Columns<'a>, slot: u32) -> io::Result<&'a [u8]> {
+    rows.bytes(slot, LITERAL)?
+        .ok_or_else(|| invalid("A dictionary row's literal was not recorded"))
+}
+
 /// The spelling the dictionary's `rows` give `token`, as an observation interns it.
-fn spelling(rows: &[replay_data::rows::LexicalTokenRow], token: u32) -> Option<Box<[u8]>> {
-    rows.binary_search_by_key(&token, |row| row.token)
-        .ok()
-        .map(|at| installed_content_core::parser::c_string(&rows[at].literal).into())
+fn spelling(rows: Columns<'_>, token: u32) -> io::Result<Option<Box<[u8]>>> {
+    match rows.find(u128::from(token)) {
+        Some(slot) => Ok(Some(installed_content_core::parser::c_string(literal(rows, slot)?).into())),
+        None => Ok(None),
+    }
 }
 
 impl Keeper {
-    fn kept(&mut self, frame: &DecodedFrame, touched: &Touched) -> Kept {
+    fn kept(&mut self, frame: &ColumnFrame<'_>, touched: &Touched) -> io::Result<Kept> {
         let [status, folders, tracks, links, countries, _] = &mut self.copied;
         let mut kept = Kept {
             status: part::<tables::DoctrineCountries>(
                 frame,
                 touched.of(TableId::DoctrineCountries),
                 status,
-            ),
+            )?,
             folders: part::<tables::DoctrineFolders>(
                 frame,
                 touched.of(TableId::DoctrineFolders),
                 folders,
-            ),
+            )?,
             tracks: part::<tables::DoctrineTracks>(
                 frame,
                 touched.of(TableId::DoctrineTracks),
                 tracks,
-            ),
-            links: part::<tables::CountryLinks>(frame, touched.of(TableId::CountryLinks), links),
-            countries: part::<tables::Countries>(frame, touched.of(TableId::Countries), countries),
+            )?,
+            links: part::<tables::CountryLinks>(frame, touched.of(TableId::CountryLinks), links)?,
+            countries: part::<tables::Countries>(
+                frame,
+                touched.of(TableId::Countries),
+                countries,
+            )?,
             dictionary: Dictionary {
                 shape: None,
                 spellings: Vec::new(),
             },
         };
-        self.dictionary(frame, touched.of(TableId::LexicalTokens), &mut kept);
-        kept
+        self.dictionary(frame, touched.of(TableId::LexicalTokens), &mut kept)?;
+        Ok(kept)
     }
 
     /// The dictionary's shape and the spellings `kept`'s rows need.
-    fn dictionary(&mut self, frame: &DecodedFrame, touch: &Touch, kept: &mut Kept) {
-        let view = &frame.tables[TableId::LexicalTokens.index()];
-        let rows = frame.complete::<tables::LexicalTokens>().ok();
+    fn dictionary(
+        &mut self,
+        frame: &ColumnFrame<'_>,
+        touch: &Touch,
+        kept: &mut Kept,
+    ) -> io::Result<()> {
+        let view = frame.view(TableId::LexicalTokens);
+        let rows = match view {
+            ColumnView::Complete(rows) => Some(rows),
+            _ => None,
+        };
         let dictionary = &mut kept.dictionary;
         match rows {
             Some(rows) if touch.restated || self.copied[DICTIONARY].is_some() => {
@@ -419,17 +501,16 @@ impl Keeper {
                 self.prints.clear();
                 self.prints.reserve(rows.len());
                 self.print = 0;
-                for row in rows {
-                    let print = print(row.token, &row.literal);
-                    self.prints.push((row.token, print));
+                for &slot in rows.slots() {
+                    let token = rows.key(slot) as u32;
+                    let print = print(token, literal(rows, slot)?);
+                    self.prints.push((token, print));
                     self.print = self.print.wrapping_add(print);
                 }
                 dictionary.shape = Some(Shape::Complete(self.print));
-                dictionary.spellings.extend(
-                    self.referenced
-                        .iter()
-                        .map(|&token| (token, spelling(rows, token))),
-                );
+                for &token in &self.referenced {
+                    dictionary.spellings.push((token, spelling(rows, token)?));
+                }
             }
             Some(rows) if touch.any() => {
                 for (key, now) in touch
@@ -439,10 +520,10 @@ impl Keeper {
                     .chain(touch.deleted.iter().map(|&key| (key, false)))
                 {
                     let token = key as u32;
-                    let row = now
-                        .then(|| rows.binary_search_by_key(&token, |row| row.token).ok())
-                        .flatten()
-                        .map(|at| print(token, &rows[at].literal));
+                    let row = match now.then(|| rows.find(u128::from(token))).flatten() {
+                        Some(slot) => Some(print(token, literal(rows, slot)?)),
+                        None => None,
+                    };
                     match (
                         self.prints.binary_search_by_key(&token, |&(held, _)| held),
                         row,
@@ -464,7 +545,7 @@ impl Keeper {
                         (Err(_), None) => {}
                     }
                     if self.referenced.contains(&token) {
-                        dictionary.spellings.push((token, spelling(rows, token)));
+                        dictionary.spellings.push((token, spelling(rows, token)?));
                     }
                 }
                 dictionary.shape = Some(Shape::Complete(self.print));
@@ -474,12 +555,13 @@ impl Keeper {
                 self.prints = Vec::new();
                 self.print = 0;
                 let copied = &mut self.copied[DICTIONARY];
-                if touch.restated || !copied.as_ref().is_some_and(|known| known.is(view)) {
-                    *copied = Some(view.identity());
-                    dictionary.shape = Some(Shape::Missing(Box::new(Missing {
-                        view: SharedView::from((**view).clone()),
-                        why: String::new(),
-                    })));
+                if touch.restated || !Copied::holds(copied, view) {
+                    *copied = Copied::of(view);
+                    dictionary.shape = Some(Shape::Missing(missing(
+                        view,
+                        TableId::LexicalTokens,
+                        String::new(),
+                    )?));
                 }
             }
         }
@@ -499,9 +581,10 @@ impl Keeper {
             {
                 kept.dictionary
                     .spellings
-                    .push((token, spelling(rows, token)));
+                    .push((token, spelling(rows, token)?));
             }
         }
+        Ok(())
     }
 }
 
@@ -509,10 +592,10 @@ impl native::Keeper<Observer> for Keeper {
     fn keep(
         &mut self,
         _: FormatVersion,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         touched: &Touched,
     ) -> io::Result<(Box<dyn Operands<Observer>>, usize)> {
-        let kept = self.kept(frame, touched);
+        let kept = self.kept(frame, touched)?;
         let bytes = kept.bytes();
         Ok((Box::new(kept), bytes))
     }

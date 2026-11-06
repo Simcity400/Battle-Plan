@@ -14,12 +14,14 @@ use dashboard_keyed::{
     segment::{self as keyed, Hour, Segmented, Touched},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Identity, PageRead, Publication, Snapshot, Span, Writer,
+    Blob, Identity, PageRead, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
+use replay::columnar_frames::synthetic::Synthetic;
+use replay_data::scope::CaptureMode;
+use replay_frame::frame::{ColumnFrame, Orders};
 
-static BUDGET: Budget = Budget::new(256 << 20);
 const SECTION: &str = "air-statistics-test";
 
 fn identity() -> Identity {
@@ -31,8 +33,8 @@ fn identity() -> Identity {
     }
 }
 
-/// Each frame's hour as a segment's reader hands it on, every table restated, a segment
-/// starting at each of `starts` (frame indices).
+/// Each frame's hour as a segment's reader hands it on, read through the walk's views with
+/// every table restated, a segment starting at each of `starts` (frame indices).
 pub(super) fn observed(frames: &[DecodedFrame], starts: &[usize]) -> Vec<Hour<Segments>> {
     let format = FormatVersion::CURRENT;
     let mut touched = Touched::default();
@@ -40,19 +42,40 @@ pub(super) fn observed(frames: &[DecodedFrame], starts: &[usize]) -> Vec<Hour<Se
         touched.of_mut(table).restated = true;
     }
     let mut reader = Segments::reader(format);
-    frames
-        .iter()
-        .enumerate()
-        .map(|(at, frame)| {
-            if at > 0 && starts.contains(&at) {
-                reader = Segments::reader(format);
-            }
-            let changes = FrameChanges::alone(frame, format);
-            let dated = changes.slot_read[TableId::AirStatistics.index()];
-            let (facts, _) = reader.read(frame, &changes, &touched).unwrap();
-            Hour::new(frame.hour, dated, Some(facts))
-        })
-        .collect()
+    let mut walk: Option<Synthetic> = None;
+    let mut orders = Orders::new(TABLES.iter().copied()).unwrap();
+    let mut hours = Vec::new();
+    for (at, frame) in frames.iter().enumerate() {
+        if at > 0 && starts.contains(&at) {
+            reader = Segments::reader(format);
+        }
+        let gap = at > 0 && frames[at - 1].hour + 1 != frame.hour;
+        if walk.is_none() || gap {
+            walk = Some(Synthetic::new(TABLES, frame.branch, frame.hour).unwrap());
+        }
+        let walk = walk.as_mut().unwrap();
+        super::native_statistics_tables(walk, frame);
+        let changes = FrameChanges::alone(frame, format);
+        let dated = changes.slot_read[TableId::AirStatistics.index()];
+        let facts = walk
+            .end(|state, _, _, first| {
+                orders.hour(state, first)?;
+                let columns = ColumnFrame::new(
+                    (frame.branch, frame.hour),
+                    &frame.metrics,
+                    state,
+                    &orders,
+                    (CaptureMode::Full, format.version()),
+                );
+                reader
+                    .read(&columns, &changes, &touched)
+                    .map(|(facts, _)| facts)
+            })
+            .unwrap()
+            .unwrap();
+        hours.push(Hour::new(frame.hour, dated, Some(facts)));
+    }
+    hours
 }
 
 /// A publication of branch 1's hours.
@@ -68,10 +91,9 @@ pub(super) fn publish_hours(
     cuts: &[i32],
     resume: Option<i32>,
 ) -> Published {
-    let cache = Cache::new(&BUDGET);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(&BUDGET, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut generation = 0;
     let mut root = 0;
@@ -85,7 +107,6 @@ pub(super) fn publish_hours(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -99,8 +120,8 @@ pub(super) fn publish_hours(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &BUDGET, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }

@@ -16,7 +16,7 @@ import { DEFAULT_SORT } from './definition.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { nameKey } from '../../dashboard/countryFacts.ts';
 import type { LeaderSelection, LeaderChangeDate } from '../../generated/dashboard';
-import type { LeaderCareer as WireLeaderCareer, LeaderPerson, LeaderRole as WireLeaderRole, LeaderValues, UnitLeaderPortraitsReply, UnitLeadersReply } from '../../generated/dashboard';
+import type { LeaderCareer as WireLeaderCareer, LeaderPerson, LeaderRole as WireLeaderRole, LeaderValues, UnitLeaderPortraitsReply, UnitLeadersHourReply, UnitLeadersReply } from '../../generated/dashboard';
 
 import { object, opaqueTag, signed32 as integer, unsigned32 as u32, unsigned64 as handle } from '../../dashboard/validation.ts';
 import { isSpan as span, isOrderedSpans as ordered } from '../../charts/series.ts';
@@ -42,6 +42,88 @@ export function validateLeaderPortraitsReply(input: unknown): UnitLeaderPortrait
   return input as unknown as UnitLeaderPortraitsReply;
 }
 
+const validPerson = (p: unknown) => object(p) && u32(p.characterId) && text(p.token) && text(p.name) && integer(p.portraitHour) && handle(p.portraitReference);
+const validTrait = (t: unknown) => object(t) && typeof t.token === 'string' && text(t.name) && text(t.missing) && (t.icon === null || png(t.icon));
+const validRole = (r: unknown) => object(r) && (r.owner === null || opaqueTag(r.owner)) && integer(r.category) && text(r.rank)
+  && Array.isArray(r.attributeNames) && r.attributeNames.length === 4 && r.attributeNames.every(text)
+  && (r.kind === 1 || r.kind === 2) && (r.maximumSkill === null || integer(r.maximumSkill) && r.maximumSkill >= 0);
+
+/** What a reply's leaders may name: its first hour, and the people, roles and traits by number. */
+interface Named { firstHour: number; person: (index: number) => boolean; role: (index: number) => boolean; trait: (index: number) => boolean }
+
+/** A wire leader checked against what it may name, its runs and gains made ordinary; null when malformed. */
+function wireLeader(l: unknown, named: Named): LeaderCareer | null {
+  const firstHour = named.firstHour;
+  /** Sorted delta-coded hours, none before the first read. */
+  const visibleHours = (deltas: unknown) => {
+    let hour = 0;
+    return Array.isArray(deltas) && deltas.every((delta, i) => Number.isSafeInteger(delta) && (!i || delta >= 0) && integer(hour += delta) && hour >= firstHour) ? decode(deltas) : null;
+  };
+  if (!object(l) || !handle(l.reference) || !Array.isArray(l.runs)
+    || !Array.isArray(l.traitGains) || !Array.isArray(l.commands) || !(l.partialFrom === null || integer(l.partialFrom))) return null;
+  // Careers list every participation, leaderboards only when counts change, choices neither.
+  const battleStarts = l.battleStarts ?? []; const startReads = l.battleStartReadHours ?? []; const unknownStarts = l.unknownBattleStarts ?? [];
+  if (!Array.isArray(battleStarts) || !Array.isArray(startReads) || startReads.length !== battleStarts.length || !Array.isArray(unknownStarts)) return null;
+  const runs: LeaderRun[] = [];
+  for (const r of l.runs) {
+    if (!Array.isArray(r) || r.length !== 8 || !integer(r[0]) || !integer(r[1]) || r[0] > r[1]
+      || !u32(r[2]) || !named.person(r[2]) || !u32(r[3]) || !named.role(r[3]) || !(r[4] === null || integer(r[4]))
+      || !Array.isArray(r[5]) || r[5].length !== 4 || !r[5].every(integer)
+      || !(r[6] === null || Array.isArray(r[6]) && r[6].every(t => u32(t) && named.trait(t)))) return null;
+    runs.push({ firstHour: r[0], lastHour: r[1], value: { person: r[2], role: r[3], skill: r[4], components: r[5] as [number, number, number, number], traits: r[6], progress: r[7] } });
+  }
+  for (const run of runs) {
+    const progress = run.value.progress;
+    const fixed = (value: unknown) => typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/.test(value) && BigInt(value) >= -(1n << 63n) && BigInt(value) < 1n << 63n;
+    if (progress !== null && (!object(progress) || !fixed(progress.experienceRaw)
+      || !(progress.nextRequiredRaw === null || fixed(progress.nextRequiredRaw))
+      || !(progress.training === null || Array.isArray(progress.training) && progress.training.every(t => object(t)
+        && (t.token === null || text(t.token)) && (t.name === null || text(t.name)) && fixed(t.experienceRaw)
+        && (t.requiredRaw === null || fixed(t.requiredRaw))))
+      || !(progress.factors === null || Array.isArray(progress.factors) && progress.factors.every(t => object(t)
+        && (t.token === null || text(t.token)) && (t.name === null || text(t.name)) && fixed(t.factorRaw))))) return null;
+  }
+  const traitGains: TraitGain[] = [];
+  for (const g of l.traitGains) {
+    if (!Array.isArray(g) || g.length !== 3 || !integer(g[0]) || !u32(g[1]) || !named.trait(g[1]) || !(g[2] === 0 || g[2] === 1 || g[2] === 2)) return null;
+    traitGains.push({ hour: g[0], token: g[1], date: g[2] === 0 ? 'heldBefore' : g[2] === 1 ? 'gained' : 'firstObserved' });
+  }
+  const at = l.atHour;
+  // A leader read at one hour carries its counts there, never its battle hours.
+  if (at !== undefined && (!object(at) || !integer(at.hour) || !integer(at.firstSeenHour) || !u32(at.fought)
+    || ['foughtHours', 'wonHours', 'lostHours', 'battleStarts'].some(field => l[field] !== undefined)
+    || !(at.won === null || u32(at.won)) || !(at.lost === null || u32(at.lost)) || (at.won === null) !== (at.lost === null)
+    || runs.length !== 1 || !(at.firstSeenHour <= runs[0].firstHour && runs[0].firstHour <= at.hour && at.hour <= runs[0].lastHour)
+    || at.won !== null && at.won + at.lost! > at.fought || traitGains.some(gain => gain.hour > (at.hour as number)))) return null;
+  if (!ordered(runs)
+    || !l.commands.every(c => span(c) && handle(c.formation) && (c.kind === 'army' || c.kind === 'armyGroup' || c.kind === 'fleet') && text(c.name)
+      && (c.nameReadHour === null || integer(c.nameReadHour) && c.firstHour <= c.nameReadHour && c.nameReadHour <= c.lastHour) && ordered(c.nameUnknown))) return null;
+  let hour = 0;
+  for (const [i, delta] of battleStarts.entries()) {
+    if (typeof delta !== 'number' || !Number.isSafeInteger(delta) || i > 0 && delta < 0 || !integer(hour + delta)) return null;
+    hour += delta; const read = startReads[i];
+    if (!integer(read) || read < hour || read < firstHour || hour < firstHour && !unknownStarts.includes(i)) return null;
+  }
+  const battleCount = battleStarts.length;
+  if (!unknownStarts.every((n, i, all) => u32(n) && n < battleCount && (!i || all[i - 1] < n))) return null;
+  const won = l.battleWon; const resultHours = l.battleResultHours; const resultReads = l.battleResultReadHours;
+  if ((won === undefined) !== (resultHours === undefined) || (won === undefined) !== (resultReads === undefined)) return null;
+  if (won !== undefined && (!Array.isArray(won) || !Array.isArray(resultHours) || !Array.isArray(resultReads) || resultReads.length !== won.length || won.length !== battleCount || resultHours.length !== won.length
+    || !won.every((w, i) => (w === null || typeof w === 'boolean') && (resultHours[i] === null || integer(resultHours[i])) && (w === null) === (resultHours[i] === null) && (w === null) === (resultReads[i] === null) && (resultReads[i] === null || integer(resultReads[i]) && resultReads[i] >= resultHours[i] && resultReads[i] >= firstHour)))) return null;
+  hour = 0;
+  if (Array.isArray(resultHours) && resultHours.some((result, i) => {
+    hour += battleStarts[i]; return result !== null && result < hour;
+  })) return null;
+  // Every decided result needs an earlier or same-hour participation of its own.
+  const foughtAt = l.foughtHours === undefined ? [] : visibleHours(l.foughtHours);
+  const wonAt = l.wonHours === undefined ? [] : visibleHours(l.wonHours);
+  const lostAt = l.lostHours === undefined ? [] : visibleHours(l.lostHours);
+  if (!foughtAt || !wonAt || !lostAt || (l.wonHours === undefined) !== (l.lostHours === undefined)
+    || (l.foughtHours === undefined ? l.wonHours !== undefined : l.battleStarts !== undefined)
+    || [...wonAt, ...lostAt].sort(ascending).some((at, i) => !(foughtAt[i] <= at))) return null;
+  return { ...l, runs, traitGains } as unknown as LeaderCareer;
+}
+
 /** Validate the compact wire format once, then expose ordinary runs to the kits. */
 export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
   const bad = () => { throw new Error('The unit leaders reply is malformed.'); };
@@ -53,95 +135,16 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
     || typeof input.resultsMissing !== 'string' || typeof input.navyCommandsMissing !== 'string'
     || !Array.isArray(input.warnings) || !input.warnings.every(w => typeof w === 'string')) return bad();
   if (input.preparing !== undefined && (!Array.isArray(input.preparing) || !input.preparing.every(field => typeof field === 'string'))) return bad();
-  const firstHour = input.firstHour;
-  const withheldKeys = new Set<string>(); const withheldSpans = new Map<string, { firstHour: number; lastHour: number }[]>();
-  for (const w of input.withheld) {
-    if (!object(w) || !handle(w.reference) || !(w.owner === null || opaqueTag(w.owner)) || !(w.kind === 1 || w.kind === 2) || !text(w.name) || !text(w.detail)
-      || typeof w.reason !== 'string' || !w.reason.length || !ordered(w.spans) || !w.spans.length
-      || !w.spans.every(s => integer(s.firstHour) && integer(s.lastHour) && s.firstHour >= firstHour)) return bad();
-    const key = JSON.stringify([w.reference, w.owner, w.kind, w.name, w.reason, w.detail]);
-    if (withheldKeys.has(key)) return bad();
-    withheldKeys.add(key);
-    const spans = withheldSpans.get(w.reference) ?? []; for (const span of w.spans) spans.push(span); withheldSpans.set(w.reference, spans);
-  }
-  for (const spans of withheldSpans.values()) if (!ordered(spans.sort((a, b) => a.firstHour - b.firstHour))) return bad();
-  for (const p of input.people) if (!object(p) || !u32(p.characterId) || !text(p.token) || !text(p.name) || !integer(p.portraitHour) || !handle(p.portraitReference)) return bad();
-  for (const t of input.traits) if (!object(t) || typeof t.token !== 'string' || !text(t.name) || !text(t.missing) || !(t.icon === null || png(t.icon))) return bad();
-  for (const r of input.roles) if (!object(r) || !(r.owner === null || opaqueTag(r.owner)) || !integer(r.category) || !text(r.rank)
-    || !Array.isArray(r.attributeNames) || r.attributeNames.length !== 4 || !r.attributeNames.every(text)
-    || !(r.kind === 1 || r.kind === 2) || !(r.maximumSkill === null || integer(r.maximumSkill) && r.maximumSkill >= 0)) return bad();
+  if (!validWithheld(input.withheld, input.firstHour)) return bad();
+  if (!input.people.every(validPerson) || !input.traits.every(validTrait) || !input.roles.every(validRole)) return bad();
+  const people = input.people.length, roles = input.roles.length, traits = input.traits.length;
+  const named: Named = { firstHour: input.firstHour, person: i => i < people, role: i => i < roles, trait: i => i < traits };
   const keys = new Set<string>(); const leaders: LeaderCareer[] = [];
-  const traitCount = input.traits.length;
-  /** Sorted delta-coded hours, none before the first read. */
-  const visibleHours = (deltas: unknown) => {
-    let hour = 0;
-    return Array.isArray(deltas) && deltas.every((delta, i) => Number.isSafeInteger(delta) && (!i || delta >= 0) && integer(hour += delta) && hour >= firstHour) ? decode(deltas) : null;
-  };
   for (const l of input.leaders) {
-    if (!object(l) || !handle(l.reference) || keys.has(String(l.reference)) || !Array.isArray(l.runs)
-      || !Array.isArray(l.traitGains) || !Array.isArray(l.commands) || !(l.partialFrom === null || integer(l.partialFrom))) return bad();
-    // Careers list every participation, leaderboards only when counts change, choices neither.
-    const battleStarts = l.battleStarts ?? []; const startReads = l.battleStartReadHours ?? []; const unknownStarts = l.unknownBattleStarts ?? [];
-    if (!Array.isArray(battleStarts) || !Array.isArray(startReads) || startReads.length !== battleStarts.length || !Array.isArray(unknownStarts)) return bad();
-    keys.add(String(l.reference));
-    const runs: LeaderRun[] = [];
-    for (const r of l.runs) {
-      if (!Array.isArray(r) || r.length !== 8 || !integer(r[0]) || !integer(r[1]) || r[0] > r[1]
-        || !u32(r[2]) || r[2] >= input.people.length || !u32(r[3]) || r[3] >= input.roles.length || !(r[4] === null || integer(r[4]))
-        || !Array.isArray(r[5]) || r[5].length !== 4 || !r[5].every(integer)
-        || !(r[6] === null || Array.isArray(r[6]) && r[6].every(t => u32(t) && t < traitCount))) return bad();
-      runs.push({ firstHour: r[0], lastHour: r[1], value: { person: r[2], role: r[3], skill: r[4], components: r[5] as [number, number, number, number], traits: r[6], progress: r[7] } });
-    }
-    for (const run of runs) {
-      const progress = run.value.progress;
-      const fixed = (value: unknown) => typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/.test(value) && BigInt(value) >= -(1n << 63n) && BigInt(value) < 1n << 63n;
-      if (progress !== null && (!object(progress) || !fixed(progress.experienceRaw)
-        || !(progress.nextRequiredRaw === null || fixed(progress.nextRequiredRaw))
-        || !(progress.training === null || Array.isArray(progress.training) && progress.training.every(t => object(t)
-          && (t.token === null || text(t.token)) && (t.name === null || text(t.name)) && fixed(t.experienceRaw)
-          && (t.requiredRaw === null || fixed(t.requiredRaw))))
-        || !(progress.factors === null || Array.isArray(progress.factors) && progress.factors.every(t => object(t)
-          && (t.token === null || text(t.token)) && (t.name === null || text(t.name)) && fixed(t.factorRaw))))) return bad();
-    }
-    const traitGains: TraitGain[] = [];
-    for (const g of l.traitGains) {
-      if (!Array.isArray(g) || g.length !== 3 || !integer(g[0]) || !u32(g[1]) || g[1] >= traitCount || !(g[2] === 0 || g[2] === 1 || g[2] === 2)) return bad();
-      traitGains.push({ hour: g[0], token: g[1], date: g[2] === 0 ? 'heldBefore' : g[2] === 1 ? 'gained' : 'firstObserved' });
-    }
-    const at = l.atHour;
-    // A leader read at one hour carries its counts there, never its battle hours.
-    if (at !== undefined && (!object(at) || !integer(at.hour) || !integer(at.firstSeenHour) || !u32(at.fought)
-      || ['foughtHours', 'wonHours', 'lostHours', 'battleStarts'].some(field => l[field] !== undefined)
-      || !(at.won === null || u32(at.won)) || !(at.lost === null || u32(at.lost)) || (at.won === null) !== (at.lost === null)
-      || runs.length !== 1 || !(at.firstSeenHour <= runs[0].firstHour && runs[0].firstHour <= at.hour && at.hour <= runs[0].lastHour)
-      || at.won !== null && at.won + at.lost! > at.fought || traitGains.some(gain => gain.hour > (at.hour as number)))) return bad();
-    if (!ordered(runs)
-      || !l.commands.every(c => span(c) && handle(c.formation) && (c.kind === 'army' || c.kind === 'armyGroup' || c.kind === 'fleet') && text(c.name)
-        && (c.nameReadHour === null || integer(c.nameReadHour) && c.firstHour <= c.nameReadHour && c.nameReadHour <= c.lastHour) && ordered(c.nameUnknown))) return bad();
-    let hour = 0;
-    for (const [i, delta] of battleStarts.entries()) {
-      if (typeof delta !== 'number' || !Number.isSafeInteger(delta) || i > 0 && delta < 0 || !integer(hour + delta)) return bad();
-      hour += delta; const read = startReads[i];
-      if (!integer(read) || read < hour || read < firstHour || hour < firstHour && !unknownStarts.includes(i)) return bad();
-    }
-    const battleCount = battleStarts.length;
-    if (!unknownStarts.every((n, i, all) => u32(n) && n < battleCount && (!i || all[i - 1] < n))) return bad();
-    const won = l.battleWon; const resultHours = l.battleResultHours; const resultReads = l.battleResultReadHours;
-    if ((won === undefined) !== (resultHours === undefined) || (won === undefined) !== (resultReads === undefined)) return bad();
-    if (won !== undefined && (!Array.isArray(won) || !Array.isArray(resultHours) || !Array.isArray(resultReads) || resultReads.length !== won.length || won.length !== battleCount || resultHours.length !== won.length
-      || !won.every((w, i) => (w === null || typeof w === 'boolean') && (resultHours[i] === null || integer(resultHours[i])) && (w === null) === (resultHours[i] === null) && (w === null) === (resultReads[i] === null) && (resultReads[i] === null || integer(resultReads[i]) && resultReads[i] >= resultHours[i] && resultReads[i] >= firstHour)))) return bad();
-    hour = 0;
-    if (Array.isArray(resultHours) && resultHours.some((result, i) => {
-      hour += battleStarts[i]; return result !== null && result < hour;
-    })) return bad();
-    // Every decided result needs an earlier or same-hour participation of its own.
-    const foughtAt = l.foughtHours === undefined ? [] : visibleHours(l.foughtHours);
-    const wonAt = l.wonHours === undefined ? [] : visibleHours(l.wonHours);
-    const lostAt = l.lostHours === undefined ? [] : visibleHours(l.lostHours);
-    if (!foughtAt || !wonAt || !lostAt || (l.wonHours === undefined) !== (l.lostHours === undefined)
-      || (l.foughtHours === undefined ? l.wonHours !== undefined : l.battleStarts !== undefined)
-      || [...wonAt, ...lostAt].sort(ascending).some((at, i) => !(foughtAt[i] <= at))) return bad();
-    leaders.push({ ...l, runs, traitGains } as unknown as LeaderCareer);
+    const leader = wireLeader(l, named);
+    if (!leader || keys.has(String(leader.reference))) return bad();
+    keys.add(String(leader.reference));
+    leaders.push(leader);
   }
   if (new Set(input.traits.map(t => (t as Record<string, unknown>).token)).size !== input.traits.length) return bad();
   const reply = { ...input, leaders } as unknown as UnitLeadersData;
@@ -149,6 +152,105 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
   return reply;
 }
 
+/** Withheld leaders whose spans start at or after the first hour, each named once, each leader's spans apart. */
+function validWithheld(withheld: unknown[], firstHour: number): boolean {
+  const withheldKeys = new Set<string>(); const withheldSpans = new Map<string, { firstHour: number; lastHour: number }[]>();
+  for (const w of withheld) {
+    if (!object(w) || !handle(w.reference) || !(w.owner === null || opaqueTag(w.owner)) || !(w.kind === 1 || w.kind === 2) || !text(w.name) || !text(w.detail)
+      || typeof w.reason !== 'string' || !w.reason.length || !ordered(w.spans) || !w.spans.length
+      || !w.spans.every(s => integer(s.firstHour) && integer(s.lastHour) && s.firstHour >= firstHour)) return false;
+    const key = JSON.stringify([w.reference, w.owner, w.kind, w.name, w.reason, w.detail]);
+    if (withheldKeys.has(key)) return false;
+    withheldKeys.add(key);
+    const spans = withheldSpans.get(w.reference) ?? []; for (const span of w.spans) spans.push(span); withheldSpans.set(w.reference, spans);
+  }
+  for (const spans of withheldSpans.values()) if (!ordered(spans.sort((a, b) => a.firstHour - b.firstHour))) return false;
+  return true;
+}
+
+const numbered = <T,>(entries: unknown, valid: (entry: unknown) => boolean): entries is [number, T][] => Array.isArray(entries)
+  && entries.every((entry, i) => Array.isArray(entry) && entry.length === 2 && u32(entry[0]) && (!i || (entries[i - 1] as [number])[0] < entry[0]) && valid(entry[1]));
+
+/** Checks a leaderboard's rows at an hour ([`UnitLeadersHourReply`]): its envelope and the numbered people, roles and
+ * traits it adds. Rows are checked as they are joined, against what the reply and the rows held name. */
+export function validateLeaderHourReply(input: unknown): UnitLeadersHourReply {
+  const bad = () => { throw new Error('The unit leaders reply is malformed.'); };
+  if (!object(input) || !handle(input.branchId) || !integer(input.firstHour) || !integer(input.hour)
+    || !(input.index === null || typeof input.index === 'string') || !(input.since === null || integer(input.since))
+    || input.since !== null && input.index === null
+    || !Array.isArray(input.leaders) || !Array.isArray(input.ended) || !input.ended.every(handle)
+    || !numbered(input.people, validPerson) || !numbered(input.roles, validRole) || !numbered(input.traits, validTrait)
+    || !Array.isArray(input.withheld) || !validWithheld(input.withheld, input.firstHour)
+    || !ordered(input.observed) || !input.observed.every(s => ['leaders', 'landBattles', 'navalBattles', 'landCommands', 'navalCommands'].every(k => typeof s[k] === 'boolean'))
+    || !(input.selectionTags === undefined || Array.isArray(input.selectionTags) && input.selectionTags.every(opaqueTag))
+    || typeof input.resultsMissing !== 'string' || typeof input.navyCommandsMissing !== 'string'
+    || !Array.isArray(input.warnings) || !input.warnings.every(w => typeof w === 'string')) return bad();
+  if (input.preparing !== undefined && (!Array.isArray(input.preparing) || !input.preparing.every(field => typeof field === 'string'))) return bad();
+  if (new Set(input.traits.map(([, trait]) => (trait as { token: string }).token)).size !== input.traits.length) return bad();
+  return input as unknown as UnitLeadersHourReply;
+}
+
+/** The rows a leaderboard holds at an hour as playback joined them: each leader's row, and every person, role and
+ * trait by the index's number, never dropped while the index stands. */
+export interface HeldLeaders { reply: UnitLeadersHourReply; leaders: Map<string, LeaderCareer>; people: Map<number, LeaderPerson>;
+  roles: Map<number, LeaderRole>; traits: Map<number, UnitLeadersData['traits'][number]>; selectionTags?: string[]; data: UnitLeadersData }
+
+/** `reply` joined to `held`, the rows held at the hour it was read against (none for a whole reply), as the leaderboard
+ * a whole reply at its hour gives: people, roles and traits numbered as the rows first name them. Null when the reply
+ * was read against rows other than those held. */
+export function joinLeaderHour(held: HeldLeaders | null, reply: UnitLeadersHourReply): HeldLeaders | null {
+  const against = reply.since === null ? null : held;
+  if (reply.since !== null && (!against || against.reply.hour !== reply.since || against.reply.index !== reply.index)) return null;
+  const bad = () => { throw new Error('The unit leaders reply is malformed.'); };
+  const people = new Map(against?.people), roles = new Map(against?.roles), traits = new Map(against?.traits);
+  for (const [at, person] of reply.people) people.set(at, person);
+  for (const [at, role] of reply.roles) roles.set(at, role as LeaderRole);
+  for (const [at, trait] of reply.traits) traits.set(at, trait);
+  const leaders = new Map(against?.leaders);
+  for (const reference of reply.ended) if (!leaders.delete(reference)) return bad();
+  const named: Named = { firstHour: reply.firstHour, person: i => people.has(i), role: i => roles.has(i), trait: i => traits.has(i) };
+  const changed = new Set<string>();
+  for (const l of reply.leaders) {
+    const leader = wireLeader(l, named);
+    if (!leader || changed.has(leader.reference) || reply.ended.includes(leader.reference)) return bad();
+    changed.add(leader.reference);
+    leaders.set(leader.reference, leader);
+  }
+  // A held row read at another hour is that row at this hour: its counts and gains hold until it changes.
+  for (const [reference, leader] of leaders) if (!changed.has(reference) && leader.atHour && leader.atHour.hour !== reply.hour) {
+    const run = leader.runs[0];
+    if (!run || run.firstHour > reply.hour || reply.hour > run.lastHour) return bad();
+    leaders.set(reference, { ...leader, atHour: { ...leader.atHour, hour: reply.hour } });
+  }
+  const selectionTags = reply.since === null ? reply.selectionTags : against!.selectionTags;
+  const data = compactLeaders(reply, [...leaders.values()], people, roles, traits, selectionTags);
+  return { reply, leaders, people, roles, traits, selectionTags, data };
+}
+
+/** The leaderboard a whole reply gives of `leaders`: only the people, roles and traits they name, numbered in the
+ * index's order, as the native reply numbers them. */
+function compactLeaders(reply: UnitLeadersHourReply, leaders: LeaderCareer[], people: Map<number, LeaderPerson>, roles: Map<number, LeaderRole>,
+  traits: Map<number, UnitLeadersData['traits'][number]>, selectionTags: string[] | undefined): UnitLeadersData {
+  const usedPeople = new Set<number>(), usedRoles = new Set<number>(), usedTraits = new Set<number>();
+  for (const leader of leaders) {
+    for (const run of leader.runs) {
+      usedPeople.add(run.value.person); usedRoles.add(run.value.role);
+      for (const token of run.value.traits ?? []) usedTraits.add(token);
+    }
+    for (const gain of leader.traitGains) usedTraits.add(gain.token);
+  }
+  const renumber = (used: Set<number>) => new Map([...used].sort(ascending).map((old, index) => [old, index]));
+  const person = renumber(usedPeople), role = renumber(usedRoles), trait = renumber(usedTraits);
+  const shown = leaders.map(leader => ({ ...leader,
+    runs: leader.runs.map(run => ({ ...run, value: { ...run.value, person: person.get(run.value.person)!, role: role.get(run.value.role)!,
+      traits: run.value.traits && run.value.traits.map(token => trait.get(token)!) } })),
+    traitGains: leader.traitGains.map(gain => ({ ...gain, token: trait.get(gain.token)! })) }));
+  const { hour: _hour, index: _index, since: _since, leaders: _leaders, ended: _ended, people: _people, roles: _roles, traits: _traits,
+    selectionTags: _selectionTags, ...rest } = reply as UnitLeadersHourReply & Record<string, unknown>;
+  return { ...rest, leaders: shown,
+    people: [...person.keys()].map(at => people.get(at)!), roles: [...role.keys()].map(at => roles.get(at)!), traits: [...trait.keys()].map(at => traits.get(at)!),
+    ...(selectionTags === undefined ? {} : { selectionTags }) } as unknown as UnitLeadersData;
+}
 export interface LeaderRow { key: string; hour: number; career: LeaderCareer; value: LeaderValues & LeaderRole; person: LeaderPerson; traitCatalogue: UnitLeadersData['traits']; fought: number | null; preparing: boolean; foughtPartial: boolean; won: number | null; lost: number | null; winRate: number | null; unresolved: number | null }
 
 export function withheldLeadersAt(reply: UnitLeadersData, hour: number, countries: ReadonlySet<string> | null, kind: string) {

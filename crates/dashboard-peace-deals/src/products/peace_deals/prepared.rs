@@ -45,7 +45,7 @@ impl Prepared {
         let reads = self
             .scan
             .reader
-            .read(frame, &[true; replay_data::rows::TABLE_COUNT]);
+            .read(frame, &[true; replay_data::rows::TABLE_COUNT])?;
         self.observe_changed(frame.hour, reads, read, events)
     }
 

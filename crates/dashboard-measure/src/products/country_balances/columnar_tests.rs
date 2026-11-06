@@ -14,7 +14,7 @@ use dashboard_base::{
     test_fixtures::source,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, PageRead, Publication, Snapshot, Span, Writer,
+    Blob, PageRead, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -211,11 +211,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -229,7 +228,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -243,8 +241,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::resume(&directory, &saved).unwrap();
         }
@@ -271,9 +269,7 @@ fn family(measure: &str) -> Value {
 /// Holds the publication `built` to the row history of `frames`: each balance's runs, the holder
 /// and segment start of each, and its drops.
 fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let mut scan = HistoryScan::new(false, &[Measure::PoliticalPower, Measure::CommandPower]);
     for frame in frames {
@@ -386,7 +382,6 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
 /// Every placement of segment starts, cuts and a resume publishes what the row history reads.
 #[test]
 fn the_publication_holds_what_the_row_history_reads_across_segments_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     for (starts, cuts, resume) in [
         (&[][..], &[160][..], None),
@@ -400,7 +395,7 @@ fn the_publication_holds_what_the_row_history_reads_across_segments_cuts_and_a_r
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
         let (projected, frames) = projected(&hours, starts);
-        let built = build(projected, cuts, resume, &budget);
+        let built = build(projected, cuts, resume);
         check(&built, &frames, &label);
     }
 }
@@ -409,11 +404,9 @@ fn the_publication_holds_what_the_row_history_reads_across_segments_cuts_and_a_r
 /// balances and unresolved holders break runs, and a balance never held is never zero.
 #[test]
 fn the_scenario_reads_as_the_top_bar_shows_it() {
-    let budget = Budget::new(256 << 20);
     let (projected, _) = projected(&scenario(), &[]);
-    let built = build(projected, &[160], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(projected, &[160], None);
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let drops = |snapshot: &mut Snapshot<'_, Memory>, tag: &str, measure: &str| -> Vec<i64> {
         reply(
@@ -484,11 +477,9 @@ fn the_scenario_reads_as_the_top_bar_shows_it() {
 /// later counts its first ordinal from the branch's first drop.
 #[test]
 fn drop_pages_resume_by_merged_ordinal() {
-    let budget = Budget::new(256 << 20);
     let (projected, _) = projected(&scenario(), &[120]);
-    let built = build(projected, &[129, 160], Some(129), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(projected, &[129, 160], Some(129));
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let page = |snapshot: &mut Snapshot<'_, Memory>, cursor: &str, size: u32, from: Option<i32>| {
         reply(

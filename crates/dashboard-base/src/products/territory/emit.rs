@@ -215,7 +215,7 @@ fn before(labels: &[Arc<[u8]>], left: (u64, i64), right: (u64, i64)) -> Ordering
 
 /// A composite run's values as event fields.
 fn run_cells(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     values: &Values,
     starts: bool,
 ) -> io::Result<dashboard_series::Blob> {
@@ -229,7 +229,7 @@ fn run_cells(
 
 /// A regional run's values as event fields.
 fn region_cells(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     values: &RegionValues,
     starts: bool,
 ) -> io::Result<dashboard_series::Blob> {
@@ -295,12 +295,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family_keys(&mut self, writer: &mut Writer<'_>) -> io::Result<FamilyKeys> {
+    fn family_keys(&mut self, writer: &mut Writer) -> io::Result<FamilyKeys> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -325,7 +325,7 @@ impl Emit {
     }
 
     /// The tag actor named `tag`.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -341,7 +341,7 @@ impl Emit {
     }
 
     /// `actor`'s keys.
-    fn keys(&mut self, writer: &mut Writer<'_>, actor: u64) -> io::Result<Keys> {
+    fn keys(&mut self, writer: &mut Writer, actor: u64) -> io::Result<Keys> {
         if let Some(keys) = &self.countries[actor as usize].keys {
             return Ok((**keys).clone());
         }
@@ -372,7 +372,7 @@ impl Emit {
     /// as the row accumulator's did.
     fn set(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         value: Option<i128>,
@@ -388,7 +388,7 @@ impl Emit {
     }
 
     fn event(
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         kind: u64,
@@ -406,7 +406,7 @@ impl Emit {
     }
 
     /// Takes up a lineage: each tag's actor, and each dense holder's.
-    fn install(&mut self, writer: &mut Writer<'_>, lineage: &Lineage, at: i32) -> io::Result<()> {
+    fn install(&mut self, writer: &mut Writer, lineage: &Lineage, at: i32) -> io::Result<()> {
         for held in &mut self.held {
             *held = None;
         }
@@ -441,7 +441,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("territory.emit", None);
         let at = hour.hour;
         let adjacent = match self.last {
@@ -649,7 +649,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn complete_hour(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         family: FamilyKeys,
         contiguous: bool,
@@ -724,7 +724,7 @@ impl Emit {
     /// A tag at a complete hour.
     fn tag(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         contiguous: bool,
@@ -805,7 +805,7 @@ impl Emit {
     /// A regional series at a complete hour.
     fn region(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         index: u32,
         contiguous: bool,
@@ -882,7 +882,7 @@ impl Emit {
     /// The column's position key at `position`.
     fn position(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         column: usize,
         position: usize,
     ) -> io::Result<KeyHandle> {
@@ -905,7 +905,7 @@ impl Emit {
     /// the ranks that changed go on from `at`.
     fn rank(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         column: usize,
         moved: Vec<(u64, Option<i64>)>,
@@ -1010,7 +1010,7 @@ impl Emit {
     /// An hour whose countries are not complete: every tag, run and roster ends.
     fn incomplete_hour(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         family: FamilyKeys,
     ) -> io::Result<()> {
@@ -1067,7 +1067,7 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for country in &mut self.countries {
             country.present = false;
@@ -1089,7 +1089,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

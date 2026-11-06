@@ -155,7 +155,7 @@ impl Emit {
 
     fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         measure: u64,
         dimension: Option<u64>,
@@ -174,7 +174,7 @@ impl Emit {
     }
 
     /// The actor named `name`, first seen at `hour`.
-    fn actor(&mut self, writer: &mut Writer<'_>, name: &[u8], hour: i32) -> io::Result<u64> {
+    fn actor(&mut self, writer: &mut Writer, name: &[u8], hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(name) {
             return Ok(actor);
         }
@@ -189,7 +189,7 @@ impl Emit {
     }
 
     /// The country actor of `tag`, with its keys.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         let actor = self.actor(writer, tag.as_bytes(), hour)?;
         if self.countries[actor as usize].keys.is_empty() {
             let mut keys = Vec::with_capacity(18);
@@ -207,7 +207,7 @@ impl Emit {
     }
 
     /// The aid party actor of `party`, with its proof keys.
-    fn party(&mut self, writer: &mut Writer<'_>, party: &Party, hour: i32) -> io::Result<u64> {
+    fn party(&mut self, writer: &mut Writer, party: &Party, hour: i32) -> io::Result<u64> {
         if let Some(&actor) = self.parties.get(party) {
             return Ok(actor);
         }
@@ -223,7 +223,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if self.reads.is_none() {
@@ -307,7 +307,7 @@ impl Emit {
         self.aid(writer, at, !adjacent, hour.aid)
     }
 
-    fn end(&mut self, writer: &mut Writer<'_>, hour: i32, actor: u64) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, hour: i32, actor: u64) -> io::Result<()> {
         let country = &mut self.countries[actor as usize];
         for &key in &country.keys[..10] {
             self.carry.value(writer, key, hour, None, false)?;
@@ -320,7 +320,7 @@ impl Emit {
 
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         adjacent: bool,
         actor: u64,
@@ -389,7 +389,7 @@ impl Emit {
     /// where it is unknown.
     fn mix_cells(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         mix: &Mix,
     ) -> io::Result<dashboard_series::Blob> {
         let mut sides = Vec::with_capacity(2);
@@ -428,7 +428,7 @@ impl Emit {
 
     /// Moves the `touched` countries in each ranking to their totals' places; the positions
     /// and ranks that changed go on from `hour`.
-    fn rank(&mut self, writer: &mut Writer<'_>, hour: i32, touched: &[u64]) -> io::Result<()> {
+    fn rank(&mut self, writer: &mut Writer, hour: i32, touched: &[u64]) -> io::Result<()> {
         for channel in 0..8 {
             let mut moved = Vec::new();
             let mut changed = HashSet::new();
@@ -536,7 +536,7 @@ impl Emit {
 
     fn aid(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         gap: bool,
         projection: aid::Projection,
@@ -668,7 +668,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

@@ -9,10 +9,12 @@ import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
 import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
-import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, HistoryCacheReply, MapSettingsReply, PreparedQueryOptions, ProductReply, RecorderSettings, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, PreparedQueryOptions, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
+import { parseReplyBytes } from './replyParse.ts';
 import { contentRevision } from './contentRevision.ts';
 import { forgetReplySizes } from './replySizes.ts';
+import { forgetReplyGaps } from './replyGaps.ts';
 import type { Compression } from '../recorder/compression';
 import { perfLog } from '../shell/perf.ts';
 import type { QueryTiming } from '../shell/perf';
@@ -26,13 +28,14 @@ async function rawInvoke<T>(command: string, args: Record<string, unknown>, timi
   const result = await invoke<unknown>(command, args).catch((error: QueryError) => { throw queryFailure(error); });
   if (timing) timing.received = performance.now();
   if (!(result instanceof ArrayBuffer || result instanceof Uint8Array)) return result as T;
-  const reply: unknown = JSON.parse(new TextDecoder().decode(result));
-  if (timing) { timing.parsed = performance.now(); timing.bytes = result.byteLength; }
+  const bytes = result.byteLength;
+  const reply: unknown = await parseReplyBytes(result);
+  if (timing) { timing.parsed = performance.now(); timing.bytes = bytes; }
   if (reply && typeof reply === 'object') {
-    replyLengths.set(reply, result.byteLength);
+    replyLengths.set(reply, bytes);
     // A prepared reply's data is kept without its envelope.
     const data: unknown = (reply as { data?: unknown }).data;
-    if (data && typeof data === 'object') replyLengths.set(data, result.byteLength);
+    if (data && typeof data === 'object') replyLengths.set(data, bytes);
   }
   return reply as T;
 }
@@ -82,6 +85,7 @@ async function preparation(command: string, query: PreparationRequest, signal: A
 
 async function releaseSource(sourceId: string): Promise<void> {
   forgetReplySizes(nativeDashboardClient, sourceId);
+  forgetReplyGaps(sourceId);
   if (!desktopAvailable) return;
   await invoke('dashboard_release_source', { sourceId });
 }
@@ -123,12 +127,11 @@ export const nativeDashboardClient: DashboardClient = {
   async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
     const query = { sourceId: source.id, revision: source.revision, product, params };
     const reply = await request<ProductReply<T>>('dashboard_prepared_query', () => ({ query, refresh: options.refresh ?? false }), options.signal);
-    return preparedReplyData(validateProductReply(reply, query), options);
+    return preparedReplyData(validateProductReply(reply, query), options, params);
   },
   prepareSource: (query, signal) => preparation('dashboard_prepare_source', query, signal),
   cancelPreparation: (query, signal) => preparation('dashboard_cancel_preparation', query, signal),
   clearPreparation: (query, signal) => preparation('dashboard_clear_preparation', query, signal),
-  historyCache: (clear, signal) => request<HistoryCacheReply>('dashboard_history_cache', () => ({ clear }), signal),
 
   async openSource(path, signal): Promise<DashboardSource> {
     if (signal.aborted) throw cancelled();

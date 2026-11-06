@@ -569,7 +569,7 @@ fn completion_projection_uses_mod_override_name_and_native_art_path() {
             .unwrap();
     let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
     let mut content = Content {
-        definitions: Catalog::read(&catalogue.content.layers).unwrap(),
+        definitions: Arc::new(Catalog::read(&catalogue.content.layers).unwrap()),
         politics: Arc::new(PoliticsContent::load(Arc::clone(&catalogue)).unwrap()),
         catalogue,
         icons: BTreeMap::new(),

@@ -730,14 +730,29 @@ pub fn cells<P: PageRead>(
     tags: &[&str],
     hour: i32,
 ) -> io::Result<Vec<(Option<i128>, bool)>> {
+    cells_by(directory, tags, &mut |key| {
+        Ok(run_at(snapshot, Some(key), hour)?.map(|run| run.value))
+    })
+}
+
+/// [`cells`], each key's value at the hour given by `read`.
+pub fn cells_by(
+    directory: &Directory,
+    tags: &[&str],
+    read: &mut dyn FnMut(u64) -> io::Result<Option<i128>>,
+) -> io::Result<Vec<(Option<i128>, bool)>> {
+    let mut at = |key: Option<u64>| match key {
+        Some(key) => read(key),
+        None => Ok(None),
+    };
     tags.iter()
         .map(|tag| {
             let Some(actor) = actor(directory, tag) else {
                 return Ok((None, false));
             };
-            let total = run_at(snapshot, directory.key(actor, TOTAL, None), hour)?;
-            let read = run_at(snapshot, directory.key(actor, MIX, None), hour)?;
-            Ok((total.map(|run| run.value), read.is_some()))
+            let total = at(directory.key(actor, TOTAL, None))?;
+            let census = at(directory.key(actor, MIX, None))?;
+            Ok((total, census.is_some()))
         })
         .collect()
 }

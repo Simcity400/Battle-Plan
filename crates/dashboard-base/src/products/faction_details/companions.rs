@@ -1,8 +1,9 @@
 //! Independent faction rule, shared-programme and manpower presentation.
 use super::*;
 use installed_content_core::content::diagnostics::Once as OnceLock;
-use replay_data::rows::{FactionDoctrineRow, FactionRuleRow, ProjectProgramRow};
-use std::sync::Arc;
+use replay_data::rows::{CountryRow, FactionDoctrineRow, FactionRuleRow, ProjectProgramRow, mask};
+use replay_frame::frame::HourFrame;
+use std::{borrow::Cow, sync::Arc};
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FactionRuleDetail {
@@ -67,47 +68,55 @@ pub const PROGRAMME_TABLES: &[TableId] = &[
     TableId::LexicalTokens,
 ];
 pub(super) fn tag(frame: &DecodedFrame, raw: u32) -> Result<String, String> {
+    tag_in(HourFrame::from(frame), raw)
+}
+/// The fields a country's tag is read by.
+pub(super) const COUNTRY_TAG: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+/// [`tag`] of any frame's tables, a walk's views among them.
+pub(super) fn tag_in(frame: HourFrame<'_>, raw: u32) -> Result<String, String> {
     if raw == 0 {
-        let [row] = frame
-            .complete::<tables::ReservedCountryNaming>()
-            .map_err(|why| why.to_string())?
-        else {
+        let rows = frame
+            .complete::<tables::ReservedCountryNaming>(u64::MAX)
+            .map_err(|why| why.to_string())?;
+        let (1, Some(row)) = (rows.len(), rows.iter().next()) else {
             return Err("Faction manpower country zero has no unique reserved name".into());
         };
+        let row = row.map_err(|why| why.to_string())?;
         return String::from_utf8(row.tag.clone())
             .map_err(|_| "Reserved faction country tag is not UTF-8".into());
     }
     let links = frame
-        .complete::<tables::CountryLinks>()
+        .complete::<tables::CountryLinks>(super::viewer::LINK)
         .map_err(|why| why.to_string())?;
-    let slot = crate::metadata::link_slot(links, raw)
+    let slot = crate::metadata::link_slot_in(&links, raw)
         .ok_or_else(|| format!("Faction country {raw} has no unambiguous link"))?;
-    let row = frame
-        .complete::<tables::Countries>()
-        .map_err(|why| why.to_string())?
-        .iter()
-        .find(|row| row.canonical_slot == slot)
-        .ok_or_else(|| format!("Faction country slot {slot} is not recorded"))?;
-    String::from_utf8(row.tag.clone()).map_err(|_| "Faction country tag is not UTF-8".into())
+    let countries = frame
+        .complete::<tables::Countries>(COUNTRY_TAG)
+        .map_err(|why| why.to_string())?;
+    for row in countries.iter() {
+        let row = row.map_err(|why| why.to_string())?;
+        if row.canonical_slot == slot {
+            return String::from_utf8(row.tag.clone())
+                .map_err(|_| "Faction country tag is not UTF-8".into());
+        }
+    }
+    Err(format!("Faction country slot {slot} is not recorded"))
 }
 fn environment(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     cat: &catalogue::Catalogue,
     faction: u64,
     text: &str,
     held: Option<&ViewerText<'_>>,
 ) -> Result<String, String> {
-    let raw = super::viewer::viewing(frame)?.ok_or("Faction text requires the selected country")?;
-    let slot = crate::metadata::link_slot(
-        frame
-            .complete::<tables::CountryLinks>()
-            .map_err(|why| why.to_string())?,
-        raw,
-    )
-    .ok_or("Faction text's selected country has no link")?;
+    let slot = super::viewer::viewer_slot(
+        frame,
+        "Faction text requires the selected country",
+        "Faction text's selected country has no link",
+    )?;
     match held {
         Some(held) => held.with(slot, |scripted| scripted.expand_faction(text, faction))?,
-        None => ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, slot)
+        None => ScriptedText::new_in(frame, &cat.localisation, cat.scripted_content()?, slot)
             .expand_faction(text, faction),
     }
 }
@@ -118,11 +127,11 @@ pub(super) fn rule(
     cat: Option<&catalogue::Catalogue>,
     expand: bool,
 ) -> FactionRuleDetail {
-    rule_in(frame, faction, row, cat, expand, None)
+    rule_in(HourFrame::from(frame), faction, row, cat, expand, None)
 }
-/// [`rule`], a dynamic name expanded in `held` when given.
+/// [`rule`] of any frame's tables, a dynamic name expanded in `held` when given.
 pub(super) fn rule_in(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     faction: u64,
     row: &FactionRuleRow,
     cat: Option<&catalogue::Catalogue>,
@@ -136,7 +145,7 @@ pub(super) fn rule_in(
         reason: None,
     };
     let result = (|| -> Result<(), String> {
-        let spelling = faction_names::template_spelling(frame, Some(row.token))?
+        let spelling = faction_names::template_spelling_in(&frame, Some(row.token))?
             .ok_or("Faction rule has no spelling")?;
         value.token = Some(spelling.clone());
         let cat = cat.ok_or("Faction rule name requires localisation")?;
@@ -161,11 +170,11 @@ pub(super) fn doctrine(
     row: &FactionDoctrineRow,
     cat: Option<&catalogue::Catalogue>,
 ) -> FactionRuleDetail {
-    doctrine_named(frame, faction, row, cat, true, None)
+    doctrine_named(HourFrame::from(frame), faction, row, cat, true, None)
 }
-/// [`doctrine`], a dynamic name expanded in `held` when given.
+/// [`doctrine`] of any frame's tables, a dynamic name expanded in `held` when given.
 pub(super) fn doctrine_in(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     faction: u64,
     row: &FactionDoctrineRow,
     cat: Option<&catalogue::Catalogue>,
@@ -174,7 +183,7 @@ pub(super) fn doctrine_in(
     doctrine_named(frame, faction, row, cat, true, held)
 }
 fn doctrine_named(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     faction: u64,
     row: &FactionDoctrineRow,
     cat: Option<&catalogue::Catalogue>,
@@ -188,7 +197,7 @@ fn doctrine_named(
         reason: None,
     };
     let result = (|| -> Result<(), String> {
-        let spelling = faction_names::template_spelling(frame, Some(row.token))?
+        let spelling = faction_names::template_spelling_in(&frame, Some(row.token))?
             .ok_or("Faction selection token is absent")?;
         detail.token = Some(spelling.clone());
         let cat = cat.ok_or("Faction selection requires recorded localisation")?;
@@ -211,16 +220,25 @@ pub(super) fn programme(
     frame: &DecodedFrame,
     reference: u64,
 ) -> Result<&ProjectProgramRow, String> {
+    match programme_in(HourFrame::from(frame), reference)? {
+        Cow::Borrowed(row) => Ok(row),
+        Cow::Owned(_) => Err("Shared programme is not recorded".into()),
+    }
+}
+/// [`programme`] of any frame's tables, a walk's views among them.
+pub(super) fn programme_in(
+    frame: HourFrame<'_>,
+    reference: u64,
+) -> Result<Cow<'_, ProjectProgramRow>, String> {
     if reference as u32 != engine_projects::nproject_cprogram::REFERENCE_TYPE {
         return Err("Shared programme reference does not name a research programme".into());
     }
     let rows = frame
-        .complete::<tables::ProjectPrograms>()
+        .complete::<tables::ProjectPrograms>(u64::MAX)
         .map_err(|why| why.to_string())?;
     let id = (reference >> 32) as u32;
-    rows.binary_search_by_key(&id, |row| row.id)
-        .ok()
-        .map(|index| &rows[index])
+    rows.get(u128::from(id))
+        .map_err(|why| why.to_string())?
         .ok_or("Shared programme is not recorded".into())
 }
 fn project_catalog(
@@ -237,26 +255,25 @@ fn project_catalog(
         .clone()
 }
 pub(super) fn project_name(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     reference: u64,
     cat: &catalogue::Catalogue,
     expand: bool,
 ) -> Result<Option<String>, String> {
-    let programme = programme(frame, reference)?;
+    let programme = programme_in(frame, reference)?;
     let Some(active) = programme.active_project else {
         return Ok(None);
     };
-    let project = frame
-        .complete::<tables::Projects>()
+    let projects = frame
+        .complete::<tables::Projects>(u64::MAX)
+        .map_err(|why| why.to_string())?;
+    // A programme's project is keyed by its owner and local id: one row at most.
+    let project = projects
+        .get(u128::from(programme.owner) << 32 | u128::from(active))
         .map_err(|why| why.to_string())?
-        .iter()
-        .find(|row| {
-            row.owner == programme.owner
-                && row.local_id == active
-                && row.program_reference == reference
-        })
+        .filter(|row| row.program_reference == reference)
         .ok_or("Shared programme's active project is not recorded")?;
-    let token = faction_names::template_spelling(frame, Some(project.definition_id))?
+    let token = faction_names::template_spelling_in(&frame, Some(project.definition_id))?
         .ok_or("Shared project has no definition spelling")?;
     let definitions = project_catalog(cat)?;
     if let Some(reason) = &definitions.unsettled {
@@ -274,7 +291,7 @@ pub(super) fn project_name(
         .as_deref()
         .filter(|name| !name.is_empty())
         .unwrap_or(&token);
-    let country = tag(frame, programme.owner)?;
+    let country = tag_in(frame, programme.owner)?;
     let country_key = format!("{country}_{key}");
     let key = if cat.localisation.get(&country_key).is_some() {
         &country_key
@@ -286,20 +303,18 @@ pub(super) fn project_name(
         .localise(key.as_bytes())
         .map_err(|why| why.to_string())?;
     if expand && text.contains('[') {
-        let slot = crate::metadata::link_slot(
-            frame
-                .complete::<tables::CountryLinks>()
-                .map_err(|why| why.to_string())?,
-            programme.owner,
-        )
-        .ok_or("Shared project country is not linked")?;
-        text = ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, slot)
+        let links = frame
+            .complete::<tables::CountryLinks>(super::viewer::LINK)
+            .map_err(|why| why.to_string())?;
+        let slot = crate::metadata::link_slot_in(&links, programme.owner)
+            .ok_or("Shared project country is not linked")?;
+        text = ScriptedText::new_in(frame, &cat.localisation, cat.scripted_content()?, slot)
             .expand(&text)?;
     }
     catalogue::plain_text(&text).map(Some)
 }
 pub(super) fn programme_detail(
-    supplying: Option<&DecodedFrame>,
+    supplying: Option<HourFrame<'_>>,
     ordinal: u32,
     reference: u64,
     cat: Option<&catalogue::Catalogue>,
@@ -314,9 +329,9 @@ pub(super) fn programme_detail(
     };
     let result = (|| -> Result<(), String> {
         let details = supplying.ok_or("Shared programme supplying read is unavailable")?;
-        let programme = programme(details, reference)?;
+        let programme = programme_in(details, reference)?;
         value.active_project = Some(programme.active_project.is_some());
-        let owner = tag(details, programme.owner);
+        let owner = tag_in(details, programme.owner);
         value.owner = owner.as_ref().ok().cloned();
         if programme.active_project.is_some() {
             value.project = project_name(
@@ -351,7 +366,7 @@ pub(super) fn needs_environment(
     }
     if let Ok(rows) = frame.complete::<tables::FactionDoctrine>() {
         for row in selected(rows, faction, |row| row.faction) {
-            if doctrine_named(frame, faction, row, Some(cat), false, None)
+            if doctrine_named(HourFrame::from(frame), faction, row, Some(cat), false, None)
                 .name
                 .is_some_and(|text| text.contains('['))
             {
@@ -361,14 +376,23 @@ pub(super) fn needs_environment(
     }
     false
 }
+/// The keys of `faction`'s rows in a table keyed by faction above its ordinal.
+pub fn owned(faction: u64) -> (u128, u128) {
+    let low = u128::from(faction) << 32;
+    (low, low | u128::from(u32::MAX))
+}
 pub(super) fn programmes_need_environment(
-    frame: &DecodedFrame,
-    details: &DecodedFrame,
+    frame: HourFrame<'_>,
+    details: HourFrame<'_>,
     faction: u64,
     cat: &catalogue::Catalogue,
 ) -> bool {
-    if let Ok(rows) = frame.complete::<tables::FactionPrograms>() {
-        for row in selected(rows, faction, |row| row.faction) {
+    if let Ok(rows) = frame.complete::<tables::FactionPrograms>(u64::MAX) {
+        let (low, high) = owned(faction);
+        for row in rows.span(low, high).iter() {
+            let Ok(row) = row else {
+                continue;
+            };
             if project_name(details, row.reference, cat, false)
                 .ok()
                 .flatten()
@@ -379,6 +403,18 @@ pub(super) fn programmes_need_environment(
         }
     }
     false
+}
+pub(super) fn read_names_scripted(details: HourFrame<'_>, cat: &catalogue::Catalogue) -> bool {
+    let Ok(rows) = details.complete::<tables::ProjectPrograms>(0) else {
+        return false;
+    };
+    let kind = u64::from(engine_projects::nproject_cprogram::REFERENCE_TYPE);
+    rows.keys().any(|id| {
+        project_name(details, (id as u64) << 32 | kind, cat, false)
+            .ok()
+            .flatten()
+            .is_some_and(|text| text.contains('['))
+    })
 }
 pub(super) fn attach(
     frame: &DecodedFrame,
@@ -424,7 +460,7 @@ pub(super) fn attach(
             reply.minimum_upgrades = Some(
                 selected(rows, faction, |row| row.faction)
                     .iter()
-                    .map(|row| selectors::upgrade(frame, row.group, row.token, cat))
+                    .map(|row| selectors::upgrade(HourFrame::from(frame), row.group, row.token, cat))
                     .collect(),
             )
         }
@@ -555,7 +591,12 @@ pub(super) fn attach(
                         .push("Faction programme ordinals are not contiguous".into());
                     break;
                 }
-                let value = programme_detail(programme_frame, row.ordinal, row.reference, cat);
+                let value = programme_detail(
+                    programme_frame.map(HourFrame::from),
+                    row.ordinal,
+                    row.reference,
+                    cat,
+                );
                 if let Some(reason) = &value.reason {
                     reply
                         .warnings
@@ -679,7 +720,9 @@ mod tests {
         let text = ViewerText::new(&frame, &cat);
         for _ in 0..2 {
             let (shared, inputs) =
-                capture(&frame, || rule_in(&frame, 7, &row, Some(&cat), true, Some(&text)));
+                capture(&frame, || {
+                    rule_in(HourFrame::from(&frame), 7, &row, Some(&cat), true, Some(&text))
+                });
             assert_eq!((&shared.name, &shared.reason), (&alone.name, &alone.reason));
             let read: Vec<TableId> = inputs
                 .keys()

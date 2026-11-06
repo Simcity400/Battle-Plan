@@ -6,7 +6,7 @@ use super::*;
 use crate::products::equipment_stockpile::columnar::{self, TABLES};
 use dashboard_base::products::equipment::daily_units_raw;
 use dashboard_series::{
-    Budget, Cache, EventOrder, EventQuery, Identity, Publication, Selection, Snapshot,
+    EventOrder, EventQuery, Identity, Publication, Selection, Snapshot,
     codec::Binary,
     family::Scalar,
     memory::{Memory, publish},
@@ -456,11 +456,9 @@ fn content() -> Content {
 /// A publication of `hours`, cut after each of `cuts`' hours; at each of `resume`'s, the emit
 /// is saved and goes on from the publication, as a preparation of a grown recording does.
 pub(crate) fn build(hours: Vec<columnar::Hour>, cuts: &[i32], resume: &[i32]) -> (Memory, u64) {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(FormatVersion::CURRENT, content());
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -476,12 +474,12 @@ pub(crate) fn build(hours: Vec<columnar::Hour>, cuts: &[i32], resume: &[i32]) ->
             reached: cut,
             refusal: None,
         };
-        root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+        root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
         if resume.contains(&cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(FormatVersion::CURRENT, content(), &directory, &saved).unwrap();
         }
@@ -993,9 +991,7 @@ struct Published {
 
 /// What the publication at `root` holds of every holder at every one of `hours`.
 fn published(pages: &Memory, root: u64, hours: &[i32]) -> Published {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let span = Span::new(hours[0], *hours.last().unwrap()).unwrap();
     let mut dump = BTreeMap::new();
@@ -1598,10 +1594,8 @@ fn fifteen_hundred_countries_write_events_only_for_the_holders_whose_rows_change
 fn a_damaged_saved_emit_is_refused() {
     let runs = vec![(1, later(100, 103))];
     let mut projected = project(&runs, &BTreeSet::new());
-    let budget = Budget::new(1 << 28);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 100).unwrap();
+    let mut writer = Writer::new(identity(), 100).unwrap();
     let mut emit = Emit::new(FormatVersion::CURRENT, content());
     for hour in projected.remove(&1).unwrap() {
         emit.hour(&mut writer, hour).unwrap();
@@ -1614,10 +1608,10 @@ fn a_damaged_saved_emit_is_refused() {
         reached: 103,
         refusal: None,
     };
-    let root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+    let root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
     let mut saved = Vec::new();
     emit.save(&mut saved).unwrap();
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     assert!(Emit::load(FormatVersion::CURRENT, content(), &directory, &saved).is_ok());
     for cut in [1, saved.len() / 2, saved.len() - 1] {

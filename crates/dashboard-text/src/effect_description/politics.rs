@@ -3,6 +3,8 @@
 use super::*;
 use replay_data::rows::tables;
 
+const AGENCY_CREATED: u64 = mask::<replay_data::rows::IntelligenceAgencyRow>(&["created"]);
+
 mod content;
 mod rules;
 pub(super) use content::PoliticsContent;
@@ -400,23 +402,20 @@ impl Renderer<'_, '_, '_> {
     // feature 0x19 ( bit 5), then agency == 0.
     // retain the recorded table cadence.
     pub(super) fn politics_create_agency(&self, scopes: Scopes) -> Result<String, String> {
-        let frame = self.context.text.frame();
-        let [features] = frame
-            .complete::<tables::SimulationFeatures>()
-            .map_err(|why| why.to_string())?
-        else {
+        let Some(features) = self.features(DLC_MASK)? else {
             return Err("SimulationFeatures lacks the agency feature mask".into());
         };
         if features.dlc_mask & (1 << 5) == 0 {
             return Ok(String::new());
         }
         let country = self.current_country(scopes)?;
-        let rows = frame
-            .complete::<tables::IntelligenceAgencies>()
-            .map_err(|why| why.to_string())?;
+        let rows = self.complete::<tables::IntelligenceAgencies>(AGENCY_CREATED)?;
+        let recorded = self.context.text.recorded();
         let row = rows
-            .iter()
-            .find(|row| self.context.text.recorded().slot(row.country) == Some(country))
+            .keyed(|key| recorded.slot(key as u32) == Some(country))
+            .next()
+            .transpose()
+            .map_err(built)?
             .ok_or("IntelligenceAgencies lacks agency identity")?;
         if row.created != 0 {
             return Ok(String::new());

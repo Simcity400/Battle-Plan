@@ -5,7 +5,15 @@ use installed_content_core::{
     modifiers::EquipmentBonus, modifiers::Modifiers, unit_leader::Adjuster, unit_leader::Leaders,
     unit_leader::SubUnit, unit_leader::TraitEffects,
 };
+use replay_data::rows::{ModifierDefinitionRow, SimulationFeatureRow, UnitLeaderTraitRow};
 use std::{borrow::Cow, collections::BTreeSet};
+
+/// The fields of each table the trait descriptions read.
+const DEFINITION_TOKEN: u64 = mask::<ModifierDefinitionRow>(&["token"]);
+const DEFINITION_GATE: u64 =
+    mask::<ModifierDefinitionRow>(&["token", "feature_selector", "eligibility"]);
+const FEATURES: u64 = mask::<SimulationFeatureRow>(&["dlc_mask"]);
+const TRAIT_ORDINAL: u64 = mask::<UnitLeaderTraitRow>(&["definition_ordinal"]);
 
 #[cfg(test)]
 mod tests;
@@ -57,11 +65,10 @@ impl Renderer<'_, '_, '_> {
         if !leaders.conditional() {
             return Ok(Cow::Borrowed(leaders));
         }
-        let definition_tokens: BTreeSet<_> = self
-            .character_table::<tables::ModifierDefinitions>()?
-            .iter()
-            .map(|definition| definition.token)
-            .collect();
+        let definition_tokens: BTreeSet<_> =
+            each(self.character_table::<tables::ModifierDefinitions>(DEFINITION_TOKEN)?)
+                .map(|definition| definition.map(|definition| definition.token))
+                .collect::<Result<_, _>>()?;
         let world = self.context.world()?;
         let refusal = RefCell::new(None);
         let terrain = self.char_terrain()?;
@@ -92,17 +99,15 @@ impl Renderer<'_, '_, '_> {
     fn char_trait_modifier_definition(
         &self,
         name: &str,
-    ) -> Result<&replay_data::rows::ModifierDefinitionRow, String> {
-        let definitions = self.character_table::<tables::ModifierDefinitions>()?;
+    ) -> Result<Cow<'_, ModifierDefinitionRow>, String> {
+        let definitions = self.character_table::<tables::ModifierDefinitions>(DEFINITION_GATE)?;
         let token = self
             .context
             .world()?
             .token_of(name.as_bytes())
             .map_err(|why| why.to_string())?
             .ok_or_else(|| format!("trait modifier {name} has no recorded definition"))?;
-        definitions
-            .iter()
-            .find(|definition| definition.token == token)
+        find(definitions, |definition| definition.token == token)?
             .ok_or_else(|| format!("trait modifier {name} has no recorded definition"))
     }
 
@@ -114,7 +119,8 @@ impl Renderer<'_, '_, '_> {
         if definition.feature_selector == 0 {
             return Ok(true);
         }
-        let [features] = self.character_table::<tables::SimulationFeatures>()? else {
+        let features = self.character_table::<tables::SimulationFeatures>(FEATURES)?;
+        let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
             return Err("SimulationFeatures has no unique feature mask".into());
         };
         Ok(features.dlc_mask & definition.feature_selector != 0)
@@ -134,7 +140,7 @@ impl Renderer<'_, '_, '_> {
         }
         for modifier in &source.values {
             if self.char_trait_modifier_eligible(
-                self.char_trait_modifier_definition(&modifier.name)?,
+                &*self.char_trait_modifier_definition(&modifier.name)?,
             )? {
                 return Ok(true);
             }
@@ -147,7 +153,7 @@ impl Renderer<'_, '_, '_> {
         if definition.feature_selector != 0 && definition.eligibility == 0 {
             return Ok(false);
         }
-        self.char_trait_modifier_eligible(definition)
+        self.char_trait_modifier_eligible(&definition)
     }
 
     // Pass the caller scale unchanged to the raw modifier formatter.
@@ -605,7 +611,7 @@ impl Renderer<'_, '_, '_> {
             format!("  -{body}\n")
         };
         if remove || self.effect_character(scopes.this)?.is_none() {
-            let name = self.effect_character_name(character)?;
+            let name = self.effect_character_name(&character)?;
             self.char_native_text(
                 if remove {
                     b"EFFECT_REMOVE_TRAIT"
@@ -695,7 +701,7 @@ impl Renderer<'_, '_, '_> {
         let mut character = None;
         if let Some(current) = self.effect_character(scopes.this)?
             && self
-                .char_country_leader_scope(current, operand(item, "ideology"))?
+                .char_country_leader_scope(&current, operand(item, "ideology"))?
                 .is_some()
         {
             character = Some(current);
@@ -734,7 +740,7 @@ impl Renderer<'_, '_, '_> {
                 .unwrap_or_default(),
         );
         trait_text.push('\n');
-        let leader = self.char_country_leader_display_name(character, scopes)?;
+        let leader = self.char_country_leader_display_name(&character, scopes)?;
         self.char_native_text(
             if remove {
                 b"EFFECT_REMOVE_COUNTRY_LEADER_TRAIT"
@@ -782,7 +788,7 @@ impl Renderer<'_, '_, '_> {
             let Some(character) = self.effect_character(scopes.this)? else {
                 return Ok(String::new());
             };
-            self.char_country_leader_scope(character, operand(item, "ideology"))?
+            self.char_country_leader_scope(&character, operand(item, "ideology"))?
                 .map(|_| character)
         } else {
             let country = self.current_country(scopes)?;
@@ -791,7 +797,7 @@ impl Renderer<'_, '_, '_> {
         let Some(character) = character else {
             return Ok(String::new());
         };
-        let leader = self.char_country_leader_display_name(character, scopes)?;
+        let leader = self.char_country_leader_display_name(&character, scopes)?;
         let remove = self.localised(old.token.as_bytes(), &[], scopes, false)?;
         let add = self.localised(new.token.as_bytes(), &[], scopes, false)?;
         let arguments = [
@@ -847,15 +853,16 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let database = self.char_unit_catalogue()?;
-        let held: Vec<u32> = match leader {
+        let held: Vec<u32> = match &leader {
             UnitLeader::Referenced(row) => row.trait_definitions.clone(),
             UnitLeader::Direct(row) => {
-                let reference = (u64::from(row.id) << 32) | u64::from(row.reference_type);
-                self.character_table::<tables::UnitLeaderTraits>()?
-                    .iter()
-                    .filter(|trait_| trait_.leader_reference == reference)
-                    .map(|trait_| trait_.definition_ordinal as u32)
-                    .collect()
+                let low = (u128::from(row.id) << 32 | u128::from(row.reference_type)) << 32;
+                each(
+                    self.character_table::<tables::UnitLeaderTraits>(TRAIT_ORDINAL)?
+                        .span(low, low | u128::from(u32::MAX)),
+                )
+                .map(|trait_| trait_.map(|trait_| trait_.definition_ordinal as u32))
+                .collect::<Result<_, _>>()?
             }
         };
         let mut candidates = Vec::new();

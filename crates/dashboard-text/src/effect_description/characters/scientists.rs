@@ -14,23 +14,20 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     pub(in crate::effect_description) fn char_scientist(
         &self,
         scopes: Scopes,
-    ) -> Result<Option<&'f CharacterRow>, String> {
+    ) -> Result<Option<Cow<'f, CharacterRow>>, String> {
         let Some(character) = self.effect_character(scopes.this)? else {
             return Ok(None);
         };
         if self
-            .character_table::<tables::Scientists>()?
-            .iter()
-            .any(|row| row.character == character.id)
+            .character_table::<tables::Scientists>(0)?
+            .contains(u128::from(character.id))
         {
             return Ok(Some(character));
         }
-        if self
-            .character_table::<tables::CountryCharacters>()?
-            .iter()
-            .any(|row| row.character == Some(character.id))
-        {
-            return Ok(None);
+        for row in each(self.character_table::<tables::CountryCharacters>(ROSTER)?) {
+            if row?.character == Some(character.id) {
+                return Ok(None);
+            }
         }
         Err(format!(
             "unrostered character {} scientist holder is unrecorded",
@@ -134,7 +131,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if levels {
             Ok(text)
         } else {
-            Ok(format!("{} {text}", self.effect_character_name(character)?))
+            Ok(format!("{} {text}", self.effect_character_name(&character)?))
         }
     }
 
@@ -274,7 +271,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character_target(operand, scopes)? else {
             return Ok(String::new());
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         self.char_native_text(
             b"EFFECT_ADD_SCIENTIST_ROLE",
             &[("CHARACTER", Argument::Text(&name))],
@@ -296,7 +293,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character_target(operand, scopes)? else {
             return Ok(String::new());
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         self.char_native_text(
             b"EFFECT_REMOVE_SCIENTIST_ROLE",
             &[("NAME", Argument::Text(&name))],

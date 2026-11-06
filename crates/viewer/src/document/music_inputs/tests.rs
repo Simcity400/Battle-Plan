@@ -717,7 +717,7 @@ fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
 fn map_products_music_matches_the_pre_extraction_synchronous_evaluator() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let content = fixture_content();
-    let memo = map_products::music_inputs::Memo::new(8);
+    let memo = map_products::music_inputs::Memo::new();
     for countries in [2, 1500, 5000] {
         let mut frame = frame(countries);
         for (branch, hour, country) in

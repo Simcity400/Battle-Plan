@@ -1,4 +1,8 @@
 use super::*;
+use replay_data::rows::{ProvinceRow, ResourceDefinitionRow};
+
+const PROVINCE_STATE: u64 = mask::<ProvinceRow>(&["state"]);
+const RESOURCE_TOKEN: u64 = mask::<ResourceDefinitionRow>(&["token"]);
 use installed_content_core::{
     buildings::BuildingType, crt::Scanned, crt::scan_i32, parser, parser::c_string,
 };
@@ -246,16 +250,11 @@ impl Renderer<'_, '_, '_> {
             .world()?
             .token_of(kind.name.as_bytes())
             .map_err(|why| why.to_string())?;
-        let buildings = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::StateBuildings>()
-            .map_err(|why| why.to_string())?;
-        if !buildings
-            .iter()
-            .any(|row| row.location == state && Some(row.building_type) == token)
-        {
+        let buildings = self.complete::<tables::StateBuildings>(0)?;
+        // The key is the location, then the building type.
+        if !token.is_some_and(|token| {
+            buildings.contains(u128::from(state) << 32 | u128::from(token))
+        }) {
             return Ok(String::new()); // level0/inactive rows still exist.
         }
         // Name the target's state before evaluating the amount.
@@ -497,14 +496,9 @@ impl Renderer<'_, '_, '_> {
                 }
             }
         }
-        let provinces = self
-            .context
-            .text
-            .frame()
-            .provinces()
-            .map_err(|why| why.to_string())?;
+        let provinces = self.complete::<tables::Provinces>(PROVINCE_STATE)?;
         let endpoint_state = |id: u32| {
-            provinces.iter().find(|row| row.id == id).map(|row| row.state).ok_or_else(|| {
+            keyed(&provinces, u128::from(id))?.map(|row| row.state).ok_or_else(|| {
                 format!(
                     "build_railway endpoint province {id} is absent; state lookup requires an existing province"
                 )
@@ -549,13 +543,8 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let location = plain_integer(children(item), "location").unwrap_or(0) as u32;
-        let provinces = self
-            .context
-            .text
-            .frame()
-            .provinces()
-            .map_err(|why| why.to_string())?;
-        let state = match provinces.iter().find(|row| row.id == location) {
+        let provinces = self.complete::<tables::Provinces>(PROVINCE_STATE)?;
+        let state = match keyed(&provinces, u128::from(location))? {
             Some(province) if province.state == 0 => {
                 return Err(
                     "create_railway_gun location has no state; state naming requires an existing state".into(),
@@ -679,14 +668,9 @@ impl Renderer<'_, '_, '_> {
             None => plain as u32,
         }; // truncates division; it does not round.
         Ok(self
-            .context
-            .text
-            .frame()
-            .provinces()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| row.id == province)
-            .map(|row| row.id))
+            .complete::<tables::Provinces>(0)?
+            .contains(u128::from(province))
+            .then_some(province))
     }
 
     fn building_state(&self, item: &Item, scopes: Scopes) -> Result<Option<u32>, String> {
@@ -736,16 +720,11 @@ impl Renderer<'_, '_, '_> {
             .world()?
             .token_of(name.as_bytes())
             .map_err(|why| why.to_string())?;
-        self.context
-            .text
-            .frame()
-            .complete::<tables::ResourceDefinitions>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .filter(|row| row.id != 0 && Some(row.token) == token)
-            .map(|row| row.id)
-            .min()
-            .map(|id| id as i32)
+        find(
+            self.complete::<tables::ResourceDefinitions>(RESOURCE_TOKEN)?,
+            |row| row.id != 0 && Some(row.token) == token,
+        )?
+        .map(|row| row.id as i32)
             .ok_or_else(|| {
                 format!(
                     "modify_building resource {name} has no recorded database index in ResourceDefinitions"

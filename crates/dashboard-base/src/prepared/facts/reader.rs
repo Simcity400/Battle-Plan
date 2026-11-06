@@ -1,5 +1,5 @@
 use super::*;
-use pages::{Admitted, Cache};
+use pages::Pages;
 use std::{
     cell::RefCell,
     ops::{Bound, Deref},
@@ -8,7 +8,7 @@ use std::{
 
 enum Found<'a, V> {
     Open(&'a Interval<V>),
-    Page(Rc<Admitted<Vec<Interval<V>>>>, usize),
+    Page(Rc<Vec<Interval<V>>>, usize),
 }
 pub struct FactRef<'a, V> {
     found: Found<'a, V>,
@@ -26,7 +26,7 @@ pub struct Cursor<'a, V> {
     section: String,
     directory: index::IndexCursor<i32, directory::Entry>,
     entry: Option<directory::Entry>,
-    page: Option<Rc<Admitted<Vec<Interval<V>>>>>,
+    page: Option<Rc<Vec<Interval<V>>>>,
     row: usize,
     column: Option<&'a Column<V>>,
     pending: usize,
@@ -35,11 +35,10 @@ pub struct Cursor<'a, V> {
     last: i32,
     finished: bool,
     owner: Rc<PhaseOwner>,
-    _credit: Credit,
 }
 pub struct Reader<'a, K, V, R> {
     facts: &'a Facts<K, V>,
-    cache: Rc<RefCell<Cache<'a, R>>>,
+    cache: Rc<RefCell<Pages<'a, R>>>,
     owner: Rc<PhaseOwner>,
 }
 impl<
@@ -50,20 +49,13 @@ impl<
 > Reader<'a, K, V, R>
 {
     pub(super) fn new(facts: &'a Facts<K, V>, source: &'a mut R) -> io::Result<Self> {
-        ReadPhase::new(source, facts.budget.clone(), facts.limits.cache_bytes)?.reader(facts)
-    }
-    pub fn cached_bytes(&self) -> usize {
-        self.cache.borrow().bytes()
+        ReadPhase::new(source).reader(facts)
     }
     pub fn cursor(&mut self, key: &K, first: i32, last: i32) -> io::Result<Cursor<'a, V>> {
         if first > last {
             return Err(invalid("Private fact query interval is reversed"));
         }
         let section = self.facts.namespace.section();
-        let credit = self
-            .facts
-            .budget
-            .admit(section.capacity().saturating_add(size_of::<Cursor<V>>()))?;
         let column = self.facts.columns.get(key);
         let mut cache = self.cache.borrow_mut();
         let root = match column {
@@ -85,7 +77,6 @@ impl<
             last,
             finished: false,
             owner: self.owner.clone(),
-            _credit: credit,
         })
     }
     pub fn next(&mut self, cursor: &mut Cursor<'a, V>) -> io::Result<Option<FactRef<'a, V>>> {
@@ -128,7 +119,7 @@ impl<
                     cursor.finished = true;
                     return Ok(None);
                 }
-                let page: Rc<Admitted<Vec<Interval<V>>>> = self
+                let page: Rc<Vec<Interval<V>>> = self
                     .cache
                     .borrow_mut()
                     .read(&format!("{}/values", cursor.section), entry.payload)?;
@@ -216,43 +207,24 @@ impl<
     }
 }
 
-pub(super) struct PhaseOwner {
-    _credit: Credit,
-}
+// Cursors name the phase they were opened in by this allocation.
+pub(super) struct PhaseOwner;
 pub struct ReadPhase<'a, R> {
-    pub(super) cache: Rc<RefCell<Cache<'a, R>>>,
+    pub(super) cache: Rc<RefCell<Pages<'a, R>>>,
     pub(super) owner: Rc<PhaseOwner>,
-    budget: MemoryBudget,
 }
 impl<'a, R: ReadPages> ReadPhase<'a, R> {
-    pub fn new(source: &'a mut R, budget: MemoryBudget, cache_bytes: usize) -> io::Result<Self> {
-        let credit = budget.admit(size_of::<Self>() + size_of::<Cache<R>>() + 128)?;
-        Ok(Self {
-            cache: Rc::new(RefCell::new(Cache::new(
-                source,
-                budget.clone(),
-                cache_bytes,
-            )?)),
-            owner: Rc::new(PhaseOwner { _credit: credit }),
-            budget,
-        })
-    }
-    pub(super) fn check(&self, budget: &MemoryBudget) -> io::Result<()> {
-        if self.budget.same(budget) {
-            Ok(())
-        } else {
-            Err(invalid("Private read phase uses a different memory budget"))
+    pub fn new(source: &'a mut R) -> Self {
+        Self {
+            cache: Rc::new(RefCell::new(Pages::new(source))),
+            owner: Rc::new(PhaseOwner),
         }
-    }
-    pub fn cached_bytes(&self) -> usize {
-        self.cache.borrow().bytes()
     }
     pub fn reader<K, V>(&self, facts: &'a Facts<K, V>) -> io::Result<Reader<'a, K, V, R>>
     where
         K: Ord + Clone + Serialize + DeserializeOwned + Resident + 'static,
         V: PartialEq + Serialize + DeserializeOwned + Resident + 'static,
     {
-        self.check(&facts.budget)?;
         facts.healthy()?;
         Ok(Reader {
             facts,
@@ -283,7 +255,6 @@ pub struct KeyCursor<'a, K, V> {
     archived: index::IndexCursor<K, Root>,
     next: Option<index::Item<K, Root>>,
     owner: Rc<PhaseOwner>,
-    _credit: Credit,
 }
 impl<'a, K, V, R> Reader<'a, K, V, R>
 where
@@ -293,10 +264,6 @@ where
 {
     pub fn keys(&self, first: Option<&K>, last: Option<&K>) -> io::Result<KeyCursor<'a, K, V>> {
         let section = self.facts.namespace.section();
-        let credit = self
-            .facts
-            .budget
-            .admit(size_of::<KeyCursor<K, V>>().saturating_add(section.capacity()))?;
         let mut cache = self.cache.borrow_mut();
         let mut archived = index::IndexCursor::new(
             &mut cache,
@@ -319,7 +286,6 @@ where
             archived,
             next,
             owner: self.owner.clone(),
-            _credit: credit,
         })
     }
     pub fn next_key(&self, cursor: &mut KeyCursor<'a, K, V>) -> io::Result<Option<KeyRef<'a, K>>> {

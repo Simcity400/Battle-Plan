@@ -745,11 +745,74 @@ impl ClassPlan {
     }
 }
 
+/// Planned index lists on each device, by the list they hold. Views showing hours with one shared
+/// plan ([`ClassPlan::share`]) upload each run once; a buffer lives while a view draws it.
+#[derive(Default)]
+struct PlannedBuffers {
+    lists: std::collections::HashMap<usize, Vec<PlannedBuffer>>,
+    /// Uploads since every list was last swept, so dead lists never outnumber live ones.
+    since_sweep: usize,
+}
+
+struct PlannedBuffer {
+    device: wgpu::Device,
+    list: std::sync::Weak<Vec<u32>>,
+    buffer: std::sync::Weak<wgpu::Buffer>,
+}
+
+impl PlannedBuffer {
+    fn live(&self) -> bool {
+        self.list.strong_count() != 0 && self.buffer.strong_count() != 0
+    }
+}
+
+static PLANNED: std::sync::LazyLock<std::sync::Mutex<PlannedBuffers>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The index buffer of `indices` on `device`: one a view already holds, else a new upload.
+fn planned_buffer(device: &wgpu::Device, indices: &Arc<Vec<u32>>) -> io::Result<Arc<wgpu::Buffer>> {
+    let key = Arc::as_ptr(indices) as usize;
+    let mut planned = PLANNED.lock().unwrap_or_else(|error| error.into_inner());
+    // A held buffer keeps its list alive, so a live entry at this address holds this list.
+    if let Some(held) = planned.lists.get(&key).and_then(|entries| {
+        entries.iter().find_map(|entry| {
+            (entry.device == *device && std::ptr::eq(entry.list.as_ptr(), Arc::as_ptr(indices)))
+                .then(|| entry.buffer.upgrade())
+                .flatten()
+        })
+    }) {
+        return Ok(held);
+    }
+    let made = Arc::new(buffer(
+        device,
+        "border indices",
+        wgpu::BufferUsages::INDEX,
+        bytemuck::cast_slice(indices),
+    )?);
+    let planned = &mut *planned;
+    planned.since_sweep += 1;
+    if planned.since_sweep >= planned.lists.len() {
+        planned.since_sweep = 0;
+        planned.lists.retain(|_, entries| {
+            entries.retain(PlannedBuffer::live);
+            !entries.is_empty()
+        });
+    }
+    let entries = planned.lists.entry(key).or_default();
+    entries.retain(PlannedBuffer::live);
+    entries.push(PlannedBuffer {
+        device: device.clone(),
+        list: Arc::downgrade(indices),
+        buffer: Arc::downgrade(&made),
+    });
+    Ok(made)
+}
+
 /// One index buffer over one vertex chunk of one source bucket.
 struct Run {
     source: usize,
     chunk: usize,
-    indices: wgpu::Buffer,
+    indices: Arc<wgpu::Buffer>,
     count: u32,
     /// The planned indices the buffer holds, when it came from a [`ClassPlan`].
     planned: Option<Arc<Vec<u32>>>,
@@ -953,12 +1016,7 @@ impl BorderPass {
                         source: run.source,
                         chunk: run.chunk,
                         count: run.indices.len() as u32,
-                        indices: buffer(
-                            device,
-                            "border indices",
-                            wgpu::BufferUsages::INDEX,
-                            bytemuck::cast_slice(&run.indices),
-                        )?,
+                        indices: planned_buffer(device, &run.indices)?,
                         planned: Some(Arc::clone(&run.indices)),
                     })
                 })
@@ -994,12 +1052,12 @@ impl BorderPass {
                     source: source.bucket(),
                     chunk,
                     count: indices.len() as u32,
-                    indices: buffer(
+                    indices: Arc::new(buffer(
                         device,
                         "border indices",
                         wgpu::BufferUsages::INDEX,
                         bytemuck::cast_slice(&indices),
-                    )?,
+                    )?),
                     planned: None,
                 })
             })

@@ -21,7 +21,7 @@ use dashboard_core::{
     test_fixtures::{CAMPAIGN, records, resource_frame},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -219,11 +219,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -237,7 +236,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -251,8 +249,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -329,9 +327,7 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
         &flag,
     )
     .unwrap();
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let (first, last) = (frames[0].hour, frames.last().unwrap().hour);
     let naming = ResourceNaming::stored(&source, &context);
@@ -401,7 +397,6 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
 /// cuts and a resume.
 #[test]
 fn the_publication_holds_what_the_row_oracle_reads_across_segments_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let frames = scenario();
     let hours: Vec<i32> = frames.iter().map(|frame| frame.hour).collect();
     for (starts, cuts, resume) in [
@@ -411,7 +406,7 @@ fn the_publication_holds_what_the_row_oracle_reads_across_segments_cuts_and_a_re
         (&hours[1..], &hours[..], Some(36)),
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
-        let built = build(projected(&frames, starts), cuts, resume, &budget);
+        let built = build(projected(&frames, starts), cuts, resume);
         check(&built, &frames, &label);
     }
 }
@@ -514,7 +509,6 @@ fn folded(
 /// through the run that started before the window and across the hours a flow held no run.
 #[test]
 fn the_integral_chart_folds_as_the_hourly_integrals_would() {
-    let budget = Budget::new(256 << 20);
     let frames = scenario();
     let flag = AtomicBool::new(false);
     let (replay, source) = recorded(&frames, &flag);
@@ -531,9 +525,8 @@ fn the_integral_chart_folds_as_the_hourly_integrals_would() {
         &flag,
     )
     .unwrap();
-    let built = build(projected(&frames, &[24, 52]), &[30, 80], Some(30), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(projected(&frames, &[24, 52]), &[30, 80], Some(30));
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let naming = ResourceNaming::stored(&source, &context);
     let read = Read {
@@ -583,15 +576,13 @@ fn the_integral_chart_folds_as_the_hourly_integrals_would() {
 /// totals and averages in one bin per hour or fewer, and the next change from each hour.
 #[test]
 fn dense_charts_and_navigation_answer_from_the_publication() {
-    let budget = Budget::new(256 << 20);
     let frames = scenario();
     let flag = AtomicBool::new(false);
     let (replay, source) = recorded(&frames, &flag);
     let context = LoadContext { content: None };
     let history = scan_histories(&replay, 1, false, &[], &flag).unwrap();
-    let built = build(projected(&frames, &[40]), &[80], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(projected(&frames, &[40]), &[80], None);
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let naming = ResourceNaming::stored(&source, &context);
     let read = Read {

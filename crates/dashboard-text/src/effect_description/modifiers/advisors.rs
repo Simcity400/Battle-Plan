@@ -1,6 +1,17 @@
 //! Advisor-backed idea lookup and stored description.
 use super::*;
-use replay_data::{rows::AdvisorRoleRow, rows::CharacterRoleTraitRow, rows::CharacterRow};
+use replay_data::rows::{
+    AdvisorRoleRow, AvailableAdvisorRow, CharacterRoleTraitRow, CharacterRow,
+    CountryCharacterRow,
+};
+
+/// The fields of each table the advisor descriptions read.
+const AVAILABLE: u64 = mask::<AvailableAdvisorRow>(&["idea", "character"]);
+const RETIRED: u64 = mask::<CountryCharacterRow>(&["character"]);
+const ROLE_IDEA: u64 = mask::<AdvisorRoleRow>(&["idea"]);
+const ROLE_CACHE: u64 = mask::<AdvisorRoleRow>(&["idea", "modifier_cache", "tooltip_keys"]);
+const DEFINITIONS_COLUMN: usize =
+    replay_data::rows::column::<CharacterRoleTraitRow>("definitions");
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     pub(in crate::effect_description) fn advisor_idea_character(
@@ -13,32 +24,30 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let raw = world
             .raw_country(country)
             .ok_or_else(|| format!("Countries lacks advisor country {country}"))?;
-        let frame = self.context.text.frame();
-        // exact string comparison, in array order.
+        let frame = self.tables();
+        // exact string comparison, in array order. Both tables' keys are the raw country, then
+        // the ordinal.
+        let (low, high) = (u128::from(raw) << 32, u128::from(raw) << 32 | u128::from(u32::MAX));
         let available = frame
-            .complete::<tables::AvailableAdvisors>()
+            .complete::<tables::AvailableAdvisors>(AVAILABLE)
             .map_err(|why| why.to_string())?;
-        if let Some(row) = available
-            .iter()
-            .filter(|row| row.country == raw && row.idea == token.as_bytes())
-            .min_by_key(|row| row.ordinal)
-        {
+        if let Some(row) = find(available.span(low, high), |row| row.idea == token.as_bytes())? {
             return Ok(Some(row.character));
         }
         // retired records, then each character's tree order.
         // folds the name, unlike the primary.
-        let mut retired: Vec<_> = frame
-            .complete::<tables::CountryRetiredCharacters>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .filter(|row| row.country == raw)
-            .collect();
-        retired.sort_by_key(|row| row.ordinal);
+        let retired = each(
+            frame
+                .complete::<tables::CountryRetiredCharacters>(RETIRED)
+                .map_err(|why| why.to_string())?
+                .span(low, high),
+        )
+        .collect::<Result<Vec<_>, _>>()?;
         if retired.is_empty() {
             return Ok(None);
         }
         let roles = frame
-            .complete::<tables::AdvisorRoles>()
+            .complete::<tables::AdvisorRoles>(ROLE_IDEA)
             .map_err(|why| why.to_string())?;
         for row in retired {
             let Some(character) = row.character else {
@@ -47,9 +56,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     raw, row.ordinal
                 ));
             };
-            if roles.iter().any(|role| {
-                role.character == character && role.idea.eq_ignore_ascii_case(token.as_bytes())
-            }) {
+            let low = u128::from(character) << 32;
+            if find(roles.span(low, low | u128::from(u32::MAX)), |role| {
+                role.idea.eq_ignore_ascii_case(token.as_bytes())
+            })?
+            .is_some()
+            {
                 return Ok(Some(character));
             }
         }
@@ -64,10 +76,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         role: &AdvisorRoleRow,
         scopes: Scopes,
     ) -> Result<(String, String), String> {
-        let frame = self.context.text.frame();
+        let frame = self.tables();
         let token =
             std::str::from_utf8(&role.idea).map_err(|_| "advisor idea token is not UTF-8")?;
-        let built = identity::built_template(character, frame.lexical().ok());
+        let built =
+            identity::built_template_in(character, frame.complete::<tables::LexicalTokens>(0).ok());
         let template = self
             .character_content()?
             .catalogue
@@ -82,19 +95,18 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             before.push_str(&self.research_bonus_line(bonus, scopes)?);
             before.push('\n'); // appends LF unconditionally.
         }
+        let key = u128::from(character.id) << 40
+            | u128::from(CharacterRoleTraitRow::ADVISOR) << 32
+            | u128::from(role.ordinal);
         let traits = frame
-            .complete::<tables::CharacterRoleTraits>()
+            .complete::<tables::CharacterRoleTraits>(0)
             .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| {
-                row.character == character.id
-                    && row.kind == CharacterRoleTraitRow::ADVISOR
-                    && row.role == role.ordinal
-            });
+            .u32s(key, |row| &row.definitions, DEFINITIONS_COLUMN)
+            .map_err(crate::effect_description::built)?;
         let mut targets = String::new();
         if let Some(traits) = traits {
             let catalogue = self.char_country_traits()?;
-            for &ordinal in &traits.definitions {
+            for &ordinal in traits {
                 let trait_ = catalogue.by_ordinal(ordinal).ok_or_else(|| {
                     format!("advisor trait definition {ordinal} is absent from recorded content")
                 })?;
@@ -152,16 +164,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         // resolves the role again by folded token,
         // in tree order, even when availability selected a later role.
-        let frame = self.context.text.frame();
-        let role = frame
-            .complete::<tables::AdvisorRoles>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .filter(|row| {
-                row.character == character.id && row.idea.eq_ignore_ascii_case(token.as_bytes())
-            })
-            .min_by_key(|row| row.ordinal)
-            .ok_or_else(|| format!("AdvisorRoles lacks character {} idea {token}", character.id))?;
+        let frame = self.tables();
+        let low = u128::from(character.id) << 32;
+        let role = find(
+            frame
+                .complete::<tables::AdvisorRoles>(ROLE_CACHE)
+                .map_err(|why| why.to_string())?
+                .span(low, low | u128::from(u32::MAX)),
+            |row| row.idea.eq_ignore_ascii_case(token.as_bytes()),
+        )?
+        .ok_or_else(|| format!("AdvisorRoles lacks character {} idea {token}", character.id))?;
         let cache = role
             .modifier_cache
             .require("AdvisorRoles.modifier_cache")?
@@ -184,7 +196,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 keys.as_ref()
                     .ok_or_else(|| "AdvisorRoles.tooltip_keys capture unavailable".to_owned())
             }) {
-            Ok(_) => self.advisor_cache_description(role)?,
+            Ok(_) => self.advisor_cache_description(&role)?,
             Err(why) => {
                 self.refuse(class, why);
                 self.cached_modifier_description_with(
@@ -197,7 +209,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 )?
             }
         };
-        let (mut details, targets) = match self.advisor_idea_fragments(character, role, scopes) {
+        let (mut details, targets) = match self.advisor_idea_fragments(character, &role, scopes) {
             Ok(fragments) => fragments,
             Err(why) => {
                 self.refuse(class, why);
@@ -210,7 +222,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         details.push_str(&targets);
         // trim, LF -> comma, colon cleanup, four/two spaces -> one.
         let details = clean_modifiers(&details, true).replace("  ", " ");
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         // always uses the detailed wrapper and appends LF;
         // scope expansion belongs to the add/remove caller, not this helper.
         self.char_native_line(

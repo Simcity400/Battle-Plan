@@ -134,11 +134,6 @@ pub enum DataCommand {
         /// opposite of its value when the flip runs; never with `settings`.
         flip: Option<crate::protocol::MapSetting>,
     },
-    /// The [`crate::reply_cache`] folder's size, after clearing it when asked.
-    HistoryCache {
-        id: String,
-        clear: bool,
-    },
     Open {
         id: String,
         path: String,
@@ -181,7 +176,6 @@ impl DataCommand {
         match self {
             Self::Open { id, .. }
             | Self::MapSettings { id, .. }
-            | Self::HistoryCache { id, .. }
             | Self::Product { id, .. }
             | Self::PreparedQuery { id, .. }
             | Self::Preparation { id, .. }
@@ -221,15 +215,6 @@ pub struct SourceReply {
     /// source's widget artwork changed and content-dependent replies are fetched again.
     #[ts(type = "number")]
     pub presentation_generation: u64,
-}
-
-/// Bytes the history cache holds, and its size limit.
-#[derive(Serialize, TS)]
-pub struct HistoryCacheReply {
-    #[ts(type = "number")]
-    pub bytes: u64,
-    #[ts(type = "number")]
-    pub limit: u64,
 }
 
 /// Keeps only one serialized result plus the current small transport fragment.
@@ -443,17 +428,6 @@ mod tests {
         );
         for id in [String::new(), "x".repeat(129), "a\0b".into()] {
             assert!(MapSettingsTarget::Widget { id }.key("campaign").is_err());
-        }
-    }
-
-    #[test]
-    fn history_cache_commands_keep_their_request_id() {
-        for clear in [false, true] {
-            let command = DataCommand::HistoryCache {
-                id: "h".into(),
-                clear,
-            };
-            assert_eq!(command.request_id(), Some("h"));
         }
     }
 

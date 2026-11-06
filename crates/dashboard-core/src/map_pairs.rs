@@ -24,13 +24,13 @@ where
 pub use serialize as ordered_pairs;
 // Persist hash-backed continuation state in key order without changing its
 // runtime lookup representation or copying the retained values.
-pub fn ordered_entries<K: Ord, V>(map: &std::collections::HashMap<K, V>) -> Vec<(&K, &V)> {
+pub fn ordered_entries<K: Ord, V, H>(map: &std::collections::HashMap<K, V, H>) -> Vec<(&K, &V)> {
     let mut entries: Vec<_> = map.iter().collect();
     entries.sort_unstable_by_key(|(key, _)| *key);
     entries
 }
-pub fn ordered_map<S: serde::Serializer, K: Serialize + Ord, V: Serialize>(
-    map: &std::collections::HashMap<K, V>,
+pub fn ordered_map<S: serde::Serializer, K: Serialize + Ord, V: Serialize, H>(
+    map: &std::collections::HashMap<K, V, H>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.collect_map(ordered_entries(map))

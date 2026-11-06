@@ -23,11 +23,13 @@ pub use naming::*;
 use replay::container::TableFields;
 use replay_data::{
     format::FormatVersion,
-    rows::{self, TableId, tables},
+    rows::{self, TABLE_COUNT, TableId, TableSchema, tables},
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{Rowset, RowsetIter, Tables};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
+    cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::Arc,
@@ -52,37 +54,99 @@ pub fn types() -> Vec<String> {
     ]
 }
 
-/// The design names' tables: definitions, country tags and lexical tokens.
-fn design_naming(
-    frame: &DecodedFrame,
-) -> Result<(&[rows::VariantDefinitionRow], Tags<'_>, &[rows::LexicalTokenRow]), String> {
-    let variants = frame
-        .complete::<tables::VariantDefinitions>()
-        .map_err(|why| why.to_string())?;
-    let countries = frame
-        .complete::<tables::Countries>()
-        .map_err(|why| why.to_string())?;
-    let links = frame
-        .complete::<tables::CountryLinks>()
-        .map_err(|why| why.to_string())?;
-    let lexical = frame
-        .complete::<tables::LexicalTokens>()
-        .unwrap_or_default();
-    let tags = Tags::new(
-        countries,
-        links,
-        frame.complete::<tables::CountryAppearance>().ok(),
-    );
-    Ok((variants, tags, lexical))
+/// Each table's fields the views read, by table: every field of a table they do not name.
+pub(crate) type Masks = [u64; TABLE_COUNT];
+
+pub(crate) fn masks() -> io::Result<Box<Masks>> {
+    let mut masks = Box::new([u64::MAX; TABLE_COUNT]);
+    for read in fields(management::TABLES)? {
+        masks[read.table.index()] = read.fields;
+    }
+    Ok(masks)
+}
+
+/// An hour's tables as the yard views read them, a walk's views or a decoded frame: each row
+/// built of the fields the views read alone, and the first row that could not be built kept
+/// for the hour to refuse with.
+pub(crate) struct Frame<'f, F: ?Sized> {
+    tables: &'f F,
+    masks: &'f Masks,
+    failed: Cell<Option<io::Error>>,
+}
+
+impl<'f, F: Tables + ?Sized> Frame<'f, F> {
+    pub(crate) fn new(tables: &'f F, masks: &'f Masks) -> Self {
+        Self {
+            tables,
+            masks,
+            failed: Cell::new(None),
+        }
+    }
+
+    pub(crate) fn tables(&self) -> &'f F {
+        self.tables
+    }
+
+    /// The first row the hour could not build, if any.
+    pub(crate) fn failed(&self) -> io::Result<()> {
+        self.failed.take().map_or(Ok(()), Err)
+    }
+
+    fn fail(&self, error: io::Error) {
+        let first = self.failed.take().unwrap_or(error);
+        self.failed.set(Some(first));
+    }
+
+    /// What `read` found; none, the hour failing, where it failed.
+    pub(crate) fn found<R>(&self, read: io::Result<Option<R>>) -> Option<R> {
+        read.unwrap_or_else(|error| {
+            self.fail(error);
+            None
+        })
+    }
+
+    /// `T`'s rows when complete.
+    pub(crate) fn complete<T: TableSchema>(&self) -> Option<Rowset<'f, T::Row>> {
+        self.tables
+            .complete_rows::<T>(self.masks[T::ID.index()])
+            .ok()
+    }
+
+    /// `T`'s rows when complete; why not otherwise, as a decoded frame says it.
+    pub(crate) fn complete_or<T: TableSchema>(&self) -> Result<Rowset<'f, T::Row>, String> {
+        self.tables
+            .complete_rows::<T>(self.masks[T::ID.index()])
+            .map_err(|why| why.to_string())
+    }
+
+    /// `T`'s row keyed `key`, when `T` is complete.
+    pub(crate) fn get<T: TableSchema>(&self, key: impl Into<u128>) -> Option<Cow<'f, T::Row>> {
+        let rows = self.complete::<T>()?;
+        self.found(rows.get(key.into()))
+    }
+
+    /// The rows `rows` yields, in key order; those that could not be built fail the hour.
+    pub(crate) fn each<R: rows::RowCodec>(&self, rows: RowsetIter<'f, R>) -> Vec<Cow<'f, R>> {
+        let mut built = Vec::with_capacity(rows.size_hint().0);
+        for row in rows {
+            match row {
+                Ok(row) => built.push(row),
+                Err(error) => self.fail(error),
+            }
+        }
+        built
+    }
 }
 
 fn design_operand(
     definition: &rows::VariantDefinitionRow,
     tags: &Tags<'_>,
-    lexical: &[rows::LexicalTokenRow],
+    literal: Option<&[u8]>,
 ) -> Operand {
     // Dates are separate channels, never an interned token per hour.
-    Operand::Design(variant_names::raw_variant(definition, 0, tags, lexical))
+    Operand::Design(variant_names::raw_variant_spelled(
+        definition, 0, tags, literal,
+    ))
 }
 
 pub fn find<T, K: Ord>(rows: Option<&[T]>, key: K, by: impl Fn(&T) -> K) -> Option<&T> {
@@ -111,25 +175,30 @@ pub(crate) struct Source {
 }
 
 impl Sources {
-    pub(crate) fn read(format: FormatVersion, frame: &DecodedFrame, sources: &[TableId]) -> Self {
+    pub(crate) fn read<F: Tables + ?Sized>(
+        format: FormatVersion,
+        frame: &F,
+        sources: &[TableId],
+    ) -> Self {
+        let hour = frame.at_hour();
         Self {
-            hour: frame.hour,
+            hour,
             tables: sources
                 .iter()
                 .map(|&table| Source {
                     table,
-                    missing: (!known(frame, table)).then(|| {
-                        let reason = dashboard_base::products::table_missing_reason(frame, table)
-                            .unwrap_or_else(|| "Table not recorded".into());
-                        format!("{table:?}: {reason}")
-                    }),
+                    missing: dashboard_base::products::status_missing_reason(
+                        frame.table_status(table),
+                        table,
+                    )
+                    .map(|reason| format!("{table:?}: {reason}")),
                     read: dashboard_text::metadata::slot_read(
                         format,
-                        &frame.metrics,
+                        frame.metrics(),
                         table,
-                        frame.hour,
+                        hour,
                     ),
-                    sampled: frame.tables[table.index()].sampled_at(),
+                    sampled: frame.table_sampled_at(table),
                     dated: dated(table, format),
                 })
                 .collect(),
@@ -147,11 +216,6 @@ impl Sources {
     }
 }
 
-/// Whether `table` holds its own complete rows at the hour.
-fn known(frame: &DecodedFrame, table: TableId) -> bool {
-    matches!(&*frame.tables[table.index()], replay_frame::frame::TableView::Complete(rows) if rows.table() == table)
-}
-
 /// Whether a known source carries the date of its supplying read.
 fn dated(table: TableId, format: FormatVersion) -> bool {
     !matches!(
@@ -160,10 +224,16 @@ fn dated(table: TableId, format: FormatVersion) -> bool {
     )
 }
 
-pub fn owners(frame: &DecodedFrame, countries: &Countries) -> Vec<String> {
-    let mut owners: Vec<_> = frame
+pub(crate) fn owners<F: Tables + ?Sized>(
+    frame: &Frame<'_, F>,
+    countries: &Countries,
+) -> Vec<String> {
+    const SLOT: u64 = rows::mask::<rows::CountryRow>(&["canonical_slot"]);
+    let rows = frame
         .complete::<tables::Countries>()
-        .unwrap_or_default()
+        .map(|rows| frame.each(rows.with_mask(SLOT).iter()))
+        .unwrap_or_default();
+    let mut owners: Vec<_> = rows
         .iter()
         .filter_map(|row| countries.slotted(row.canonical_slot))
         .collect();

@@ -1,7 +1,5 @@
 #![forbid(unsafe_code)]
 
-pub mod budget;
-pub mod cache;
 pub mod carry;
 mod chunked;
 pub mod codec;
@@ -17,15 +15,14 @@ pub mod query;
 pub mod rank;
 mod read;
 mod seal;
+pub mod shared;
 mod source;
 pub mod summary;
 pub mod types;
 pub mod writer;
 
-pub use budget::Budget;
-pub use cache::Cache;
 pub use pages::{PageRead, PageWrite, StoreRead, StoreWrite};
-pub use query::{Cursor, EventQuery, Selection, Snapshot, Viewport};
+pub use query::{Cursor, EventQuery, Pinned, Selection, Snapshot, Viewport};
 pub use seal::{Pending, Sealed, Work};
 pub use types::*;
 pub use writer::{Tree, Writer};
@@ -39,6 +36,18 @@ pub(crate) fn invalid(message: &'static str) -> io::Error {
 pub(crate) fn add(a: u64, b: u64) -> io::Result<u64> {
     a.checked_add(b)
         .ok_or_else(|| invalid("series integer overflow"))
+}
+
+/// A push that reports a failed allocation rather than aborting.
+pub(crate) trait Grow<T> {
+    fn try_push(&mut self, value: T) -> io::Result<()>;
+}
+impl<T> Grow<T> for Vec<T> {
+    fn try_push(&mut self, value: T) -> io::Result<()> {
+        engine_allocation::reserve(self, 1)?;
+        self.push(value);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

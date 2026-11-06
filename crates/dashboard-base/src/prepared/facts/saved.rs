@@ -1,5 +1,4 @@
 use super::*;
-use pages::Admitted;
 use std::io::Read;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -11,10 +10,9 @@ pub struct Checkpoint {
 }
 struct Stream<'a, K, V> {
     rows: std::collections::btree_map::Iter<'a, K, Column<V>>,
-    budget: &'a MemoryBudget,
     head: Vec<u8>,
     head_at: usize,
-    value: Option<Admitted<Vec<u8>>>,
+    value: Option<Vec<u8>>,
     at: usize,
 }
 impl<K: Serialize, V: Serialize> Read for Stream<'_, K, V> {
@@ -41,10 +39,7 @@ impl<K: Serialize, V: Serialize> Read for Stream<'_, K, V> {
             let Some((key, column)) = self.rows.next() else {
                 return Ok(0);
             };
-            let value = pages::encode(
-                self.budget,
-                &(key, column.root, column.open.as_ref().map(|v| &v.interval)),
-            )?;
+            let value = pages::encode(&(key, column.root, column.open.as_ref().map(|v| &v.interval)))?;
             self.head.clear();
             self.head
                 .extend_from_slice(&(value.len() as u64).to_le_bytes());
@@ -71,7 +66,6 @@ impl<
             }
             let result = index::put(
                 writer,
-                &self.budget,
                 &format!("{}/keys", self.namespace.section()),
                 self.keys,
                 key,
@@ -93,7 +87,6 @@ impl<
         head.extend_from_slice(&(self.columns.len() as u64).to_le_bytes());
         let stream = Stream {
             rows: self.columns.iter(),
-            budget: &self.budget,
             head,
             head_at: 0,
             value: None,
@@ -101,7 +94,6 @@ impl<
         };
         let result = pages::write(
             writer,
-            &self.budget,
             &format!("{}/checkpoints", self.namespace.section()),
             stream,
         );
@@ -121,16 +113,14 @@ impl<
     pub fn restore<R: ReadPages>(
         source: &mut R,
         checkpoint: &Checkpoint,
-        budget: MemoryBudget,
         limits: Limits,
     ) -> io::Result<Self> {
-        let mut facts = Self::new(checkpoint.namespace.clone(), budget, limits)?;
+        let mut facts = Self::new(checkpoint.namespace.clone(), limits)?;
         facts.keys = checkpoint.keys;
         let section = format!("{}/checkpoints", facts.namespace.section());
         let input = source
             .open(&section, checkpoint.range)?
             .ok_or_else(|| invalid("Private fact checkpoint missing"))?;
-        let _scratch = facts.budget.admit(8192)?;
         let mut input = io::BufReader::new(input);
         let mut magic = [0; 8];
         input.read_exact(&mut magic)?;
@@ -142,25 +132,11 @@ impl<
             let len = word(&mut input)?;
             let bytes = usize::try_from(len)
                 .map_err(|_| invalid("Private fact checkpoint row too large"))?;
-            let reserve = K::decode_budget()
-                .for_encoded(bytes)?
-                .checked_add(Option::<Interval<V>>::decode_budget().for_encoded(bytes)?)
-                .and_then(|n| n.checked_add(size_of::<Root>()))
-                .ok_or_else(|| invalid("Fact allocation overflow"))?;
-            let mut credit = facts.budget.admit(reserve)?;
             let mut take = (&mut input).take(len);
             let (key, root, open): (K, Root, Option<Interval<V>>) =
                 serde_json::from_reader(&mut take)?;
             if take.limit() != 0 {
                 return Err(invalid("Private fact checkpoint row truncated"));
-            }
-            let actual = size_of::<(K, Root, Option<Interval<V>>)>()
-                .saturating_add(key.heap_bytes())
-                .saturating_add(open.heap_bytes());
-            if actual > reserve {
-                return Err(invalid(
-                    "Private fact Resident checkpoint decode bound was too small",
-                ));
             }
             if (root.index.count == 0) != root.last.is_none()
                 || open.as_ref().is_some_and(|v| {
@@ -170,16 +146,7 @@ impl<
             {
                 return Err(invalid("Invalid private fact checkpoint roots"));
             }
-            let key_bytes = key
-                .heap_bytes()
-                .saturating_add((size_of::<K>() + size_of::<Column<V>>() + 128).saturating_mul(12));
-            let open_bytes = open.as_ref().map_or(0, |v| {
-                v.heap_bytes()
-                    .saturating_add(size_of::<Held<V>>().saturating_mul(4))
-            });
-            credit.resize(key_bytes.saturating_add(open_bytes))?;
-            let key_credit = credit.split_off(key_bytes);
-            let open = open.map(|interval| Held { interval, credit });
+            let open = open.map(Self::held);
             facts.columns.insert(
                 key,
                 Column {
@@ -187,7 +154,6 @@ impl<
                     indexed: true,
                     pending: Vec::new(),
                     open,
-                    _credit: key_credit,
                 },
             );
         }

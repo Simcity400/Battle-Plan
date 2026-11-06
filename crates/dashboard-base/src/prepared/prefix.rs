@@ -91,10 +91,15 @@ impl Prefix {
         self.pending = subtract(&self.pending, approximate);
     }
 
-    /// This prefix short of the first of `holes`: no hour from it on is
-    /// answered or pending, since its values need observations the hole lacks.
+    /// This prefix short of the first of `holes` its family does not go on past: no hour from
+    /// it on is answered or pending, since its values need observations the hole lacks.
     pub fn before(mut self, holes: &[Hole]) -> Self {
-        let Some(first) = holes.iter().map(|hole| hole.first_hour).min() else {
+        let Some(first) = holes
+            .iter()
+            .filter(|hole| !hole.gap)
+            .map(|hole| hole.first_hour)
+            .min()
+        else {
             return self;
         };
         let last = first.saturating_sub(1);

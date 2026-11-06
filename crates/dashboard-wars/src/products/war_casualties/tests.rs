@@ -1445,7 +1445,7 @@ fn changing_selections_reuses_one_branch_scan_with_content_loaded() {
 }
 
 #[test]
-fn switching_branches_reuses_two_cached_scans_and_evicts_the_oldest() {
+fn switching_branches_keeps_one_scan_per_branch() {
     let mut second = casualty_frame(0, Some((0, 0)), 0);
     second.branch = 2;
     let mut third = casualty_frame(0, Some((0, 0)), 0);
@@ -1485,22 +1485,13 @@ fn switching_branches_reuses_two_cached_scans_and_evicts_the_oldest() {
     let mut third_request = chosen();
     third_request.branch_id = "3".into();
     WarCasualties::load(&source, &third_request, &context, &AtomicBool::new(false)).unwrap();
-    assert_eq!(source.state::<Scans>().lock().unwrap().entries.len(), 2);
+    assert_eq!(source.state::<Scans>().lock().unwrap().entries.len(), 3);
     assert_eq!(
         source.state::<LabelScans>().lock().unwrap().entries.len(),
-        2
+        3
     );
-    assert!(
-        source
-            .state::<LabelScans>()
-            .lock()
-            .unwrap()
-            .entries
-            .iter()
-            .all(|(branch, _, _)| *branch != 1)
-    );
-    let rebuilt = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
-    assert!(!Arc::ptr_eq(&first, &rebuilt));
+    let kept = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
+    assert!(Arc::ptr_eq(&first, &kept));
     assert!(scanned_branch(&source, 999, &AtomicBool::new(false)).is_err());
 }
 

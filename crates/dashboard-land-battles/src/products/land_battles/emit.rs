@@ -10,7 +10,7 @@
 
 use super::{
     BattleBound, BattleEnd, BattleMoment, BattleWindow, Census, LiveSide,
-    facts::{self, Combat, Combats, Countries, Table},
+    facts::{self, Combat, Combats, Countries, Loss, Progress, Table},
     held,
     losses::SideLossInputs,
     windows,
@@ -20,7 +20,7 @@ use replay::container::Replay;
 use replay_data::{format::FormatVersion, rows::LandCombatSideRow};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::BTreeMap,
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -61,14 +61,14 @@ impl Row {
 #[derive(Default)]
 struct Stepping {
     /// Battles whose last run holds through `through`, though it records an earlier last hour.
-    members: HashSet<usize>,
+    members: foldhash::HashSet<usize>,
     through: i32,
     /// The open battles read in the last hour, by combat: those that may start to step.
     fresh: Vec<(u64, usize)>,
     /// Every open battle may start to step: the last hour read them some other way.
     all: bool,
     /// Combats whose open battle may hold no hourly counters.
-    lacking: HashSet<u64>,
+    lacking: foldhash::HashSet<u64>,
 }
 
 /// The tables the census mirrors beside its own state, from a whole hour on.
@@ -76,11 +76,11 @@ struct Stepping {
 struct Mirror {
     /// Whether `combats` holds LandCombats as the census last read it.
     held: bool,
-    combats: HashMap<u64, Row>,
-    sides: Option<HashMap<u64, LandCombatSideRow>>,
-    progress: Option<HashMap<u64, [SideLossInputs; 2]>>,
+    combats: foldhash::HashMap<u64, Row>,
+    sides: Option<foldhash::HashMap<u64, LandCombatSideRow>>,
+    progress: Option<foldhash::HashMap<u64, [SideLossInputs; 2]>>,
     /// Combats whose row holds no open battle: a finalizer ended theirs.
-    orphans: HashSet<u64>,
+    orphans: foldhash::HashSet<u64>,
     stepping: Stepping,
 }
 
@@ -198,7 +198,7 @@ impl Census {
                     .iter()
                     .map(|(&combat, row)| (combat, LiveSide::new(Some(row), &self.links, labels)))
                     .collect(),
-                _ => HashMap::new(),
+                _ => Default::default(),
             };
         } else if sides_read && let Some(rows) = &mirror.sides {
             for &combat in &side_changes {
@@ -218,25 +218,45 @@ impl Census {
 
         let progress_changed = progress.changed();
         let mut progress_all = false;
-        let mut progress_ids = HashSet::new();
+        let mut progress_ids = foldhash::HashSet::default();
         match progress {
-            Table::Incomplete => mirror.progress = None,
-            Table::Same => {}
-            Table::Whole(rows) => {
+            Progress::Incomplete => mirror.progress = None,
+            Progress::Same => {}
+            Progress::Whole(rows) => {
                 mirror.progress = Some(rows.into_iter().collect());
                 progress_all = true;
             }
-            Table::Changed { rows, deleted } => {
+            Progress::Changed { rows, deleted } => {
                 let held = mirror
                     .progress
                     .as_mut()
                     .ok_or_else(|| invalid("A land hour changed losses it never held"))?;
-                for combat in deleted {
+                let step = |last: u64, step: u64| {
+                    last.checked_add(step)
+                        .ok_or_else(|| invalid("A land hour's combats overflow"))
+                };
+                let mut combat = 0;
+                for gone in deleted {
+                    combat = step(combat, gone)?;
                     held.remove(&combat);
                     progress_ids.insert(combat);
                 }
-                for (combat, inputs) in rows {
-                    held.insert(combat, inputs);
+                combat = 0;
+                for (next, loss) in rows {
+                    combat = step(combat, next)?;
+                    match loss {
+                        Loss::Whole(inputs) => {
+                            held.insert(combat, inputs);
+                        }
+                        Loss::Moved(moves) => {
+                            let inputs = held.get_mut(&combat).ok_or_else(|| {
+                                invalid("A land hour moved losses it never held")
+                            })?;
+                            for (side, moved) in inputs.iter_mut().zip(moves) {
+                                side.apply(moved)?;
+                            }
+                        }
+                    }
                     progress_ids.insert(combat);
                 }
             }
@@ -321,7 +341,7 @@ impl Census {
         let mut absent = Vec::new();
         match combats {
             Combats::Whole(rows) => {
-                let ids: HashSet<u64> = rows.iter().map(|combat| combat.id).collect();
+                let ids: foldhash::HashSet<u64> = rows.iter().map(|combat| combat.id).collect();
                 absent.extend(self.open.keys().filter(|id| !ids.contains(*id)).copied());
                 mirror.combats = rows
                     .iter()
@@ -334,7 +354,7 @@ impl Census {
             }
             Combats::Changed { rows, deleted } => {
                 // A row deleted and inserted again within the hour is read as it stands.
-                let kept: HashSet<u64> = rows.iter().map(|combat| combat.id).collect();
+                let kept: foldhash::HashSet<u64> = rows.iter().map(|combat| combat.id).collect();
                 for combat in deleted.into_iter().filter(|combat| !kept.contains(combat)) {
                     mirror.combats.remove(&combat);
                     mirror.orphans.remove(&combat);
@@ -443,14 +463,17 @@ impl Census {
             read.dedup();
         }
         let mut opened = Vec::new();
+        // Read in place: a combat's participants are copied only into a run they start.
+        let live_sides = std::mem::take(&mut self.live_sides);
+        let none = unrecorded();
         for &combat in &read {
             let row = mirror.combats[&combat].at(combat, at);
-            let (countries, unknown) = self
-                .live_sides
+            let (countries, unknown) = live_sides
                 .get(&combat)
-                .map_or_else(unrecorded, |side| (side.countries.clone(), side.unknown));
+                .map_or((&none.0, none.1), |side| (&side.countries, side.unknown));
             self.read_combat(branch, at, adjacent, row, countries, unknown, &mut opened);
         }
+        self.live_sides = live_sides;
         mirror.stepping.fresh = read
             .iter()
             .filter_map(|combat| self.open.get(combat).map(|&ordinal| (*combat, ordinal)))
@@ -495,7 +518,7 @@ impl Census {
     fn project_losses(
         &mut self,
         at: i32,
-        (whole, readable, changed): (bool, bool, &HashSet<u64>),
+        (whole, readable, changed): (bool, bool, &foldhash::HashSet<u64>),
         opened: &[u64],
         mirror: &mut Mirror,
     ) {
@@ -528,8 +551,8 @@ impl Census {
         open.sort_unstable();
         open.dedup();
         let held = mirror.progress.as_ref().filter(|_| readable);
-        self.read_losses(at, open.clone(), |combat| {
-            held.and_then(|rows| rows.get(&combat).cloned())
+        self.read_losses(at, &open, |combat| {
+            held.and_then(|rows| rows.get(&combat).map(std::borrow::Cow::Borrowed))
         });
         for (combat, ordinal) in open {
             if self.episodes[&ordinal].loss_inputs.is_none() {
@@ -678,17 +701,20 @@ impl Emit {
     pub fn publish(
         &mut self,
         writer: &mut store::Writer,
-        replay: &Replay,
         before: i32,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         while self.due(before) {
             self.census.settle_all(&mut self.mirror.stepping);
             // An open battle's run went on through the block, which its pages hold.
-            let open: Vec<usize> = self.census.open.values().copied().collect();
-            self.census.dirty.extend(open);
-            self.census
-                .publish_block(writer, replay, self.branch, self.next, cancelled)?;
+            self.census.dirty.extend(self.census.open.values().copied());
+            self.census.publish_block_in(
+                writer,
+                &self.windows,
+                self.branch,
+                self.next,
+                cancelled,
+            )?;
             self.next += 1;
         }
         Ok(())

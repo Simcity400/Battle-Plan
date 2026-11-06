@@ -641,7 +641,36 @@ pub fn sample_counts(adapter: &wgpu::Adapter, features: wgpu::Features) -> Vec<u
         .collect()
 }
 
+/// Runs `work` under out-of-memory and validation scopes, so a resource the device cannot make
+/// fails it, named as `what`, rather than reaching the device's uncaptured-error handler.
+pub fn scoped<T>(
+    device: &wgpu::Device,
+    what: impl FnOnce() -> String,
+    work: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let result = work();
+    match pollster::block_on(validation.pop()).or(pollster::block_on(memory.pop())) {
+        Some(error) => Err(invalid(format!("{}: {error}", what()))),
+        None => result,
+    }
+}
+
 pub fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    texel_bytes: u32,
+) -> io::Result<Vec<u8>> {
+    scoped(
+        device,
+        || "The graphics device could not read this map back".to_owned(),
+        || read_texture_unscoped(device, queue, texture, texel_bytes),
+    )
+}
+
+fn read_texture_unscoped(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,

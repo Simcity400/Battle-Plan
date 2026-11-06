@@ -5,8 +5,8 @@
 //! its icon drawn as the reply shows it.
 //! A request whose tokens read no recorded state reads no recording; one
 //! that does reads that hour's frame (shared with `focus-artwork`'s frames).
-//! Results that read no recorded state are kept per content binding, within
-//! a byte budget, least recently used evicted first.
+//! Results that read no recorded state are content, resolved once per content
+//! binding and kept with it.
 use super::*;
 use crate::FocusDatabase;
 use crate::products::{Product, validate_tag};
@@ -17,106 +17,28 @@ use std::sync::{Arc, PoisonError};
 /// page of a country's completed focuses and its active focus.
 const MAX_TOKENS: usize = PAGE_ROWS + 1;
 
-/// Bytes of art kept across requests (icons included). A budget on reuse
-/// only: evicted art is evaluated again, never refused or shortened.
-const KEPT_ART_BYTES: usize = 64 * 1024 * 1024;
-
 /// The database, presentation, token and (for country-specific art) tag.
 type ArtKey = (FocusDatabase, Presentation, String, String);
 
-/// Art that reads no recorded state, kept within a byte budget: the least
-/// recently used goes first.
+/// Art that reads no recorded state: content, one entry per focus, presentation and country
+/// whose own sprite it shows, dropped with the content binding.
+#[derive(Default)]
 pub(crate) struct Kept {
-    entries: BTreeMap<ArtKey, (crate::catalogue::Drawn<artwork::ResolvedArt>, u64, usize)>,
-    used: BTreeMap<u64, ArtKey>,
-    next: u64,
-    bytes: usize,
-    budget: usize,
-}
-
-impl Default for Kept {
-    fn default() -> Self {
-        Self::with_budget(KEPT_ART_BYTES)
-    }
-}
-
-/// A whole map node for one entry of `T`: a node holds at least one entry and
-/// reserves room for eleven, its metadata and an internal node's twelve edges.
-const fn node<T>() -> usize {
-    11 * std::mem::size_of::<T>() + 16 * std::mem::size_of::<usize>()
+    entries: BTreeMap<ArtKey, crate::catalogue::Drawn<artwork::ResolvedArt>>,
 }
 
 impl Kept {
-    pub(crate) fn with_budget(budget: usize) -> Self {
-        Self {
-            entries: BTreeMap::new(),
-            used: BTreeMap::new(),
-            next: 0,
-            bytes: 0,
-            budget,
-        }
+    /// The kept art of `key`.
+    pub(crate) fn get(&self, key: &ArtKey) -> Option<artwork::ResolvedArt> {
+        Some(self.entries.get(key)?.get().clone())
     }
 
-    /// An entry's retained bytes: its key, held twice (the entry and its
-    /// place in the recency order), both maps' nodes for it, its art (icon
-    /// included) and reason.
-    fn size(key: &ArtKey, (art, reason): &artwork::ResolvedArt) -> usize {
-        let text = |text: &Option<String>| text.as_ref().map_or(0, String::capacity);
-        // A whole node of each map bounds its place there.
-        node::<(
-            ArtKey,
-            (crate::catalogue::Drawn<artwork::ResolvedArt>, u64, usize),
-        )>() + node::<(u64, ArtKey)>()
-            + 2 * (key.2.capacity() + key.3.capacity())
-            + art.token.capacity()
-            + text(&art.name)
-            + text(&art.description)
-            + text(&art.icon)
-            + text(reason)
-    }
-
-    /// The kept art of `key`, now the most recently used.
-    pub(crate) fn get(&mut self, key: &ArtKey) -> Option<artwork::ResolvedArt> {
-        let (item, used, _) = self.entries.get_mut(key)?;
-        self.used.remove(used);
-        *used = self.next;
-        self.used.insert(self.next, key.clone());
-        self.next += 1;
-        Some(item.get().clone())
-    }
-
-    /// Keep `item`, evicting the least recently used until it fits; an item
-    /// larger than the whole budget is not kept.
     pub(crate) fn insert(
         &mut self,
         key: ArtKey,
         item: crate::catalogue::Drawn<artwork::ResolvedArt>,
     ) {
-        let size = Self::size(&key, item.get());
-        if let Some((_, used, old)) = self.entries.remove(&key) {
-            self.used.remove(&used);
-            self.bytes -= old;
-        }
-        if size > self.budget {
-            return;
-        }
-        while self.bytes + size > self.budget {
-            let Some((_, oldest)) = self.used.pop_first() else {
-                break;
-            };
-            if let Some((_, _, old)) = self.entries.remove(&oldest) {
-                self.bytes -= old;
-            }
-        }
-        self.used.insert(self.next, key.clone());
-        self.entries.insert(key, (item, self.next, size));
-        self.next += 1;
-        self.bytes += size;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn bytes(&self) -> usize {
-        self.bytes
+        self.entries.insert(key, item);
     }
 
     #[cfg(test)]
@@ -263,8 +185,7 @@ impl Evaluator {
             .expect("focus contexts loaded")
             .of_mut(database);
         let mut requests = Vec::new();
-        // Kept art is taken now, so keeping new art cannot evict a row this
-        // request counts on.
+        // Kept art is taken first; what is evaluated is kept after.
         let mut planned = Vec::with_capacity(tokens.len());
         for token in tokens {
             // A country's own sprite makes otherwise shared art its own.
@@ -576,13 +497,15 @@ pub struct Presenter(Option<artwork::Context>);
 impl Presenter {
     /// Each of `asked` (token, tag), completed at `hour` of `branch`, as the event feed shows it,
     /// chosen as one batch: on `frame`'s tables where any of them reads recorded state, on none
-    /// otherwise. `frame` names why the recording holds none.
-    pub(crate) fn present(
+    /// otherwise. `frame` names why the recording holds none; `lexicon` is its walk's lexer
+    /// folds ([`artwork::FocusFrame::with_lexicon`]).
+    pub(crate) fn present<'f>(
         &mut self,
         catalogue: &Arc<crate::catalogue::Catalogue>,
         (branch, hour): (u64, i32),
         asked: &[(&str, &str)],
-        frame: impl FnOnce() -> io::Result<Result<DecodedFrame, String>>,
+        lexicon: Option<&'f dashboard_world::Lexicon>,
+        frame: impl FnOnce() -> io::Result<Result<replay_frame::frame::HourFrame<'f>, String>>,
     ) -> io::Result<Vec<CompletionArt>> {
         let every =
             |art: CompletionArt| -> io::Result<Vec<CompletionArt>> { Ok(vec![art; asked.len()]) };
@@ -594,21 +517,24 @@ impl Presenter {
             Err(error) => return every(CompletionArt::Refused(error.to_string())),
         };
         let tokens: Vec<String> = asked.iter().map(|(token, _)| (*token).to_owned()).collect();
-        let decoded = if context.requested_focus_needs_frame(&tokens) {
+        let unread;
+        let (decoded, lexicon) = if context.requested_focus_needs_frame(&tokens) {
             match frame()? {
-                Ok(frame) => frame,
+                Ok(frame) => (frame, lexicon),
                 Err(reason) => return every(CompletionArt::Gap(reason)),
             }
         } else {
-            unread_frame(branch, hour)
+            unread = unread_frame(branch, hour);
+            (replay_frame::frame::HourFrame::from(&unread), None)
         };
-        Ok(context.event_focus_choices_at(asked, &decoded, |items| {
+        let shown = context.event_focus_choices_at(asked, decoded, lexicon, |items| {
             std::iter::from_fn(|| {
                 let (item, noted) = crate::catalogue::capture(|| items.next());
                 item.map(|art| CompletionArt::Shown { art, noted })
             })
             .collect()
-        }))
+        });
+        Ok(shown)
     }
 
     /// [`Self::present`] on the frame sought from `source`'s recording at `hour`.
@@ -619,14 +545,18 @@ impl Presenter {
         (branch, hour): (u64, i32),
         asked: &[(&str, &str)],
     ) -> io::Result<Vec<CompletionArt>> {
-        self.present(catalogue, (branch, hour), asked, || {
+        let mut sought: Option<DecodedFrame> = None;
+        let slot = &mut sought;
+        self.present(catalogue, (branch, hour), asked, None, move || {
             #[cfg(test)]
             FRAME_READS.with(|reads| reads.set(reads.get() + 1));
             Ok(
                 match dashboard_base::prepared::query::frames::seek(
                     source, branch, hour, tables(), &WHOLE,
                 )? {
-                    replay::container::SeekResult::Frame(frame) => Ok(*frame),
+                    replay::container::SeekResult::Frame(frame) => {
+                        Ok(replay_frame::frame::HourFrame::from(&*slot.insert(*frame)))
+                    }
                     replay::container::SeekResult::Gap { reason, .. } => Err(reason),
                 },
             )

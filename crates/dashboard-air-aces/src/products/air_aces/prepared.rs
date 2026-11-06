@@ -493,7 +493,6 @@ fn kept_portraits(
             &(),
             &page,
             cancelled,
-            dashboard_base::prepared::query::observations::serde_bytes,
             || {
                 let state = Prepared::read(store, key, None, branch)?;
                 Ok((
@@ -548,9 +547,6 @@ pub(super) fn kept_manifest(
         &params.branch_id,
         &pages,
         cancelled,
-        |(_, manifest): &(Option<std::sync::Weak<Catalogue>>, AirAcesManifestReply)| {
-            dashboard_base::prepared::query::observations::serde_bytes(manifest)
-        },
         || {
             let mut state = Prepared::read(store, key, None, branch)?;
             let manifest =

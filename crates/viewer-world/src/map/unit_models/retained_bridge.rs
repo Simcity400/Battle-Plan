@@ -16,8 +16,7 @@ pub(super) struct RetainedBridge(Keyed<bridge::Retained>);
 
 impl Default for RetainedBridge {
     fn default() -> Self {
-        // Recency bounds storage, never which country or variant is admitted.
-        Self(Keyed::new(INPUTS, 8))
+        Self(Keyed::new(INPUTS))
     }
 }
 

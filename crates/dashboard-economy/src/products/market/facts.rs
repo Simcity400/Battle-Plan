@@ -28,7 +28,7 @@ use replay_data::{
     },
     scope::CaptureMode,
 };
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
+use replay_frame::frame::{Rowset, Tables};
 use std::{
     collections::BTreeMap,
     io,
@@ -284,18 +284,6 @@ impl Hour {
     }
 }
 
-/// The frame the world's views are lent into for an hour, given back when dropped.
-struct Lent<'o> {
-    frame: &'o mut DecodedFrame,
-    asks: &'o [(TableId, Hold)],
-}
-
-impl Drop for Lent<'_> {
-    fn drop(&mut self) {
-        dashboard_world::release(self.frame, self.asks);
-    }
-}
-
 /// The bytes a built variant's operands hold.
 fn raws_heap(raws: &Vec<(u64, RawVariant)>) -> usize {
     raws.capacity() * size_of::<(u64, RawVariant)>()
@@ -439,19 +427,24 @@ fn purchases(row: &PurchaseContractRow, roster: &Roster) -> Row {
 /// The rows of a complete table, sorted by key: every one when `edits` is None, else the
 /// hour's written and deleted keys.
 fn read_rows<R: RowCodec>(
-    rows: &[R],
+    rows: Rowset<'_, R>,
     edits: Option<(Vec<u128>, Vec<u128>)>,
     read: impl Fn(&R) -> Row,
 ) -> io::Result<Vec<(u128, Option<Row>)>> {
     let Some((written, deleted)) = edits else {
-        return Ok(rows.iter().map(|row| (RowCodec::key(row), Some(read(row)))).collect());
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows.iter() {
+            let row = row?;
+            out.push((RowCodec::key(&*row), Some(read(&*row))));
+        }
+        return Ok(out);
     };
     let mut out = Vec::with_capacity(written.len() + deleted.len());
     for key in written {
-        let at = rows
-            .binary_search_by_key(&key, RowCodec::key)
-            .map_err(|_| io::Error::other("A written market row is not in its table"))?;
-        out.push((key, Some(read(&rows[at]))));
+        let row = rows
+            .get(key)?
+            .ok_or_else(|| io::Error::other("A written market row is not in its table"))?;
+        out.push((key, Some(read(&*row))));
     }
     out.extend(deleted.into_iter().map(|key| (key, None)));
     out.sort_unstable_by_key(|&(key, _)| key);
@@ -484,9 +477,6 @@ pub struct Projector {
     block_starts: Arc<[i32]>,
     next_block: usize,
     masks: [u64; 5],
-    asks: Vec<(TableId, Hold)>,
-    /// The frame the world's views are lent into for an hour, given back before it ends.
-    frame: DecodedFrame,
     naming: Naming,
     /// Nothing is held: the next hour is read whole, as a segment's first.
     cold: bool,
@@ -515,14 +505,7 @@ impl Projector {
             blocks,
             block_starts: Arc::from([]),
             next_block: 0,
-            asks: asks(&masks),
             masks,
-            frame: DecodedFrame {
-                branch: 0,
-                hour: 0,
-                tables: std::array::from_fn(|_| not_selected()),
-                metrics: Metrics::default(),
-            },
             naming: Naming::new()?,
             cold: true,
             last: None,
@@ -660,17 +643,8 @@ impl Operator<World> for Projector {
                 self.tags = now;
             }
         }
-        // The views go back before the hour ends, however it ends, so the next hour's builds
-        // change them in place.
-        let lent = Lent {
-            frame: &mut self.frame,
-            asks: &self.asks,
-        };
-        let wanted = changed[4] || (identities && (relinked || changed[..4].contains(&true)));
-        if wanted {
-            hour.world.frame_held_into(state, lent.asks, lent.frame)?;
-        }
-        let frame = &*lent.frame;
+        let frame = hour.world.columns(state);
+        let masks = self.masks;
         for (index, &table) in STATE[..4].iter().enumerate() {
             let whole = restated[index] || relinked;
             facts.tables[index] = if !identities {
@@ -683,24 +657,25 @@ impl Operator<World> for Projector {
                 let edits = (!whole)
                     .then(|| edited(state, table, self.masks[index]))
                     .transpose()?;
+                let mask = masks[index];
                 let rows = match table {
-                    TableId::CountryMarket => {
-                        read_rows(frame.complete::<tables::CountryMarket>()?, edits, |row| {
-                            offers(row, roster)
-                        })?
-                    }
+                    TableId::CountryMarket => read_rows(
+                        frame.complete_rows::<tables::CountryMarket>(mask)?,
+                        edits,
+                        |row| offers(row, roster),
+                    )?,
                     TableId::MarketContractTerms => read_rows(
-                        frame.complete::<tables::MarketContractTerms>()?,
+                        frame.complete_rows::<tables::MarketContractTerms>(mask)?,
                         edits,
                         |row| terms(row, roster),
                     )?,
                     TableId::LendLeaseAgreements => read_rows(
-                        frame.complete::<tables::LendLeaseAgreements>()?,
+                        frame.complete_rows::<tables::LendLeaseAgreements>(mask)?,
                         edits,
                         |row| agreements(row, roster),
                     )?,
                     _ => read_rows(
-                        frame.complete::<tables::PurchaseContracts>()?,
+                        frame.complete_rows::<tables::PurchaseContracts>(mask)?,
                         edits,
                         |row| purchases(row, roster),
                     )?,
@@ -713,25 +688,26 @@ impl Operator<World> for Projector {
         if changed[4] || (woke && !columns::complete(state, TableId::MarketEvents)) {
             let table = TableId::MarketEvents;
             facts.events = Some(if columns::complete(state, table) {
-                let rows = frame.complete::<tables::MarketEvents>()?;
+                let rows = frame.complete_rows::<tables::MarketEvents>(masks[4])?;
                 let party = |raw: u32| identities.then(|| roster.slot_of(raw)).flatten();
-                Events::Rows {
-                    ids: rows.iter().map(|row| row.id).collect(),
-                    kept: rows
-                        .iter()
-                        .filter(|row| ledger_kind(row))
-                        .map(|&row| Occurrence {
+                let mut ids = Vec::with_capacity(rows.len());
+                let mut kept = Vec::new();
+                for row in rows.iter() {
+                    let row = *row?;
+                    ids.push(row.id);
+                    if ledger_kind(&row) {
+                        kept.push(Occurrence {
                             row,
                             seller: party(row.country),
                             buyer: party(row.receiver),
-                        })
-                        .collect(),
+                        });
+                    }
                 }
+                Events::Rows { ids, kept }
             } else {
                 Events::Refused(refusal(state, table, self.mode, at)?)
             });
         }
-        drop(lent);
         let bytes = facts.heap() + raws_heap(&raws);
         out.push(Hour {
             hour: at,

@@ -215,7 +215,6 @@ pub fn read_prepared_histories(
     let history = crate::prepared::series::reuse_value(
         pages.clone(),
         &None::<i32>,
-        RecordedHistories::bytes,
         || {
             let scan: HistoryScan = serde_json::from_reader(io::BufReader::new(file))?;
             Ok(scan.finish())
@@ -224,7 +223,7 @@ pub fn read_prepared_histories(
     match through {
         None => Ok(Some(history)),
         Some(last) => {
-            crate::prepared::series::reuse_value(pages, &through, RecordedHistories::bytes, || {
+            crate::prepared::series::reuse_value(pages, &through, || {
                 Ok((*history).clone().through(last))
             })
             .map(Some)
@@ -1555,7 +1554,7 @@ mod tests {
                 serde_json::to_vec(&*clipped).unwrap(),
                 serde_json::to_vec(&expected.finish_through(last)).unwrap()
             );
-            assert!(scope.finish().bytes() >= whole.bytes());
+            assert_eq!(scope.finish().held(), 2, "the whole history and its clip");
         }
         scan.observe(&crate::test_fixtures::scale_frame(1, 7, 3));
         let mut writer = fixture.writer();

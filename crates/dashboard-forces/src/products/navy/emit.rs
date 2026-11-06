@@ -214,7 +214,7 @@ impl Emit {
 
     fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         measure: u64,
         dimension: Option<u64>,
@@ -232,7 +232,7 @@ impl Emit {
     }
 
     /// The tag actor of `tag`, with its keys, first seen at `hour`.
-    fn tag(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn tag(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         let actor = match self.actors.find(tag.as_bytes()) {
             Some(actor) => actor,
             None => self.actors.actor(writer, tag.as_bytes(), hour)?,
@@ -254,7 +254,7 @@ impl Emit {
     }
 
     /// The class `token` names now: the token with its spelling.
-    fn class(&mut self, writer: &mut Writer<'_>, token: u32) -> io::Result<u32> {
+    fn class(&mut self, writer: &mut Writer, token: u32) -> io::Result<u32> {
         let spelling = self.spellings.get(&token).cloned().flatten();
         let held = (token, spelling);
         if let Some(&id) = self.class_ids.get(&held) {
@@ -271,7 +271,7 @@ impl Emit {
     }
 
     /// The part key id of `key`.
-    fn part(&mut self, writer: &mut Writer<'_>, key: String) -> io::Result<u32> {
+    fn part(&mut self, writer: &mut Writer, key: String) -> io::Result<u32> {
         if let Some(&id) = self.part_keys.get(key.as_str()) {
             return Ok(id);
         }
@@ -287,7 +287,7 @@ impl Emit {
     /// The part key `class` counts under in `grouping`.
     fn class_part(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         class: u32,
         grouping: usize,
     ) -> io::Result<u32> {
@@ -348,7 +348,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
@@ -542,7 +542,7 @@ impl Emit {
     }
 
     /// The run of `channel` for the country at `slot` this hour.
-    fn run_of(&mut self, writer: &mut Writer<'_>, channel: usize, slot: u32) -> io::Result<Run> {
+    fn run_of(&mut self, writer: &mut Writer, channel: usize, slot: u32) -> io::Result<Run> {
         let ownership = channel / 2;
         if !self.complete[ownership] {
             return Ok(Run::UNKNOWN);
@@ -577,7 +577,7 @@ impl Emit {
     /// none the hour before, as the row census's series start them.
     fn put(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         value: Option<i128>,
@@ -589,7 +589,7 @@ impl Emit {
     }
 
     /// Ends `actor`'s runs at `hour`.
-    fn end(&mut self, writer: &mut Writer<'_>, hour: i32, actor: u64) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, hour: i32, actor: u64) -> io::Result<()> {
         let tag = &mut self.tags[actor as usize];
         for &key in &tag.keys {
             self.carry.value(writer, key, hour, None, false)?;
@@ -608,7 +608,7 @@ impl Emit {
     /// Starts `run` of `channel` for `actor` at `hour`, a segment where `starts`.
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         actor: u64,
         channel: usize,
@@ -669,7 +669,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn parts(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         actor: u64,
         channel: usize,
@@ -747,7 +747,7 @@ impl Emit {
 
     /// Moves the `touched` tags in each ranking to their totals' places; the positions between
     /// the places a move left and took go on from `hour`, where they changed.
-    fn rank(&mut self, writer: &mut Writer<'_>, hour: i32, touched: &[u64]) -> io::Result<()> {
+    fn rank(&mut self, writer: &mut Writer, hour: i32, touched: &[u64]) -> io::Result<()> {
         if touched.is_empty() {
             return Ok(());
         }
@@ -813,7 +813,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

@@ -68,6 +68,23 @@ struct State {
     frame: Arc<SharedFrames>,
 }
 
+/// A new focus history scan seeds the frames from now on: the last scan's go.
+pub(crate) fn begin_seeding(source: &Source) {
+    let state = source.state::<State>();
+    let frames = Arc::clone(
+        &state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .frame,
+    );
+    frames
+        .cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .frames
+        .retain(|entry| !entry.seeded);
+}
+
 /// The history scan has checked the campaign and the complete block checksum.
 /// Keep only the inputs a basic presentation read would reconstruct at that hour.
 pub(crate) fn retain_basic(
@@ -110,11 +127,6 @@ pub(crate) fn scoped_frame(
     frames.at(&source.replay(), branch, hour, true, cancelled)
 }
 
-/// Retained row allocations for recent focus presentation hours. Nested strings
-/// and lists owned by rows are outside this measure, as in the viewer frame cache.
-/// Frame/table ownership and unavailable reasons also count; shared allocations
-/// are conservatively charged once per entry. This never limits returned data.
-const FRAME_CACHE_ROW_BYTES: usize = 64 * 1024 * 1024;
 const BASIC_TABLES: [TableId; 3] = [TableId::Campaign, TableId::Countries, TableId::CountryLinks];
 
 /// Cached hours remain available while another request reconstructs a miss.
@@ -178,10 +190,11 @@ impl SharedFrames {
     }
 }
 
+/// The frames focus presentation reads: those the current focus history scan seeded at the
+/// hours its selected country's focuses changed, and each branch's latest one read.
+#[derive(Default)]
 struct FrameCache {
     frames: VecDeque<CachedFrame>,
-    bytes: usize,
-    budget: usize,
     #[cfg(test)]
     reads: usize,
 }
@@ -189,26 +202,11 @@ struct FrameCache {
 struct CachedFrame {
     frame: DecodedFrame,
     scoped: bool,
-    bytes: usize,
-}
-
-impl Default for FrameCache {
-    fn default() -> Self {
-        Self::with_budget(FRAME_CACHE_ROW_BYTES)
-    }
+    /// Seeded by the history scan rather than read for a request.
+    seeded: bool,
 }
 
 impl FrameCache {
-    fn with_budget(budget: usize) -> Self {
-        Self {
-            frames: VecDeque::new(),
-            bytes: 0,
-            budget,
-            #[cfg(test)]
-            reads: 0,
-        }
-    }
-
     fn retain_basic(&mut self, decoded: &DecodedFrame, cancelled: &AtomicBool) -> io::Result<()> {
         check_cancel(cancelled)?;
         if let Some(index) = self.frames.iter().position(|entry| {
@@ -234,58 +232,32 @@ impl FrameCache {
             }),
             metrics: decoded.metrics.clone(),
         };
-        self.retain(basic, false, cancelled)
+        check_cancel(cancelled)?;
+        self.frames.push_back(CachedFrame {
+            frame: basic,
+            scoped: false,
+            seeded: true,
+        });
+        Ok(())
     }
 
-    fn frame_bytes(frame: &DecodedFrame) -> usize {
-        frame
-            .tables
-            .iter()
-            .fold(size_of::<CachedFrame>(), |bytes, table| {
-                let rows = match &**table {
-                    TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-                        rows.allocated_bytes()
-                    }
-                    TableView::Unavailable { reason } => reason.capacity(),
-                    TableView::NotRecorded { .. } => 0,
-                };
-                bytes
-                    .saturating_add(size_of::<TableView>() + 2 * size_of::<usize>())
-                    .saturating_add(rows)
-            })
-    }
-
+    /// Keeps `frame`, read for a request, as its branch's latest.
     fn retain(
         &mut self,
         frame: DecodedFrame,
         scoped: bool,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let bytes = Self::frame_bytes(&frame);
         check_cancel(cancelled)?;
-        // Larger frames remain complete replies without entering the cache.
-        if bytes > self.budget {
-            return Ok(());
-        }
-        if let Some(index) = self
-            .frames
-            .iter()
-            .position(|entry| entry.frame.branch == frame.branch && entry.frame.hour == frame.hour)
-        {
-            let previous = self.frames.remove(index).expect("cached frame index");
-            self.bytes -= previous.bytes;
-        }
-        while self.bytes > self.budget - bytes {
-            let previous = self.frames.pop_front().expect("retained frame owns bytes");
-            self.bytes -= previous.bytes;
-        }
-        check_cancel(cancelled)?;
+        self.frames.retain(|entry| {
+            entry.frame.branch != frame.branch
+                || (entry.seeded && entry.frame.hour != frame.hour)
+        });
         self.frames.push_back(CachedFrame {
             frame,
             scoped,
-            bytes,
+            seeded: false,
         });
-        self.bytes += bytes;
         Ok(())
     }
 
@@ -1267,7 +1239,6 @@ mod tests {
             cache.reads, 1,
             "the static image reply uses its verified history frame"
         );
-        assert!(cache.bytes <= FRAME_CACHE_ROW_BYTES);
     }
 
     #[test]
@@ -1607,17 +1578,14 @@ mod tests {
     }
 
     #[test]
-    fn seeded_basic_frames_use_the_existing_budget_and_keep_scoped_entries() {
+    fn a_scan_seeds_its_basic_frames_and_keeps_scoped_entries() {
         let frames = [
             source(1, 10, Some(100)),
             source(1, 12, Some(120)),
             source(1, 14, Some(140)),
         ];
         let cancelled = AtomicBool::new(false);
-        let mut measuring = FrameCache::default();
-        measuring.retain_basic(&frames[0], &cancelled).unwrap();
-        let size = measuring.frames[0].bytes;
-        let mut cache = FrameCache::with_budget(size * 2);
+        let mut cache = FrameCache::default();
         for frame in &frames {
             cache.retain_basic(frame, &cancelled).unwrap();
         }
@@ -1627,9 +1595,8 @@ mod tests {
                 .iter()
                 .map(|entry| entry.frame.hour)
                 .collect::<Vec<_>>(),
-            [12, 14]
+            [10, 12, 14]
         );
-        assert!(cache.bytes <= cache.budget);
         let broad = frames[2].clone();
         cache.retain(broad.clone(), true, &cancelled).unwrap();
         cache.retain_basic(&broad, &cancelled).unwrap();
@@ -1638,17 +1605,7 @@ mod tests {
             &cache.frames.back().unwrap().frame.tables[TableId::Countries.index()],
             &broad.tables[TableId::Countries.index()]
         ));
-        let mut oversized = FrameCache::with_budget(size - 1);
-        oversized.retain_basic(&frames[0], &cancelled).unwrap();
-        assert!(oversized.frames.is_empty());
-        assert_eq!(oversized.bytes, 0);
-    }
-
-    fn power(frame: &DecodedFrame) -> Option<i64> {
-        let TableView::Complete(rows) = &*frame.tables[TableId::Countries.index()] else {
-            panic!("country fixture must be complete");
-        };
-        rows.rows::<tables::Countries>().unwrap()[0].political_power_raw
+        assert_eq!(cache.frames.len(), 3, "the scoped read replaced the seeded hour");
     }
 
     #[test]
@@ -1686,7 +1643,7 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_focus_hours_reuse_their_recorded_allocations() {
+    fn a_branch_keeps_its_latest_focus_hour_and_reads_an_earlier_one_again() {
         let replay = Replay::from_records(
             CAMPAIGN.into(),
             &[records(
@@ -1699,26 +1656,24 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let first = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
         let second = cache.at(&replay, 1, 12, false, &cancelled).unwrap();
-        for (hour, expected) in [(10, &first), (12, &second)] {
-            let reused = cache.at(&replay, 1, hour, false, &cancelled).unwrap();
-            assert_eq!(power(&reused), power(expected));
-            assert!(SharedView::ptr_eq(
-                &expected.tables[TableId::Countries.index()],
-                &reused.tables[TableId::Countries.index()]
-            ));
-        }
+        let reused = cache.at(&replay, 1, 12, false, &cancelled).unwrap();
+        assert!(SharedView::ptr_eq(
+            &second.tables[TableId::Countries.index()],
+            &reused.tables[TableId::Countries.index()]
+        ));
+        assert_eq!(cache.reads, 2);
+        let again = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
+        assert_eq!(again, first);
+        assert_eq!(cache.reads, 3);
+        assert_eq!(cache.frames.len(), 1);
     }
 
     #[test]
-    fn interleaved_focus_hours_keep_scoped_upgrades_for_plain_reads() {
+    fn a_scoped_upgrade_answers_plain_reads_of_its_hour() {
         let mut first = source(1, 10, Some(100));
         first.tables[TableId::ActiveIdeas.index()] =
             TableView::Complete(TableRows::ActiveIdeas(Vec::new())).into();
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![first, source(1, 12, Some(120))])],
-        )
-        .unwrap();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first])]).unwrap();
         let mut cache = FrameCache::default();
         let cancelled = AtomicBool::new(false);
         let narrow = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
@@ -1726,16 +1681,10 @@ mod tests {
             &*narrow.tables[TableId::ActiveIdeas.index()],
             TableView::Unavailable { .. }
         ));
-        let other = cache.at(&replay, 1, 12, false, &cancelled).unwrap();
         let broad = cache.at(&replay, 1, 10, true, &cancelled).unwrap();
         assert!(matches!(
             &*broad.tables[TableId::ActiveIdeas.index()],
             TableView::Complete(_)
-        ));
-        let other_reused = cache.at(&replay, 1, 12, false, &cancelled).unwrap();
-        assert!(SharedView::ptr_eq(
-            &other.tables[TableId::Countries.index()],
-            &other_reused.tables[TableId::Countries.index()]
         ));
         for scoped in [false, true] {
             let reused = cache.at(&replay, 1, 10, scoped, &cancelled).unwrap();
@@ -1746,80 +1695,14 @@ mod tests {
                 ));
             }
         }
-        assert_eq!(cache.frames.len(), 2);
+        assert_eq!(cache.frames.len(), 1);
     }
 
-    #[test]
-    fn focus_frame_budget_evicts_least_recent_hours_without_changing_replies() {
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(
-                1,
-                vec![
-                    source(1, 10, Some(100)),
-                    source(1, 12, Some(120)),
-                    source(1, 14, Some(140)),
-                ],
-            )],
-        )
-        .unwrap();
-        let cancelled = AtomicBool::new(false);
-        let sample = FrameCache::default()
-            .at(&replay, 1, 10, false, &cancelled)
-            .unwrap();
-        let budget = 2 * FrameCache::frame_bytes(&sample);
-        let mut cache = FrameCache::with_budget(budget);
-        let first = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        let second = cache.at(&replay, 1, 12, false, &cancelled).unwrap();
-        assert_eq!(
-            FrameCache::frame_bytes(&first),
-            FrameCache::frame_bytes(&second)
-        );
-        cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        let third = cache.at(&replay, 1, 14, false, &cancelled).unwrap();
-        assert_eq!(power(&third), Some(140));
-        assert!(cache.bytes <= budget);
-        assert_eq!(
-            cache
-                .frames
-                .iter()
-                .map(|entry| entry.frame.hour)
-                .collect::<Vec<_>>(),
-            vec![10, 14]
-        );
-        let first_reused = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        assert!(SharedView::ptr_eq(
-            &first.tables[TableId::Countries.index()],
-            &first_reused.tables[TableId::Countries.index()]
-        ));
-        let second_reloaded = cache.at(&replay, 1, 12, false, &cancelled).unwrap();
-        assert_eq!(power(&second_reloaded), Some(120));
-        assert!(!SharedView::ptr_eq(
-            &second.tables[TableId::Countries.index()],
-            &second_reloaded.tables[TableId::Countries.index()]
-        ));
-        assert!(cache.bytes <= budget);
-    }
-
-    #[test]
-    fn oversized_focus_frames_return_complete_without_retention() {
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![source(1, 10, Some(100))])],
-        )
-        .unwrap();
-        let cancelled = AtomicBool::new(false);
-        let mut cache = FrameCache::with_budget(1);
-        let first = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        let second = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        assert_eq!(first, second);
-        assert_eq!(power(&second), Some(100));
-        assert!(!SharedView::ptr_eq(
-            &first.tables[TableId::Countries.index()],
-            &second.tables[TableId::Countries.index()]
-        ));
-        assert!(cache.frames.is_empty());
-        assert_eq!(cache.bytes, 0);
+    fn power(frame: &DecodedFrame) -> Option<i64> {
+        let TableView::Complete(rows) = &*frame.tables[TableId::Countries.index()] else {
+            panic!("country fixture must be complete");
+        };
+        rows.rows::<tables::Countries>().unwrap()[0].political_power_raw
     }
 
     #[test]
@@ -1890,7 +1773,6 @@ mod tests {
                 .contains("campaign identity")
         );
         assert!(cache.frames.is_empty());
-        assert_eq!(cache.bytes, 0);
     }
 
     fn params() -> FocusArtworkParams {

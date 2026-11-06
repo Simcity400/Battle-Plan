@@ -2,24 +2,29 @@
 //! never moves what is held, so a segment's columns grow without copying, and its heap seals a
 //! chunk to a page.
 
-use crate::{
-    budget::{Budget, Lease},
-    pages::PAGE_BYTES,
-};
+use crate::pages::PAGE_BYTES;
 use std::{
     io,
     mem::size_of,
     ops::{Index, IndexMut},
 };
 
-pub(crate) struct Chunked<'a, T> {
+pub(crate) struct Chunked<T> {
     /// Every chunk but the last holds [`Self::PER`] values.
     chunks: Vec<Vec<T>>,
     len: usize,
-    lease: Lease<'a>,
 }
 
-impl<'a, T> Chunked<'a, T> {
+impl<T> Default for Chunked<T> {
+    fn default() -> Self {
+        Self {
+            chunks: Vec::new(),
+            len: 0,
+        }
+    }
+}
+
+impl<T> Chunked<T> {
     /// Values a chunk holds: the most of a page's bytes that is a power of two, so an index splits
     /// by a shift.
     const SHIFT: u32 = {
@@ -30,17 +35,12 @@ impl<'a, T> Chunked<'a, T> {
     const PER: usize = 1 << Self::SHIFT;
     const MASK: usize = Self::PER - 1;
 
-    pub(crate) fn new(budget: &'a Budget) -> io::Result<Self> {
-        Ok(Self {
-            chunks: Vec::new(),
-            len: 0,
-            lease: budget.admit(0)?,
-        })
-    }
-
-    /// The bytes it holds of its budget.
+    /// The bytes its chunks hold.
     pub(crate) fn held(&self) -> usize {
-        self.lease.bytes()
+        self.chunks
+            .iter()
+            .map(|chunk| chunk.capacity() * size_of::<T>())
+            .sum()
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -56,7 +56,7 @@ impl<'a, T> Chunked<'a, T> {
         }
     }
 
-    /// Admits room for `more` further values: the first chunk grows by doubling, as a slab does,
+    /// Makes room for `more` further values: the first chunk grows by doubling, as a slab does,
     /// until it holds a whole chunk; then a whole chunk at a time.
     pub(crate) fn reserve(&mut self, more: usize) -> io::Result<()> {
         let need = engine_allocation::add(self.len, more)?;
@@ -66,39 +66,22 @@ impl<'a, T> Chunked<'a, T> {
         }
         if self.chunks.len() <= 1 && held < Self::PER {
             let target = need.max(held.max(4).saturating_mul(2)).min(Self::PER);
-            let bytes = (target - held)
-                .checked_mul(size_of::<T>())
-                .ok_or_else(engine_allocation::oom)?;
             if self.chunks.is_empty() {
                 engine_allocation::reserve(&mut self.chunks, 1)?;
                 self.chunks.push(Vec::new());
             }
-            self.lease.grow(bytes)?;
             let first = &mut self.chunks[0];
             let more = target - first.len();
-            if let Err(error) = engine_allocation::reserve_exact(first, more) {
-                self.lease.shrink(bytes);
-                return Err(error);
-            }
+            engine_allocation::reserve_exact(first, more)?;
         }
         while self.capacity() < need {
-            let bytes = Self::PER
-                .checked_mul(size_of::<T>())
-                .ok_or_else(engine_allocation::oom)?;
             engine_allocation::reserve(&mut self.chunks, 1)?;
-            self.lease.grow(bytes)?;
-            match engine_allocation::vec(Self::PER) {
-                Ok(chunk) => self.chunks.push(chunk),
-                Err(error) => {
-                    self.lease.shrink(bytes);
-                    return Err(error);
-                }
-            }
+            self.chunks.push(engine_allocation::vec(Self::PER)?);
         }
         Ok(())
     }
 
-    /// Appends into room [`Self::reserve`] admitted.
+    /// Appends into room [`Self::reserve`] made.
     pub(crate) fn put(&mut self, value: T) {
         self.chunks[self.len >> Self::SHIFT].push(value);
         self.len += 1;
@@ -118,7 +101,7 @@ impl<'a, T> Chunked<'a, T> {
         self.get(0)
     }
 
-    /// Keeps its first `len` values; the room after them stays admitted.
+    /// Keeps its first `len` values; the room after them stays held.
     pub(crate) fn truncate(&mut self, len: usize) {
         if len >= self.len {
             return;
@@ -140,7 +123,7 @@ impl<'a, T> Chunked<'a, T> {
     }
 }
 
-impl<T: Copy> Chunked<'_, T> {
+impl<T: Copy> Chunked<T> {
     /// Appends `values`, which may cross chunks.
     pub(crate) fn extend(&mut self, mut values: &[T]) -> io::Result<()> {
         // Most appends fit the chunk they start in.
@@ -186,7 +169,7 @@ impl<T: Copy> Chunked<'_, T> {
     }
 }
 
-impl<T> Index<usize> for Chunked<'_, T> {
+impl<T> Index<usize> for Chunked<T> {
     type Output = T;
 
     fn index(&self, at: usize) -> &T {
@@ -195,7 +178,7 @@ impl<T> Index<usize> for Chunked<'_, T> {
     }
 }
 
-impl<T> IndexMut<usize> for Chunked<'_, T> {
+impl<T> IndexMut<usize> for Chunked<T> {
     fn index_mut(&mut self, at: usize) -> &mut T {
         assert!(at < self.len, "series row index out of range");
         &mut self.chunks[at >> Self::SHIFT][at & Self::MASK]

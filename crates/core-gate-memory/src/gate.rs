@@ -5,8 +5,8 @@ use crate::{
     memory::{Census, Footprint, Layout, Peak, Trace},
     reverse::{Index, Size},
 };
-use replay::columnar_frames::{self, Budget, Damage, Limits, Recording, Segment, Walker};
-use replay_columnar::walk::{Allowance, State};
+use replay::columnar_frames::{self, Damage, Recording, Segment, Walker};
+use replay_columnar::walk::State;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -14,8 +14,8 @@ use std::{
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -138,14 +138,6 @@ pub struct Lost {
     pub reason: String,
 }
 
-pub fn limits() -> Limits {
-    Limits {
-        budget: Arc::new(Budget::new(DECODE_ALLOWANCE as usize)),
-        dictionary_bytes: DICTIONARY_ALLOWANCE as usize,
-        tables: Allowance::new(TABLE_ALLOWANCE as usize),
-    }
-}
-
 fn full(selected: &Selection) -> Selection {
     Selection {
         fields: (0..selected.table.schema().len()).collect(),
@@ -211,8 +203,7 @@ pub fn measure(
     let folder = out.join(format!("segment-{index:05}"));
     std::fs::create_dir(&folder)?;
     let mut state = State::new(columnar_frames::schema()?)?;
-    let stop = AtomicBool::new(false);
-    let mut walker = Walker::new(recording, &stop)?;
+    let mut walker = Walker::new(recording)?;
     let start = cpu::cycles()?;
     walker.begin(segment, &mut state)?;
     let mut timing = Timing {
@@ -737,8 +728,7 @@ pub fn measure(
 
 pub fn timed_walk(recording: &Recording, segment: &Segment) -> io::Result<Timing> {
     let mut state = State::new(columnar_frames::schema()?)?;
-    let stop = AtomicBool::new(false);
-    let mut walker = Walker::new(recording, &stop)?;
+    let mut walker = Walker::new(recording)?;
     let start = cpu::cycles()?;
     walker.begin(segment, &mut state)?;
     let mut timing = Timing {

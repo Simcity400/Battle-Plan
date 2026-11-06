@@ -18,7 +18,6 @@ dashboard-base.workspace = true
 viewer-counter-products = { path = "../viewer-counter-products" }
 map-products.workspace = true
 engine-characters.workspace = true
-engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
 installed-content-core.workspace = true

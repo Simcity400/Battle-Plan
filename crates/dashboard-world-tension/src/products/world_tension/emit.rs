@@ -178,12 +178,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, DECIMALS), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 6]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 6]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -203,7 +203,7 @@ impl Emit {
     }
 
     /// The contributor of `slot` named `tag`, numbered at `hour` when it is new.
-    fn entry(&mut self, writer: &mut Writer<'_>, slot: u32, tag: &Arc<str>, hour: i32) -> io::Result<u64> {
+    fn entry(&mut self, writer: &mut Writer, slot: u32, tag: &Arc<str>, hour: i32) -> io::Result<u64> {
         if let Some(&actor) = self.by_country.get(&(slot, Arc::clone(tag))) {
             return Ok(actor);
         }
@@ -231,7 +231,7 @@ impl Emit {
     /// the hour before.
     fn set(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         value: Option<i128>,
@@ -243,7 +243,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("tension.emit", None);
         let at = hour.hour;
         match self.last {
@@ -327,7 +327,7 @@ impl Emit {
 
     /// The read's contributions: every nonzero aggregate, by slot, named by the tag its slot last
     /// recorded; the rest is unnamed.
-    fn contribute(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn contribute(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         let aggregates = self.aggregates.clone().unwrap_or_else(|| Arc::from([]));
         let (mut sum, mut unnamed) = (0_i64, 0_i64);
         for &actor in &self.current {
@@ -385,7 +385,7 @@ impl Emit {
 
     /// The read's threat sources: each listed one's event, first read, changed or listed again,
     /// and each one listed before and no longer.
-    fn list(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn list(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         let [.., events] = self.family(writer)?;
         self.listing += 1;
         let listing = self.listing;
@@ -484,7 +484,7 @@ impl Emit {
 
     fn event(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         kind: u64,
@@ -502,7 +502,7 @@ impl Emit {
     }
 
     /// The read's values from `at` on: every key starts again where `starts`.
-    fn publish(&mut self, writer: &mut Writer<'_>, at: i32, tension: Tension, starts: bool) -> io::Result<()> {
+    fn publish(&mut self, writer: &mut Writer, at: i32, tension: Tension, starts: bool) -> io::Result<()> {
         let [world, sum, unnamed, read, zero, _] = self.family(writer)?;
         let scaled = i128::from(tension.total_raw) * i128::from(cworld_threat::SCALAR_DIVISOR);
         for (key, value) in [
@@ -536,7 +536,7 @@ impl Emit {
     }
 
     /// Ends the read held before `at`.
-    fn end(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         if !self.open {
             return Ok(());
         }
@@ -557,7 +557,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the counts where they changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

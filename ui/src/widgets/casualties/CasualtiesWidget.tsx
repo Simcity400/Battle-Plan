@@ -27,6 +27,7 @@ import { casualtiesAt, casualtyBarStretch, casualtyBarValue, casualtyIndex, casu
 import type { CountryCasualties } from './casualtiesData';
 import { OPTIONS } from './definition';
 import './casualties.css';
+import { useReplyGaps } from '../../dashboard/replyGaps';
 
 const NO_WARNINGS: string[] = [];
 type CasualtyItem = ButterflyItem & { data: CountryCasualties };
@@ -39,6 +40,8 @@ function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: Wi
   const options = resolveOptions(OPTIONS, widget.options);
   const race = options.view === 'race';
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
+  // Its charts draw war-casualties replies: cut only where the families they read lost hours.
+  const gaps = useReplyGaps(track?.source.id, track?.branch.id, 'war-casualties');
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const requestedHour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const anchor = useRef<HTMLDivElement>(null);
@@ -110,7 +113,7 @@ function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: Wi
   if (!snapshot.length && data.series.length) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this time." />);
   if (!items.length) return withGap(chosen?.resolved?.known(hour) === false ? preparing : <WidgetState kind="empty" message="No casualties yet." />);
   if (race) return <div ref={anchor} className="casualties">{groupFailure}
-    <CountryRaceView key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}
+    <CountryRaceView gaps={gaps} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}
       runtime={runtime} track={track} active={active} options={options} view="race"
       extent={[window.firstHour, window.lastHour]} playhead={widget.time.mode === 'follow' ? hour : null}
       moment={hour} slots={chosen?.params.top?.count ?? selected.length} ranked={ranked} lines={[]}

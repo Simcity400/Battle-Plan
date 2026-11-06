@@ -25,6 +25,7 @@ pub fn append(field: &OrderField, more: &OrderField) -> OrderField {
     out.vertices.extend_from_slice(&more.vertices);
     out.native_vertices.extend_from_slice(&more.native_vertices);
     out.raid_units.extend(more.raid_units.iter().cloned());
+    out.held.extend(more.held.iter().cloned());
     out.trade_route_hovers
         .extend_from_slice(&more.trade_route_hovers);
     out.draws.extend(more.draws.iter().map(|draw| {

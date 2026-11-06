@@ -223,7 +223,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["division-equipment-history"],
         gates: &[crate::products::division_equipment::history::QUERY],
         // 4: the engine handed on holds its reads alone, and saves its context.
-        version: 4,
+        // 5: the engine saves its templates' facts and its reads' tags, never frames.
+        version: 5,
         ..family("division-equipment")
     },
     Descriptor {
@@ -284,7 +285,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             crate::prepared_production::FACTS,
             crate::prepared_production::STATE,
         ],
-        version: 8,
+        // 9: the emit folds the operator's output changes as they come, sharing with idle workers.
+        version: 9,
         ..family("production")
     },
     Descriptor {
@@ -485,7 +487,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     },
     Descriptor {
         // 2: battles on the segment driver, their pages published block by block.
-        version: 2,
+        version: 3,
         status: &["land-battles"],
         queries: &[
             "land-battles",
@@ -527,7 +529,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // Battles' and ships sunk's window pages; naval losses publish on its series.
         sections: &["naval-battle", "naval-battles", "ships-sunk", "sinking"],
         // 2: on the segment driver, naval losses published as a series root.
-        version: 2,
+        // 3: goes on past lost segments, its sinkings and tallies counted afresh after them.
+        version: 3,
         ..family("naval")
     },
     Descriptor {
@@ -578,7 +581,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // as a series root. 4: inputs and parts packed as only their own tables. 5: prepared
         // layers and each viewpoint's groups instead of change inputs. 6: labels' refusals
         // without their hour, and the hours naming reads again marked on coverage.
-        version: 6,
+        version: 7,
         ..family("wars")
     },
     Descriptor {
@@ -690,7 +693,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["stability-parts"],
         gates: &["stability-parts"],
         // 4: tag numbers follow the world's lifetime across starts.
-        version: 4,
+        // 5: a read's characters named while its hour is still dated, not only in the last 192.
+        version: 5,
         ..family("parts")
     },
     // Its series queries route by the family kind `country-experience`.
@@ -710,7 +714,10 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // 3: stored names and icon choices: is_country_leader is now evaluated.
         // 4: rows, items and holds stored as replies show them; presence by tag.
         // 5: only what widget replies read is stored: no capture coverage, revisions or zero costs.
-        version: 5,
+        // 6: each segment's walk folds its countries into a lens the emit binds to; a payment's
+        //    item is its event's own cell, and an item's tooltip token is named when read.
+        // 7: items dated on the walk's views; late rows from an owned copy of the kit.
+        version: 7,
         ..family("politics_ledger")
     },
     Descriptor {
@@ -780,7 +787,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         ],
         // 2: its observers on the segment driver, their pages published as the walk did.
         // 3: its operators hand on what their reads changed, never tables beside the countries.
-        version: 3,
+        // 4: reads keyed by entity, observers told only what changed; rosters dated by one read.
+        version: 4,
         ..family("intelligence")
     },
     // Its series and events route by the family kind `research`.
@@ -790,7 +798,9 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["research"],
         // 2: a read of no slots is a known empty slot set.
         // 3: on the segment driver, published as a series root with its grants.
-        version: 3,
+        // 4: each segment's walk folds its countries past their first day into a lens its emit
+        //    binds to.
+        version: 4,
         ..family("research")
     },
     Descriptor {
@@ -834,7 +844,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["equipment-losses"],
         sections: &["equipment-loss"],
         // 2: its operators hand on compact reads, and its fold runs in shards by country.
-        version: 2,
+        // 3: each segment's lens folds its countries, and a leaf's change is an empty event.
+        version: 3,
         ..family("equipment_losses")
     },
     // Provinces' and states' names at hours: their name inputs as events on the segment driver.
@@ -870,8 +881,9 @@ pub(crate) static JOBS: &[Job] = &[
     },
     Job {
         name: "production-lines",
-        // 2: its operators hand on census deltas, and its fold runs in shards by country.
-        version: 2,
+        // 3: its chunks follow segments, each country's lines past a segment's first census
+        // folded by the walk into lenses its histories bind to.
+        version: 3,
         gates: &[
             "production-lines",
             "production-line-detail",

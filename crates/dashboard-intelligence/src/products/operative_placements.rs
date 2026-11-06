@@ -137,6 +137,125 @@ impl PlacementRead {
     }
 }
 
+/// What a membership read changed of the placements read before: the pairs whose operatives
+/// changed or came and those gone, or the read whole.
+#[derive(replay_spool::Spooled)]
+pub(crate) enum PlacementDelta {
+    Whole(PlacementRead),
+    Pairs {
+        warnings: Vec<String>,
+        empty: bool,
+        set: Vec<(PairKey, Vec<PlacedOperative>)>,
+        gone: Vec<PairKey>,
+    },
+}
+
+/// The pairs a read changed, or all.
+#[derive(Default)]
+pub(crate) struct PlacementTouched {
+    pub(crate) all: bool,
+    pub(crate) pairs: Vec<PairKey>,
+}
+
+impl PlacementRead {
+    /// What `self` changed of `old`: none where equal.
+    pub(crate) fn delta(&self, old: Option<&Self>) -> Option<PlacementDelta> {
+        let Some(old) = old else {
+            return Some(PlacementDelta::Whole(self.clone()));
+        };
+        match (&old.resolved, &self.resolved) {
+            (Ok(before), Ok(pairs)) => {
+                let (set, gone) = super::intelligence_prepared::delta::mapped(before, pairs);
+                (!set.is_empty()
+                    || !gone.is_empty()
+                    || old.warnings != self.warnings
+                    || old.empty != self.empty)
+                    .then(|| PlacementDelta::Pairs {
+                        warnings: self.warnings.clone(),
+                        empty: self.empty,
+                        set,
+                        gone,
+                    })
+            }
+            _ if old == self => None,
+            _ => Some(PlacementDelta::Whole(self.clone())),
+        }
+    }
+
+    /// Takes `delta` into the read `held`, telling `touched` which pairs it changed.
+    pub(crate) fn apply(
+        held: &mut Option<Self>,
+        delta: PlacementDelta,
+        touched: &mut PlacementTouched,
+    ) {
+        match delta {
+            PlacementDelta::Whole(read) => {
+                *held = Some(read);
+                touched.all = true;
+            }
+            PlacementDelta::Pairs {
+                warnings,
+                empty,
+                set,
+                gone,
+            } => {
+                let Some(read) = held else {
+                    return;
+                };
+                read.warnings = warnings;
+                read.empty = empty;
+                if let Ok(pairs) = &mut read.resolved {
+                    for key in gone {
+                        pairs.remove(&key);
+                        touched.pairs.push(key);
+                    }
+                    for (key, operatives) in set {
+                        touched.pairs.push(key.clone());
+                        pairs.insert(key, operatives);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl PlacementDelta {
+    pub(crate) fn heap(&self) -> usize {
+        let operatives = |operatives: &[PlacedOperative]| {
+            operatives
+                .iter()
+                .map(|operative| {
+                    std::mem::size_of::<PlacedOperative>()
+                        + operative.id.capacity()
+                        + operative.name.as_ref().map_or(0, String::capacity)
+                })
+                .sum::<usize>()
+        };
+        match self {
+            Self::Whole(read) => read.heap(),
+            Self::Pairs {
+                warnings,
+                set,
+                gone,
+                ..
+            } => {
+                warnings.iter().map(String::capacity).sum::<usize>()
+                    + set
+                        .iter()
+                        .map(|(key, value)| key.heap() + operatives(value))
+                        .sum::<usize>()
+                    + gone.iter().map(PairKey::heap).sum::<usize>()
+            }
+        }
+    }
+}
+
+impl PairKey {
+    fn heap(&self) -> usize {
+        std::mem::size_of::<Self>() + self.owner.2.capacity() + self.target.2.capacity()
+    }
+}
+
 /// The placements `captured` gives, its countries `inputs` (complete), its names localised by
 /// `localisation`.
 pub(crate) fn read(
@@ -190,9 +309,10 @@ fn recorded_operatives(frame: &DecodedFrame) -> Option<&[OperativeMembershipRow]
     frame.complete::<tables::OperativeMemberships>().ok()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[derive(replay_spool::Spooled)]
-struct PairKey {
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, replay_spool::Spooled,
+)]
+pub(crate) struct PairKey {
     owner: (u32, u32, String),
     target: (u32, u32, String),
 }
@@ -325,7 +445,30 @@ struct History {
     periods: Vec<PlacementPeriod>,
     reads: Vec<i32>,
     last_hour: Option<i32>,
-    held: Option<Vec<(PairKey, Vec<PlacedOperative>)>>,
+    /// The pairs held, each run going on through `last_hour` however far its own end says.
+    #[serde(with = "held_pairs")]
+    held: Option<BTreeMap<PairKey, Vec<PlacedOperative>>>,
+}
+
+/// The held pairs persist as a list of key and operatives.
+mod held_pairs {
+    use super::{BTreeMap, PairKey, PlacedOperative};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    type Held = Option<BTreeMap<PairKey, Vec<PlacedOperative>>>;
+
+    pub fn serialize<S: Serializer>(held: &Held, serializer: S) -> Result<S::Ok, S::Error> {
+        held.as_ref()
+            .map(|held| held.iter().collect::<Vec<_>>())
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Held, D::Error> {
+        Ok(
+            Option::<Vec<(PairKey, Vec<PlacedOperative>)>>::deserialize(deserializer)?
+                .map(|held| held.into_iter().collect()),
+        )
+    }
 }
 
 enum Observation {
@@ -334,7 +477,39 @@ enum Observation {
     Unavailable(PlacementAvailability),
 }
 
+/// What an hour's observation told of the pairs held.
+enum Told {
+    /// A read going on from the hour before, changing only these pairs.
+    Pairs(Vec<PairKey>),
+    /// A read taken whole.
+    Read,
+    /// A hold going on unchanged.
+    Held,
+    /// Every pair, without a read.
+    All,
+}
+
 impl History {
+    /// Carries the runs of the pairs held through the last hour observed: each went on
+    /// unchanged since it was last told.
+    fn carry(&mut self) {
+        let (Some(held), Some(last)) = (&self.held, self.last_hour) else {
+            return;
+        };
+        for key in held.keys() {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.history_visits += 1);
+            if let Some(run) = self
+                .pairs
+                .get_mut(key)
+                .and_then(|pair| pair.runs.last_mut())
+            {
+                run.last_hour = last;
+            }
+        }
+    }
+
+    /// Re-keys the pairs held by `countries`' identities; their runs are carried first.
     fn project<T: std::borrow::Borrow<CountryRow>>(
         &mut self,
         countries: &HashMap<u32, T>,
@@ -374,12 +549,54 @@ impl History {
                     value.clone(),
                 ))
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
         self.held = Some(projected);
         Ok(())
     }
 
+    /// The pair of `key`, made where it is new.
+    fn pair<'p>(
+        pairs: &'p mut BTreeMap<PairKey, OperativePlacementPair>,
+        key: &PairKey,
+    ) -> &'p mut OperativePlacementPair {
+        pairs
+            .entry(key.clone())
+            .or_insert_with(|| OperativePlacementPair {
+                id: serde_json::to_string(&(&key.owner, &key.target))
+                    .expect("serializable country identities"),
+                owner: key.owner.2.clone(),
+                target: key.target.2.clone(),
+                runs: Vec::new(),
+            })
+    }
+
+    /// Tells `pair`'s run of `value` at `hour`: the run going on to it, or a new one.
+    fn run(pair: &mut OperativePlacementPair, hour: i32, value: &[PlacedOperative], goes_on: bool) {
+        let count = u32::try_from(value.len()).expect("native operative census fits u32");
+        match pair.runs.last_mut() {
+            Some(run)
+                if goes_on
+                    && run.last_hour.checked_add(1) == Some(hour)
+                    && run.operatives == value =>
+            {
+                run.last_hour = hour
+            }
+            _ => pair.runs.push(OperativePlacementRun {
+                first_hour: hour,
+                last_hour: hour,
+                count,
+                operatives: value.to_vec(),
+            }),
+        }
+    }
+
     fn update(&mut self, hour: i32, observation: Observation) {
+        self.carry();
+        self.advance(hour, observation);
+    }
+
+    /// [`Self::update`] of pairs whose runs were carried through the last hour.
+    fn advance(&mut self, hour: i32, observation: Observation) {
         let consecutive = self.last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
         self.last_hour = Some(hour);
         if !consecutive {
@@ -388,7 +605,7 @@ impl History {
         let availability = match observation {
             Observation::Read(rows) => {
                 self.reads.push(hour);
-                self.held = Some(rows.into_iter().collect());
+                self.held = Some(rows);
                 PlacementAvailability::Recorded
             }
             Observation::Hold if self.held.is_some() => PlacementAvailability::Recorded,
@@ -412,33 +629,68 @@ impl History {
             return;
         }
         for (key, value) in self.held.as_ref().expect("recorded coverage has a read") {
-            let pair = self
-                .pairs
-                .entry(key.clone())
-                .or_insert_with(|| OperativePlacementPair {
-                    id: serde_json::to_string(&(&key.owner, &key.target))
-                        .expect("serializable country identities"),
-                    owner: key.owner.2.clone(),
-                    target: key.target.2.clone(),
-                    runs: Vec::new(),
-                });
-            let count = u32::try_from(value.len()).expect("native operative census fits u32");
-            match pair.runs.last_mut() {
-                Some(run)
-                    if consecutive
-                        && run.last_hour.checked_add(1) == Some(hour)
-                        && run.operatives == *value =>
-                {
-                    run.last_hour = hour
+            Self::run(Self::pair(&mut self.pairs, key), hour, value, consecutive);
+        }
+    }
+
+    /// [`Self::update`] of a read of `resolved` at `hour` going on from the read held the hour
+    /// before, of which only `keys` changed: only those pairs are told. False, changing
+    /// nothing, where it does not go on.
+    fn patch(
+        &mut self,
+        hour: i32,
+        resolved: &BTreeMap<PairKey, Vec<PlacedOperative>>,
+        keys: &[PairKey],
+    ) -> bool {
+        let consecutive = self.last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
+        let Some(last) = self
+            .last_hour
+            .filter(|_| consecutive && self.held.is_some())
+        else {
+            return false;
+        };
+        let held = self.held.as_mut().expect("a held read");
+        for key in keys {
+            if held.contains_key(key)
+                && let Some(run) = self
+                    .pairs
+                    .get_mut(key)
+                    .and_then(|pair| pair.runs.last_mut())
+            {
+                run.last_hour = last;
+            }
+            match resolved.get(key) {
+                Some(value) => {
+                    Self::run(Self::pair(&mut self.pairs, key), hour, value, true);
+                    held.insert(key.clone(), value.clone());
                 }
-                _ => pair.runs.push(OperativePlacementRun {
-                    first_hour: hour,
-                    last_hour: hour,
-                    count,
-                    operatives: value.clone(),
-                }),
+                None => {
+                    held.remove(key);
+                }
             }
         }
+        self.last_hour = Some(hour);
+        self.reads.push(hour);
+        self.periods
+            .last_mut()
+            .expect("a held read's coverage")
+            .last_hour = hour;
+        true
+    }
+
+    /// [`Self::update`] of a hold going on from the read held the hour before, its countries
+    /// unchanged: no pair changes. False, changing nothing, where it does not go on.
+    fn hold(&mut self, hour: i32) -> bool {
+        let consecutive = self.last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
+        if !consecutive || self.held.is_none() {
+            return false;
+        }
+        self.last_hour = Some(hour);
+        self.periods
+            .last_mut()
+            .expect("a held read's coverage")
+            .last_hour = hour;
+        true
     }
 }
 
@@ -496,10 +748,22 @@ impl Scan {
             }
             None => None,
         };
-        self.observe_read(decoded.hour, census, inputs, bound, read.as_ref())
+        self.observe_read(
+            decoded.hour,
+            census,
+            inputs,
+            bound,
+            read.as_ref(),
+            None,
+            true,
+        )
+        .map(drop)
     }
 
-    /// Observes `hour`, its census `read` given where [`Census::resolves`].
+    /// Observes `hour`, its census `read` given where [`Census::resolves`]: a read going on
+    /// from the hour before tells only the pairs of `changed`, where given, and a hold of
+    /// countries that did not change (`!rekey`) tells none.
+    #[allow(clippy::too_many_arguments)]
     fn observe_read(
         &mut self,
         hour: i32,
@@ -510,9 +774,12 @@ impl Scan {
             dashboard_text::catalogue::ContentError,
         >,
         read: Option<&PlacementRead>,
-    ) -> io::Result<()> {
+        changed: Option<&[PairKey]>,
+        rekey: bool,
+    ) -> io::Result<Told> {
         let mut observation = Observation::Unavailable(PlacementAvailability::TablesNotRecorded);
         let is_read = census.read;
+        let mut carried = false;
         if let Some(feature) = census.feature {
             if !feature {
                 observation = Observation::Unavailable(PlacementAvailability::FeatureAbsent);
@@ -522,13 +789,26 @@ impl Scan {
                 self.warnings.extend(read.warnings.iter().cloned());
                 match &read.resolved {
                     Ok(resolved) => {
-                        observation = Observation::Read(resolved.clone());
+                        if let Some(keys) = changed
+                            && self.history.patch(hour, resolved, keys)
+                        {
+                            return Ok(Told::Pairs(keys.to_vec()));
+                        }
+                        self.history
+                            .update(hour, Observation::Read(resolved.clone()));
+                        return Ok(Told::Read);
                     }
                     Err(reason) => {
                         self.warnings.insert(reason.clone());
                     }
                 }
             } else if !is_read && census.complete {
+                if !rekey && self.history.hold(hour) {
+                    return Ok(Told::Held);
+                }
+                // The runs go on under the keys they had before any projection renames them.
+                self.history.carry();
+                carried = true;
                 let Self {
                     history, warnings, ..
                 } = self;
@@ -556,8 +836,12 @@ impl Scan {
                 }
             }
         }
-        self.history.update(hour, observation);
-        Ok(())
+        if carried {
+            self.history.advance(hour, observation);
+        } else {
+            self.history.update(hour, observation);
+        }
+        Ok(Told::All)
     }
     fn reply(&self, branch: u64) -> OperativePlacementReply {
         OperativePlacementReply {

@@ -23,9 +23,6 @@ use viewer_foundation::map::{
 };
 use viewer_foundation::tooltip_painter::TooltipDefines;
 
-/// Combat portrait textures kept resident at once beyond the ones on screen.
-const COMBAT_PORTRAIT_CAPACITY: usize = 256;
-
 /// Portrait decode failures by sprite name: the refusal kind and its reason.
 type PortraitFailures = BTreeMap<String, (Option<native_gui::RefusalKind>, String)>;
 
@@ -939,7 +936,6 @@ impl Assets {
                     }
                 }
             }),
-            COMBAT_PORTRAIT_CAPACITY,
             lazy,
         );
         if !lazy_sprites.is_empty() {

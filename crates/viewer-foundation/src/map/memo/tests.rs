@@ -32,7 +32,7 @@ fn weather(rows: usize) -> SharedView {
 
 #[test]
 fn a_keyed_layer_builds_once_while_its_tables_are_shared() {
-    let layer = Keyed::<usize>::new(&[TableId::WeatherProvinces], 4);
+    let layer = Keyed::<usize>::new(&[TableId::WeatherProvinces]);
     let shared = weather(3);
     let (a, b) = (weather(1), weather(2));
     let builds = Cell::new(0);
@@ -61,7 +61,7 @@ fn a_keyed_layer_builds_once_while_its_tables_are_shared() {
 
 #[test]
 fn the_extra_key_separates_values_of_the_same_tables() {
-    let layer = Keyed::<i32, i32>::new(&[TableId::WeatherProvinces], 4);
+    let layer = Keyed::<i32, i32>::new(&[TableId::WeatherProvinces]);
     let shared = weather(1);
     let at = |hour: i32| {
         layer
@@ -95,7 +95,7 @@ fn a_projected_frame_holds_only_the_listed_tables() {
 
 #[test]
 fn a_settled_layer_keeps_one_value_while_its_content_is_unchanged() {
-    let layer = Settled::<usize>::new(&[TableId::WeatherProvinces], 4);
+    let layer = Settled::<usize>::new(&[TableId::WeatherProvinces]);
     let other = weather(1);
     let builds = Cell::new(0);
     let get = |weather: &SharedView| {
@@ -135,9 +135,9 @@ fn a_settled_layer_keeps_one_value_while_its_content_is_unchanged() {
 
 /// A settled layer of `WeatherProvinces` row counts, and how many builds
 /// it made.
-fn counting(capacity: usize) -> (Settled<usize>, std::sync::atomic::AtomicU32) {
+fn counting() -> (Settled<usize>, std::sync::atomic::AtomicU32) {
     (
-        Settled::new(&[TableId::WeatherProvinces], capacity),
+        Settled::new(&[TableId::WeatherProvinces]),
         std::sync::atomic::AtomicU32::new(0),
     )
 }
@@ -161,7 +161,7 @@ fn settle(
 
 #[test]
 fn a_settled_layer_settles_back_onto_an_older_value() {
-    let (layer, builds) = counting(4);
+    let (layer, builds) = counting();
     let three = settle(&layer, &builds, &weather(3));
     let two = settle(&layer, &builds, &weather(2));
     assert!(!Arc::ptr_eq(&three, &two));
@@ -172,19 +172,21 @@ fn a_settled_layer_settles_back_onto_an_older_value() {
 }
 
 #[test]
-fn a_settled_layer_evicts_its_least_recently_used_tables() {
-    let (layer, builds) = counting(2);
+fn a_settled_layer_keeps_the_latest_value_and_those_held() {
+    let (layer, builds) = counting();
     let count = || builds.load(std::sync::atomic::Ordering::SeqCst);
     let (a, b, c) = (weather(1), weather(2), weather(3));
-    settle(&layer, &builds, &a);
+    let held = settle(&layer, &builds, &a);
     settle(&layer, &builds, &b);
-    // A hit makes `a` the most recently used, so `c` evicts `b`.
-    settle(&layer, &builds, &a);
-    assert_eq!(count(), 2);
     settle(&layer, &builds, &c);
     assert_eq!(count(), 3);
-    settle(&layer, &builds, &a);
+    // `c`'s value is the latest: it hits though nothing else holds it.
+    settle(&layer, &builds, &c);
     assert_eq!(count(), 3);
+    // `a`'s value is held: it hits.
+    assert!(Arc::ptr_eq(&held, &settle(&layer, &builds, &a)));
+    assert_eq!(count(), 3);
+    // Nothing holds `b`'s value: it builds again.
     settle(&layer, &builds, &b);
     assert_eq!(count(), 4);
 }
@@ -192,7 +194,7 @@ fn a_settled_layer_evicts_its_least_recently_used_tables() {
 // regression: 9501a84f48 Build Settled on Recent so one hour's tables build once
 #[test]
 fn concurrent_callers_of_one_settled_hour_share_one_build() {
-    let (layer, builds) = counting(4);
+    let (layer, builds) = counting();
     let (shared, other) = (weather(3), weather(0));
     let started = std::sync::Barrier::new(4);
     let values: Vec<_> = std::thread::scope(|scope| {
@@ -220,7 +222,7 @@ fn concurrent_callers_of_one_settled_hour_share_one_build() {
 
 #[test]
 fn distinct_values_hold_each_allocation_once_most_recent_first() {
-    let (layer, builds) = counting(4);
+    let (layer, builds) = counting();
     let one = settle(&layer, &builds, &weather(1));
     let two = settle(&layer, &builds, &weather(2));
     // A second allocation of one row is a second entry for the same value.
@@ -233,7 +235,7 @@ fn distinct_values_hold_each_allocation_once_most_recent_first() {
 
 #[test]
 fn a_settled_layer_does_not_keep_failed_builds() {
-    let layer = Settled::<usize>::new(&[TableId::WeatherProvinces], 2);
+    let layer = Settled::<usize>::new(&[TableId::WeatherProvinces]);
     let shared = weather(1);
     let other = weather(1);
     let hour = frame(1, &shared, &other);
@@ -246,14 +248,14 @@ fn a_settled_layer_does_not_keep_failed_builds() {
 }
 
 #[test]
-fn recent_values_are_bounded_and_failures_are_not_kept() {
-    let recent = Recent::<u32, u32>::new(2);
+fn recent_values_live_while_held_and_failures_are_not_kept() {
+    let recent = Recent::<u32, u32>::new();
     for key in 0..3 {
         recent
             .get_or_insert_with(key, || Ok::<_, ()>(Arc::new(key)))
             .unwrap();
     }
-    // Key 0 was evicted, so it builds again.
+    // Only key 2, the latest, is held: key 0 builds again.
     let mut built = false;
     recent
         .get_or_insert_with(0, || {
@@ -279,7 +281,7 @@ fn recent_values_are_bounded_and_failures_are_not_kept() {
 
 #[test]
 fn concurrent_callers_of_one_key_share_one_build() {
-    let recent = Arc::new(Recent::<u32, u32>::new(4));
+    let recent = Arc::new(Recent::<u32, u32>::new());
     let builds = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let started = Arc::new(std::sync::Barrier::new(4));
     let threads: Vec<_> = (0..4)

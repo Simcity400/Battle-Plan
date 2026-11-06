@@ -12,7 +12,7 @@ use crate::{
     tests::rows::{Canon, Rows, whole},
 };
 use dashboard_series::{
-    Budget, Cache, Knownness, PageRead, Snapshot,
+    Knownness, PageRead, Snapshot,
     family::Directory,
     memory::Memory,
 };
@@ -99,9 +99,7 @@ fn reads_what_the_recording_gives<V: View>(label: &str) {
         }
         let resume = if placement.resume { cuts.clone() } else { Vec::new() };
         let (pages, root) = build(project::<V>(&frames, &placement.restarts), &cuts, &resume);
-        let budget = Budget::new(1 << 30);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, layout::SCHEMA).unwrap();
         for frame in &frames {
             assert_eq!(
@@ -155,9 +153,7 @@ fn a_ship_queued_at_two_ports_is_shown_at_both() {
         &[*hours.last().unwrap()],
         &[],
     );
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, layout::SCHEMA).unwrap();
     let mut shown = 0;
     for frame in &frames {
@@ -203,9 +199,7 @@ fn a_port_s_reply_lists_its_queue_in_order() {
         &[*hours.last().unwrap()],
         &[],
     );
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, layout::SCHEMA).unwrap();
     let mut queued = 0;
     for frame in &frames {

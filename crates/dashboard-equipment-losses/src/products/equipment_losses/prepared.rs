@@ -1,20 +1,30 @@
 //! Shared all-country loss observations, sparse exact values and native-dated ship events.
 //!
-//! Each hour's facts are queued as a step; a drain folds the queued steps over the countries
-//! in contiguous shards, each country keeping its own series at the branch's hours. A flush
-//! publishes every country's series as the one section.
+//! Each segment's lens folds every country on the walk's workers ([`lens`]); the emit binds the
+//! countries whose state the lens began from and splices what the lens made of them once per
+//! segment. Each hour's facts are queued as a step; a drain folds the queued steps over the
+//! countries no lens holds, in contiguous shards, each country keeping its own series at the
+//! branch's hours. A flush publishes every country's series as the one section. A leaf's change
+//! is an empty event at its hour: its total is the key's value there.
 use super::*;
-use super::columnar::{self, Drains, Metadata, Records, btree_bytes};
+use super::columnar::{self, Drains, Facts, Input, Metadata, Records, btree_bytes};
 #[cfg(test)]
 use dashboard_base::prepared::series::Run;
 use dashboard_base::prepared::{
+    coverage,
     prefix::Prefix,
     series::{self, Accumulator, Reader},
 };
 use serde_json::{Value, json};
 use std::{mem::size_of, sync::Arc};
 
+pub(super) mod lens;
+
 type Identity = (u32, u32);
+
+/// A key the catalogue names once its step is folded: its step, whether it is a leaf, its
+/// country or order of making, and its key in its country's series.
+type Name = ((u64, u8, u64, u64), Identity, Option<LeafKey>);
 
 #[derive(Serialize, Deserialize)]
 struct Country {
@@ -34,6 +44,9 @@ struct Country {
     /// Whether the steps folded so far hold it current, and found.
     #[serde(skip)]
     current: Option<bool>,
+    /// The unresolved sets it last took in, by read: one handed on again adds nothing.
+    #[serde(skip)]
+    taken_unresolved: [Option<Arc<BTreeSet<u32>>>; 4],
     #[serde(skip)]
     membership: Option<census::Membership>,
     /// The first step it takes.
@@ -42,6 +55,12 @@ struct Country {
     /// The queued ticks its series took.
     #[serde(skip)]
     ticked: usize,
+    /// Whether the segment's lens folds it: the emit's drains pass it by.
+    #[serde(skip)]
+    lensed: bool,
+    /// In a lens, what it made of the segment's hours.
+    #[serde(skip)]
+    out: Option<Box<lens::Out>>,
 }
 
 /// The existing naming and uncertainty inputs contain changes, not hourly values.
@@ -111,8 +130,8 @@ struct Taken {
     lend_read: Option<i32>,
     metadata: Arc<Metadata>,
     drains: Arc<Drains>,
-    records: Vec<(u32, Records)>,
-    unresolved: [BTreeSet<u32>; 4],
+    records: Arc<Vec<(u32, Records)>>,
+    unresolved: [Arc<BTreeSet<u32>>; 4],
     /// The ticks through this hour's advance.
     tick: usize,
 }
@@ -260,6 +279,17 @@ pub struct Prepared {
     /// The most the queued steps held at once.
     #[serde(skip)]
     queued_peak: usize,
+    /// In a segment's lens, what it begins its countries from; None in the emit.
+    #[serde(skip)]
+    lens: Option<Box<lens::Mode>>,
+    /// The segment a lens folds the bound countries of, until it hands them back.
+    #[serde(skip)]
+    span: Option<Box<lens::Span>>,
+    /// Keys made since the catalogue last named them, and how many countries were made.
+    #[serde(skip)]
+    names: Vec<Name>,
+    #[serde(skip)]
+    made: u64,
 }
 
 fn state(format: replay_data::format::FormatVersion) -> State {
@@ -391,7 +421,7 @@ fn holding(shard: &[(Identity, &mut Country)], slot: u32) -> std::ops::Range<usi
 
 /// The countries of `shard` an hour selects, ascending.
 fn chosen(shard: &[(Identity, &mut Country)], taken: &Taken, index: u64) -> Vec<usize> {
-    let born = |at: usize| shard[at].1.born <= index;
+    let born = |at: usize| shard[at].1.born <= index && !shard[at].1.lensed;
     if taken.every {
         return (0..shard.len()).filter(|&at| born(at)).collect();
     }
@@ -442,7 +472,11 @@ fn fold(shard: &mut [(Identity, &mut Country)], queue: &Queue) -> Result<Folded,
                 last,
                 lend_read,
             } => {
-                for (_, country) in shard.iter_mut().filter(|(_, country)| country.born <= index) {
+                // A lens's country meets no gap: its lens stops short of one, but where lost.
+                for (_, country) in shard
+                    .iter_mut()
+                    .filter(|(_, country)| country.born <= index && !country.lensed)
+                {
                     country.scanned.advance(first.saturating_sub(1));
                     exchanges_read(country, *lend_read);
                     country.scanned.missing(*first, *last, LandSource::CombatLog);
@@ -483,10 +517,29 @@ fn fold(shard: &mut [(Identity, &mut Country)], queue: &Queue) -> Result<Folded,
                         },
                     )?;
                 }
+                // A lens leaves ships to the emit: their counts are kept from the branch's start.
+                for (slot, records) in taken.records.iter() {
+                    let Some(ships) = records.ships.as_deref() else {
+                        continue;
+                    };
+                    for at in holding(shard, *slot) {
+                        let (identity, country) = &mut shard[at];
+                        if country.lensed && country.born <= index && country.current == Some(true)
+                        {
+                            let identity = *identity;
+                            sunk(country, taken.at, ships, &mut folded).map_err(|error| Failed {
+                                at: (index, identity),
+                                error,
+                            })?;
+                        }
+                    }
+                }
             }
         }
     }
-    for (identity, country) in shard.iter_mut() {
+    // Without ticks (a lens's queue) no country's place in them moved from the start.
+    let ticked = if queue.ticks.is_empty() { &mut [][..] } else { shard };
+    for (identity, country) in ticked.iter_mut() {
         let identity = *identity;
         catch_up(country, &queue.ticks, queue.ticks.len()).map_err(|error| Failed {
             at: (u64::MAX, identity),
@@ -495,6 +548,29 @@ fn fold(shard: &mut [(Identity, &mut Country)], queue: &Queue) -> Result<Folded,
         country.ticked = 0;
     }
     Ok(folded)
+}
+
+/// A bound country's ships read at `hour`: each count past the last seen sank anew.
+fn sunk(country: &mut Country, hour: i32, ships: &[ShipRead], folded: &mut Folded) -> io::Result<()> {
+    let mut scanned = Scanned::default();
+    ship_counts(&mut scanned, &mut country.state, ships);
+    for ((_, variant), events) in scanned.events {
+        if let Some(variant) = variant {
+            folded.variants.insert(variant);
+        }
+        for (sink_hour, delta) in events {
+            country.values.event(
+                0,
+                hour,
+                &ShipLoss {
+                    sink_hour,
+                    variant,
+                    delta_raw: delta.to_string(),
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// One country's hour: its spans, its reads' amounts, and their publication.
@@ -508,7 +584,15 @@ fn take(
 ) -> io::Result<()> {
     catch_up(country, ticks, taken.tick)?;
     let at = taken.at;
-    exchanges_read(country, taken.lend_read);
+    // A lens's first take of a country it began from the restart leaves the dates it read
+    // lend-lease to the emit, which knows whether that record was read the hour before.
+    let begun = country
+        .out
+        .as_deref_mut()
+        .is_some_and(|out| out.begun && !std::mem::replace(&mut out.taken, true));
+    if !begun {
+        exchanges_read(country, taken.lend_read);
+    }
     country.scanned.advance(at.saturating_sub(1));
     let selected = match country.current {
         Some(true) => Selection::Found(identity.0),
@@ -539,11 +623,19 @@ fn take(
             .ok()
             .map(|at| &taken.records[at].1);
         let (scanned, state) = (&mut country.scanned, &mut country.state);
-        if let Some(ships) = records.and_then(|records| records.ships.as_deref()) {
+        let mut lens = country.out.as_deref_mut();
+        if lens.is_none()
+            && let Some(ships) = records.and_then(|records| records.ships.as_deref())
+        {
             ship_counts(scanned, state, ships);
         }
         if let Some(records) = records {
-            convoy_rows(scanned, state, at, &records.convoys);
+            match &mut lens {
+                Some(out) => convoy_rows(scanned, state, at, &records.convoys, |key, count| {
+                    out.first_convoy(at, key, count)
+                }),
+                None => convoy_rows(scanned, state, at, &records.convoys, |_, _| {}),
+            }
         }
         // A country holding exchanges takes every lend-lease read, to see them end.
         if taken.lend_process
@@ -552,15 +644,33 @@ fn take(
                 || !state.exchanges.is_empty())
         {
             let pools = records.map_or(&[][..], |records| records.lend.as_slice());
-            lend_lease_rows(scanned, state, at, pools);
+            match &mut lens {
+                Some(out) => out.lend(scanned, state, at, pools),
+                None => lend_lease_rows(scanned, state, at, pools),
+            }
         }
         if let Some(records) = records {
-            combat_rows(scanned, state, at, &records.combat);
+            match &mut lens {
+                Some(out) => combat_rows(scanned, state, at, &records.combat, |key, amount| {
+                    out.first_log(at, key, amount)
+                }),
+                None => combat_rows(scanned, state, at, &records.combat, |_, _| {}),
+            }
         }
-        for unresolved in &taken.unresolved[..3] {
-            scanned.unresolved.extend(unresolved);
+        // The sets only grow: one this country took in already adds nothing.
+        for (read, unresolved) in taken.unresolved.iter().enumerate() {
+            let held = &mut country.taken_unresolved[read];
+            if held.as_ref().is_some_and(|held| Arc::ptr_eq(held, unresolved)) {
+                continue;
+            }
+            let into = if read < 3 {
+                &mut scanned.unresolved
+            } else {
+                &mut scanned.combat_unresolved
+            };
+            into.extend(unresolved.iter().copied());
+            *held = Some(Arc::clone(unresolved));
         }
-        scanned.combat_unresolved.extend(&taken.unresolved[3]);
     }
     publish(identity, country, at, taken.interrupted, drained, index, folded)
 }
@@ -604,6 +714,21 @@ fn publish(
         changed_read = country.last_read.as_ref() != Some(&read);
         country.last_read = Some(read);
         country.read_key = Some((coverage, reason.map(str::to_owned), unread));
+    }
+    if let Some(out) = country.out.as_deref_mut() {
+        if changed_read {
+            out.versions.push(hour);
+            if out.first_read.is_none() {
+                out.first_read = country.last_read.clone().map(|read| (hour, read));
+            }
+        }
+        return out.publish(
+            &mut country.scanned,
+            &mut country.totals,
+            &mut country.leaves,
+            hour,
+            drains,
+        );
     }
     let version = country
         .values
@@ -676,14 +801,7 @@ fn publish(
             .values
             .observe_boundary(key, hour, Some(value), false, changed);
         if changed {
-            country.values.event(
-                key,
-                hour,
-                &LossPoint {
-                    hour,
-                    total_raw: value.to_string(),
-                },
-            )?;
+            country.values.event_raw(key, hour, Vec::new())?;
         }
     }
     Ok(())
@@ -722,6 +840,10 @@ impl Prepared {
             identities_incomplete: false,
             queue: Queue::default(),
             queued_peak: 0,
+            lens: None,
+            span: None,
+            names: Vec::new(),
+            made: 0,
         }
     }
 
@@ -734,36 +856,71 @@ impl Prepared {
         super::columnar::Projector::new(replay)
     }
 
-    /// Queues an hour's facts as a step, after what the branch itself keeps of it: its hours,
-    /// identities, memberships, design names and the absent country's spans.
+    /// Takes up what the segment's lens hands on, then queues the hour's facts as a step.
     pub fn observe_projected(&mut self, hour: super::columnar::Hour) -> io::Result<()> {
         let _cpu =
             replay_frame::cpu::scope("equipment_losses.columnar.emit", Some("equipment_losses"));
         let at = hour.hour;
-        if i64::from(at) < self.next {
-            return Ok(());
-        }
-        let Some(input) = hour.input else {
-            self.forget_runtime();
-            return Ok(());
+        let begun = match hour.lens.map(|lens| *lens) {
+            Some(lens::Handed::Begun(begun)) => Some(begun),
+            Some(lens::Handed::Part(part)) => {
+                self.splice(part)?;
+                None
+            }
+            None => None,
         };
+        match hour.input {
+            Facts::Read(input) => {
+                if let Some(begun) = &begun {
+                    self.begin(begun, at)?;
+                }
+                if self.observe_input(at, &input)? {
+                    self.variants
+                        .observe_hour(at, input.names, |_| input.variants);
+                }
+                if let Some(begun) = begun {
+                    self.bind(begun);
+                }
+            }
+            Facts::Other => {
+                if i64::from(at) >= self.next {
+                    self.forget_runtime();
+                }
+                return Ok(());
+            }
+            Facts::Lens => return Ok(()),
+        }
+        let held = self.queue.held();
+        self.queued_peak = self.queued_peak.max(held);
+        if self.queue.steps.len() >= QUEUED || held >= QUEUED_BYTES {
+            self.drain()?;
+        }
+        Ok(())
+    }
+
+    /// Queues an hour's facts as a step, after what the branch itself keeps of it: its hours,
+    /// identities, memberships and the absent country's spans; whether it was the branch's next.
+    fn observe_input(&mut self, at: i32, input: &Input) -> io::Result<bool> {
+        if i64::from(at) < self.next {
+            return Ok(false);
+        }
         let interrupted = self.interrupted || self.next < i64::from(at);
         if self.next < i64::from(at) {
             self.finish_block(at - 1);
         }
-        self.clock.advance(at)?;
-        self.queue.ticks.push(Tick::Advance(at));
-        self.variants
-            .observe_hour(at, input.names, |_| input.variants);
+        if self.lens.is_none() {
+            self.clock.advance(at)?;
+            self.queue.ticks.push(Tick::Advance(at));
+        }
         self.absent.advance(at.saturating_sub(1));
         let index = self.steps;
         self.steps += 1;
         let mut listed = Vec::new();
         let mut current = None;
-        if let Some(identities) = input.identities {
+        if let Some(identities) = &input.identities {
             listed.extend(self.current.keys().copied());
             let mut now = BTreeMap::new();
-            for (identity, resolved) in identities {
+            for &(identity, resolved) in identities {
                 if resolved {
                     if !self.countries.contains_key(&identity) {
                         self.make(identity, input.format, index);
@@ -795,7 +952,7 @@ impl Prepared {
         if input.membership_complete {
             let held = self.memberships.get_or_insert_with(BTreeMap::new);
             let mut changes = Vec::new();
-            for (slot, membership) in input.memberships {
+            for &(slot, membership) in &input.memberships {
                 if held.insert(slot, membership) != Some(membership) {
                     slots.push(slot);
                     changes.push((slot, membership));
@@ -850,21 +1007,16 @@ impl Prepared {
                 slots,
                 lend_process: input.lend_process,
                 lend_read,
-                metadata: input.metadata,
-                drains: input.drains,
-                records: input.records,
-                unresolved: input.unresolved,
+                metadata: Arc::clone(&input.metadata),
+                drains: Arc::clone(&input.drains),
+                records: Arc::clone(&input.records),
+                unresolved: input.unresolved.clone(),
                 tick,
             },
         );
         self.next = i64::from(at) + 1;
         self.interrupted = false;
-        let held = self.queue.held();
-        self.queued_peak = self.queued_peak.max(held);
-        if self.queue.steps.len() >= QUEUED || held >= QUEUED_BYTES {
-            self.drain()?;
-        }
-        Ok(())
+        Ok(true)
     }
 
     /// A country first resolved at step `index`, going on from the absent country's spans.
@@ -877,10 +1029,25 @@ impl Prepared {
             .memberships
             .as_ref()
             .and_then(|memberships| memberships.get(&identity.0).copied().flatten());
+        let mut scanned = self.absent.clone();
+        let mut out = None;
+        let mut lensed = false;
+        if let Some(mode) = &self.lens {
+            out = Some(Box::new(mode.begin(identity, index, &mut continuation)));
+        } else if let Some(span) = self
+            .span
+            .as_deref()
+            .filter(|span| span.newborns() && index > span.index)
+        {
+            // The lens begins it from its absent country, as the emit's stood before the segment.
+            scanned = span.absent.clone();
+            continuation.destruction_withheld.clone_from(&span.withheld);
+            lensed = true;
+        }
         self.countries.insert(
             identity,
             Country {
-                scanned: self.absent.clone(),
+                scanned,
                 state: continuation,
                 totals: BTreeMap::new(),
                 leaves: BTreeMap::new(),
@@ -889,9 +1056,12 @@ impl Prepared {
                 last_read: None,
                 read_key: None,
                 current: None,
+                taken_unresolved: Default::default(),
                 membership,
                 born: index,
                 ticked: self.queue.ticks.len(),
+                lensed,
+                out,
             },
         );
         self.queue.made.push((index, identity));
@@ -912,11 +1082,17 @@ impl Prepared {
             .collect();
         let mut folded = Vec::new();
         let mut failed: Option<Failed> = None;
-        for shard in shared(
-            &mut countries,
-            |(_, country)| 1 + country.leaves.len(),
-            |shard| fold(shard, &queue),
-        ) {
+        // A lens folds on its walk's worker; the emit shares its countries out over spare cores.
+        let shards = if self.lens.is_some() {
+            vec![fold(&mut countries, &queue)]
+        } else {
+            shared(
+                &mut countries,
+                |(_, country)| 1 + country.leaves.len() * usize::from(!country.lensed),
+                |shard| fold(shard, &queue),
+            )
+        };
+        for shard in shards {
             match shard {
                 Ok(shard) => folded.push(shard),
                 Err(error) => {
@@ -929,24 +1105,36 @@ impl Prepared {
         if let Some(failed) = failed {
             return Err(failed.error);
         }
-        // Keys are numbered as they were first met: by step, a step's new countries first.
-        let mut fresh: Vec<((u64, u8, u64, u64), Identity, Option<LeafKey>)> = queue
-            .made
-            .iter()
-            .enumerate()
-            .map(|(order, &(index, identity))| ((index, 0, order as u64, 0), identity, None))
-            .collect();
-        let mut variants = BTreeSet::new();
-        for shard in folded {
-            variants.extend(shard.variants);
-            fresh.extend(shard.fresh.into_iter().map(|(index, identity, local, leaf)| {
-                let packed = u64::from(identity.0) << 32 | u64::from(identity.1);
-                ((index, 1, packed, local), identity, Some(leaf))
-            }));
+        // A lens names nothing: the emit numbers what it hands on.
+        if self.lens.is_some() {
+            return Ok(());
         }
-        self.loss_variants.extend(variants);
-        fresh.sort_unstable_by_key(|item| item.0);
-        for ((_, _, _, local), identity, leaf) in fresh {
+        // Keys are numbered as they were first met: by step, a step's new countries first.
+        for &(index, identity) in &queue.made {
+            self.names
+                .push(((index, 0, self.made, 0), identity, None));
+            self.made += 1;
+        }
+        for shard in folded {
+            self.loss_variants.extend(shard.variants);
+            self.names
+                .extend(shard.fresh.into_iter().map(|(index, identity, local, leaf)| {
+                    let packed = u64::from(identity.0) << 32 | u64::from(identity.1);
+                    ((index, 1, packed, local), identity, Some(leaf))
+                }));
+        }
+        // A bound country's keys are met with the segment's hand-over, which names them all.
+        if !self.span.as_deref().is_some_and(lens::Span::live) {
+            self.name()?;
+        }
+        Ok(())
+    }
+
+    /// Names the keys made since, in the order they were first met.
+    fn name(&mut self) -> io::Result<()> {
+        let mut names = std::mem::take(&mut self.names);
+        names.sort_unstable_by_key(|item| item.0);
+        for ((_, _, _, local), identity, leaf) in names {
             let name = match leaf {
                 None => key(&mut self.keys, &("country", identity))?,
                 Some(leaf) => key(&mut self.keys, &("loss", identity, leaf))?,
@@ -967,6 +1155,21 @@ impl Prepared {
         self.current = Arc::default();
         self.memberships = None;
         self.identities_incomplete = false;
+    }
+
+    /// Hours through `last` were lost from the recording, after those its last flush published:
+    /// they are missing, and every country's totals restart after them.
+    pub fn lost(&mut self, last: i32) -> io::Result<()> {
+        self.drain()?;
+        self.abandon()?;
+        self.finish_block(last);
+        self.drain()?;
+        for country in self.countries.values_mut() {
+            for total in country.totals.values_mut() {
+                *total = 0;
+            }
+        }
+        Ok(())
     }
 
     pub fn finish_block(&mut self, last: i32) {
@@ -1000,6 +1203,7 @@ impl Prepared {
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("equipment_losses:series_flush");
         self.drain()?;
+        self.abandon()?;
         if let Ok(last) = i32::try_from(self.next - 1) {
             self.absent.advance(last);
             for country in self.countries.values_mut() {
@@ -1100,6 +1304,9 @@ pub struct PreparedLossesReply {
     pub destruction_counted_from: Option<i32>,
     pub retained_months: Option<i32>,
     pub warnings: Vec<String>,
+    /// The first hour of each stretch after hours the recording lost: every total restarts
+    /// there, and a total at a later hour counts from the last of them before it.
+    pub restarts: Vec<i32>,
     #[serde(flatten)]
     pub prefix: Prefix,
     pub approximate: Vec<dashboard_base::products::country_groups::HourSpan>,
@@ -1109,6 +1316,14 @@ pub struct PreparedLossesReply {
     pub prepared_from: f64,
     pub prepared_to: f64,
     pub prepared_width: u32,
+}
+
+/// The total of leaf `actor` at `hour`, an hour it changed: its value there.
+fn total_at(reader: &mut Reader<'_>, actor: u64, hour: i32) -> io::Result<i128> {
+    reader
+        .value_at(actor, hour)?
+        .map(|run| run.value)
+        .ok_or_else(|| dashboard_core::invalid("A prepared loss change has no total"))
 }
 
 fn sampled_events(
@@ -1166,24 +1381,73 @@ fn sampled_events(
     }
     let mut samples = BTreeMap::new();
     for hour in hours {
-        if let Some((_, row)) = reader.latest_event(actor, hour)? {
-            let point: LossPoint = serde_json::from_slice(&row)?;
-            let value = point
-                .total_raw
-                .parse::<i128>()
-                .map_err(|_| dashboard_core::invalid("Invalid prepared loss amount"))?;
-            samples.insert(point.hour, value);
+        if let Some((changed, _)) = reader.latest_event(actor, hour)? {
+            samples.insert(changed, total_at(reader, actor, changed)?);
         }
     }
-    let mut previous = 0;
+    // Each stretch after lost hours publishes totals counted from its own start.
+    let (mut previous, mut stretch) = (0, None);
     Ok(samples
         .into_iter()
         .map(|(hour, value)| {
+            let since = coverage::since(super::FAMILY, hour);
+            if since != stretch {
+                (previous, stretch) = (0, since);
+            }
             let delta = value - previous;
             previous = value;
             (hour, delta)
         })
         .collect())
+}
+
+/// Each leaf's running totals restarted at `restarts`, the first hours of the stretches after
+/// hours the recording lost: a total at a stretch's first hour counts from there, never across.
+fn restart_totals(causes: &mut [LossCause], restarts: &[i32]) -> io::Result<()> {
+    if restarts.is_empty() {
+        return Ok(());
+    }
+    let parse = |point: &LossPoint| {
+        point
+            .total_raw
+            .parse::<i128>()
+            .map_err(|_| dashboard_core::invalid("Invalid prepared loss amount"))
+    };
+    for leaf in causes.iter_mut().flat_map(|cause| cause.leaves.iter_mut()) {
+        let mut points = Vec::with_capacity(leaf.points.len() + restarts.len());
+        // The running total summed from the branch's start, its stretch's start, and the total
+        // shown last.
+        let (mut offset, mut last, mut shown) = (0_i128, 0_i128, 0_i128);
+        let mut next = restarts.iter().copied().peekable();
+        let zero = |hour: i32| LossPoint {
+            hour,
+            total_raw: "0".into(),
+        };
+        for point in &leaf.points {
+            let total = parse(point)?;
+            while let Some(since) = next.next_if(|&since| since <= point.hour) {
+                offset = last;
+                if since < point.hour && shown != 0 {
+                    points.push(zero(since));
+                }
+                shown = 0;
+            }
+            last = total;
+            shown = total - offset;
+            points.push(LossPoint {
+                hour: point.hour,
+                total_raw: shown.to_string(),
+            });
+        }
+        for since in next {
+            if shown != 0 {
+                points.push(zero(since));
+            }
+            shown = 0;
+        }
+        leaf.points = points;
+    }
+    Ok(())
 }
 
 pub fn query(
@@ -1249,7 +1513,9 @@ pub fn query(
     };
     scanned.format = source.replay_ref().format;
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let reply = reply_with_content(source, &params.selection, context, &scanned)?;
+    let mut reply = reply_with_content(source, &params.selection, context, &scanned)?;
+    let restarts = coverage::restarts(super::FAMILY, i32::MIN, i32::MAX);
+    restart_totals(&mut reply.causes, &restarts)?;
     let result = PreparedLossesReply {
         branch_id: reply.branch_id,
         tag: reply.tag,
@@ -1263,6 +1529,7 @@ pub fn query(
         destruction_counted_from: reply.destruction_counted_from,
         retained_months: reply.retained_months,
         warnings: reply.warnings,
+        restarts,
         approximate: prefix.revisable(source, branch),
         prefix,
         prepared_reads: params.reads,
@@ -1630,9 +1897,20 @@ pub fn series_query(
                     .and_then(|size| u32::try_from(size).ok()),
             )?;
             let page = reader.events(&actors, from, to, cursor, size)?;
+            let mut rows = Vec::with_capacity(page.rows.len());
+            for row in page.rows {
+                // A leaf's change holds nothing: its point is its total there.
+                let point = if row.key == country {
+                    serde_json::from_slice::<serde_json::Value>(&row.row)?
+                } else {
+                    let total = total_at(&mut reader, row.key, row.hour)?;
+                    json!({"hour": row.hour, "totalRaw": total.to_string()})
+                };
+                rows.push(json!({"key":row.key.to_string(), "hour":row.hour, "ordinal":row.ordinal.to_string(), "row":point}));
+            }
             Ok(
                 json!({"firstOrdinal":page.first.to_string(), "total":page.total.to_string(), "cursor":page.cursor.map(|cursor| cursor.to_string()),
-                "rows": page.rows.into_iter().map(|row| Ok::<_, io::Error>(json!({"key":row.key.to_string(), "hour":row.hour, "ordinal":row.ordinal.to_string(), "row":serde_json::from_slice::<serde_json::Value>(&row.row)?}))).collect::<io::Result<Vec<_>>>()?}),
+                "rows": rows}),
             )
         }
         "events-clusters" => {

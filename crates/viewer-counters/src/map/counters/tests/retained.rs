@@ -263,8 +263,8 @@ fn synthetic_hour_with_history(
         None,
         history,
         None,
-        &type_tint::Memo::new(type_tint::TABLES, 1),
-        &MissionMemo::new(1),
+        &type_tint::Memo::new(type_tint::TABLES),
+        &MissionMemo::new(),
         moves.movement_reads(),
         Err("unreached synthetic naval topology".into()),
     )

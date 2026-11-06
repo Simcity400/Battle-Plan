@@ -575,7 +575,7 @@ impl Prepared {
                             source,
                             &requested(frame.branch, frame.hour, requests),
                             context,
-                            frame,
+                            frame.into(),
                             flag,
                         )
                     },
@@ -870,7 +870,8 @@ impl Sighting {
     }
 }
 
-/// The title operands of `wanted`, read apart; `frame` is built only when a pick names a province.
+/// The title operands of `wanted`, read apart; `frame` is read only when a pick names a
+/// province.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sighting(
     source: &Source,
@@ -878,7 +879,7 @@ pub(crate) fn sighting(
     (branch, hour): (u64, i32),
     wanted: &[&sinkings::ShipEvent],
     points: Result<&dyn Fn(u32) -> Option<i32>, String>,
-    frame: impl FnOnce() -> io::Result<DecodedFrame>,
+    frame: replay_frame::frame::HourFrame<'_>,
     flag: &AtomicBool,
 ) -> io::Result<Option<(Sighting, catalogue::OwnRefusals)>> {
     let (sighted, noted) = catalogue::capture_isolated(|| {
@@ -892,24 +893,16 @@ pub(crate) fn sighting(
             return Ok(None);
         };
         check_cancel(flag)?;
-        // A frame that cannot be built stops preparation, never titles a ship.
-        let mut failed = None;
         let sighting = sight(&geo, wanted, points, |requests| {
-            let frame = frame().inspect_err(|error| {
-                failed = Some(io::Error::new(error.kind(), error.to_string()));
-            })?;
             place_names::at_frame_unreported(
                 source,
                 &requested(branch, hour, requests),
                 context,
-                &frame,
+                frame,
                 flag,
             )
         });
-        match failed {
-            Some(error) => Err(error),
-            None => Ok(Some(sighting)),
-        }
+        Ok::<_, io::Error>(Some(sighting))
     });
     Ok(sighted?.map(|sighting| (sighting, noted)))
 }

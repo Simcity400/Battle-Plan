@@ -1,6 +1,11 @@
 use super::*;
 use crate::scripted_text::{EventObject, EventScope, random};
 use installed_content_core::ResolvedLayers;
+use replay_data::rows::{PoliticalPartyRow, TechSharingGroupRow, TechSharingMemberRow};
+
+const PARTY_TOKEN: u64 = mask::<PoliticalPartyRow>(&["token"]);
+const SHARING_COUNT: u64 = mask::<TechSharingGroupRow>(&["member_count"]);
+const SHARING_MEMBER: u64 = mask::<TechSharingMemberRow>(&["country"]);
 
 #[cfg(test)]
 mod tests;
@@ -104,20 +109,20 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .map(|item| self.politics_ideology(item.key.as_deref(), scopes))
             .collect::<Result<Vec<_>, _>>()?;
-        let parties = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::PoliticalParties>()
-            .map_err(|why| why.to_string())?;
+        let parties = self.complete::<tables::PoliticalParties>(PARTY_TOKEN)?;
+        let recorded = self.context.text.recorded();
+        let ours = parties.keyed(|key| recorded.slot((key >> 32) as u32) == Some(country));
+        let tokens = ours
+            .map(|party| party.map(|party| party.token.clone()).map_err(built))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut text = self.line(b"EFFECT_SET_POPULARITIES", &[], scopes, true)?;
         for group in groups {
             // A missing recorded ideology-party row is a gap,
             // not permission to invent a party the runtime roster did not hold.
-            if !parties.iter().any(|party| {
-                self.context.text.recorded().slot(party.country) == Some(country)
-                    && party.token.eq_ignore_ascii_case(group.token.as_bytes())
-            }) {
+            if !tokens
+                .iter()
+                .any(|token| token.eq_ignore_ascii_case(group.token.as_bytes()))
+            {
                 return Err(format!("PoliticalParties lacks ideology {}", group.token));
             }
             let value = selectors
@@ -159,11 +164,7 @@ impl Renderer<'_, '_, '_> {
         country: u32,
     ) -> Result<String, String> {
         let game_seed = self
-            .context
-            .text
-            .frame()
-            .clock_seed()
-            .map_err(|why| why.to_string())?
+            .clock_seed()?
             .ok_or("Clock lacks focus-description seed")?;
         let hash = id.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
             (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
@@ -326,23 +327,20 @@ impl Renderer<'_, '_, '_> {
             // Native unset token.
             return empty::describe();
         }
-        let frame = self.context.text.frame();
-        let groups = frame
-            .complete::<tables::TechSharingGroups>()
-            .map_err(|why| why.to_string())?;
-        let Some(group) = groups.iter().find(|group| group.id == token) else {
+        let groups = self.complete::<tables::TechSharingGroups>(SHARING_COUNT)?;
+        let Some(group) = keyed(&groups, u128::from(token))? else {
             return empty::describe();
         };
         if group.member_count == 0 {
             return empty::describe();
         }
-        let members = frame
-            .complete::<tables::TechSharingMembers>()
-            .map_err(|why| why.to_string())?;
-        if !members.iter().any(|member| {
-            member.group == token
-                && self.context.text.recorded().slot(member.country) == Some(country)
-        }) {
+        let members = self.complete::<tables::TechSharingMembers>(SHARING_MEMBER)?;
+        let low = u128::from(token) << 32;
+        if find(members.span(low, low | u128::from(u32::MAX)), |member| {
+            self.context.text.recorded().slot(member.country) == Some(country)
+        })?
+        .is_none()
+        {
             return empty::describe();
         }
         let id = std::str::from_utf8(installed_content_core::parser::c_string(id))

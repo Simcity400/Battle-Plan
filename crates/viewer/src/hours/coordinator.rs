@@ -56,6 +56,8 @@ pub(super) struct Driver<B: BuildTarget = Coordinator> {
     pool_blocked: bool,
     output_blocked: bool,
     started: Instant,
+    /// Whether this view counts against the pool's shared width.
+    busy: bool,
 }
 
 pub(super) fn start(core: Coordinator) -> Driver {
@@ -120,6 +122,7 @@ impl<B: BuildTarget> Driver<B> {
             pool_blocked: false,
             output_blocked: false,
             started: Instant::now(),
+            busy: false,
         }
     }
 
@@ -240,6 +243,7 @@ impl<B: BuildTarget> Driver<B> {
                 timing,
                 children,
                 part,
+                held,
             } => {
                 let valid = self
                     .ledger
@@ -251,6 +255,7 @@ impl<B: BuildTarget> Driver<B> {
                         return false;
                     };
                     pending.take(ticket, name, timing, children, *part);
+                    pending.held.extend(held);
                 }
             }
         }
@@ -309,7 +314,16 @@ impl<B: BuildTarget> Driver<B> {
         }
     }
 
+    /// Counts this view against the shared width while it has hours to build, and takes its share.
+    fn take_width(&mut self) {
+        let busy = self.ledger.len() != 0 || self.next_hour().is_some();
+        self.core.width.set_busy(self.busy, busy);
+        self.busy = busy;
+        self.ledger.set_limit(self.core.width.share());
+    }
+
     fn turn(&mut self) -> Turn {
+        self.take_width();
         let mut progress = false;
         for ticket in self.ledger.terminal_retired() {
             self.targets.remove(&ticket);
@@ -478,22 +492,15 @@ impl<B: BuildTarget> Driver<B> {
         let ticket = plan.ticket;
         let key = (plan.want.branch, plan.hour);
         let prepared = self.core.prepare(plan, current);
-        let reused = match &prepared {
-            PreparedTarget::Ready(_) => u8::MAX,
+        match &prepared {
+            PreparedTarget::Ready(_) => assert!(self.ledger.gap(ticket)),
             PreparedTarget::Parts(pending, _) => {
                 self.slot_tickets.insert(key, ticket);
-                if pending.received == 0 {
-                    0
-                } else {
-                    0b1111_1000
-                }
+                assert!(self.ledger.decoded(ticket, pending.prefilled));
+                // Parts another view's builder delivers are in flight without a job here.
+                assert!(self.ledger.awaiting(ticket, pending.awaited));
             }
-        };
-        assert!(if reused == u8::MAX {
-            self.ledger.gap(ticket)
-        } else {
-            self.ledger.decoded(ticket, reused)
-        });
+        }
         self.targets.insert(ticket, prepared);
     }
 
@@ -561,6 +568,7 @@ pub(super) fn retarget_ledger(
 
 impl<B: BuildTarget> Drop for Driver<B> {
     fn drop(&mut self) {
+        self.core.width.set_busy(self.busy, false);
         if let Some(reading) = &self.reading {
             reading.handle.cancel();
         }

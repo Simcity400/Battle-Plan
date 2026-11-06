@@ -5,7 +5,7 @@ use dashboard_text::{
     subunit_requirements::{Content, Sources},
 };
 use replay_data::rows::tables;
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, HourFrame};
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Content is parsed once for a bound stack; local definitions belong to this
@@ -79,6 +79,78 @@ pub fn reused_sources(
         .map_err(|why| format!("Template equipment inputs unavailable: {why}"))
 }
 
+/// [`sources`] of any frame's tables, a walk's views among them.
+pub fn sources_in(frame: HourFrame<'_>) -> Result<Sources<'_>, String> {
+    Sources::read_in(frame).map_err(|why| format!("Template equipment inputs unavailable: {why}"))
+}
+
+/// [`reused_sources`] of any frame's tables, a walk's views among them.
+pub fn reused_sources_in(
+    frame: HourFrame<'_>,
+    index: Arc<dashboard_text::subunit_requirements::SourceIndex>,
+) -> Result<Sources<'_>, String> {
+    Sources::reuse_in(frame, index)
+        .map_err(|why| format!("Template equipment inputs unavailable: {why}"))
+}
+
+/// [`template`] of any frame's tables, a walk's views among them: the template's composition
+/// row built alone.
+pub fn template_in<'s, 'a: 's>(
+    content: &Result<Arc<Content>, String>,
+    sources: impl FnOnce() -> &'s Result<Sources<'a>, String>,
+    frame: HourFrame<'_>,
+    handle: u64,
+) -> Result<Vec<(String, i64)>, String> {
+    if let Some(decoded) = frame.decoded() {
+        return template(content, sources, decoded.decoded_frame(), handle);
+    }
+    let content = content.as_ref().map_err(Clone::clone)?;
+    let sources = sources().as_ref().map_err(Clone::clone)?;
+    let rows = frame
+        .complete::<tables::DivisionTemplateIcons>(u64::MAX)
+        .map_err(|why| format!("{COMPOSITION_UNAVAILABLE}{why}"))?;
+    let template = rows
+        .get(u128::from(handle))
+        .ok()
+        .flatten()
+        .ok_or_else(|| format!("Template {handle} equipment composition was not recorded"))?;
+    needs(content, sources, &template, handle)
+}
+
+/// A template's need from its composition row.
+fn needs(
+    content: &Content,
+    sources: &Sources<'_>,
+    template: &replay_data::rows::DivisionTemplateIconRow,
+    handle: u64,
+) -> Result<Vec<(String, i64)>, String> {
+    if template.model_unreadable != 0 {
+        return Err(format!(
+            "Template {handle} grouped sub-units were not readable"
+        ));
+    }
+    let mut needs = Vec::<(String, i64)>::new();
+    let mut indices = BTreeMap::<String, usize>::new();
+    for unit in template.subunits.iter().filter(|unit| unit.token != 0) {
+        let group = content
+            .group(template, sources, unit.token, unit.local, unit.count)
+            .map_err(|why| format!("Template {handle} equipment need: {why}"))?;
+        for (archetype, amount) in group.requirements.iter() {
+            let amount = amount.checked_mul(i64::from(group.count)).ok_or_else(|| {
+                format!("Template {handle} {archetype} equipment need overflows fixed5")
+            })?;
+            let index = *indices.entry(archetype.clone()).or_insert_with(|| {
+                needs.push((archetype.clone(), 0));
+                needs.len() - 1
+            });
+            needs[index].1 = needs[index].1.checked_add(amount).ok_or_else(|| {
+                format!("Template {handle} {archetype} equipment need overflows fixed5")
+            })?;
+        }
+    }
+    Ok(needs)
+}
+
 /// [`Needs::warnings`] of `content`.
 pub fn warnings(content: &Result<Arc<Content>, String>) -> impl Iterator<Item = &str> {
     content.as_ref().ok().into_iter().flat_map(|content| {
@@ -105,32 +177,7 @@ pub fn template<'s, 'a: 's>(
     let at = rows
         .binary_search_by_key(&handle, |row| row.template)
         .map_err(|_| format!("Template {handle} equipment composition was not recorded"))?;
-    let template = &rows[at];
-    if template.model_unreadable != 0 {
-        return Err(format!(
-            "Template {handle} grouped sub-units were not readable"
-        ));
-    }
-    let mut needs = Vec::<(String, i64)>::new();
-    let mut indices = BTreeMap::<String, usize>::new();
-    for unit in template.subunits.iter().filter(|unit| unit.token != 0) {
-        let group = content
-            .group(template, sources, unit.token, unit.local, unit.count)
-            .map_err(|why| format!("Template {handle} equipment need: {why}"))?;
-        for (archetype, amount) in group.requirements.iter() {
-            let amount = amount.checked_mul(i64::from(group.count)).ok_or_else(|| {
-                format!("Template {handle} {archetype} equipment need overflows fixed5")
-            })?;
-            let index = *indices.entry(archetype.clone()).or_insert_with(|| {
-                needs.push((archetype.clone(), 0));
-                needs.len() - 1
-            });
-            needs[index].1 = needs[index].1.checked_add(amount).ok_or_else(|| {
-                format!("Template {handle} {archetype} equipment need overflows fixed5")
-            })?;
-        }
-    }
-    Ok(needs)
+    needs(content, sources, &rows[at], handle)
 }
 
 #[cfg(test)]

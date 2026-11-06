@@ -25,10 +25,6 @@ pub use crate::idea_names::{CountryLook, IdeaCountry, IdeaName, idea_name};
 
 /// Longest side of a returned idea icon or portrait.
 const ICON_EDGE: u32 = 96;
-/// Idea artwork kept per catalogue.
-const MAX_CACHED_ARTWORK: usize = 2048;
-/// Recorded portraits kept per catalogue.
-const MAX_CACHED_PORTRAITS: usize = 512;
 
 /// See [`PoliticsContent::recorded_name`].
 pub fn recorded_name(
@@ -789,12 +785,10 @@ impl PoliticsContent {
             |catalogue| recorded_portrait_in(catalogue, kind, text, edge),
         );
         let loaded = drawn.get().clone();
-        let mut cached = store.lock().unwrap_or_else(|error| error.into_inner());
-        // Start over rather than grow without bound, as idea artwork does.
-        if cached.len() >= MAX_CACHED_PORTRAITS {
-            cached.clear();
-        }
-        cached.insert(key, drawn);
+        store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(key, drawn);
         loaded
     }
 
@@ -887,15 +881,10 @@ impl PoliticsContent {
             self.draw_idea_artwork(token, character, country, saved, idea, role)
         });
         let result = drawn.get().clone();
-        let mut cached = self
-            .artwork
+        self.artwork
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        // A long campaign names a few hundred ideas; start over rather than grow without bound.
-        if cached.len() >= MAX_CACHED_ARTWORK {
-            cached.clear();
-        }
-        cached.insert(key, drawn);
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(key, drawn);
         result
     }
 

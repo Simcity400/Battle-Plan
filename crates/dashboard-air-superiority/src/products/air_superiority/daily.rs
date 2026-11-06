@@ -4,7 +4,7 @@
 //! roster's resolved sides with the same code.
 
 use super::{AirCell, AirSideCell, AirValue, assignment::AssignedSide};
-use dashboard_base::prepared::facts::{DecodeBudget, Resident};
+use dashboard_base::prepared::facts::Resident;
 use dashboard_core::invalid;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, sync::Arc};
@@ -14,21 +14,6 @@ use std::{collections::HashMap, io, sync::Arc};
 pub(super) type Pair = (String, (i64, i64));
 /// A read of a country's or side's scores: unknown, no air object, or scores.
 pub(super) type Score = Result<Option<(i64, i64)>, ()>;
-
-fn budget(size: usize, parts: &[DecodeBudget]) -> DecodeBudget {
-    parts.iter().fold(
-        DecodeBudget {
-            fixed_bytes: size,
-            bytes_per_encoded_byte: 0,
-        },
-        |total, part| DecodeBudget {
-            fixed_bytes: total.fixed_bytes.saturating_add(part.fixed_bytes),
-            bytes_per_encoded_byte: total
-                .bytes_per_encoded_byte
-                .saturating_add(part.bytes_per_encoded_byte),
-        },
-    )
-}
 
 /// A side of a native roster other than a lone country, at its place.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,16 +33,6 @@ impl Resident for Group {
             .saturating_add(self.leader.heap_bytes())
             .saturating_add(self.members.heap_bytes())
     }
-    fn decode_budget() -> DecodeBudget {
-        budget(
-            size_of::<Self>(),
-            &[
-                Vec::<u64>::decode_budget(),
-                Option::<String>::decode_budget(),
-                Vec::<String>::decode_budget(),
-            ],
-        )
-    }
 }
 
 /// The sides a day's sample hour assigns, keyless: its groups, and the lone
@@ -71,9 +46,6 @@ pub(super) struct Roster {
 impl Resident for Roster {
     fn heap_bytes(&self) -> usize {
         self.groups.heap_bytes()
-    }
-    fn decode_budget() -> DecodeBudget {
-        budget(size_of::<Self>(), &[Vec::<Group>::decode_budget()])
     }
 }
 
@@ -91,9 +63,6 @@ impl Resident for Operands {
     fn heap_bytes(&self) -> usize {
         0
     }
-    fn decode_budget() -> DecodeBudget {
-        budget(size_of::<Self>(), &[])
-    }
 }
 
 /// A day's theatre membership: each theatre's regions, sorted.
@@ -105,12 +74,6 @@ pub(super) struct Theatres {
 impl Resident for Theatres {
     fn heap_bytes(&self) -> usize {
         self.regions.heap_bytes()
-    }
-    fn decode_budget() -> DecodeBudget {
-        budget(
-            size_of::<Self>(),
-            &[Vec::<(String, Vec<u32>)>::decode_budget()],
-        )
     }
 }
 impl Theatres {
@@ -157,9 +120,6 @@ pub(super) struct Day {
 impl Resident for Day {
     fn heap_bytes(&self) -> usize {
         self.used.heap_bytes()
-    }
-    fn decode_budget() -> DecodeBudget {
-        budget(size_of::<Self>(), &[Option::<Vec<u32>>::decode_budget()])
     }
 }
 
@@ -344,26 +304,6 @@ impl Layout {
     }
     fn lone_count(&self) -> usize {
         self.present.len() - self.members.len()
-    }
-    /// What it holds beyond its shared tag set.
-    pub fn bytes(&self) -> usize {
-        let text = |tag: &String| tag.capacity() + size_of::<String>();
-        self.groups.capacity() * size_of::<Group>()
-            + self
-                .groups
-                .iter()
-                .map(|group| {
-                    group.factions.capacity() * 8
-                        + group.leader.as_ref().map_or(0, text)
-                        + group.members.iter().map(text).sum::<usize>()
-                })
-                .sum::<usize>()
-            + self.members.iter().map(text).sum::<usize>()
-            + self
-                .member_of
-                .keys()
-                .map(|tag| text(tag) + 16)
-                .sum::<usize>()
     }
 }
 

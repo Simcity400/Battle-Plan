@@ -333,7 +333,6 @@ impl Product for CountryFuelAwardHistory {
     const KEY: &'static str = "country-fuel-award-history";
     // Keys use receipt-time raw operands; numeric history does not read content.
     const CONTENT_DEPENDENT: bool = false;
-    const PUBLISHED: bool = true;
     type Params = FuelAwardHistoryParams;
     type Reply = FuelAwardHistoryReply;
     fn types() -> Vec<String> {

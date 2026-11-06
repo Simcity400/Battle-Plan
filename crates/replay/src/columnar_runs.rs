@@ -22,7 +22,7 @@
 use crate::{
     branches::BranchStart,
     columnar_file::Capture,
-    columnar_frames::{Damage, Limits, Recording, Segment, Views, metrics, schema, wire},
+    columnar_frames::{Damage, Recording, Segment, Views, metrics, schema, wire},
     container::{BlockIndex, Parallel, Replay},
     format::FormatVersion,
     frame::{DecodedFrame, Metrics, TableView},
@@ -34,11 +34,9 @@ use crate::{
     },
     spool::ControlRecord,
 };
-use engine_allocation::{
-    credit::MemoryBudget,
-    labels::{self, Kind as Label},
-};
-pub use replay_columnar::runs::{Layout, beyond_memory};
+use engine_allocation::labels::{self, Kind as Label};
+use job_priority::SpawnCarried as _;
+pub use replay_columnar::runs::Layout;
 use replay_columnar::{
     leaf::{Int, Reader, Writer},
     manifest::{Manifest, Section, Status},
@@ -48,13 +46,14 @@ use replay_columnar::{
 };
 use std::{
     cell::RefCell,
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, PoisonError, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        mpsc,
     },
 };
 use zstd::bulk::{Compressor, Decompressor};
@@ -68,9 +67,7 @@ const MAGIC: &[u8; 8] = b"H4RUNS07";
 const FOOTER: usize = 8 * 5 + MAGIC.len();
 /// The zstd level pages are packed at, on the walks' workers.
 pub const LEVEL: i32 = 3;
-/// The dictionary chunks an index's readers share once none holds them, by their raw bytes.
-const SHARED_STRINGS: usize = 16 << 20;
-/// What a walk's segment file gathers before it goes to disk, and what the emit copies at once.
+/// What each of a walk's files gathers before it goes to disk, and what the copier copies at once.
 const LANDING_BYTES: usize = 256 << 10;
 const COPY_BYTES: usize = 1 << 20;
 
@@ -192,11 +189,8 @@ impl Folder {
         let at = self.next.fetch_add(1, Ordering::Relaxed);
         Ok(Landing {
             at,
-            pages: Temp::create(self.pages(at))?,
-            gathered: Vec::new(),
-            landed: 0,
-            open: Temp::create(self.path.join(format!("seg-{at}.open")))?,
-            kept: 0,
+            pages: Spill::new(Temp::create(self.pages(at))?),
+            open: Spill::new(Temp::create(self.path.join(format!("seg-{at}.open")))?),
         })
     }
 }
@@ -212,11 +206,9 @@ struct Temp(Option<(File, PathBuf)>);
 
 impl Temp {
     fn create(path: PathBuf) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
+        let file =
+            segments::temporary(OpenOptions::new().read(true).write(true).create_new(true))
+                .open(&path)?;
         Ok(Self(Some((file, path))))
     }
 
@@ -243,65 +235,100 @@ impl Drop for Temp {
     }
 }
 
-/// Walk `at`'s files: its pages, views and dictionary chunks as they will lie in the index,
-/// `landed` bytes on disk and the rest gathered; and its open pages' bytes, `kept` of them.
-struct Landing {
-    at: u64,
-    pages: Temp,
+/// One of a walk's files written end to end: `landed` bytes on disk, then those it gathered,
+/// which go to disk [`LANDING_BYTES`] at a time.
+struct Spill {
+    file: Temp,
     gathered: Vec<u8>,
     landed: u64,
-    open: Temp,
-    kept: u64,
 }
 
-impl Landing {
+impl Spill {
+    fn new(file: Temp) -> Self {
+        Self {
+            file,
+            gathered: Vec::new(),
+            landed: 0,
+        }
+    }
+
+    /// The bytes it holds, on disk and gathered.
+    fn len(&self) -> u64 {
+        self.landed + self.gathered.len() as u64
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         if !self.gathered.is_empty() {
-            write_at(self.pages.file()?, self.landed, &self.gathered)?;
+            write_at(self.file.file()?, self.landed, &self.gathered)?;
             self.landed += self.gathered.len() as u64;
             self.gathered.clear();
         }
         Ok(())
     }
 
+    /// Appends `bytes`: where they lie.
+    fn append(&mut self, bytes: &[u8]) -> io::Result<u64> {
+        let offset = self.len();
+        if self.gathered.len() + bytes.len() > LANDING_BYTES {
+            self.flush()?;
+        }
+        if bytes.len() > LANDING_BYTES {
+            write_at(self.file.file()?, self.landed, bytes)?;
+            self.landed += bytes.len() as u64;
+        } else {
+            let _memory = labels::kind(Label::IndexSpill);
+            engine_allocation::reserve(&mut self.gathered, bytes.len())?;
+            self.gathered.extend_from_slice(bytes);
+        }
+        Ok(offset)
+    }
+
+    /// Fills `into` with its bytes from `at`, which it holds: those on disk read, the rest
+    /// copied from those gathered.
+    fn read(&self, at: u64, into: &mut [u8]) -> io::Result<()> {
+        let on_disk = self.landed.saturating_sub(at).min(into.len() as u64) as usize;
+        let (disk, gathered) = into.split_at_mut(on_disk);
+        if !disk.is_empty() {
+            read_at(self.file.file()?, at, disk)?;
+        }
+        if !gathered.is_empty() {
+            let from = (at + on_disk as u64 - self.landed) as usize;
+            gathered.copy_from_slice(&self.gathered[from..][..gathered.len()]);
+        }
+        Ok(())
+    }
+}
+
+/// Walk `at`'s files: its pages, views and dictionary chunks as they will lie in the index;
+/// and its open pages' bytes, read back once as the walk ends.
+struct Landing {
+    at: u64,
+    pages: Spill,
+    open: Spill,
+}
+
+impl Landing {
     /// The segment's walk wrote `piece`: its file whole, left to the folder for the emit, its
     /// open pages' bytes let go.
     fn land(mut self, piece: Piece) -> io::Result<Landed> {
-        self.flush()?;
-        let Self {
-            at,
-            pages,
-            landed,
-            open,
-            ..
-        } = self;
+        self.pages.flush()?;
+        let Self { at, pages, open } = self;
         drop(open);
-        pages.keep();
+        let length = pages.landed;
+        pages.file.keep();
         Ok(Landed {
             piece,
             pages: at,
-            length: landed,
+            length,
         })
     }
 }
 
 impl Store for Landing {
     fn put(&mut self, stored: &[u8], raw: u32) -> io::Result<Location> {
-        let offset = self.landed + self.gathered.len() as u64;
         let length = u32::try_from(stored.len()).map_err(|_| invalid("A page passes 4 GiB"))?;
-        if self.gathered.len() + stored.len() > LANDING_BYTES {
-            self.flush()?;
-        }
-        if stored.len() > LANDING_BYTES {
-            write_at(self.pages.file()?, self.landed, stored)?;
-            self.landed += stored.len() as u64;
-        } else {
-            let _memory = labels::kind(Label::IndexSpill);
-            engine_allocation::reserve(&mut self.gathered, stored.len())?;
-            self.gathered.extend_from_slice(stored);
-        }
         Ok(Location {
-            offset,
+            offset: self.pages.append(stored)?,
             stored: length,
             raw,
         })
@@ -310,20 +337,17 @@ impl Store for Landing {
 
 impl Disk for Landing {
     fn keep(&mut self, bytes: &[u8]) -> io::Result<u64> {
-        let at = self.kept;
-        write_at(self.open.file()?, at, bytes)?;
-        self.kept += bytes.len() as u64;
-        Ok(at)
+        self.open.append(bytes)
     }
 
     fn kept(&mut self, at: u64, into: &mut [u8]) -> io::Result<()> {
         if at
             .checked_add(into.len() as u64)
-            .is_none_or(|end| end > self.kept)
+            .is_none_or(|end| end > self.open.len())
         {
             return Err(invalid("An open page's bytes lie past those kept"));
         }
-        read_at(self.open.file()?, at, into)
+        self.open.read(at, into)
     }
 }
 
@@ -336,34 +360,6 @@ struct Landed {
     length: u64,
 }
 
-impl Landed {
-    /// Appends its file of `folder` to `out`, through `buffer`, then removes it.
-    fn append(
-        &self,
-        folder: &Folder,
-        out: &mut impl Write,
-        buffer: &mut Vec<u8>,
-    ) -> io::Result<()> {
-        let path = folder.pages(self.pages);
-        let file = File::open(&path)?;
-        if buffer.is_empty() {
-            let _memory = labels::kind(Label::IndexSpill);
-            *buffer = engine_allocation::filled(COPY_BYTES, 0_u8)?;
-        }
-        let mut at = 0;
-        while at < self.length {
-            let count = (self.length - at).min(buffer.len() as u64) as usize;
-            read_at(&file, at, &mut buffer[..count])?;
-            out.write_all(&buffer[..count])?;
-            at += count as u64;
-        }
-        // Closed first: an open file cannot be removed everywhere.
-        drop(file);
-        let _ = fs::remove_file(&path);
-        Ok(())
-    }
-}
-
 /// One segment's walk writing its pages, its native recording's runs from the index's run
 /// `first`, to its files, until `stop` is set.
 struct Walk<'s> {
@@ -373,7 +369,7 @@ struct Walk<'s> {
     landing: Option<Landing>,
 }
 
-impl Operator for Walk<'_> {
+impl<W> Operator<W> for Walk<'_> {
     type Output = Landed;
 
     fn start(&mut self, start: Start<'_>, _branch: u64, _first: i32) -> io::Result<()> {
@@ -383,12 +379,9 @@ impl Operator for Walk<'_> {
         })
     }
 
-    fn hour(&mut self, hour: &Hour<'_>, _out: &mut dyn Sink<Landed>) -> io::Result<()> {
+    fn hour(&mut self, hour: &Hour<'_, W>, _out: &mut dyn Sink<Landed>) -> io::Result<()> {
         if self.stop.load(Ordering::Relaxed) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "A change-run index's preparation was stopped",
-            ));
+            return Err(stopped());
         }
         let landing = self
             .landing
@@ -413,10 +406,122 @@ impl Operator for Walk<'_> {
     }
 }
 
-/// Segments' files appended one after another to `out`, from the offset it stands at.
+/// Segments' files appended one after another to `out` by a copier thread of its own, in the
+/// order the emit places them: the emit only names where each lands, so copying the index's
+/// bytes is never its serial work.
 struct Appended<W> {
-    out: W,
+    /// Where the next segment's bytes land.
     offset: u64,
+    queue: Option<mpsc::Sender<(PathBuf, u64)>>,
+    copier: Option<std::thread::JoinHandle<io::Result<W>>>,
+    /// The copier's failure, which the next placement meets; its own result says it again.
+    failed: Arc<Mutex<Option<io::Error>>>,
+    /// Set as it is dropped unfinished: the copier copies nothing more.
+    abandoned: Arc<AtomicBool>,
+}
+
+impl<W: Write + Send + 'static> Appended<W> {
+    /// Copies into `out`, which stands at `offset`, the files placed.
+    fn new(out: W, offset: u64) -> io::Result<Self> {
+        let (queue, placed) = mpsc::channel::<(PathBuf, u64)>();
+        let failed = Arc::new(Mutex::new(None));
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let (failing, stopping) = (Arc::clone(&failed), Arc::clone(&abandoned));
+        let label = labels::current();
+        let copier = std::thread::Builder::new()
+            .name("change-run copier".to_owned())
+            .spawn_carried(move || {
+                let _memory = labels::resume(label);
+                let mut out = out;
+                let mut buffer = Vec::new();
+                let mut failure = None;
+                for (path, length) in placed {
+                    if failure.is_none() && !stopping.load(Ordering::Relaxed) {
+                        failure = copy(&path, length, &mut out, &mut buffer).err();
+                        if let Some(error) = &failure {
+                            *failing.lock().unwrap_or_else(PoisonError::into_inner) =
+                                Some(io::Error::new(error.kind(), error.to_string()));
+                        }
+                    }
+                    let _ = fs::remove_file(&path);
+                }
+                match failure {
+                    Some(error) => Err(error),
+                    None => Ok(out),
+                }
+            })?;
+        Ok(Self {
+            offset,
+            queue: Some(queue),
+            copier: Some(copier),
+            failed,
+            abandoned,
+        })
+    }
+
+    /// Places the `length` bytes of the file at `path` next: where they land.
+    fn place(&mut self, path: PathBuf, length: u64) -> io::Result<u64> {
+        if let Some(error) = self
+            .failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            return Err(error);
+        }
+        let at = self.offset;
+        let queue = self
+            .queue
+            .as_ref()
+            .ok_or_else(|| io::Error::other("A change-run index's copier has ended"))?;
+        queue
+            .send((path, length))
+            .map_err(|_| io::Error::other("A change-run index's copier has ended"))?;
+        self.offset = at
+            .checked_add(length)
+            .ok_or_else(|| invalid("A change-run index passes 2^64 bytes"))?;
+        Ok(at)
+    }
+
+    /// Waits for every file placed to be copied: `out`, and where the next bytes land.
+    fn finish(mut self) -> io::Result<(W, u64)> {
+        drop(self.queue.take());
+        let copier = self
+            .copier
+            .take()
+            .ok_or_else(|| io::Error::other("A change-run index's copier has ended"))?;
+        let out = copier
+            .join()
+            .map_err(|_| io::Error::other("A change-run index's copier panicked"))??;
+        Ok((out, self.offset))
+    }
+}
+
+impl<W> Drop for Appended<W> {
+    fn drop(&mut self) {
+        self.abandoned.store(true, Ordering::Relaxed);
+        drop(self.queue.take());
+        if let Some(copier) = self.copier.take() {
+            let _ = copier.join();
+        }
+    }
+}
+
+/// Appends the `length` bytes of the file at `path` to `out`, through `buffer`.
+fn copy(path: &Path, length: u64, out: &mut impl Write, buffer: &mut Vec<u8>) -> io::Result<()> {
+    let file = File::open(path)?;
+    if buffer.is_empty() {
+        let _memory = labels::kind(Label::IndexSpill);
+        *buffer = engine_allocation::filled(COPY_BYTES, 0_u8)?;
+    }
+    let mut at = 0;
+    while at < length {
+        let count = (length - at).min(buffer.len() as u64) as usize;
+        read_at(&file, at, &mut buffer[..count])?;
+        out.write_all(&buffer[..count])?;
+        at += count as u64;
+    }
+    Ok(())
 }
 
 /// Why `runs` (branch, first hour, ordinals) do not hold exactly the hours `index`'s blocks
@@ -782,7 +887,7 @@ fn copy_withheld(withheld: &[(usize, String)]) -> io::Result<Vec<(usize, String)
 }
 
 /// The schema tables of `tables`, ascending, and each one's kinds.
-fn indexed(tables: &[TableId]) -> io::Result<(Vec<usize>, Vec<Vec<Kind>>)> {
+fn table_kinds(tables: &[TableId]) -> io::Result<(Vec<usize>, Vec<Vec<Kind>>)> {
     let schema = schema()?;
     let mut indexed: Vec<usize> = tables.iter().map(|table| table.index()).collect();
     indexed.sort_unstable();
@@ -804,16 +909,17 @@ pub struct Preparation<W> {
     reads: Vec<Vec<TableId>>,
     pending: Vec<Vec<u8>>,
     tables: Vec<usize>,
+    /// The same tables, as its lanes read them.
+    ids: Vec<TableId>,
     kinds: Vec<Vec<Kind>>,
     level: i32,
+    /// Before its folder: the copier stops before the files it reads go.
     store: Appended<W>,
     pack: Zstd,
     folder: Folder,
-    /// What the emit copies a segment's file through.
-    copy: Vec<u8>,
 }
 
-impl<W: Write + Send> Preparation<W> {
+impl<W: Write + Send + 'static> Preparation<W> {
     /// The index of `tables` of `whole`'s native recordings, of its campaign, their runs in
     /// turn, naming its pending sessions, laid out as `layout`, its pages packed at zstd
     /// `level`, into `out`, its walks' files in a folder of its own in `scratch`. Every
@@ -838,7 +944,7 @@ impl<W: Write + Send> Preparation<W> {
                 "A change-run index's native recordings are of one campaign",
             ));
         }
-        let (tables, kinds) = indexed(tables)?;
+        let (tables, kinds) = table_kinds(tables)?;
         let mut shapes = Vec::new();
         let mut natives = engine_allocation::vec(recordings.len())?;
         let mut firsts = engine_allocation::vec(recordings.len())?;
@@ -868,11 +974,18 @@ impl<W: Write + Send> Preparation<W> {
             engine_allocation::reserve(&mut reads, 1)?;
             reads.push(held);
         }
-        let mut store = Appended { out, offset: 0 };
-        store.out.write_all(MAGIC)?;
-        store.offset = MAGIC.len() as u64;
+        let mut out = out;
+        out.write_all(MAGIC)?;
+        let folder = Folder::new(scratch)?;
+        let store = Appended::new(out, MAGIC.len() as u64)?;
+        let ids = engine_allocation::collect_vec(
+            TableId::ALL
+                .into_iter()
+                .filter(|table| tables.binary_search(&table.index()).is_ok()),
+        )?;
         Ok(Self {
             index: Index::new(layout, &tables, kinds.clone(), &shapes)?,
+            ids,
             campaign: engine_allocation::copy_vec(campaign)?,
             natives,
             firsts,
@@ -887,14 +1000,24 @@ impl<W: Write + Send> Preparation<W> {
             level,
             store,
             pack: Zstd::new(level)?,
-            folder: Folder::new(scratch)?,
-            copy: Vec::new(),
+            folder,
         })
     }
 
     /// The lane writing the pages of its native recording `native`, its walks stopping once
     /// `stop` is set and running for the job of the thread that makes the lane.
     pub fn lane<'a>(&'a mut self, native: usize, stop: &'a AtomicBool) -> io::Result<Lane<'a>> {
+        self.lane_for(native, stop, job_priority::JobPriority::current())
+    }
+
+    /// [`Self::lane`], its walks running for `job`, in a run whose walks share the world `V`
+    /// with other lanes: it reads only the tables it indexes, and none of the world.
+    pub fn lane_for<'a, V: 'a>(
+        &'a mut self,
+        native: usize,
+        stop: &'a AtomicBool,
+        job: job_priority::JobPriority,
+    ) -> io::Result<Lane<'a, V>> {
         let first = *self
             .firsts
             .get(native)
@@ -907,12 +1030,11 @@ impl<W: Write + Send> Preparation<W> {
             level,
             store,
             folder,
-            copy,
             ..
         } = self;
         let (layout, level, tables, kinds) = (index.layout, *level, &*tables, &*kinds);
+        let reads: &'a [Vec<TableId>] = reads;
         let folder: &'a Folder = folder;
-        let job = job_priority::JobPriority::current();
         let make = move |_: &Segment| -> io::Result<Walk<'a>> {
             // Walks run on the executor's workers, which start at no job's priority.
             job.clone().enter(job_priority::Level::Normal);
@@ -924,17 +1046,20 @@ impl<W: Write + Send> Preparation<W> {
             })
         };
         // Only the directories are taken in, in segment order: each segment's bytes are its
-        // file's, appended whole.
+        // file's, appended whole by the copier while the emit goes on.
         let emit = move |chunk: Chunk<'_, Landed>| -> io::Result<()> {
             for landed in chunk.items {
-                let at = store.offset;
-                landed.append(folder, &mut store.out, copy)?;
-                store.offset += landed.length;
+                let at = store.place(folder.pages(landed.pages), landed.length)?;
                 index.append(landed.piece, at)?;
             }
             Ok(())
         };
         Ok(Lane::new("change runs", make, emit).reads(&reads[native]))
+    }
+
+    /// The tables it indexes, in table order.
+    pub fn tables(&self) -> &[TableId] {
+        &self.ids
     }
 
     /// The finished file, once a lane walked every segment of each of `recordings`.
@@ -977,9 +1102,8 @@ impl<W: Write + Send> Preparation<W> {
             pending: self.pending,
         }
         .write()?;
-        let directory_at = self.store.offset;
+        let (mut out, directory_at) = self.store.finish()?;
         let summary_at = directory_at + stored.len() as u64;
-        let mut out = self.store.out;
         out.write_all(&stored)?;
         out.write_all(&summary)?;
         for word in [
@@ -1004,7 +1128,7 @@ impl<W: Write + Send> Preparation<W> {
 /// table indexed. Each run's statistics. An index stopped, or any segment of which reached its
 /// emit short or not at all, is refused and never finished.
 #[allow(clippy::too_many_arguments)]
-pub fn prepare<W: Write + Send>(
+pub fn prepare<W: Write + Send + 'static>(
     whole: &Whole,
     tables: &[TableId],
     layout: Layout,
@@ -1014,12 +1138,6 @@ pub fn prepare<W: Write + Send>(
     stop: &AtomicBool,
     out: W,
 ) -> io::Result<(W, Vec<segments::Stats>)> {
-    let stopped = || {
-        io::Error::new(
-            io::ErrorKind::Interrupted,
-            "A change-run index's preparation was stopped",
-        )
-    };
     let recordings = &whole.recordings;
     let mut preparation = Preparation::new(whole, tables, layout, level, scratch, out)?;
     let settings = Settings::new(threads);
@@ -1036,17 +1154,56 @@ pub fn prepare<W: Write + Send>(
         if ran.cancelled || stop.load(Ordering::Relaxed) {
             return Err(stopped());
         }
-        let segments = recording.segments().len();
-        if let Some(error) = ran
-            .outcomes
-            .into_iter()
-            .find_map(|outcome| short(outcome, segments))
-        {
-            return Err(error);
+        for outcome in ran.outcomes {
+            indexed(recording, outcome)?;
         }
         stats.push(ran.stats);
     }
     Ok((preparation.finish(recordings)?, stats))
+}
+
+/// Why a preparation was stopped.
+pub fn stopped() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "A change-run index's preparation was stopped",
+    )
+}
+
+/// Whether a run's lane of [`Preparation::lane`] wrote every segment of `recording`, as `outcome`
+/// says: why not, when it did not.
+pub fn indexed(recording: &Recording, outcome: segments::Outcome) -> io::Result<()> {
+    match short(outcome, recording.segments().len()) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Whether `a` and `b` are one recording: of one campaign, identity and capture, holding the
+/// same runs, each with the same branch, hours and hour digest chain, in the same segments.
+/// Walks of either then see the same hours.
+pub fn same(a: &Recording, b: &Recording) -> bool {
+    let runs = (0..a.run_count()).all(|run| match (a.run(run), b.run(run)) {
+        (Ok(a), Ok(b)) => {
+            a.branch == b.branch
+                && a.first_hour == b.first_hour
+                && a.ordinals == b.ordinals
+                && a.chain == b.chain
+        }
+        _ => false,
+    });
+    let captured = match (a.capture(), b.capture()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    a.campaign() == b.campaign()
+        && a.identity() == b.identity()
+        && a.run_count() == b.run_count()
+        && runs
+        && captured
+        && a.segments() == b.segments()
+        && a.damage().is_empty()
+        && b.damage().is_empty()
 }
 
 /// Why a preparation's run of `segments` segments left its index short: its family's failure,
@@ -1091,6 +1248,10 @@ fn short(outcome: segments::Outcome, segments: usize) -> Option<io::Error> {
         ),
         Ending::Lost(Loss::After(before)) => invalid(format!(
             "Segment {} goes on from segment {before}, which was lost",
+            ended.at
+        )),
+        Ending::Lost(Loss::Earlier) => invalid(format!(
+            "Segment {} goes on from hours an earlier run lost",
             ended.at
         )),
     })
@@ -1432,19 +1593,11 @@ fn footer(source: &Source) -> io::Result<(u64, Location, Summary)> {
 struct Shared {
     source: Source,
     pages: (u64, u64),
-    /// Dictionary chunks a reader holds, by their offset, and those read last, held for the
-    /// next reader up to [`SHARED_STRINGS`] raw bytes.
-    strings: Mutex<Strings>,
+    /// Dictionary chunks readers hold, by their offset: a chunk goes with its last reader.
+    strings: Mutex<HashMap<u64, Weak<Packed>>>,
     /// Pages and dictionary chunks read.
     page_reads: AtomicUsize,
     chunk_reads: AtomicUsize,
-}
-
-#[derive(Default)]
-struct Strings {
-    held: HashMap<u64, Weak<Packed>>,
-    recent: VecDeque<(Arc<Packed>, usize)>,
-    bytes: usize,
 }
 
 /// The raw bytes stored at `location`, into `into`, emptied first: it lies within `region`,
@@ -1515,7 +1668,6 @@ impl Shared {
             .strings
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .held
             .get(&key)
             .and_then(Weak::upgrade)
         {
@@ -1534,27 +1686,15 @@ impl Shared {
         if strings.len() != chunk.count as usize {
             return Err(invalid("A dictionary chunk holds other than its strings"));
         }
-        let strings = Arc::new(strings);
         let mut held = self.strings.lock().unwrap_or_else(PoisonError::into_inner);
-        let Strings {
-            held: weak,
-            recent,
-            bytes,
-        } = &mut *held;
-        weak.retain(|_, strings| strings.strong_count() > 0);
-        engine_allocation::reserve_map(weak, 1)?;
-        weak.insert(key, Arc::downgrade(&strings));
-        recent
-            .try_reserve(1)
-            .map_err(|_| engine_allocation::oom())?;
-        let size = chunk.location.raw as usize;
-        recent.push_back((Arc::clone(&strings), size));
-        *bytes += size;
-        while *bytes > SHARED_STRINGS
-            && let Some((_, size)) = recent.pop_front()
-        {
-            *bytes -= size;
+        // Read outside the lock: a reader that raced this one may hold the chunk already.
+        if let Some(raced) = held.get(&key).and_then(Weak::upgrade) {
+            return Ok(raced);
         }
+        held.retain(|_, strings| strings.strong_count() > 0);
+        engine_allocation::reserve_map(&mut *held, 1)?;
+        let strings = Arc::new(strings);
+        held.insert(key, Arc::downgrade(&strings));
         Ok(strings)
     }
 }
@@ -1715,7 +1855,6 @@ impl IndexFile {
         let strings = || -> io::Result<Dictionary> {
             Ok(Dictionary::run(
                 self.chunks(&held.chunks)?,
-                usize::MAX,
                 held.strings as usize,
             ))
         };
@@ -1813,27 +1952,18 @@ pub struct Snapshots {
 
 impl Snapshots {
     /// Frames of `tables` and Campaign, opaque cells encoded at `format`, as a recording of
-    /// `mode` holds them, each move on up to `workers` threads, the cursor's tables admitted to
-    /// `memory` before they grow.
+    /// `mode` holds them, each move on up to `workers` threads.
     pub fn new(
         file: Arc<IndexFile>,
         tables: &[TableId],
         format: FormatVersion,
         mode: CaptureMode,
         workers: usize,
-        memory: MemoryBudget,
     ) -> io::Result<Self> {
         let views = Views::new(tables, format, mode)?;
         let held: Vec<usize> = views.selected().iter().map(|table| table.index()).collect();
         Ok(Self {
-            cursor: Cursor::new(
-                &file.index,
-                schema()?,
-                &held,
-                workers,
-                Limits::default().dictionary_bytes,
-                memory,
-            )?,
+            cursor: Cursor::new(&file.index, schema()?, &held, workers)?,
             views,
             file,
             at: None,
@@ -1879,15 +2009,12 @@ impl Snapshots {
     }
 
     /// Moves to `hour` of `branch`, building no frame, its cursor's workers each first running
-    /// `on_worker`: false when no run holds the hour, which is then the recording's gap. A move
-    /// short of the memory its tables share waits for it until `cancelled`; one needing more
-    /// than they may ever hold is refused ([`beyond_memory`]).
+    /// `on_worker`: false when no run holds the hour, which is then the recording's gap.
     pub fn move_to(
         &mut self,
         branch: u64,
         hour: i32,
         on_worker: &(dyn Fn() + Sync),
-        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<bool> {
         let Some((run, ordinal)) = self.file.index.find(branch, hour) else {
             return Ok(false);
@@ -1897,7 +2024,7 @@ impl Snapshots {
         let file = &*self.file;
         if let Err(error) = self
             .cursor
-            .seek(&file.index, file, run, ordinal, on_worker, cancelled)
+            .seek(&file.index, file, run, ordinal, on_worker)
         {
             self.broken = true;
             return Err(error);
@@ -1986,7 +2113,7 @@ impl Snapshots {
         let alone = || {};
         let on_worker =
             parallel.map_or(&alone as &(dyn Fn() + Sync), |parallel| parallel.on_worker);
-        if !self.move_to(branch, hour, on_worker, &|| false)? {
+        if !self.move_to(branch, hour, on_worker)? {
             return Ok(None);
         }
         self.build(parallel).map(Some)

@@ -1,33 +1,35 @@
+use crate::triggers::Failure;
 use replay_data::rows::LexicalTokenRow;
+use replay_frame::frame::Rowset;
 use std::collections::BTreeMap;
 
 pub(super) enum Lookup<'a> {
-    Sorted(replay_frame::frame::Rows<'a, LexicalTokenRow>),
+    Sorted(Rowset<'a, LexicalTokenRow>),
     Map(BTreeMap<u32, &'a [u8]>),
 }
 
 impl<'a> Lookup<'a> {
-    pub(super) fn new(rows: impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>) -> Self {
-        let rows = rows.into();
-        if rows.is_sorted_by(|a, b| a.token < b.token) {
-            Self::Sorted(rows)
-        } else {
+    pub(super) fn new(rows: Rowset<'a, LexicalTokenRow>) -> Self {
+        match rows {
+            // A walk's views hold each token once, ascending by it.
+            Rowset::Walked(..) => Self::Sorted(rows),
+            Rowset::Decoded(slice) if slice.is_sorted_by(|a, b| a.token < b.token) => {
+                Self::Sorted(rows)
+            }
             // Preserve last-row wins for unordered or duplicate tokens, including zero.
-            Self::Map(
-                rows.iter()
+            Rowset::Decoded(slice) => Self::Map(
+                slice
+                    .iter()
                     .map(|row| (row.token, row.literal.as_slice()))
                     .collect(),
-            )
+            ),
         }
     }
 
-    pub(super) fn get(&self, token: u32) -> Option<&'a [u8]> {
+    pub(super) fn get(&self, token: u32) -> Result<Option<&'a [u8]>, Failure> {
         match self {
-            Self::Sorted(rows) => rows
-                .binary_search_by_key(&token, |row| row.token)
-                .ok()
-                .map(|index| rows.get(index).unwrap().literal.as_slice()),
-            Self::Map(rows) => rows.get(&token).copied(),
+            Self::Sorted(rows) => super::literal(rows, token),
+            Self::Map(rows) => Ok(rows.get(&token).copied()),
         }
     }
 }

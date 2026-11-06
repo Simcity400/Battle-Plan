@@ -708,7 +708,7 @@ fn kept_manifests_take_each_requests_content_warnings() {
     .unwrap();
     assert_eq!(after, serde_json::to_value(expected).unwrap());
     assert_eq!(
-        dashboard_base::prepared::query::observations::usage(&source, "air-aces:manifest").2,
+        dashboard_base::prepared::query::observations::computations(&source, "air-aces:manifest"),
         1
     );
 }

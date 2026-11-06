@@ -87,17 +87,17 @@ fn a_kept_leader_visibility_rejection_is_counted_once_per_hour() {
     let (_, inputs) = capture(&frame, || table(&frame, TableId::ScriptVariables));
     let reduced = Unread;
     let kept = Kept::new(&reduced);
-    assert!(!kept.reads_whole(&inputs, &frame, frame.hour));
+    assert!(!kept.reads_whole(&inputs, HourFrame::from(&frame), frame.hour));
     let reason = "leaders.reject.kept-inputs";
     let before = noted(reason);
-    kept.block_inputs(&inputs, &frame);
-    kept.block_inputs(&inputs, &frame);
+    kept.block_inputs(&inputs, HourFrame::from(&frame));
+    kept.block_inputs(&inputs, HourFrame::from(&frame));
     assert!(kept.blocked());
     assert_eq!(noted(reason) - before, 1);
 
     let unchanged = block::Changes::default();
     let whole = Kept::new(&unchanged);
-    assert!(whole.reads_whole(&inputs, &frame, frame.hour));
+    assert!(whole.reads_whole(&inputs, HourFrame::from(&frame), frame.hour));
     assert!(!whole.blocked());
     assert_eq!(noted(reason) - before, 1);
 }
@@ -1008,7 +1008,8 @@ fn read_leader_visibility_reads_the_world_only_to_evaluate() {
     fn hour<'a>(content: &'a ScriptedContent, frame: &'a DecodedFrame) -> HourWorld<'a> {
         HourWorld {
             content,
-            frame,
+            frame: HourFrame::from(frame),
+            lexicon: None,
             world: OnceCell::from(Err("the World is read".to_owned())),
             gap: OnceCell::new(),
             kept: None,
@@ -1941,36 +1942,27 @@ fn compact_wire_retains_scan_runs_traits_and_recorded_battles() {
 }
 
 #[test]
-fn cache_retains_recent_branches_replies_and_transport_refusals() {
+fn cache_keeps_each_branch_its_latest_reply_and_transport_refusals() {
     let mut cache = Cache::default();
     let first = cache.branch(None, "1");
     assert!(Arc::ptr_eq(&first, &cache.branch(None, "1")));
     for branch in ["2", "3"] {
         cache.branch(None, branch);
     }
-    assert_eq!(cache.branches.len(), CACHED_BRANCHES);
-    assert!(!Arc::ptr_eq(&first, &cache.branch(None, "1")));
+    assert_eq!(cache.branches.len(), 3);
+    assert!(Arc::ptr_eq(&first, &cache.branch(None, "1")));
     let reply = Arc::new(empty_reply());
-    for reference in 0..CACHED_REPLIES + 1 {
-        let params = UnitLeadersParams {
-            selection: LeaderSelection::Leader {
-                reference: reference.to_string(),
-            },
-            ..all_params()
-        };
-        first.remember(&params, Ok(Arc::clone(&reply)));
+    let leader = |reference: usize| UnitLeadersParams {
+        selection: LeaderSelection::Leader {
+            reference: reference.to_string(),
+        },
+        ..all_params()
+    };
+    for reference in 0..2 {
+        first.remember(&leader(reference), Ok(Arc::clone(&reply)));
     }
-    assert_eq!(first.state.lock().unwrap().replies.len(), CACHED_REPLIES);
-    assert!(
-        first
-            .reply(&UnitLeadersParams {
-                selection: LeaderSelection::Leader {
-                    reference: "0".into()
-                },
-                ..all_params()
-            })
-            .is_none()
-    );
+    assert!(first.reply(&leader(0)).is_none());
+    assert!(first.reply(&leader(1)).is_some());
     let params = all_params();
     first.remember(
         &params,
@@ -2692,7 +2684,8 @@ fn reused_leader_visibility(checking: bool) {
         );
         let hour = HourWorld {
             content,
-            frame: &frame,
+            frame: HourFrame::from(&frame),
+            lexicon: None,
             world: OnceCell::from(Ok(world)),
             gap: OnceCell::new(),
             kept: None,
@@ -2886,7 +2879,8 @@ fn leader_visibility_from_changes(checking: bool) {
         }
         let hour_world = HourWorld {
             content,
-            frame: &decoded,
+            frame: HourFrame::from(&decoded),
+            lexicon: None,
             world,
             gap: OnceCell::new(),
             kept: None,

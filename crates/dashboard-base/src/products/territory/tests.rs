@@ -980,10 +980,10 @@ fn concurrent_scans_release_the_cache_lock_and_keep_the_first_insert() {
             .lock()
             .unwrap()
             .scans
-            .iter()
-            .map(|scan| scan.0)
+            .keys()
+            .copied()
             .collect::<Vec<_>>(),
-        [2, 3]
+        [1, 2, 3]
     );
 }
 

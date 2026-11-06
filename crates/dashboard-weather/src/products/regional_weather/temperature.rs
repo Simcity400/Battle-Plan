@@ -3,7 +3,6 @@
 //! and use the same binding and reconstruction without walking branch frames.
 
 use super::admission;
-use dashboard_base::prepared::facts::{Credit, MemoryBudget};
 use dashboard_base::{Source, catalogue, content};
 use dashboard_core::config::ContentOptions;
 use dashboard_keyed::{Delta, Values};
@@ -13,7 +12,7 @@ use installed_content_core::{
 use installed_content_regions::regions::{self, StrategicRegions};
 use replay_data::{
     rows::{TemperatureRecord, tables},
-    temperature::{Content, Memo, Plan, Planned, State},
+    temperature::{Content, Memo, Plan, Planned, ProvinceRows, State},
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -46,9 +45,14 @@ impl Bound {
     }
 
     fn unavailable(&self, frame: &DecodedFrame) -> Vec<u32> {
-        let Ok(rows) = frame.complete::<tables::WeatherProvinces>() else {
-            return Vec::new();
-        };
+        match frame.complete::<tables::WeatherProvinces>() {
+            Ok(rows) => self.unavailable_in(rows),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// The member provinces `rows`, the complete WeatherProvinces, hold no temperature for.
+    fn unavailable_in<R: ProvinceRows + ?Sized>(&self, rows: &R) -> Vec<u32> {
         self.members
             .values()
             .flatten()
@@ -56,11 +60,11 @@ impl Bound {
             .filter(|&province| {
                 (province as usize) < self.pass.provinces.len()
                     && !rows
-                        .binary_search_by_key(&province, |row| row.id)
-                        .ok()
-                        .is_some_and(|at| {
+                        .find(province)
+                        .and_then(|at| rows.row(at).ok().flatten())
+                        .is_some_and(|(_, temperature)| {
                             matches!(
-                                rows[at].temperature.record(),
+                                temperature.record(),
                                 Ok(TemperatureRecord::Anchored(_) | TemperatureRecord::AtHour(_))
                             )
                         })
@@ -193,7 +197,6 @@ pub(super) fn membership(
 
 struct Inverse {
     rows: Vec<(u32, u32)>,
-    _credit: Credit,
 }
 
 struct InverseLease {
@@ -226,7 +229,7 @@ impl Drop for InverseLease {
         {
             *cached = None;
         }
-        // Release allocation and credit before a competing initializer can acquire the mutex.
+        // Release the allocation before a competing initializer can acquire the mutex.
         drop(index);
     }
 }
@@ -241,19 +244,9 @@ impl Inverse {
     }
 }
 
-impl Inverse {
-    fn allocation_bytes(count: usize) -> io::Result<usize> {
-        admission::add(
-            admission::add(2 * size_of::<usize>(), size_of::<Self>())?,
-            admission::bytes::<(u32, u32)>(count)?,
-        )
-    }
-}
-
 impl Bound {
     fn lease_inverse(
         self: &Arc<Self>,
-        budget: &MemoryBudget,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<InverseLease> {
         let mut cached = self
@@ -271,11 +264,6 @@ impl Bound {
             .members
             .values()
             .try_fold(0, |count, members| admission::add(count, members.len()))?;
-        let credit = admission::admit_in(
-            budget,
-            Inverse::allocation_bytes(count)?,
-            "shared inverse membership",
-        )?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(count).map_err(|error| {
             admission::pressure(
@@ -289,10 +277,7 @@ impl Bound {
         }
         rows.sort_unstable();
         check()?;
-        let inverse = Arc::new(Inverse {
-            rows,
-            _credit: credit,
-        });
+        let inverse = Arc::new(Inverse { rows });
         *cached = Some(Arc::clone(&inverse));
         Ok(InverseLease {
             owner: Arc::clone(self),
@@ -388,22 +373,10 @@ struct Aggregates {
     point: Option<(u64, i32)>,
     regions: BTreeMap<u32, RegionSum>,
     missing: u64,
-    _credit: Credit,
 }
 
 impl Aggregates {
     fn new(content: &Bound, states: &[State]) -> io::Result<Self> {
-        let per_region = admission::add(admission::tree_entry::<u32, RegionSum>()?, 15)?;
-        let credit = admission::admit(
-            content
-                .members
-                .len()
-                .checked_mul(per_region)
-                .ok_or_else(|| {
-                    admission::pressure("aggregate size", io::ErrorKind::OutOfMemory.into())
-                })?,
-            "region aggregates",
-        )?;
         let mut missing = 0;
         let mut regions = BTreeMap::new();
         for (&id, members) in &content.members {
@@ -431,7 +404,6 @@ impl Aggregates {
             point: None,
             regions,
             missing,
-            _credit: credit,
         })
     }
 }
@@ -495,12 +467,9 @@ impl Observation {
         options: Option<&ContentOptions>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.bind_in(
-            source,
-            options,
-            &mut || dashboard_text::metadata::check_cancel(cancelled),
-            &MemoryBudget::preparation(),
-        )
+        self.bind_in(source, options, &mut || {
+            dashboard_text::metadata::check_cancel(cancelled)
+        })
     }
 
     pub(super) fn bind_states(
@@ -527,14 +496,13 @@ impl Observation {
         source: &Source,
         options: Option<&ContentOptions>,
         check: &mut dyn FnMut() -> io::Result<()>,
-        budget: &MemoryBudget,
     ) -> io::Result<()> {
         let result = (|| {
             self.bind_inner(source, options, check)?;
             if self.inverse.is_none()
                 && let Some(content) = &self.content
             {
-                let inverse = content.lease_inverse(budget, check)?;
+                let inverse = content.lease_inverse(check)?;
                 check()?;
                 self.inverse = Some(inverse);
             }
@@ -551,8 +519,7 @@ impl Observation {
         self.apply(resolved);
         let result = (|| {
             if let Some(content) = &self.content {
-                self.inverse =
-                    Some(content.lease_inverse(&MemoryBudget::preparation(), &mut || Ok(()))?);
+                self.inverse = Some(content.lease_inverse(&mut || Ok(()))?);
             }
             Ok(())
         })();
@@ -744,7 +711,7 @@ impl Observation {
         let previous = self.certified.filter(|&(previous_branch, previous_hour)| {
             previous_branch == branch && previous_hour.checked_add(1) == Some(hour)
         });
-        self.memo.admit_changes(&content.pass)?;
+        self.memo.reserve_changes(&content.pass)?;
         let observed = observe(&mut self.memo, &content);
         if let Err(reason) = observed {
             self.certified = None;
@@ -775,7 +742,7 @@ impl Observation {
                         admission::add(count, inverse.regions(province).count())
                     })?
                     .min(aggregates.regions.len());
-                let (mut dirty, _credit) = admission::vector(count, "changed regions")?;
+                let mut dirty = admission::vector(count, "changed regions")?;
                 for &(province, before, now) in changed {
                     for id in inverse.regions(province) {
                         let region = aggregates.regions.get_mut(&id).unwrap();

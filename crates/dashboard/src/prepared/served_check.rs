@@ -1145,8 +1145,8 @@ pub fn store_root(folder: &Path) -> io::Result<PathBuf> {
 /// Each branch's columnar segments' first hours, from the columnar conversion
 /// at `path`.
 pub fn segments(path: &Path) -> io::Result<BTreeMap<u64, Vec<i32>>> {
-    use replay::columnar_frames::{Limits, Recording};
-    let file = Recording::open_path(path, Limits::default())?;
+    use replay::columnar_frames::Recording;
+    let file = Recording::open_path(path)?;
     if let Some(damage) = file.damage().first() {
         return Err(invalid(format!("The columnar file is damaged: {damage}")));
     }

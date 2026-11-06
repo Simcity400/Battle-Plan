@@ -273,19 +273,23 @@ pub(crate) struct Tags<'a> {
     slots: BTreeMap<u32, &'a [u8]>,
 }
 impl<'a> Tags<'a> {
-    pub(crate) fn new(frame: &'a DecodedFrame) -> io::Result<Self> {
-        let countries = frame.complete::<tables::Countries>()?;
-        let links = frame.complete::<tables::CountryLinks>()?;
-        Ok(Self {
-            links: links
-                .iter()
-                .map(|link| (link.id, link.canonical_slot))
-                .collect(),
-            slots: countries
-                .iter()
-                .map(|row| (row.canonical_slot, row.tag.as_slice()))
-                .collect(),
-        })
+    pub(crate) fn new<F: replay_frame::frame::Tables + ?Sized>(frame: &'a F) -> io::Result<Self> {
+        use replay_data::rows::{CountryLinkRow, CountryRow, column, mask};
+        let countries =
+            frame.complete_rows::<tables::Countries>(mask::<CountryRow>(&["canonical_slot"]))?;
+        let links = frame
+            .complete_rows::<tables::CountryLinks>(mask::<CountryLinkRow>(&["canonical_slot"]))?;
+        let mut held = BTreeMap::new();
+        for link in links.iter() {
+            let link = link?;
+            held.insert(link.id, link.canonical_slot);
+        }
+        let mut slots = BTreeMap::new();
+        let tags = countries.texts(|row| &row.tag, column::<CountryRow>("tag"));
+        for (row, tag) in countries.iter().zip(tags) {
+            slots.insert(row?.canonical_slot, tag?);
+        }
+        Ok(Self { links: held, slots })
     }
     /// Every holder slot read at the hour.
     pub(crate) fn holders(&self) -> impl Iterator<Item = u32> + '_ {

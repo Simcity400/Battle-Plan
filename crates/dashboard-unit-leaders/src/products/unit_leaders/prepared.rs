@@ -30,6 +30,92 @@ pub struct Prepared {
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
 }
+/// A branch's leaders state as its walks push it. It holds no [`Prepared`] until it accepts a
+/// segment's end, so a branch whose walk is refused before then publishes nothing.
+pub struct Leading {
+    kept: Stage,
+    /// The runs the segment being kept began, until its end.
+    begins: columnar::Begins,
+}
+
+enum Stage {
+    Starting {
+        format: FormatVersion,
+        branch: u64,
+        start: i32,
+    },
+    Prepared(Box<Prepared>),
+}
+
+impl Leading {
+    /// A branch whose first recorded hour is `start`.
+    pub fn starting(format: FormatVersion, branch: u64, start: i32) -> Self {
+        Self {
+            kept: Stage::Starting {
+                format,
+                branch,
+                start,
+            },
+            begins: columnar::Begins::default(),
+        }
+    }
+
+    /// [`Prepared::resumed`].
+    pub fn resumed(reader: impl io::Read, catalogue: &[u8]) -> io::Result<Self> {
+        Ok(Self {
+            kept: Stage::Prepared(Box::new(Prepared::resumed(reader, catalogue)?)),
+            begins: columnar::Begins::default(),
+        })
+    }
+
+    pub fn observe(&mut self, pushed: columnar::Pushed) -> io::Result<()> {
+        let hour = match pushed {
+            columnar::Pushed::Began(began) => return self.begins.keep(began),
+            columnar::Pushed::Ended(hour) => *hour,
+        };
+        match &mut self.kept {
+            Stage::Prepared(prepared) => prepared.observe_projected(hour, &mut self.begins),
+            &mut Stage::Starting {
+                format,
+                branch,
+                start,
+            } => {
+                let mut prepared = Box::new(Prepared::starting(format, branch, start));
+                prepared.observe_projected(hour, &mut self.begins)?;
+                self.kept = Stage::Prepared(prepared);
+                Ok(())
+            }
+        }
+    }
+
+    /// [`Prepared::flush`], once it holds one.
+    pub fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        content: Option<&Content>,
+        content_errors: &[String],
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        // A segment its walk ended short of adds none of the runs it began.
+        self.begins.clear();
+        match &mut self.kept {
+            Stage::Prepared(prepared) => {
+                prepared.flush(writer, branch, content, content_errors, cancelled)
+            }
+            Stage::Starting { .. } => Ok(()),
+        }
+    }
+
+    /// [`Prepared::saved_catalogue`]; None before it holds one, as nothing was flushed.
+    pub fn saved_catalogue(&self) -> io::Result<Option<Vec<u8>>> {
+        match &self.kept {
+            Stage::Prepared(prepared) => prepared.saved_catalogue().map(Some),
+            Stage::Starting { .. } => Ok(None),
+        }
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Metadata {
     countries: BTreeMap<String, BTreeSet<u64>>,
@@ -156,7 +242,6 @@ impl Prepared {
             .enumerate()
             .map(|(index, leader)| (leader.reference, index))
             .collect();
-        state.scan.recount_pending();
         Ok(state)
     }
     pub fn saved_bytes(&self) -> io::Result<Vec<u8>> {
@@ -221,7 +306,12 @@ impl Prepared {
         self.own(|state| state.observe_own(frame, replay, content, changes, changes, None))
             .map(drop)
     }
-    pub fn observe_projected(&mut self, hour: columnar::Hour) -> io::Result<()> {
+    /// Keeps a segment's end, with the runs its walk began (`begins`).
+    pub fn observe_projected(
+        &mut self,
+        hour: columnar::Hour,
+        begins: &mut columnar::Begins,
+    ) -> io::Result<()> {
         self.series.advance_span(hour.first, hour.hour)?;
         self.through = hour.hour;
         self.refusals.merge(&hour.refusals);
@@ -241,6 +331,7 @@ impl Prepared {
             }
         }
         hour.stitch(
+            begins,
             &mut self.scan,
             &self.published.outcomes,
             &self.published.sources,
@@ -435,21 +526,6 @@ impl Prepared {
         }
         Ok(observed)
     }
-    pub fn buffered_bytes(&self) -> usize {
-        let active = self.scan.withheld_active.len();
-        // B-tree nodes hold 11 pairs and up to 12 children, with at least five pairs outside the root.
-        let active_bytes = if active == 0 {
-            0
-        } else {
-            (active.div_ceil(5) + 1)
-                * (11 * std::mem::size_of::<(u64, usize)>() + 14 * std::mem::size_of::<usize>())
-        };
-        self.series
-            .bytes()
-            .saturating_add(self.scan.pending_bytes)
-            .saturating_add(self.scan.withheld_bytes)
-            .saturating_add(active_bytes)
-    }
     /// Publish the window. Changed outcomes and sources are found against
     /// [`Published`], so the published series is never read.
     pub fn flush(
@@ -615,7 +691,6 @@ impl Prepared {
         self.content_warnings = presentation.warnings;
         self.scan.row_indices.clear();
         self.scan.active_commands.clear();
-        self.scan.recount_pending();
         self.scan.formation_names.clear();
         self.series.through(self.through);
         let cpu = ::replay_frame::cpu::scope_phase("leaders:series_flush");
@@ -665,6 +740,21 @@ pub fn at_hour(
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
     cancelled: &AtomicBool,
 ) -> io::Result<serde_json::Value> {
+    serde_json::to_value(at_hour_reply(
+        source, params, hour, context, history, cancelled,
+    )?)
+    .map_err(Into::into)
+}
+
+/// [`at_hour`]'s reply.
+pub fn at_hour_reply(
+    source: &Source,
+    params: &UnitLeadersParams,
+    hour: i32,
+    context: &LoadContext,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    cancelled: &AtomicBool,
+) -> io::Result<UnitLeadersReply> {
     let branch = params.branch_id.parse().expect("validated branch");
     let replay = source.replay_ref();
     let mut scan = Scan::new(replay, branch)?;
@@ -721,7 +811,7 @@ pub fn at_hour(
         leader.partial_from = None;
     }
     reply.preparing = vec!["battles".into(), "history".into()];
-    serde_json::to_value(reply).map_err(Into::into)
+    Ok(reply)
 }
 
 /// The prepared path uses the original materializer and selection/view projection.
@@ -791,6 +881,43 @@ pub struct Careers {
     all: UnitLeadersReply,
     /// Each leader's [`visible_battles`], in `all`'s order.
     visible: Vec<[Option<Vec<i64>>; 3]>,
+    /// Names this read, and with it its numbering of people, roles and traits.
+    number: u64,
+    /// Each hour a leader's row may differ from the hour before's, with the leader's place in
+    /// `all`, in hour order.
+    changes: Vec<(i32, u32)>,
+}
+
+/// Numbers every [`Careers`] this process reads.
+static READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The people, roles and traits a leaderboard row names by number.
+#[derive(Default)]
+struct Named {
+    people: BTreeSet<u32>,
+    roles: BTreeSet<u32>,
+    traits: BTreeSet<u32>,
+}
+
+impl Named {
+    fn add(&mut self, row: &LeaderCareer) {
+        for run in &row.runs {
+            self.people.insert(run.value.person);
+            self.roles.insert(run.value.role);
+            self.traits
+                .extend(run.value.traits.iter().flat_map(|held| held.iter().copied()));
+        }
+        self.traits.extend(row.trait_gains.iter().map(|gain| gain.token));
+    }
+
+    /// What `row` names that `before` does not, added.
+    fn add_new(&mut self, row: &LeaderCareer, before: &Self) {
+        let mut named = Self::default();
+        named.add(row);
+        self.people.extend(named.people.difference(&before.people));
+        self.roles.extend(named.roles.difference(&before.roles));
+        self.traits.extend(named.traits.difference(&before.traits));
+    }
 }
 
 impl Careers {
@@ -801,10 +928,146 @@ impl Careers {
         branch_id: &str,
         cancelled: &AtomicBool,
     ) -> io::Result<Option<Self>> {
-        Ok(all_careers(store, key, branch_id, cancelled)?.map(|all| Self {
-            visible: all.leaders.iter().map(visible_battles).collect(),
+        let Some(all) = all_careers(store, key, branch_id, cancelled)? else {
+            return Ok(None);
+        };
+        let visible: Vec<_> = all.leaders.iter().map(visible_battles).collect();
+        let mut changes = Vec::new();
+        for (position, leader) in all.leaders.iter().enumerate() {
+            let at = u32::try_from(position)
+                .map_err(|_| dashboard_core::invalid("Too many leaders to index"))?;
+            for run in &leader.runs {
+                changes.push((run.first_hour, at));
+                if let Some(after) = run.last_hour.checked_add(1) {
+                    changes.push((after, at));
+                }
+            }
+            changes.extend(leader.trait_gains.iter().map(|gain| (gain.hour, at)));
+            for hours in visible[position].iter().flatten() {
+                changes.extend(hours.iter().map(|&shown| {
+                    (
+                        shown.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                        at,
+                    )
+                }));
+            }
+        }
+        changes.sort_unstable();
+        changes.dedup();
+        Ok(Some(Self {
             all,
+            visible,
+            number: READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            changes,
         }))
+    }
+
+    /// `params`' leaderboard at `hour` as playback reads it: the rows that differ from `since`'s
+    /// where the request holds this selection's rows there by the index it names (`held`), else
+    /// every row. Each row is the full leaderboard's at `hour`.
+    pub fn hour(
+        &self,
+        params: &UnitLeadersParams,
+        history: Option<&Arc<dashboard_base::products::country_history::RecordedHistories>>,
+        hour: i32,
+        since: Option<i32>,
+        held: Option<&str>,
+    ) -> io::Result<UnitLeadersHourReply> {
+        let selector = Selector::new(params, history.map(|history| &**history));
+        // Rows held under this id are this read's rows of the same resolved selection.
+        let id = format!("{}-{}", self.number, selector.fingerprint());
+        let since = since.filter(|_| held == Some(id.as_str()));
+        let all = &self.all;
+        let admitted = |place: u32| selector.admits(all, &all.leaders[place as usize]);
+        let row = |place: u32, at: i32| {
+            let position = place as usize;
+            leader_at(&all.leaders[position], &self.visible[position], at)
+        };
+        let mut named = Named::default();
+        let mut leaders = Vec::new();
+        let mut ended = Vec::new();
+        match since {
+            None => {
+                for place in (0..all.leaders.len() as u32).filter(|&place| admitted(place)) {
+                    if let Some(row) = row(place, hour) {
+                        named.add(&row);
+                        leaders.push(row);
+                    }
+                }
+            }
+            Some(since) => {
+                let (low, high) = (since.min(hour), since.max(hour));
+                let first = self.changes.partition_point(|&(at, _)| at <= low);
+                let last = self.changes.partition_point(|&(at, _)| at <= high);
+                let mut changed: Vec<u32> = self.changes[first..last]
+                    .iter()
+                    .map(|&(_, place)| place)
+                    .collect();
+                changed.sort_unstable();
+                changed.dedup();
+                changed.retain(|&place| admitted(place));
+                for place in changed {
+                    let then = row(place, since);
+                    match row(place, hour) {
+                        Some(now) => {
+                            let mut before = Named::default();
+                            if let Some(then) = &then {
+                                before.add(then);
+                            }
+                            named.add_new(&now, &before);
+                            leaders.push(now);
+                        }
+                        None => ended.extend(then.map(|then| then.reference)),
+                    }
+                }
+            }
+        }
+        let reply = UnitLeadersHourReply {
+            branch_id: params.branch_id.clone(),
+            first_hour: all.first_hour,
+            hour,
+            index: Some(id),
+            since,
+            leaders,
+            ended,
+            people: named
+                .people
+                .into_iter()
+                .map(|at| (at, all.people[at as usize].clone()))
+                .collect(),
+            roles: named
+                .roles
+                .into_iter()
+                .map(|at| (at, all.roles[at as usize].clone()))
+                .collect(),
+            traits: named
+                .traits
+                .into_iter()
+                .map(|at| (at, all.traits[at as usize].clone()))
+                .collect(),
+            observed: all
+                .observed
+                .iter()
+                .filter(|span| span.first_hour <= hour && hour <= span.last_hour)
+                .cloned()
+                .collect(),
+            withheld: withheld_at(&all.withheld, Some(hour), |row| {
+                selector.admits_withheld(row)
+            }),
+            results_missing: all.results_missing.clone(),
+            navy_commands_missing: all.navy_commands_missing.clone(),
+            selection_tags: selector
+                .selection_tags()
+                .filter(|_| since.is_none()),
+            preparing: all.preparing.clone(),
+            warnings: all.warnings.clone(),
+        };
+        dashboard_core::transport::json_len(&reply, MAX_REPLY_BYTES).ok_or_else(|| {
+            io::Error::other(
+                "Leader reply exceeds its transport budget; select fewer countries or one career",
+            )
+        })?;
+        Ok(reply)
     }
 
     /// `params`' selection, a leaderboard cut at `hour` in the same pass, copying only what the

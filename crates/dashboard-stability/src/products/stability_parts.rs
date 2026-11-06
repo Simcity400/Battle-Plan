@@ -48,12 +48,6 @@ pub mod facts;
 pub mod query;
 pub mod served;
 
-/// Runs kept per country before the scan refuses.
-const MAX_RUNS: usize = 400_000;
-/// Recorded hours whose character tables are kept to name a read's characters.
-const NAMED_HOURS: usize = 24 * 8;
-/// Countries whose parts are kept per source.
-const CACHED_COUNTRIES: usize = 4;
 /// The formula terms and recorded modifier names (`engine_stability::country_stability::KEY_NAMES`).
 const LINES_OF: [(&str, &str); 2] = [
     ("stabilityFactor", "stability_factor"),
@@ -320,7 +314,6 @@ impl Measure {
         joined: bool,
         values: &[Value],
         country: &NamingCountry,
-        runs: &mut usize,
     ) {
         match self.observed.last_mut() {
             Some(span) if joined && span.last_hour.checked_add(1) == Some(hour) => {
@@ -346,7 +339,6 @@ impl Measure {
                 last => {
                     let follows = joined
                         && last.is_some_and(|run| run.last_hour.checked_add(1) == Some(hour));
-                    *runs += 1;
                     part.runs.push(FixedRun {
                         first_hour: hour,
                         last_hour: hour,
@@ -391,7 +383,6 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Stability request cancelled");
     let mut result = Scanned::default();
     let mut observer = Scan::default();
-    let mut runs = 0_usize;
     let selected_tag = BTreeSet::from([tag]);
     dashboard_core::blocks::scan_blocks(
         replay,
@@ -424,17 +415,12 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
                         |_, _, _, joined, values, naming| {
                             for (measure, values) in result.measures.iter_mut().zip(values) {
                                 if let Some(values) = values {
-                                    measure.record(frame.hour, joined, values, naming, &mut runs);
+                                    measure.record(frame.hour, joined, values, naming);
                                 }
                             }
                             Ok(())
                         },
                     )?;
-                    if runs > MAX_RUNS {
-                        return Err(io::Error::other(
-                            "Stability parts exceed their memory budget",
-                        ));
-                    }
                 }
             }
             Ok(())
@@ -459,6 +445,7 @@ struct Scan {
     #[cfg(test)]
     calculated_reads: usize,
     tracks: BTreeMap<String, Track>,
+    /// Each hour's characters and tokens, ascending, from the earliest read still held.
     recent_names: VecDeque<(i32, SharedView, SharedView)>,
     hour: Option<i32>,
     active: BTreeSet<String>,
@@ -621,9 +608,6 @@ impl Scan {
             decoded.tables[TableId::Characters.index()].clone(),
             decoded.tables[TableId::LexicalTokens.index()].clone(),
         ));
-        while self.recent_names.len() > NAMED_HOURS {
-            self.recent_names.pop_front();
-        }
         let mut dirty = self.native.refresh(decoded, changes, false);
         dirty.extend(self.clock_names.iter().copied());
         let changed =
@@ -784,6 +768,18 @@ impl Scan {
         }) else {
             return Ok(());
         };
+        // No later hour reads inputs before the earliest read held now.
+        let inputs = TableId::CountryStabilityInputs.index() as u32;
+        let first = reads.partition_point(|row| row.table < inputs);
+        if let Some(floor) = reads[first..]
+            .iter()
+            .take_while(|row| row.table == inputs)
+            .map(|row| row.sample_hour)
+            .min()
+        {
+            let before = self.recent_names.partition_point(|(at, _, _)| *at < floor);
+            self.recent_names.drain(..before);
+        }
         drop(cpu);
         let _cpu = ::replay_frame::cpu::scope_phase("stability:parts_projection_series");
         let mut seen = BTreeSet::new();
@@ -865,7 +861,11 @@ impl Scan {
                     &mut notes,
                     &mut track.refused,
                 );
-                let at_read = self.recent_names.iter().find(|(at, _, _)| *at == read);
+                let at_read = self
+                    .recent_names
+                    .binary_search_by_key(&read, |(at, _, _)| *at)
+                    .ok()
+                    .map(|at| &self.recent_names[at]);
                 let characters = at_read.and_then(|(_, view, _)| match &**view {
                     TableView::Complete(rows) => rows.rows::<tables::Characters>(),
                     _ => None,
@@ -1018,10 +1018,8 @@ fn named_parts(
     }
 }
 
-#[derive(Default)]
-struct Cache {
-    entries: VecDeque<((u64, String), Arc<Scanned>)>,
-}
+/// Each branch's latest country scanned; an earlier one lives only while a request holds it.
+type Cache = dashboard_base::latest::BranchLatest<String, Scanned>;
 
 impl Product for StabilityParts {
     const KEY: &'static str = "stability-parts";
@@ -1049,27 +1047,20 @@ impl Product for StabilityParts {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params.branch();
-        let key = (branch, params.tag.clone());
         let state = source.state::<Cache>();
-        let cached = {
-            let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache
-                .entries
-                .iter()
-                .find(|(cached, _)| *cached == key)
-                .map(|(_, scanned)| Arc::clone(scanned))
-        };
+        let cached = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(branch, &params.tag);
         // Scan outside the lock, so other countries' requests are not held up.
         let scanned = match cached {
             Some(scanned) => scanned,
             None => {
                 let scanned = Arc::new(scan(&source.replay(), branch, &params.tag, cancelled)?);
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache.entries.retain(|(cached, _)| *cached != key);
-                cache.entries.push_back((key, Arc::clone(&scanned)));
-                while cache.entries.len() > CACHED_COUNTRIES {
-                    cache.entries.pop_front();
-                }
+                state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .put(branch, params.tag.clone(), &scanned);
                 scanned
             }
         };

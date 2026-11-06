@@ -363,9 +363,9 @@ impl EnvironmentInputs {
         &'a self,
         content: &'a ScriptedContent,
         environment: &'a Environment,
-        frame: &'a dyn replay_frame::frame::DecodedSource,
+        frame: replay_frame::frame::HourFrame<'a>,
     ) -> World<'a> {
-        World::read(frame, self.facts(environment))
+        World::read_in(frame, self.facts(environment))
             .with_geography(self.geography(content, environment))
             .with_template_names(
                 &content.template_names,
@@ -458,6 +458,14 @@ impl ScriptedContent {
         &'a self,
         frame: &'a dyn replay_frame::frame::DecodedSource,
     ) -> Result<World<'a>, String> {
+        self.lazy_world(replay_frame::frame::HourFrame::Decoded(frame))
+    }
+
+    /// [`Self::recorded_world`] of any frame's tables, a walk's views among them.
+    pub fn recorded_world_in<'a>(
+        &'a self,
+        frame: replay_frame::frame::HourFrame<'a>,
+    ) -> Result<World<'a>, String> {
         self.lazy_world(frame)
     }
 }
@@ -467,7 +475,11 @@ impl<'a> ScriptedText<'a> {
     pub fn trigger_world(&self) -> Result<&World<'a>, String> {
         self.world
             .get_or_init(|| {
-                crate::triggers::inputs::unrecorded(|| self.content.lazy_world(self.frame))
+                crate::triggers::inputs::unrecorded(|| {
+                    self.content
+                        .lazy_world(self.frame)
+                        .map(|world| world.with_lexicon(self.lexicon))
+                })
             })
             .as_ref()
             .map_err(Clone::clone)
@@ -617,13 +629,10 @@ impl<'a> ScriptedText<'a> {
 
     pub(crate) fn state_name_for_unrecorded(&self, id: u32, plain: bool) -> Result<String, String> {
         static EMPTY_STATE_NAMES: StateNames = BTreeMap::new();
-        let (states, gap) = rows::<tables::States>(self.frame);
-        let state = states
-            .iter()
-            .find(|s| s.id == id)
-            .ok_or_else(|| format!("state {id}: States {gap}"))?;
+        let (states, gap) = rows::<tables::States>(self.frame, STATE);
+        let state = keyed(&states, u128::from(id))?.ok_or_else(|| format!("state {id}: States {gap}"))?;
         state_name_from(
-            state,
+            &state,
             |bytes, what| self.stored_text(bytes, what),
             |id| {
                 self.content.environment()?;
@@ -688,13 +697,8 @@ impl<'a> ScriptedText<'a> {
         if let Some(text) = self.province_display_name_primary(id)? {
             return Ok(text);
         }
-        let (provinces, gap) = (
-            self.frame.province_rows(),
-            self.frame.row_gap(tables::Provinces::ID),
-        );
-        let province = provinces
-            .iter()
-            .find(|row| row.id == id)
+        let (provinces, gap) = rows::<tables::Provinces>(self.frame, PROVINCE);
+        let province = keyed(&provinces, u128::from(id))?
             .ok_or_else(|| format!("province {id}: Provinces {gap}"))?;
         if province.state != 0 {
             self.state_name(province.state)
@@ -716,9 +720,12 @@ impl<'a> ScriptedText<'a> {
         &self,
         id: u32,
     ) -> Result<Option<&[u8]>, String> {
-        let (names, gap) = rows::<tables::ProvinceNames>(self.frame);
-        if let Some(row) = names.iter().find(|row| row.province == id) {
-            Ok(Some(&row.name))
+        let (names, gap) = rows::<tables::ProvinceNames>(self.frame, PROVINCE_NAME);
+        if let Some(name) = names
+            .text(u128::from(id), |row| &row.name, PROVINCE_NAME_COLUMN)
+            .map_err(built)?
+        {
+            Ok(Some(name))
         } else if complete::<tables::ProvinceNames>(self.frame) {
             Ok(None)
         } else {
@@ -734,23 +741,16 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn province_victory_point_name_unrecorded(&self, id: u32) -> Result<String, String> {
-        let (provinces, gap) = (
-            self.frame.province_rows(),
-            self.frame.row_gap(tables::Provinces::ID),
-        );
-        let province = provinces
-            .iter()
-            .find(|row| row.id == id)
+        let (provinces, gap) = rows::<tables::Provinces>(self.frame, PROVINCE);
+        let province = keyed(&provinces, u128::from(id))?
             .ok_or_else(|| format!("province {id}: Provinces {gap}"))?;
         // Use the state's owner original tag or tag, not the
         // province controller. A null state uses the country at slot zero.
         let owner = if province.state == 0 {
             0
         } else {
-            let (states, gap) = rows::<tables::States>(self.frame);
-            let state = states
-                .iter()
-                .find(|row| row.id == province.state)
+            let (states, gap) = rows::<tables::States>(self.frame, STATE);
+            let state = keyed(&states, u128::from(province.state))?
                 .ok_or_else(|| {
                     format!(
                         "province {id}: state {} has no States row: {gap}",
@@ -768,8 +768,9 @@ impl<'a> ScriptedText<'a> {
                 })?
             }
         };
-        let tag = installed_content_country_names::country_names::original_or_own_tag(self.frame, owner)?;
-        victory_point_name(self.localisation, id, tag)
+        let tag =
+            installed_content_country_names::country_names::original_or_own_tag_in(&self.frame, owner)?;
+        victory_point_name(self.localisation, id, &tag)
     }
 
     pub(crate) fn province_terrain(&self, id: u32) -> Result<i32, String> {

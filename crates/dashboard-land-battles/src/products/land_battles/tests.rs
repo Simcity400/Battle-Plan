@@ -29,6 +29,7 @@ fn assert_held(prepared: &Census, oracle: &Census) {
             ];
         }
         expected.history = episode.history;
+        expected.carried = episode.carried.clone();
         assert_eq!(episode.history.is_some(), runs + losses > 0, "battle {at}");
         assert_eq!(
             serde_json::to_value(episode).unwrap(),
@@ -634,15 +635,14 @@ fn land_battles_counter_runs_are_exact_and_split_non_unit_steps() {
     assert!(!serde_json::to_string(&reply).unwrap().contains("durations"));
 }
 #[test]
-fn land_battles_cache_retains_two_most_recent_branches() {
+fn land_battles_cache_keeps_one_census_per_branch() {
     let mut cache = Cache::default();
-    for id in [1, 2] {
+    for id in [1, 2, 3] {
         cache.insert(id, Arc::new(Census::default()));
     }
     assert!(cache.get(1, None).is_some());
-    cache.insert(3, Arc::new(Census::default()));
-    assert!(cache.get(2, None).is_none());
-    assert_eq!(cache.branches.len(), 2);
+    assert!(cache.get(2, None).is_some());
+    assert_eq!(cache.branches.len(), 3);
 }
 #[test]
 fn land_battles_ranking_filters_before_top_n_and_keeps_unknown_participants() {

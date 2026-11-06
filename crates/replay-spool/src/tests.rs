@@ -51,6 +51,31 @@ fn containers_read_back_exactly() {
 }
 
 #[test]
+fn plain_slices_go_as_their_bytes() {
+    same(vec![u32::MAX, 0, 300]);
+    same(vec![i64::MIN, -1, 7]);
+    same(vec![1.5_f64, -2.25]);
+    same(vec![u128::MAX, 1]);
+    same(vec![usize::MAX, 0]);
+    same([-3_i16; 4]);
+    assert_eq!(round_trip(&vec![1_u32; 3]).unwrap().1.len(), 1 + 3 * 4);
+}
+
+#[test]
+fn an_allocation_only_its_value_held_is_released_with_it() {
+    let mut shared = Shared::default();
+    let mut bytes = Vec::new();
+    let held = Arc::new(5_u32);
+    Arc::new(7_u32)
+        .spool(&mut Writer::new(&mut bytes, &mut shared))
+        .unwrap();
+    held.spool(&mut Writer::new(&mut bytes, &mut shared)).unwrap();
+    shared.sweep_recent().unwrap();
+    assert_eq!(shared.released().len(), 1);
+    assert_eq!(shared.len(), 1);
+}
+
+#[test]
 fn a_shared_allocation_reads_back_as_one() {
     let shared: Arc<str> = Arc::from("tag");
     let other: Arc<str> = Arc::from("tag");

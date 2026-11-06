@@ -432,12 +432,8 @@ fn air_superiority_region_choices_ignore_viewpoint_and_preserve_group_retention(
     let group_state = source.append_state::<country_groups::GroupCache>();
     let registry = group_state.lock().unwrap();
     assert_eq!(
-        registry
-            .entries
-            .iter()
-            .map(|entry| entry.0)
-            .collect::<Vec<_>>(),
-        [5, 4, 3, 2]
+        registry.entries.keys().copied().collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5]
     );
     assert_eq!(
         source
@@ -445,10 +441,10 @@ fn air_superiority_region_choices_ignore_viewpoint_and_preserve_group_retention(
             .lock()
             .unwrap()
             .branches
-            .iter()
-            .map(|entry| entry.0)
+            .keys()
+            .copied()
             .collect::<Vec<_>>(),
-        [5, 4]
+        [1, 2, 3, 4, 5]
     );
 }
 use dashboard_base::products::country_groups;
@@ -1828,8 +1824,8 @@ fn product_load_inherits_verified_append_state_and_keeps_prior_source_independen
     let next_state = next_source.state::<AirCache>();
     let first_state = first_state.lock().unwrap();
     let next_state = next_state.lock().unwrap();
-    let first_entry = Arc::clone(&first_state.branches[0].1);
-    let next_entry = Arc::clone(&next_state.branches[0].1);
+    let first_entry = Arc::clone(first_state.branches.values().next().unwrap());
+    let next_entry = Arc::clone(next_state.branches.values().next().unwrap());
     drop(first_state);
     drop(next_state);
     {
@@ -2159,14 +2155,14 @@ fn air_superiority_retains_two_views_and_one_replaced_partial_without_waiting_on
         cached_branch(&source, 1, Some((tag, true)));
     }
     let registry = source.append_state::<AirCache>();
-    assert_eq!(registry.lock().unwrap().viewpoints.len(), 2);
+    assert_eq!(registry.lock().unwrap().viewpoints.len(), 1);
     let _cold_scan = entry.gate.lock().unwrap();
     let inherited = registry.lock().unwrap().clone();
     assert!(Arc::ptr_eq(
-        &inherited.branches[0].1.data.lock().unwrap().segments[0],
+        &inherited.branches[&1].data.lock().unwrap().segments[0],
         &entry.data.lock().unwrap().segments[0]
     ));
-    assert!(inherited.branches[0].1.gate.try_lock().is_ok());
+    assert!(inherited.branches[&1].gate.try_lock().is_ok());
 }
 
 #[test]

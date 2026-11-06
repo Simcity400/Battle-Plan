@@ -100,7 +100,7 @@ use std::sync::atomic::AtomicBool;
 use serde::Deserialize;
 
 use crate::{
-    Source, reply_cache,
+    Source,
     transport::{MAX_REPLY_BYTES, bounded_json},
 };
 
@@ -173,42 +173,6 @@ fn refuse<P: Product>(
     Err(prepared_only(P::KEY).into())
 }
 
-/// How long an interactive reply must take to compute to be kept between sessions: one read
-/// back from disk takes a few milliseconds, and quicker hover answers are not worth the writes.
-// Tests choose their own threshold ([`KEEP_AFTER`]).
-#[cfg_attr(test, allow(dead_code))]
-const KEEP_INTERACTIVE_AFTER: std::time::Duration = std::time::Duration::from_millis(25);
-
-#[cfg(test)]
-thread_local! {
-    /// [`KEEP_INTERACTIVE_AFTER`] as this thread's test sets it: none is kept unless it does,
-    /// so no test's outcome turns on how fast it ran.
-    static KEEP_AFTER: std::cell::Cell<std::time::Duration> =
-        const { std::cell::Cell::new(std::time::Duration::MAX) };
-}
-
-fn keep_after() -> std::time::Duration {
-    #[cfg(test)]
-    return KEEP_AFTER.get();
-    #[cfg(not(test))]
-    KEEP_INTERACTIVE_AFTER
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Whether artwork failed to draw, as this thread's test sets it: other tests' draws fail
-    /// on machines without a GPU or shader compiler.
-    static DRAW_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Whether artwork failed to draw in this process ([`shader_pipeline::artwork::draw_failed`]).
-fn draw_failed() -> bool {
-    #[cfg(test)]
-    return DRAW_FAILED.get();
-    #[cfg(not(test))]
-    shader_pipeline::artwork::draw_failed()
-}
-
 fn load_json<P: Product>(
     source: &Source,
     lease_id: &str,
@@ -231,19 +195,13 @@ fn load_json<P: Product>(
         .map(|(store, key)| store.scope(key))
         .transpose()
         .map_err(dashboard_core::QueryError::from)?;
-    // A content reply holds its folders' content while it runs, so its reads, its diagnostics
-    // and whether it is kept all follow one read set, whatever the source binds meanwhile.
+    // A content reply holds its folders' content while it runs, so its reads and its diagnostics
+    // follow one read set, whatever the source binds meanwhile.
     let _held = context
         .content
         .as_ref()
         .filter(|_| P::CONTENT_DEPENDENT)
         .and_then(|content| source.content(&content.options).ok());
-    // Replies persist between sessions, interactive ones once slow to compute.
-    let entry = (!P::MACHINE_DEPENDENT
-        && !P::PUBLISHED
-        && !production_lines::PREPARED_PRODUCTS.contains(&P::KEY))
-    .then(|| reply_cache::Entry::new(source, P::KEY, P::CONTENT_DEPENDENT, &request, context))
-    .flatten();
     let mut reply = bounded_json(
         &Envelope {
             source_id: lease_id,
@@ -255,52 +213,22 @@ fn load_json<P: Product>(
     )?;
     // The data serializes last.
     reply.truncate(reply.len() - "null}".len());
-    let stored = entry.as_ref().and_then(reply_cache::Entry::get);
-    let data = match stored {
-        Some(data) => data,
-        None => {
-            // The reply names what it refused and drew in the recording's style itself, with
-            // what the shared loads it reused noted, never what other consumers did: the same
-            // whichever replies ran before it.
-            let started = std::time::Instant::now();
-            let mut own = crate::catalogue::OwnRefusals::default();
-            let data = crate::catalogue::own_refusals(&mut own, || {
-                P::load(source, &params, context, cancelled)
-            });
-            let computing = started.elapsed();
-            let mut data = data.map_err(dashboard_core::QueryError::from)?;
-            own.diagnostics().append_to(data.warnings_mut());
-            if P::CONTENT_DEPENDENT {
-                source.append_changed_warnings(data.warnings_mut(), context.content.as_ref());
-            }
-            // What the presentation the request was admitted under shows, never the source's now.
-            source.append_presentation_warnings(data.warnings_mut(), context.content.as_ref());
-            data.warnings_mut().extend(own.fallback_line());
-            let data = bounded_json(&data, cancelled)?;
-            // Kept under the identity it was drawn with (the recording's own for recorded-only
-            // work, whatever is selected), and only while its admission still holds the source's
-            // current binding: a reply of a binding the source has left is not kept.
-            if let Some(entry) = entry
-                && !own.diagnostics().has_uncovered()
-                && own.fallbacks().is_empty()
-                && !own.diagnostics().has_shader_warnings()
-                && context
-                    .content
-                    .as_ref()
-                    .is_none_or(|content| source.still_admitted(content))
-            {
-                // A failed draw may be this machine's, which a later run may draw: no interactive
-                // answer is kept once one has failed.
-                if !P::INTERACTIVE {
-                    entry.put(&data);
-                } else if computing >= keep_after() && !draw_failed() {
-                    let json = data.clone();
-                    entry.put_later(json.len(), move || Some(json));
-                }
-            }
-            data
-        }
-    };
+    // The reply names what it refused and drew in the recording's style itself, with what the
+    // shared loads it reused noted, never what other consumers did: the same whichever replies
+    // ran before it.
+    let mut own = crate::catalogue::OwnRefusals::default();
+    let data = crate::catalogue::own_refusals(&mut own, || {
+        P::load(source, &params, context, cancelled)
+    });
+    let mut data = data.map_err(dashboard_core::QueryError::from)?;
+    own.diagnostics().append_to(data.warnings_mut());
+    if P::CONTENT_DEPENDENT {
+        source.append_changed_warnings(data.warnings_mut(), context.content.as_ref());
+    }
+    // What the presentation the request was admitted under shows, never the source's now.
+    source.append_presentation_warnings(data.warnings_mut(), context.content.as_ref());
+    data.warnings_mut().extend(own.fallback_line());
+    let data = bounded_json(&data, cancelled)?;
     if reply.len() + data.len() + 1 > MAX_REPLY_BYTES {
         return Err("Projected response exceeds the transport byte budget".into());
     }
@@ -486,8 +414,6 @@ mod recording_tests;
 
 #[cfg(test)]
 mod casualty_route_tests;
-#[cfg(test)]
-mod kept_reply_tests;
 #[cfg(test)]
 mod own_refusal_tests;
 #[cfg(test)]

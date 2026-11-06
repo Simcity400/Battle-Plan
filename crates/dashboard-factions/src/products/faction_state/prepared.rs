@@ -4,13 +4,12 @@ use super::*;
 use dashboard_base::{
     Source, catalogue,
     metadata::check_cancel,
-    prepared::{
-        frame_changes::FrameChanges,
-        query::{frames::Walk, native, progressive},
-    },
+    prepared::frame_changes::FrameChanges,
     products::faction_details::{self, FactionRuleDetail, GoalLabel, selectors},
     triggers::inputs as reuse,
 };
+#[cfg(test)]
+use dashboard_base::prepared::query::{frames::Walk, progressive};
 use replay_data::rows::{RowCodec, TableId, TableSchema, tables};
 use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use std::{
@@ -85,18 +84,14 @@ impl Kind {
         }
     }
 }
-/// Every table [`Supplying`] reads through the native hour reader: the programmes' supplying
-/// read and its widest frame.
-pub fn native_tables() -> Vec<TableId> {
-    let mut tables = selectors::programme_text_tables();
-    tables.push(TableId::ProjectPrograms);
-    tables
-}
-/// One branch's programme supplying reads, each sought in rising hours.
+/// One branch's programme supplying reads in a row recording's frames, each sought in rising
+/// hours: the oracle the columnar walk's reads are checked against.
+#[cfg(test)]
 pub struct Supplying<'a> {
     hours: Walk<'a>,
     frames: Walk<'a>,
 }
+#[cfg(test)]
 impl<'a> Supplying<'a> {
     pub fn new(source: &'a Source, branch: u64) -> Self {
         Self {
@@ -104,40 +99,25 @@ impl<'a> Supplying<'a> {
             frames: Walk::new(source, branch),
         }
     }
-    /// The hour of `frame`'s latest supplying read of programme operands.
+    /// The hour of the latest supplying read of programme operands at `branch`'s `hour`.
     pub(super) fn read_hour(
         &mut self,
-        frame: &DecodedFrame,
+        (branch, hour): (u64, i32),
         cancelled: &AtomicBool,
     ) -> io::Result<Option<i32>> {
-        if self.hours.branch() != frame.branch {
-            *self = Supplying::new(self.hours.source(), frame.branch);
-        }
-        // A native recording's row frames leave the programmes' statuses to its capture.
-        match native::read_hour(
-            self.hours.source(),
-            frame.branch,
-            frame.hour,
-            TableId::ProjectPrograms,
-            replay_data::cadence::STAGGER_PERIOD,
-            cancelled,
-        ) {
-            Ok(Some(read)) => return Ok(read),
-            Ok(None) => {}
-            // An index refused or not holding the hour leaves the read unknown, as a lost one.
-            Err(error) if error.kind() != io::ErrorKind::Interrupted => return Ok(None),
-            Err(error) => return Err(error),
+        if self.hours.branch() != branch {
+            *self = Supplying::new(self.hours.source(), branch);
         }
         progressive::walked_read_hour(
             &mut self.hours,
-            frame.hour,
+            hour,
             TableId::ProjectPrograms,
             replay_data::cadence::STAGGER_PERIOD,
             cancelled,
         )
     }
     /// The supplying read at `hour`: the programme tables, and every scripted-text table
-    /// when `wide`, those its row frame leaves to the native capture read from its index.
+    /// when `wide`.
     pub(super) fn frame(
         &mut self,
         hour: i32,
@@ -149,7 +129,7 @@ impl<'a> Supplying<'a> {
         } else {
             selectors::PROGRAMME_TABLES.to_vec()
         };
-        let Some(mut read) = progressive::walked_supplying_frame(
+        let Some(read) = progressive::walked_supplying_frame(
             &mut self.frames,
             hour,
             TableId::ProjectPrograms,
@@ -159,7 +139,6 @@ impl<'a> Supplying<'a> {
         else {
             return Ok(None);
         };
-        native::fill(self.frames.source(), &mut read, &tables, cancelled)?;
         Ok(Some(Arc::from(read)))
     }
 }
@@ -211,7 +190,7 @@ mod projection;
 use goals::GoalList;
 pub(in crate::products::faction_state) use projection::{
     ACCOUNT_FIELDS, AccountOp, AccountRow, Accounts, ChannelOp, Edits, FactionOps, Frames, Ghost,
-    GoalsOp, ManpowerEntry, ManpowerOp, Owner, Projected, Runtime,
+    GoalsOp, ManpowerEntry, ManpowerOp, Owner, Projected, Runtime, Supply,
 };
 #[cfg(test)]
 pub(in crate::products::faction_state) use projection::{Whole, timeless};

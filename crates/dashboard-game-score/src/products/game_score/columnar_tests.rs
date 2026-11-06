@@ -11,7 +11,7 @@ use super::{
     *,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -161,12 +161,10 @@ fn build(
     hours: Vec<facts::Hour>,
     cuts: &[i32],
     resume: Option<i32>,
-    budget: &Budget,
 ) -> Built {
-    let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(content);
     let mut root = 0;
     let mut generation = 0;
@@ -180,7 +178,6 @@ fn build(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -194,8 +191,8 @@ fn build(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -270,9 +267,7 @@ fn check(
     (first, last): (i32, i32),
     label: &str,
 ) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let flag = AtomicBool::new(false);
     for (product, params) in requests(first, last, &["BBB", "DDD", "FFF"]) {
@@ -367,7 +362,6 @@ fn scenario() -> Vec<DecodedFrame> {
 fn the_publication_answers_as_the_row_oracle_across_starts_cuts_a_gap_and_a_resume() {
     let content = content();
     let frames = scenario();
-    let budget = Budget::new(64 << 20);
     for (label, starts, cuts, resume) in [
         ("one segment", &[][..], &[130][..], None),
         ("segment starts", &[104, 110, 117, 126][..], &[130][..], None),
@@ -377,7 +371,7 @@ fn the_publication_answers_as_the_row_oracle_across_starts_cuts_a_gap_and_a_resu
     ] {
         let (hours, decoded) = projected(&content, &frames, starts);
         let fixture = oracle(&content, &decoded);
-        let built = build(&content, hours, cuts, resume, &budget);
+        let built = build(&content, hours, cuts, resume);
         check(&built, &fixture, (100, 130), label);
     }
 }

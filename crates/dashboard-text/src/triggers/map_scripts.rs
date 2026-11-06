@@ -2,8 +2,9 @@
 use super::{Eval, Evaluator, Scope, Scopes, Store};
 use crate::triggers::Failure;
 use installed_content_core::parser::Item;
-use replay_data::rows::tables;
-use std::collections::BTreeSet;
+use replay_data::rows::{TableSchema, mask, tables};
+use replay_frame::frame::HourFrame;
+use std::{borrow::Cow, collections::BTreeSet};
 
 impl Evaluator<'_, '_> {
     pub(super) fn map_builtin_value(
@@ -22,7 +23,8 @@ impl Evaluator<'_, '_> {
                 None => 0,
             };
             let world = self.world();
-            let definitions = recorded::<tables::ModifierDefinitions>(world.frame())?;
+            const TOKEN: u64 = mask::<replay_data::rows::ModifierDefinitionRow>(&["token"]);
+            let definitions = recorded::<tables::ModifierDefinitions>(world.tables(), TOKEN)?;
             if !definitions.iter().any(|row| row.token == token) {
                 return Ok(Some(0));
             }
@@ -34,7 +36,7 @@ impl Evaluator<'_, '_> {
                 .position(|key| *key == name)
             {
                 let row = self.country_stability_inputs(slot)?;
-                return self.stability_modifier_input(row, slot, index).map(Some);
+                return self.stability_modifier_input(&row, slot, index).map(Some);
             }
             return Err(format!(
                 "modifier@{}: the country accumulator entry is not recorded",
@@ -51,9 +53,10 @@ impl Evaluator<'_, '_> {
             name,
             b"owner" | b"controller" | b"state_population" | b"state_population_k"
         ) {
-            let row = recorded::<tables::States>(world.frame())?
-                .iter()
-                .find(|row| row.id == state)
+            const BUILTIN: u64 =
+                mask::<replay_data::rows::StateRow>(&["owner", "controller", "population"]);
+            // States is keyed by its id.
+            let row = recorded_row::<tables::States>(world.tables(), BUILTIN, u128::from(state))?
                 .ok_or("state builtin lacks its States row")?;
             return match name {
                 b"state_population" => Ok(Some(
@@ -100,10 +103,19 @@ impl Evaluator<'_, '_> {
             b"resistance" | b"compliance" | b"resistance_speed" | b"compliance_speed"
         ) {
             world.table_fresh(replay_data::rows::TableId::StateResistance)?;
-            let row = recorded::<tables::StateResistance>(world.frame())?
-                .iter()
-                .find(|row| row.state == state)
-                .ok_or_else(|| {
+            const RESISTANCE: u64 = mask::<replay_data::rows::StateResistanceRow>(&[
+                "level",
+                "speed",
+                "compliance",
+                "compliance_speed",
+            ]);
+            // Keyed by the state.
+            let row = recorded_row::<tables::StateResistance>(
+                world.tables(),
+                RESISTANCE,
+                u128::from(state),
+            )?
+            .ok_or_else(|| {
                     super::refusal::missing_reference(
                         replay_data::rows::TableId::StateResistance,
                         Some(Store::State(state)),
@@ -135,9 +147,12 @@ impl Evaluator<'_, '_> {
         let Some(ordinal) = traits.first_ordinal(name).map_err(|why| why.to_string())? else {
             return Ok(false);
         };
-        let hired = recorded::<tables::HiredAdvisors>(world.frame())?;
-        let roles = recorded::<tables::AdvisorRoles>(world.frame())?;
-        let held = recorded::<tables::CharacterRoleTraits>(world.frame())?;
+        const HIRED: u64 = mask::<replay_data::rows::HiredAdvisorRow>(&["character", "idea", "slot"]);
+        const ROLE: u64 = mask::<replay_data::rows::AdvisorRoleRow>(&["idea", "slot"]);
+        const HELD: u64 = mask::<replay_data::rows::CharacterRoleTraitRow>(&["definitions"]);
+        let hired = recorded::<tables::HiredAdvisors>(world.tables(), HIRED)?;
+        let roles = recorded::<tables::AdvisorRoles>(world.tables(), ROLE)?;
+        let held = recorded::<tables::CharacterRoleTraits>(world.tables(), HELD)?;
         for advisor in hired {
             let owner = world
                 .slot(advisor.country)
@@ -165,7 +180,10 @@ impl Evaluator<'_, '_> {
                 return Ok(true);
             }
         }
-        let active = recorded::<tables::ActiveIdeas>(world.frame())?;
+        let active = recorded::<tables::ActiveIdeas>(
+            world.tables(),
+            mask::<replay_data::rows::ActiveIdeaRow>(&["token"]),
+        )?;
         let ideas = world.ideas.map_err(Failure::from)?;
         for row in active {
             let owner = world
@@ -197,11 +215,13 @@ impl Evaluator<'_, '_> {
 
     pub(super) fn state_in_home_area(&self, state: u32) -> Result<bool, Failure> {
         let world = self.world();
-        let states = recorded::<tables::States>(world.frame())?;
-        let row = states
-            .iter()
-            .find(|row| row.id == state)
-            .ok_or("home area state is absent")?;
+        // States is keyed by its id.
+        let row = recorded_row::<tables::States>(
+            world.tables(),
+            mask::<replay_data::rows::StateRow>(&["owner"]),
+            u128::from(state),
+        )?
+        .ok_or("home area state is absent")?;
         let owner = if row.owner == 0 {
             0
         } else {
@@ -209,7 +229,10 @@ impl Evaluator<'_, '_> {
                 .slot(row.owner)
                 .ok_or("home area owner is unresolved")?
         };
-        let politics = recorded::<tables::Politics>(world.frame())?;
+        let politics = recorded::<tables::Politics>(
+            world.tables(),
+            mask::<replay_data::rows::PoliticsRow>(&["capital"]),
+        )?;
         let capital = politics
             .iter()
             .find(|row| world.slot(row.country) == Some(owner))
@@ -276,7 +299,11 @@ impl Evaluator<'_, '_> {
         Ok(area != 0 && largest == Some(area))
     }
     pub(super) fn country_is_ai(&self, slot: u32) -> Result<bool, Failure> {
-        let [features] = recorded::<tables::SimulationFeatures>(self.world().frame())? else {
+        let features = recorded::<tables::SimulationFeatures>(
+            self.world().tables(),
+            tables::SimulationFeatures::ID.full_mask(),
+        )?;
+        let [features] = features.as_slice() else {
             return Err(Failure::input(
                 replay_data::rows::TableId::SimulationFeatures,
                 "",
@@ -287,13 +314,19 @@ impl Evaluator<'_, '_> {
         if features.human_ai != 0 {
             return Ok(true);
         }
-        let flag = recorded::<tables::RaidCountryInputs>(self.world().frame())?
-            .iter()
-            .find(|row| row.canonical_slot == slot)
-            .ok_or("RaidCountryInputs lacks AI-control country")?
-            .autonomous;
+        // Keyed by the canonical slot.
+        let flag = recorded_row::<tables::RaidCountryInputs>(
+            self.world().tables(),
+            mask::<replay_data::rows::RaidCountryInputRow>(&["autonomous"]),
+            u128::from(slot),
+        )?
+        .ok_or("RaidCountryInputs lacks AI-control country")?
+        .autonomous;
         if let Some(flag) = flag {
-            let rows = recorded::<tables::HumanControllers>(self.world().frame())?;
+            let rows = recorded::<tables::HumanControllers>(
+                self.world().tables(),
+                mask::<replay_data::rows::HumanControllerRow>(&["count"]),
+            )?;
             let row = rows
                 .iter()
                 .find(|row| self.world().slot(row.country) == Some(slot))
@@ -302,7 +335,10 @@ impl Evaluator<'_, '_> {
         }
         // The raid census leaves this flag absent only outside the native
         // controller arrays, where AI control falls back to the live players.
-        for player in recorded::<tables::Players>(self.world().frame())? {
+        for player in recorded::<tables::Players>(
+            self.world().tables(),
+            mask::<replay_data::rows::PlayerRow>(&["country"]),
+        )? {
             let country = if player.country == 0 {
                 0
             } else {
@@ -322,7 +358,10 @@ impl Evaluator<'_, '_> {
 
     fn tech_sharing_roster(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
         let world = self.world();
-        let rows = recorded::<tables::ResearchModifiers>(world.frame())?;
+        let rows = recorded::<tables::ResearchModifiers>(
+            world.tables(),
+            tables::ResearchModifiers::ID.full_mask(),
+        )?;
         let token = if name.is_empty() {
             Some(0)
         } else {
@@ -434,7 +473,11 @@ impl Evaluator<'_, '_> {
     ) -> Result<Option<i64>, Failure> {
         let world = self.world();
         if let (Store::Global, b"states") = (store, name) {
-            let [features] = recorded::<tables::SimulationFeatures>(world.frame())? else {
+            let features = recorded::<tables::SimulationFeatures>(
+                world.tables(),
+                tables::SimulationFeatures::ID.full_mask(),
+            )?;
+            let [features] = features.as_slice() else {
                 return Err(Failure::input(
                     replay_data::rows::TableId::SimulationFeatures,
                     "",
@@ -472,11 +515,14 @@ impl Evaluator<'_, '_> {
         }
         let (countries, values): (bool, std::borrow::Cow<'_, [u32]>) = match (store, name) {
             (Store::State(state), b"core_countries") => {
-                let row = recorded::<tables::StateCores>(world.frame())?
-                    .iter()
-                    .find(|row| row.state == state)
-                    .ok_or("core_countries lacks its StateCores row")?;
-                (true, std::borrow::Cow::Borrowed(&row.cores))
+                // Keyed by the state.
+                let row = recorded_row::<tables::StateCores>(
+                    world.tables(),
+                    mask::<replay_data::rows::StateCoreRow>(&["cores"]),
+                    u128::from(state),
+                )?
+                .ok_or("core_countries lacks its StateCores row")?;
+                (true, std::borrow::Cow::Owned(row.into_owned().cores))
             }
             (Store::Global, b"countries") => (
                 true,
@@ -491,13 +537,15 @@ impl Evaluator<'_, '_> {
             ),
             (Store::Country(slot), b"owned_controlled_states") => {
                 let owned = self.country_state_array(slot, b"owned_states")?;
-                let states = recorded::<tables::States>(world.frame())?;
                 let mut values = Vec::new();
-                for &id in owned {
-                    let row = states
-                        .iter()
-                        .find(|row| row.id == id)
-                        .ok_or("owned state is not recorded")?;
+                for &id in owned.iter() {
+                    // States is keyed by its id.
+                    let row = recorded_row::<tables::States>(
+                        world.tables(),
+                        mask::<replay_data::rows::StateRow>(&["controller"]),
+                        u128::from(id),
+                    )?
+                    .ok_or("owned state is not recorded")?;
                     if world.slot(row.controller) == Some(slot) {
                         values.push(id);
                     }
@@ -506,7 +554,7 @@ impl Evaluator<'_, '_> {
             }
             (Store::Country(slot), b"owned_states" | b"controlled_states" | b"core_states") => (
                 false,
-                std::borrow::Cow::Borrowed(self.country_state_array(slot, name)?),
+                self.country_state_array(slot, name)?,
             ),
             _ => return Ok(None),
         };
@@ -530,7 +578,7 @@ impl Evaluator<'_, '_> {
         self.encode(scope).map(Some)
     }
 
-    fn country_state_array(&self, slot: u32, name: &[u8]) -> Result<&[u32], Failure> {
+    fn country_state_array(&self, slot: u32, name: &[u8]) -> Result<Cow<'_, [u32]>, Failure> {
         if name == b"owned_states" || name == b"controlled_states" {
             return self
                 .world()
@@ -546,12 +594,26 @@ impl Evaluator<'_, '_> {
         };
         (|| {
             let inputs = self.world().country_counter_inputs(slot)?;
-            let field = match name {
-                b"owned_states" => &inputs.owned_states,
-                b"controlled_states" => &inputs.controlled_states,
-                _ => &inputs.core_states,
-            };
-            field
+            fn field<'r>(
+                inputs: &'r replay_data::rows::CountryCounterInputRow,
+                name: &[u8],
+            ) -> &'r replay_data::rows::Recorded<Option<Vec<u32>>> {
+                match name {
+                    b"owned_states" => &inputs.owned_states,
+                    b"controlled_states" => &inputs.controlled_states,
+                    _ => &inputs.core_states,
+                }
+            }
+            fn states<'r>(
+                inputs: &'r replay_data::rows::CountryCounterInputRow,
+                name: &[u8],
+            ) -> &'r [u32] {
+                match field(inputs, name) {
+                    replay_data::rows::Recorded::Value(Some(states)) => states.as_slice(),
+                    _ => &[],
+                }
+            }
+            field(&inputs, name)
                 .require(what)
                 .map_err(|why| {
                     Failure::input(
@@ -569,14 +631,18 @@ impl Evaluator<'_, '_> {
                         Some(Store::Country(slot)),
                         format!("{what} capture unavailable"),
                     )
-                })
+                })?;
+            Ok(match inputs {
+                Cow::Borrowed(inputs) => Cow::Borrowed(states(inputs, name)),
+                Cow::Owned(inputs) => Cow::Owned(states(&inputs, name).to_vec()),
+            })
         })()
     }
 
     fn country_stability_inputs(
         &self,
         slot: u32,
-    ) -> Result<&replay_data::rows::CountryStabilityInputRow, Failure> {
+    ) -> Result<Cow<'_, replay_data::rows::CountryStabilityInputRow>, Failure> {
         let world = self.world();
         let raw = match world.raw_country(slot) {
             Some(raw) => raw,
@@ -590,10 +656,13 @@ impl Evaluator<'_, '_> {
                 ));
             }
         };
-        recorded::<tables::CountryStabilityInputs>(world.frame())?
-            .iter()
-            .find(|row| row.country == raw)
-            .ok_or_else(|| {
+        // Keyed by the raw country; its readers read any of its fields.
+        recorded_row::<tables::CountryStabilityInputs>(
+            world.tables(),
+            tables::CountryStabilityInputs::ID.full_mask(),
+            u128::from(raw),
+        )?
+        .ok_or_else(|| {
                 Failure::input(
                     replay_data::rows::TableId::CountryStabilityInputs,
                     "",
@@ -640,7 +709,7 @@ impl Evaluator<'_, '_> {
                             _ => false,
                         })
             };
-            if needed && let Err(failure) = self.stability_modifier_input(row, slot, index) {
+            if needed && let Err(failure) = self.stability_modifier_input(&row, slot, index) {
                 missing.push(failure);
             }
         }
@@ -648,9 +717,9 @@ impl Evaluator<'_, '_> {
             return Err(Failure::merge(missing));
         }
         let terms = if support {
-            crate::stability::war_support(row)
+            crate::stability::war_support(&row)
         } else {
-            crate::stability::stability(row)
+            crate::stability::stability(&row)
         };
         Ok(terms
             .value
@@ -664,7 +733,10 @@ impl Evaluator<'_, '_> {
             return Ok(true);
         }
         let world = self.world();
-        for row in recorded::<tables::WarRelations>(world.frame())? {
+        for row in recorded::<tables::WarRelations>(
+            world.tables(),
+            mask::<replay_data::rows::WarRelationRow>(&["start_hour", "end_hour"]),
+        )? {
             if !super::ongoing(row.start_hour, row.end_hour, world.clock()) {
                 continue;
             }
@@ -730,10 +802,13 @@ impl Evaluator<'_, '_> {
             let Scope::State(state) = scopes.this else {
                 return Ok(Eval::False);
             };
-            let row = recorded::<tables::StateCores>(world.frame())?
-                .iter()
-                .find(|row| row.state == state)
-                .ok_or("StateCores lacks iterator state")?;
+            // Keyed by the state.
+            let row = recorded_row::<tables::StateCores>(
+                world.tables(),
+                mask::<replay_data::rows::StateCoreRow>(&["cores"]),
+                u128::from(state),
+            )?
+            .ok_or("StateCores lacks iterator state")?;
             row.cores
                 .iter()
                 .map(|&raw| {
@@ -795,9 +870,27 @@ impl Evaluator<'_, '_> {
     }
 }
 
-fn recorded<T: replay_data::rows::TableSchema>(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<&[T::Row], Failure> {
+/// `T`'s rows when complete, each holding the fields `mask` names, the whole table read.
+fn recorded<'a, T: replay_data::rows::TableSchema>(
+    frame: HourFrame<'a>,
+    mask: u64,
+) -> Result<Vec<Cow<'a, T::Row>>, Failure> {
     super::inputs::table(frame, T::ID);
-    super::world::table::<T>(frame)
+    super::world::table::<T>(frame, mask)?
+        .iter()
+        .map(|row| row.map_err(|why| super::refusal::input_error(T::ID, why)))
+        .collect()
+}
+
+/// `T`'s row keyed `key` when the table is complete, holding the fields `mask` names, the
+/// whole table read.
+fn recorded_row<'a, T: replay_data::rows::TableSchema>(
+    frame: HourFrame<'a>,
+    mask: u64,
+    key: u128,
+) -> Result<Option<Cow<'a, T::Row>>, Failure> {
+    super::inputs::table(frame, T::ID);
+    super::world::table::<T>(frame, mask)?
+        .get(key)
+        .map_err(|why| super::refusal::input_error(T::ID, why))
 }

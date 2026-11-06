@@ -52,7 +52,7 @@ pub(crate) enum Selected {
 impl Selected {
     pub(crate) fn scope(
         self,
-        recorded: &RecordedScopes,
+        recorded: &RecordedScopes<'_>,
         caller: Scope,
         name: &[u8],
         reader: Reader,

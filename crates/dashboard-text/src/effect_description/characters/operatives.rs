@@ -2,6 +2,10 @@
 
 use super::*;
 use crate::scripted_text::{EventObject, EventScope, Link, random};
+use replay_data::rows::CapturedOperativeReferenceRow;
+
+const CAPTURED_OWNER: u64 = mask::<CapturedOperativeReferenceRow>(&["owner"]);
+const OPERATIVE_CHARACTER: u64 = mask::<UnitLeaderRow>(&["character_id"]);
 
 #[cfg(test)]
 mod tests;
@@ -38,7 +42,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<Option<UnitLeader<'f>>, String> {
         let selected = self.effect_character_target(operand, scopes)?;
         let leader = match selected {
-            Some(character) => Tables::read(self.context.text.frame())
+            Some(character) => Tables::read_in(self.tables())
                 .unit_leader(character.id)
                 .map_err(|why| why.to_string())?,
             None => None,
@@ -174,14 +178,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let owner = self.current_country(scopes)?;
         let world = self.context.world()?;
         let mut found = false;
-        for row in world
-            .frame()
-            .complete::<tables::CapturedOperativeReferences>()
-            .map_err(|why| why.to_string())?
-        {
-            if world.slot(row.country) != Some(capturer) {
-                continue;
-            }
+        let captured = self.complete::<tables::CapturedOperativeReferences>(CAPTURED_OWNER)?;
+        for row in captured.keyed(|key| world.slot((key >> 32) as u32) == Some(capturer)) {
+            let row = row.map_err(built)?;
             // Skip null or unresolved references before comparing countries.
             if let Some(raw) = row.owner {
                 let country = if raw == 0 {
@@ -242,7 +241,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(operative) = operative.filter(|leader| leader.category() == 3) else {
             return Ok(String::new());
         };
-        let codename = self.effect_operative_codename(operative)?;
+        let codename = self.effect_operative_codename(&operative)?;
         let name = self.effect_resolved_leader_name(operative)?;
         let mut text = self.char_native_text(
             key,
@@ -422,15 +421,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let (seed, counter, refusal) = self.char_event_draw(cursor)?;
         // Installing a unit leader copies its own character, including a referenced
         // role's character. That field is not present in CharacterOperatives.
-        let character = match leader {
+        let character = match &leader {
             UnitLeader::Direct(row) => row.character_id,
-            UnitLeader::Referenced(row) => self
-                .character_leaders()?
-                .iter()
-                .find(|leader| {
-                    (u64::from(leader.id) << 32) | u64::from(leader.reference_type) == row.reference
-                })
-                .map(|leader| leader.character_id)
+            UnitLeader::Referenced(row) => keyed(
+                &self.character_leaders(OPERATIVE_CHARACTER)?,
+                u128::from(row.reference),
+            )?
+            .map(|leader| leader.character_id)
                 .ok_or_else(|| {
                     format!(
                         "referenced unit leader {} character is unrecorded",

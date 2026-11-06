@@ -31,37 +31,19 @@ pub fn focus_order(
 /// every country when no tag is selected.
 pub struct FocusBranch {
     pub countries: BTreeMap<String, FocusHistory>,
-    pub retained_bytes: usize,
-    /// The first hour whose focus progress was not kept because progress
-    /// reached its own budget. Order history is unaffected; progress after it
-    /// is absent, never carried forward.
-    pub progress_stopped: Option<i32>,
 }
 
-/// Retained bytes for focus progress runs, apart from the order history's
-/// budget: progress changes daily for every country, so a long or heavily
-/// modded campaign stops recording progress instead of failing the product.
-const PROGRESS_BUDGET_BYTES: usize = 48 * 1024 * 1024;
-/// A progress run's retained size: the struct plus its decimal string.
-const PROGRESS_RUN_BYTES: usize = std::mem::size_of::<FocusProgress>() + 20;
-
-const MAX_CACHED_BYTES: usize = 64 * 1024 * 1024;
-const MAX_CACHED_COUNTRIES: usize = 16;
-
-/// Each request scans only its own country, so the memory budget and the work
-/// never grow with how many countries the recording holds. Recently viewed
-/// countries stay cached within one shared byte budget.
+/// The country a request scans, kept for the next request of it: a widget shows one country's
+/// history, whose scan is its whole branch.
 #[derive(Default)]
 pub struct FocusCache {
-    countries: std::collections::VecDeque<CachedCountry>,
+    country: Option<CachedCountry>,
 }
 
 struct CachedCountry {
     branch: u64,
     tag: String,
     history: FocusHistory,
-    bytes: usize,
-    progress_stopped: Option<i32>,
 }
 
 impl FocusCache {
@@ -71,7 +53,7 @@ impl FocusCache {
         branch: u64,
         tag: &str,
         cancelled: &AtomicBool,
-    ) -> io::Result<(FocusHistory, Option<i32>)> {
+    ) -> io::Result<FocusHistory> {
         self.get_observing(replay, branch, tag, cancelled, &mut |_| Ok(()))
     }
 
@@ -82,56 +64,29 @@ impl FocusCache {
         tag: &str,
         cancelled: &AtomicBool,
         observe: &mut dyn FnMut(&DecodedFrame) -> io::Result<()>,
-    ) -> io::Result<(FocusHistory, Option<i32>)> {
+    ) -> io::Result<FocusHistory> {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Focus request cancelled",
             ));
         }
-        if let Some(index) = self
-            .countries
-            .iter()
-            .position(|entry| entry.branch == branch && entry.tag == tag)
+        if let Some(country) = &self.country
+            && country.branch == branch
+            && country.tag == tag
         {
-            let entry = self.countries.remove(index).unwrap();
-            self.countries.push_back(entry);
-        } else {
-            let mut result = focus_branch_observing(
-                replay,
-                branch,
-                Some(tag),
-                cancelled,
-                PROGRESS_BUDGET_BYTES,
-                observe,
-            )?;
-            let history = result
-                .countries
-                .remove(tag)
-                .ok_or_else(|| io::Error::other("No recorded focus history for this country"))?;
-            let bytes = result.retained_bytes;
-            while !self.countries.is_empty()
-                && (self.countries.len() >= MAX_CACHED_COUNTRIES
-                    || self
-                        .countries
-                        .iter()
-                        .map(|entry| entry.bytes)
-                        .sum::<usize>()
-                        + bytes
-                        > MAX_CACHED_BYTES)
-            {
-                self.countries.pop_front();
-            }
-            self.countries.push_back(CachedCountry {
-                branch,
-                tag: tag.to_owned(),
-                history,
-                bytes,
-                progress_stopped: result.progress_stopped,
-            });
+            return Ok(country.history.clone());
         }
-        let entry = self.countries.back().unwrap();
-        Ok((entry.history.clone(), entry.progress_stopped))
+        let history = focus_branch_observing(replay, branch, Some(tag), cancelled, observe)?
+            .countries
+            .remove(tag)
+            .ok_or_else(|| io::Error::other("No recorded focus history for this country"))?;
+        self.country = Some(CachedCountry {
+            branch,
+            tag: tag.to_owned(),
+            history: history.clone(),
+        });
+        Ok(history)
     }
 }
 
@@ -224,13 +179,11 @@ impl HeldFocusRead {
                 .last_mut()
                 .expect("accepted focus order")
                 .last_hour = frame.hour;
-            if result.progress_stopped.is_none() {
-                history
-                    .progress
-                    .last_mut()
-                    .expect("accepted focus progress")
-                    .last_hour = frame.hour;
-            }
+            history
+                .progress
+                .last_mut()
+                .expect("accepted focus progress")
+                .last_hour = frame.hour;
         }
         self.hour = Some(frame.hour);
         if let Some(views) = &mut self.views {
@@ -240,38 +193,13 @@ impl HeldFocusRead {
 }
 
 /// Scans one branch for `selected_tag`, or for every country when it is None.
-/// The memory budget applies to the scanned countries only.
 pub fn focus_branch(
     replay: &Replay,
     branch: u64,
     selected_tag: Option<&str>,
     cancelled: &AtomicBool,
 ) -> io::Result<FocusBranch> {
-    focus_branch_within(
-        replay,
-        branch,
-        selected_tag,
-        cancelled,
-        PROGRESS_BUDGET_BYTES,
-    )
-}
-
-/// [`focus_branch`] with the progress budget given, so tests can reach it.
-pub(crate) fn focus_branch_within(
-    replay: &Replay,
-    branch: u64,
-    selected_tag: Option<&str>,
-    cancelled: &AtomicBool,
-    progress_budget: usize,
-) -> io::Result<FocusBranch> {
-    focus_branch_observing(
-        replay,
-        branch,
-        selected_tag,
-        cancelled,
-        progress_budget,
-        &mut |_| Ok(()),
-    )
+    focus_branch_observing(replay, branch, selected_tag, cancelled, &mut |_| Ok(()))
 }
 
 /// New selected-country order segments expose only already verified frames.
@@ -281,7 +209,6 @@ fn focus_branch_observing(
     branch: u64,
     selected_tag: Option<&str>,
     cancelled: &AtomicBool,
-    progress_budget: usize,
     observe: &mut dyn FnMut(&DecodedFrame) -> io::Result<()>,
 ) -> io::Result<FocusBranch> {
     if cancelled.load(Ordering::Acquire) {
@@ -299,15 +226,11 @@ fn focus_branch_observing(
     ];
     let mut result = FocusBranch {
         countries: BTreeMap::new(),
-        retained_bytes: 0,
-        progress_stopped: None,
     };
     let mut identities = BTreeMap::new();
     // Each tag's focus tree as its last segment read it: another tree is a reset.
     let mut trees: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
     let mut held_read = HeldFocusRead::default();
-    let mut segment_count = 0;
-    let mut progress_bytes = 0_usize;
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|b| b.branch == branch),
@@ -416,19 +339,13 @@ fn focus_branch_observing(
                         // Progress changes once a day; runs never bridge a gap or an identity change.
                         match history.progress.last_mut() {
                             Some(run)
-                                if result.progress_stopped.is_none()
-                                    && same_identity
+                                if same_identity
                                     && run.last_hour.checked_add(1) == Some(frame.hour)
                                     && run.progress_raw.parse::<i64>() == Ok(focus.progress) =>
                             {
                                 run.last_hour = frame.hour;
                             }
-                            _ if result.progress_stopped.is_some() => {}
-                            _ if progress_bytes + PROGRESS_RUN_BYTES > progress_budget => {
-                                result.progress_stopped = Some(frame.hour);
-                            }
                             _ => {
-                                progress_bytes += PROGRESS_RUN_BYTES;
                                 history.progress.push(FocusProgress {
                                     first_hour: frame.hour,
                                     last_hour: frame.hour,
@@ -475,21 +392,6 @@ fn focus_branch_observing(
                         {
                             date_completions(&mut order, &previous.order, frame.hour);
                         }
-                        result.retained_bytes += 256
-                            + tag.len()
-                            + order.current.as_ref().map_or(0, String::len)
-                            + order.continuous.as_ref().map_or(0, String::len)
-                            + order
-                                .completed
-                                .iter()
-                                .map(|r| 64 + r.token.len())
-                                .sum::<usize>();
-                        segment_count += 1;
-                        if result.retained_bytes > 64 * 1024 * 1024 || segment_count > 100000 {
-                            return Err(io::Error::other(
-                                "Focus history exceeds its memory budget",
-                            ));
-                        }
                         history.segments.push(FocusSegment {
                             first_hour: frame.hour,
                             last_hour: frame.hour,
@@ -515,8 +417,6 @@ fn focus_branch_observing(
             "Focus request cancelled",
         ));
     }
-    // The cache's shared budget counts both; only order history can fail the scan.
-    result.retained_bytes += progress_bytes;
     Ok(result)
 }
 
@@ -705,13 +605,20 @@ impl Product for NationalFocus {
             national,
             continuous,
         } = &mut *state;
+        let mut seeded = false;
         let mut scan = || {
             history.get_observing(
                 &replay,
                 params.branch(),
                 &params.tag,
                 cancelled,
-                &mut |frame| super::focus_artwork::retain_basic(source, frame, cancelled),
+                &mut |frame| {
+                    // A scan seeds the frames of its own country's history, the last scan's going.
+                    if !std::mem::replace(&mut seeded, true) {
+                        super::focus_artwork::begin_seeding(source);
+                    }
+                    super::focus_artwork::retain_basic(source, frame, cancelled)
+                },
             )
         };
         let prepared = national.is_some() && continuous.is_some();
@@ -730,7 +637,7 @@ impl Product for NationalFocus {
             )
             .map(|_| ())
         };
-        let (history, progress_stopped) = if !prepared {
+        let history = if !prepared {
             prepare_while_scanning(cancelled, scan, prepare)?
         } else {
             let scanned = scan()?;
@@ -763,11 +670,6 @@ impl Product for NationalFocus {
         let (continuous_static_text, _) =
             continuous.text_catalogue(continuous_tokens, cancelled)?;
         let (artwork, mut warnings) = national.focus_metadata(national_tokens, cancelled)?;
-        if let Some(hour) = progress_stopped {
-            warnings.push(format!(
-                "Focus progress is too large to keep in full; it is unavailable from hour {hour}."
-            ));
-        }
         // Dated artwork requests report their own selector/localisation refusals.
         let reply = FocusReply {
             history,

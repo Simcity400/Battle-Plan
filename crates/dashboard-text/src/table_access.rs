@@ -1,11 +1,12 @@
 use crate::invalid;
 use replay_data::{
-    Hour, rows::LexicalTokenRow, rows::TableRows, rows::TableSchema, rows::tables,
+    Hour,
+    rows::{LexicalTokenRow, TableId, TableRows, TableSchema, column, mask, tables},
     scope::CaptureMode,
 };
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
-use replay_frame::frame::TableView;
+use replay_frame::frame::{HourFrame, Rowset, TableView};
 use std::{collections::BTreeMap, io};
 
 /// What one table of one decoded hour actually holds.
@@ -94,12 +95,25 @@ pub fn rows<T: TableSchema>(
 /// (empty, or starting with a digit or
 /// '-'), so it names no one key. A spelling that is not NUL-free UTF-8 names
 /// nothing here.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct TokenNames<'a> {
-    /// The hour's rows, in token order.
-    rows: replay_frame::frame::Rows<'a, LexicalTokenRow>,
+    /// The hour's rows, in token order: a decoded frame's, or a walk's literals read in place.
+    rows: Rowset<'a, LexicalTokenRow>,
     complete: bool,
 }
+
+impl std::fmt::Debug for TokenNames<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenNames")
+            .field("rows", &self.rows.len())
+            .field("complete", &self.complete)
+            .finish()
+    }
+}
+
+/// The LexicalTokens fields a name reads: each token's literal.
+const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
+const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
 
 /// Why a token has no name this hour. Formatted only when reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,27 +157,42 @@ impl<'a> TokenNames<'a> {
             )));
         }
         Ok(Self {
-            rows,
+            rows: Rowset::Decoded(rows.as_slice()),
             complete: frame.lexical_status().is_complete(),
+        })
+    }
+
+    /// [`Self::new`] of any frame's tables: a walk's rows are in token order, its literals read
+    /// where the walker holds them.
+    pub fn new_in(frame: HourFrame<'a>) -> io::Result<Self> {
+        if let Some(decoded) = frame.decoded() {
+            return Self::new(decoded.decoded_frame());
+        }
+        Ok(Self {
+            rows: frame.held::<tables::LexicalTokens>(LITERAL),
+            complete: frame.status(TableId::LexicalTokens).is_complete(),
         })
     }
 
     /// Rows already in ascending token order, as every replay table is.
     pub fn from_rows(rows: &'a [LexicalTokenRow], complete: bool) -> Self {
         Self {
-            rows: rows.into(),
+            rows: Rowset::Decoded(rows),
             complete,
         }
     }
 
     /// Every token of the hour spelled as text, in token order.
     pub fn iter(&self) -> impl Iterator<Item = (u32, &'a str)> + '_ {
-        self.rows.iter().filter_map(|row| {
-            let name = std::str::from_utf8(&row.literal).ok()?;
-            (row.token != 0 && !name.contains('\0')).then_some((row.token, name))
-        })
+        self.rows
+            .keys()
+            .zip(self.rows.texts(|row| &row.literal, LITERAL_COLUMN))
+            .filter_map(|(token, literal)| {
+                let token = token as u32;
+                let name = std::str::from_utf8(literal.ok()?).ok()?;
+                (token != 0 && !name.contains('\0')).then_some((token, name))
+            })
     }
-
     /// The token the lexer gives each key: the one spelled equal to it under
     /// the lexer's fold (`TokenKeys`), found in one pass without allocating.
     /// Several such tokens are refused by name.
@@ -201,14 +230,22 @@ impl<'a> TokenNames<'a> {
         if token == 0 {
             return Err(TokenError::Rejected);
         }
-        let Ok(index) = self.rows.binary_search_by_key(&token, |row| row.token) else {
-            return Err(if self.complete {
-                TokenError::Absent(token)
-            } else {
-                TokenError::Missing(token)
-            });
+        // A token's row is keyed by the token; a literal the walk did not record is no text.
+        let literal = match self
+            .rows
+            .text(u128::from(token), |row| &row.literal, LITERAL_COLUMN)
+        {
+            Ok(Some(literal)) => literal,
+            Ok(None) => {
+                return Err(if self.complete {
+                    TokenError::Absent(token)
+                } else {
+                    TokenError::Missing(token)
+                });
+            }
+            Err(_) => return Err(TokenError::NotText(token)),
         };
-        std::str::from_utf8(&self.rows.get(index).unwrap().literal)
+        std::str::from_utf8(literal)
             .ok()
             .filter(|name| !name.contains('\0'))
             .ok_or(TokenError::NotText(token))

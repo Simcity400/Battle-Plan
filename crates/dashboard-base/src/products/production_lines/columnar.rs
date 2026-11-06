@@ -8,14 +8,20 @@
 //! row at its first, then only the rows that changed, came or went. Rows come from the walk's
 //! world's views, built only at the hours that need them, and every operand is made with the
 //! fold's own functions. The emit takes each census into the one it holds and folds each hour
-//! through the fold a row preparation runs ([`Prepared`]), each country's part on spare cores, so
-//! the index it publishes, and every reply read from it, are those of the same hours' frames.
-//! Each segment starts cold, as a row block starts at a keyframe.
+//! through the fold a row preparation runs ([`Prepared`]), so every reply read from what it
+//! publishes is that of the same hours' frames. Each segment starts cold, as a row block starts
+//! at a keyframe.
+//!
+//! From a segment's first census on, the walk folds each linked country's lines itself, into a
+//! lens ([`Lenses`]), from its own fold of the same facts: the emit is then handed only the
+//! census rows of the countries no lens folds, and between hours, where a chunk ends, the
+//! lenses' parts and states ([`Item::Flush`]).
 
 use super::{
     Country, DesignRead, RawOrganisation, link_slot, organisation_name, organisation_state,
     pictures_hold_with,
-    prepared::{Directory, Prepared, directory_section},
+    input::{HourInput, World as Inputs},
+    prepared::{Directory, Lenses, Prepared, directory_section},
     raw_organisation, text,
 };
 use crate::{
@@ -39,13 +45,17 @@ use replay::{
 use replay_data::{
     format::FormatVersion,
     rows::{
-        CountryProductionModifiersRow, IndustrialOrganisationDetailsRow, IndustrialOrganisationRow,
-        LexicalTokenRow, ProductionLineModifiersRow, ProductionLineOutputRow, ProductionLineRow,
-        RowCodec, TABLE_COUNT, TableId, TableRows, VariantDefinitionRow, full_mask, tables,
+        CountryLinkRow, CountryProductionModifiersRow, CountryRow,
+        IndustrialOrganisationRow, LexicalTokenRow, ProductionLineModifiersRow,
+        ProductionLineOutputRow, ProductionLineRow, RowCodec, TABLE_COUNT, TableId, TableRows,
+        TableSchema, VariantDefinitionRow, VariantStatsRow, full_mask, mask, tables,
     },
 };
-use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_selected};
+use replay_frame::frame::{
+    ColumnFrame, DecodedFrame, Metrics, Rowset, SharedView, TableView, Tables, not_selected,
+};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     io,
     mem::size_of,
@@ -170,7 +180,7 @@ impl Bits {
 /// The countries' identities as the fold reads them where they changed: each holder's tag, each
 /// tag's country, the countries their links resolve, and each row's slot, id and tag in table
 /// order. Empty where the tables they come from are not complete.
-#[derive(replay_spool::Spooled)]
+#[derive(Clone, replay_spool::Spooled)]
 pub(super) struct Identities {
     pub holders: BTreeMap<(u32, u32), Option<String>>,
     /// None unless Countries and CountryLinks are complete.
@@ -180,7 +190,7 @@ pub(super) struct Identities {
 }
 
 /// VariantStats' designs where the hour built it anew.
-#[derive(replay_spool::Spooled)]
+#[derive(Clone, replay_spool::Spooled)]
 pub(super) enum Designs {
     /// It is not complete.
     Incomplete,
@@ -194,7 +204,7 @@ pub(super) enum Designs {
 }
 
 /// An organisation as the fold reads it: its operands with its state, without it, and its name.
-#[derive(replay_spool::Spooled)]
+#[derive(Clone, replay_spool::Spooled)]
 pub(super) struct Organisation {
     pub raw: RawOrganisation,
     pub author: RawOrganisation,
@@ -202,7 +212,7 @@ pub(super) struct Organisation {
 }
 
 /// What the hour did to the organisations the fold names.
-#[derive(replay_spool::Spooled)]
+#[derive(Clone, replay_spool::Spooled)]
 pub(super) enum Organisations {
     /// They are not named this hour: none is held.
     Reset,
@@ -214,7 +224,7 @@ pub(super) enum Organisations {
 /// list by slot and key: every entry in `added` when `whole`; else those in place of one held
 /// under their key and slot, those under a key not held under their slot, and the slot and key
 /// of each one gone or moved to another slot.
-#[derive(replay_spool::Spooled)]
+#[derive(Clone, replay_spool::Spooled)]
 pub(super) struct Delta<E> {
     pub whole: bool,
     pub changed: Vec<E>,
@@ -234,13 +244,15 @@ impl<E: Entry> Delta<E> {
 }
 
 /// A census's rows as deltas of the segment's census before: each line and output row with the
-/// canonical slot its link resolves, None where it resolves none.
-#[derive(replay_spool::Spooled)]
+/// canonical slot its link resolves, None where it resolves none; and every variant its line and
+/// output rows produce, whatever country's, where that changed.
+#[derive(Clone, replay_spool::Spooled)]
 pub(super) struct Census {
     pub lines: Delta<(Option<u32>, ProductionLineRow)>,
     pub output: Delta<(Option<u32>, ProductionLineOutputRow)>,
     pub modifier_countries: Delta<Arc<CountryProductionModifiersRow>>,
     pub modifier_lines: Delta<ProductionLineModifiersRow>,
+    pub variants: Option<Vec<u64>>,
 }
 
 impl Census {
@@ -249,6 +261,36 @@ impl Census {
             + self.output.heap()
             + self.modifier_countries.heap()
             + self.modifier_lines.heap()
+            + self.variants.as_ref().map_or(0, |variants| variants.len() * 8)
+    }
+}
+
+/// The entries of `delta` `keep` keeps, with `fresh`, which the emit did not hold, added whole.
+fn kept<E: Entry>(
+    delta: Delta<E>,
+    keep: impl Fn(Option<u32>, u128) -> bool,
+    fresh: impl IntoIterator<Item = E>,
+) -> Delta<E> {
+    let mut added: Vec<E> = delta
+        .added
+        .into_iter()
+        .filter(|entry| keep(entry.slot(), entry.row().key()))
+        .chain(fresh)
+        .collect();
+    added.sort_unstable_by_key(|entry| (entry.slot(), entry.row().key()));
+    Delta {
+        whole: delta.whole,
+        changed: delta
+            .changed
+            .into_iter()
+            .filter(|entry| keep(entry.slot(), entry.row().key()))
+            .collect(),
+        added,
+        gone: delta
+            .gone
+            .into_iter()
+            .filter(|&(slot, key)| keep(slot, key))
+            .collect(),
     }
 }
 
@@ -314,7 +356,7 @@ impl Entry for ProductionLineModifiersRow {
 fn diff<'r, E: Entry>(
     held: &mut Vec<E>,
     whole: bool,
-    rows: impl IntoIterator<Item = (Option<u32>, &'r E::Row)>,
+    rows: impl IntoIterator<Item = io::Result<(Option<u32>, Cow<'r, E::Row>)>>,
 ) -> io::Result<Delta<E>>
 where
     E::Row: 'r,
@@ -332,9 +374,10 @@ where
     let by_slot = |entry: &E| (entry.slot(), entry.row().key());
     if whole {
         let mut next = Vec::new();
-        for (slot, row) in rows {
+        for row in rows {
+            let (slot, row) = row?;
             ascending(row.key())?;
-            next.push(E::of(slot, row));
+            next.push(E::of(slot, &row));
         }
         let mut added = next.clone();
         added.sort_unstable_by_key(by_slot);
@@ -349,7 +392,9 @@ where
     let mut next = Vec::with_capacity(held.len());
     let (mut changed, mut added, mut gone) = (Vec::new(), Vec::new(), Vec::new());
     let mut old = std::mem::take(held).into_iter().peekable();
-    for (slot, row) in rows {
+    for row in rows {
+        let (slot, row) = row?;
+        let row = &*row;
         let key = row.key();
         ascending(key)?;
         while let Some(entry) = old.next_if(|entry| entry.row().key() < key) {
@@ -399,7 +444,7 @@ fn key_of<E: Entry>(entry: &E) -> u128 {
 }
 
 /// The census entries the segment last handed on, which its next census is a delta of.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Held {
     lines: Vec<(Option<u32>, ProductionLineRow)>,
     output: Vec<(Option<u32>, ProductionLineOutputRow)>,
@@ -438,9 +483,23 @@ pub(super) struct Facts {
     pub icons: Option<Icons>,
 }
 
-/// One hour of a segment, as the fold reads it.
+/// What a segment's walk hands its emit: an hour, or, between two hours, where a chunk ends.
 #[derive(replay_spool::Spooled)]
 pub struct Hour {
+    pub hour: i32,
+    pub(super) item: Item,
+}
+
+#[derive(replay_spool::Spooled)]
+pub(super) enum Item {
+    Read(Box<HourRead>),
+    /// A [`super::prepared::Lenses`] flush, encoded.
+    Flush(Vec<u8>),
+}
+
+/// One hour of a segment, as the fold reads it.
+#[derive(replay_spool::Spooled)]
+pub struct HourRead {
     pub hour: i32,
     /// The tables read in their slot ([`slot_reads`]).
     pub(super) reads: Bits,
@@ -587,12 +646,19 @@ fn edited(state: &State, table: TableId) -> io::Result<(Vec<u128>, Vec<u128>)> {
     Ok((written, deleted))
 }
 
+/// What the caches keep of an organisation they hold: its country, the tokens its row and
+/// detail name, and whether a detail of its country was held with it.
+struct Organised {
+    country: u32,
+    tokens: Box<[u32]>,
+    detailed: bool,
+}
+
 /// The organisations' caches the fold keeps to find those an hour changes, as the fold's own.
 #[derive(Default)]
 struct Mio {
     valid: bool,
-    rows: BTreeMap<u64, IndustrialOrganisationRow>,
-    details: BTreeMap<u64, IndustrialOrganisationDetailsRow>,
+    rows: BTreeMap<u64, Organised>,
     tokens: BTreeMap<u32, BTreeSet<u64>>,
     countries: BTreeMap<u32, BTreeSet<u64>>,
     owners: BTreeMap<u32, BTreeSet<u64>>,
@@ -603,6 +669,13 @@ impl Mio {
     fn clear(&mut self) {
         *self = Self::default();
     }
+}
+
+/// The organisations held with a detail.
+fn detailed(rows: &BTreeMap<u64, Organised>) -> impl Iterator<Item = u64> + '_ {
+    rows.iter()
+        .filter(|(_, held)| held.detailed)
+        .map(|(&id, _)| id)
 }
 
 /// The spellings of `tokens`, as LexicalTokens' rows of them, sorted by token.
@@ -661,21 +734,46 @@ fn spellings(
     Ok(spelled)
 }
 
-/// Keys of `rows` as the fold's candidates read them: none unless rebuilt, the hour's edited keys
-/// where its delta is exact, else every row's.
-fn candidates<T: RowCodec>(
+/// Keys of a table's rows, `keys`, as the fold's candidates read them: none unless rebuilt, the
+/// hour's edited keys where its delta is exact, else every row's.
+fn candidates(
     rebuilt: bool,
     edits: Option<(Vec<u128>, Vec<u128>)>,
-    rows: &[T],
+    keys: impl Iterator<Item = u128>,
 ) -> BTreeSet<u128> {
     if !rebuilt {
         return BTreeSet::new();
     }
     match edits {
         Some((written, deleted)) => written.into_iter().chain(deleted).collect(),
-        None => rows.iter().map(RowCodec::key).collect(),
+        None => keys.collect(),
     }
 }
+
+/// The rows of `T`'s complete table, each of the fields `mask` names; none when it is not
+/// complete.
+fn owned<T: TableSchema>(frame: &ColumnFrame<'_>, mask: u64) -> io::Result<Option<Vec<T::Row>>> {
+    let Ok(rows) = frame.complete_rows::<T>(mask) else {
+        return Ok(None);
+    };
+    rows.iter()
+        .map(|row| row.map(Cow::into_owned))
+        .collect::<io::Result<Vec<_>>>()
+        .map(Some)
+}
+
+/// The countries' and links' fields the fold reads: their slots and tags.
+const COUNTRY_FIELDS: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+const LINK_FIELDS: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+/// The design fields a variant read keeps.
+const DESIGN_FIELDS: u64 = mask::<VariantStatsRow>(&[
+    "organisation",
+    "organisation_trait_count",
+    "organisation_bonuses",
+]);
+const DEFINITION_TOKEN: u64 = mask::<VariantDefinitionRow>(&["equipment_token"]);
+const LINE_VARIANT: u64 = mask::<ProductionLineRow>(&["variant"]);
+const OUTPUT_VARIANT: u64 = mask::<ProductionLineOutputRow>(&["variant"]);
 
 /// A segment's walk of the fold's tables: what it hands on of each hour, and what it keeps to
 /// tell what changed.
@@ -686,8 +784,6 @@ pub struct Projector {
     asks: Vec<(TableId, Hold)>,
     /// The fields of each icon table its rule reads, to tell when its operands may change.
     icon_fields: Vec<(TableId, u64)>,
-    /// The frame the world's views are lent into for an hour, given back before it ends.
-    frame: Option<DecodedFrame>,
     naming: Naming,
     cold: bool,
     /// Each table's status the hour before, by table index.
@@ -716,6 +812,17 @@ pub struct Projector {
     named: Option<bool>,
     /// The walk begins at a run's start, from empty tables.
     empty: bool,
+    /// The fold's input as the lenses read it, and its last hour's.
+    inputs: Inputs,
+    input: Option<HourInput>,
+    lenses: Lenses,
+    /// Countries whose rows the emit holds again, handed whole at the next census.
+    fresh: BTreeSet<(u32, u32)>,
+    /// Every variant the census last handed on produces.
+    variants: Option<Vec<u64>>,
+    /// Each modifier line's slot at the census before and at the last.
+    modifier_before: BTreeMap<u64, Option<u32>>,
+    modifier_slots: BTreeMap<u64, Option<u32>>,
 }
 
 impl Projector {
@@ -744,7 +851,6 @@ impl Projector {
             tables: tables(pictured),
             asks,
             icon_fields,
-            frame: Some(empty(0)),
             naming: Naming::new()?,
             cold: true,
             statuses: vec![None; TABLE_COUNT],
@@ -767,6 +873,13 @@ impl Projector {
             tokens_dirty: true,
             named: None,
             empty: false,
+            inputs: Inputs::default(),
+            input: None,
+            lenses: Lenses::new(),
+            fresh: BTreeSet::new(),
+            variants: None,
+            modifier_before: BTreeMap::new(),
+            modifier_slots: BTreeMap::new(),
         })
     }
 
@@ -880,6 +993,224 @@ impl Operator<World> for Projector {
         hour: &segments::Hour<'_, World>,
         out: &mut dyn Sink<Hour>,
     ) -> io::Result<()> {
+        let at = hour.hour;
+        // Only the hour's own read refuses, before the lenses fold any of it: they hand over
+        // exactly the hours before, as every history the emit folds holds them.
+        let mut read = match self.read(hour) {
+            Ok(read) => read,
+            Err(error) => {
+                self.hand_over(at, out).map_err(segments::family_failure)?;
+                return Err(error);
+            }
+        };
+        // What the lenses add, and handing the hour on, fail only where the fold itself is
+        // wrong: never a refusal, so no history keeps a part of the hour another lacks.
+        (|| -> io::Result<()> {
+            let (before, after) = self.lensed(at, &mut read)?;
+            if let Some(flush) = before {
+                out.push(flush)?;
+            }
+            out.push(Hour {
+                hour: at,
+                item: Item::Read(Box::new(read)),
+            })?;
+            if let Some(flush) = after {
+                out.push(flush)?;
+            }
+            Ok(())
+        })()
+        .map_err(segments::family_failure)
+    }
+
+    fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        let at = self.input.as_ref().map_or(0, |input| input.last_hour);
+        self.hand_over(at, out).map_err(segments::family_failure)
+    }
+}
+
+impl Projector {
+    /// The lenses' fold of `read`'s hour, `at`, done whole before any of it is handed on: the
+    /// flush ending a chunk before the hour and the one after it, encoded, and `read`'s census
+    /// cut to what the emit holds.
+    fn lensed(&mut self, at: i32, read: &mut HourRead) -> io::Result<(Option<Hour>, Option<Hour>)> {
+        let mut local = local(read);
+        self.inputs.native_hour(&mut local);
+        let mut input = self
+            .inputs
+            .extract_native(&mut local, None, self.input.take())?;
+        let before = self.lenses.before(&input)?;
+        self.fresh.extend(self.lenses.take_fresh());
+        self.hand(read);
+        let after = self.lenses.after(&mut input)?;
+        self.input = Some(input);
+        Ok((
+            before.map(|flush| flush_item(at, &flush)).transpose()?,
+            after.map(|flush| flush_item(at, &flush)).transpose()?,
+        ))
+    }
+
+    /// Hands the emit every live lens's state through the last hour handed on, at `at`: at the
+    /// segment's end, or before an hour the walk refuses.
+    fn hand_over(&mut self, at: i32, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        let flush = self.lenses.end()?;
+        out.push(flush_item(at, &flush)?)
+    }
+}
+
+/// `flush` as the emit is handed it, at `hour`.
+fn flush_item(hour: i32, flush: &super::prepared::lens::Flush) -> io::Result<Hour> {
+    Ok(Hour {
+        hour,
+        item: Item::Flush(flush.encode()?),
+    })
+}
+
+/// What the lenses' own input folds of `read`: its facts but the variants' and icons', whose
+/// census `read` keeps a copy of for its emit to be cut from.
+fn local(read: &HourRead) -> HourRead {
+    let facts = read.facts.as_ref().map(|facts| {
+        Box::new(Facts {
+            identities: facts.identities.clone(),
+            designs: facts.designs.clone(),
+            organisations: facts.organisations.clone(),
+            census: facts.census.clone(),
+            refusal: facts.refusal.clone(),
+            ..Facts::default()
+        })
+    });
+    HourRead {
+        hour: read.hour,
+        reads: read.reads,
+        complete: read.complete,
+        rebuilt: read.rebuilt,
+        relevant: read.relevant,
+        stats_sampled: read.stats_sampled,
+        modules_sampled: read.modules_sampled,
+        details_sampled: read.details_sampled,
+        variant_changes: read.variant_changes,
+        definitions_empty: read.definitions_empty,
+        variants: read.variants,
+        raws: Vec::new(),
+        facts,
+        bytes: 0,
+    }
+}
+
+impl Projector {
+    /// Cuts `read`'s census to the rows the emit holds: none of a lensed country's, and those of
+    /// a country it holds again whole.
+    fn hand(&mut self, read: &mut HourRead) {
+        let Some(facts) = read.facts.as_mut() else {
+            return;
+        };
+        let Some(census) = facts.census.take() else {
+            return;
+        };
+        let (slots, ids) = self.lenses.lensed();
+        if slots.is_empty() && ids.is_empty() && self.fresh.is_empty() {
+            facts.census = Some(census);
+            return;
+        }
+        let fresh = std::mem::take(&mut self.fresh);
+        let fresh_slots: BTreeSet<u32> = fresh.iter().map(|(slot, _)| *slot).collect();
+        let fresh_ids: BTreeSet<u32> = fresh.iter().map(|(_, id)| *id).collect();
+        let held = self.held.as_ref();
+        // What the emit held before this census, and what it holds from it.
+        let before = |slot: Option<u32>| {
+            slot.is_none_or(|slot| !slots.contains(&slot) && !fresh_slots.contains(&slot))
+        };
+        let after = |slot: Option<u32>| slot.is_none_or(|slot| !slots.contains(&slot));
+        let fresh_of = |slot: &Option<u32>| slot.is_some_and(|slot| fresh_slots.contains(&slot));
+        let lines = kept(
+            census.lines,
+            |slot, _| before(slot),
+            held.into_iter()
+                .flat_map(|held| &held.lines)
+                .filter(|(slot, _)| fresh_of(slot))
+                .cloned(),
+        );
+        let output = kept(
+            census.output,
+            |slot, _| before(slot),
+            held.into_iter()
+                .flat_map(|held| &held.output)
+                .filter(|(slot, _)| fresh_of(slot))
+                .cloned(),
+        );
+        let modifier_countries = kept(
+            census.modifier_countries,
+            |_, key| {
+                let id = key as u32;
+                !ids.contains(&id) && !fresh_ids.contains(&id)
+            },
+            held.into_iter()
+                .flat_map(|held| &held.modifier_countries)
+                .filter(|row| fresh_ids.contains(&row.country))
+                .cloned(),
+        );
+        // A modifier line is the emit's while its line's slot is: one moving into or out of a
+        // lensed slot in place comes or goes.
+        let (slots_before, slots_after) = (&self.modifier_before, &self.modifier_slots);
+        let slot_of =
+            |map: &BTreeMap<u64, Option<u32>>, line: u64| map.get(&line).copied().flatten();
+        let delta = census.modifier_lines;
+        let named: BTreeSet<u64> = delta
+            .added
+            .iter()
+            .chain(&delta.changed)
+            .map(|row| row.line)
+            .collect();
+        let mut modifier_lines = Delta {
+            whole: delta.whole,
+            changed: Vec::new(),
+            added: Vec::new(),
+            gone: Vec::new(),
+        };
+        for row in delta.changed {
+            match (
+                before(slot_of(slots_before, row.line)),
+                after(slot_of(slots_after, row.line)),
+            ) {
+                (true, true) => modifier_lines.changed.push(row),
+                (true, false) => modifier_lines.gone.push((None, u128::from(row.line))),
+                (false, true) => modifier_lines.added.push(row),
+                (false, false) => {}
+            }
+        }
+        for row in delta.added {
+            if after(slot_of(slots_after, row.line)) {
+                modifier_lines.added.push(row);
+            }
+        }
+        for (slot, key) in delta.gone {
+            if before(slot_of(slots_before, key as u64)) {
+                modifier_lines.gone.push((slot, key));
+            }
+        }
+        modifier_lines.added.extend(
+            held.into_iter()
+                .flat_map(|held| &held.modifier_lines)
+                .filter(|row| {
+                    fresh_of(&slot_of(slots_after, row.line)) && !named.contains(&row.line)
+                })
+                .cloned(),
+        );
+        modifier_lines.changed.sort_unstable_by_key(|row| row.line);
+        modifier_lines.added.sort_unstable_by_key(|row| row.line);
+        modifier_lines.gone.sort_unstable();
+        let handed = Census {
+            lines,
+            output,
+            modifier_countries,
+            modifier_lines,
+            variants: census.variants,
+        };
+        self.lenses.sent(handed.heap());
+        facts.census = Some(handed);
+    }
+
+    /// One hour of the walk, as the fold reads it.
+    fn read(&mut self, hour: &segments::Hour<'_, World>) -> io::Result<HourRead> {
         let _cpu = replay_frame::cpu::scope("production-lines.columnar", Some("production-lines"));
         let (state, manifest, world) = (hour.state, hour.manifest, hour.world);
         let at = hour.hour;
@@ -1087,12 +1418,9 @@ impl Operator<World> for Projector {
         };
         let mut new_icons = 0;
         if !lent.is_empty() {
-            let mut frame = self.frame.take().unwrap_or_else(|| empty(0));
-            world.frame_held_into(state, &lent, &mut frame)?;
-            let made = self.facts(
-                state,
+            new_icons = self.facts(
+                (state, world),
                 names,
-                &frame,
                 &flags,
                 Wants {
                     identities,
@@ -1108,10 +1436,7 @@ impl Operator<World> for Projector {
                 },
                 at,
                 &mut facts,
-            );
-            dashboard_world::release(&mut frame, &lent);
-            self.frame = Some(frame);
-            new_icons = made?;
+            )?;
         } else if designs {
             facts.designs = Some(Designs::Incomplete);
         }
@@ -1151,7 +1476,7 @@ impl Operator<World> for Projector {
             + facts
                 .as_ref()
                 .map_or(0, |facts| facts.heap(new_icons));
-        out.push(Hour {
+        Ok(HourRead {
             hour: at,
             reads: Bits::of(&flags.reads),
             complete: flags.complete,
@@ -1187,24 +1512,32 @@ struct Wants {
 }
 
 impl Projector {
-    /// Fills `facts` from the views lent into `frame`; the bytes of the icon operands first held
-    /// here.
+    /// Fills `facts` from the walk's views of the hour; the bytes of the icon operands first
+    /// held here.
     #[allow(clippy::too_many_arguments)]
     fn facts(
         &mut self,
-        state: &State,
+        (state, world): (&State, &World),
         names: &dashboard_world::Naming,
-        frame: &DecodedFrame,
         flags: &Flags,
         wants: Wants,
         at: i32,
         facts: &mut Facts,
     ) -> io::Result<usize> {
+        let frame = world.columns(state);
         if wants.refuse {
-            self.refusal = Some(self.refusal(state, names, frame, at)?);
+            self.refusal = Some(self.refusal((state, world), &frame, names, at)?);
         }
-        let countries = frame.complete::<tables::Countries>().ok();
-        let links = frame.complete::<tables::CountryLinks>().ok();
+        // The countries and links, of the fields the fold reads, where a read names countries.
+        let (countries, links) = if wants.identities || wants.organisations || wants.census {
+            (
+                owned::<tables::Countries>(&frame, COUNTRY_FIELDS)?,
+                owned::<tables::CountryLinks>(&frame, LINK_FIELDS)?,
+            )
+        } else {
+            (None, None)
+        };
+        let (countries, links) = (countries.as_deref(), links.as_deref());
         let old_keys = if wants.identities {
             let identities = identities(countries, links);
             let keys = countries
@@ -1224,17 +1557,23 @@ impl Projector {
             None
         };
         if wants.definitions {
-            let rows = frame.complete::<tables::VariantDefinitions>()?;
+            let rows = frame.complete_rows::<tables::VariantDefinitions>(
+                TableId::VariantDefinitions.full_mask(),
+            )?;
             let handed: Vec<VariantDefinitionRow> = match &self.pending {
-                None => rows.to_vec(),
-                Some(pending) => pending
+                None => rows
                     .iter()
-                    .filter_map(|&key| {
-                        rows.binary_search_by_key(&key, RowCodec::key)
-                            .ok()
-                            .map(|at| rows[at].clone())
-                    })
-                    .collect(),
+                    .map(|row| row.map(Cow::into_owned))
+                    .collect::<io::Result<_>>()?,
+                Some(pending) => {
+                    let mut handed = Vec::new();
+                    for &key in pending {
+                        if let Some(row) = rows.get(key)? {
+                            handed.push(row.into_owned());
+                        }
+                    }
+                    handed
+                }
             };
             facts.spellings = spellings(
                 state,
@@ -1244,11 +1583,12 @@ impl Projector {
             facts.definitions = Some(handed);
         }
         if wants.designs {
-            facts.designs = Some(match frame.complete::<tables::VariantStats>() {
+            facts.designs = Some(match frame.complete_rows::<tables::VariantStats>(DESIGN_FIELDS) {
                 Err(_) => Designs::Incomplete,
                 Ok(stats) => {
-                    let design_hour = frame.tables[TableId::VariantStats.index()]
-                        .sampled_at()
+                    // A complete view is sampled at its last complete read.
+                    let design_hour = state
+                        .sampled_at(TableId::VariantStats.index())
                         .or_else(|| {
                             flags
                                 .complete
@@ -1256,7 +1596,7 @@ impl Projector {
                                 .then(|| state.sampled_at(TableId::VariantModules.index()))
                                 .flatten()
                         });
-                    let read = |row: &replay_data::rows::VariantStatsRow| {
+                    let read = |row: &VariantStatsRow| {
                         (
                             row.variant,
                             DesignRead {
@@ -1269,15 +1609,21 @@ impl Projector {
                         )
                     };
                     match flags.edits(state, TableId::VariantStats)? {
-                        None => Designs::Whole(stats.iter().map(read).collect()),
+                        None => {
+                            let mut whole = Vec::with_capacity(stats.len());
+                            for row in stats.iter() {
+                                whole.push(read(&*row?));
+                            }
+                            Designs::Whole(whole)
+                        }
                         Some((written, deleted)) => {
                             let mut changed = Vec::with_capacity(written.len());
                             let mut gone: Vec<u64> =
                                 deleted.iter().map(|&key| key as u64).collect();
                             for key in written {
-                                match stats.binary_search_by_key(&key, RowCodec::key) {
-                                    Ok(at) => changed.push(read(&stats[at])),
-                                    Err(_) => gone.push(key as u64),
+                                match stats.get(key)? {
+                                    Some(row) => changed.push(read(&row)),
+                                    None => gone.push(key as u64),
                                 }
                             }
                             Designs::Rows {
@@ -1292,11 +1638,13 @@ impl Projector {
         if wants.organisations
             && let (Some(countries), Some(links)) = (countries, links)
         {
-            let rows = frame.complete::<tables::IndustrialOrganisations>()?;
+            let rows = frame.complete_rows::<tables::IndustrialOrganisations>(
+                TableId::IndustrialOrganisations.full_mask(),
+            )?;
             let updates = self.organisations(
                 state,
                 names,
-                frame,
+                &frame,
                 flags,
                 at,
                 (countries, links),
@@ -1311,55 +1659,96 @@ impl Projector {
             let whole = self.held.is_none();
             let held = self.held.get_or_insert_with(Held::default);
             let lines = frame
-                .complete::<tables::ProductionLines>()
-                .unwrap_or_default();
+                .complete_rows::<tables::ProductionLines>(TableId::ProductionLines.full_mask())
+                .ok();
             let output = frame
-                .complete::<tables::ProductionLineOutput>()
-                .unwrap_or_default();
+                .complete_rows::<tables::ProductionLineOutput>(
+                    TableId::ProductionLineOutput.full_mask(),
+                )
+                .ok();
             let refused = wants.refusal_due && !self.refusal.as_ref().is_some_and(Option::is_none);
-            let (countries, modified): (
-                &[CountryProductionModifiersRow],
-                &[ProductionLineModifiersRow],
-            ) = if wants.modifiers && !refused {
+            let modifiers = wants.modifiers && !refused;
+            let (countries, modified) = if modifiers {
                 (
-                    frame.complete::<tables::CountryProductionModifiers>()?,
-                    frame.complete::<tables::ProductionLineModifiers>()?,
+                    Some(frame.complete_rows::<tables::CountryProductionModifiers>(
+                        TableId::CountryProductionModifiers.full_mask(),
+                    )?),
+                    Some(frame.complete_rows::<tables::ProductionLineModifiers>(
+                        TableId::ProductionLineModifiers.full_mask(),
+                    )?),
                 )
             } else {
-                (&[], &[])
+                (None, None)
             };
+            let mut variants = BTreeSet::new();
+            for row in lines.iter().flat_map(|rows| rows.with_mask(LINE_VARIANT).iter()) {
+                variants.insert(row?.variant);
+            }
+            for row in output
+                .iter()
+                .flat_map(|rows| rows.with_mask(OUTPUT_VARIANT).iter())
+            {
+                variants.insert(row?.variant);
+            }
+            let variants: Vec<u64> = variants.into_iter().collect();
+            let variants = (self.variants.as_ref() != Some(&variants)).then(|| {
+                self.variants = Some(variants.clone());
+                variants
+            });
+            let mut slots = BTreeMap::new();
+            let modifier_lines = diff(
+                &mut held.modifier_lines,
+                whole,
+                modified.iter().flat_map(|rows| rows.iter()).map(|row| {
+                    let row = row?;
+                    slots.insert(row.line, link_slot(links, row.country));
+                    Ok((None, row))
+                }),
+            )?;
+            self.modifier_before = std::mem::replace(&mut self.modifier_slots, slots);
             facts.census = Some(Census {
                 lines: diff(
                     &mut held.lines,
                     whole,
-                    lines
-                        .iter()
-                        .map(|row| (link_slot(links, row.country), row)),
+                    lines.iter().flat_map(|rows| rows.iter()).map(|row| {
+                        let row = row?;
+                        Ok((link_slot(links, row.country), row))
+                    }),
                 )?,
                 output: diff(
                     &mut held.output,
                     whole,
-                    output
-                        .iter()
-                        .map(|row| (link_slot(links, row.country), row)),
+                    output.iter().flat_map(|rows| rows.iter()).map(|row| {
+                        let row = row?;
+                        Ok((link_slot(links, row.country), row))
+                    }),
                 )?,
                 modifier_countries: diff(
                     &mut held.modifier_countries,
                     whole,
-                    countries.iter().map(|row| (None, row)),
+                    countries
+                        .iter()
+                        .flat_map(|rows| rows.iter())
+                        .map(|row| Ok((None, row?))),
                 )?,
-                modifier_lines: diff(
-                    &mut held.modifier_lines,
-                    whole,
-                    modified.iter().map(|row| (None, row)),
-                )?,
+                modifier_lines,
+                variants,
             });
         }
         let mut new_icons = 0;
         if wants.icon_hour
             && let Some(content) = self.icons.as_deref()
         {
-            let hour = IconHour::read(frame, content).map_err(|error| error.to_string());
+            // The icon rule reads decoded rows: its tables are copied in the fields it reads.
+            let mut icon_frame = empty(frame.branch);
+            let icon_tables = self.pick(
+                &[TableId::Countries, TableId::CountryLinks]
+                    .into_iter()
+                    .chain(ICON_FIELDS.map(|(table, _)| table))
+                    .collect::<Vec<_>>(),
+            );
+            world.copy_into(state, &icon_tables, &mut icon_frame)?;
+            let hour = IconHour::read(&icon_frame, content).map_err(|error| error.to_string());
             new_icons += match &hour {
                 Ok(hour) => hour.heap(),
                 Err(why) => why.len(),
@@ -1368,14 +1757,13 @@ impl Projector {
             self.icon_dirty = false;
         }
         if wants.tokens {
-            let live = frame
-                .complete::<tables::VariantDefinitions>()
-                .map(|rows| {
-                    rows.iter()
-                        .map(|row| row.equipment_token)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let mut live = Vec::new();
+            if let Ok(rows) = frame.complete_rows::<tables::VariantDefinitions>(DEFINITION_TOKEN) {
+                live.reserve(rows.len());
+                for row in rows.iter() {
+                    live.push(row?.equipment_token);
+                }
+            }
             let mut held = BTreeMap::new();
             for (token, spelling) in spellings(state, self.format, live)? {
                 new_icons += size_of::<(u32, String)>() + spelling.len();
@@ -1391,26 +1779,32 @@ impl Projector {
     /// and the spellings of its tokens, as the fold reads it of a frame.
     fn refusal(
         &self,
-        state: &State,
+        (state, world): (&State, &World),
+        frame: &ColumnFrame<'_>,
         names: &dashboard_world::Naming,
-        frame: &DecodedFrame,
         at: i32,
     ) -> io::Result<Option<String>> {
         let mut checked = empty(frame.branch);
         checked.hour = at;
-        let definitions = TableId::ModifierDefinitions.index();
-        checked.tables[definitions] = frame.tables[definitions].clone();
-        let lexical = TableId::LexicalTokens.index();
-        checked.tables[lexical] = if names.tokens_complete() {
-            let tokens = frame
-                .complete::<tables::ModifierDefinitions>()
-                .map(|rows| rows.iter().map(|row| row.token).collect::<Vec<_>>())
-                .unwrap_or_default();
+        let definitions = TableId::ModifierDefinitions;
+        checked.tables[definitions.index()] = world.copy(state, definitions, Hold::Whole)?;
+        let lexical = TableId::LexicalTokens;
+        checked.tables[lexical.index()] = if names.tokens_complete() {
+            let mut tokens = Vec::new();
+            const TOKEN: u64 = mask::<replay_data::rows::ModifierDefinitionRow>(&["token"]);
+            if let Ok(rows) = frame.complete_rows::<tables::ModifierDefinitions>(TOKEN) {
+                for row in rows.iter() {
+                    tokens.push(row?.token);
+                }
+            }
             SharedView::from(TableView::Complete(TableRows::LexicalTokens(spelled(
                 names, state, tokens,
             )?)))
+        } else if !columns::complete(state, lexical) {
+            // The spellings are read whole only where they are not complete.
+            world.copy(state, lexical, Hold::Whole)?
         } else {
-            frame.tables[lexical].clone()
+            not_selected()
         };
         Ok(replay_derive::fixed_layout::validate_recording(
             &checked,
@@ -1425,26 +1819,23 @@ impl Projector {
         &mut self,
         state: &State,
         names: &dashboard_world::Naming,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         flags: &Flags,
         hour: i32,
-        (countries, links): (
-            &[replay_data::rows::CountryRow],
-            &[replay_data::rows::CountryLinkRow],
-        ),
-        rows: &[IndustrialOrganisationRow],
+        (countries, links): (&[CountryRow], &[CountryLinkRow]),
+        rows: Rowset<'_, IndustrialOrganisationRow>,
         old_keys: Option<Vec<(u32, u32)>>,
     ) -> io::Result<Vec<(u64, Option<Box<Organisation>>)>> {
         let changed = |table: TableId| flags.relevant.get(table);
         let any = |table: TableId| flags.rebuilt.get(table) && !flags.patched.get(table);
         let mio = &mut self.mio;
         let mut affected: BTreeSet<u64> = if !mio.valid {
-            rows.iter().map(|row| row.organisation).collect()
+            rows.keys().map(|key| key as u64).collect()
         } else {
             candidates(
                 flags.rebuilt.get(TableId::IndustrialOrganisations),
                 flags.edits(state, TableId::IndustrialOrganisations)?,
-                rows,
+                rows.keys(),
             )
             .into_iter()
             .map(|id| id as u64)
@@ -1454,33 +1845,37 @@ impl Projector {
             affected.extend(mio.rows.keys().copied());
         }
         let details = frame
-            .complete::<tables::IndustrialOrganisationDetails>()
+            .complete_rows::<tables::IndustrialOrganisationDetails>(
+                TableId::IndustrialOrganisationDetails.full_mask(),
+            )
             .ok();
         if changed(TableId::IndustrialOrganisationDetails) {
             if any(TableId::IndustrialOrganisationDetails) {
-                affected.extend(mio.details.keys().copied());
+                affected.extend(detailed(&mio.rows));
             }
             affected.extend(
                 candidates(
                     true,
                     flags.edits(state, TableId::IndustrialOrganisationDetails)?,
-                    details.unwrap_or_default(),
+                    details.iter().flat_map(|rows| rows.keys()),
                 )
                 .into_iter()
                 .map(|id| id as u64),
             );
             if details.is_none() {
-                affected.extend(mio.details.keys().copied());
+                affected.extend(detailed(&mio.rows));
             }
         }
         let policies = frame
-            .complete::<tables::IndustrialOrganisationPolicies>()
+            .complete_rows::<tables::IndustrialOrganisationPolicies>(
+                TableId::IndustrialOrganisationPolicies.full_mask(),
+            )
             .ok();
         if changed(TableId::IndustrialOrganisationPolicies) {
             for id in candidates(
                 true,
                 flags.edits(state, TableId::IndustrialOrganisationPolicies)?,
-                policies.unwrap_or_default(),
+                policies.iter().flat_map(|rows| rows.keys()),
             ) {
                 affected.extend(
                     mio.countries
@@ -1539,34 +1934,34 @@ impl Projector {
             .as_deref()
             .and_then(|icons| icons.catalogue.as_deref())
             .map(|catalogue| catalogue as &dyn Texts);
-        let details_sampled =
-            frame.tables[TableId::IndustrialOrganisationDetails.index()].sampled_at();
+        // A complete view is sampled at its last complete read.
+        let details_sampled = details
+            .is_some()
+            .then(|| state.sampled_at(TableId::IndustrialOrganisationDetails.index()))
+            .flatten();
         let mut updates = Vec::with_capacity(affected.len());
         for id in affected {
-            for token in super::input::organisation_tokens(mio.rows.get(&id), mio.details.get(&id))
-            {
-                super::input::remove_user(&mut mio.tokens, token, id);
-            }
-            if let Some(row) = mio.rows.get(&id) {
-                super::input::remove_user(&mut mio.countries, row.country, id);
+            if let Some(held) = mio.rows.get(&id) {
+                for &token in &held.tokens {
+                    super::input::remove_user(&mut mio.tokens, token, id);
+                }
+                super::input::remove_user(&mut mio.countries, held.country, id);
             }
             if let Some(slot) = mio.owner_slots.remove(&id) {
                 super::input::remove_user(&mut mio.owners, slot, id);
             }
-            let Ok(at) = rows.binary_search_by_key(&id, |row| row.organisation) else {
+            let Some(row) = rows.get(u128::from(id))? else {
                 mio.rows.remove(&id);
-                mio.details.remove(&id);
                 updates.push((id, None));
                 continue;
             };
-            let row = &rows[at];
-            let detail = details
-                .and_then(|rows| {
-                    rows.binary_search_by_key(&id, |row| row.organisation)
-                        .ok()
-                        .map(|at| &rows[at])
-                })
-                .filter(|detail| detail.country == row.country);
+            let row = &*row;
+            let detail = match &details {
+                Some(details) => details.get(u128::from(id))?,
+                None => None,
+            }
+            .filter(|detail| detail.country == row.country);
+            let detail = detail.as_deref();
             mio.countries.entry(row.country).or_default().insert(id);
             let owner_slot = link_slot(links, row.owner);
             if let Some(slot) = owner_slot {
@@ -1577,6 +1972,11 @@ impl Projector {
             for &token in &tokens {
                 mio.tokens.entry(token).or_default().insert(id);
             }
+            let held = Organised {
+                country: row.country,
+                tokens: tokens.iter().copied().collect(),
+                detailed: detail.is_some(),
+            };
             let lexical = spelled(names, state, tokens)?;
             let owner: Vec<_> = owner_slot
                 .and_then(|slot| self.country_rows.get(&slot))
@@ -1587,14 +1987,14 @@ impl Projector {
             let author = raw_organisation(row, hour, &tags, &lexical);
             let name = organisation_name(&author, texts);
             let mut raw = author.clone();
+            let policy = match (detail, &policies) {
+                (Some(detail), Some(policies)) => policies.get(u128::from(detail.country))?,
+                _ => None,
+            };
             raw.state = detail.map(|detail| {
                 let mut state = organisation_state(detail, details_sampled, &lexical);
-                state.policy_name = policies
-                    .and_then(|rows| {
-                        rows.binary_search_by_key(&detail.country, |row| row.country)
-                            .ok()
-                            .map(|at| &rows[at])
-                    })
+                state.policy_name = policy
+                    .as_deref()
                     .and_then(|row| {
                         row.policies
                             .iter()
@@ -1603,12 +2003,7 @@ impl Projector {
                     .map(|policy| text(&policy.name));
                 state
             });
-            mio.rows.insert(id, row.clone());
-            if let Some(detail) = detail {
-                mio.details.insert(id, detail.clone());
-            } else {
-                mio.details.remove(&id);
-            }
+            mio.rows.insert(id, held);
             updates.push((id, Some(Box::new(Organisation { raw, author, name }))));
         }
         mio.valid = true;
@@ -1767,16 +2162,21 @@ impl Branch {
         Ok(())
     }
 
-    /// Folds `hour`.
+    /// Folds `hour`, or ends a chunk where the walk says.
     pub fn observe<W: Pages + ?Sized>(
         &mut self,
         writer: &mut W,
         hour: Hour,
         icons: Option<&IconContent>,
     ) -> io::Result<()> {
-        let at = hour.hour;
-        self.prepared.observe_facts(writer, hour, icons, &NEVER)?;
-        self.last = Some(at);
+        match hour.item {
+            Item::Read(read) => {
+                let at = read.hour;
+                self.prepared.observe_facts(writer, *read, icons, &NEVER)?;
+                self.last = Some(at);
+            }
+            Item::Flush(flush) => self.prepared.lens_flush_into(writer, &flush)?,
+        }
         Ok(())
     }
 

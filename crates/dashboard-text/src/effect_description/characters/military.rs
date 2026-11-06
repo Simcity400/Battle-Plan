@@ -21,14 +21,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // Equal tokens use the first entry.
     fn military_roster_character(
         &self,
-        roster: &[CountryCharacterRow],
+        roster: Rowset<'f, CountryCharacterRow>,
         country: u32,
         token: i32,
-    ) -> Result<Option<&'f CharacterRow>, String> {
+    ) -> Result<Option<Cow<'f, CharacterRow>>, String> {
         let world = self.context.world()?;
         let characters = self.character_rows()?;
-        let mut selected: Option<(u32, Option<&'f CharacterRow>)> = None;
-        for row in roster {
+        let mut selected: Option<(u32, Option<Cow<'f, CharacterRow>>)> = None;
+        for row in each(roster) {
+            let row = row?;
             if world.slot(row.country).ok_or_else(|| {
                 format!(
                     "CountryLinks lacks character roster country {}",
@@ -41,13 +42,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let character = row
                 .character
                 .map(|id| {
-                    characters.iter().find(|row| row.id == id).ok_or_else(|| {
+                    keyed(&characters, u128::from(id))?.ok_or_else(|| {
                         format!("country character roster references missing character {id}")
                     })
                 })
                 .transpose()?;
-            if character.map_or(0, |row| row.name_token_id) == token
-                && selected.is_none_or(|(ordinal, _)| row.ordinal < ordinal)
+            if character.as_ref().map_or(0, |row| row.name_token_id) == token
+                && selected
+                    .as_ref()
+                    .is_none_or(|(ordinal, _)| row.ordinal < *ordinal)
             {
                 selected = Some((row.ordinal, character));
             }
@@ -68,7 +71,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character_target(operand, scopes)? else {
             return Ok(String::new());
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         self.char_native_text(
             creation_key(category).expect("registered military role category"),
             &[("NAME", Argument::Text(&name))],
@@ -93,7 +96,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .to_owned();
         if name.is_empty() {
             let country = self.current_country(scopes)?;
-            let roster = self.character_table::<tables::CountryCharacters>()?;
+            let roster = self.character_table::<tables::CountryCharacters>(ROSTER)?;
             let id = field(children(item), "id")
                 .and_then(|item| item.value.scalar())
                 .and_then(|value| installed_content_core::crt::scan_i32(value).stored())
@@ -103,8 +106,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 let token = format!("{}_", self.tag(country)?);
                 let characters = self.character_rows()?;
                 let world = self.context.world()?;
-                let mut selected: Option<(u32, &'f CharacterRow)> = None;
-                for row in roster {
+                let mut selected: Option<(u32, Cow<'f, CharacterRow>)> = None;
+                for row in each(roster) {
+                    let row = row?;
                     if world
                         .slot(row.country)
                         .ok_or("character roster country is not recorded")?
@@ -113,12 +117,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         continue;
                     }
                     let Some(id) = row.character else { continue };
-                    let candidate =
-                        characters.iter().find(|row| row.id == id).ok_or_else(|| {
-                            format!("CountryCharacters references missing character {id}")
-                        })?;
+                    let candidate = keyed(&characters, u128::from(id))?.ok_or_else(|| {
+                        format!("CountryCharacters references missing character {id}")
+                    })?;
                     if candidate.token == token.as_bytes()
-                        && selected.is_none_or(|(ordinal, _)| row.ordinal < ordinal)
+                        && selected
+                            .as_ref()
+                            .is_none_or(|(ordinal, _)| row.ordinal < *ordinal)
                     {
                         selected = Some((row.ordinal, candidate));
                     }
@@ -126,7 +131,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 character = selected.map(|(_, character)| character);
             }
             if let Some(character) = character {
-                name = self.effect_character_name(character)?;
+                name = self.effect_character_name(&character)?;
             }
         }
         self.char_native_text(
@@ -180,13 +185,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         };
         let mut character = self.military_roster_character(
-            self.character_table::<tables::CountryCharacters>()?,
+            self.character_table::<tables::CountryCharacters>(ROSTER)?,
             country,
             token as i32,
         )?;
         if character.is_none() {
             character = self.military_roster_character(
-                self.character_table::<tables::CountryRetiredCharacters>()?,
+                self.character_table::<tables::CountryRetiredCharacters>(ROSTER)?,
                 country,
                 token as i32,
             )?;
@@ -194,7 +199,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = character.filter(|character| !character.token.is_empty()) else {
             return Ok(String::new());
         };
-        let Some(leader) = Tables::read(self.context.text.frame())
+        let Some(leader) = Tables::read_in(self.tables())
             .unit_leader(character.id)
             .map_err(|why| why.to_string())?
         else {
@@ -254,7 +259,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let Some(character) = self.effect_character(Scope::Character(id as u32))? else {
                 return Ok(String::new());
             };
-            Tables::read(self.context.text.frame())
+            Tables::read_in(self.tables())
                 .unit_leader(character.id)
                 .map_err(|why| why.to_string())?
         } else {
@@ -268,7 +273,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             1 => b"EFFECT_REMOVE_CC_LEADER",
             2 => b"EFFECT_REMOVE_NAVY_LEADER",
             3 => {
-                let codename = self.effect_operative_codename(leader)?;
+                let codename = self.effect_operative_codename(&leader)?;
                 let name = self.effect_resolved_leader_name(leader)?;
                 return self.char_native_text(
                     b"EFFECT_REMOVE_OPERATIVE_LEADER",
@@ -309,7 +314,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character_target(operand, scopes)? else {
             return Ok(String::new());
         };
-        let Some(leader) = Tables::read(self.context.text.frame())
+        let Some(leader) = Tables::read_in(self.tables())
             .unit_leader(character.id)
             .map_err(|why| why.to_string())?
         else {
@@ -337,7 +342,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             }
             _ => String::new(),
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         self.char_native_text(
             b"EFFECT_REMOVE_UNIT_LEADER_ROLE",
             &[
@@ -360,7 +365,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character_target(operand, scopes)? else {
             return Ok(String::new());
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         self.char_native_text(
             b"EFFECT_ADD_RANDOM_UNIT_TRAIT",
             &[("NAME", Argument::Text(&name))],
@@ -438,8 +443,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let world = self.context.world()?;
         let raid = world.raid(reference).map_err(|why| why.to_string())?;
         let army_resolved = raid.unit != 0
-            && match world.frame().divisions() {
-                Ok(rows) => rows.iter().any(|row| row.id == raid.unit),
+            && match world.tables().complete::<tables::Divisions>(0) {
+                Ok(rows) => rows.contains(u128::from(raid.unit)),
                 Err(why) => {
                     // The legacy active-raid witness proves Army resolution
                     // failed before choosing this exact wing. An unknown

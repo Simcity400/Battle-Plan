@@ -1,4 +1,13 @@
 use super::*;
+use replay_data::rows::{
+    BuildingRow, CountryAppearanceRow, RaidFacilityRow, TechnologyDefinitionRow,
+};
+
+/// The fields of each table the technology descriptions read.
+const BUILDING_STATUS: u64 = mask::<BuildingRow>(&["ordinal", "status_flags", "active"]);
+const FACILITY: u64 = mask::<RaidFacilityRow>(&["owner", "province", "active_project"]);
+const TECHNOLOGY: u64 = mask::<TechnologyDefinitionRow>(&["technology_handle", "id"]);
+const NAME_TAG: u64 = mask::<CountryAppearanceRow>(&["name_tag"]);
 
 mod bound_effect;
 mod project_output;
@@ -338,7 +347,7 @@ impl Renderer<'_, '_, '_> {
     fn raid_target_project(
         &self,
         scopes: Scopes,
-    ) -> Result<Option<&replay_data::rows::ProjectRow>, String> {
+    ) -> Result<Option<std::borrow::Cow<'_, replay_data::rows::ProjectRow>>, String> {
         let Scope::State(state) = scopes.this else {
             return Err("raid_reduce_project_progress_ratio requires THIS state".into());
         };
@@ -353,19 +362,7 @@ impl Renderer<'_, '_, '_> {
             .content
             .buildings
             .ok_or_else(|| self.content_gap("buildings"))?;
-        let rows = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::ProvinceBuildings>()
-            .map_err(|why| why.to_string())?;
-        let mut active: BTreeMap<u32, Vec<_>> = BTreeMap::new();
-        for row in rows.iter().filter(|row| row.active) {
-            active.entry(row.location).or_default().push(row);
-        }
-        for rows in active.values_mut() {
-            rows.sort_by_key(|row| row.ordinal);
-        }
+        let rows = self.complete::<tables::ProvinceBuildings>(BUILDING_STATUS)?;
         for province in provinces {
             let province = world
                 .provinces()
@@ -383,7 +380,17 @@ impl Renderer<'_, '_, '_> {
                 .map_err(|why| why.to_string())?; // owner getter.
             // checks only the first specialization-bearing building.
             let mut facility = false;
-            for row in active.get(&province.id).into_iter().flatten() {
+            // The key is the location, then the building type.
+            let low = u128::from(province.id) << 32;
+            let mut active = Vec::new();
+            for row in each(rows.span(low, low | u128::from(u32::MAX))) {
+                let row = row?;
+                if row.active {
+                    active.push(row);
+                }
+            }
+            active.sort_by_key(|row| row.ordinal);
+            for row in &active {
                 let token = world
                     .token(row.building_type)
                     .map_err(|why| why.to_string())?
@@ -406,16 +413,16 @@ impl Renderer<'_, '_, '_> {
             if !enemy || !facility {
                 continue;
             }
-            let programs = self
-                .context
-                .text
-                .frame()
-                .complete::<tables::RaidFacilities>()
-                .map_err(|why| why.to_string())?;
-            let program = programs
-                .iter()
-                .filter(|row| world.slot(row.country) == Some(owner) && row.province == province.id)
-                .min_by_key(|row| row.ordinal); // hourly native roster.
+            let programs = self.complete::<tables::RaidFacilities>(FACILITY)?;
+            let mut program: Option<Cow<'_, RaidFacilityRow>> = None; // hourly native roster.
+            for row in programs.keyed(|key| world.slot((key >> 32) as u32) == Some(owner)) {
+                let row = row.map_err(built)?;
+                if row.province == province.id
+                    && program.as_ref().is_none_or(|first| row.ordinal < first.ordinal)
+                {
+                    program = Some(row);
+                }
+            }
             let Some(project) =
                 program.and_then(|row| row.active_project.map(|id| (row.owner, id)))
             else {
@@ -444,13 +451,8 @@ impl Renderer<'_, '_, '_> {
             return Ok(None);
         }
         let handle = (self.scoped_value(operand, scopes)? / 100_000) as u32;
-        let rows = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::TechnologyDefinitions>()
-            .map_err(|why| why.to_string())?;
-        match rows.iter().find(|row| row.technology_handle == handle) {
+        let rows = self.complete::<tables::TechnologyDefinitions>(TECHNOLOGY)?;
+        match find(rows, |row| row.technology_handle == handle)? {
             Some(row) => catalog.get(&row.id),
             None => Ok(None),
         }
@@ -472,13 +474,11 @@ impl Renderer<'_, '_, '_> {
             // already applies the native dynamic-country boundary predicate.
             let world = self.context.world()?;
             let appearance = self
-                .context
-                .text
-                .frame()
-                .complete::<tables::CountryAppearance>()
-                .map_err(|why| why.to_string())?
-                .iter()
-                .find(|row| world.slot(row.country) == Some(country))
+                .complete::<tables::CountryAppearance>(NAME_TAG)?
+                .keyed(|key| world.slot(key as u32) == Some(country))
+                .next()
+                .transpose()
+                .map_err(built)?
                 .ok_or("CountryAppearance lacks technology owner")?;
             if !appearance.name_tag.is_empty() {
                 tag = appearance.name_tag.clone();

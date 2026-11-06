@@ -860,6 +860,17 @@ pub fn cells<P: PageRead>(
     tags: &[&str],
     hour: i32,
 ) -> io::Result<Vec<(Option<i128>, bool)>> {
+    cells_by(directory, tags, &mut |key| {
+        Ok(engine::run_at(snapshot, key, hour)?.map(|(run, _)| run.value))
+    })
+}
+
+/// [`cells`], each key's value at the hour given by `read`.
+pub fn cells_by(
+    directory: &Directory,
+    tags: &[&str],
+    read: &mut dyn FnMut(u64) -> io::Result<Option<i128>>,
+) -> io::Result<Vec<(Option<i128>, bool)>> {
     let index = channel(ArmyMeasure::Manpower, ArmyAttribution::Owner) as u64;
     tags.iter()
         .map(|tag| {
@@ -867,11 +878,11 @@ pub fn cells<P: PageRead>(
                 return Ok((None, false));
             };
             let value = match directory.key(actor, index, None) {
-                Some(key) => engine::run_at(snapshot, key, hour)?.map(|(run, _)| run.value),
+                Some(key) => read(key)?,
                 None => None,
             };
             let known = match directory.key(actor, COVERAGE, None) {
-                Some(key) => engine::run_at(snapshot, key, hour)?.is_some(),
+                Some(key) => read(key)?.is_some(),
                 None => false,
             };
             Ok((value, known))

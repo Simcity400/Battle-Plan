@@ -1,4 +1,4 @@
-//! Synthetic version 3 recordings, written as the converter writes them, for tests.
+//! Synthetic version 4 recordings, written as the converter writes them, for tests.
 
 use super::*;
 use replay_columnar::{

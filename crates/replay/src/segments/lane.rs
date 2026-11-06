@@ -384,13 +384,13 @@ impl<O: Operator<W>, W> Walking<W> for Walk<'_, '_, O, W> {
         })
     }
 
-    fn close(&mut self, _: &Context<'_>) -> io::Result<usize> {
+    fn close(&mut self, context: &Context<'_>) -> io::Result<usize> {
         let _memory = labels::enter(self.typed.owner, Kind::Operator);
         if let Some(fault) = &self.fault {
             // An operator going on past what its sink met has its walk end there.
             return Err(fault.echo());
         }
-        if let Err(error) = self.spooling.flush() {
+        if let Err(error) = self.spooling.flush(context.folder) {
             return Err(self.met(Fault::Run(error)));
         }
         Ok(usize::try_from(self.spooling.length()).unwrap_or(usize::MAX))

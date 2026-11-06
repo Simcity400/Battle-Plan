@@ -1,7 +1,7 @@
-//! A keyed family read a segment at a time on a native recording. A segment's operator asks the
-//! walk's world for the family's tables, held in the fields the family reads, at each hour where
-//! one of those fields changed, and hands its reader that frame with the keys the hour changed;
-//! every other hour is quiet. What a reader hands on names what only the branch numbers or dates
+//! A keyed family read a segment at a time on a native recording. A segment's operator reads the
+//! family's tables through the walk's views, at each hour where one of the fields it reads
+//! changed, and hands its reader those views with the keys the hour changed; every other hour is
+//! quiet. What a reader hands on names what only the branch numbers or dates
 //! by spelling; the branch's emit takes the hours in order.
 
 use dashboard_base::prepared::frame_changes::FrameChanges;
@@ -16,7 +16,7 @@ use replay_data::{
     format::FormatVersion,
     rows::{TABLE_COUNT, TableId},
 };
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
+use replay_frame::frame::ColumnFrame;
 use std::io;
 
 #[cfg(test)]
@@ -48,12 +48,12 @@ pub trait Segmented: Sized + Send + Sync + 'static {
 /// One segment's reader of a keyed family, given its hours in order.
 pub trait Reader<S: Segmented>: Send {
     /// An hour at which a field `S` reads changed, or whose change facts `S` reads
-    /// ([`Segmented::changed`]): `frame`, `S`'s tables at the hour as the world holds them,
+    /// ([`Segmented::changed`]): `frame`, the hour through the walk's views of `S`'s tables,
     /// those facts, and what the hour changed of each table. What it reads, and the bytes that
     /// holds.
     fn read(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         changes: &FrameChanges,
         touched: &Touched,
     ) -> io::Result<(S::Read, usize)>;
@@ -174,11 +174,8 @@ pub fn needs<S: Segmented>() -> io::Result<Needs> {
 pub struct Operator<S: Segmented> {
     format: FormatVersion,
     watches: Vec<Watch>,
-    asks: Vec<(TableId, Hold)>,
     /// Each watched table's status the hour before.
     shapes: [Option<columns::Status>; TABLE_COUNT],
-    /// The frame the world's views are lent into for an hour, given back before it ends.
-    frame: DecodedFrame,
     touched: Touched,
     reader: Box<dyn Reader<S>>,
 }
@@ -193,15 +190,8 @@ impl<S: Segmented> Operator<S> {
         let watches = watches::<S>()?;
         Ok(Self {
             format,
-            asks: asks(&watches),
             watches,
             shapes: [None; TABLE_COUNT],
-            frame: DecodedFrame {
-                branch: 0,
-                hour: 0,
-                tables: std::array::from_fn(|_| not_selected()),
-                metrics: Metrics::default(),
-            },
             touched: Touched::default(),
             reader,
         })
@@ -305,40 +295,15 @@ impl<S: Segmented> segments::Operator<World> for Operator<S> {
                 });
             }
         }
-        // The views go back before the hour ends, however it ends, so the next hour's builds
-        // change them in place.
-        let lent = Lent {
-            frame: &mut self.frame,
-            asks: &self.asks,
-        };
-        hour.world.frame_held_into(hour.state, lent.asks, lent.frame)?;
-        for watch in &self.watches {
-            let index = watch.table.index();
-            lent.frame.tables[index] = lent.frame.tables[index]
-                .clone()
-                .with_sampled_at(hour.state.sampled_at(index));
-        }
-        let mut facts = FrameChanges::alone(lent.frame, self.format);
+        let frame = hour.world.columns(hour.state);
+        let mut facts = FrameChanges::alone_at(frame.metrics, hour.hour, self.format);
         facts.rows_changed = rows_changed;
-        let (read, _) = self.reader.read(lent.frame, &facts, &self.touched)?;
-        drop(lent);
+        let (read, _) = self.reader.read(&frame, &facts, &self.touched)?;
         out.push(Hour {
             hour: hour.hour,
             dated: facts.slot_read[S::READ.index()],
             read: Some(read),
         })
-    }
-}
-
-/// The world's views lent into `frame` for `asks`, given back when dropped.
-struct Lent<'o> {
-    frame: &'o mut DecodedFrame,
-    asks: &'o [(TableId, Hold)],
-}
-
-impl Drop for Lent<'_> {
-    fn drop(&mut self) {
-        dashboard_world::release(self.frame, self.asks);
     }
 }
 

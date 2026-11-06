@@ -8,7 +8,9 @@ use replay_data::{
     rows::PoliticalPartyRow, rows::PoliticsRow, rows::ScriptFlagRow, rows::SubjectRow,
     rows::TableRows, rows::TableSchema, rows::WarRelationRow,
 };
-use replay_frame::{frame::Frame, frame::FrameDecoder, frame::FrameEncoder, frame::TableUpdate};
+use replay_frame::{
+    frame::Frame, frame::FrameDecoder, frame::FrameEncoder, frame::TableUpdate, frame::TableView,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -675,15 +677,15 @@ fn expected_miss_accounting_is_thread_local_and_nested() {
         std::thread::scope(|threads| {
             threads
                 .spawn(|| {
-                    let (_, worker) = expecting_missed(|| super::missed(&key, &frame));
+                    let (_, worker) = expecting_missed(|| super::missed(&key, frame.hour));
                     assert_eq!(worker, 1);
                 })
                 .join()
                 .unwrap();
         });
-        let (_, inner) = expecting_missed(|| super::missed(&key, &frame));
+        let (_, inner) = expecting_missed(|| super::missed(&key, frame.hour));
         assert_eq!(inner, 1);
-        super::missed(&key, &frame);
+        super::missed(&key, frame.hour);
     });
     assert_eq!(outer, 2);
 }

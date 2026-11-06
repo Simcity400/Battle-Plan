@@ -12,7 +12,7 @@ pub struct Keys {
 }
 
 /// Keep the requested proof, including an unproven result, as compressed
-/// bytes under the shared cache's live-block bound and content binding.
+/// bytes, the latest of its block, under the content binding.
 pub fn cached<T: Serialize + DeserializeOwned>(
     source: &Source,
     proof: &'static str,
@@ -34,7 +34,6 @@ pub fn cached<T: Serialize + DeserializeOwned>(
         block,
         &window,
         cancelled,
-        |bytes: &Vec<u8>| std::mem::size_of::<Vec<u8>>() + bytes.capacity(),
         || crate::prepared::series::compress(serde_json::to_vec(&read()?)?.as_slice(), 1),
     )?;
     serde_json::from_reader(zstd::stream::Decoder::new(bytes.as_slice())?).map_err(Into::into)
@@ -61,13 +60,6 @@ pub fn keys(
             block,
             &(),
             cancelled,
-            |facts: &Keys| {
-                // Hash buckets hold keys and control bytes, plus a control
-                // group; charge from capacity rather than key count.
-                std::mem::size_of::<Keys>()
-                    + facts.values.capacity().saturating_mul(2) * (std::mem::size_of::<u64>() + 1)
-                    + std::mem::size_of::<u128>()
-            },
             || {
                 let mut facts = Keys::default();
                 source.replay_ref().read_block_changes(
@@ -105,7 +97,7 @@ mod tests {
     use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows, rows::tables};
 
     #[test]
-    fn earlier_prefixes_reuse_block_facts_within_the_shared_live_block_bound() {
+    fn earlier_prefixes_reuse_each_blocks_kept_facts() {
         let country = |hour, id| {
             let mut frame = frame(1, hour, None);
             *frame.tables[TableId::Countries.index()] =
@@ -140,14 +132,12 @@ mod tests {
         };
         assert_eq!(read(&blocks[..1]).values, HashSet::from([7]));
         assert_eq!(read(&blocks).values, HashSet::from([7, 9]));
-        let (bytes, bound, computations) =
-            super::super::observations::usage(&source, "test:earlier");
-        assert!(bytes > 0 && bytes <= bound);
+        let computations = super::super::observations::computations(&source, "test:earlier");
         assert_eq!(computations, 2);
         assert!(read(&blocks[..1]).available);
         assert_eq!(read(&blocks).values, HashSet::from([7, 9]));
         assert_eq!(
-            super::super::observations::usage(&source, "test:earlier").2,
+            super::super::observations::computations(&source, "test:earlier"),
             2
         );
         let _ = std::fs::remove_dir_all(root);
@@ -177,8 +167,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(proved, Some(vec![7]));
-        let (bytes, bound, computations) = super::super::observations::usage(&source, "test:proof");
-        assert!(bytes > 0 && bytes <= bound);
+        let computations = super::super::observations::computations(&source, "test:proof");
         assert_eq!(computations, 2);
         let _ = std::fs::remove_dir_all(root);
     }

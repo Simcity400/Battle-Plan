@@ -17,7 +17,7 @@ use super::{
 use crate::products::test_support::fixture;
 use dashboard_base::prepared::frame_changes::FrameChangeTracker;
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -174,11 +174,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -192,7 +191,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -206,8 +204,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::resume(&directory, &saved).unwrap();
         }
@@ -369,14 +367,12 @@ fn row_replies(frames: &[DecodedFrame], throughs: &[i32]) -> Vec<(String, Value)
 
 /// The publication's replies to every request through each of `throughs`.
 fn published_replies(built: &Built, throughs: &[i32]) -> Vec<(String, Value)> {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
     let flag = AtomicBool::new(false);
     throughs
         .iter()
         .flat_map(|&through| {
             let mut snapshot =
-                Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+                Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             replies(&TAGS, through, |params, naming| {
                 super::query(
@@ -418,8 +414,7 @@ fn the_publication_answers_every_request_as_the_row_census_does() {
             );
             let (projected, frames) = projected(&hours, starts, carried);
             let expected = expected.get_or_insert_with(|| row_replies(&frames, &throughs));
-            let budget = Budget::new(64 << 20);
-            let built = build(projected, cuts, resume, &budget);
+            let built = build(projected, cuts, resume);
             let published = published_replies(&built, &throughs);
             assert_eq!(published.len(), expected.len(), "{label}");
             for ((name, published), (_, expected)) in published.iter().zip(expected.iter()) {

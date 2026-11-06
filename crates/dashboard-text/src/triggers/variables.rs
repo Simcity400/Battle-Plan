@@ -15,11 +15,11 @@
 //! forms. Saved targets select stores through the caller's event graph when
 //! present, then the recorded global registry; flat callers retain explicit
 //! refusals for event-chain links they cannot describe.
-use crate::triggers::{Failure, refusal::FrameInputs};
+use crate::triggers::Failure;
 
 // Complete country rosters bound these lookups, so present partial rows remain exact.
 fn localisation_status(
-    frame: &dyn replay_frame::frame::DecodedSource,
+    frame: replay_frame::frame::HourFrame<'_>,
     table: replay_data::rows::TableId,
     status: replay_frame::frame::OperandStatus<'_>,
 ) -> Result<(), Failure> {
@@ -304,13 +304,22 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             _ => return Ok(()),
         };
+        const RECORD: u64 =
+            replay_data::rows::mask::<replay_data::rows::CountryCharacterRow>(&["character"]);
+        const NAME: u64 =
+            replay_data::rows::mask::<replay_data::rows::CharacterRow>(&["name_token_id"]);
         let active = super::world::table::<replay_data::rows::tables::CountryCharacters>(
-            self.world().frame(),
+            self.world().tables(),
+            RECORD,
         )?;
         let retired = super::world::table::<replay_data::rows::tables::CountryRetiredCharacters>(
-            self.world().frame(),
+            self.world().tables(),
+            RECORD,
         )?;
-        for record in active.iter().chain(retired) {
+        for record in active.iter().chain(retired.iter()) {
+            let record = record.map_err(|why| {
+                super::refusal::input_error(replay_data::rows::TableId::CountryCharacters, why)
+            })?;
             let Some(id) = record.character else {
                 continue;
             };
@@ -326,28 +335,34 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             // The roster bounds this lookup. Unrelated truncated manager or
             // dictionary rows cannot shadow this country's parsed operand.
-            let frame = self.world().frame();
+            let frame = self.world().tables();
             localisation_status(
                 frame,
                 replay_data::rows::TableId::Characters,
-                frame.character_status(),
+                frame.status(replay_data::rows::TableId::Characters),
             )?;
-            let characters = frame.character_rows();
-            let character = &characters[characters.binary_search_by_key(&id, |row| row.id).map_err(|_| {
-                format!("{candidate}: rostered character {id} is unread in Characters, so its token could shadow the numeric operand")
-            })?];
+            // Both are keyed: Characters by id, LexicalTokens by token.
+            let character = frame
+                .held::<replay_data::rows::tables::Characters>(NAME)
+                .get(u128::from(id))
+                .map_err(|why| {
+                    super::refusal::input_error(replay_data::rows::TableId::Characters, why)
+                })?
+                .ok_or_else(|| -> Failure {
+                    format!("{candidate}: rostered character {id} is unread in Characters, so its token could shadow the numeric operand").into()
+                })?;
             let Ok(token) = u32::try_from(character.name_token_id) else {
                 continue;
             };
             localisation_status(
                 frame,
                 replay_data::rows::TableId::LexicalTokens,
-                frame.lexical_status(),
+                frame.status(replay_data::rows::TableId::LexicalTokens),
             )?;
-            let tokens = frame.lexical_rows();
-            let spelling = &tokens[tokens.binary_search_by_key(&token, |row| row.token).map_err(|_| {
-                format!("{candidate}: rostered character {id}'s name token {token} is unread in LexicalTokens")
-            })?].literal;
+            let tokens = frame.held::<replay_data::rows::tables::LexicalTokens>(0);
+            let spelling = super::world::literal(&tokens, token)?.ok_or_else(|| -> Failure {
+                format!("{candidate}: rostered character {id}'s name token {token} is unread in LexicalTokens").into()
+            })?;
             if spelling.eq_ignore_ascii_case(candidate.as_bytes()) {
                 return Err(format!(
                     "{candidate}: live character {id} changes numeric localisation's parsed operand; that grammar path is not reproduced"
@@ -358,24 +373,30 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     fn localisation_character_candidates(&self, name: &str) -> Result<Vec<u32>, Failure> {
-        let characters = super::world::characters(self.world().frame())?;
-        if characters
-            .iter()
-            .all(|character| character.name_token_id < 0)
-        {
+        const NAME: u64 =
+            replay_data::rows::mask::<replay_data::rows::CharacterRow>(&["name_token_id"]);
+        let characters = super::world::characters(self.world().tables(), NAME)?;
+        let mut named = Vec::new();
+        for character in characters.iter() {
+            let character = character.map_err(|why| {
+                super::refusal::input_error(replay_data::rows::TableId::Characters, why)
+            })?;
+            named.push((character.id, character.name_token_id));
+        }
+        if named.iter().all(|&(_, token)| token < 0) {
             return Ok(Vec::new());
         }
-        let tokens = super::world::lexical(self.world().frame())?;
+        let tokens = super::world::lexical(self.world().tables())?;
         let mut matches = Vec::new();
-        for character in characters {
-            let Ok(token) = u32::try_from(character.name_token_id) else {
+        for (id, token) in named {
+            let Ok(token) = u32::try_from(token) else {
                 continue;
             };
-            let index = tokens.binary_search_by_key(&token, |entry| entry.token).map_err(|_| {
-                format!("{name}: character {}'s name token {token} is not spelled in LexicalTokens, so native character lookup cannot be decided", character.id)
+            let literal = super::world::literal(&tokens, token)?.ok_or_else(|| -> Failure {
+                format!("{name}: character {id}'s name token {token} is not spelled in LexicalTokens, so native character lookup cannot be decided").into()
             })?;
-            if tokens[index].literal.eq_ignore_ascii_case(name.as_bytes()) {
-                matches.push(character.id);
+            if literal.eq_ignore_ascii_case(name.as_bytes()) {
+                matches.push(id);
             }
         }
         Ok(matches)
@@ -1320,17 +1341,28 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             tag
         } else if slot == 0 {
             super::inputs::table(
-                self.world().frame(),
+                self.world().tables(),
                 replay_data::rows::TableId::ReservedCountryNaming,
             );
-            let [reserved] = self
-                .world()
-                .frame()
-                .trigger_table::<replay_data::rows::tables::ReservedCountryNaming>()?
-            else {
+            const TAG: usize =
+                replay_data::rows::column::<replay_data::rows::ReservedCountryNamingRow>("tag");
+            let reserved = super::world::table::<replay_data::rows::tables::ReservedCountryNaming>(
+                self.world().tables(),
+                0,
+            )?;
+            if reserved.len() != 1 {
                 return Err("ReservedCountryNaming does not hold one reserved country".into());
-            };
-            reserved.tag.as_slice()
+            }
+            // The one reserved row is keyed zero.
+            reserved
+                .text(0, |row| &row.tag, TAG)
+                .map_err(|why| {
+                    super::refusal::input_error(
+                        replay_data::rows::TableId::ReservedCountryNaming,
+                        why,
+                    )
+                })?
+                .ok_or("ReservedCountryNaming's one row is not keyed zero")?
         } else {
             return Err(format!("country slot {slot} has no recorded tag").into());
         };

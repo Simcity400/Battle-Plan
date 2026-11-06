@@ -1,5 +1,6 @@
 //! The country groups' native backend: each hour's operator reads the group tables the hour may
-//! have changed, as the walk's world holds them, by the fields the groups' scan reads, and hands
+//! have changed from the walk's views, in the fields the groups' scan reads (only the rows the
+//! hour's changes name, where the table it handed on before is complete), and hands
 //! its ordered emit which tables moved and, of those, only what the scan reads of them otherwise
 //! than the segment handed on before: the rows set and the keys gone, or a table whole where its
 //! status or most of its rows moved. The emit applies them to its frame of the tables as the scan
@@ -12,7 +13,11 @@ use crate::{
     Source,
     config::LoadContext,
     prepared::{driver::publication::Stage, frame_changes::FrameChanges},
-    products::country_groups::{Scan, changes::Prepared as Changes, prepared::TABLES},
+    products::country_groups::{
+        Scan,
+        changes::Prepared as Changes,
+        prepared::{self, TABLES},
+    },
 };
 use dashboard_base::prepared::{
     roots::Published,
@@ -23,13 +28,13 @@ use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::{Segment, view_heap_bytes},
     columns,
-    segments::{self, Operator, Sink},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{
     CapitulationRow, CountryRow, FactionRow, RowCodec, TABLE_COUNT, TableId, TableRows,
     TableSchema, WarRelationRow, tables,
 };
-use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_selected};
+use replay_frame::frame::{ColumnView, DecodedFrame, Metrics, SharedView, TableView, not_selected};
 use std::{
     io::{self, BufReader},
     mem::size_of,
@@ -52,23 +57,11 @@ const READ: [TableId; 8] = [
     TableId::LexicalTokens,
 ];
 
-/// How the world holds each table the groups read, and the fields a change to which moves it:
-/// countries' slots and tags, wars' dates and instigator, every field of the others, since any
-/// change of those is an hour the walk observes.
+/// How the world holds each table the groups read, in [`READ`] order, and the fields a change to
+/// which moves it ([`prepared::holds`]).
 fn holds() -> io::Result<[(TableId, Hold); 8]> {
-    let fields = |table, names: &[&str]| -> io::Result<Hold> {
-        let mut mask = 0_u64;
-        for name in names {
-            mask |= 1_u64 << columns::field(table, name)?;
-        }
-        Ok(Hold::Fields(mask))
-    };
-    let mut holds = READ.map(|table| (table, Hold::Whole));
-    holds[0].1 = fields(TableId::Countries, &["canonical_slot", "tag"])?;
-    holds[5].1 = fields(
-        TableId::WarRelations,
-        &["start_hour", "end_hour", "first_was_instigator"],
-    )?;
+    let holds = prepared::holds()?;
+    debug_assert!(holds.iter().map(|&(table, _)| table).eq(READ));
     Ok(holds)
 }
 
@@ -263,15 +256,13 @@ fn reads_as<T: TableSchema>(
 }
 
 /// What `view` hands on against `sent`, the table as the scan read it when handed on before,
-/// which it becomes: none where the scan reads the same rows; its edits only where `edits`.
+/// which it becomes: none where the scan reads the same rows.
 fn hand<T: TableSchema>(
     view: &TableView,
     sent: &mut Option<SharedView>,
     reading: &Reading<T::Row>,
-    edits: bool,
 ) -> Option<Handed> {
     if let Some(held) = sent.as_mut()
-        && edits
         && let (TableView::Complete(old), TableView::Complete(new)) = (&**held, view)
         && let (Some(old), Some(new)) = (T::borrow(old), T::borrow(new))
         && ascending(old)
@@ -331,25 +322,136 @@ fn hand<T: TableSchema>(
     Some(Handed::Whole(new))
 }
 
-/// What `view` of `table` hands on against `sent` ([`hand`]).
-fn hand_table(table: TableId, view: &TableView, sent: &mut Option<SharedView>) -> Option<Handed> {
-    match table {
-        TableId::Countries => hand::<tables::Countries>(view, sent, &COUNTRIES, true),
-        TableId::CountryLinks => hand::<tables::CountryLinks>(view, sent, &Reading::WHOLE, true),
+/// What the hour's own changes to `table` hand on against `sent`, which holds it complete as the
+/// scan read it the hour before ([`hand`] of the rows they name alone): Some(None) where the scan
+/// reads the same rows, the edits where they are fewer than its rows; None where the changes
+/// cannot tell, and the whole table does.
+fn told<T: TableSchema>(
+    world: &World,
+    state: &State,
+    (table, hold): (TableId, Hold),
+    sent: &mut Option<SharedView>,
+    reading: &Reading<T::Row>,
+) -> io::Result<Option<Option<Handed>>> {
+    let Some(held) = sent.as_mut() else {
+        return Ok(None);
+    };
+    let (TableView::Complete(old), ColumnView::Complete(columns), Some(changes)) = (
+        &**held,
+        world.view(state, table),
+        state.changes(table.index()),
+    ) else {
+        return Ok(None);
+    };
+    let Some(old) = T::borrow(old) else {
+        return Ok(None);
+    };
+    if changes.truncated {
+        return Ok(None);
+    }
+    let mask = match hold.of(table) {
+        Hold::Whole => table.full_mask(),
+        Hold::Fields(fields) => fields,
+    };
+    let at = |key: u128| old.binary_search_by_key(&key, |row| row.key());
+    let mut slots: Vec<u32> = changes
+        .changed
+        .iter()
+        .chain(&changes.inserted)
+        .chain(&changes.fill_slots)
+        .copied()
+        .collect();
+    slots.sort_unstable();
+    slots.dedup();
+    let mut set = Vec::new();
+    for slot in slots {
+        // A slot deleted since holds no row.
+        let Some(key) = columns.table().key(slot) else {
+            continue;
+        };
+        let row: T::Row = columns.row(slot, mask)?;
+        if !at(key).is_ok_and(|at| (reading.same)(&old[at], &row)) {
+            set.push((reading.read)(&row));
+        }
+    }
+    let mut gone: Vec<u128> = changes
+        .deleted_keys
+        .iter()
+        .copied()
+        .filter(|&key| columns.find(key).is_none() && at(key).is_ok())
+        .collect();
+    if set.is_empty() && gone.is_empty() {
+        return Ok(Some(None));
+    }
+    if set.len() + gone.len() >= columns.len() {
+        return Ok(None);
+    }
+    set.sort_unstable_by_key(|row| row.key());
+    gone.sort_unstable();
+    gone.dedup();
+    if let TableView::Complete(rows) = &mut **held
+        && let Some(rows) = T::borrow_mut(rows)
+    {
+        merge(rows, set.clone(), &gone);
+    }
+    Ok(Some(Some(Handed::Edits {
+        set: T::wrap(set),
+        gone,
+    })))
+}
+
+/// What the hour hands on of `table` against `sent`: from its own changes where they tell
+/// ([`told`]), else from the table whole ([`hand`]).
+fn hand_moved<T: TableSchema>(
+    world: &World,
+    state: &State,
+    ask: (TableId, Hold),
+    fresh: bool,
+    sent: &mut Option<SharedView>,
+    reading: &Reading<T::Row>,
+) -> io::Result<Option<Handed>> {
+    if !fresh && let Some(handed) = told::<T>(world, state, ask, sent, reading)? {
+        return Ok(handed);
+    }
+    let view = world.copy(state, ask.0, ask.1)?;
+    Ok(hand::<T>(&view, sent, reading))
+}
+
+/// What the hour hands on of `ask`'s table against `sent` ([`hand_moved`]); `fresh` where the
+/// hour before is not the one `sent` was read at.
+fn hand_table(
+    world: &World,
+    state: &State,
+    ask: (TableId, Hold),
+    fresh: bool,
+    sent: &mut Option<SharedView>,
+) -> io::Result<Option<Handed>> {
+    match ask.0 {
+        TableId::Countries => {
+            hand_moved::<tables::Countries>(world, state, ask, fresh, sent, &COUNTRIES)
+        }
+        TableId::CountryLinks => {
+            hand_moved::<tables::CountryLinks>(world, state, ask, fresh, sent, &Reading::WHOLE)
+        }
         TableId::HumanControllers => {
-            hand::<tables::HumanControllers>(view, sent, &Reading::WHOLE, true)
+            hand_moved::<tables::HumanControllers>(world, state, ask, fresh, sent, &Reading::WHOLE)
         }
-        TableId::Factions => hand::<tables::Factions>(view, sent, &FACTIONS, true),
+        TableId::Factions => {
+            hand_moved::<tables::Factions>(world, state, ask, fresh, sent, &FACTIONS)
+        }
         TableId::FactionMembers => {
-            hand::<tables::FactionMembers>(view, sent, &Reading::WHOLE, true)
+            hand_moved::<tables::FactionMembers>(world, state, ask, fresh, sent, &Reading::WHOLE)
         }
-        TableId::WarRelations => hand::<tables::WarRelations>(view, sent, &WARS, true),
-        TableId::Capitulation => hand::<tables::Capitulation>(view, sent, &CAPITULATIONS, true),
-        // Whole: the scan keeps the dictionary it read, so edits would copy it in the emit.
+        TableId::WarRelations => {
+            hand_moved::<tables::WarRelations>(world, state, ask, fresh, sent, &WARS)
+        }
+        TableId::Capitulation => {
+            hand_moved::<tables::Capitulation>(world, state, ask, fresh, sent, &CAPITULATIONS)
+        }
         TableId::LexicalTokens => {
-            hand::<tables::LexicalTokens>(view, sent, &Reading::WHOLE, false)
+            hand_moved::<tables::LexicalTokens>(world, state, ask, fresh, sent, &Reading::WHOLE)
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -386,6 +488,8 @@ fn apply(
         TableId::FactionMembers => edited::<tables::FactionMembers>(held, set, gone),
         TableId::WarRelations => edited::<tables::WarRelations>(held, set, gone),
         TableId::Capitulation => edited::<tables::Capitulation>(held, set, gone),
+        // The scan keeps the dictionary it read: the edited view is a copy.
+        TableId::LexicalTokens => edited::<tables::LexicalTokens>(held, set, gone),
         _ => Err(invalid("Country group edits name a table the groups do not read")),
     }
 }
@@ -423,8 +527,6 @@ impl Projected for Hour {
 
 pub(crate) struct Projector {
     asks: [(TableId, Hold); 8],
-    /// The asks of the hour's moved tables, kept from hour to hour.
-    moved: Vec<(TableId, Hold)>,
     /// Each table as the scan read it when the segment last handed it on, by position in
     /// [`READ`].
     sent: [Option<SharedView>; 8],
@@ -434,7 +536,6 @@ impl Projector {
     fn new() -> io::Result<Self> {
         Ok(Self {
             asks: holds()?,
-            moved: Vec::with_capacity(READ.len()),
             sent: Default::default(),
         })
     }
@@ -464,35 +565,26 @@ impl Operator<World> for Projector {
         if opens {
             self.restart();
         }
-        self.moved.clear();
+        let fresh = opens || world.first();
         let mut moved = 0_u8;
+        let mut handed = Vec::new();
         for (position, &(table, hold)) in self.asks.iter().enumerate() {
             let fields = match hold {
                 Hold::Whole => u64::MAX,
                 Hold::Fields(fields) => fields,
             };
             // The row decoder reads a table it cannot read whole anew every hour.
-            if opens
+            if !(opens
                 || world.touched(table, fields)
-                || columns::status(hour.state, table) != columns::Status::Complete
+                || columns::status(hour.state, table) != columns::Status::Complete)
             {
-                moved |= 1 << position;
-                self.moved.push((table, hold));
+                continue;
             }
-        }
-        let mut handed = Vec::new();
-        if !self.moved.is_empty() {
-            // The frame is dropped before the hour ends: none of the walk's views is kept.
-            let frame = world.frame_held(hour.state, &self.moved)?;
-            for (position, &table) in READ.iter().enumerate() {
-                if moved & 1 << position == 0 {
-                    continue;
-                }
-                let view = &frame.tables[table.index()];
-                if let Some(change) = hand_table(table, view, &mut self.sent[position]) {
-                    engine_allocation::reserve(&mut handed, 1)?;
-                    handed.push((table, change));
-                }
+            moved |= 1 << position;
+            let sent = &mut self.sent[position];
+            if let Some(change) = hand_table(world, hour.state, (table, hold), fresh, sent)? {
+                engine_allocation::reserve(&mut handed, 1)?;
+                handed.push((table, change));
             }
         }
         out.push(Hour {

@@ -1,12 +1,10 @@
 use crate::{
-    add,
-    budget::{Admission, Lease, Slab},
-    cache::Cache,
+    Grow, add,
     codec::{Binary, Decode, Encode},
     format::{Definition, Entry, Meta, Node, NodeRef, Root},
     invalid,
     pages::{Kind, PAGE_BYTES, PageRead},
-    read::Reader,
+    read::{Reader, Upper},
     source::{Piece, Rows, RunRows, Source, Subject, partition_point},
     summary::Summary,
     types::*,
@@ -161,51 +159,60 @@ fn cancelled(flag: Option<&AtomicBool>) -> io::Result<()> {
     }
 }
 
-/// One pinned publication. Decoded pages come from the shared cache; the
-/// snapshot keeps only its root, node headers and key definitions it read.
+/// The part of a pinned publication every query of it walks, its root and interior nodes: held
+/// by whoever holds the publication open, and shared by each snapshot opened from it.
+#[derive(Clone)]
+pub struct Pinned(Arc<Upper>);
+
+/// One pinned publication. It holds every page, node header and key definition it reads until
+/// it is dropped; decoded pages are shared with every reader holding them.
 pub struct Snapshot<'a, P> {
     pub(crate) io: Access<'a, P>,
-    pub(crate) budget: Admission<'a>,
-    pub(crate) reader: Reader<'a>,
+    pub(crate) reader: Reader,
     defs: HashMap<u64, Option<Definition>>,
     cancelled: Option<&'a AtomicBool>,
-    _lease: Lease<'a>,
-    pub(crate) event_walk: Option<crate::events::EventWalk<'a>>,
+    pub(crate) event_walk: Option<crate::events::EventWalk>,
 }
 /// The identity of the publication rooted at `id`, before any is expected of it: what an
 /// owner compares to learn whether it may resume the publication.
-pub fn root_identity<'a>(
-    io: &mut impl PageRead,
-    cache: &'a Cache<'a>,
-    id: PageId,
-) -> io::Result<Identity> {
-    Ok(Reader::open(io, cache, id)?.root().identity)
+pub fn root_identity(io: &mut impl PageRead, id: PageId) -> io::Result<Identity> {
+    Ok(Reader::open(io, id)?.root().identity)
 }
 
 impl<'a, P: PageRead> Snapshot<'a, P> {
-    pub fn open(
-        mut io: P,
-        cache: &'a Cache<'a>,
-        id: PageId,
-        identity: Identity,
-    ) -> io::Result<Self> {
-        let reader = Reader::open(&mut io, cache, id)?;
+    pub fn open(mut io: P, id: PageId, identity: Identity) -> io::Result<Self> {
+        let reader = Reader::open(&mut io, id)?;
         if reader.root().identity != identity {
             return Err(invalid("series snapshot identity mismatch"));
         }
-        let budget = Admission::from(cache);
         Ok(Self {
             io: Access {
                 inner: io,
                 cancelled: None,
             },
-            budget,
             reader,
             defs: HashMap::new(),
             cancelled: None,
-            _lease: budget.admit(std::mem::size_of::<Self>())?,
             event_walk: None,
         })
+    }
+    /// A snapshot of the publication `pinned` holds, read through `io`.
+    pub fn open_pinned(io: P, pinned: &Pinned) -> Self {
+        Self {
+            io: Access {
+                inner: io,
+                cancelled: None,
+            },
+            reader: Reader::upper(Arc::clone(&pinned.0)),
+            defs: HashMap::new(),
+            cancelled: None,
+            event_walk: None,
+        }
+    }
+    /// Its root and interior nodes, read once, for snapshots of the same publication to start from.
+    pub fn pin(&mut self) -> io::Result<Pinned> {
+        self.check()?;
+        Ok(Pinned(Arc::new(self.reader.pin(&mut self.io)?)))
     }
     pub fn with_cancellation(mut self, cancelled: &'a AtomicBool) -> Self {
         self.cancelled = Some(cancelled);
@@ -227,7 +234,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
     pub(crate) fn accepted(&self) -> Span {
         self.reader.root().state.publication.accepted
     }
-    pub(crate) fn source(&mut self) -> Source<'_, 'a, Access<'a, P>> {
+    pub(crate) fn source(&mut self) -> Source<'_, Access<'a, P>> {
         let accepted = self.accepted();
         Source {
             r: &mut self.reader,
@@ -277,7 +284,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
             state,
             nodes,
         };
-        self.reader = Reader::with(self.reader.cache(), root, end.page)?;
+        self.reader.rebase(root, end.page)?;
         self.defs.clear();
         self.event_walk = None;
         Ok(Some(self))
@@ -536,7 +543,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
         }
         let first = cursor.position;
         let frontier = self.reader.root().nodes.clone();
-        let mut tables = Slab::new(self.budget, frontier.len())?;
+        let mut tables = engine_allocation::vec(frontier.len())?;
         for reference in frontier {
             let node = self.reader.child(&mut self.io, reference)?;
             let table = node.metadata;
@@ -549,7 +556,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
                     high = middle;
                 }
             }
-            tables.push((table, low))?;
+            tables.try_push((table, low))?;
         }
         let mut returned = 0;
         let mut more = false;
@@ -841,7 +848,7 @@ struct Held {
 impl Held {
     fn at<P: PageRead>(
         &mut self,
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         key: u64,
         hour: i32,
     ) -> io::Result<Option<Run>> {
@@ -864,7 +871,7 @@ struct HeldEvidence {
 impl HeldEvidence {
     fn at<P: PageRead>(
         &mut self,
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         subject: Subject,
         hour: i32,
     ) -> io::Result<Option<Evidence>> {
@@ -882,7 +889,7 @@ impl HeldEvidence {
 
 /// An observation at an accepted hour; `run` passes the run already found there.
 fn observe<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     definition: &Definition,
     hour: i32,
@@ -959,13 +966,13 @@ impl<'m> Pieces<'m> {
             }
         }
     }
-    fn peek<P: PageRead>(&mut self, s: &mut Source<'_, '_, P>) -> io::Result<Option<Run>> {
+    fn peek<P: PageRead>(&mut self, s: &mut Source<'_, P>) -> io::Result<Option<Run>> {
         if self.peeked.is_none() {
             self.peeked = self.find(s)?;
         }
         Ok(self.peeked)
     }
-    fn next<P: PageRead>(&mut self, s: &mut Source<'_, '_, P>) -> io::Result<Option<Run>> {
+    fn next<P: PageRead>(&mut self, s: &mut Source<'_, P>) -> io::Result<Option<Run>> {
         let run = self.peek(s)?;
         self.peeked = None;
         if let Some(run) = run {
@@ -975,7 +982,7 @@ impl<'m> Pieces<'m> {
         }
         Ok(run)
     }
-    fn find<P: PageRead>(&mut self, s: &mut Source<'_, '_, P>) -> io::Result<Option<Run>> {
+    fn find<P: PageRead>(&mut self, s: &mut Source<'_, P>) -> io::Result<Option<Run>> {
         if self.definition.mode == RunMode::OrderedContributions {
             return self.contribution(s);
         }
@@ -1016,7 +1023,7 @@ impl<'m> Pieces<'m> {
     }
     /// Ordered contributions keep the current reader's canonical order: pieces
     /// by canonical, then by hour within one canonical's membership parts.
-    fn contribution<P: PageRead>(&mut self, s: &mut Source<'_, '_, P>) -> io::Result<Option<Run>> {
+    fn contribution<P: PageRead>(&mut self, s: &mut Source<'_, P>) -> io::Result<Option<Run>> {
         if self.done {
             return Ok(None);
         }
@@ -1081,7 +1088,7 @@ impl Contributions {
     /// The walk from the first row, in the segments meeting `window`, of the
     /// first canonical at or after `canonical`.
     fn seek<P: PageRead>(
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         key: u64,
         window: Span,
         canonical: u64,
@@ -1104,7 +1111,7 @@ impl Contributions {
     /// The next canonical run, none past the segments meeting `window`.
     fn next<P: PageRead>(
         &mut self,
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         key: u64,
         window: Span,
     ) -> io::Result<Option<Run>> {
@@ -1191,7 +1198,7 @@ struct Sweep {
 impl Sweep {
     fn select<P: PageRead>(
         &mut self,
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         key: u64,
         definition: &Definition,
         hour: i32,
@@ -1268,7 +1275,7 @@ struct Path {
 }
 impl Path {
     fn new<P: PageRead>(
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         segment: Arc<Node>,
         entry: Entry,
         hour: i32,
@@ -1288,7 +1295,7 @@ impl Path {
     /// The search from step `depth`, in `<[T]>::partition_point`'s probe order.
     fn descend<P: PageRead>(
         &mut self,
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         mut depth: usize,
         mut base: u64,
         mut size: u64,
@@ -1321,7 +1328,7 @@ impl Path {
         Ok(())
     }
     /// The partition point at `hour`, no earlier than the last asked, and the last hour it holds.
-    fn at<P: PageRead>(&mut self, s: &mut Source<'_, '_, P>, hour: i32) -> io::Result<(u64, i32)> {
+    fn at<P: PageRead>(&mut self, s: &mut Source<'_, P>, hour: i32) -> io::Result<(u64, i32)> {
         let before = self.hour;
         self.hour = hour;
         let flipped = self.probes[..self.depth]
@@ -1361,7 +1368,7 @@ fn member_from(selection: Selection<'_>, hour: i32) -> Option<Span> {
 }
 
 fn collect(
-    reader: &mut Reader<'_>,
+    reader: &mut Reader,
     io: &mut impl PageRead,
     references: &[NodeRef],
     end: u64,
@@ -1800,10 +1807,7 @@ impl<P: PageRead> Snapshot<'_, P> {
         }
         let count = usize::try_from((grid.count - first_bin).min(allowance as u64))
             .map_err(|_| invalid("chart tile size"))?;
-        let mut buckets = Slab::new(self.budget, count)?;
-        for _ in 0..count {
-            buckets.push(None)?;
-        }
+        let mut buckets = engine_allocation::filled(count, None)?;
         let selection = selections[key_index];
         selection.validate()?;
         let tile = Span {
@@ -2204,7 +2208,7 @@ impl<P: PageRead> Snapshot<'_, P> {
 
 /// The start after `hour` of an exact key's next run.
 fn next_run_start<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     hour: i32,
 ) -> io::Result<Option<i32>> {
@@ -2225,7 +2229,7 @@ fn next_run_start<P: PageRead>(
 /// the hour after the run at `hour` or the next run's start; backward, the end
 /// of the last run starting before `hour`, or its start.
 fn numeric_next<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     definition: &Definition,
     accepted: Span,
@@ -2276,7 +2280,7 @@ fn numeric_next<P: PageRead>(
 /// Forward from `hour` with no run at it: the row after the partition point in
 /// the segment holding `first`, else the first run created after that segment.
 fn ordered_forward<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     hour: f64,
     first: i32,
@@ -2318,7 +2322,7 @@ fn ordered_forward<P: PageRead>(
 /// point in the segment holding `probe`, else at the end of the run carried
 /// out of the segment before it.
 fn ordered_backward<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     definition: &Definition,
     hour: f64,
@@ -2441,7 +2445,7 @@ fn mark_gap(value: &mut Option<Summary>, span: Span) {
 }
 
 fn numeric_tiles<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     selection: Selection<'_>,
     definition: &Definition,
     grid: Grid,
@@ -2533,7 +2537,7 @@ fn numeric_tiles<P: PageRead>(
 }
 
 pub(crate) fn numeric_range<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     definition: &Definition,
     span: Span,
@@ -2596,7 +2600,7 @@ fn repeated(mut summary: Summary, blocks: u64, size: i64) -> io::Result<Summary>
 /// One aligned block of ordered contributions, folded in insertion order, and
 /// how many identical blocks follow it before any contribution changes.
 fn contribution_blocks<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     decimals: u8,
     block: Span,
@@ -2659,7 +2663,7 @@ fn contribution_blocks<P: PageRead>(
     ))
 }
 fn legacy_range<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     definition: &Definition,
     span: Span,
@@ -2743,7 +2747,7 @@ impl<P: PageRead> Snapshot<'_, P> {
         if Grid::new(bounds, view)?.size != 1 {
             return Err(invalid("original alias runs require an hourly viewport"));
         }
-        let mut selections = Slab::new(self.budget, aliases.len())?;
+        let mut selections = engine_allocation::vec(aliases.len())?;
         let mut hash = blake3::Hasher::new();
         let mut extra = [0; 20];
         extra[..8].copy_from_slice(&view.from.to_bits().to_le_bytes());
@@ -2751,7 +2755,7 @@ impl<P: PageRead> Snapshot<'_, P> {
         extra[16..].copy_from_slice(&view.width.to_le_bytes());
         hash.update(&extra);
         for alias in aliases {
-            selections.push(Selection {
+            selections.try_push(Selection {
                 key: alias.key,
                 membership: Some(std::slice::from_ref(&alias.span)),
             })?;
@@ -2841,9 +2845,9 @@ impl<P: PageRead> Snapshot<'_, P> {
         {
             return Err(invalid("dated aliases must be ordered and disjoint"));
         }
-        let mut selections = Slab::new(self.budget, aliases.len())?;
+        let mut selections = engine_allocation::vec(aliases.len())?;
         for alias in aliases {
-            selections.push(Selection {
+            selections.try_push(Selection {
                 key: alias.key,
                 membership: Some(std::slice::from_ref(&alias.span)),
             })?;
@@ -2878,18 +2882,14 @@ impl<P: PageRead> Snapshot<'_, P> {
             });
         }
         let count = (grid.count - first).min(limit as u64) as usize;
-        let mut buckets: Slab<'_, Option<Summary>> = Slab::new(self.budget, count)?;
-        for _ in 0..count {
-            buckets.push(None)?;
-        }
+        let mut buckets: Vec<Option<Summary>> = engine_allocation::filled(count, None)?;
         let extent = Span {
             first: grid.bin(first)?.first,
             last: grid.bin(first + count as u64 - 1)?.last,
         };
-        let budget = self.budget;
         let accepted = self.accepted();
         let mut decimal_scale = None;
-        let mut part = Slab::new(budget, 0)?;
+        let mut part = Vec::new();
         for alias in aliases
             .iter()
             .skip_while(|a| a.span.last < extent.first)
@@ -2912,10 +2912,7 @@ impl<P: PageRead> Snapshot<'_, P> {
             let last_part = grid.index(overlap.last);
             let length = (last_part - first_part + 1) as usize;
             part.clear();
-            part.grow(length)?;
-            for _ in 0..length {
-                part.push(None)?;
-            }
+            engine_allocation::resize(&mut part, length, None)?;
             let selection = Selection {
                 key: alias.key,
                 membership: Some(std::slice::from_ref(&alias.span)),

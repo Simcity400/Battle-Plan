@@ -1,10 +1,7 @@
-//! The walk's one frame of the tables its lanes read as rows: each hour's edits noted as the
-//! walker applies them, each table's view built only at its first ask of an hour, the tables an
-//! ask builds of a group built in one pass ([`Views::update_tables`]). The tables held whole are
-//! one group, Campaign among them, and those held by some fields another. A table held by some
-//! fields is held apart, even when another lane holds it whole: it is noted only at the hours
-//! that touch those fields, so its other fields stay as last built and its view changes only
-//! with them.
+//! The walk's one frame of rows, for the lanes that still read rows of the world in place of its
+//! views ([`super::World::frame_held`]): a table is held only once a lane asks for it, each
+//! hour's edits noted as the walker applies them, and its view built only at its first ask of an
+//! hour, the tables an ask builds of a group built in one pass ([`Views::update_tables`]).
 
 use super::{Facts, invalid};
 use replay::{
@@ -101,7 +98,7 @@ impl Frame {
         )?;
         engine_allocation::reserve(&mut whole, 1)?;
         whole.push((TableId::Campaign, Hold::Whole));
-        frame.group(&whole)?;
+        frame.group(&whole, false)?;
         let fields = engine_allocation::collect_vec(
             tables
                 .iter()
@@ -111,13 +108,14 @@ impl Frame {
                 .copied(),
         )?;
         if !fields.is_empty() {
-            frame.group(&fields)?;
+            frame.group(&fields, false)?;
         }
         Ok(frame)
     }
 
-    /// A group of `tables`, each in its hold.
-    fn group(&mut self, tables: &[(TableId, Hold)]) -> io::Result<()> {
+    /// A group of `tables`, each in its hold; one a lane asked for without declaring it is
+    /// built rarely, and noted by slot ([`Views::by_slot`]).
+    fn group(&mut self, tables: &[(TableId, Hold)], asked: bool) -> io::Result<()> {
         let at = self.groups.len();
         let mut fields = engine_allocation::filled(TABLE_COUNT, 0)?;
         for &(table, hold) in tables {
@@ -126,9 +124,10 @@ impl Frame {
             self.held[table.index()].push((at, hold));
         }
         let selected = engine_allocation::collect_vec(tables.iter().map(|&(table, _)| table))?;
+        let views = Views::new(&selected, self.format, self.mode)?;
         engine_allocation::reserve(&mut self.groups, 1)?;
         self.groups.push(Group {
-            views: Views::new(&selected, self.format, self.mode)?,
+            views: if asked { views.by_slot() } else { views },
             fields,
             built: engine_allocation::filled(TABLE_COUNT, false)?,
             wanted: Vec::new(),
@@ -185,7 +184,7 @@ impl Frame {
         if !missing.is_empty() {
             missing.sort_unstable_by_key(|&(table, _)| table);
             missing.dedup();
-            self.group(&missing)?;
+            self.group(&missing, true)?;
             // Built anew at this hour, from the rows the walker holds.
             self.groups
                 .last_mut()

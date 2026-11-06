@@ -463,46 +463,27 @@ impl NameAreas {
 /// fronts moved re-places only the areas that changed. Placement is a pure
 /// function of the tag, the text and the area, so a hit is the same name.
 ///
-/// Bounded by bytes: past [`PLACED_AREA_BYTES`] the areas least recently
-/// placed go first, so a long campaign keeps the areas its recent hours use.
+/// Holds the areas the last placement showed: each placement keeps only what it read.
+#[derive(Default)]
 pub struct PlacedAreas {
     areas: Mutex<Areas>,
-    limit: usize,
-}
-
-impl Default for PlacedAreas {
-    fn default() -> Self {
-        Self::with_limit(PLACED_AREA_BYTES)
-    }
 }
 
 type AreaKey = (String, String, Vec<u32>, bool);
 
-/// Bytes of placed names and their keys [`PlacedAreas`] keeps.
-const PLACED_AREA_BYTES: usize = 64 << 20;
-
 #[derive(Default)]
 struct Areas {
     placed: HashMap<AreaKey, PlacedArea>,
-    bytes: usize,
     /// Counts placements; an area's `used` is the placement that last read it.
     generation: u64,
 }
 
 struct PlacedArea {
     name: Option<WorldName>,
-    bytes: usize,
     used: u64,
 }
 
 impl PlacedAreas {
-    fn with_limit(limit: usize) -> Self {
-        Self {
-            areas: Mutex::new(Areas::default()),
-            limit,
-        }
-    }
-
     fn lock(&self) -> MutexGuard<'_, Areas> {
         self.areas
             .lock()
@@ -516,7 +497,12 @@ impl PlacedAreas {
         areas.generation
     }
 
-    /// The name of one area, placed by `build` unless a recent placement has it.
+    /// Ends placement `generation`: what it did not read is no longer shown.
+    fn end(&self, generation: u64) {
+        self.lock().placed.retain(|_, area| area.used >= generation);
+    }
+
+    /// The name of one area, placed by `build` unless the last placement has it.
     fn place(
         &self,
         generation: u64,
@@ -528,57 +514,15 @@ impl PlacedAreas {
             return area.name.clone();
         }
         let name = build();
-        let bytes = area_bytes(&key, name.as_ref());
-        let mut areas = self.lock();
-        if let Some(old) = areas.placed.insert(
+        self.lock().placed.insert(
             key,
             PlacedArea {
                 name: name.clone(),
-                bytes,
                 used: generation,
             },
-        ) {
-            areas.bytes -= old.bytes;
-        }
-        areas.bytes += bytes;
-        if areas.bytes > self.limit {
-            // The least recently used first, down to three quarters of the
-            // limit, so a full cache does not evict on every insert.
-            let mut ages: Vec<(u64, AreaKey)> = areas
-                .placed
-                .iter()
-                .map(|(key, area)| (area.used, key.clone()))
-                .collect();
-            ages.sort_by_key(|(used, _)| *used);
-            let target = self.limit / 4 * 3;
-            for (_, key) in ages {
-                if areas.bytes <= target {
-                    break;
-                }
-                if let Some(area) = areas.placed.remove(&key) {
-                    areas.bytes -= area.bytes;
-                }
-            }
-        }
+        );
         name
     }
-}
-
-/// The heap bytes one placed area holds, key included.
-fn area_bytes(key: &AreaKey, name: Option<&WorldName>) -> usize {
-    let key_bytes = key.0.len() + key.1.len() + key.2.len() * std::mem::size_of::<u32>();
-    let name_bytes = name.map_or(0, |name| {
-        name.key.len()
-            + name.text.len()
-            + name.pages.len() * std::mem::size_of::<usize>()
-            + name.corners.len() * std::mem::size_of::<[f32; 3]>()
-            + name.uvs.len() * std::mem::size_of::<[f32; 4]>()
-            + name
-                .strategic_provinces
-                .as_ref()
-                .map_or(0, |provinces| std::mem::size_of_val(provinces.as_ref()))
-    });
-    std::mem::size_of::<PlacedArea>() + key_bytes + name_bytes
 }
 
 /// Places the names of `areas`, reusing `placed` areas when given.
@@ -587,13 +531,27 @@ pub fn place_areas(
     areas: &NameAreas,
     placed: Option<&PlacedAreas>,
 ) -> Placements {
+    let generation = placed.map(PlacedAreas::begin);
+    let result = place_in(inputs, areas, placed, generation);
+    if let (Some(placed), Some(generation)) = (placed, generation) {
+        placed.end(generation);
+    }
+    result
+}
+
+/// [`place_areas`] within one placement `generation` of `placed`.
+fn place_in(
+    inputs: &PlacementInputs<'_>,
+    areas: &NameAreas,
+    placed: Option<&PlacedAreas>,
+    generation: Option<u64>,
+) -> Placements {
     let mut result = Placements {
         generation: next_generation(),
         ..Placements::default()
     };
     let mut unplaced: Vec<String> = Vec::new();
     let mut unnamed: Vec<String> = Vec::new();
-    let generation = placed.map(PlacedAreas::begin);
     result.warnings.extend(areas.warnings.iter().cloned());
     let mut unnamed_factions: Vec<String> = Vec::new();
     for CountryArea {
@@ -670,7 +628,7 @@ pub fn place_areas(
         ));
     }
     if let Some(near) = &areas.near {
-        let near = place_areas(inputs, near, placed);
+        let near = place_in(inputs, near, placed, generation);
         result.warnings.extend(near.warnings.iter().cloned());
         result.near = Some(std::sync::Arc::new(near));
     }

@@ -3505,8 +3505,8 @@ fn keep_admitted(
     spooled: &BranchLoads,
     admitted: &BTreeSet<i64>,
 ) -> std::io::Result<bool> {
-    use replay::columnar_frames::{Limits, Recording};
-    let native = Recording::open_path(finished, Limits::default())?;
+    use replay::columnar_frames::Recording;
+    let native = Recording::open_path(finished)?;
     let refused = capture_refused_loads(&native, campaign_dir, replay_dir, spooled, admitted)?;
     if refused.is_empty() {
         return Ok(true);
@@ -9187,9 +9187,7 @@ mod tests {
             })
             .collect();
             assert_eq!(paths.len(), 1);
-            let columns =
-                replay::columnar_frames::Recording::open_path(&paths[0].path(), Default::default())
-                    .unwrap();
+            let columns = replay::columnar_frames::Recording::open_path(paths[0].path()).unwrap();
             assert_eq!(columns.hours(), 4);
             assert_eq!(columns.run_count(), 1);
             assert_eq!(columns.run(0).unwrap().branch, 9);

@@ -24,7 +24,7 @@ use replay_data::{
     format::FormatVersion,
     rows::{TABLE_COUNT, TableId, tables},
 };
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
+use replay_frame::frame::Tables;
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -148,8 +148,6 @@ pub struct Hour {
 pub struct Project {
     format: FormatVersion,
     asks: Vec<(TableId, Hold)>,
-    /// The frame the world's views are lent into for a read, given back before its hour ends.
-    frame: DecodedFrame,
     naming: Naming,
     /// Each named table's status the hour before.
     shapes: [Option<columns::Status>; TABLE_COUNT],
@@ -169,12 +167,6 @@ impl Project {
         Ok(Self {
             format,
             asks: asks()?,
-            frame: DecodedFrame {
-                branch: 0,
-                hour: 0,
-                tables: std::array::from_fn(|_| not_selected()),
-                metrics: Metrics::default(),
-            },
             naming: Naming::dated()?,
             shapes: [None; TABLE_COUNT],
             last: None,
@@ -192,22 +184,15 @@ impl Project {
         world: &World,
     ) -> io::Result<(Roster, Option<Box<Noted>>)> {
         let Self {
-            frame,
-            asks,
             held,
             tags,
             noted,
             dirty,
             ..
         } = self;
-        // The views go back before the hour ends, however it ends.
-        let lent = Lent {
-            frame,
-            asks: asks.as_slice(),
-        };
-        world.frame_held_into(state, lent.asks, lent.frame)?;
-        let frame: &DecodedFrame = &*lent.frame;
-        let rows = frame.complete::<tables::AirAces>()?;
+        let frame = world.columns(state);
+        let rows = frame.complete_rows::<tables::AirAces>(TableId::AirAces.full_mask())?;
+        let known = tags.update_tables(&frame).is_ok();
         *dirty = false;
         let previous = held.take();
         if duplicated(rows) {
@@ -220,9 +205,9 @@ impl Project {
                 let mut aces = HashMap::with_capacity(rows.len());
                 seen.reserve_exact(rows.len());
                 join(
-                    frame,
+                    &frame,
                     rows,
-                    tags,
+                    (tags, known),
                     &mut refused.roster,
                     &mut refused.wings,
                     |ace| {
@@ -230,7 +215,7 @@ impl Project {
                         aces.insert(ace.id(), owned.clone());
                         seen.push(owned);
                     },
-                );
+                )?;
                 *held = Some(aces);
                 Read {
                     whole: true,
@@ -240,9 +225,9 @@ impl Project {
             }
             Some(mut aces) => {
                 join(
-                    frame,
+                    &frame,
                     rows,
-                    tags,
+                    (tags, known),
                     &mut refused.roster,
                     &mut refused.wings,
                     |ace| match aces.get_mut(&ace.id()) {
@@ -258,11 +243,11 @@ impl Project {
                             seen.push(owned);
                         }
                     },
-                );
+                )?;
                 // The read holds each of its aces once, so any more held are gone.
                 let mut gone = Vec::new();
                 if aces.len() > rows.len() {
-                    let ids: HashSet<u64> = rows.iter().map(|row| row.id).collect();
+                    let ids: HashSet<u64> = rows.keys().map(|key| key as u64).collect();
                     aces.retain(|id, _| {
                         let kept = ids.contains(id);
                         if !kept {
@@ -355,14 +340,3 @@ impl Operator<World> for Project {
     }
 }
 
-/// The world's views lent into `frame` for `asks`, given back when dropped.
-struct Lent<'o> {
-    frame: &'o mut DecodedFrame,
-    asks: &'o [(TableId, Hold)],
-}
-
-impl Drop for Lent<'_> {
-    fn drop(&mut self) {
-        dashboard_world::release(self.frame, self.asks);
-    }
-}

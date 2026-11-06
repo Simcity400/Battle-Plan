@@ -35,7 +35,8 @@ use replay::{container::QuietHours, container::TableFields};
 use replay_data::{
     BranchId, Hour, rows::DeltaRow, rows::RowCodec, rows::TableId, rows::full_mask, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity, frame::view_reads};
+use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, ViewIdentity, view_reads};
+use std::sync::LazyLock;
 
 /// Evaluations run, reused, and (in check mode) reused but run anyway,
 /// and of those, any that changed.
@@ -211,40 +212,50 @@ impl Resolution {
     }
 
     /// `frame`'s table it maps by; none where it is not complete, so any row may be.
-    pub fn slots(self, frame: &DecodedFrame) -> Option<Slots<'_>> {
+    pub fn slots<'f>(self, frame: impl Into<HourFrame<'f>>) -> Option<Slots<'f>> {
+        let frame = frame.into();
         view_reads::unrecorded(|| match self {
             Self::Links => frame
-                .complete::<tables::CountryLinks>()
+                .complete::<tables::CountryLinks>(*CANONICAL_LINK)
                 .ok()
                 .map(Slots::Links),
             Self::Countries => frame
-                .complete::<tables::Countries>()
+                .complete::<tables::Countries>(*CANONICAL_COUNTRY)
                 .ok()
                 .map(Slots::Countries),
         })
     }
 }
 
-/// A complete table that maps raw countries to slots, ascending by raw id as its keys are.
+/// The fields a [`Slots`] reads of each table it maps by.
+static CANONICAL_LINK: LazyLock<u64> =
+    LazyLock::new(|| TableRead::fields(TableId::CountryLinks, &["canonical_slot"]).fields);
+static CANONICAL_COUNTRY: LazyLock<u64> =
+    LazyLock::new(|| TableRead::fields(TableId::Countries, &["canonical_slot"]).fields);
+
+/// A complete table that maps raw countries to slots, keyed by raw id.
 #[derive(Clone, Copy)]
 pub enum Slots<'a> {
-    Links(&'a [replay_data::rows::CountryLinkRow]),
-    Countries(&'a [replay_data::rows::CountryRow]),
+    Links(Rowset<'a, replay_data::rows::CountryLinkRow>),
+    Countries(Rowset<'a, replay_data::rows::CountryRow>),
 }
 
 impl Slots<'_> {
-    /// The slot it maps raw country `country` to, if any.
+    /// The slot it maps raw country `country` to, if any; none where its row cannot be read,
+    /// so any row may be any country's.
     pub fn of(self, country: u32) -> Option<u32> {
-        match self {
+        view_reads::unrecorded(|| match self {
             Self::Links(rows) => rows
-                .binary_search_by_key(&country, |row| row.id)
+                .get(u128::from(country))
                 .ok()
-                .map(|at| rows[at].canonical_slot),
+                .flatten()
+                .map(|row| row.canonical_slot),
             Self::Countries(rows) => rows
-                .binary_search_by_key(&country, |row| row.id)
+                .get(u128::from(country))
                 .ok()
-                .map(|at| rows[at].canonical_slot),
-        }
+                .flatten()
+                .map(|row| row.canonical_slot),
+        })
     }
 }
 
@@ -351,7 +362,7 @@ impl TableRead {
     /// Whether this read reads the row keyed `key` of `frame`: in its key
     /// range and, if owned, its country's or unresolved by `frame`'s links.
     #[cfg(test)]
-    pub(crate) fn reads_row(&self, key: u128, frame: &DecodedFrame) -> bool {
+    pub(crate) fn reads_row(&self, key: u128, frame: &'_ DecodedFrame) -> bool {
         self.holds(key)
             && self.owner.is_none_or(|owner| {
                 owner.by.slots(frame).is_none_or(|slots| {
@@ -488,7 +499,7 @@ pub struct Since<'a> {
     branch: BranchId,
     from: Hour,
     to: Hour,
-    rows: Option<&'a DecodedFrame>,
+    rows: Option<HourFrame<'a>>,
     tables: &'a dyn TableChanges,
     /// Each read asked about, and whether it changed: the evaluations an
     /// hour confirms share most of their reads.
@@ -508,15 +519,18 @@ struct Reached {
 impl<'a> Since<'a> {
     /// `frame`'s `tables` changes since the hour before it on its branch.
     pub fn hour_before(frame: &'a DecodedFrame, tables: &'a dyn TableChanges) -> Option<Self> {
-        Some(Self {
-            branch: frame.branch,
-            from: frame.hour.checked_sub(1)?,
-            to: frame.hour,
-            rows: Some(frame),
+        Self::hour_before_in(HourFrame::from(frame), tables)
+    }
+
+    /// [`Self::hour_before`] of any frame's tables, a walk's views among them.
+    pub fn hour_before_in(frame: HourFrame<'a>, tables: &'a dyn TableChanges) -> Option<Self> {
+        Some(Self::span_in(
+            frame.branch(),
+            frame.hour().checked_sub(1)?,
+            frame.hour(),
+            Some(frame),
             tables,
-            asked: RefCell::default(),
-            owned: RefCell::default(),
-        })
+        ))
     }
 
     /// `tables` changes on `branch` from `from` to `to`, read without a
@@ -528,11 +542,22 @@ impl<'a> Since<'a> {
         rows: Option<&'a DecodedFrame>,
         tables: &'a dyn TableChanges,
     ) -> Self {
+        Self::span_in(branch, from, to, rows.map(HourFrame::from), tables)
+    }
+
+    /// [`Self::span`] with `rows` of any frame's tables, a walk's views among them.
+    pub fn span_in(
+        branch: BranchId,
+        from: Hour,
+        to: Hour,
+        rows: Option<HourFrame<'a>>,
+        tables: &'a dyn TableChanges,
+    ) -> Self {
         Self {
             branch,
             from,
             to,
-            rows,
+            rows: rows.map(HourFrame::from),
             tables,
             asked: RefCell::default(),
             owned: RefCell::default(),
@@ -655,40 +680,49 @@ fn touches(table: TableId, fields: u64, row: &DeltaRow) -> bool {
 /// Whether one of `read`'s rows in `frame` ends after `from` and by `to`,
 /// so a relation ongoing at `from` is not at `to`
 /// ([`crate::triggers::ongoing`]). Every other table may.
-fn ended(frame: &DecodedFrame, read: &TableRead, from: Hour, to: Hour) -> bool {
+fn ended(frame: HourFrame<'_>, read: &TableRead, from: Hour, to: Hour) -> bool {
     fn any<T: replay_data::rows::TableSchema>(
-        view: &TableView,
+        frame: HourFrame<'_>,
         read: &TableRead,
         span: impl Fn(&T::Row) -> (i32, i32),
         from: Hour,
         to: Hour,
     ) -> bool {
-        let rows = match view {
-            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
-            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => return false,
+        use replay_frame::frame::OperandStatus;
+        match frame.status(T::ID) {
+            OperandStatus::Unavailable(_) | OperandStatus::NotRecorded(_) => return false,
+            OperandStatus::WrongLayout | OperandStatus::TruncatedWrongLayout(_) => return true,
+            OperandStatus::Complete | OperandStatus::Truncated(_) => {}
+        }
+        let mask = TableRead::fields(T::ID, &["start_hour", "end_hour"]).fields;
+        let Some(rows) = frame.rows::<T>(mask) else {
+            return true;
         };
-        rows.rows::<T>().is_none_or(|rows| {
-            rows.iter().any(|row| {
-                let (start, end) = span(row);
-                read.holds(row.key()) && end > start && from < end && end <= to
-            })
+        let rows = match read.rows {
+            Some((first, last)) => rows.span(first, last),
+            None => rows,
+        };
+        // A row that cannot be read may have ended.
+        rows.iter().any(|row| {
+            row.is_err()
+                || row.is_ok_and(|row| {
+                    let (start, end) = span(&row);
+                    end > start && from < end && end <= to
+                })
         })
     }
-    view_reads::unrecorded(|| {
-        let view = &*frame.tables[read.table.index()];
-        match read.table {
-            TableId::WarRelations => any::<tables::WarRelations>(
-                view,
-                read,
-                |row| (row.start_hour, row.end_hour),
-                from,
-                to,
-            ),
-            TableId::Subjects => {
-                any::<tables::Subjects>(view, read, |row| (row.start_hour, row.end_hour), from, to)
-            }
-            _ => true,
+    view_reads::unrecorded(|| match read.table {
+        TableId::WarRelations => any::<tables::WarRelations>(
+            frame,
+            read,
+            |row| (row.start_hour, row.end_hour),
+            from,
+            to,
+        ),
+        TableId::Subjects => {
+            any::<tables::Subjects>(frame, read, |row| (row.start_hour, row.end_hour), from, to)
         }
+        _ => true,
     })
 }
 
@@ -733,6 +767,12 @@ thread_local! {
 /// Run `evaluate`, recording its reads: its queries, and every table view
 /// of `frame` it reads outside a query.
 pub fn capture<T>(frame: &DecodedFrame, evaluate: impl FnOnce() -> T) -> (T, Inputs) {
+    capture_in(HourFrame::from(frame), evaluate)
+}
+
+/// [`capture`] of any frame's tables: a walk's views, which have no identity, are recorded by
+/// their status, and declare every row and field read.
+pub fn capture_in<T>(frame: HourFrame<'_>, evaluate: impl FnOnce() -> T) -> (T, Inputs) {
     RECORDING.with(|recording| recording.borrow_mut().push(Inputs::default()));
     // Pop even when `evaluate` unwinds, so a later capture starts clean.
     struct Pop;
@@ -744,13 +784,18 @@ pub fn capture<T>(frame: &DecodedFrame, evaluate: impl FnOnce() -> T) -> (T, Inp
         }
     }
     let pop = Pop;
-    let (value, views) = view_reads::record(evaluate);
-    for (index, view) in frame.tables.iter().enumerate() {
-        if views.iter().any(|read| read.is(view)) {
-            record(Key::Table(TableId::ALL[index]), || {
-                Value::View(view.identity())
-            });
+    let (value, views, walked) = view_reads::record_walked(evaluate);
+    if let Some(decoded) = frame.decoded() {
+        for (index, view) in decoded.decoded_frame().tables.iter().enumerate() {
+            if views.iter().any(|read| read.is(view)) {
+                record(Key::Table(TableId::ALL[index]), || {
+                    Value::View(view.identity())
+                });
+            }
         }
+    }
+    for table in walked {
+        record(Key::Table(table), || view_value(frame, table));
     }
     let mut inputs = RECORDING.with(|recording| {
         let mut recording = recording.borrow_mut();
@@ -764,7 +809,7 @@ pub fn capture<T>(frame: &DecodedFrame, evaluate: impl FnOnce() -> T) -> (T, Inp
         inputs
     });
     drop(pop);
-    inputs.at = Some((frame.branch, frame.hour));
+    inputs.at = Some((frame.branch(), frame.hour()));
     (value, inputs)
 }
 
@@ -780,6 +825,7 @@ pub(crate) struct Handoff {
 pub(crate) struct Carried {
     inputs: Option<Inputs>,
     views: Vec<ViewIdentity>,
+    walked: Vec<TableId>,
 }
 
 /// This thread's recording state, for a helper thread.
@@ -796,15 +842,22 @@ impl Handoff {
         if self.inputs {
             RECORDING.with(|recording| recording.borrow_mut().push(Inputs::default()));
         }
-        let (value, views) = if self.views {
-            view_reads::record(compute)
+        let (value, views, walked) = if self.views {
+            view_reads::record_walked(compute)
         } else {
-            (compute(), Vec::new())
+            (compute(), Vec::new(), Vec::new())
         };
         let inputs = self
             .inputs
             .then(|| RECORDING.with(|recording| recording.borrow_mut().pop().unwrap_or_default()));
-        (value, Carried { inputs, views })
+        (
+            value,
+            Carried {
+                inputs,
+                views,
+                walked,
+            },
+        )
     }
 }
 
@@ -821,6 +874,7 @@ impl Carried {
             });
         }
         view_reads::credit(&self.views);
+        view_reads::credit_walked(&self.walked);
     }
 }
 
@@ -922,29 +976,35 @@ pub fn unrecorded<T>(compute: impl FnOnce() -> T) -> T {
 
 /// Record a read of `table`'s whole view in `frame`, for state built from
 /// the whole table that an evaluation reads directly.
-pub fn table(frame: &dyn replay_frame::frame::DecodedSource, table: TableId) {
+pub fn table<'f>(frame: impl Into<replay_frame::frame::HourFrame<'f>>, table: TableId) {
+    let frame = frame.into();
     if recording() {
-        record(Key::Table(table), || {
-            frame
-                .identity(table.index())
-                .map(Value::View)
-                .unwrap_or_else(|| Value::Digest(digest_debug(frame.view(table.index()))))
-        });
+        record(Key::Table(table), || view_value(frame, table));
+    }
+}
+
+/// What a read of `table`'s view in `frame` records: the view's identity, else a digest of
+/// it; a walk's view, which has neither, its status alone.
+fn view_value(frame: replay_frame::frame::HourFrame<'_>, table: TableId) -> Value {
+    match (frame.identity(table), frame.decoded()) {
+        (Some(view), _) => Value::View(view),
+        (None, Some(decoded)) => Value::Digest(digest_debug(decoded.view(table.index()))),
+        (None, None) => Value::Digest(digest_debug(&frame.status(table))),
     }
 }
 
 /// Record a read of the fields `names` name in every row of `table`'s view
 /// in `frame`, for state built from those fields of the whole table that an
 /// evaluation reads directly ([`Key::Fields`]).
-pub fn fields(frame: &dyn replay_frame::frame::DecodedSource, table: TableId, names: &[&str]) {
+pub fn fields<'f>(
+    frame: impl Into<replay_frame::frame::HourFrame<'f>>,
+    table: TableId,
+    names: &[&str],
+) {
+    let frame = frame.into();
     if recording() {
         let fields = TableRead::fields(table, names).fields;
-        record(Key::Fields(table, fields), || {
-            frame
-                .identity(table.index())
-                .map(Value::View)
-                .unwrap_or_else(|| Value::Digest(digest_debug(frame.view(table.index()))))
-        });
+        record(Key::Fields(table, fields), || view_value(frame, table));
     }
 }
 
@@ -1011,22 +1071,26 @@ type Declaration = Box<dyn Fn(&Key) -> Option<Option<Vec<TableRead>>>>;
 /// changed: a declared dependence of one of its inputs missed a read
 /// ([`missed_dependences`]).
 pub fn missed_reuse(evaluation: &dyn std::fmt::Debug, frame: &DecodedFrame) {
-    missed(evaluation, frame);
+    missed(evaluation, frame.hour);
 }
 
-fn missed(key: &dyn std::fmt::Debug, frame: &DecodedFrame) {
+/// [`missed_reuse`] of an evaluation at `hour`, of any frame.
+pub fn missed_reuse_at(evaluation: &dyn std::fmt::Debug, hour: Hour) {
+    missed(evaluation, hour);
+}
+
+fn missed(key: &dyn std::fmt::Debug, hour: Hour) {
     MISSED.fetch_add(1, Ordering::Relaxed);
     #[cfg(any(test, feature = "test-support"))]
     LOCAL_MISSED.with(|missed| missed.set(missed.get().wrapping_add(1)));
     #[cfg(any(test, feature = "test-support"))]
     if !EXPECTING_MISSED.with(Cell::get) {
         panic!(
-            "{key:?} read differently at hour {} although its declared dependence did not change",
-            frame.hour
+            "{key:?} read differently at hour {hour} although its declared dependence did not change"
         );
     }
     #[cfg(not(any(test, feature = "test-support")))]
-    let _ = (key, frame);
+    let _ = (key, hour);
 }
 
 /// Run `f` on this thread with a missed dependence counted rather than
@@ -1161,43 +1225,63 @@ impl Inputs {
         &mut self,
         frame: &DecodedFrame,
         since: Option<&Since<'_>>,
+        reread: impl FnMut(&Key) -> Option<u64>,
+    ) -> bool {
+        self.confirm_since_in(HourFrame::from(frame), since, reread)
+    }
+
+    /// [`Self::confirm_since`] of any frame's tables. A walk's view, which has no identity, is
+    /// the same only where `since` did not change what it declares.
+    pub fn confirm_since_in(
+        &mut self,
+        frame: HourFrame<'_>,
+        since: Option<&Since<'_>>,
         mut reread: impl FnMut(&Key) -> Option<u64>,
     ) -> bool {
+        let (branch, hour) = (frame.branch(), frame.hour());
         let changed = since
-            .filter(|since| {
-                self.follows(since) && since.branch == frame.branch && since.to == frame.hour
-            })
+            .filter(|since| self.follows(since) && since.branch == branch && since.to == hour)
             .map(|since| self.changed(since));
         let checking = check_reuse();
+        let decoded = frame.decoded().map(|frame| frame.decoded_frame());
         for read in &mut self.reads {
             let unchanged =
                 changed.is_some_and(|changed| read.uses.is_some_and(|uses| uses & changed == 0));
             if unchanged {
-                match (&mut read.value, read.key.table()) {
-                    (Value::View(view), Some(table)) => {
-                        *view = frame.tables[table.index()].identity()
+                match (&mut read.value, read.key.table(), decoded) {
+                    (Value::View(view), Some(table), Some(decoded)) => {
+                        *view = decoded.tables[table.index()].identity()
                     }
-                    (Value::Digest(digest), _)
+                    // A walk's view, recorded by its status: check mode reads that again.
+                    (Value::Digest(digest), Some(table), None) => {
+                        if checking
+                            && !matches!(view_value(frame, table), Value::Digest(now) if now == *digest)
+                        {
+                            missed(&read.key, hour);
+                        }
+                    }
+                    (Value::Digest(digest), _, _)
                         if checking && reread(&read.key) != Some(*digest) =>
                     {
-                        missed(&read.key, frame);
+                        missed(&read.key, hour);
                     }
                     _ => {}
                 }
                 continue;
             }
-            let same = match (&read.key, &read.value) {
-                (Key::Table(table) | Key::Fields(table, _), Value::View(view)) => {
-                    view.is(&frame.tables[table.index()])
+            let same = match (&read.key, &read.value, decoded) {
+                (Key::Table(table) | Key::Fields(table, _), Value::View(view), Some(decoded)) => {
+                    view.is(&decoded.tables[table.index()])
                 }
-                (_, Value::Digest(digest)) => reread(&read.key) == Some(*digest),
+                (Key::Table(_) | Key::Fields(..), Value::Digest(_), None) => false,
+                (_, Value::Digest(digest), _) => reread(&read.key) == Some(*digest),
                 _ => false,
             };
             if !same {
                 return false;
             }
         }
-        self.at = Some((frame.branch, frame.hour));
+        self.at = Some((branch, hour));
         true
     }
 

@@ -455,7 +455,7 @@ impl Projector {
             return columns::row(state, table, slot, self.format.version());
         }
         let at = slot as usize;
-        let cell = |values: &[i64]| {
+        let cell = |values: &replay::columns::Paged<i64>| {
             values
                 .get(at)
                 .copied()

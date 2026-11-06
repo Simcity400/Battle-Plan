@@ -2,7 +2,7 @@ use crate::prepared::driver::native::{measure, status};
 use dashboard_base::test_fixtures::{CAMPAIGN, file_source, records, source};
 use replay::{
     columnar_frames::{
-        Damage, Limits, Recording, Segment, fixtures, schema,
+        Damage, Recording, Segment, fixtures, schema,
         synthetic::{Input, Sample},
     },
     container::Replay,
@@ -50,7 +50,7 @@ fn native(later: &[u8]) -> Recording {
                 .unwrap();
         },
     );
-    Recording::open(bytes, Limits::default()).unwrap()
+    Recording::open(bytes).unwrap()
 }
 
 /// What a native preparation of no family made of [`native`]`(later)`, and whether it published.
@@ -59,7 +59,17 @@ fn prepared(later: &[u8]) -> (io::Result<()>, bool) {
     let replay = Replay::from_records(CAMPAIGN.to_vec(), &[records(1, frames)]).unwrap();
     let (source, root) = file_source(replay);
     let cancelled = AtomicBool::new(false);
-    let made = measure(&source, None, native(later), Some(&[][..]), 1, false, &cancelled).map(drop);
+    let made = measure(
+        &source,
+        None,
+        native(later),
+        None,
+        Some(&[][..]),
+        1,
+        false,
+        &cancelled,
+    )
+    .map(drop);
     let (store, _) = crate::prepared::files(&source, None).unwrap();
     let published = status::held(&store).unwrap().is_some();
     let _ = store.clear();
@@ -138,7 +148,7 @@ fn recorded(units: u32, restart_units: u32, campaign: impl Fn(u32) -> TableView)
 }
 
 fn opened(bytes: &[u8]) -> Recording {
-    Recording::open(bytes.to_vec(), Limits::default()).unwrap()
+    Recording::open(bytes.to_vec()).unwrap()
 }
 
 /// Whether page `at` of `recording` sections Campaign, and whether it changes its status.

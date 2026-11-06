@@ -48,30 +48,32 @@ pub struct StateName {
     pub owner: Vec<u8>,
 }
 
-pub fn port_operand(frame: &DecodedFrame, countries: &Countries, province: u32) -> PortName {
+pub(crate) fn port_operand<F: Tables + ?Sized>(
+    frame: &Frame<'_, F>,
+    countries: &Countries,
+    province: u32,
+) -> PortName {
     let override_name = frame
-        .complete::<tables::ProvinceNames>()
+        .complete_or::<tables::ProvinceNames>()
         .map(|rows| {
-            find(Some(rows), province, |row| row.province)
+            frame
+                .found(rows.get(u128::from(province)))
                 .map(|row| row.name.clone())
                 .unwrap_or_default()
-        })
-        .map_err(|why| why.to_string());
+        });
     let state = frame
-        .complete::<tables::Provinces>()
-        .map_err(|why| why.to_string())
+        .complete_or::<tables::Provinces>()
         .and_then(|rows| {
-            find(Some(rows), province, |row| row.id)
+            frame
+                .found(rows.get(u128::from(province)))
                 .ok_or_else(|| format!("Province {province} not recorded"))
         })
         .and_then(|province| {
-            frame
-                .complete::<tables::States>()
-                .map_err(|why| why.to_string())
-                .and_then(|rows| {
-                    find(Some(rows), province.state, |row| row.id)
-                        .ok_or_else(|| format!("State {} not recorded", province.state))
-                })
+            frame.complete_or::<tables::States>().and_then(|rows| {
+                frame
+                    .found(rows.get(u128::from(province.state)))
+                    .ok_or_else(|| format!("State {} not recorded", province.state))
+            })
         });
     let owner_tag = state.as_ref().map_err(Clone::clone).and_then(|state| {
         let slot = if state.owner == 0 {
@@ -80,7 +82,7 @@ pub fn port_operand(frame: &DecodedFrame, countries: &Countries, province: u32) 
             countries.slot(state.owner)
         }
         .ok_or_else(|| "Port state owner's country not recorded".to_owned())?;
-        installed_content_country_names::country_names::original_or_own_tag(frame, slot).map(str::to_owned)
+        installed_content_country_names::country_names::original_or_own_tag_tables(frame.tables(), slot)
     });
     let state = state.map(|state| StateName {
         id: state.id,

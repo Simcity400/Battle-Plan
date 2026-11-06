@@ -10,7 +10,7 @@ const reply = () => ({ branchId: '1', tag: 'mod country', landSource: 'destructi
     group: null, loss: true, unknown: null, unknownSpans: [], leaves: [{ design: null, lowerBoundFrom: null,
       points: [{ hour: 100, totalRaw: '9007199254740993' }, { hour: 180, totalRaw: '-9007199254740993' }] }] }],
   preparedReads: [100, 150, 200], preparedHeadHour: 150, preparedDetailHour: 150,
-  preparedFrom: 100, preparedTo: 200, preparedWidth: 10 });
+  preparedFrom: 100, preparedTo: 200, preparedWidth: 10, restarts: [] as number[] });
 
 test('prepared loss geometry never establishes an unfetched exact hover or pick', () => {
   const data = validatePreparedLosses(reply());

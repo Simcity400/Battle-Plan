@@ -207,7 +207,7 @@ impl Emit {
 
     fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         measure: u64,
         dimension: Option<u64>,
@@ -225,7 +225,7 @@ impl Emit {
     }
 
     /// The tag actor of `tag`, with its keys, first seen at `hour`.
-    fn tag(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn tag(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         let actor = match self.actors.find(tag.as_bytes()) {
             Some(actor) => actor,
             None => self.actors.actor(writer, tag.as_bytes(), hour)?,
@@ -247,7 +247,7 @@ impl Emit {
     }
 
     /// The spelled part `part` names now.
-    fn spell(&mut self, writer: &mut Writer<'_>, part: Part) -> io::Result<u32> {
+    fn spell(&mut self, writer: &mut Writer, part: Part) -> io::Result<u32> {
         let spelled: Spelled = match part {
             Part::Variant(variant) => Some((
                 variant,
@@ -273,7 +273,7 @@ impl Emit {
     }
 
     /// The part key id of `key`.
-    fn part(&mut self, writer: &mut Writer<'_>, key: String) -> io::Result<u32> {
+    fn part(&mut self, writer: &mut Writer, key: String) -> io::Result<u32> {
         if let Some(&id) = self.part_keys.get(key.as_str()) {
             return Ok(id);
         }
@@ -287,7 +287,7 @@ impl Emit {
     }
 
     /// The part key a spelled part's planes count under.
-    fn plane_part(&mut self, writer: &mut Writer<'_>, spelled: u32) -> io::Result<u32> {
+    fn plane_part(&mut self, writer: &mut Writer, spelled: u32) -> io::Result<u32> {
         if let Some(Some(id)) = self.plane_parts.get(spelled as usize) {
             return Ok(*id);
         }
@@ -304,7 +304,7 @@ impl Emit {
     }
 
     /// The part key a wing holding `spelled` counts under: its one type, or its mix of them.
-    fn wing_part(&mut self, writer: &mut Writer<'_>, mut spelled: Vec<u32>) -> io::Result<u32> {
+    fn wing_part(&mut self, writer: &mut Writer, mut spelled: Vec<u32>) -> io::Result<u32> {
         spelled.sort_unstable();
         if let Some(&id) = self.wing_parts.get(&spelled) {
             return Ok(id);
@@ -352,7 +352,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
@@ -509,7 +509,7 @@ impl Emit {
     /// none the hour before, as the row census's series start them.
     fn put(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         value: Option<i128>,
@@ -521,7 +521,7 @@ impl Emit {
     }
 
     /// Ends `actor`'s runs at `hour`.
-    fn end(&mut self, writer: &mut Writer<'_>, hour: i32, actor: u64) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, hour: i32, actor: u64) -> io::Result<()> {
         let tag = &mut self.tags[actor as usize];
         for &key in &tag.keys {
             self.carry.value(writer, key, hour, None, false)?;
@@ -540,7 +540,7 @@ impl Emit {
     /// Starts `run` for `actor` at `hour`, a segment where `starts`.
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         actor: u64,
         run: Run,
@@ -585,7 +585,7 @@ impl Emit {
 
     /// A composition as event cells: planes, wings, (spelled part, planes or null) pairs and
     /// (spelled parts, wings) pairs.
-    fn composition(&mut self, writer: &mut Writer<'_>, counts: &Counts) -> io::Result<Cell> {
+    fn composition(&mut self, writer: &mut Writer, counts: &Counts) -> io::Result<Cell> {
         let mut parts = Vec::with_capacity(counts.parts.len() * 2);
         for &(part, amount) in &counts.parts {
             parts.push(Cell::Unsigned(u64::from(self.spell(writer, part)?)));
@@ -614,7 +614,7 @@ impl Emit {
     /// absent; every part ends where the total is unknown.
     fn parts(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         actor: u64,
         channel: usize,
@@ -700,7 +700,7 @@ impl Emit {
 
     /// Moves the `touched` tags in each ranking to their totals' places; the positions that
     /// changed go on from `hour`.
-    fn rank(&mut self, writer: &mut Writer<'_>, hour: i32, touched: &[u64]) -> io::Result<()> {
+    fn rank(&mut self, writer: &mut Writer, hour: i32, touched: &[u64]) -> io::Result<()> {
         if touched.is_empty() {
             return Ok(());
         }
@@ -783,7 +783,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

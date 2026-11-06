@@ -5,9 +5,34 @@
 use super::{Field, PART_SLOT, Part};
 use crate::products::politics_state::Tags;
 use dashboard_base::products::country_people;
-use replay_data::rows::{TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::{
+    CountryCivilWarRow, CountryCounterInputRow, CountryStabilityInputRow, PoliticsRow,
+    PowerBalanceMemberRow, PowerBalanceRow, SliceReadRow, TableId, WarRelationRow, mask, tables,
+};
+use replay_frame::frame::Tables;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// The fields each part reads, as [`Part::reads`] names them.
+const ELECTIONS: u64 = mask::<PoliticsRow>(&[
+    "last_election",
+    "has_elections",
+    "election_interval",
+    "next_election_cache",
+]);
+const OWNED: u64 = mask::<CountryCounterInputRow>(&["owned_state_count"]);
+const HOST: u64 = mask::<CountryStabilityInputRow>(&["exile_host"]);
+const EXILE: u64 = mask::<CountryStabilityInputRow>(&[
+    "exile_host",
+    "exile_legitimacy",
+    "exile_leaders",
+    "exile_manpower",
+    "exile_manpower_cap",
+]);
+const SAMPLE: u64 = mask::<SliceReadRow>(&["sample_hour"]);
+const BALANCE: u64 = mask::<PowerBalanceRow>(&["value_raw", "balance", "trending", "active_range"]);
+const MEMBER: u64 = mask::<PowerBalanceMemberRow>(&["country"]);
+const RIVAL: u64 = mask::<CountryCivilWarRow>(&["target"]);
+const SPAN: u64 = mask::<WarRelationRow>(&["start_hour", "end_hour"]);
 
 /// A value as the operator hands it on: a number, or a content token the emit numbers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +82,7 @@ fn token(bytes: &[u8]) -> Option<Val> {
 }
 
 /// `part` at `frame`'s hour, its holders named by `tags`; none of it when they cannot be.
-pub fn observe(frame: &DecodedFrame, tags: Option<&Tags<'_>>, part: Part) -> Observation {
+pub fn observe<F: Tables + ?Sized>(frame: &F, tags: Option<&Tags<'_>>, part: Part) -> Observation {
     let mut observed = Observation::default();
     let Some(tags) = tags else {
         return observed;
@@ -75,8 +100,8 @@ pub fn observe(frame: &DecodedFrame, tags: Option<&Tags<'_>>, part: Part) -> Obs
 }
 
 /// Whether the part was read; the same holds for each part below.
-fn elections(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) -> bool {
-    let rows = match frame.complete::<tables::Politics>() {
+fn elections<F: Tables + ?Sized>(frame: &F, tags: &Tags<'_>, observed: &mut Observation) -> bool {
+    let rows = match frame.complete_rows::<tables::Politics>(ELECTIONS) {
         Ok(rows) => rows,
         Err(error) => {
             observed.refuse(format!("election schedules unavailable: {error}"));
@@ -84,14 +109,18 @@ fn elections(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) 
         }
     };
     // The game's daily politics, elections included, skip a country owning no states.
-    let owned = match frame.complete::<tables::CountryCounterInputs>() {
-        Ok(counters) => {
+    let counted = frame
+        .complete_rows::<tables::CountryCounterInputs>(OWNED)
+        .and_then(|counters| {
             let mut owned = HashMap::with_capacity(counters.len());
-            for counter in counters {
+            for counter in counters.iter() {
+                let counter = counter?;
                 owned.entry(counter.country).or_insert(counter.owned_state_count);
             }
-            Some(owned)
-        }
+            Ok(owned)
+        });
+    let owned = match counted {
+        Ok(owned) => Some(owned),
         Err(error) => {
             observed.refuse(format!("country existence unavailable: {error}"));
             None
@@ -99,7 +128,15 @@ fn elections(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) 
     };
     // A schedule whose country can't be named leaves the hour's schedules unknown, not ended.
     let mut read = true;
-    for row in rows {
+    for row in rows.iter() {
+        let row = match row {
+            Ok(row) => row,
+            Err(error) => {
+                observed.refuse(format!("election schedules unavailable: {error}"));
+                return false;
+            }
+        };
+        let row = &*row;
         let Some(slot) = tags.slot(row.country) else {
             observed.refuse("an election schedule's country has no identity");
             read = false;
@@ -144,15 +181,15 @@ fn elections(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) 
     read
 }
 
-fn exiles(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) -> bool {
-    let rows = match frame.complete::<tables::CountryStabilityInputs>() {
+fn exiles<F: Tables + ?Sized>(frame: &F, tags: &Tags<'_>, observed: &mut Observation) -> bool {
+    let rows = match frame.complete_rows::<tables::CountryStabilityInputs>(EXILE) {
         Ok(rows) => rows,
         Err(error) => {
             observed.refuse(format!("exile status unavailable: {error}"));
             return false;
         }
     };
-    let reads = frame.complete::<tables::SliceReads>().ok();
+    let reads = frame.complete_rows::<tables::SliceReads>(SAMPLE).ok();
     let scalar = |value: &replay_data::rows::Recorded<Option<i64>>| {
         value.require("exile operand").ok().copied().flatten()
     };
@@ -162,7 +199,14 @@ fn exiles(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) -> 
     // An exile is listed by its host: one whose host or country can't be named leaves the
     // hour's exiles unknown, never one fewer.
     let mut read = true;
-    for row in rows {
+    for row in rows.iter() {
+        let row = match row {
+            Ok(row) => row,
+            Err(error) => {
+                observed.refuse(format!("exile status unavailable: {error}"));
+                return false;
+            }
+        };
         let Some(host) = small(&row.exile_host) else {
             observed.refuse("an exile host is not recorded");
             read = false;
@@ -181,8 +225,11 @@ fn exiles(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) -> 
             observed.refuse("an exile's host has no identity");
             read = false;
         }
+        // The exile row's own read: SliceReads keyed by its table and owner.
         let sliced = reads.and_then(|reads| {
-            replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
+            let key = (TableId::CountryStabilityInputs.index() as u128) << 32
+                | u128::from(row.country);
+            reads.get(key).ok().flatten().map(|read| read.sample_hour)
         });
         for (field, value) in [
             (Field::ExileHost, host.map(i128::from)),
@@ -201,40 +248,31 @@ fn exiles(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) -> 
 }
 
 /// The raw countries `frame`'s exiles are: the rows whose recorded host is positive.
-pub(crate) fn exile_countries(frame: &DecodedFrame) -> Vec<u32> {
-    frame
-        .complete::<tables::CountryStabilityInputs>()
-        .map(|rows| {
-            rows.iter()
-                .filter(|row| {
-                    row.exile_host
-                        .require("exile operand")
-                        .ok()
-                        .copied()
-                        .flatten()
-                        .is_some_and(|host| host > 0)
-                })
-                .map(|row| row.country)
-                .collect()
-        })
-        .unwrap_or_default()
+pub(crate) fn exile_countries<F: Tables + ?Sized>(frame: &F) -> Vec<u32> {
+    let Ok(rows) = frame.complete_rows::<tables::CountryStabilityInputs>(HOST) else {
+        return Vec::new();
+    };
+    let mut exiles = Vec::new();
+    for row in rows.iter() {
+        let Ok(row) = row else {
+            return Vec::new();
+        };
+        let host = row.exile_host.require("exile operand").ok().copied().flatten();
+        if host.is_some_and(|host| host > 0) {
+            exiles.push(row.country);
+        }
+    }
+    exiles
 }
 
-fn balances(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) -> bool {
-    let (records, members) = match (
-        frame.complete::<tables::PowerBalances>(),
-        frame.complete::<tables::PowerBalanceMembers>(),
-    ) {
-        (Ok(records), Ok(members)) => (records, members),
-        (Err(error), _) | (_, Err(error)) => {
+fn balances<F: Tables + ?Sized>(frame: &F, tags: &Tags<'_>, observed: &mut Observation) -> bool {
+    let (records, members) = match balance_rows(frame) {
+        Ok(read) => read,
+        Err(error) => {
             observed.refuse(format!("balance reads unavailable: {error}"));
             return false;
         }
     };
-    let records: BTreeMap<u32, _> = records
-        .iter()
-        .map(|record| (record.ordinal, record))
-        .collect();
     // Members in stored record order: the first record listing a holder under an identity is
     // the one the game reads.
     let mut ordered: Vec<_> = members.iter().collect();
@@ -289,8 +327,29 @@ fn balances(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) -
 /// its inputs indexed once for them all; a list naming a country that no longer exists does not
 /// make a civil war. And whether every holder exists, so a side's annexation is told from one
 /// it outlived: the emit follows it for each holder ever listed.
-fn civil_wars(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation) -> bool {
-    let rows = match frame.complete::<tables::CountryCivilWars>() {
+/// The balance records by ordinal, and their members in key order.
+type BalanceRows<'f> = (
+    BTreeMap<u32, std::borrow::Cow<'f, PowerBalanceRow>>,
+    Vec<std::borrow::Cow<'f, PowerBalanceMemberRow>>,
+);
+
+fn balance_rows<F: Tables + ?Sized>(frame: &F) -> std::io::Result<BalanceRows<'_>> {
+    let records = frame.complete_rows::<tables::PowerBalances>(BALANCE)?;
+    let members = frame.complete_rows::<tables::PowerBalanceMembers>(MEMBER)?;
+    let mut held = BTreeMap::new();
+    for record in records.iter() {
+        let record = record?;
+        held.insert(record.ordinal, record);
+    }
+    let mut listed = Vec::with_capacity(members.len());
+    for member in members.iter() {
+        listed.push(member?);
+    }
+    Ok((held, listed))
+}
+
+fn civil_wars<F: Tables + ?Sized>(frame: &F, tags: &Tags<'_>, observed: &mut Observation) -> bool {
+    let rows = match frame.complete_rows::<tables::CountryCivilWars>(RIVAL) {
         Ok(rows) => rows,
         Err(error) => {
             observed.refuse(format!("civil-war lists unavailable: {error}"));
@@ -299,7 +358,14 @@ fn civil_wars(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation)
     };
     let mut listed = BTreeSet::new();
     let mut read = true;
-    for row in rows {
+    for row in rows.iter() {
+        let row = match row {
+            Ok(row) => row,
+            Err(error) => {
+                observed.refuse(format!("civil-war lists unavailable: {error}"));
+                return false;
+            }
+        };
         let (Some(slot), Some(rival)) = (tags.slot(row.country), tags.slot(row.target)) else {
             // The lists are incomplete: what they name at this hour is unknown, not ended.
             observed.refuse("a civil-war list names a country with no identity");
@@ -338,18 +404,18 @@ fn civil_wars(frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observation)
 
 /// The hours at which an ongoing war relation of `frame` stops being ongoing, which changes the
 /// civil-war predicate with no row changing.
-pub(crate) fn relation_ends(frame: &DecodedFrame) -> BTreeSet<i32> {
-    use replay_frame::frame::TableView;
-    let rows = match &*frame.tables[TableId::WarRelations.index()] {
-        TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
-        _ => return BTreeSet::new(),
+pub(crate) fn relation_ends<F: Tables + ?Sized>(frame: &F) -> BTreeSet<i32> {
+    let Some(rows) = frame.rows::<tables::WarRelations>(SPAN) else {
+        return BTreeSet::new();
     };
-    rows.rows::<tables::WarRelations>()
-        .map(|rows| {
-            rows.iter()
-                .filter(|row| row.end_hour > row.start_hour)
-                .map(|row| row.end_hour)
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut ends = BTreeSet::new();
+    for row in rows.iter() {
+        let Ok(row) = row else {
+            return BTreeSet::new();
+        };
+        if row.end_hour > row.start_hour {
+            ends.insert(row.end_hour);
+        }
+    }
+    ends
 }

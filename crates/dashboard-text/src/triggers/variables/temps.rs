@@ -1,5 +1,5 @@
 //! Temp triggers execute over the shared TLS store, not persistent variables.
-use crate::triggers::{Failure, refusal::FrameInputs};
+use crate::triggers::Failure;
 
 use super::*;
 use installed_content_core::parser::Value as ParsedValue;
@@ -499,13 +499,16 @@ impl Evaluator<'_, '_> {
             .world()
             .raw_country(country)
             .ok_or("supply-temp country is not recorded")?;
-        let row = self
-            .world()
-            .frame()
-            .trigger_table::<replay_data::rows::tables::TrainInventory>()?
-            .iter()
-            .find(|row| row.country == raw)
-            .ok_or_else(|| -> Failure {
+        // Keyed by the raw country.
+        let row = super::super::world::table::<replay_data::rows::tables::TrainInventory>(
+            self.world().tables(),
+            replay_data::rows::TableId::TrainInventory.full_mask(),
+        )?
+        .get(u128::from(raw))
+        .map_err(|why| {
+            super::super::refusal::input_error(replay_data::rows::TableId::TrainInventory, why)
+        })?
+        .ok_or_else(|| -> Failure {
                 format!("TrainInventory lacks supply-temp country {raw}").into()
             })?;
         let value = match (kind.as_deref(), need) {

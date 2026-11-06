@@ -1,5 +1,7 @@
 import ArtFallback from '../../components/ArtFallback';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { clipColumns, hatchColumns } from '../gaps';
+import type { LostSpan } from '../gaps';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ZoomReset } from '../ZoomReset';
 import { mix, parseColor, readableText } from '../../shell/appearance/color';
@@ -36,6 +38,9 @@ export type { BandStep, LaneGeometry, TimelineLane, TimelineSpan } from './layou
 export interface TimelineProps {
   /** Names the chart for screen readers. */
   label: string;
+  /** The lost spans of the reply its lanes draw, in hour order: no span or step is drawn
+   * across them. */
+  gaps?: readonly LostSpan[];
   /** Every hour the timeline can show: the branch or the widget's range. */
   extent: readonly [number, number];
   /** The playback hour: bars stop and the left column shows holders there. */
@@ -403,6 +408,9 @@ export default function Timeline(props: TimelineProps) {
       grid(axisTop + AXIS_HEIGHT - 4, bottom);
       for (const [from, to] of spanRanges(p.pending, x[0], x[1], p.playhead))
         fillPendingBand(context, tokens, Math.max(left, toX(from)), Math.min(right, toX(to)), AXIS_HEIGHT, bottom - AXIS_HEIGHT);
+      const axis = { toX, x, left, right };
+      const gaps = p.gaps ?? [];
+      hatchColumns(context, tokens, axis, gaps, AXIS_HEIGHT, bottom - AXIS_HEIGHT);
 
       let animating = false;
       // Each lane's bands, placed together so gaps between its spans stay visible too.
@@ -490,12 +498,14 @@ export default function Timeline(props: TimelineProps) {
         if (lane.paint) {
           context.save();
           context.beginPath(); context.rect(left, y, plotWidth(), laneHeight); context.clip();
+          clipColumns(context, axis, gaps);
           lane.paint(context, { top: y, height: laneHeight, left, right, hours: x, toX, playhead: p.playhead }, tokens);
           context.restore();
           return;
         }
         context.save();
         context.beginPath(); context.rect(left, AXIS_HEIGHT, plotWidth() + 10, bottom - AXIS_HEIGHT); context.clip();
+        clipColumns(context, axis, gaps);
         const bands = layouts.get(lane.id)?.bands;
         let previous: TimelineSpan | undefined;
         for (const span of lane.spans) {

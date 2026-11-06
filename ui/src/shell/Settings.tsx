@@ -10,7 +10,6 @@ import { VIDEO_OPTION_LABELS } from './VideoSettings';
 import GameFolderSettings from './GameFolderSettings';
 import PreparationSetting from './PreparationSetting';
 import RecordingCompressionSetting from './RecordingCompressionSetting';
-import HistoryCacheSetting from './HistoryCacheSetting';
 import type { ContentFolders, DesktopState, ReplayMetadata } from './api';
 import AppearanceSettings, { newThemeId, SettingsBlock } from './appearance/AppearanceSettings';
 import ThemeEditor from './appearance/ThemeEditor';
@@ -36,7 +35,6 @@ const searchItems: SettingsTarget[] = [
   { section: 'folders', title: 'Game installation', keywords: 'game folder install steam path' },
   { section: 'folders', title: 'Paradox user folder', keywords: 'documents mods user path' },
   { section: 'folders', title: 'Replay folder', keywords: 'recordings library replays path' },
-  { section: 'folders', title: 'Widget history', id: 'folders-history', keywords: 'cache storage disk space size clear history' },
   { section: 'appearance', title: 'Colour scheme', id: 'appearance-scheme', keywords: 'color dark light system mode' },
   { section: 'appearance', title: 'Themes', id: 'appearance-themes', keywords: 'theme palette colours colors accent' },
   { section: 'appearance', title: 'Import theme', id: 'appearance-themes', keywords: 'vs code vscode json file paste' },
@@ -205,9 +203,6 @@ export default function Settings({ section, target, onTargetShown, appearance, l
             <ReplayFolderSetting compact library={library} client={client} />
           </SettingsBlock>
           {folderError && <p className="map-menu-error" role="alert">{folderError}</p>}
-          {client.historyCache && <SettingsBlock id="folders-history" title="Widget history">
-            <HistoryCacheSetting client={client} contentReady={!!folders?.contentReady} />
-          </SettingsBlock>}
         </>}
         {section === 'appearance' && <><AppearanceSettings appearance={appearance} searchTarget={target?.id} onEdit={editTheme} /><ResetPages onReset={onResetPages} /></>}
         {section === 'graphics' && <SettingsBlock id="graphics-defaults" title="Defaults">

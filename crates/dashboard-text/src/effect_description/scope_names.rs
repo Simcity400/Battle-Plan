@@ -1,7 +1,10 @@
 //! Native names for the additional event scope carriers.
 
 use super::*;
-use replay_data::{rows::RaidScope, rows::tables};
+use replay_data::rows::{AirWingRow, ProvinceRow, RaidScope, tables};
+
+const WING_NAME: u64 = mask::<AirWingRow>(&["name"]);
+const PROVINCE_STATE: u64 = mask::<ProvinceRow>(&["state"]);
 
 #[cfg(test)]
 mod tests;
@@ -62,8 +65,8 @@ impl Renderer<'_, '_, '_> {
     pub(super) fn unit_name(&self, reference: u64) -> Result<String, String> {
         // A positive full wing handle is independent class evidence; it needs
         // no division census. Old formats retain the active-raid projection.
-        if let Ok(wings) = self.context.text.frame().complete::<tables::AirWings>()
-            && let Some(wing) = wings.iter().find(|row| row.id == reference)
+        if let Ok(wings) = self.tables().complete::<tables::AirWings>(WING_NAME)
+            && let Some(wing) = keyed(&wings, u128::from(reference))?
         {
             let bytes = match &wing.name {
                 replay_data::rows::Recorded::Value(Some(bytes)) => bytes.as_slice(),
@@ -94,7 +97,7 @@ impl Renderer<'_, '_, '_> {
             );
         }
         let world = self.context.world()?;
-        let divisions = match world.frame().divisions() {
+        let divisions = match world.tables().complete::<tables::Divisions>(0) {
             Ok(rows) => rows,
             Err(why) => {
                 // The legacy raid's exact references and native resolution
@@ -110,7 +113,7 @@ impl Renderer<'_, '_, '_> {
                 return Err(why.to_string());
             }
         };
-        if !divisions.iter().any(|row| row.id == reference) {
+        if !divisions.contains(u128::from(reference)) {
             let bytes = world
                 .raid_wing_name(reference)
                 .map_err(|why| format!("Divisions lacks UNIT {reference:#x}; {why}"))?;
@@ -122,7 +125,7 @@ impl Renderer<'_, '_, '_> {
             );
         }
         crate::unit_names::army_name(
-            world
+            &*world
                 .unit_status(reference)
                 .map_err(|why| why.to_string())?,
             self.context.localisation,
@@ -152,11 +155,11 @@ impl Renderer<'_, '_, '_> {
         let target = self
             .context
             .text
-            .frame()
-            .complete::<tables::RaidTargets>()
+            .tables()
+            .complete::<tables::RaidTargets>(tables::RaidTargets::ID.full_mask())
             .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| (u64::from(row.id) << 32 | u64::from(row.reference_type)) == reference)
+            .get(u128::from(reference))
+            .map_err(built)?
             .ok_or_else(|| format!("RaidTargets lacks raid {reference:#x}"))?;
         let (kind, type_name) = if target.raid_type == 0 {
             (None, String::new()) // null type contributes empty TYPE.
@@ -322,13 +325,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn raid_province_state(&self, province: u32) -> Result<u32, String> {
-        self.context
-            .text
-            .frame()
-            .provinces()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| row.id == province)
+        keyed(&self.complete::<tables::Provinces>(PROVINCE_STATE)?, u128::from(province))?
             .map(|row| row.state)
             .ok_or_else(|| format!("raid target province {province} is not recorded"))
     }

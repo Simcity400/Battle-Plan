@@ -169,23 +169,23 @@ pub struct Scene {
     graphics: dashboard_core::protocol::MapGraphics,
     /// The light depth map, screen-space receiver and blur targets.
     shadow: ShadowPass,
-    atlas: Bound,
-    atlas_normal: Bound,
-    colormap: Bound,
-    city_lights: Bound,
-    snow: Bound,
-    mud_diffuse: Bound,
-    mud_normal: Bound,
-    colormap_water: Bound,
-    underwater: Bound,
-    lean1: Bound,
-    lean2: Bound,
-    water_specular: Bound,
-    naval_dominance: Bound,
+    atlas: Arc<Bound>,
+    atlas_normal: Arc<Bound>,
+    colormap: Arc<Bound>,
+    city_lights: Arc<Bound>,
+    snow: Arc<Bound>,
+    mud_diffuse: Arc<Bound>,
+    mud_normal: Arc<Bound>,
+    colormap_water: Arc<Bound>,
+    underwater: Arc<Bound>,
+    lean1: Arc<Bound>,
+    lean2: Arc<Bound>,
+    water_specular: Arc<Bound>,
+    naval_dominance: Arc<Bound>,
     // fog of war
     intel_map: Bound,
     intel_installed: Option<map_display_data::Paged<u8>>,
-    fow_noise: Bound,
+    fow_noise: Arc<Bound>,
     /// Whether this hour has a fog-of-war input at all; see
     /// [`Scene::set_fog_of_war`].
     fog: bool,
@@ -193,18 +193,18 @@ pub struct Scene {
     visibility: viewer_foundation::map::mode_visibility::Visibility,
     point_light_maps: crate::map::pointlights::PointLightMaps,
     point_light_tiles: crate::map::pointlights::Tiles,
-    reflection: Bound,
-    ice_diffuse: Bound,
-    ice_noise: Bound,
-    height_normal: Bound,
-    heightmap: Bound,
-    terrain_ids: Bound,
+    reflection: Arc<Bound>,
+    ice_diffuse: Arc<Bound>,
+    ice_noise: Arc<Bound>,
+    height_normal: Arc<Bound>,
+    heightmap: Arc<Bound>,
+    terrain_ids: Arc<Bound>,
     snow_mud: Bound,
     /// One texel per snow/mud cell, set where [`crate::map::weather::Presentation::unknown`]
     /// hatches it.
     snow_unknown: Bound,
     /// The terrain's vertex heights for the hatch, when [`Self::heightmap`] is not them.
-    hatch_heights: Option<Bound>,
+    hatch_heights: Option<Arc<Bound>>,
     /// Where the map holds a hatched cell; none skips the hatch.
     hatch_coverage: Option<crate::map::weather::HatchCoverage>,
     /// Built on the first hour with an unknown cell for the targets' sample count, or why not.
@@ -219,7 +219,7 @@ pub struct Scene {
     secondary: Bound,
     province_colors: Option<super::political_gpu::ProvinceColors>,
     compiled_terrain: crate::map::terrain_shader::Terrain,
-    terrain_null: Bound,
+    terrain_null: Arc<Bound>,
     water: WaterPass,
     arrow_effect: Arc<shader_pipeline::library::Effect>,
     tree_effect: Arc<shader_pipeline::library::Effect>,
@@ -265,7 +265,9 @@ pub struct Scene {
     /// The rendered pin currently owning a local pointer highlight.
     faction_highlight_regions: Vec<u32>,
     // names
-    icon_textures: IconTextures,
+    icon_textures: Arc<IconTextures>,
+    /// The game textures this scene draws, shared with every scene of its content.
+    _shared: Arc<SceneTextures>,
     name_pass: NamePass,
     /// The names written close in ([`Placements::near`]), fading in as the country layer fades
     /// out.
@@ -420,6 +422,289 @@ impl Default for Overlay<'_> {
     }
 }
 
+/// The game textures a map uploads once and only reads: every scene of the same content on
+/// one device draws from one set, so another view of it adds only its own targets and hour data.
+#[derive(Clone)]
+pub struct SceneTextures {
+    atlas: Arc<Bound>,
+    atlas_normal: Arc<Bound>,
+    colormap: Arc<Bound>,
+    city_lights: Arc<Bound>,
+    snow: Arc<Bound>,
+    mud_diffuse: Arc<Bound>,
+    mud_normal: Arc<Bound>,
+    colormap_water: Arc<Bound>,
+    underwater: Arc<Bound>,
+    lean1: Arc<Bound>,
+    lean2: Arc<Bound>,
+    water_specular: Arc<Bound>,
+    naval_dominance: Arc<Bound>,
+    fow_noise: Arc<Bound>,
+    reflection: Arc<Bound>,
+    ice_diffuse: Arc<Bound>,
+    ice_noise: Arc<Bound>,
+    height_normal: Arc<Bound>,
+    heightmap: Arc<Bound>,
+    terrain_ids: Arc<Bound>,
+    hatch_heights: Option<Arc<Bound>>,
+    terrain_null: Arc<Bound>,
+    icon_textures: Arc<IconTextures>,
+}
+
+impl SceneTextures {
+    /// Uploads the game textures of `assets` and the icon pages of `icon_images`.
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        assets: &MapAssets,
+        icon_images: &[installed_content_image::dds::Texture],
+    ) -> io::Result<Arc<Self>> {
+        check_textures(device)?;
+        let fow_noise = Arc::new(upload(
+            device,
+            queue,
+            "FOWNoise",
+            &assets.fow_noise,
+            ColorSpace::Linear,
+        )?);
+        // `FOWHeight` and the water's `SpecularMap` are the same file, which is
+        // what its name says: `fow_rgb_waterspec_a`.
+        let water_specular = Arc::new(upload(
+            device,
+            queue,
+            "SpecularMap",
+            &assets.water_specular,
+            ColorSpace::Linear,
+        )?);
+        let height_normal = Arc::new(data_texture(
+            device,
+            queue,
+            "HeightNormal (world_normal.bmp)",
+            [assets.world_normal.width, assets.world_normal.height],
+            wgpu::TextureFormat::Rgba8Unorm,
+            &assets.world_normal.pixels,
+        )?);
+        let (height_size, height_texels) = assets.height_texture();
+        let heightmap = Arc::new(data_texture(
+            device,
+            queue,
+            "heightmap",
+            height_size,
+            wgpu::TextureFormat::R8Unorm,
+            height_texels,
+        )?);
+        let terrain_ids = Arc::new(data_texture(
+            device,
+            queue,
+            "TerrainIDMap",
+            [assets.heightmap.width, assets.heightmap.height],
+            wgpu::TextureFormat::Rgba8Unorm,
+            &assets.terrain_ids,
+        )?);
+        let hatch_heights = assets
+            .height_texture
+            .is_some()
+            .then(|| {
+                data_texture(
+                    device,
+                    queue,
+                    "unknown snow/mud hatch heights",
+                    [assets.heightmap.width, assets.heightmap.height],
+                    wgpu::TextureFormat::R8Unorm,
+                    assets.heightmap_texels(),
+                )
+            })
+            .transpose()?
+            .map(Arc::new);
+        Ok(Arc::new(Self {
+            atlas: Arc::new(upload(device, queue, "atlas0", &assets.atlas, ColorSpace::Srgb)?),
+            atlas_normal: Arc::new(upload(
+                device,
+                queue,
+                "atlas_normal0",
+                &assets.atlas_normal,
+                ColorSpace::Linear,
+            )?),
+            colormap: Arc::new(upload(
+                device,
+                queue,
+                "TerrainColorTint",
+                &assets.colormap,
+                ColorSpace::Srgb,
+            )?),
+            city_lights: Arc::new(upload(
+                device,
+                queue,
+                "CityLightsAndSnowNoise",
+                &assets.city_lights,
+                ColorSpace::Srgb,
+            )?),
+            snow: Arc::new(upload(
+                device,
+                queue,
+                "SnowTexture",
+                &assets.snow,
+                ColorSpace::Linear,
+            )?),
+            mud_diffuse: Arc::new(upload(
+                device,
+                queue,
+                "MudDiffuseGloss",
+                &assets.mud_diffuse,
+                ColorSpace::Srgb,
+            )?),
+            mud_normal: Arc::new(upload(
+                device,
+                queue,
+                "MudNormalSpec",
+                &assets.mud_normal,
+                ColorSpace::Linear,
+            )?),
+            colormap_water: Arc::new(upload(
+                device,
+                queue,
+                "colormap_water",
+                &assets.colormap_water,
+                ColorSpace::Srgb,
+            )?),
+            underwater: Arc::new(upload(
+                device,
+                queue,
+                "underwater_terrain",
+                &assets.underwater,
+                ColorSpace::Srgb,
+            )?),
+            lean1: Arc::new(upload(
+                device,
+                queue,
+                "LeanTexture1",
+                &assets.lean1,
+                ColorSpace::Linear,
+            )?),
+            lean2: Arc::new(upload(
+                device,
+                queue,
+                "LeanTexture2",
+                &assets.lean2,
+                ColorSpace::Linear,
+            )?),
+            water_specular,
+            naval_dominance: Arc::new(upload(
+                device,
+                queue,
+                "naval dominance colors",
+                &assets.naval_dominance,
+                ColorSpace::Srgb,
+            )?),
+            reflection: Arc::new(upload(
+                device,
+                queue,
+                "ReflectionCubeMap",
+                &assets.reflection,
+                ColorSpace::Srgb,
+            )?),
+            ice_diffuse: Arc::new(upload(
+                device,
+                queue,
+                "IceDiffuse",
+                &assets.ice_diffuse,
+                ColorSpace::Linear,
+            )?),
+            ice_noise: Arc::new(upload(
+                device,
+                queue,
+                "IceNoise",
+                &assets.ice_noise,
+                ColorSpace::Linear,
+            )?),
+            terrain_null: Arc::new(data_texture(
+                device,
+                queue,
+                "terrain null",
+                [1, 1],
+                wgpu::TextureFormat::Rgba8Unorm,
+                &[0; 4],
+            )?),
+            fow_noise,
+            height_normal,
+            heightmap,
+            terrain_ids,
+            hatch_heights,
+            icon_textures: Arc::new(IconTextures::new(device, queue, icon_images)?),
+        }))
+    }
+}
+
+/// One content's [`SceneTextures`] on each device. The weak entry releases them with the last
+/// scene drawing them; scenes built meanwhile, a dashboard's views among them, share one upload.
+#[derive(Default)]
+pub struct TextureCache(std::sync::Mutex<Vec<(wgpu::Device, std::sync::Weak<SceneTextures>)>>);
+
+impl TextureCache {
+    /// The textures of `assets` and `icon_images` on `device`: those a scene holds, else uploaded.
+    pub fn warm(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        assets: &MapAssets,
+        icon_images: &[installed_content_image::dds::Texture],
+    ) -> io::Result<Arc<SceneTextures>> {
+        // Held through an upload, so scenes built at once upload these textures once.
+        let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        entries.retain(|(_, textures)| textures.strong_count() != 0);
+        if let Some(shared) = entries.iter().find_map(|(owner, textures)| {
+            (owner == device).then(|| textures.upgrade()).flatten()
+        }) {
+            return Ok(shared);
+        }
+        let shared = SceneTextures::new(device, queue, assets, icon_images)?;
+        entries.push((device.clone(), Arc::downgrade(&shared)));
+        Ok(shared)
+    }
+}
+
+/// Whether `device` can hold the game's textures: the political pass's needs and BC formats.
+fn check_textures(device: &wgpu::Device) -> io::Result<()> {
+    crate::map::political_gpu::check_device(device)?;
+    if !device
+        .features()
+        .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+    {
+        return Err(invalid(
+            "this GPU does not support BC texture compression, which the game's terrain atlas, \
+             water and border textures are authored in",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `device` can draw the map at `samples`: its textures, anti-aliasing and bindings.
+fn check_device(device: &wgpu::Device, samples: u32) -> io::Result<()> {
+    check_textures(device)?;
+    match dashboard_core::map_settings::sample_counts() {
+        Some(counts) if counts.contains(&samples) => {}
+        Some(_) => {
+            return Err(invalid(
+                "Selected anti-aliasing is unavailable on this graphics device",
+            ));
+        }
+        None => {
+            return Err(invalid(
+                "the map's graphics device was opened without recording its anti-aliasing \
+                 support (gpu_contract::map_device_descriptor)",
+            ));
+        }
+    }
+    let sampled = device.limits().max_sampled_textures_per_shader_stage;
+    if sampled < MAP_SAMPLED_TEXTURES {
+        return Err(invalid(format!(
+            "this GPU binds {sampled} sampled textures per shader stage; the map needs {}",
+            MAP_SAMPLED_TEXTURES
+        )));
+    }
+    Ok(())
+}
+
 impl Scene {
     #[cfg(any(test, feature = "test-support"))]
     pub fn offline_particle_packets(&self) -> BTreeMap<String, usize> {
@@ -439,38 +724,22 @@ impl Scene {
         lazy: &Arc<LazyTextures>,
         graphics: dashboard_core::protocol::MapGraphics,
     ) -> io::Result<Self> {
-        crate::map::political_gpu::check_device(device)?;
+        check_device(device, graphics.samples)?;
+        let textures = SceneTextures::new(device, queue, assets, icon_images)?;
+        Self::with_textures(device, queue, textures, assets, lazy, graphics)
+    }
+
+    /// [`Scene::new`] drawing `textures`, uploaded from these `assets` and their icon images.
+    pub fn with_textures(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        textures: Arc<SceneTextures>,
+        assets: &MapAssets,
+        lazy: &Arc<LazyTextures>,
+        graphics: dashboard_core::protocol::MapGraphics,
+    ) -> io::Result<Self> {
+        check_device(device, graphics.samples)?;
         let samples = graphics.samples;
-        match dashboard_core::map_settings::sample_counts() {
-            Some(counts) if counts.contains(&samples) => {}
-            Some(_) => {
-                return Err(invalid(
-                    "Selected anti-aliasing is unavailable on this graphics device",
-                ));
-            }
-            None => {
-                return Err(invalid(
-                    "the map's graphics device was opened without recording its anti-aliasing \
-                     support (gpu_contract::map_device_descriptor)",
-                ));
-            }
-        }
-        if !device
-            .features()
-            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
-        {
-            return Err(invalid(
-                "this GPU does not support BC texture compression, which the game's terrain atlas, \
-                 water and border textures are authored in",
-            ));
-        }
-        let sampled = device.limits().max_sampled_textures_per_shader_stage;
-        if sampled < MAP_SAMPLED_TEXTURES {
-            return Err(invalid(format!(
-                "this GPU binds {sampled} sampled textures per shader stage; the map needs {}",
-                MAP_SAMPLED_TEXTURES
-            )));
-        }
         // fog of war: the intel map is rewritten in place every hour, so it is
         // allocated at its final size here and the bind groups below outlive
         // every one of its contents. An all-zero grid is "no fog anywhere",
@@ -486,50 +755,9 @@ impl Scene {
             wgpu::TextureFormat::Rgba8Unorm,
             &vec![0u8; (fow[0] * fow[1] * 4) as usize],
         )?;
-        let fow_noise = upload(
-            device,
-            queue,
-            "FOWNoise",
-            &assets.fow_noise,
-            ColorSpace::Linear,
-        )?;
-        // `FOWHeight` and the water's `SpecularMap` are the same file, which is
-        // what its name says: `fow_rgb_waterspec_a`.
-        let water_specular = upload(
-            device,
-            queue,
-            "SpecularMap",
-            &assets.water_specular,
-            ColorSpace::Linear,
-        )?;
         let point_light_maps = crate::map::pointlights::PointLightMaps::new(device, queue)?;
         let shadow = ShadowPass::new(device, &assets.shadow_blur)?;
 
-        let height_normal = data_texture(
-            device,
-            queue,
-            "HeightNormal (world_normal.bmp)",
-            [assets.world_normal.width, assets.world_normal.height],
-            wgpu::TextureFormat::Rgba8Unorm,
-            &assets.world_normal.pixels,
-        )?;
-        let (height_size, height_texels) = assets.height_texture();
-        let heightmap = data_texture(
-            device,
-            queue,
-            "heightmap",
-            height_size,
-            wgpu::TextureFormat::R8Unorm,
-            height_texels,
-        )?;
-        let terrain_ids = data_texture(
-            device,
-            queue,
-            "TerrainIDMap",
-            [assets.heightmap.width, assets.heightmap.height],
-            wgpu::TextureFormat::Rgba8Unorm,
-            &assets.terrain_ids,
-        )?;
         let snow_mud_size = crate::map::weather::grid_size(assets.map.width, assets.map.height);
         let snow_mud = data_texture(
             device,
@@ -547,20 +775,6 @@ impl Scene {
             wgpu::TextureFormat::R8Unorm,
             &vec![0u8; (snow_mud_size[0] * snow_mud_size[1]) as usize],
         )?;
-        let hatch_heights = assets
-            .height_texture
-            .is_some()
-            .then(|| {
-                data_texture(
-                    device,
-                    queue,
-                    "unknown snow/mud hatch heights",
-                    [assets.heightmap.width, assets.heightmap.height],
-                    wgpu::TextureFormat::R8Unorm,
-                    assets.heightmap_texels(),
-                )
-            })
-            .transpose()?;
         let gradient_size = [1, 1];
         let gradient = |label| {
             data_texture(
@@ -589,7 +803,32 @@ impl Scene {
         )?;
 
         // names
-        let icon_textures = IconTextures::new(device, queue, icon_images)?;
+        let _shared = Arc::clone(&textures);
+        let SceneTextures {
+            atlas,
+            atlas_normal,
+            colormap,
+            city_lights,
+            snow,
+            mud_diffuse,
+            mud_normal,
+            colormap_water,
+            underwater,
+            lean1,
+            lean2,
+            water_specular,
+            naval_dominance,
+            fow_noise,
+            reflection,
+            ice_diffuse,
+            ice_noise,
+            height_normal,
+            heightmap,
+            terrain_ids,
+            hatch_heights,
+            terrain_null,
+            icon_textures,
+        } = SceneTextures::clone(&textures);
         let name_pass = NamePass::new(
             device,
             samples,
@@ -625,85 +864,19 @@ impl Scene {
             test_faults: Default::default(),
             graphics,
             shadow,
-            atlas: upload(device, queue, "atlas0", &assets.atlas, ColorSpace::Srgb)?,
-            atlas_normal: upload(
-                device,
-                queue,
-                "atlas_normal0",
-                &assets.atlas_normal,
-                ColorSpace::Linear,
-            )?,
-            colormap: upload(
-                device,
-                queue,
-                "TerrainColorTint",
-                &assets.colormap,
-                ColorSpace::Srgb,
-            )?,
-            city_lights: upload(
-                device,
-                queue,
-                "CityLightsAndSnowNoise",
-                &assets.city_lights,
-                ColorSpace::Srgb,
-            )?,
-            snow: upload(
-                device,
-                queue,
-                "SnowTexture",
-                &assets.snow,
-                ColorSpace::Linear,
-            )?,
-            mud_diffuse: upload(
-                device,
-                queue,
-                "MudDiffuseGloss",
-                &assets.mud_diffuse,
-                ColorSpace::Srgb,
-            )?,
-            mud_normal: upload(
-                device,
-                queue,
-                "MudNormalSpec",
-                &assets.mud_normal,
-                ColorSpace::Linear,
-            )?,
-            colormap_water: upload(
-                device,
-                queue,
-                "colormap_water",
-                &assets.colormap_water,
-                ColorSpace::Srgb,
-            )?,
-            underwater: upload(
-                device,
-                queue,
-                "underwater_terrain",
-                &assets.underwater,
-                ColorSpace::Srgb,
-            )?,
-            lean1: upload(
-                device,
-                queue,
-                "LeanTexture1",
-                &assets.lean1,
-                ColorSpace::Linear,
-            )?,
-            lean2: upload(
-                device,
-                queue,
-                "LeanTexture2",
-                &assets.lean2,
-                ColorSpace::Linear,
-            )?,
+            atlas,
+            atlas_normal,
+            colormap,
+            city_lights,
+            snow,
+            mud_diffuse,
+            mud_normal,
+            colormap_water,
+            underwater,
+            lean1,
+            lean2,
             water_specular,
-            naval_dominance: upload(
-                device,
-                queue,
-                "naval dominance colors",
-                &assets.naval_dominance,
-                ColorSpace::Srgb,
-            )?,
+            naval_dominance,
             // fog of war
             intel_map,
             intel_installed: None,
@@ -712,27 +885,9 @@ impl Scene {
             visibility: viewer_foundation::map::mode_visibility::Visibility::POLITICAL,
             point_light_maps,
             point_light_tiles: crate::map::pointlights::Tiles::default(),
-            reflection: upload(
-                device,
-                queue,
-                "ReflectionCubeMap",
-                &assets.reflection,
-                ColorSpace::Srgb,
-            )?,
-            ice_diffuse: upload(
-                device,
-                queue,
-                "IceDiffuse",
-                &assets.ice_diffuse,
-                ColorSpace::Linear,
-            )?,
-            ice_noise: upload(
-                device,
-                queue,
-                "IceNoise",
-                &assets.ice_noise,
-                ColorSpace::Linear,
-            )?,
+            reflection,
+            ice_diffuse,
+            ice_noise,
             height_normal,
             heightmap,
             terrain_ids,
@@ -756,14 +911,7 @@ impl Scene {
                 [assets.map.width, assets.map.height],
                 samples,
             )?,
-            terrain_null: data_texture(
-                device,
-                queue,
-                "terrain null",
-                [1, 1],
-                wgpu::TextureFormat::Rgba8Unorm,
-                &[0; 4],
-            )?,
+            terrain_null,
             water: WaterPass::new(
                 &assets.water_shader,
                 [assets.map.width, assets.map.height],
@@ -803,6 +951,7 @@ impl Scene {
             faction_highlight_regions: Vec::new(),
             // names
             icon_textures,
+            _shared,
             name_pass,
             near_name_pass,
             order_label_pass,
@@ -2103,16 +2252,50 @@ impl Scene {
             .targets
             .as_ref()
             .is_none_or(|t| t.size() != size || t.world_size() != world_size);
-        if generation_changed {
-            self.targets = Some(Targets::new(
+        // Receiver and blur stay backbuffer-sized, even when the
+        // scene is half size. Camera projection/culling and GUI also retain size.
+        if generation_changed
+            || !self.shadow.sized(size)
+            || !self.post.prepared(size, world_size)
+        {
+            // Everything sized to this view is made in this one step, so a device that cannot
+            // make it fails this view alone: no later pass of the frame allocates for its size.
+            let made = viewer_foundation::map::gpu_contract::scoped(
                 device,
-                size,
-                world_size,
-                self.graphics.samples,
-            ));
-            self.generation += 1;
-            #[cfg(any(test, feature = "test-support"))]
-            faults.after(failure_tests::Point::Targets)?;
+                || {
+                    format!(
+                        "The graphics device could not allocate this map's {}x{} targets",
+                        size[0], size[1]
+                    )
+                },
+                || {
+                    let made = generation_changed
+                        .then(|| Targets::new(device, size, world_size, self.graphics.samples));
+                    let targets = made
+                        .as_ref()
+                        .or(self.targets.as_ref())
+                        .expect("made or kept");
+                    self.shadow.resize(device, size);
+                    self.post.prepare(device, targets, generation_changed);
+                    Ok(made)
+                },
+            );
+            let made = match made {
+                Ok(made) => made,
+                Err(error) => {
+                    // Field by field: the frame's arena and pass records borrow the scene.
+                    self.targets = None;
+                    self.shadow.release();
+                    self.post.release_chain();
+                    return Err(error);
+                }
+            };
+            if let Some(targets) = made {
+                self.targets = Some(targets);
+                self.generation += 1;
+                #[cfg(any(test, feature = "test-support"))]
+                faults.after(failure_tests::Point::Targets)?;
+            }
         }
         let samples = self.targets.as_ref().map_or(1, Targets::samples);
         if self.hatch_coverage.is_some()
@@ -2126,9 +2309,6 @@ impl Scene {
                 crate::map::weather::UnknownHatch::new(device, samples),
             ));
         }
-        // Receiver and blur stay backbuffer-sized, even when the
-        // scene is half size. Camera projection/culling and GUI also retain size.
-        self.shadow.resize(device, size);
         self.cover = crate::map::terrain::cover_for(camera, size);
         self.grid = self.cover.grid();
         // trees: the same rectangle the wrap offsets come from, which the tree pass culls its
@@ -3607,7 +3787,6 @@ impl Scene {
                 targets,
                 grading,
                 tau_delta,
-                generation_changed,
                 &mut mark,
             );
             #[cfg(any(test, feature = "test-support"))]
@@ -3617,8 +3796,7 @@ impl Scene {
             }
             post?;
         } else {
-            self.post
-                .copy_scene(device, &mut encoder, targets, generation_changed);
+            self.post.copy_scene(&mut encoder, targets)?;
         }
         mark(&mut encoder, "post");
         self.last_animation_time = Some(animation_time);
@@ -3720,6 +3898,15 @@ impl Scene {
 
     pub fn view(&self) -> Option<&wgpu::TextureView> {
         self.targets.as_ref().map(Targets::output_view)
+    }
+
+    /// Lets go of everything sized to the view: its targets, the shadow receivers and the post
+    /// chain. The game textures, hour data and exposure history stay, so the next frame makes
+    /// the targets again and draws as if the view had never been hidden.
+    pub fn release_viewport(&mut self) {
+        self.targets = None;
+        self.shadow.release();
+        self.post.release_chain();
     }
 
     // names

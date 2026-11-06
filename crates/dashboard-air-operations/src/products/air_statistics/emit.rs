@@ -176,7 +176,7 @@ impl Emit {
     }
 
     /// One hour, after the last one given.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: Hour<Segments>) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: Hour<Segments>) -> io::Result<()> {
         let at = hour.hour;
         let continuous = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last
@@ -204,7 +204,7 @@ impl Emit {
 
     fn observe(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         read: bool,
         continuous: bool,
@@ -417,7 +417,7 @@ impl Emit {
     }
 
     /// An hour whose inputs are not known: every value becomes unknown.
-    fn refused(&mut self, writer: &mut Writer<'_>, at: i32, continuous: bool) -> io::Result<()> {
+    fn refused(&mut self, writer: &mut Writer, at: i32, continuous: bool) -> io::Result<()> {
         if self.open {
             self.put_own(writer, READ, at, None, false)?;
             self.put_own(writer, KNOWN, at, None, false)?;
@@ -439,7 +439,7 @@ impl Emit {
     /// Numbers `units`, in their first rows' order, as the observation first holds them.
     fn publish_new(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         units: &mut [u32],
         at: i32,
     ) -> io::Result<()> {
@@ -450,7 +450,7 @@ impl Emit {
         Ok(())
     }
 
-    fn number(&mut self, writer: &mut Writer<'_>, unit: u32, at: i32) -> io::Result<()> {
+    fn number(&mut self, writer: &mut Writer, unit: u32, at: i32) -> io::Result<()> {
         let held = &self.units[unit as usize];
         if held.keys != NONE {
             return Ok(());
@@ -484,7 +484,7 @@ impl Emit {
     /// Every value of `unit` from `at` on.
     fn restate(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         unit: u32,
         at: i32,
         starts: bool,
@@ -502,7 +502,7 @@ impl Emit {
     }
 
     /// No value of `unit` from `at` on.
-    fn end(&mut self, writer: &mut Writer<'_>, unit: u32, at: i32) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, unit: u32, at: i32) -> io::Result<()> {
         let keys = self.units[unit as usize].keys;
         if keys == NONE {
             return Ok(());
@@ -517,7 +517,7 @@ impl Emit {
     /// `handle`'s value from `at` on, a new observation's when `starts`.
     fn put(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         handle: KeyHandle,
         at: i32,
         value: Option<i128>,
@@ -531,7 +531,7 @@ impl Emit {
 
     fn put_own(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         measure: u64,
         at: i32,
         value: Option<i128>,
@@ -555,7 +555,7 @@ impl Emit {
     }
 
     /// The hours walked since the domain's last row, through `last`, as known.
-    fn known(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if let Some(first) = self.first.take() {
             writer.domain(
                 DOMAIN,
@@ -573,7 +573,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, and the refusals where they changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.known(writer, last)?;
         if self.noted {

@@ -676,7 +676,6 @@ fn selected_segment_observer_preserves_history_through_gaps_resets_and_identity_
         1,
         Some("GER"),
         &cancelled,
-        super::PROGRESS_BUDGET_BYTES,
         &mut |frame| {
             observed.push(frame.hour);
             Ok(())
@@ -685,8 +684,6 @@ fn selected_segment_observer_preserves_history_through_gaps_resets_and_identity_
     .unwrap();
     assert_eq!(observed, [100, 103, 104, 105, 107]);
     assert_eq!(with_observer.countries, baseline.countries);
-    assert_eq!(with_observer.retained_bytes, baseline.retained_bytes);
-    assert_eq!(with_observer.progress_stopped, baseline.progress_stopped);
     let history = &with_observer.countries["GER"];
     assert_eq!(
         history.at(104).unwrap().completed[1].completed_by_hour,
@@ -708,7 +705,6 @@ fn selected_segment_observer_preserves_history_through_gaps_resets_and_identity_
         1,
         None,
         &cancelled,
-        super::PROGRESS_BUDGET_BYTES,
         &mut |frame| {
             observed.push(frame.hour);
             Ok(())
@@ -747,9 +743,9 @@ fn cancelled_segment_observation_does_not_publish_a_partial_history() {
         .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
     assert_eq!(observed, [100]);
-    assert!(cache.countries.is_empty());
+    assert!(cache.country.is_none());
     cancelled.store(false, Ordering::Release);
-    let (history, _) = cache.get(&replay, 1, "GER", &cancelled).unwrap();
+    let history = cache.get(&replay, 1, "GER", &cancelled).unwrap();
     assert_eq!(
         history.at(101).unwrap().completed[1].completed_by_hour,
         Some(101)
@@ -819,8 +815,7 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
     assert_eq!(projection.countries.len(), 2);
     let mut cache = crate::FocusCache::default();
     for tag in ["GER", "FRA", "GER", "FRA"] {
-        let (history, progress_stopped) = cache.get(&replay, 1, tag, &cancel).unwrap();
-        assert_eq!(progress_stopped, None);
+        let history = cache.get(&replay, 1, tag, &cancel).unwrap();
         assert_eq!(history, projection.countries[tag]);
         assert!(history.at(102).is_err());
         assert!(history.at(103).is_err());
@@ -831,7 +826,6 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
         cache
             .get(&replay, 1, "FRA", &cancel)
             .unwrap()
-            .0
             .at(104)
             .unwrap()
             .completed[1]
@@ -842,7 +836,6 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
         cache
             .get(&replay, 2, "GER", &cancel)
             .unwrap()
-            .0
             .at(100)
             .unwrap()
             .completed[0]
@@ -855,7 +848,7 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
             .is_err()
     );
     assert_eq!(
-        cache.get(&replay, 1, "GER", &cancel).unwrap().0,
+        cache.get(&replay, 1, "GER", &cancel).unwrap(),
         projection.countries["GER"]
     );
 }
@@ -1050,36 +1043,13 @@ fn focus_progress_runs_compress_equal_hours_and_never_bridge_gaps() {
         runs,
         [(100, 101, "0"), (102, 102, "100000"), (104, 104, "100000")]
     );
-    // Two countries, so the budget holds two hours of runs. Past it, recording
-    // stops rather than failing the product: the order history is complete and
-    // the last kept run is never extended.
-    let run = std::mem::size_of::<crate::FocusProgress>() + 20;
-    let limited = crate::products::national_focus::focus_branch_within(
-        &replay,
-        1,
-        None,
-        &AtomicBool::new(false),
-        4 * run,
-    )
-    .unwrap();
-    assert_eq!(limited.progress_stopped, Some(104));
-    let country = &limited.countries["GER"];
-    assert_eq!(country.segments, history.segments);
-    assert_eq!(
-        country
-            .progress
-            .iter()
-            .map(|run| (run.first_hour, run.last_hour))
-            .collect::<Vec<_>>(),
-        [(100, 101), (102, 102)]
-    );
 }
 
 #[test]
 fn focus_topic_cache_keeps_selected_countries_independent() {
     use replay_data::{rows::CompletedFocusRow, rows::FocusRow};
     const COUNTRIES: u32 = 3;
-    // Hourly changes stay in each selected country's independent cache entry.
+    // Each selected country's history is its own, whichever was asked before.
     let frames = (0..21)
         .map(|step| {
             let mut frame = scale_frame(1, 100 + step, COUNTRIES);
@@ -1110,8 +1080,7 @@ fn focus_topic_cache_keeps_selected_countries_independent() {
     let mut cache = crate::FocusCache::default();
     for index in [0, 1, COUNTRIES - 1] {
         let tag = String::from_utf8(scale_tag(index)).unwrap();
-        let (history, progress_stopped) = cache.get(&replay, 1, &tag, &cancel).unwrap();
-        assert_eq!(progress_stopped, None);
+        let history = cache.get(&replay, 1, &tag, &cancel).unwrap();
         assert_eq!(history.segments.len(), 21);
         assert_eq!(history.at(120).unwrap().completed[0].token, "focus_20");
     }

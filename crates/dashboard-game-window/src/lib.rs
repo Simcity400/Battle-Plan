@@ -13,9 +13,9 @@ static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod compose;
 pub mod designer;
-pub mod display_products;
 pub mod mio;
 pub mod paint;
+pub mod product_pilot;
 pub mod resources;
 pub mod scene;
 pub mod session;

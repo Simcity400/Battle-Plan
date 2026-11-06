@@ -11,7 +11,7 @@ use super::{
 use dashboard_core::test_fixtures::{CAMPAIGN, records, source};
 use dashboard_keyed::segment::{self as keyed, Hour};
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -341,12 +341,10 @@ fn identity() -> dashboard_series::Identity {
 /// names one of them, the emit is saved there and goes on from the publication at the next
 /// segment's first hour, as a preparation of a grown recording does.
 fn build(hours: Vec<Hour<Segments>>, cuts: &[i32], resume: Option<i32>) -> (Memory, u64) {
-    let budget = Budget::new(256 << 20);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
     let format = FormatVersion::CURRENT;
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(format, 1, None);
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -362,12 +360,12 @@ fn build(hours: Vec<Hour<Segments>>, cuts: &[i32], resume: Option<i32>) -> (Memo
             reached: cut,
             refusal: None,
         };
-        root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+        root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(format, 1, None, &directory, &saved).unwrap();
         }
@@ -415,9 +413,7 @@ fn requests() -> Vec<RaidsParams> {
 
 /// Holds the publication to the row scan's replies over `frames`.
 fn check((pages, root): &(Memory, u64), frames: &[DecodedFrame], label: &str) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages.clone(), &cache, *root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages.clone(), *root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let source = replay_source(frames.to_vec());
     let context = LoadContext { content: None };

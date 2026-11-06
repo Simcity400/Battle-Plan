@@ -1,7 +1,24 @@
 use super::*;
 use crate::triggers::{Eval, Scope};
 use installed_content_core::{scope, scope::Scope as Parsed};
-use replay_data::rows::tables;
+use replay_data::rows::{
+    CountryCounterInputRow, CountryRow, DivisionRow, DivisionStatusRow, FactionMemberRow,
+    IndustrialOrganisationRow, OccupationSettingsRow, OperativeMembershipRow,
+    ProvinceUnitOrderRow, ScientistRow, tables,
+};
+
+/// The fields of each table the scope iterators read.
+const COUNTRY_SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
+const MEMBERSHIP: u64 = mask::<OperativeMembershipRow>(&["ordinal"]);
+const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["country", "ordinal", "token"]);
+const FACTION_MEMBER: u64 = mask::<FactionMemberRow>(&["faction", "ordinal"]);
+const SCIENTIST: u64 = mask::<ScientistRow>(&["country", "ordinal"]);
+const SCIENTIST_ACTIVE: u64 = mask::<ScientistRow>(&["active"]);
+const NEIGHBORS: u64 = mask::<CountryCounterInputRow>(&["neighbors"]);
+const OCCUPIED: u64 = mask::<OccupationSettingsRow>(&["occupied"]);
+const COUNTRY_ORDINAL: u64 = mask::<DivisionStatusRow>(&["country_ordinal"]);
+const ROSTER_OWNER: u64 = mask::<DivisionRow>(&["roster_owner"]);
+const MIXED: usize = replay_data::rows::column::<ProvinceUnitOrderRow>("mixed");
 
 #[cfg(test)]
 mod tests;
@@ -503,7 +520,7 @@ impl Renderer<'_, '_, '_> {
 
     fn roster(&self, source: Roster, item: &Item, scopes: Scopes) -> Result<Vec<Scope>, String> {
         let world = self.context.world()?;
-        let frame = world.frame();
+        let frame = world.tables();
         let country = || self.current_country(scopes);
         let slot = |raw| {
             if raw == 0 {
@@ -589,10 +606,12 @@ impl Renderer<'_, '_, '_> {
                         // Resolve the CALLER for
                         // each other existing country, repeating its army roster.
                         let mut count = 0;
-                        for row in frame
-                            .complete::<tables::Countries>()
-                            .map_err(|why| why.to_string())?
-                        {
+                        for row in each(
+                            frame
+                                .complete::<tables::Countries>(COUNTRY_SLOT)
+                                .map_err(|why| why.to_string())?,
+                        ) {
+                            let row = row?;
                             if row.id as i32 > 0
                                 && row.canonical_slot != caller
                                 && world
@@ -642,7 +661,7 @@ impl Renderer<'_, '_, '_> {
                                         )
                                     })?;
                                 // Collect visible armies before navies.
-                                if invisible || self.evaluator()?.leader_visible(row).decided()? {
+                                if invisible || self.evaluator()?.leader_visible(&*row).decided()? {
                                     out.push(Scope::Leader(reference));
                                 }
                             }
@@ -650,14 +669,14 @@ impl Renderer<'_, '_, '_> {
                     }
                     return Ok(out);
                 }
-                let mut members = frame
-                    .complete::<tables::OperativeMemberships>()
+                let mut members = Vec::new();
+                for member in frame
+                    .complete::<tables::OperativeMemberships>(MEMBERSHIP)
                     .map_err(|why| why.to_string())?
-                    .iter()
-                    .filter(|member| {
-                        member.roster_kind == 0 && world.slot(member.roster_country) == Some(caller)
-                    })
-                    .collect::<Vec<_>>();
+                    .keyed(|key| key as u8 == 0 && world.slot((key >> 8) as u32) == Some(caller))
+                {
+                    members.push(member.map_err(built)?);
+                }
                 // copy the active operative array.
                 // Older rows can still settle a pure empty/singleton selection;
                 // the iterator also checks reached limit writes/RNG below.
@@ -698,10 +717,12 @@ impl Renderer<'_, '_, '_> {
                         == Some(true)
                 });
                 let mut rows = Vec::new();
-                for row in frame
-                    .complete::<tables::IndustrialOrganisations>()
-                    .map_err(|why| why.to_string())?
-                {
+                for row in each(
+                    frame
+                        .complete::<tables::IndustrialOrganisations>(ORGANISATION)
+                        .map_err(|why| why.to_string())?,
+                ) {
+                    let row = row?;
                     if slot(row.country)? == caller {
                         rows.push(row);
                     }
@@ -709,7 +730,7 @@ impl Renderer<'_, '_, '_> {
                 rows.sort_by_key(|row| row.ordinal); // production status.
                 let mut out = Vec::new();
                 for row in rows {
-                    if invisible || self.organisation_visible(row)? {
+                    if invisible || self.organisation_visible(&row)? {
                         out.push(Scope::IndustrialOrganisation(row.organisation));
                     }
                 }
@@ -717,7 +738,7 @@ impl Renderer<'_, '_, '_> {
             }
             Roster::States => {
                 frame
-                    .complete::<tables::States>()
+                    .complete::<tables::States>(0)
                     .map_err(|why| why.to_string())?;
                 // walks game state's state-id vector, not ownership order.
                 Ok(world
@@ -744,12 +765,14 @@ impl Renderer<'_, '_, '_> {
                 // as required by the active-relation predicate.
                 let mut enemies = std::collections::BTreeSet::new();
                 if enemy {
-                    for row in frame
-                        .complete::<tables::WarRelations>()
+                    for key in frame
+                        .complete::<tables::WarRelations>(0)
                         .map_err(|why| why.to_string())?
+                        .keys()
                     {
-                        let first = slot(row.first_country)?;
-                        let second = slot(row.second_country)?;
+                        // The key is the first country, then the second.
+                        let first = slot((key >> 32) as u32)?;
+                        let second = slot(key as u32)?;
                         if Some(first) == caller {
                             enemies.insert(second);
                         }
@@ -782,12 +805,17 @@ impl Renderer<'_, '_, '_> {
                         vec![Scope::Country(caller)]
                     });
                 };
-                let mut rows = frame
-                    .complete::<tables::FactionMembers>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .filter(|row| row.faction == faction)
-                    .collect::<Vec<_>>();
+                let mut rows = Vec::new();
+                for row in each(
+                    frame
+                        .complete::<tables::FactionMembers>(FACTION_MEMBER)
+                        .map_err(|why| why.to_string())?,
+                ) {
+                    let row = row?;
+                    if row.faction == faction {
+                        rows.push(row);
+                    }
+                }
                 rows.sort_by_key(|row| row.ordinal); // faction.
                 let mut out = Vec::new();
                 for row in rows {
@@ -831,10 +859,12 @@ impl Renderer<'_, '_, '_> {
             Roster::Scientists { .. } => {
                 let caller = country()?;
                 let mut rows = Vec::new();
-                for row in frame
-                    .complete::<tables::Scientists>()
-                    .map_err(|why| why.to_string())?
-                {
+                for row in each(
+                    frame
+                        .complete::<tables::Scientists>(SCIENTIST)
+                        .map_err(|why| why.to_string())?,
+                ) {
+                    let row = row?;
                     if slot(row.country)? == caller {
                         rows.push(row);
                     }
@@ -880,24 +910,33 @@ impl Renderer<'_, '_, '_> {
                 else {
                     return Ok(Vec::new());
                 };
+                let ours = |key: u128| world.slot(key as u32) == Some(caller);
+                let neighbors;
+                let occupied;
                 let refs = if matches!(source, Roster::CountryNeighbors) {
-                    frame
-                        .complete::<tables::CountryCounterInputs>()
+                    neighbors = frame
+                        .complete::<tables::CountryCounterInputs>(NEIGHBORS)
                         .map_err(|why| why.to_string())?
-                        .iter()
-                        .find(|row| world.slot(row.country) == Some(caller))
-                        .ok_or("CountryCounterInputs lacks neighbor roster")?
+                        .keyed(ours)
+                        .next()
+                        .transpose()
+                        .map_err(built)?
+                        .ok_or("CountryCounterInputs lacks neighbor roster")?;
+                    neighbors
                         .neighbors
                         .require("CountryCounterInputs.neighbors")?
                         .as_ref()
                         .ok_or("CountryCounterInputs.neighbors capture refused")?
                 } else {
-                    frame
-                        .complete::<tables::OccupationSettings>()
+                    occupied = frame
+                        .complete::<tables::OccupationSettings>(OCCUPIED)
                         .map_err(|why| why.to_string())?
-                        .iter()
-                        .find(|row| world.slot(row.country) == Some(caller))
-                        .ok_or("OccupationSettings lacks occupied roster")?
+                        .keyed(ours)
+                        .next()
+                        .transpose()
+                        .map_err(built)?
+                        .ok_or("OccupationSettings lacks occupied roster")?;
+                    occupied
                         .occupied
                         .require("OccupationSettings.occupied")?
                         .as_ref()
@@ -919,19 +958,20 @@ impl Renderer<'_, '_, '_> {
                 if caller == 0 {
                     return Ok(Vec::new()); // case 4.
                 }
-                let status: std::collections::BTreeMap<_, _> = frame
-                    .division_names()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .map(|row| (row.division, row))
-                    .collect();
+                let status = frame
+                    .complete::<tables::DivisionStatus>(COUNTRY_ORDINAL)
+                    .map_err(|why| why.to_string())?;
                 let mut rows = Vec::new();
-                for row in frame.divisions().map_err(|why| why.to_string())? {
+                for row in each(
+                    frame
+                        .complete::<tables::Divisions>(ROSTER_OWNER)
+                        .map_err(|why| why.to_string())?,
+                ) {
+                    let row = row?;
                     if slot(row.roster_owner)? != caller {
                         continue;
                     }
-                    let ordinal = status
-                        .get(&row.id)
+                    let ordinal = keyed(&status, u128::from(row.id))?
                         .ok_or("DivisionStatus lacks country ordinal")?
                         .country_ordinal
                         .require("DivisionStatus.country_ordinal")?
@@ -961,43 +1001,40 @@ impl Renderer<'_, '_, '_> {
                     return Ok(Vec::new());
                 }
                 frame
-                    .complete::<tables::States>()
+                    .complete::<tables::States>(0)
                     .map_err(|why| why.to_string())?;
                 if !world.states().contains_key(&state) {
                     return Ok(Vec::new()); // case 2: invalid state.
                 }
-                let order: std::collections::BTreeMap<_, _> = frame
-                    .complete::<tables::ProvinceUnitOrder>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .map(|row| (row.province, row))
-                    .collect();
-                let armies: std::collections::BTreeSet<_> = frame
-                    .divisions()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .map(|row| row.id)
-                    .collect();
+                let order = frame
+                    .complete::<tables::ProvinceUnitOrder>(0)
+                    .map_err(|why| why.to_string())?;
+                let armies = frame
+                    .complete::<tables::Divisions>(0)
+                    .map_err(|why| why.to_string())?;
                 let mut out = Vec::new();
                 // Walk state divisions, then each province's divisions.
                 // state_order verifies runtime membership against the native
                 // content order. Divisions authenticates class-0 full handles;
                 // the reference type alone cannot distinguish unit classes.
                 for &province in world.state_order(state).map_err(|why| why.to_string())? {
-                    let row = order.get(&province).ok_or_else(|| {
-                        format!("ProvinceUnitOrder lacks state {state} province {province}")
-                    })?;
-                    for &unit in &row.mixed {
-                        if armies.contains(&unit) {
+                    let mixed = order
+                        .u64s(u128::from(province), |row| &row.mixed, MIXED)
+                        .map_err(built)?
+                        .ok_or_else(|| {
+                            format!("ProvinceUnitOrder lacks state {state} province {province}")
+                        })?;
+                    for &unit in mixed {
+                        if armies.contains(u128::from(unit)) {
                             out.push(Scope::Unit(unit));
                         } else if frame
-                            .complete::<tables::TaskForces>()
+                            .complete::<tables::TaskForces>(0)
                             .ok()
-                            .is_some_and(|rows| rows.iter().any(|row| row.id == unit))
+                            .is_some_and(|rows| rows.contains(u128::from(unit)))
                             || frame
-                                .complete::<tables::RailwayGunCounterInputs>()
+                                .complete::<tables::RailwayGunCounterInputs>(0)
                                 .ok()
-                                .is_some_and(|rows| rows.iter().any(|row| row.gun == unit))
+                                .is_some_and(|rows| rows.contains(u128::from(unit)))
                         {
                             // Only class 0 passes the native check; known
                             // task forces (1) and railway guns (13) are skipped.
@@ -1100,15 +1137,11 @@ impl Renderer<'_, '_, '_> {
                         };
                         // Every scientist evaluates the limit; membership is checked
                         // only after that limit succeeds.
-                        let row = self
-                            .context
-                            .world()?
-                            .frame()
-                            .complete::<tables::Scientists>()
-                            .map_err(|why| why.to_string())?
-                            .iter()
-                            .find(|row| row.character == character)
-                            .ok_or("Scientists lacks active iterator target")?;
+                        let row = keyed(
+                            &self.complete::<tables::Scientists>(SCIENTIST_ACTIVE)?,
+                            u128::from(character),
+                        )?
+                        .ok_or("Scientists lacks active iterator target")?;
                         if row
                             .active
                             .require("Scientists.active")?
@@ -1180,7 +1213,7 @@ impl Renderer<'_, '_, '_> {
             .character(id)
             .map_err(|why| why.to_string())?
             .ok_or("Characters lacks scope target")?;
-        self.effect_character_name(row)
+        self.effect_character_name(&row)
     }
 
     // default country/organisation pair; FROM is owner.
@@ -1278,7 +1311,7 @@ impl Renderer<'_, '_, '_> {
         } else {
             name.as_bytes()
         };
-        self.localised(key, &[], self.organisation_scopes(row)?, true)
+        self.localised(key, &[], self.organisation_scopes(&row)?, true)
     }
 
     fn iterator(
@@ -1302,22 +1335,17 @@ impl Renderer<'_, '_, '_> {
         {
             let world = self.context.world()?;
             let caller = self.current_country(scopes)?;
-            unordered_operatives.extend(
-                world
-                    .frame()
-                    .complete::<tables::OperativeMemberships>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .filter(|member| {
-                        member.roster_kind == 0
-                            && world.slot(member.roster_country) == Some(caller)
-                            && member
-                                .ordinal
-                                .require("OperativeMemberships.ordinal")
-                                .is_err()
-                    })
-                    .map(|member| Scope::Leader(member.id)),
-            );
+            for member in world
+                .tables()
+                .complete::<tables::OperativeMemberships>(MEMBERSHIP)
+                .map_err(|why| why.to_string())?
+                .keyed(|key| key as u8 == 0 && world.slot((key >> 8) as u32) == Some(caller))
+            {
+                let member = member.map_err(built)?;
+                if member.ordinal.require("OperativeMemberships.ordinal").is_err() {
+                    unordered_operatives.push(Scope::Leader(member.id));
+                }
+            }
         }
         let order_checkpoint = if unordered_operatives.is_empty() {
             None
@@ -1552,8 +1580,7 @@ impl Renderer<'_, '_, '_> {
         let roster = self.roster(Roster::Characters, item, scopes)?;
         let targets = self.targets(roster, children(item), scopes, false)?;
         let world = self.context.world()?;
-        let frame = world.frame();
-        let tables = crate::character_scope::Tables::read(frame);
+        let tables = crate::character_scope::Tables::read_in(world.tables());
         for &target in &targets {
             let id = match target {
                 Scope::Character(id) => id,
@@ -1570,15 +1597,23 @@ impl Renderer<'_, '_, '_> {
                 );
             }
         }
-        let roles = frame
-            .complete::<tables::AdvisorRoles>()
-            .map_err(|why| why.to_string())?;
-        let traits = frame
-            .complete::<tables::CharacterRoleTraits>()
-            .map_err(|why| why.to_string())?;
-        let hired = frame
-            .complete::<tables::HiredAdvisors>()
-            .map_err(|why| why.to_string())?;
+        fn whole<T: replay_data::rows::TableSchema>(
+            frame: &impl replay_frame::frame::Tables,
+        ) -> Result<Vec<T::Row>, String>
+        where
+            T::Row: Clone,
+        {
+            frame
+                .complete_rows::<T>(T::ID.full_mask())
+                .map_err(|why| why.to_string())?
+                .iter()
+                .map(|row| row.map(std::borrow::Cow::into_owned).map_err(|why| why.to_string()))
+                .collect()
+        }
+        let frame = world.tables();
+        let roles = whole::<tables::AdvisorRoles>(&frame)?;
+        let traits = whole::<tables::CharacterRoleTraits>(&frame)?;
+        let hired = whole::<tables::HiredAdvisors>(&frame)?;
         let country = self.current_country(scopes)?;
         let mut text = String::new();
         // Registered advisor slot strings.

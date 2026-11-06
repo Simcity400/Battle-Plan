@@ -333,7 +333,7 @@ pub(super) fn holder(row: &CountryPowerChangeRow, dated: Option<&[u8]>) -> Optio
     let facts = dated
         .and_then(|bytes| dashboard_base::prepared::codec::decode::<items::Dated>(bytes).ok())
         .map(|dated| dated.facts)
-        .unwrap_or_else(|| items::event_facts(None, &row.identity, row.cause, None));
+        .unwrap_or_else(|| items::event_facts::<replay_frame::frame::DecodedFrame>(None, &row.identity, row.cause, None));
     Some(Holder {
         kind: holder_kind(row),
         amount: 0,

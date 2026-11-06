@@ -1,8 +1,9 @@
 //! What the operators of one walk of a columnar recording share ([`segments::World`]): the
 //! countries with what each hour changed of them, each state's owner, the spellings and
-//! cosmetic tags names are read with, and one frame of the tables trigger and scripted-text
-//! readers read. A part is kept only when a lane the walk carries reads it ([`Needs`]), and
-//! follows the walker's changed rows alone; the walk's first hour builds every part whole.
+//! cosmetic tags names are read with, and views of the tables its lanes read ([`World::columns`]):
+//! each table's live rows in key order, read where the walker holds them, nothing copied. A part
+//! is kept only when a lane the walk carries reads it ([`Needs`]), and follows the walker's
+//! changed rows alone; the walk's first hour builds every part whole.
 
 use replay::{
     columnar_frames::metrics,
@@ -14,27 +15,35 @@ use replay_data::{
     rows::{TABLE_COUNT, TableId},
     scope::CaptureMode,
 };
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
+use replay_frame::frame::{
+    ColumnFrame, ColumnView, DecodedFrame, Metrics, Orders, SharedView, not_selected,
+};
 use std::{
     io,
     sync::{Mutex, PoisonError},
 };
 
 mod changes;
+mod copies;
 mod countries;
 mod divisions;
+mod epochs;
 mod flags;
 mod frame;
+mod lexicon;
 mod naming;
 mod owners;
 #[cfg(test)]
 mod tests;
 
 pub use changes::Changes;
+pub use copies::Copies;
 pub use countries::{Country, Roster, Tag, Tagged};
 pub use divisions::{Division, Divisions, Held, Kept};
+pub use epochs::{Epochs, Mark, Viewed};
 pub use flags::{Appearance, FLAG_TABLES, FlagInputs, Flags};
 pub use frame::Hold;
+pub use lexicon::{Found, Lexicon};
 pub use naming::Naming;
 pub use owners::Owners;
 
@@ -76,9 +85,12 @@ pub struct Needs {
     pub divisions: bool,
     /// Token spellings and cosmetic tags ([`World::naming`]).
     pub naming: bool,
+    /// The lexer tokens by their literal under the fold ([`World::lexicon`]).
+    pub lexicon: bool,
     /// Each country's flag inputs ([`World::flags`]), read from [`FLAG_TABLES`].
     pub flags: bool,
-    /// The tables the lane reads of the shared frame ([`World::frame`]), and how.
+    /// The tables the lane reads through the world's views ([`World::columns`]), and the fields
+    /// of each it reads.
     pub frame: Vec<(TableId, Hold)>,
 }
 
@@ -94,6 +106,7 @@ impl Needs {
             union.owners |= needs.owners;
             union.divisions |= needs.divisions;
             union.naming |= needs.naming;
+            union.lexicon |= needs.lexicon;
             union.flags |= needs.flags;
             for &(table, hold) in &needs.frame {
                 let held = &mut holds[table.index()];
@@ -152,6 +165,7 @@ impl Facts<'_> {
 /// A walk's world: built for the walk, advanced once an hour before its operators.
 pub struct World {
     format: FormatVersion,
+    mode: CaptureMode,
     branch: u64,
     hour: i32,
     /// Before the walk's first hour.
@@ -169,7 +183,11 @@ pub struct World {
     owners: Option<Owners>,
     divisions: Option<Divisions>,
     naming: Option<Naming>,
-    /// Asked by the walk's operators on whichever workers run them.
+    lexicon: Option<Lexicon>,
+    /// Each table the lanes read by view, its live slots in key order.
+    orders: Orders,
+    /// Rows built for a lane asking a frame of them ([`Self::frame_held`]) in place of views,
+    /// only of the tables it asks; asked by the walk's operators on whichever workers run them.
     frame: Mutex<frame::Frame>,
     /// How [`Self::identity`] asks for its tables.
     identity: Vec<(TableId, Hold)>,
@@ -188,8 +206,15 @@ impl World {
         // Each table once, as every declaration of it holds it.
         let needs = &Needs::union([needs]);
         let roster = needs.countries || needs.owners || needs.naming || needs.flags;
+        let viewed = needs
+            .frame
+            .iter()
+            .map(|&(table, _)| table)
+            .chain(IDENTITY)
+            .chain([TableId::Campaign]);
         Ok(Self {
             format,
+            mode,
             branch: 0,
             hour: 0,
             cold: true,
@@ -206,7 +231,12 @@ impl World {
                 .then(|| Divisions::new(format))
                 .transpose()?,
             naming: needs.naming.then(|| Naming::new(format)).transpose()?,
-            frame: Mutex::new(frame::Frame::new(&needs.frame, format, mode)?),
+            lexicon: needs
+                .lexicon
+                .then(|| Lexicon::new(format.version()))
+                .transpose()?,
+            orders: Orders::new(viewed)?,
+            frame: Mutex::new(frame::Frame::new(&[], format, mode)?),
             identity: identity()?,
         })
     }
@@ -229,6 +259,11 @@ impl World {
             .ok_or_else(|| invalid("A walk holds no world"))?;
         segments::World::hour(world, state, manifest)?;
         Ok(world)
+    }
+
+    /// The hour's branch and hour.
+    pub fn branch_hour(&self) -> (u64, i32) {
+        (self.branch, self.hour)
     }
 
     /// Whether the hour is the walk's first, at which every part was built whole.
@@ -281,6 +316,68 @@ impl World {
         self.naming.as_ref().ok_or_else(|| undeclared("naming"))
     }
 
+    /// The walk's one lexer fold index, which every lane's trigger worlds on its frames share;
+    /// none unless a lane declared it.
+    pub fn lexicon(&self) -> Option<&Lexicon> {
+        self.lexicon.as_ref()
+    }
+
+    /// The hour read through views of the tables the walk's lanes declared ([`Needs::frame`]),
+    /// Campaign and [`IDENTITY`]: each table's rows in key order where the walker holds them,
+    /// read by slot. Any other table is not selected.
+    pub fn columns<'s>(&'s self, state: &'s State) -> ColumnFrame<'s> {
+        ColumnFrame::new(
+            (self.branch, self.hour),
+            &self.metrics,
+            state,
+            &self.orders,
+            (self.mode, self.format.version()),
+        )
+    }
+
+    /// `table` this hour, as [`Self::columns`] reads it.
+    pub fn view<'s>(&'s self, state: &'s State, table: TableId) -> ColumnView<'s> {
+        self.columns(state).view(table)
+    }
+
+    /// A decoded copy of `table` this hour, its rows holding the fields `hold` names: for a lane
+    /// handing the table on whole, built from the walker's columns. A complete table is sampled
+    /// at its last complete read, as a decoder's view is.
+    pub fn copy(&self, state: &State, table: TableId, hold: Hold) -> io::Result<SharedView> {
+        let view = self.view(state, table);
+        let sampled = view
+            .is_complete()
+            .then(|| state.sampled_at(table.index()))
+            .flatten();
+        let mask = match hold.of(table) {
+            Hold::Whole => table.full_mask(),
+            Hold::Fields(fields) => fields,
+        };
+        Ok(SharedView::from(view.to_table_view(mask)?).with_sampled_at(sampled))
+    }
+
+    /// Copies of `asks` and Campaign into `frame`, as [`Self::copy`] makes them, its other
+    /// tables left as they are, dated this hour: for a lane handing those tables on whole.
+    pub fn copy_into(
+        &self,
+        state: &State,
+        asks: &[(TableId, Hold)],
+        frame: &mut DecodedFrame,
+    ) -> io::Result<()> {
+        frame.branch = self.branch;
+        frame.hour = self.hour;
+        frame.metrics.clone_from(&self.metrics);
+        for &(table, hold) in asks.iter().chain(&[(TableId::Campaign, Hold::Whole)]) {
+            frame.tables[table.index()] = self.copy(state, table, hold)?;
+        }
+        Ok(())
+    }
+
+    /// The bytes the views' key orders hold.
+    pub fn views_heap_bytes(&self) -> usize {
+        self.orders.heap_bytes()
+    }
+
     /// [`Self::frame_held`] of every field of `tables`.
     pub fn frame(&self, state: &State, tables: &[TableId]) -> io::Result<DecodedFrame> {
         let asks =
@@ -288,11 +385,11 @@ impl World {
         self.frame_held(state, &asks)
     }
 
-    /// A frame of each table of `asks`, current in at least the fields asked, and Campaign,
-    /// at this hour: the walk's one view of each, built at the first ask of the hour from the
-    /// rows changed since it was built last. A table held in fewer fields than asked, or not
-    /// held, is held whole from then on, built anew now. Drop the frame before the hour
-    /// ends: a view still shared when the next hour builds it is copied, not changed.
+    /// A frame of rows of each table of `asks`, and Campaign, at this hour, for a lane that
+    /// reads rows in place of [`Self::columns`]: the walk's one row copy of each, held from the
+    /// first ask of it on and rebuilt at the first ask of an hour from the rows changed since.
+    /// Drop the frame before the hour ends: a view still shared when the next hour builds it is
+    /// copied, not changed.
     pub fn frame_held(&self, state: &State, asks: &[(TableId, Hold)]) -> io::Result<DecodedFrame> {
         let mut frame = DecodedFrame {
             branch: self.branch,
@@ -398,6 +495,10 @@ impl segments::World for World {
         if let (Some(naming), Some(roster)) = (&mut self.naming, &self.countries) {
             naming.hour(state, &facts, roster)?;
         }
+        if let Some(lexicon) = &mut self.lexicon {
+            lexicon.hour(state, &facts, (self.branch, self.hour))?;
+        }
+        self.orders.hour(state, self.first)?;
         self.frame
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner)

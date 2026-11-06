@@ -7,9 +7,12 @@
 //! ([`coverage_section`]), and no family refuses it or leaves a hole in it.
 //!
 //! Every query is declared by its entry point before any reader runs, with the hours its request
-//! names and the first hole its gate leaves there ([`Entry::declare`]). Readers name no hours that
-//! reach past it: each gate they ask answers for the declared hours at most, its coverage ends
-//! before that hole, and no sampled read reaches it ([`sampled_through`]).
+//! names, the first hole its gate leaves there that nothing answers after, and the runs of hours
+//! the recording lost that its families go on past ([`Entry::declare`]). Readers name no hours
+//! that reach past that hole: each gate they ask answers for the declared hours at most, its
+//! coverage ends before that hole, and no sampled read reaches it or a lost run
+//! ([`sampled_through`]). What a family totals restarts after each lost run: a reader dates each
+//! total it shows from its stretch's first hour ([`since`]), never from before the run.
 
 use super::roots;
 use crate::{Source, metadata::check_cancel, products::ContentOptions};
@@ -112,6 +115,8 @@ thread_local! {
             before: None,
         })
     };
+    /// The lost runs the declared request's families go on past, in hour order.
+    static GAPS: RefCell<Vec<Hole>> = const { RefCell::new(Vec::new()) };
 }
 
 /// What the query this thread answers declared; outside a query, every hour of the branch.
@@ -120,19 +125,71 @@ pub fn declared() -> Declared {
 }
 
 impl Entry {
-    /// Runs `query` as the request `declared`: until it returns, every gate a reader asks answers
-    /// for those hours at most, its coverage ends before their first hole, and no sampled read
-    /// reaches that hole.
-    pub fn declare<T>(&self, declared: Declared, query: impl FnOnce() -> T) -> T {
-        struct Restore(Declared);
+    /// Runs `query` as the request `declared`, whose families go on past the lost runs `gaps`
+    /// (holes, in hour order): until it returns, every gate a reader asks answers for those
+    /// hours at most, its coverage ends before their first hole, no sampled read reaches that
+    /// hole or a gap, and each total is dated from its stretch ([`since`]).
+    pub fn declare<T>(&self, declared: Declared, gaps: Vec<Hole>, query: impl FnOnce() -> T) -> T {
+        struct Restore(Declared, Vec<Hole>);
         impl Drop for Restore {
             fn drop(&mut self) {
                 DECLARED.set(self.0);
+                GAPS.with(|gaps| *gaps.borrow_mut() = std::mem::take(&mut self.1));
             }
         }
-        let _restore = Restore(DECLARED.replace(declared));
+        let gaps: Vec<Hole> = gaps.into_iter().filter(|hole| hole.gap).collect();
+        let _restore = Restore(
+            DECLARED.replace(declared),
+            GAPS.with(|held| held.replace(gaps)),
+        );
         query()
     }
+}
+
+/// The first hour of the stretch `hour` lies in for `family`, after the last run of hours the
+/// recording lost before it that the family went on past: every total it shows at `hour` counts
+/// from there. None in the branch's first stretch, and outside a declared query.
+pub fn since(family: &str, hour: i32) -> Option<i32> {
+    GAPS.with(|gaps| {
+        run_ends(&gaps.borrow(), family)
+            .take_while(|&end| end < hour)
+            .last()
+            .and_then(|end| end.checked_add(1))
+    })
+}
+
+/// The first hour of each stretch of `family` that begins in `first..=last`, after a run of
+/// hours the recording lost: every total it shows restarts there.
+pub fn restarts(family: &str, first: i32, last: i32) -> Vec<i32> {
+    GAPS.with(|gaps| {
+        run_ends(&gaps.borrow(), family)
+            .filter_map(|end| end.checked_add(1))
+            .filter(|&since| (first..=last).contains(&since))
+            .collect()
+    })
+}
+
+/// The last hour of each run of hours `family` lost, in hour order: lost holes that meet are one
+/// run, whatever their reasons.
+fn run_ends<'a>(gaps: &'a [Hole], family: &'a str) -> impl Iterator<Item = i32> + 'a {
+    let mut gaps = gaps.iter().filter(move |gap| gap.family == family).peekable();
+    std::iter::from_fn(move || {
+        loop {
+            let gap = gaps.next()?;
+            let meets = gaps.peek().is_some_and(|next| {
+                i64::from(next.first_hour) <= i64::from(gap.last_hour) + 1
+            });
+            if !meets {
+                return Some(gap.last_hour);
+            }
+        }
+    })
+}
+
+/// Whether `hour` lies in a run of hours the recording lost that a family of the declared
+/// request goes on past: nothing is answered there.
+pub fn lost(hour: i32) -> bool {
+    GAPS.with(|gaps| gaps.borrow().iter().any(|gap| gap.holds(hour)))
 }
 
 /// `through`, the last hour a reader asks (None: every hour), as the declared request allows it.
@@ -167,9 +224,10 @@ pub fn sampled_through(through: Option<i32>) -> Option<i32> {
     }
 }
 
-/// Whether a sampled read may read `hour`: not from the declared request's first hole on.
+/// Whether a sampled read may read `hour`: not from the declared request's first hole on, nor
+/// in a run of hours the recording lost.
 pub fn sampled(hour: i32) -> bool {
-    declared().before.is_none_or(|before| hour < before)
+    declared().before.is_none_or(|before| hour < before) && !lost(hour)
 }
 
 /// The coverage `product`'s queries wait for on `branch`, through the declared hours
@@ -244,11 +302,14 @@ pub struct Hole {
     pub family: String,
     pub unavailable: Unavailable,
     pub reason: String,
+    // The family answers again after these lost hours, each total it keeps restarted there.
+    pub gap: bool,
 }
 
 impl Hole {
-    /// `family`'s ledger `interval` as a hole; None for prepared hours.
-    pub fn of(family: &str, interval: &roots::Interval) -> Option<Self> {
+    /// `family`'s ledger `interval` as a hole, a lost run it goes on past when `gap`; None for
+    /// prepared hours.
+    pub fn of(family: &str, interval: &roots::Interval, gap: bool) -> Option<Self> {
         let unavailable = match interval.held {
             roots::Held::Prepared => return None,
             roots::Held::Lost => Unavailable::Lost,
@@ -260,7 +321,12 @@ impl Hole {
             family: family.to_owned(),
             unavailable,
             reason: interval.reason.clone(),
+            gap: gap && unavailable == Unavailable::Lost,
         })
+    }
+
+    fn holds(&self, hour: i32) -> bool {
+        (self.first_hour..=self.last_hour).contains(&hour)
     }
 }
 
@@ -352,7 +418,7 @@ pub fn refusal(
 /// version is prepared again whole, and coverage of another is refused. What
 /// one family publishes has a version of its own in the driver's registry,
 /// whose change prepares that family again alone.
-pub const SCHEMA: u32 = 58;
+pub const SCHEMA: u32 = 59;
 
 /// Accepted extent, distinct from a complete source's timeline and recorded gaps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]

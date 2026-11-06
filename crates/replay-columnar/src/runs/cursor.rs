@@ -7,16 +7,10 @@
 //! the changes past where it stood; any other decodes its page at the ordinal. Every cell a
 //! strip sets is compared with the one held, so the state's changes name exactly the rows and
 //! columns that differ from where the cursor stood.
-//!
-//! Its memory is admitted to its budget before it is allocated: its tables' slots at their
-//! most, before the rows' strips; each column's cells' items, its strips' buffers and the slots
-//! it notes changed, exactly, before each grows. A move its budget is short for starts again
-//! from nothing; one from nothing waits, holding nothing, for what it took, and one that could
-//! never have it is refused.
 
 use super::{
     Layout, PAGE_BYTES, Page, Pages, at,
-    cell::{self, Items, Ledger, Position, Share, Write},
+    cell::{self, Items, Position, Write},
     index::{Index, RunIndex},
 };
 use crate::{
@@ -27,11 +21,10 @@ use crate::{
     state::{self, Bits, Cell, Column, Kind, Table},
     walk::{Dictionary, State},
 };
-use engine_allocation::credit::MemoryBudget;
 use std::{
     io,
     sync::{
-        Arc, Mutex, PoisonError,
+        Mutex, PoisonError,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -51,14 +44,6 @@ struct Strip {
     velocity: Vec<u64>,
     /// The offsets of its block its page set a cell at, a bit each.
     covered: Vec<u64>,
-    /// What its share holds for its buffers.
-    charged: usize,
-}
-
-/// The bytes `strip`'s buffers hold.
-fn buffers(strip: &Strip) -> usize {
-    strip.bytes.capacity()
-        + (strip.velocity.capacity() + strip.covered.capacity()) * size_of::<u64>()
 }
 
 /// One table the cursor holds.
@@ -79,10 +64,6 @@ struct Held {
     masks: Vec<u64>,
     marked: Vec<bool>,
     touched: Vec<u32>,
-    /// Each column's cells' items, strips' buffers and changed slots.
-    memory: Vec<Share>,
-    /// Its rows' strips' buffers, its truncated view and its rows' log.
-    rows_memory: Share,
 }
 
 /// What a move read: pages, and their raw bytes.
@@ -108,57 +89,14 @@ pub struct Cursor {
     fresh: bool,
     workers: usize,
     read: (usize, usize),
-    /// The strings its dictionary holds before it drops those no live cell names.
-    dictionary_bytes: usize,
-    /// What its memory draws on, and its tables' slots at their most.
-    ledger: Arc<Ledger>,
-    slots: Share,
     /// Each worker's list items.
     scratch: Vec<Items>,
 }
 
-/// The bytes one slot of a table of `kinds` may hold, its cells' items aside: its key; its
-/// place by key, the key index at its lowest load, grown by a move's changed keys besides; its
-/// live and unrecorded bits; a cell of each column and a dictionary id of each; and what a move
-/// notes of it.
-fn slot_bytes(kinds: &[Kind]) -> usize {
-    let place = 2 * (size_of::<(u128, u32)>() + 1) * 16 / 7;
-    let cells = kinds.len() * (size_of::<Box<[u64]>>() + size_of::<u32>()) + kinds.len() / 8 + 1;
-    let noted = size_of::<u128>() + 5 * size_of::<u32>() + 4 * size_of::<u64>() + 1;
-    size_of::<u128>() + place + cells + noted
-}
-
-/// A move that needs more than its cursor may ever hold.
-#[derive(Debug)]
-struct Beyond {
-    need: usize,
-    limit: usize,
-}
-
-impl std::fmt::Display for Beyond {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "The map at this hour needs {} bytes of a change-run index, past the {} its reader \
-             may ever hold",
-            self.need, self.limit
-        )
-    }
-}
-
-impl std::error::Error for Beyond {}
-
-/// Whether `error` refused a move that needs more than its cursor may ever hold: it is not the
-/// recording's gap, and no wait gives it room.
-pub fn beyond_memory(error: &io::Error) -> bool {
-    error.get_ref().is_some_and(|error| error.is::<Beyond>())
-}
-
-/// Pushes `value` onto `into`, what its capacity grows by admitted to `share` first.
-fn noted<T>(into: &mut Vec<T>, value: T, share: &mut Share) -> io::Result<()> {
+/// Pushes `value` onto `into`.
+fn noted<T>(into: &mut Vec<T>, value: T) -> io::Result<()> {
     if into.len() == into.capacity() {
         let more = into.capacity().max(4);
-        share.take(more * size_of::<T>())?;
         engine_allocation::reserve_exact(into, more)?;
     }
     into.push(value);
@@ -276,9 +214,8 @@ fn covered(strip: &Strip, offset: u32) -> bool {
     state::span(&strip.covered, offset, 1) != 0
 }
 
-/// Moves `strip` to `ordinal` along its pages `directory`, handing `write` each cell it sets
-/// with `share`, which its buffers are admitted to before they grow: `kind` is its column's,
-/// none for rows, and it is the strip of the block of `block` slots from `start` of a table of
+/// Moves `strip` to `ordinal` along its pages `directory`, handing `write` each cell it sets:
+/// `kind` is its column's, none for rows, and it is the strip of the block of `block` slots from `start` of a table of
 /// `slots`, its slot counts. Whether it read its page anew.
 #[allow(clippy::too_many_arguments)]
 fn advance<P: AsRef<Page>>(
@@ -290,8 +227,7 @@ fn advance<P: AsRef<Page>>(
     pages: &dyn Pages,
     tally: &Tally,
     items: &mut Items,
-    share: &mut Share,
-    write: &mut dyn FnMut(Write<'_>, &mut Share) -> io::Result<()>,
+    write: &mut dyn FnMut(Write<'_>) -> io::Result<()>,
 ) -> io::Result<bool> {
     let first = |at: usize| directory.get(at).map(|page| page.as_ref().first);
     let at = match strip.page {
@@ -313,21 +249,7 @@ fn advance<P: AsRef<Page>>(
     if page.location.raw > PAGE_BYTES {
         return Err(invalid("A change-run index's page passes its length"));
     }
-    // Its buffers at their most: a page read anew grows its buffer to twice its size or the
-    // page's, beside the page as stored; its integers' differences and its cells' offsets.
-    let bytes = match (anew, page.location.raw as usize, strip.bytes.capacity()) {
-        (true, raw, held) if held >= raw => held + raw,
-        (true, raw, held) => raw.max(2 * held) + raw,
-        (false, _, held) => held,
-    };
-    let most = bytes
-        + (block as usize).max(strip.velocity.capacity()) * size_of::<u64>()
-        + (block.div_ceil(64) as usize).max(strip.covered.capacity()) * size_of::<u64>();
-    if most > strip.charged {
-        share.take(most - strip.charged)?;
-        strip.charged = most;
-    }
-    let moved = step(
+    step(
         strip,
         (page, at, anew),
         ordinal,
@@ -335,17 +257,8 @@ fn advance<P: AsRef<Page>>(
         (slots, start),
         (pages, tally),
         items,
-        share,
         write,
-    );
-    let held = buffers(strip);
-    if held > strip.charged {
-        share.take(held - strip.charged)?;
-    } else {
-        share.give(strip.charged - held);
-    }
-    strip.charged = held;
-    moved
+    )
 }
 
 /// [`advance`]'s move of `strip` along `page`, at `at` of its pages, read anew or not.
@@ -358,8 +271,7 @@ fn step(
     (slots, start): (&[(u32, u32)], u32),
     (pages, tally): (&dyn Pages, &Tally),
     items: &mut Items,
-    share: &mut Share,
-    write: &mut dyn FnMut(Write<'_>, &mut Share) -> io::Result<()>,
+    write: &mut dyn FnMut(Write<'_>) -> io::Result<()>,
 ) -> io::Result<bool> {
     if anew {
         strip.covered.clear();
@@ -372,11 +284,10 @@ fn step(
         bytes,
         velocity,
         covered,
-        ..
     } = strip;
     let mut write = |change: Write<'_>| -> io::Result<()> {
         cover(covered, &change, block, length)?;
-        write(change, share)
+        write(change)
     };
     if !anew {
         if ordinal >= *held_ordinal && position.next.is_some_and(|next| next <= ordinal) {
@@ -424,14 +335,13 @@ fn at_slots(slots: &[(u32, u32)], ordinal: u32) -> io::Result<u32> {
         .ok_or_else(|| invalid("A run index holds no slot count at a page's first ordinal"))
 }
 
-/// Sets `slot`'s row to `key`'s, or none, logging the key it held when they differ, the log
-/// admitted to `share`; the table's slots by key are left to the move's end.
+/// Sets `slot`'s row to `key`'s, or none, logging the key it held when they differ; the
+/// table's slots by key are left to the move's end.
 fn lifetime(
     table: &mut Table,
     slot: u32,
     key: Option<u128>,
     log: &mut Vec<(u32, Option<u128>)>,
-    share: &mut Share,
 ) -> io::Result<()> {
     let held = table.key(slot);
     if held == key {
@@ -440,19 +350,18 @@ fn lifetime(
     if slot as usize >= table.slots {
         return Err(invalid("A strip names a slot past its table"));
     }
-    noted(log, (slot, held), share)?;
+    noted(log, (slot, held))?;
     match key {
         Some(key) => {
             table.live.set(slot)?;
-            table.keys[slot as usize] = key;
+            table.put_key(slot, key)?;
         }
         None => table.live.clear(slot),
     }
     Ok(())
 }
 
-/// Sets `slot`'s cell, keeping it in `changed` when `mark` and it held another, its items and
-/// `changed` admitted to `share`.
+/// Sets `slot`'s cell, keeping it in `changed` when `mark` and it held another.
 #[allow(clippy::too_many_arguments)]
 fn put(
     values: &mut Column,
@@ -462,10 +371,9 @@ fn put(
     slot: u32,
     cell: Cell<'_>,
     recorded: bool,
-    share: &mut Share,
 ) -> io::Result<()> {
-    if cell::set(values, unrecorded, slot, cell, recorded, share)? && mark {
-        noted(changed, slot, share)?;
+    if cell::set(values, unrecorded, slot, cell, recorded)? && mark {
+        noted(changed, slot)?;
     }
     Ok(())
 }
@@ -481,10 +389,9 @@ fn pick(
     offset: u32,
     cell: Cell<'_>,
     recorded: bool,
-    share: &mut Share,
 ) -> io::Result<()> {
     if let Ok(at) = group.binary_search_by_key(&offset, |&(slot, _)| slot - start) {
-        cell::set(values, unrecorded, group[at].1, cell, recorded, share)?;
+        cell::set(values, unrecorded, group[at].1, cell, recorded)?;
     }
     Ok(())
 }
@@ -538,20 +445,13 @@ impl Rows<'_> {
                 if location.raw > PAGE_BYTES {
                     return Err(invalid("A change-run index's page passes its length"));
                 }
-                held.rows_memory.give(view.capacity() * size_of::<u32>());
                 *view = Vec::new();
-                // The view's page, as stored and raw, and its slots: no more than the table's.
-                let most = (location.raw as usize * 2)
-                    .saturating_add((slots as usize).saturating_mul(size_of::<u32>()));
-                held.rows_memory.take(most)?;
                 let mut raw = Vec::new();
                 pages.read(location, &mut raw)?;
                 tally.add(raw.len());
                 let mut reader = Reader::new(&raw);
                 reader.slots_below(slots as usize, view)?;
                 reader.finish()?;
-                held.rows_memory
-                    .give(most.saturating_sub(view.capacity() * size_of::<u32>()));
                 held.view = Some(entry_at);
             }
         } else {
@@ -561,18 +461,16 @@ impl Rows<'_> {
         held.log.clear();
         if (slots as usize) < table.slots {
             for slot in slots..table.slots as u32 {
-                lifetime(table, slot, None, &mut held.log, &mut held.rows_memory)?;
+                lifetime(table, slot, None, &mut held.log)?;
             }
             table.slots = slots as usize;
             // Blocks past the table's end are read anew when it reaches them again.
             let blocks = layout.blocks(slots as usize);
             for strip in held.rows.iter_mut().skip(blocks) {
-                held.rows_memory.give(strip.charged);
                 *strip = Strip::default();
             }
-            for (strips, share) in held.columns.iter_mut().zip(&mut held.memory) {
+            for strips in &mut held.columns {
                 for strip in strips.iter_mut().skip(blocks) {
-                    share.give(strip.charged);
                     *strip = Strip::default();
                 }
             }
@@ -596,9 +494,8 @@ impl Rows<'_> {
                 pages,
                 tally,
                 items,
-                &mut held.rows_memory,
-                &mut |write, share| match write {
-                    Write::Row { offset, key } => lifetime(table, start + offset, key, log, share),
+                &mut |write| match write {
+                    Write::Row { offset, key } => lifetime(table, start + offset, key, log),
                     _ => Err(invalid("A table's rows strip holds a cell")),
                 },
             )?;
@@ -609,23 +506,25 @@ impl Rows<'_> {
         engine_allocation::reserve(&mut changes.deleted, held.log.len())?;
         engine_allocation::reserve(&mut changes.deleted_keys, held.log.len())?;
         engine_allocation::reserve(&mut changes.inserted, held.log.len())?;
-        engine_allocation::reserve_map(&mut table.by_key, held.log.len())?;
         // Slots by key follow only the keys before and after: a block's base may hold a key
-        // another block's slot holds by then.
+        // another block's slot holds by then. Every slot the move changed lets go of its key
+        // before any takes its new one, as the slots held for the others read their keys.
         for &(slot, before) in &held.log {
-            let after = table.key(slot);
-            if before == after {
-                continue;
-            }
-            if let Some(key) = before {
-                if table.by_key.get(&key) == Some(&slot) {
-                    table.by_key.remove(&key);
-                }
+            if let Some(key) = before
+                && before != table.key(slot)
+            {
+                table.by_key.remove(key, slot)?;
                 changes.deleted.push(slot);
                 changes.deleted_keys.push(key);
             }
-            if let Some(key) = after {
-                table.by_key.insert(key, slot);
+        }
+        table.by_key.reserve(held.log.len())?;
+        for &(slot, before) in &held.log {
+            let after = table.key(slot);
+            if let Some(key) = after
+                && before != after
+            {
+                table.by_key.insert(&table.keys, key, slot)?;
                 changes.inserted.push(slot);
             }
         }
@@ -648,7 +547,6 @@ struct Cells<'a> {
     changed: &'a mut Vec<u32>,
     /// Whether the cells it changes are kept.
     mark: bool,
-    share: &'a mut Share,
 }
 
 impl Cells<'_> {
@@ -672,7 +570,6 @@ impl Cells<'_> {
             counts,
             changed,
             mark,
-            share,
         } = self;
         changed.clear();
         for block in 0..layout.blocks(slots) {
@@ -690,8 +587,7 @@ impl Cells<'_> {
                 pages,
                 tally,
                 items,
-                share,
-                &mut |write, share| match write {
+                &mut |write| match write {
                     Write::Cell {
                         offset,
                         cell,
@@ -704,7 +600,6 @@ impl Cells<'_> {
                         start + offset,
                         cell,
                         recorded,
-                        share,
                     ),
                     Write::Delta {
                         offset,
@@ -713,7 +608,7 @@ impl Cells<'_> {
                     } => {
                         let slot = start + offset;
                         if cell::shift(values, unrecorded, slot, delta, recorded)? && mark {
-                            noted(changed, slot, share)?;
+                            noted(changed, slot)?;
                         }
                         Ok(())
                     }
@@ -726,10 +621,8 @@ impl Cells<'_> {
                     } => {
                         let slot = start + offset;
                         let kept = (front, back);
-                        if cell::splice(values, unrecorded, slot, kept, middle, recorded, share)?
-                            && mark
-                        {
-                            noted(changed, slot, share)?;
+                        if cell::splice(values, unrecorded, slot, kept, middle, recorded)? && mark {
+                            noted(changed, slot)?;
                         }
                         Ok(())
                     }
@@ -738,20 +631,6 @@ impl Cells<'_> {
                         cell,
                         recorded,
                     } => {
-                        // Every cell it changes, admitted before the first is set.
-                        let size = cell::items_bytes(cell);
-                        if size > 0 {
-                            let mut skip = except.iter().copied().peekable();
-                            let cells = (0..length)
-                                .filter(|&offset| {
-                                    skip.next_if_eq(&offset).is_none()
-                                        && values.cell(start + offset) != Some(cell)
-                                })
-                                .count();
-                            let bytes = cells.saturating_mul(size);
-                            share.take(bytes)?;
-                            share.give(bytes);
-                        }
                         let mut except = except.iter().copied().peekable();
                         for offset in 0..length {
                             if except.next_if_eq(&offset).is_none() {
@@ -763,7 +642,6 @@ impl Cells<'_> {
                                     start + offset,
                                     cell,
                                     recorded,
-                                    share,
                                 )?;
                             }
                         }
@@ -840,21 +718,16 @@ impl Held {
 
 impl Cursor {
     /// A cursor of `tables`, schema tables of `index`'s, in a state of the recording's `schema`,
-    /// its moves on up to `workers` threads, its dictionary holding `dictionary_bytes` before
-    /// it drops the strings no live cell names, and its tables admitted to `memory` before they
-    /// grow.
+    /// its moves on up to `workers` threads.
     pub fn new(
         index: &Index,
         schema: Vec<Vec<Kind>>,
         tables: &[usize],
         workers: usize,
-        dictionary_bytes: usize,
-        memory: MemoryBudget,
     ) -> io::Result<Self> {
         let mut tables = engine_allocation::copy_vec(tables)?;
         tables.sort_unstable();
         tables.dedup();
-        let ledger = Arc::new(Ledger::new(memory));
         let mut state = State::new(schema)?;
         let mut skipped = engine_allocation::filled(state.columns().len(), true)?;
         let mut held = engine_allocation::vec(tables.len())?;
@@ -878,11 +751,6 @@ impl Cursor {
                 masks: Vec::new(),
                 marked: Vec::new(),
                 touched: Vec::new(),
-                memory: kinds
-                    .iter()
-                    .map(|_| Share::of(&ledger))
-                    .collect::<io::Result<_>>()?,
-                rows_memory: Share::of(&ledger)?,
             });
         }
         state.skip(&skipped)?;
@@ -893,10 +761,7 @@ impl Cursor {
             fresh: true,
             workers: workers.max(1),
             read: (0, 0),
-            dictionary_bytes,
-            slots: Share::of(&ledger)?,
-            scratch: vec![Items::with(Share::of(&ledger)?)],
-            ledger,
+            scratch: vec![Items::default()],
         })
     }
 
@@ -933,10 +798,8 @@ impl Cursor {
     }
 
     /// Moves to `ordinal` of `run` of `index`, whose pages `pages` reads, its workers each first
-    /// running `on_worker`. A move its memory is short for starts again from nothing, and one
-    /// from nothing waits, holding nothing, until what it took is free or `cancelled`; one that
-    /// needs more than its memory may ever hold is refused ([`beyond_memory`]). A failed move
-    /// leaves the cursor holding nothing, to start from nothing.
+    /// running `on_worker`. A failed move leaves the cursor holding nothing, to start from
+    /// nothing.
     pub fn seek(
         &mut self,
         index: &Index,
@@ -944,7 +807,6 @@ impl Cursor {
         run: u32,
         ordinal: u32,
         on_worker: &(dyn Fn() + Sync),
-        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<()> {
         let held_run = index
             .runs
@@ -954,65 +816,35 @@ impl Cursor {
             .hours
             .get(ordinal as usize)
             .ok_or_else(|| invalid("A run index's run holds no such ordinal"))?;
-        let mut fresh = self.at.is_none_or(|(at, _)| at != run);
+        let fresh = self.at.is_none_or(|(at, _)| at != run);
         // A move of a day or less reads too little to pay for its workers.
         let workers = match self.at {
             Some((_, from)) if !fresh && from.abs_diff(ordinal) <= NEAR => 1,
             _ => self.workers,
         };
         while self.scratch.len() < workers {
-            self.scratch.push(Items::with(Share::of(&self.ledger)?));
+            self.scratch.push(Items::default());
         }
         self.at = None;
-        loop {
-            let moved = self.moved(
-                index,
-                held_run,
-                pages,
-                ordinal,
-                hour,
-                fresh,
-                (workers, on_worker),
-            );
-            let need = self.ledger.peak();
-            let short = moved.as_ref().is_err_and(cell::short_of);
-            if moved.is_err() {
-                self.release()?;
-            }
-            // What the attempt waited for is spent, moved or not: a retry waits for its own.
-            self.ledger
-                .spare
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            if !short {
-                moved?;
-                break;
-            }
-            if fresh {
-                let limit = self.ledger.budget.limit();
-                if need > limit {
-                    return Err(io::Error::new(
-                        io::ErrorKind::OutOfMemory,
-                        Beyond { need, limit },
-                    ));
-                }
-                let waited = self.ledger.budget.admit_wait(need, cancelled)?;
-                *self
-                    .ledger
-                    .spare
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(waited);
-            }
-            fresh = true;
+        let moved = self.moved(
+            index,
+            held_run,
+            pages,
+            ordinal,
+            hour,
+            fresh,
+            (workers, on_worker),
+        );
+        if moved.is_err() {
+            self.release()?;
         }
+        moved?;
         self.at = Some((run, ordinal));
         self.fresh = fresh;
         Ok(())
     }
 
-    /// Drops every table, strip and view it holds, and what they held of its memory: its next
-    /// move starts from nothing.
+    /// Drops every table, strip and view it holds: its next move starts from nothing.
     fn release(&mut self) -> io::Result<()> {
         for held in &mut self.held {
             self.state.tables[held.table] = Table::new(&self.state.kinds[held.table])?;
@@ -1028,11 +860,8 @@ impl Cursor {
             held.view = None;
             (held.log, held.masks, held.marked, held.touched) =
                 (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            held.rows_memory.clear();
-            held.memory.iter_mut().for_each(Share::clear);
         }
         self.scratch.iter_mut().for_each(Items::clear);
-        self.slots.clear();
         self.at = None;
         Ok(())
     }
@@ -1051,30 +880,9 @@ impl Cursor {
         let layout = index.layout;
         if fresh {
             self.release()?;
-            self.state.dictionary = Dictionary::run(
-                pages.chunks(&run.chunks)?,
-                self.dictionary_bytes,
-                run.strings as usize,
-            );
+            self.state.dictionary =
+                Dictionary::run(pages.chunks(&run.chunks)?, run.strings as usize);
         }
-        self.ledger.begin();
-        // The tables' slots at the move's slot counts at their most, admitted before any table
-        // grows to them: a table grows to twice what it held, or to the slots it is moved to.
-        let mut bytes = 0_usize;
-        for held in &self.held {
-            let slots = at(&run.series[held.at].slots, ordinal).map_or(0, |(_, &slots)| slots);
-            let kinds = &index.kinds[held.at];
-            let reach = (slots as usize)
-                .saturating_mul(2)
-                .max(self.state.tables[held.table].keys.capacity());
-            let strips = layout
-                .blocks(reach)
-                .saturating_mul((kinds.len() + 1) * 2 * size_of::<Strip>());
-            bytes = bytes
-                .saturating_add(reach.saturating_mul(slot_bytes(kinds)))
-                .saturating_add(strips);
-        }
-        self.slots.set(bytes)?;
         let present = std::mem::take(&mut self.state.present);
         for &table in &present {
             clear(&mut self.state.changes[table]);
@@ -1145,13 +953,10 @@ impl Cursor {
                     .zip(unrecorded.iter_mut())
                     .zip(held.columns.iter_mut())
                     .zip(held.changed.iter_mut())
-                    .zip(held.memory.iter_mut())
                     .zip(kinds)
                     .zip(&strips.columns);
                 engine_allocation::reserve(&mut work, kinds.len())?;
-                for ((((((values, unrecorded), strips), changed), share), &kind), directory) in
-                    cells
-                {
+                for (((((values, unrecorded), strips), changed), &kind), directory) in cells {
                     work.push(Cells {
                         kind,
                         values,
@@ -1164,7 +969,6 @@ impl Cursor {
                         counts,
                         changed,
                         mark: !fresh,
-                        share,
                     });
                 }
             }
@@ -1198,14 +1002,6 @@ impl Cursor {
             self.state.hold_text(held.table)?;
         }
         self.state.trim_dictionary()?;
-        self.slots.settle();
-        for held in &mut self.held {
-            held.rows_memory.settle();
-            held.memory.iter_mut().for_each(Share::settle);
-        }
-        for items in &mut self.scratch {
-            items.share.settle();
-        }
         self.read = (
             tally.pages.load(Ordering::Relaxed),
             tally.bytes.load(Ordering::Relaxed),
@@ -1279,7 +1075,7 @@ pub fn rows_at(
     let layout = index.layout;
     let strips = &held_run.strips[at_table];
     // A lookup holds what it reads only while it answers.
-    let (mut items, mut share) = (Items::default(), Share::default());
+    let mut items = Items::default();
     let mut rows: Vec<Option<u128>> = engine_allocation::filled(layout.block as usize, None)?;
     let mut found: Vec<(u128, u32)> = Vec::new();
     for block in 0..layout.blocks(slots) {
@@ -1306,8 +1102,7 @@ pub fn rows_at(
             pages,
             &tally,
             &mut items,
-            &mut share,
-            &mut |write, _| match write {
+            &mut |write| match write {
                 Write::Row { offset, key } => {
                     *rows
                         .get_mut(offset as usize)
@@ -1333,11 +1128,11 @@ pub fn rows_at(
     let kinds = &index.kinds[at_table];
     let mut out = Table::new(kinds)?;
     out.resize(found.len())?;
-    engine_allocation::reserve_map(&mut out.by_key, found.len())?;
+    out.by_key.reserve(found.len())?;
     for (dense, &(key, _)) in found.iter().enumerate() {
-        out.keys[dense] = key;
+        out.put_key(dense as u32, key)?;
         out.live.set(dense as u32)?;
-        out.by_key.insert(key, dense as u32);
+        out.by_key.insert(&out.keys, key, dense as u32)?;
     }
     let mut by_slot = engine_allocation::collect_vec(
         found
@@ -1378,15 +1173,12 @@ pub fn rows_at(
                 pages,
                 &tally,
                 &mut items,
-                &mut share,
-                &mut |write, share| match write {
+                &mut |write| match write {
                     Write::Cell {
                         offset,
                         cell,
                         recorded,
-                    } => pick(
-                        values, unrecorded, group, start, offset, cell, recorded, share,
-                    ),
+                    } => pick(values, unrecorded, group, start, offset, cell, recorded),
                     Write::Delta {
                         offset,
                         delta,
@@ -1410,7 +1202,7 @@ pub fn rows_at(
                             group.binary_search_by_key(&offset, |&(slot, _)| slot - start)
                         {
                             let (dense, kept) = (group[at].1, (front, back));
-                            cell::splice(values, unrecorded, dense, kept, middle, recorded, share)?;
+                            cell::splice(values, unrecorded, dense, kept, middle, recorded)?;
                         }
                         Ok(())
                     }
@@ -1429,7 +1221,6 @@ pub fn rows_at(
                                     slot - start,
                                     cell,
                                     recorded,
-                                    share,
                                 )?;
                             }
                         }

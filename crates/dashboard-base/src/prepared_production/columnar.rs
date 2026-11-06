@@ -1,19 +1,21 @@
 //! Production read a segment at a time from a columnar walk ([`replay::segments`]): each hour
-//! hands its branch the rows of the line and Rocket output that changed, each country the
-//! ProductionLines rows name, the countries where they changed, and the variant operands a
-//! complete read built anew ([`Projector`]). A branch keeps the rows and feeds its
-//! accumulator one hour at a time as a row frame would ([`Branch`]), so its facts and spent
-//! series are those the row walk prepares.
+//! hands its branch only what changed of what production reads ([`Projector`]): the line
+//! output's rows as the fold reads them, bucketed for its shards, with the earliest
+//! observation start and spending record of the rows live; the Rocket output's rows; each
+//! country the ProductionLines rows name; the countries; and the variant operands a complete
+//! read built anew. A branch hands each hour to its accumulator ([`Branch`]), which folds the
+//! output and steps its holders over spare cores.
 
 use super::{
     NAMING, ProductionAccumulator,
+    fold::{OutputChanges, OutputRow, RowKey},
     input::{Changed, Complete, Hour as Input, Lines, Pending, Reads, Variants},
     slot_read,
 };
 use crate::products::equipment::{
     RawVariant, VariantHour,
     columnar::{Naming, slots},
-    production::{CountryHolders, Rows},
+    production::{CountryHolders, Purpose, Rows},
 };
 use dashboard_world::{Needs, Roster, World};
 use replay::{
@@ -23,8 +25,8 @@ use replay::{
 use replay_data::{
     format::FormatVersion,
     rows::{
-        CountryRow, ProductionLineOutputRow, RocketProductionOutputRow, RowCodec, TABLE_COUNT,
-        TableId,
+        CountryRow, ProductionLineOutputRow, Recorded, RocketProductionOutputRow, RowCodec,
+        TABLE_COUNT, TableId,
     },
 };
 use std::{
@@ -61,19 +63,45 @@ const WATCHED: [TableId; 9] = [
     TableId::RocketProductionOutput,
 ];
 
+/// A line output row as the fold reads it.
+pub(crate) fn output_row(row: &ProductionLineOutputRow) -> OutputRow {
+    OutputRow {
+        line: row.line,
+        ordinal: row.ordinal,
+        country: row.country,
+        variant: row.variant,
+        units: row.units,
+        spent: row.spent_raw,
+        purpose: Purpose::of(row),
+        exact: row.exact,
+        ended: row.ended,
+    }
+}
+
 /// The countries and links of an hour as production compares them, and what they resolve.
 #[derive(replay_spool::Spooled)]
 struct Countries {
-    /// Each country's id, canonical slot and tag, by id.
-    rows: Vec<CountryRow>,
+    /// Each country's id, canonical slot and tag, by id: all the comparison reads of its row.
+    rows: Vec<(u32, u32, Vec<u8>)>,
     /// Each link's raw id and canonical slot; none while CountryLinks is not complete.
     links: Option<Vec<(u32, u32)>>,
     holders: Arc<CountryHolders>,
 }
 
+/// The countries an hour hands its branch, where they or their completeness may have changed.
+#[derive(replay_spool::Spooled)]
+enum Read {
+    /// Countries is not complete.
+    Incomplete,
+    /// The same countries as the last this walk handed on, as [`Countries::same`] compares
+    /// them: what the branch holds already.
+    Same,
+    Countries(Arc<Countries>),
+}
+
 impl Countries {
     fn read(roster: &Roster, links: bool) -> io::Result<Self> {
-        let rows = roster.country_rows()?;
+        let rows: Vec<CountryRow> = roster.country_rows()?;
         let (links, slots) = if links {
             let held = roster.links();
             (
@@ -89,7 +117,10 @@ impl Countries {
         };
         let holders = Arc::new(CountryHolders::of(&rows, Arc::new(slots)));
         Ok(Self {
-            rows,
+            rows: rows
+                .into_iter()
+                .map(|row| (row.id, row.canonical_slot, row.tag))
+                .collect(),
             links,
             holders,
         })
@@ -97,26 +128,7 @@ impl Countries {
 
     /// Whether `other` holds the same countries and links, as the row walk compares them.
     fn same(&self, other: &Self) -> bool {
-        self.links == other.links
-            && self.rows.len() == other.rows.len()
-            && self.rows.iter().zip(&other.rows).all(|(left, right)| {
-                (left.id, left.canonical_slot, &left.tag)
-                    == (right.id, right.canonical_slot, &right.tag)
-            })
-    }
-
-    fn heap(&self) -> usize {
-        size_of::<Self>()
-            + self.rows.capacity() * size_of::<CountryRow>()
-            + self
-                .rows
-                .iter()
-                .map(|row| row.tag.capacity())
-                .sum::<usize>()
-            + self.links.as_ref().map_or(0, |links| links.capacity() * 8)
-            + size_of::<CountryHolders>()
-            + self.holders.holders.len() * (size_of::<(String, Option<(u32, u32)>)>() + 8)
-            + self.holders.slots.capacity() * 9
+        self.links == other.links && self.rows == other.rows
     }
 }
 
@@ -139,16 +151,6 @@ impl<R: RowCodec> Delta<R> {
         }
         held.extend(self.rows);
     }
-
-    fn heap(&self) -> usize {
-        self.rows.capacity() * size_of::<(u128, R)>()
-            + self
-                .rows
-                .iter()
-                .map(|(_, row)| row.heap_bytes())
-                .sum::<usize>()
-            + self.deleted.capacity() * size_of::<u128>()
-    }
 }
 
 /// What a complete variant read built ([`Naming::read`]).
@@ -165,22 +167,19 @@ struct Facts {
     /// The row walk observes the hour: something production watches changed, or a read is
     /// dated there.
     observed: bool,
-    /// The countries, where they or their completeness may have changed: none while
-    /// Countries is not complete.
-    countries: Option<Option<Arc<Countries>>>,
+    /// The countries, where they or their completeness may have changed.
+    countries: Option<Read>,
     changed: Changed,
     /// The naming read built or dropped a name, or a naming table's completeness changed.
     naming_moved: bool,
     reads: Reads,
-    output: Option<Delta<ProductionLineOutputRow>>,
+    output: Option<OutputChanges>,
     /// Why the line output is unavailable, at a read where it is.
     output_reason: Option<String>,
     /// Each country the ProductionLines rows name, ascending, where it changed.
     lines: Option<Arc<[u32]>>,
     rocket: Option<Delta<RocketProductionOutputRow>>,
     variants: Option<Built>,
-    /// The bytes the facts hold.
-    bytes: usize,
 }
 
 /// One hour of a segment.
@@ -257,6 +256,54 @@ impl LineCountries {
     }
 }
 
+/// The line output's live rows as far as every read reads them whole: each row's observation
+/// start and whether it records its spending.
+#[derive(Default)]
+struct OutputLive {
+    rows: HashMap<u128, (i32, bool)>,
+    /// How many live rows start at each hour.
+    since: BTreeMap<i32, u32>,
+    /// How many live rows record their spending.
+    recorded: usize,
+}
+
+impl OutputLive {
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.since.clear();
+        self.recorded = 0;
+    }
+
+    fn remove(&mut self, key: u128) {
+        let Some((since, recorded)) = self.rows.remove(&key) else {
+            return;
+        };
+        if let Some(count) = self.since.get_mut(&since) {
+            *count -= 1;
+            if *count == 0 {
+                self.since.remove(&since);
+            }
+        }
+        self.recorded -= usize::from(recorded);
+    }
+
+    fn insert(&mut self, key: u128, since: i32, recorded: bool) {
+        self.remove(key);
+        self.rows.insert(key, (since, recorded));
+        *self.since.entry(since).or_default() += 1;
+        self.recorded += usize::from(recorded);
+    }
+
+    fn since(&self) -> Option<i32> {
+        self.since.keys().next().copied()
+    }
+
+    fn heap(&self) -> usize {
+        self.rows.capacity() * (size_of::<(u128, (i32, bool))>() + 1)
+            + self.since.len() * (size_of::<(i32, u32)>() + 16)
+    }
+}
+
 /// What [`Projector::save`] writes: nothing but that it restarts, since everything it holds is
 /// read again from the walker's tables, as at a segment's first hour.
 const SAVED: &[u8] = b"production projector: cold";
@@ -270,7 +317,10 @@ pub struct Projector {
     /// Each table's status the hour before.
     shapes: [Option<columns::Status>; TABLE_COUNT],
     lines: LineCountries,
+    output: OutputLive,
     naming: Naming,
+    /// The countries this walk handed on last, while complete since.
+    handed: Option<Arc<Countries>>,
 }
 
 impl Projector {
@@ -282,7 +332,9 @@ impl Projector {
             last: None,
             shapes: [None; TABLE_COUNT],
             lines: LineCountries::default(),
+            output: OutputLive::default(),
             naming: Naming::new()?,
+            handed: None,
         })
     }
 
@@ -333,8 +385,58 @@ impl Projector {
         Ok(std::mem::take(&mut self.lines.moved).then(|| self.lines.countries()))
     }
 
+    /// The line output's rows the hour changed, read whole at `whole`, as the fold reads them;
+    /// none while it is not complete or the hour changed none.
+    fn output(&mut self, state: &State, whole: bool) -> io::Result<Option<OutputChanges>> {
+        let table = TableId::ProductionLineOutput;
+        if !columns::complete(state, table) {
+            self.output.clear();
+            return Ok(None);
+        }
+        let format = self.format.version();
+        let held = columns::table(state, table)?;
+        let (slots, deleted) = if whole {
+            self.output.clear();
+            (held.live().ones().collect::<Vec<u32>>(), Vec::new())
+        } else {
+            let changes = columns::changes(state, table)?;
+            let slots = slots::edits(state, table, u64::MAX)?;
+            if slots.is_empty() && changes.deleted_keys.is_empty() {
+                return Ok(None);
+            }
+            let mut deleted: Vec<RowKey> = Vec::with_capacity(changes.deleted_keys.len());
+            for &key in &changes.deleted_keys {
+                self.output.remove(key);
+                deleted.push(((key >> 32) as u64, key as u32));
+            }
+            (slots, deleted)
+        };
+        let mut rows = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let key = held
+                .key(slot)
+                .ok_or_else(|| io::Error::other(format!("A live {table:?} slot holds no row")))?;
+            let row: ProductionLineOutputRow = columns::row(state, table, slot, format)?;
+            self.output.insert(
+                key,
+                row.since_hour,
+                !matches!(row.spent_raw, Recorded::NotRecorded),
+            );
+            let mut folded = output_row(&row);
+            (folded.line, folded.ordinal) = ((key >> 32) as u64, key as u32);
+            rows.push(folded);
+        }
+        Ok(Some(OutputChanges::new(
+            whole,
+            rows,
+            deleted,
+            self.output.since(),
+            self.output.recorded > 0,
+        )))
+    }
+
     fn heap(&self) -> usize {
-        self.lines.heap()
+        self.lines.heap() + self.output.heap()
     }
 }
 
@@ -413,6 +515,12 @@ impl Operator<World> for Projector {
 
     fn start(&mut self, _: segments::Start<'_>, _: u64, _: i32) -> io::Result<()> {
         self.cold = true;
+        self.handed = None;
+        Ok(())
+    }
+
+    fn cross(&mut self, _: i32) -> io::Result<()> {
+        self.handed = None;
         Ok(())
     }
 
@@ -503,6 +611,15 @@ impl Operator<World> for Projector {
                 dropped: read.dropped,
             })
         };
+        let (output_table, rocket_table) = (
+            TableId::ProductionLineOutput,
+            TableId::RocketProductionOutput,
+        );
+        let output = if changed[output_table.index()] {
+            self.output(state, shaped[output_table.index()])?
+        } else {
+            None
+        };
         if !observed && variants.is_none() {
             return out.push(Hour {
                 branch: hour.branch,
@@ -516,24 +633,35 @@ impl Operator<World> for Projector {
             .then(|| {
                 complete
                     .countries
-                    .then(|| Countries::read(roster, complete.links).map(Arc::new))
+                    .then(|| Countries::read(roster, complete.links))
                     .transpose()
             })
             .transpose()?;
-        let format = self.format.version();
-        let (output, rocket) = (
-            TableId::ProductionLineOutput,
-            TableId::RocketProductionOutput,
-        );
-        let output = changed[output.index()]
+        // The branch holds what this walk handed on last: the same countries need not go again.
+        // A walk's first hour is read whole, so the branch's countries are this walk's from it.
+        if whole {
+            self.handed = None;
+        }
+        let countries = countries.map(|read| match read {
+            None => {
+                self.handed = None;
+                Read::Incomplete
+            }
+            Some(read) if self.handed.as_ref().is_some_and(|held| held.same(&read)) => Read::Same,
+            Some(read) => {
+                let read = Arc::new(read);
+                self.handed = Some(Arc::clone(&read));
+                Read::Countries(read)
+            }
+        });
+        let rocket = changed[rocket_table.index()]
             .then(|| {
-                delta::<ProductionLineOutputRow>(state, output, shaped[output.index()], format)
-            })
-            .transpose()?
-            .flatten();
-        let rocket = changed[rocket.index()]
-            .then(|| {
-                delta::<RocketProductionOutputRow>(state, rocket, shaped[rocket.index()], format)
+                delta::<RocketProductionOutputRow>(
+                    state,
+                    rocket_table,
+                    shaped[rocket_table.index()],
+                    self.format.version(),
+                )
             })
             .transpose()?
             .flatten();
@@ -546,23 +674,6 @@ impl Operator<World> for Projector {
             .then(|| unavailable(state))
             .transpose()?
             .flatten();
-        let bytes = countries
-            .as_ref()
-            .and_then(Option::as_ref)
-            .map_or(0, |countries| countries.heap())
-            + output.as_ref().map_or(0, Delta::heap)
-            + rocket.as_ref().map_or(0, Delta::heap)
-            + lines.as_ref().map_or(0, |lines| lines.len() * 4)
-            + output_reason.as_ref().map_or(0, String::capacity)
-            + variants.as_ref().map_or(0, |variants| {
-                variants.built.capacity() * size_of::<(u64, RawVariant)>()
-                    + variants
-                        .built
-                        .iter()
-                        .map(|(_, raw)| raw.heap())
-                        .sum::<usize>()
-                    + variants.dropped.capacity() * 8
-            });
         out.push(Hour {
             branch: hour.branch,
             hour: at,
@@ -575,8 +686,8 @@ impl Operator<World> for Projector {
                     || NAMING.iter().any(|table| shaped[table.index()]),
                 changed: Changed {
                     others,
-                    output: changed[TableId::ProductionLineOutput.index()],
-                    rocket: changed[TableId::RocketProductionOutput.index()],
+                    output: changed[output_table.index()],
+                    rocket: changed[rocket_table.index()],
                 },
                 reads,
                 output,
@@ -584,7 +695,6 @@ impl Operator<World> for Projector {
                 lines,
                 rocket,
                 variants,
-                bytes,
             })),
         })
     }
@@ -610,12 +720,11 @@ impl Operator<World> for Projector {
     }
 }
 
-/// One branch's production: its accumulator, and the rows and countries it reads as the
-/// hours left them.
+/// One branch's production: its accumulator, which keeps the line output's rows and folds
+/// them, and the countries, Rocket rows and line countries it reads as the hours left them.
 pub struct Branch {
     accumulator: Box<ProductionAccumulator>,
     countries: Option<Arc<Countries>>,
-    output: BTreeMap<u128, ProductionLineOutputRow>,
     rocket: BTreeMap<u128, RocketProductionOutputRow>,
     lines: Arc<[u32]>,
     variants: Pending,
@@ -640,7 +749,6 @@ impl Branch {
         Self {
             accumulator,
             countries: None,
-            output: BTreeMap::new(),
             rocket: BTreeMap::new(),
             lines: Arc::from([]),
             variants: Pending::default(),
@@ -683,6 +791,7 @@ impl Branch {
         let mut naming_moved = false;
         let mut reads = Reads::default();
         let mut output_reason = None;
+        let mut output = None;
         let mut observed = false;
         if let Some(facts) = facts {
             let Facts {
@@ -691,7 +800,7 @@ impl Branch {
                 changed: moved,
                 naming_moved: names,
                 reads: dated,
-                output,
+                output: rows,
                 output_reason: reason,
                 lines,
                 rocket,
@@ -703,11 +812,9 @@ impl Branch {
             naming_moved = names;
             reads = dated;
             output_reason = reason;
+            output = rows;
             if let Some(built) = variants {
                 self.variants.keep(built.whole, built.built, &built.dropped);
-            }
-            if let Some(delta) = output {
-                delta.apply(&mut self.output);
             }
             if let Some(delta) = rocket {
                 delta.apply(&mut self.rocket);
@@ -715,18 +822,27 @@ impl Branch {
             if let Some(lines) = lines {
                 self.lines = lines;
             }
-            if let Some(read) = read {
-                // As the row walk tells them apart: an incomplete Countries never matches.
-                let same = read.as_ref().is_some_and(|read| {
-                    self.countries.as_ref().is_some_and(|held| held.same(read))
-                });
-                if !same {
-                    countries = Some(read.as_ref().map(|read| Arc::clone(&read.holders)));
+            // As the row walk tells them apart: an incomplete Countries never matches.
+            match read {
+                None | Some(Read::Same) => {}
+                Some(Read::Incomplete) => {
+                    countries = Some(None);
+                    self.countries = None;
                 }
-                self.countries = read;
+                Some(Read::Countries(read)) => {
+                    if !self.countries.as_ref().is_some_and(|held| held.same(&read)) {
+                        countries = Some(Some(Arc::clone(&read.holders)));
+                    }
+                    self.countries = Some(read);
+                }
             }
         }
-        if observed || naming_moved || design_changed && self.accumulator.ledger_moves(complete) {
+        // The output's changes always wake the branch: they are watched.
+        if observed
+            || output.is_some()
+            || naming_moved
+            || design_changed && self.accumulator.ledger_moves(complete)
+        {
             self.settle()?;
         } else {
             match &mut self.quiet {
@@ -751,7 +867,7 @@ impl Branch {
             complete,
             design_changed,
             naming_moved,
-            output: Rows::Keyed(&self.output),
+            output,
             output_reason: output_reason.as_deref(),
             lines: Lines::Countries(&self.lines),
             rocket: Rows::Keyed(&self.rocket),

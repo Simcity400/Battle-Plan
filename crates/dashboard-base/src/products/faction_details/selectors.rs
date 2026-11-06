@@ -1,21 +1,34 @@
-//! Typed facts shared by the selected-hour panel and prepared faction histories.
-pub use super::companions::PROGRAMME_TABLES;
+///! Typed facts shared by the selected-hour panel and prepared faction histories.
+pub use super::companions::{PROGRAMME_TABLES, owned};
 pub use super::derived::{
     DoctrineMinimum, MemberUpgradeSource, ResearchLevel, doctrine_progress, member_upgrade_sources,
     research_level,
 };
 use super::*;
+use dashboard_world::{Mark, Viewed};
 use replay_data::rows::{
-    FactionAccountRow, FactionDoctrineRow, FactionManpowerRow, FactionProjectionRow, FactionRuleRow,
+    CountryLinkRow, CountryRow, FactionAccountRow, FactionDoctrineRow, FactionManpowerRow,
+    FactionProjectionRow, FactionRuleRow, mask,
 };
+use replay_frame::frame::HourFrame;
 use std::collections::BTreeMap;
+
+/// The fields country identity is read by.
+const IDENTITY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
 
 pub fn selected<T>(rows: &[T], faction: u64, owner: impl Fn(&T) -> u64) -> &[T] {
     companions::selected(rows, faction, owner)
 }
 pub fn manpower_total(rows: &[FactionManpowerRow]) -> Result<i32, String> {
+    manpower_total_of(rows)
+}
+/// [`manpower_total`] of a faction's rows, in ordinal order.
+pub fn manpower_total_of<'r>(
+    rows: impl IntoIterator<Item = &'r FactionManpowerRow>,
+) -> Result<i32, String> {
     let mut total = 0i32;
-    for (ordinal, row) in rows.iter().enumerate() {
+    for (ordinal, row) in rows.into_iter().enumerate() {
         if ordinal != row.ordinal as usize {
             return Err("Faction manpower ordinals are not contiguous".into());
         }
@@ -32,8 +45,8 @@ pub fn influence_total(
 ) -> Result<i64, String> {
     row.influence_total(accounts).map_err(|why| why.to_string())
 }
-pub fn country_tag(frame: &DecodedFrame, raw: u32) -> Result<String, String> {
-    companions::tag(frame, raw)
+pub fn country_tag(frame: HourFrame<'_>, raw: u32) -> Result<String, String> {
+    companions::tag_in(frame, raw)
 }
 pub fn rule(
     frame: &DecodedFrame,
@@ -51,9 +64,10 @@ pub fn doctrine(
 ) -> FactionRuleDetail {
     companions::doctrine(frame, faction, row, cat)
 }
-/// [`rule`], a dynamic name expanded in `held`, the shared text of `frame` and `cat`.
+/// [`rule`] of any frame's tables, a dynamic name expanded in `held`, the shared text of
+/// `frame` and `cat`.
 pub fn rule_in(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     faction: u64,
     row: &FactionRuleRow,
     cat: Option<&catalogue::Catalogue>,
@@ -61,9 +75,10 @@ pub fn rule_in(
 ) -> FactionRuleDetail {
     companions::rule_in(frame, faction, row, cat, true, held)
 }
-/// [`doctrine`], a dynamic name expanded in `held`, the shared text of `frame` and `cat`.
+/// [`doctrine`] of any frame's tables, a dynamic name expanded in `held`, the shared text of
+/// `frame` and `cat`.
 pub fn doctrine_in(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     faction: u64,
     row: &FactionDoctrineRow,
     cat: Option<&catalogue::Catalogue>,
@@ -90,19 +105,23 @@ pub struct Countries {
     keys: Option<crate::metadata::CountryKeys>,
     links: BTreeMap<u32, u32>,
     holders: BTreeMap<u32, Option<Country>>,
-    link_identity: Option<replay_frame::frame::ViewIdentity>,
+    /// The links as last read.
+    link_mark: Option<Mark>,
     pub rebuilds: usize,
 }
 impl Countries {
+    /// Reads the countries of `viewed`'s hour again, unless `changes` prove its identity
+    /// unchanged since the hour before (`continues`): whether they changed.
     pub fn refresh(
         &mut self,
-        frame: &DecodedFrame,
+        viewed: Viewed<'_>,
         changes: &crate::prepared::frame_changes::FrameChanges,
         continues: bool,
     ) -> Result<bool, String> {
-        let inputs = frame.complete::<tables::Countries>().and_then(|rows| {
+        let frame = viewed.frame;
+        let inputs = frame.complete::<tables::Countries>(IDENTITY).and_then(|rows| {
             frame
-                .complete::<tables::CountryLinks>()
+                .complete::<tables::CountryLinks>(LINK)
                 .map(|links| (rows, links))
         });
         let (rows, links) = match inputs {
@@ -111,26 +130,30 @@ impl Countries {
                 self.keys = None;
                 self.holders.clear();
                 self.links.clear();
-                self.link_identity = None;
+                self.link_mark = None;
                 return Err(why.to_string());
             }
         };
         if continues
+            && self.keys.as_ref().is_some_and(|keys| {
+                keys.kept_changes(rows.len(), changes.rows(TableId::Countries))
+                    || keys.same_in(rows)
+            })
             && self
-                .keys
+                .link_mark
                 .as_ref()
-                .is_some_and(|keys| keys.same_changes(rows, changes.rows(TableId::Countries)))
-            && self
-                .link_identity
-                .as_ref()
-                .is_some_and(|identity| identity.is(&frame.tables[TableId::CountryLinks.index()]))
+                .is_some_and(|mark| viewed.is(TableId::CountryLinks, mark))
         {
             return Ok(false);
         }
-        self.keys = Some(crate::metadata::CountryKeys::read(rows));
-        self.links = crate::metadata::link_slots(links).into_iter().collect();
+        self.keys = Some(crate::metadata::CountryKeys::read_in(rows).map_err(|why| why.to_string())?);
+        self.links = crate::metadata::link_slots_in(links)
+            .map_err(|why| why.to_string())?
+            .into_iter()
+            .collect();
         self.holders.clear();
-        for row in rows {
+        for row in rows.iter() {
+            let row = row.map_err(|why| why.to_string())?;
             let country = String::from_utf8(row.tag.clone()).ok().map(|tag| Country {
                 slot: row.canonical_slot,
                 id: row.id,
@@ -141,7 +164,7 @@ impl Countries {
                 .and_modify(|entry| *entry = None)
                 .or_insert(country);
         }
-        self.link_identity = Some(frame.tables[TableId::CountryLinks.index()].identity());
+        self.link_mark = Some(viewed.mark(TableId::CountryLinks));
         self.rebuilds += 1;
         Ok(true)
     }
@@ -152,14 +175,15 @@ impl Countries {
 
 /// Current membership is independent of a retained account's supplying faction.
 pub fn membership(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     countries: &Countries,
 ) -> Result<BTreeMap<u32, Option<u64>>, String> {
     let rows = frame
-        .complete::<tables::FactionMembers>()
+        .complete::<tables::FactionMembers>(u64::MAX)
         .map_err(|why| why.to_string())?;
     let mut owners = BTreeMap::new();
-    for row in rows {
+    for row in rows.iter() {
+        let row = row.map_err(|why| why.to_string())?;
         if let Some(country) = countries.get(row.country) {
             owners
                 .entry(country.slot)
@@ -175,7 +199,7 @@ pub fn membership(
 }
 
 pub fn upgrade(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     group: u32,
     token: u32,
     cat: Option<&catalogue::Catalogue>,
@@ -187,7 +211,7 @@ pub fn upgrade(
         reason: None,
     };
     let mut read = || -> Result<String, String> {
-        let spelling = faction_names::template_spelling(frame, Some(token))?
+        let spelling = faction_names::template_spelling_in(&frame, Some(token))?
             .ok_or("Faction member upgrade token is absent")?;
         detail.token = Some(spelling.clone());
         let cat = cat.ok_or("Faction member upgrade needs recorded localisation")?;
@@ -212,11 +236,11 @@ pub fn upgrade(
     detail
 }
 pub fn group_name(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     group: u32,
     cat: Option<&catalogue::Catalogue>,
 ) -> Result<Option<String>, String> {
-    let spelling = faction_names::template_spelling(frame, Some(group))?
+    let spelling = faction_names::template_spelling_in(&frame, Some(group))?
         .ok_or("Faction upgrade group spelling is absent")?;
     let cat =
         cat.ok_or_else(|| format!("Faction upgrade group {spelling} requires recorded content"))?;
@@ -238,30 +262,40 @@ pub fn group_name(
     catalogue::plain_text(&text).map(Some)
 }
 
-/// An owner witness is independent of the faction's name/header acquisition.
-pub fn owners(frame: &DecodedFrame) -> std::collections::BTreeSet<u64> {
+/// An owner witness is independent of the faction's name/header acquisition. A row that cannot
+/// be built witnesses none.
+pub fn owners(frame: HourFrame<'_>) -> std::collections::BTreeSet<u64> {
     let mut owners = std::collections::BTreeSet::new();
-    if let Ok(rows) = frame.complete::<tables::Factions>() {
-        owners.extend(rows.iter().map(|row| row.id));
+    if let Ok(rows) = frame.complete::<tables::Factions>(0) {
+        owners.extend(rows.keys().map(|key| key as u64));
     }
-    macro_rules! add { ($($table:ident),+ $(,)?) => { $(if let Ok(rows) = frame.complete::<tables::$table>() { owners.extend(rows.iter().map(|row| row.faction)); })+ }; }
-    add!(
-        FactionMembers,
-        FactionProjection,
+    // Each of these tables names its faction in its key.
+    if let Ok(rows) = frame.complete::<tables::FactionProjection>(0) {
+        owners.extend(rows.keys().map(|key| key as u64));
+    }
+    if let Ok(rows) = frame.complete::<tables::FactionUnlocks>(0) {
+        owners.extend(rows.keys().map(|key| key as u64));
+    }
+    if let Ok(rows) = frame.complete::<tables::FactionGoalStatus>(0) {
+        owners.extend(rows.keys().map(|key| key as u64));
+    }
+    macro_rules! ordinals { ($($table:ident),+ $(,)?) => { $(if let Ok(rows) = frame.complete::<tables::$table>(0) { owners.extend(rows.keys().map(|key| (key >> 32) as u64)); })+ }; }
+    ordinals!(
         FactionRules,
         FactionPrograms,
         FactionMinimumUpgrades,
         FactionDoctrine,
         FactionManpower,
-        FactionUnlocks,
-        FactionGoalStatus
     );
+    if let Ok(rows) = frame.complete::<tables::FactionMembers>(u64::MAX) {
+        owners.extend(rows.iter().filter_map(|row| row.ok().map(|row| row.faction)));
+    }
     owners.remove(&0);
     owners
 }
 
 pub fn programme_detail(
-    supplying: Option<&DecodedFrame>,
+    supplying: Option<HourFrame<'_>>,
     ordinal: u32,
     reference: u64,
     cat: Option<&catalogue::Catalogue>,
@@ -280,21 +314,25 @@ pub fn programme_text_tables() -> Vec<TableId> {
 
 /// Whether any faction's programme in `frame` names a scripted project at the supplying read `details`.
 pub fn programmes_need_environment(
-    frame: &DecodedFrame,
-    details: &DecodedFrame,
+    frame: HourFrame<'_>,
+    details: HourFrame<'_>,
     cat: &catalogue::Catalogue,
 ) -> bool {
     frame
-        .complete::<tables::FactionPrograms>()
+        .complete::<tables::FactionPrograms>(0)
         .is_ok_and(|rows| {
             let factions: std::collections::BTreeSet<u64> =
-                rows.iter().map(|row| row.faction).collect();
+                rows.keys().map(|key| (key >> 32) as u64).collect();
             factions
                 .into_iter()
                 .any(|faction| companions::programmes_need_environment(frame, details, faction, cat))
         })
 }
-
+/// Whether any programme the supplying read `details` records names a scripted project: the
+/// widest [`programmes_need_environment`] any faction's programmes could ask of that read.
+pub fn read_names_scripted(details: HourFrame<'_>, cat: &catalogue::Catalogue) -> bool {
+    companions::read_names_scripted(details, cat)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,19 +378,19 @@ mod tests {
                 .collect(),
             ));
         assert_eq!(
-            upgrade(&frame, 1, 2, Some(&cat)).name.as_deref(),
+            upgrade(HourFrame::from(&frame), 1, 2, Some(&cat)).name.as_deref(),
             Some("Authored mod upgrade")
         );
         assert_eq!(
-            group_name(&frame, 1, Some(&cat)).unwrap().as_deref(),
+            group_name(HourFrame::from(&frame), 1, Some(&cat)).unwrap().as_deref(),
             Some("Authored mod group")
         );
-        let dynamic = upgrade(&frame, 1, 3, Some(&cat));
+        let dynamic = upgrade(HourFrame::from(&frame), 1, 3, Some(&cat));
         assert_eq!(dynamic.token.as_deref(), Some("dynamic_upgrade"));
         assert!(dynamic.name.is_none());
         assert!(dynamic.reason.unwrap().contains("dynamic member name"));
         assert!(
-            group_name(&frame, 4, Some(&cat))
+            group_name(HourFrame::from(&frame), 4, Some(&cat))
                 .unwrap_err()
                 .contains("unnamed_group")
         );

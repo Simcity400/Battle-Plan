@@ -54,7 +54,6 @@ use {
     dashboard_text::metadata::{slot_read, validate_campaign},
     replay_data::{rows::TableId, rows::tables},
     replay_frame::frame::{DecodedFrame, FrameDecoder},
-    std::collections::VecDeque,
 };
 
 pub mod emit;
@@ -103,6 +102,7 @@ pub struct LandBattlesManifestParams {
     pub branch_id: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlePeak {
     #[ts(type = "number")]
@@ -110,6 +110,7 @@ pub struct LandBattlePeak {
     pub hour: i32,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleRun {
     pub first_hour: i32,
@@ -166,6 +167,7 @@ pub enum LandLossTotal {
 }
 /// One read of a battle's course, with each design's equipment loss.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(replay_spool::Spooled)]
 pub struct LandBattleCourseRead {
     pub hour: i32,
     /// True only for the post-flush FinalizeCombat read, never inferred from absence.
@@ -174,6 +176,7 @@ pub struct LandBattleCourseRead {
     pub sides: LandLossSides,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(untagged)]
 pub enum LandLossSides {
     Read([LandLossSide; 2]),
@@ -182,6 +185,7 @@ pub enum LandLossSides {
 /// One side's counters. Variants pair a reply design index with the exact signed
 /// fixed5 amount, in recorded order; the equipment total is their sum.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(untagged)]
 pub enum LandLossSide {
     /// Every variant: the side's first read in the reply, or its labels or order changed.
@@ -202,6 +206,7 @@ pub enum LandLossSide {
 }
 /// Manpower lost as recorded, or why it is unknown.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(untagged)]
 pub enum LandManpower {
     Known(i32),
@@ -353,6 +358,9 @@ struct Episode {
     /// (`prepared::page_out`), whose peaks `prior_peaks` holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     history: Option<u64>,
+    /// The course reply of what paged out, with `history`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    carried: Option<Box<prepared::Carried>>,
 }
 /// A finalizer for a combat whose newest battle may be paged out: publication
 /// reads that battle and ends it, or keeps this finalizer's own battle.
@@ -371,6 +379,16 @@ impl<K: Eq + std::hash::Hash> Numbered<K> {
     fn index(&mut self, key: K) -> usize {
         let next = self.0.len();
         *self.0.entry(key).or_insert(next)
+    }
+    /// Keys numbered in `order`'s order.
+    fn from_order(order: impl IntoIterator<Item = K>) -> Self {
+        Self(
+            order
+                .into_iter()
+                .enumerate()
+                .map(|(index, key)| (key, index))
+                .collect(),
+        )
     }
     fn into_vec(self) -> Vec<K> {
         let mut keys: Vec<_> = self.0.into_iter().collect();
@@ -427,10 +445,14 @@ impl Episode {
             runs,
         }
     }
-    /// Every run and every loss read, with each design's amount.
-    fn course(&self, designs: &mut Numbered<usize>) -> LandBattleCourse {
+    /// Every run and every loss read it holds, with each design's amount, the
+    /// reads wired after those `previous` and `designs` stand at.
+    fn course(
+        &self,
+        previous: &mut [Option<Vec<(usize, i64)>>; 2],
+        designs: &mut Numbered<usize>,
+    ) -> LandBattleCourse {
         let end = self.end.as_ref();
-        let mut previous = [None, None];
         LandBattleCourse {
             id: self.id.clone(),
             province_id: self.province,
@@ -443,7 +465,7 @@ impl Episode {
             losses: self
                 .losses
                 .iter()
-                .map(|read| read.wire(&mut previous, designs))
+                .map(|read| read.wire(previous, designs))
                 .collect(),
             result: self.result.clone(),
         }
@@ -548,12 +570,12 @@ pub struct Census {
     /// The earliest start of any battle, which opens the first ranking interval.
     first_start: Option<i32>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
-    open: HashMap<u64, usize>,
+    open: foldhash::HashMap<u64, usize>,
     links: LinkTags,
     observed: Vec<(i32, i32)>,
     warnings: warnings::Warnings,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
-    latest: HashMap<u64, usize>,
+    latest: foldhash::HashMap<u64, usize>,
     variants: dashboard_base::products::equipment::VariantCatalogue,
     #[serde(skip)]
     catalogue: Option<Arc<dashboard_text::catalogue::Catalogue>>,
@@ -565,7 +587,7 @@ pub struct Census {
     designs: losses::Designs,
     /// Each variant's design and whether it is named, as its current names give them.
     #[serde(skip)]
-    named: HashMap<u64, (usize, bool)>,
+    named: foldhash::HashMap<u64, (usize, bool)>,
     /// The hour and variant of each unnamed design read this hour, not warned of yet.
     #[serde(skip)]
     unnamed: Vec<(i32, u64)>,
@@ -590,7 +612,7 @@ pub struct Census {
     labels_known: bool,
     /// Current resolved participant operands (R2b), rebuilt from A3 on restore.
     #[serde(skip)]
-    live_sides: HashMap<u64, LiveSide>,
+    live_sides: foldhash::HashMap<u64, LiveSide>,
     #[serde(skip)]
     live_sides_read: bool,
     #[cfg(test)]
@@ -664,7 +686,7 @@ impl Census {
         hour: i32,
         adjacent: bool,
         row: facts::Combat,
-        countries: [Vec<String>; 2],
+        countries: &[Vec<String>; 2],
         countries_unknown: [bool; 2],
         opened: &mut Vec<u64>,
     ) {
@@ -714,6 +736,7 @@ impl Census {
                         loss_inputs: None,
                         prior_peaks: [None, None, None],
                         history: None,
+                        carried: None,
                     },
                 );
                 self.open.insert(row.id, at);
@@ -727,7 +750,7 @@ impl Census {
         if let Some(run) = runs.last_mut().filter(|run| {
             run.last_hour.checked_add(1) == Some(hour)
                 && run.counts == counts
-                && run.countries == countries
+                && run.countries == *countries
                 && run.countries_unknown == countries_unknown
                 && run.duration_at(hour) == i64::from(row.duration)
         }) {
@@ -742,7 +765,7 @@ impl Census {
                 last_hour: hour,
                 counts,
                 roster_unknown: false,
-                countries,
+                countries: countries.clone(),
                 countries_unknown,
                 duration: row.duration,
             });
@@ -1093,7 +1116,7 @@ impl Census {
                 hour,
                 adjacent,
                 combat,
-                side.countries,
+                &side.countries,
                 side.unknown,
                 &mut opened,
             );
@@ -1356,7 +1379,9 @@ impl Census {
             .find(|episode| episode.id == id)
             .ok_or_else(|| dashboard_core::invalid("Battle not in this recording branch"))?;
         let mut designs = Numbered::default();
-        let battle = self.effective_episode(episode).course(&mut designs);
+        let battle = self
+            .effective_episode(episode)
+            .course(&mut [None, None], &mut designs);
         bounded(LandBattleCourseReply {
             battle,
             designs: self.reply_designs(designs),
@@ -1365,10 +1390,13 @@ impl Census {
     }
 }
 fn bounded<T: Serialize>(reply: T) -> io::Result<T> {
-    json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| dashboard_core::invalid(format!(
-        "Battle reply exceeds MAX_PRODUCT_REPLY_BYTES ({MAX_PRODUCT_REPLY_BYTES} bytes); no battles were omitted."
-    )))?;
+    json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(too_long)?;
     Ok(reply)
+}
+fn too_long() -> io::Error {
+    dashboard_core::invalid(format!(
+        "Battle reply exceeds MAX_PRODUCT_REPLY_BYTES ({MAX_PRODUCT_REPLY_BYTES} bytes); no battles were omitted."
+    ))
 }
 #[cfg(any(test, feature = "test-support"))]
 fn scan(
@@ -1493,37 +1521,30 @@ fn windows(replay: &Replay, branch: u64) -> Vec<BattleWindow> {
         })
         .collect()
 }
+/// Each branch's census under the catalogue it read; another catalogue replaces it.
 #[derive(Default)]
 #[cfg(any(test, feature = "test-support"))]
 struct Cache {
-    branches: VecDeque<(u64, Arc<Census>)>,
+    branches: BTreeMap<u64, Arc<Census>>,
 }
 #[cfg(any(test, feature = "test-support"))]
 impl Cache {
     fn get(
-        &mut self,
+        &self,
         branch: u64,
         catalogue: Option<&Arc<dashboard_text::catalogue::Catalogue>>,
     ) -> Option<Arc<Census>> {
-        let at = self.branches.iter().position(|(id, census)| {
-            *id == branch
-                && match (&census.catalogue, catalogue) {
-                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                    (None, None) => true,
-                    _ => false,
-                }
-        })?;
-        let entry = self.branches.remove(at).expect("cached branch");
-        let census = Arc::clone(&entry.1);
-        self.branches.push_back(entry);
-        Some(census)
+        self.branches
+            .get(&branch)
+            .filter(|census| match (&census.catalogue, catalogue) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            })
+            .map(Arc::clone)
     }
     fn insert(&mut self, branch: u64, census: Arc<Census>) {
-        self.branches.retain(|(id, _)| *id != branch);
-        self.branches.push_back((branch, census));
-        while self.branches.len() > 2 {
-            self.branches.pop_front();
-        }
+        self.branches.insert(branch, census);
     }
 }
 /// The catalogue land battles name equipment designs from, or why they cannot be named.

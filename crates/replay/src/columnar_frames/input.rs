@@ -1,262 +1,15 @@
 //! A columnar recording's bytes as its walkers read them: from its file or from memory,
-//! through its last footer whose root verifies, a whole extent at a time, under one budget
-//! for every walker's buffers.
+//! through its last footer whose root verifies, a whole extent at a time.
 
 use super::invalid;
-use replay_columnar::{
-    envelope::{self, Extent, Kind},
-    walk::Allowance,
-};
-use std::{
-    collections::VecDeque,
-    fs::File,
-    io,
-    sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use replay_columnar::envelope::{self, Extent, Kind};
+use std::{fs::File, io};
 use zstd::zstd_safe::{self, DCtx};
 
 /// The blocks a footer is searched for and a file's root hashed in.
 const BLOCK: usize = 64 << 10;
 /// The most bytes a zstd frame's header takes, its content size among them.
 const FRAME_HEADER: usize = 18;
-
-/// What a recording's walkers may hold.
-#[derive(Clone)]
-pub struct Limits {
-    /// Every walker's buffers at once, shared by the recordings handed the same budget.
-    pub budget: Arc<Budget>,
-    /// The strings a walker's dictionary holds before it drops those no live cell names.
-    pub dictionary_bytes: usize,
-    /// Every walk's tables at once, shared by the recordings handed the same allowance: a
-    /// restart or section naming more slots than it leaves is refused before they are made.
-    pub tables: Arc<Allowance>,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            budget: Arc::new(Budget::new(2048 << 20)),
-            dictionary_bytes: 32 << 20,
-            tables: Allowance::new(physical_memory()),
-        }
-    }
-}
-
-/// The machine's physical memory: tables needing more cannot be walked on it.
-#[cfg(windows)]
-fn physical_memory() -> usize {
-    // MEMORYSTATUSEX.
-    #[repr(C)]
-    #[derive(Default)]
-    struct Status {
-        length: u32,
-        load: u32,
-        total_physical: u64,
-        available_physical: u64,
-        total_commit: u64,
-        available_commit: u64,
-        total_virtual: u64,
-        available_virtual: u64,
-        available_extended_virtual: u64,
-    }
-    const _: () = assert!(size_of::<Status>() == 64);
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn GlobalMemoryStatusEx(status: *mut Status) -> i32;
-    }
-    let mut status = Status {
-        length: size_of::<Status>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: the C-layout buffer is writable and its length names its complete size.
-    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
-        return usize::MAX;
-    }
-    usize::try_from(status.total_physical).unwrap_or(usize::MAX)
-}
-
-#[cfg(not(windows))]
-fn physical_memory() -> usize {
-    usize::MAX
-}
-
-/// What walkers' buffers hold at once, admitted in arrival order: a walker waits until those
-/// before it are admitted and its need fits, or no walker holds any; one that never waits
-/// takes its share then or not at all.
-pub struct Budget {
-    limit: usize,
-    queue: Mutex<Queue>,
-    changed: Condvar,
-}
-
-#[derive(Default)]
-struct Queue {
-    held: usize,
-    /// The most `held` reached.
-    peak: usize,
-    walkers: usize,
-    /// The tickets of the walkers waiting, oldest first.
-    waiting: VecDeque<u64>,
-    next: u64,
-}
-
-/// A walker's share of a [`Budget`], given back when dropped.
-pub(super) struct Permit {
-    budget: Arc<Budget>,
-    bytes: usize,
-}
-
-impl Queue {
-    fn hold(&mut self, held: usize) {
-        self.held = held;
-        self.peak = self.peak.max(held);
-    }
-}
-
-impl Budget {
-    pub fn new(limit: usize) -> Self {
-        Self {
-            limit,
-            queue: Mutex::default(),
-            changed: Condvar::new(),
-        }
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Queue> {
-        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The most its walkers held at once.
-    pub fn peak(&self) -> usize {
-        self.lock().peak
-    }
-
-    /// `bytes` of the budget, once every walker that asked before has its share and they
-    /// fit; refused as interrupted once `stop` is set and [`Self::wake`] called.
-    pub(super) fn enter(self: &Arc<Self>, bytes: usize, stop: &AtomicBool) -> io::Result<Permit> {
-        let mut queue = self.lock();
-        let ticket = queue.next;
-        queue.next += 1;
-        queue
-            .waiting
-            .try_reserve(1)
-            .map_err(|_| engine_allocation::oom())?;
-        queue.waiting.push_back(ticket);
-        self.changed.notify_all();
-        loop {
-            if stop.load(Ordering::Relaxed) {
-                queue.waiting.retain(|&waiting| waiting != ticket);
-                self.changed.notify_all();
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "The walk stopped waiting for its buffers",
-                ));
-            }
-            let fits = queue.walkers == 0
-                || queue
-                    .held
-                    .checked_add(bytes)
-                    .is_some_and(|held| held <= self.limit);
-            if fits && queue.waiting.front() == Some(&ticket) {
-                queue.waiting.pop_front();
-                let held = queue.held + bytes;
-                queue.hold(held);
-                queue.walkers += 1;
-                self.changed.notify_all();
-                return Ok(Permit {
-                    budget: self.clone(),
-                    bytes,
-                });
-            }
-            queue = self
-                .changed
-                .wait(queue)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
-
-    /// `bytes` of the budget now, when no walker waits for its share and they fit, or no
-    /// walker holds any; none otherwise.
-    pub(super) fn try_enter(self: &Arc<Self>, bytes: usize) -> Option<Permit> {
-        let mut queue = self.lock();
-        let fits = queue.walkers == 0
-            || queue
-                .held
-                .checked_add(bytes)
-                .is_some_and(|held| held <= self.limit);
-        if !fits || !queue.waiting.is_empty() {
-            return None;
-        }
-        let held = queue.held + bytes;
-        queue.hold(held);
-        queue.walkers += 1;
-        Some(Permit {
-            budget: self.clone(),
-            bytes,
-        })
-    }
-}
-
-#[cfg(test)]
-impl Budget {
-    /// Wakes the walkers waiting, for those whose walk stopped to leave.
-    pub(super) fn wake(&self) {
-        drop(self.lock());
-        self.changed.notify_all();
-    }
-
-    /// Waits until `count` walkers wait for their share.
-    pub(crate) fn wait_for_waiters(&self, count: usize) {
-        let mut queue = self.lock();
-        while queue.waiting.len() < count {
-            queue = self
-                .changed
-                .wait(queue)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
-
-    /// The walkers holding a share.
-    pub(crate) fn walkers(&self) -> usize {
-        self.lock().walkers
-    }
-}
-
-impl Permit {
-    pub(super) fn bytes(&self) -> usize {
-        self.bytes
-    }
-
-    /// Grows its share to `bytes` now, when no walker waits for one and it fits beside the
-    /// others', or no other walker holds any; false otherwise.
-    pub(super) fn try_grow(&mut self, bytes: usize) -> bool {
-        let mut queue = self.budget.lock();
-        let others = queue.held - self.bytes;
-        let fits = queue.walkers == 1
-            || others
-                .checked_add(bytes)
-                .is_some_and(|held| held <= self.budget.limit);
-        if !fits || !queue.waiting.is_empty() {
-            return false;
-        }
-        queue.hold(others + bytes);
-        self.bytes = bytes;
-        true
-    }
-}
-
-impl Drop for Permit {
-    fn drop(&mut self) {
-        let mut queue = self.budget.lock();
-        queue.held -= self.bytes;
-        queue.walkers -= 1;
-        drop(queue);
-        self.budget.changed.notify_all();
-    }
-}
 
 /// Fills `bytes` from `file` at `at`.
 fn read_at(file: &File, mut at: u64, mut bytes: &mut [u8]) -> io::Result<()> {
@@ -337,12 +90,12 @@ fn last_root(held: &Held) -> io::Result<(Extent, u64)> {
     let header = envelope::HEADER_BYTES as u64;
     let footer = envelope::FOOTER_BYTES as u64;
     if length < header + footer {
-        return Err(invalid("Not a version 3 H4COLUMN recording"));
+        return Err(invalid("Not a version 4 H4COLUMN recording"));
     }
     let mut start = [0; envelope::HEADER_BYTES];
     held.read(0, &mut start)?;
     if &start[..8] != envelope::MAGIC || start[8..] != envelope::VERSION.to_le_bytes() {
-        return Err(invalid("Not a version 3 H4COLUMN recording"));
+        return Err(invalid("Not a version 4 H4COLUMN recording"));
     }
     let magic = envelope::FOOTER_MAGIC.len();
     let mut block = engine_allocation::filled(BLOCK, 0_u8)?;
@@ -424,7 +177,7 @@ impl Source {
     }
 
     /// `extent`'s stored length once its place is checked.
-    fn place(&self, extent: &Extent) -> io::Result<usize> {
+    pub(super) fn place(&self, extent: &Extent) -> io::Result<usize> {
         let placed = extent.offset >= envelope::HEADER_BYTES as u64
             && extent
                 .offset
@@ -443,6 +196,24 @@ impl Source {
         let header = &mut header[..self.place(extent)?.min(FRAME_HEADER)];
         self.held.read(extent.offset, header)?;
         frame_length(extent, header)
+    }
+
+    /// `extent`'s raw length and the window its frame's decoder holds, as [`Self::raw_length`]
+    /// reads them.
+    pub(super) fn frame(&self, extent: &Extent) -> io::Result<Frame> {
+        let mut header = [0; FRAME_HEADER];
+        let header = &mut header[..self.place(extent)?.min(FRAME_HEADER)];
+        self.held.read(extent.offset, header)?;
+        Frame::of(extent, header)
+    }
+
+    /// The bytes a recording held in memory holds, which its extents' offsets index; none for
+    /// one read from a file.
+    pub(super) fn memory(&self) -> Option<&[u8]> {
+        match &self.held {
+            Held::Memory(bytes) => Some(bytes),
+            Held::File(_) => None,
+        }
     }
 
     /// `extent`'s stored bytes once their place is checked; a file's are read into `buffer`.
@@ -472,6 +243,46 @@ fn frame_length(extent: &Extent, frame: &[u8]) -> io::Result<usize> {
     }
 }
 
+/// Why an extent whose stored bytes go on past its one frame is refused.
+pub(super) const TRAILING: &str = "holds bytes past its frame";
+
+/// A frame's raw length, and the window its decoder holds of it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Frame {
+    pub raw: usize,
+    pub window: usize,
+}
+
+impl Frame {
+    /// `frame`'s, from its header, refused as [`frame_length`] refuses it. A frame of one
+    /// segment is its own window.
+    fn of(extent: &Extent, frame: &[u8]) -> io::Result<Self> {
+        const MAGIC: u32 = 0xFD2F_B528;
+        let raw = frame_length(extent, frame)?;
+        let window = match frame {
+            [a, b, c, d, descriptor, window, ..]
+                if u32::from_le_bytes([*a, *b, *c, *d]) == MAGIC && descriptor & 0x20 == 0 =>
+            {
+                let base = 1_u64.checked_shl(10 + u32::from(window >> 3));
+                base.map_or(u64::MAX, |base| base + base / 8 * u64::from(window & 7))
+            }
+            _ => raw as u64,
+        };
+        Ok(Self {
+            raw,
+            window: usize::try_from(window).map_or(raw, |window| window.min(raw)),
+        })
+    }
+}
+
+/// Refuses `stored`, `extent`'s bytes, unless they hold its digest.
+pub(super) fn check(extent: &Extent, stored: &[u8]) -> io::Result<()> {
+    if envelope::digest(stored) != extent.digest {
+        return Err(invalid("differs from its digest"));
+    }
+    Ok(())
+}
+
 /// A zstd context, and the buffer a file's stored extents are read into, reused extent after
 /// extent.
 pub(super) struct Decoder {
@@ -485,11 +296,6 @@ impl Decoder {
             context: DCtx::try_create().ok_or_else(engine_allocation::oom)?,
             stored: Vec::new(),
         })
-    }
-
-    /// The bytes it allocated.
-    pub(super) fn held(&self) -> usize {
-        self.context() + self.stored.capacity()
     }
 
     /// The bytes its zstd context allocated.
@@ -521,21 +327,87 @@ impl Decoder {
         out: &mut Vec<u8>,
     ) -> io::Result<()> {
         let stored = source.stored(extent, &mut self.stored)?;
-        if envelope::digest(stored) != extent.digest {
-            return Err(invalid("differs from its digest"));
+        decode(&mut self.context, extent, stored, out)
+    }
+
+    /// Reads into its buffer the stored bytes of `spans`, extents placed in a recording read
+    /// from a file as (offset, stored length, slot), one read per run of them lying end to
+    /// end: where each one's bytes begin there, at its slot of `starts`.
+    pub(super) fn gather(
+        &mut self,
+        source: &Source,
+        spans: &mut [(u64, usize, usize)],
+        starts: &mut [usize],
+    ) -> io::Result<()> {
+        let Held::File(file) = &source.held else {
+            return Err(io::Error::other("A recording held in memory is not read"));
+        };
+        let total = spans
+            .iter()
+            .try_fold(0_usize, |total, &(_, length, _)| total.checked_add(length))
+            .ok_or_else(engine_allocation::oom)?;
+        if self.stored.len() < total {
+            engine_allocation::resize(&mut self.stored, total, 0)?;
         }
-        let raw = frame_length(extent, stored)?;
-        engine_allocation::reserve(out, raw)?;
-        let start = out.len();
-        let mut into = std::io::Cursor::new(&mut *out);
-        into.set_position(start as u64);
-        let written = self
-            .context
-            .decompress(&mut into, stored)
-            .map_err(|code| invalid(zstd_safe::get_error_name(code)))?;
-        if written != raw {
-            return Err(invalid("decompresses to another length"));
+        spans.sort_unstable();
+        let mut at = 0;
+        for run in spans.chunk_by(|a, b| a.0 + a.1 as u64 == b.0) {
+            let length = run.iter().map(|&(_, length, _)| length).sum::<usize>();
+            read_at(file, run[0].0, &mut self.stored[at..][..length])?;
+            for &(_, length, slot) in run {
+                starts[slot] = at;
+                at += length;
+            }
         }
         Ok(())
     }
+
+    /// The frame of `extent`, gathered from `start`: as [`Source::frame`] reads it.
+    pub(super) fn gathered_frame(&self, extent: &Extent, start: usize) -> io::Result<Frame> {
+        let stored = extent.stored as usize;
+        Frame::of(extent, &self.stored[start..][..stored.min(FRAME_HEADER)])
+    }
+
+    /// The stored bytes it gathered last ([`Self::gather`]).
+    pub(super) fn gathered(&self) -> &[u8] {
+        &self.stored
+    }
+
+    /// Appends the raw bytes of `extent`, gathered from `start`, to `out`: as [`Self::append`]
+    /// decodes it.
+    pub(super) fn append_gathered(
+        &mut self,
+        extent: &Extent,
+        start: usize,
+        out: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let stored = &self.stored[start..][..extent.stored as usize];
+        decode(&mut self.context, extent, stored, out)
+    }
+}
+
+/// Appends `stored`, `extent`'s bytes, decoded to `out`, its digest and frame's length checked
+/// first.
+fn decode(
+    context: &mut DCtx<'static>,
+    extent: &Extent,
+    stored: &[u8],
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
+    check(extent, stored)?;
+    let raw = frame_length(extent, stored)?;
+    if zstd_safe::find_frame_compressed_size(stored).ok() != Some(stored.len()) {
+        return Err(invalid(TRAILING));
+    }
+    engine_allocation::reserve(out, raw)?;
+    let start = out.len();
+    let mut into = std::io::Cursor::new(&mut *out);
+    into.set_position(start as u64);
+    let written = context
+        .decompress(&mut into, stored)
+        .map_err(|code| invalid(zstd_safe::get_error_name(code)))?;
+    if written != raw {
+        return Err(invalid("decompresses to another length"));
+    }
+    Ok(())
 }

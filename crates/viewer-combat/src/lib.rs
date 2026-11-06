@@ -368,17 +368,14 @@ impl Window {
     pub fn prepare_air(
         &mut self,
         replay: &Arc<replay::container::Replay>,
-        columnar: Option<(
-            Arc<replay::columnar_runs::IndexFile>,
-            engine_allocation::credit::MemoryBudget,
-        )>,
+        columnar: Option<Arc<replay::columnar_runs::IndexFile>>,
         wake: impl Fn() + Send + Sync + 'static,
     ) {
         if matches!(self.selection, Some(Selection::AirRegion(_)))
             && self.air_rosters.as_ref().is_none_or(|rosters| {
                 !Arc::ptr_eq(rosters.replay(), replay)
                     || match (rosters.columnar(), columnar.as_ref()) {
-                        (Some(held), Some((file, _))) => !Arc::ptr_eq(held, file),
+                        (Some(held), Some(file)) => !Arc::ptr_eq(held, file),
                         (None, None) => false,
                         _ => true,
                     }
@@ -386,9 +383,7 @@ impl Window {
         {
             use viewer_counter_products::map::province_tooltips::air_region::PassRosters;
             self.air_rosters = Some(match columnar {
-                Some((file, memory)) => {
-                    PassRosters::from_columnar(Arc::clone(replay), file, memory, wake)
-                }
+                Some(file) => PassRosters::from_columnar(Arc::clone(replay), file, wake),
                 None => PassRosters::new(Arc::clone(replay), wake),
             });
             self.air.pass = None;

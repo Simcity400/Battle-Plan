@@ -9,7 +9,7 @@ use crate::products::equipment_stockpile::{
         tests::{self as walks, Seen, State},
     },
 };
-use dashboard_series::{Budget, Cache, memory::Memory};
+use dashboard_series::{memory::Memory};
 use replay_data::{format::FormatVersion, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,9 +42,7 @@ fn published(
 
 /// Each tag's reply at each hour `expected` names.
 fn replies(pages: &Memory, root: u64, expected: &walks::States) -> BTreeMap<(String, i32), EquipmentStockpileReply> {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages.clone(), &cache, root, walks::identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages.clone(), root, walks::identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let reading = Reading::bare(None);
     expected
@@ -214,9 +212,7 @@ fn an_hour_warns_of_its_own_read_counts_and_names_its_variants_as_then() {
 fn an_hour_past_the_published_hours_is_pending_and_an_unknown_tag_holds_nothing() {
     let runs = walks::campaign_runs();
     let (pages, root, hours) = published(&runs, 1, usize::MAX, usize::MAX, false);
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages, &cache, root, walks::identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages, root, walks::identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let reading = Reading::bare(None);
     let ask = |snapshot: &mut Snapshot<'_, Memory>, tag: &str, hour: i32| {

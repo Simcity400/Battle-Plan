@@ -64,13 +64,13 @@ fn country_groups_keep_every_event_and_run_then_refuse_oversized_replies() {
             .lock()
             .unwrap()
             .entries
-            .push((
+            .insert(
                 1,
                 Arc::new(super::GroupBranch {
                     gate: std::sync::Mutex::new(()),
                     scan: std::sync::Mutex::new(Some(scan)),
                 }),
-            ));
+            );
         let reply = CountryGroups::load(
             &source,
             &CountryGroupParams {
@@ -120,13 +120,13 @@ fn country_groups_native_identity_metadata_alone_can_refuse_the_reply() {
         .lock()
         .unwrap()
         .entries
-        .push((
+        .insert(
             1,
             Arc::new(GroupBranch {
                 gate: std::sync::Mutex::new(()),
                 scan: std::sync::Mutex::new(Some(Arc::new(scan))),
             }),
-        ));
+        );
     assert_eq!(
         CountryGroups::load(
             &source,
@@ -143,10 +143,10 @@ fn country_groups_native_identity_metadata_alone_can_refuse_the_reply() {
 }
 
 #[test]
-fn country_groups_rescan_evicted_branches_without_losing_reply_data() {
-    use super::{CACHED_BRANCHES, CountryGroupParams, CountryGroups, GroupCache};
+fn country_groups_keep_one_scan_per_branch() {
+    use super::{CountryGroupParams, CountryGroups, GroupCache};
     use crate::products::{LoadContext, Product};
-    let branches = (1..=CACHED_BRANCHES as u64 + 1)
+    let branches = (1..=5u64)
         .map(|branch| {
             let mut frame = group_frame(100, &[9001], &[(5, "Pact", &[9001, 44])], &[(44, 9001)]);
             frame.branch = branch;
@@ -167,35 +167,21 @@ fn country_groups_rescan_evicted_branches_without_losing_reply_data() {
     };
     let first = serde_json::to_value(load(1)).unwrap();
     let cache = source.append_state::<GroupCache>();
-    let original = cache.lock().unwrap().entries[0]
-        .1
-        .scan
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap();
-    for branch in 2..=CACHED_BRANCHES as u64 + 1 {
+    let scan_of = |branch: u64| {
+        cache.lock().unwrap().entries[&branch]
+            .scan
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap()
+    };
+    let original = scan_of(1);
+    for branch in 2..=5 {
         load(branch);
     }
-    {
-        let cached = cache.lock().unwrap();
-        assert_eq!(cached.entries.len(), CACHED_BRANCHES);
-        assert!(cached.entries.iter().all(|(branch, _)| *branch != 1));
-    }
+    assert_eq!(cache.lock().unwrap().entries.len(), 5);
     assert_eq!(serde_json::to_value(load(1)).unwrap(), first);
-    let cached = cache.lock().unwrap();
-    let rescanned = cached
-        .entries
-        .iter()
-        .find(|(branch, _)| *branch == 1)
-        .unwrap()
-        .1
-        .scan
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap();
-    assert!(!Arc::ptr_eq(&original, &rescanned));
+    assert!(Arc::ptr_eq(&original, &scan_of(1)));
 }
 
 #[test]
@@ -1369,13 +1355,13 @@ fn country_groups_faction_names_keep_all_changes_or_refuse_the_complete_reply() 
             .lock()
             .unwrap()
             .entries
-            .push((
+            .insert(
                 1,
                 Arc::new(GroupBranch {
                     gate: std::sync::Mutex::new(()),
                     scan: std::sync::Mutex::new(Some(Arc::new(scan))),
                 }),
-            ));
+            );
         let result = CountryGroups::load(
             &source,
             &CountryGroupParams {

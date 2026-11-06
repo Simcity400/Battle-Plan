@@ -33,7 +33,7 @@ mod index;
 mod tests;
 
 pub use build::{Builder, Closed, Piece};
-pub use cursor::{Cursor, Keyed, beyond_memory, rows_at};
+pub use cursor::{Cursor, Keyed, rows_at};
 pub use index::{Chunk, Index, RowsPage, RunIndex, Strips};
 
 /// A strip's column for a block's rows: which slots are live, and their keys.

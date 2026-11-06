@@ -632,6 +632,29 @@ pub fn cells<P: PageRead>(
         .collect()
 }
 
+/// [`cells`], each key's value at the hour given by `read`.
+pub fn cells_by(
+    directory: &Directory,
+    tags: &[&str],
+    mode: FactoryCount,
+    read: &mut dyn FnMut(u64) -> io::Result<Option<i128>>,
+) -> io::Result<Vec<Option<i128>>> {
+    let index = channel(&FactoryTop {
+        count: 1,
+        mode,
+        groups: Vec::new(),
+    }) as u64;
+    tags.iter()
+        .map(|tag| {
+            match actor(directory, tag).and_then(|actor| directory.key(actor, VALUES, Some(index)))
+            {
+                Some(key) => read(key),
+                None => Ok(None),
+            }
+        })
+        .collect()
+}
+
 /// Each history tag's actor where it holds `top`'s count, for the faction totals' member
 /// values ([`counts`]).
 pub fn member_keys(

@@ -17,6 +17,7 @@ use replay_data::rows::{
     ProductionLineRow, RocketProductionOutputRow, TableRows, VariantDefinitionRow,
 };
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 const DAYS: i32 = 40;
 

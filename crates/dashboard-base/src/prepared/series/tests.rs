@@ -2135,32 +2135,6 @@ fn keys_read_together_decode_a_repeated_key_once_and_stop_when_cancelled() {
 }
 
 #[test]
-fn a_repeated_key_shares_its_first_read_however_little_the_reader_keeps() {
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut values = Accumulator::default();
-    for hour in 0..20 {
-        for key in 0..3_u64 {
-            let amount = i128::from(hour) + i128::from(key) * 100;
-            values.observe(key, hour, Some(amount), false);
-        }
-    }
-    let mut writer = fixture.writer();
-    values.flush(&mut writer, "values", 0, &flag).unwrap();
-    writer.commit().unwrap();
-    // Only the latest decoded blob is kept, so every other one is evicted at once.
-    TEST_DECODED_BYTES.set(1);
-    let mut reader = Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
-    let decodes = BLOB_DECODES.get();
-    let read = reader.values_at(&[0, 0, 1, 2, 0], 10);
-    let decoded = BLOB_DECODES.get() - decodes;
-    TEST_DECODED_BYTES.set(DECODED_BYTES);
-    let expected = [Some(10), Some(10), Some(110), Some(210), Some(10)];
-    assert_eq!(read.unwrap(), expected);
-    assert_eq!(decoded, 3, "each key decoded once");
-}
-
-#[test]
 fn a_read_cancelled_part_way_reports_a_failure_found_before_it() {
     let cancelled = || io::Error::from(io::ErrorKind::Interrupted);
     let failed = Some(io::Error::from(io::ErrorKind::InvalidData));

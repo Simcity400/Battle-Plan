@@ -54,8 +54,13 @@ pub const TABLES: &[TableId] = &[
 ];
 
 /// How a columnar walk's world holds each table the groups read, by the fields whose change is
-/// an hour the groups observe: countries' slots and tags, wars' dates and instigator, every
-/// field of the others. Every native read of the groups holds them so.
+/// an hour the groups observe: countries' slots and tags, wars' dates and instigator, factions'
+/// names and templates, capitulations' flags and hours, every field of the others. Every native
+/// read of the groups holds them so.
+///
+/// An hour that changes only fields of factions or capitulations the groups do not read ends as
+/// a quiet hour does: their operands read again are equal, every capitulation was named when
+/// first read, the names run on, and what the hour seals early a later seal reaches anyway.
 pub fn holds() -> std::io::Result<[(TableId, dashboard_world::Hold); 8]> {
     use dashboard_world::Hold;
     let fields = |table, names: &[&str]| -> std::io::Result<Hold> {
@@ -72,7 +77,10 @@ pub fn holds() -> std::io::Result<[(TableId, dashboard_world::Hold); 8]> {
         ),
         (TableId::CountryLinks, Hold::Whole),
         (TableId::HumanControllers, Hold::Whole),
-        (TableId::Factions, Hold::Whole),
+        (
+            TableId::Factions,
+            fields(TableId::Factions, &["name", "template_token"])?,
+        ),
         (TableId::FactionMembers, Hold::Whole),
         (
             TableId::WarRelations,
@@ -81,7 +89,10 @@ pub fn holds() -> std::io::Result<[(TableId, dashboard_world::Hold); 8]> {
                 &["start_hour", "end_hour", "first_was_instigator"],
             )?,
         ),
-        (TableId::Capitulation, Hold::Whole),
+        (
+            TableId::Capitulation,
+            fields(TableId::Capitulation, &["capitulated", "capitulated_hour"])?,
+        ),
         (TableId::LexicalTokens, Hold::Whole),
     ])
 }
@@ -112,18 +123,18 @@ fn fields() -> io::Result<Vec<TableFields>> {
             TableId::WarRelations,
             &["start_hour", "end_hour", "first_was_instigator"],
         )?,
+        // Factions' names and templates, and capitulations' flags and hours:
+        // a change of their other fields ends as a quiet hour ([`holds`]).
+        TableFields::named(TableId::Factions, &["name", "template_token"])?,
+        TableFields::named(TableId::Capitulation, &["capitulated", "capitulated_hour"])?,
         // The scan takes any row change of these tables for a change of the
         // groups, and an hour it observes is not a quiet one: the change
         // publisher's refusals counted per hour start again there. So every
-        // field is watched, faction colours included, although the groups
-        // read only the links' slots, the controllers' counts, the factions'
-        // names and templates, the memberships and the capitulation flags
-        // and hours.
+        // field is watched, although the groups read only the links' slots,
+        // the controllers' counts and the memberships.
         TableFields::all(TableId::CountryLinks),
         TableFields::all(TableId::HumanControllers),
-        TableFields::all(TableId::Factions),
         TableFields::all(TableId::FactionMembers),
-        TableFields::all(TableId::Capitulation),
         // The dictionary's spellings, and every read of it: a read names the
         // templates again (a new name run) even when its rows are equal.
         TableFields::all(TableId::LexicalTokens).when_read(),

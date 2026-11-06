@@ -42,8 +42,6 @@ use ts_rs::TS;
 use dashboard_text::metadata::validate_campaign;
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
-#[cfg(any(test, feature = "test-support"))]
-use std::collections::VecDeque;
 
 pub mod prepared;
 
@@ -53,9 +51,6 @@ mod oracle;
 use oracle::scan;
 
 pub struct AgencyComparison;
-
-#[cfg(any(test, feature = "test-support"))]
-const CACHED_BRANCHES: usize = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -357,12 +352,14 @@ struct ScannedAgencies {
     operative_read_hours: Vec<i32>,
     unresolved_rows: usize,
     untext_tags: usize,
+    /// The resolved tags that are not text, as the last pass over every tag counted them.
+    untext_per_hour: usize,
     unsupported_rosters: BTreeMap<u8, usize>,
     warnings: BTreeMap<String, usize>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     native_countries: super::operative_rows::CountryInputs,
-    /// The row path's reads ([`Self::observe_frame_countries`]).
+    /// The row path's reads.
     #[serde(skip)]
     reader: Reader,
 }
@@ -383,9 +380,17 @@ pub(crate) struct AgencyRead {
     /// no slot takes.
     pub(crate) slots: HashMap<u32, Option<IntelligenceAgencyRow>>,
     pub(crate) refused: usize,
-    /// At a membership read of complete memberships, its counts.
+    /// The counts of the last membership read, where the memberships were complete there.
     pub(crate) roster: Option<RosterCounts>,
     pub(crate) acquired: Result<Acquired, (io::ErrorKind, String)>,
+}
+
+/// What an hour's read changed of the agency scan's inputs: the slots whose agency row,
+/// acquired levels or membership count changed, or everything.
+#[derive(Default)]
+pub(crate) struct AgencyTouched {
+    pub(crate) all: bool,
+    pub(crate) slots: BTreeSet<u32>,
 }
 
 impl Default for AgencyRead {
@@ -488,16 +493,15 @@ impl Reader {
             self.built = true;
             self.rebuilt.0 = true;
         }
-        let memberships = frame.complete::<tables::OperativeMemberships>().ok();
-        self.read.roster = if membership_read(frame) {
+        // The counts are those of the last membership read until the next one.
+        if membership_read(frame) {
+            let memberships = frame.complete::<tables::OperativeMemberships>().ok();
             #[cfg(test)]
             super::intelligence_prepared::work(|work| {
                 work.row_visits += memberships.map_or(0, |rows| rows.len())
             });
-            memberships.map(|rows| roster_counts(rows, links))
-        } else {
-            None
-        };
+            self.read.roster = memberships.map(|rows| roster_counts(rows, links));
+        }
         if !self.acquired
             || inputs.changed
             || changes.is_none_or(|changes| {
@@ -773,19 +777,19 @@ impl Census {
 }
 
 impl ScannedAgencies {
-    /// Observes `frame`'s agencies into the tracks, as [`Self::observe_read`] does its read.
-    #[allow(clippy::type_complexity)]
+    /// Observes `frame`'s agencies into the tracks, every tag the countries resolve, as
+    /// [`Self::observe_read`] does its read.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_frame_countries(
         &mut self,
         frame: &replay_frame::frame::DecodedFrame,
         replay: &Replay,
         inputs: &super::operative_rows::CountryInputs,
-        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         (active, fresh): (&mut BTreeMap<String, Identity>, bool),
-    ) -> io::Result<(usize, BTreeMap<u8, usize>)> {
+    ) -> io::Result<()> {
         let mut reader = std::mem::take(&mut self.reader);
         let read = if inputs.complete().is_some() {
-            reader.read(frame, inputs, changes).map(Some)
+            reader.read(frame, inputs, None).map(Some)
         } else {
             Ok(None)
         };
@@ -796,6 +800,7 @@ impl ScannedAgencies {
                 inputs,
                 Census::of(frame),
                 read,
+                None,
                 (active, fresh),
             )
         });
@@ -804,10 +809,11 @@ impl ScannedAgencies {
     }
 
     /// Observes `hour`'s agencies into the tracks from `read`, given where its countries `inputs`
-    /// are complete. Into `active`, each tag the countries resolve with its identity, where
-    /// `fresh`; else `active` is the map an earlier hour of the same countries gave, kept as it
-    /// is.
-    #[allow(clippy::type_complexity)]
+    /// are complete: each of `tags`, whose tracks go on through the hour before, or every tag
+    /// the countries resolve where `tags` is None. Into `active`, each tag the countries resolve
+    /// with its identity, where `fresh`; else `active` is the map an earlier hour of the same
+    /// countries gave, kept as it is.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe_read(
         &mut self,
         hour: i32,
@@ -815,22 +821,24 @@ impl ScannedAgencies {
         inputs: &super::operative_rows::CountryInputs,
         census: Census,
         read: Option<&AgencyRead>,
+        tags: Option<&[String]>,
         (active, fresh): (&mut BTreeMap<String, Identity>, bool),
-    ) -> io::Result<(usize, BTreeMap<u8, usize>)> {
+    ) -> io::Result<()> {
         if fresh {
             active.clear();
         }
-        let mut roster_unresolved = 0;
-        let mut roster_unsupported = BTreeMap::new();
         if census.read && census.complete {
             self.note_roster_read(hour);
         }
         let Some((countries, _)) = inputs.complete() else {
-            return Ok((roster_unresolved, roster_unsupported));
+            return Ok(());
         };
         let read = read.ok_or_else(|| io::Error::other("The agencies were not read"))?;
-        self.held_rosters
-            .retain(|_, held| held.hour.checked_add(1) == Some(hour));
+        if tags.is_none() {
+            // Every holder is observed below; a roster no holder carried to this hour is gone.
+            self.held_rosters
+                .retain(|_, held| held.hour.checked_add(1) == Some(hour));
+        }
         self.available |= read.complete;
         if read.complete {
             match self.observed.last_mut() {
@@ -855,8 +863,6 @@ impl ScannedAgencies {
         };
         if let Some((_, unresolved, unsupported)) = roster {
             self.unresolved_rows += unresolved;
-            roster_unresolved = *unresolved;
-            roster_unsupported = unsupported.clone();
             for (kind, count) in unsupported {
                 *self.unsupported_rosters.entry(*kind).or_default() += count;
             }
@@ -865,23 +871,17 @@ impl ScannedAgencies {
             .acquired
             .as_ref()
             .map_err(|(kind, message)| io::Error::new(*kind, message.clone()))?;
-        let memberships = census.complete;
-        // Each country's acquired levels are copied only where they differ from those held.
-        for (tag, lookup) in &inputs.tagged {
-            let Some((index, slot)) = *lookup else {
-                continue;
-            };
+        let upgrades = TableId::AgencyUpgradeLevels
+            .last_change()
+            .present(replay.format.version());
+        let observe = |scan: &mut Self, tag: &str, index: usize, slot: u32| {
             let country = &countries[index];
-            let Ok(tag) = std::str::from_utf8(tag) else {
-                self.untext_tags += 1;
-                continue;
-            };
             let known_identity = inputs.aliases.get(tag.as_bytes()) == Some(&1)
                 && inputs
                     .slots
                     .get(&slot)
                     .is_some_and(|row| row.id == country.id);
-            let count = if !known_identity || !memberships {
+            let count = if !known_identity || !census.complete {
                 Some(None)
             } else if let Some((counts, unresolved, _)) = roster {
                 // A complete world roster proves an empty active list, except
@@ -890,26 +890,48 @@ impl ScannedAgencies {
             } else {
                 None
             };
-            if fresh {
-                active.insert(tag.to_owned(), (slot, country.id));
-            }
-            self.observe(
+            scan.observe(
                 hour,
                 tag,
                 (slot, country.id),
                 read.slots.get(&slot).and_then(Option::as_ref),
                 count,
             );
-            if TableId::AgencyUpgradeLevels
-                .last_change()
-                .present(replay.format.version())
-            {
+            // Each country's acquired levels are copied only where they differ from those held.
+            if upgrades {
                 let (acquired, default) = acquired;
                 let read = acquired.get(&slot).unwrap_or(default);
-                self.observe_upgrades_read(hour, tag, read, Some(hour));
+                scan.observe_upgrades_read(hour, tag, read, Some(hour));
             }
+        };
+        let Some(tags) = tags else {
+            let mut untext = 0;
+            for (tag, lookup) in &inputs.tagged {
+                let Some((index, slot)) = *lookup else {
+                    continue;
+                };
+                let Ok(tag) = std::str::from_utf8(tag) else {
+                    untext += 1;
+                    continue;
+                };
+                if fresh {
+                    active.insert(tag.to_owned(), (slot, countries[index].id));
+                }
+                observe(self, tag, index, slot);
+            }
+            self.untext_per_hour = untext;
+            self.untext_tags += untext;
+            return Ok(());
+        };
+        // The countries are those the last pass over every tag counted.
+        self.untext_tags += self.untext_per_hour;
+        for tag in tags {
+            let Some(&Some((index, slot))) = inputs.tagged.get(tag.as_bytes()) else {
+                continue;
+            };
+            observe(self, tag, index, slot);
         }
-        Ok((roster_unresolved, roster_unsupported))
+        Ok(())
     }
 }
 
@@ -964,10 +986,11 @@ fn rank(entry: &RawEntry, field: AgencyRankField) -> i64 {
     }
 }
 
+/// One scan per branch of the source revision.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Scans {
-    entries: VecDeque<(u64, Arc<ScannedAgencies>)>,
+    entries: BTreeMap<u64, Arc<ScannedAgencies>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -978,14 +1001,11 @@ fn scanned_branch(
 ) -> io::Result<Arc<ScannedAgencies>> {
     let state = source.state::<Scans>();
     let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((_, result)) = scans.entries.iter().find(|(cached, _)| *cached == branch) {
+    if let Some(result) = scans.entries.get(&branch) {
         return Ok(Arc::clone(result));
     }
     let result = Arc::new(scan(&source.replay(), branch, cancelled)?);
-    scans.entries.push_back((branch, Arc::clone(&result)));
-    while scans.entries.len() > CACHED_BRANCHES {
-        scans.entries.pop_front();
-    }
+    scans.entries.insert(branch, Arc::clone(&result));
     Ok(result)
 }
 

@@ -241,7 +241,7 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, actor: u64, measure: u64) -> io::Result<u64> {
+    fn key(&mut self, writer: &mut Writer, actor: u64, measure: u64) -> io::Result<u64> {
         self.actors.key(
             writer,
             Place {
@@ -255,7 +255,7 @@ impl Emit {
     }
 
     /// Declares the hours read since the last cut or gap, through `last`, covered.
-    fn covered(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn covered(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if let Some(first) = self.first.take() {
             writer.domain(
                 DOMAIN,
@@ -272,7 +272,7 @@ impl Emit {
     }
 
     /// The number of `naming`, catalogued when new.
-    fn naming(&mut self, writer: &mut Writer<'_>, naming: &facts::Naming) -> io::Result<i128> {
+    fn naming(&mut self, writer: &mut Writer, naming: &facts::Naming) -> io::Result<i128> {
         let key = naming_key(naming);
         if let Some(&number) = self.namings.get(&key) {
             return Ok(number);
@@ -287,7 +287,7 @@ impl Emit {
 
     /// The number of the choice `chain` makes in the recorded mod stack, catalogued when new; a
     /// refused content names its refusal in every atlas.
-    fn choice(&mut self, writer: &mut Writer<'_>, chain: &Arc<Chain>) -> io::Result<i128> {
+    fn choice(&mut self, writer: &mut Writer, chain: &Arc<Chain>) -> io::Result<i128> {
         if let Some(&number) = self.chosen.get(chain) {
             return Ok(number);
         }
@@ -318,7 +318,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("country_styles.emit", None);
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
@@ -376,7 +376,7 @@ impl Emit {
 
     fn apply(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         actor: u64,
         fact: Option<&facts::Fact>,
@@ -410,7 +410,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.covered(writer, last)
     }

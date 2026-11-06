@@ -1,10 +1,11 @@
 //! A columnar recording read from its file or memory: every run's directory and restarts
 //! held from open, its hours walked a page at a time by [`Walker`]s, each decoding a page's
-//! selected units at once into one buffer it keeps.
+//! selected units into one buffer it keeps, or, for a unit larger than its frames' windows,
+//! as the walk reads it.
 
 use super::{
     Segment, columns_at, withheld_at,
-    input::{Budget, Decoder, Held, Limits, Permit, Source},
+    input::{Decoder, Frame, Held, Source, TRAILING},
     invalid, schema,
 };
 use crate::rows::{TABLE_COUNT, TableId};
@@ -13,17 +14,20 @@ use replay_columnar::{
     framing,
     leaf::Reader,
     manifest::Manifest,
+    restart::WeakRestored,
     walk::{Chunks, Dictionary, Packed, State},
 };
 use std::{
+    collections::HashMap,
     fmt,
     fs::File,
     io,
     ops::Range,
     path::Path,
-    sync::{Arc, Mutex, PoisonError, Weak, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, Weak},
     time::Instant,
 };
+use zstd::zstd_safe::{self, DCtx, InBuffer, OutBuffer, ResetDirective};
 
 /// What a piece of damage refuses.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -311,8 +315,42 @@ impl Chunks for Run {
     }
 }
 
-/// A walk nobody stops.
-static NEVER: AtomicBool = AtomicBool::new(false);
+/// One restart's tables as walks starting there decoded them, each held weakly, by table.
+type Decoded = Mutex<Vec<(usize, WeakRestored)>>;
+
+/// The restarts walks restored, by run and page, each decoded once while any walk still shares
+/// its pages ([`Walker::restore`]): a walk starting there shares them copy-on-write, holding
+/// of its own only what its hours write.
+#[derive(Default)]
+struct Restarts {
+    held: Mutex<HashMap<(u32, usize), Arc<Decoded>, foldhash::fast::RandomState>>,
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Restarts {
+    /// Restart page `at` of `run`'s tables, made when no walk holds them, and the restarts no
+    /// walk shares any page of let go.
+    fn entry(&self, run: u32, at: usize) -> io::Result<Arc<Decoded>> {
+        let mut held = locked(&self.held);
+        if let Some(entry) = held.get(&(run, at)) {
+            return Ok(entry.clone());
+        }
+        // An entry being decoded, or one a walk holds, stays.
+        held.retain(|_, entry| {
+            Arc::strong_count(entry) > 1
+                || entry.try_lock().map_or(true, |tables| {
+                    tables.iter().any(|(_, restored)| restored.alive())
+                })
+        });
+        engine_allocation::reserve_map(&mut held, 1)?;
+        let entry = Arc::new(Mutex::new(Vec::new()));
+        held.insert((run, at), entry.clone());
+        Ok(entry)
+    }
+}
 
 /// What `root`'s recording holds of each schema table: its columns, and the tables this build
 /// reads otherwise, each with why. Of this build's schema, every column and none; else of the
@@ -348,7 +386,7 @@ fn recorded_columns(
     Ok((columns, withheld_at(format)?))
 }
 
-/// A columnar recording (`H4COLUMN` version 3), read from its file or memory: its root, every
+/// A columnar recording (`H4COLUMN` version 4), read from its file or memory: its root, every
 /// run's directory and the restarts of every page, held from open. A run directory or page
 /// that cannot be read refuses only what it covers ([`Self::damage`]); the rest stays
 /// readable.
@@ -368,25 +406,23 @@ pub struct Recording {
     runs: Box<[Option<Arc<Run>>]>,
     segments: Box<[Segment]>,
     damage: Box<[Damage]>,
-    budget: Arc<Budget>,
-    dictionary_bytes: usize,
-    tables: Arc<replay_columnar::walk::Allowance>,
     /// Whether walks check every hour against the pages' hour digest chain.
     verify: bool,
     /// The tables walks restore and apply.
     selected: [bool; TABLE_COUNT],
+    restarts: Restarts,
 }
 
 impl Recording {
-    pub fn open(bytes: Vec<u8>, limits: Limits) -> io::Result<Self> {
-        Self::read(Held::Memory(bytes), limits)
+    pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
+        Self::read(Held::Memory(bytes))
     }
 
-    pub fn open_path(path: impl AsRef<Path>, limits: Limits) -> io::Result<Self> {
-        Self::read(Held::File(File::open(path)?), limits)
+    pub fn open_path(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::read(Held::File(File::open(path)?))
     }
 
-    fn read(held: Held, limits: Limits) -> io::Result<Self> {
+    fn read(held: Held) -> io::Result<Self> {
         let unlocated = |error: io::Error| Damage::wrap(DamageScope::Unlocated, error);
         let (source, root) = Source::open(held).map_err(unlocated)?;
         let source = Arc::new(source);
@@ -448,17 +484,52 @@ impl Recording {
             runs: engine_allocation::boxed_slice(runs)?,
             segments: engine_allocation::boxed_slice(segments)?,
             damage: engine_allocation::boxed_slice(damage)?,
-            budget: limits.budget,
-            dictionary_bytes: limits.dictionary_bytes,
-            tables: limits.tables,
             verify: false,
             selected: [true; TABLE_COUNT],
+            restarts: Restarts::default(),
         })
+    }
+
+    /// The recording as read from the same file, its runs and pages shared with this one, whose
+    /// walks read only `tables` ([`Self::select`]): for walks of a few tables beside the walks of
+    /// this one.
+    pub fn selecting(&self, tables: &[TableId]) -> io::Result<Self> {
+        let mut damage = engine_allocation::vec(self.damage.len())?;
+        for held in &*self.damage {
+            damage.push(Damage {
+                scope: held.scope.clone(),
+                cause: io::Error::new(held.cause.kind(), held.cause.to_string()),
+            });
+        }
+        let mut withheld = engine_allocation::vec(self.withheld.len())?;
+        for (table, reason) in &*self.withheld {
+            withheld.push((*table, engine_allocation::string(reason)?));
+        }
+        let mut recording = Self {
+            source: Arc::clone(&self.source),
+            identity: engine_allocation::copy_vec(&self.identity)?,
+            root_identity: self.root_identity.clone(),
+            controls: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.controls)?)?,
+            campaign: engine_allocation::copy_vec(&self.campaign)?,
+            columns: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.columns)?)?,
+            withheld: engine_allocation::boxed_slice(withheld)?,
+            runs: engine_allocation::boxed_slice(engine_allocation::collect_vec(
+                self.runs.iter().cloned(),
+            )?)?,
+            segments: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.segments)?)?,
+            damage: engine_allocation::boxed_slice(damage)?,
+            verify: self.verify,
+            selected: [true; TABLE_COUNT],
+            restarts: Restarts::default(),
+        };
+        recording.select(tables);
+        Ok(recording)
     }
 
     /// Walks restore, read and apply only `tables`, the tables their readers read; the others
     /// keep their statuses and no rows. A walk that verifies still reads every unit.
     pub fn select(&mut self, tables: &[TableId]) {
+        self.restarts = Restarts::default();
         self.selected = [false; TABLE_COUNT];
         for table in tables {
             self.selected[table.index()] = true;
@@ -488,22 +559,44 @@ impl Recording {
             || self.selects(extent.stream as usize - 1)
     }
 
-    /// The decoded bytes of `page`'s units that walks decode, together, and the most stored
-    /// bytes one of them takes, but for the units of the tables `lost` names; a unit whose
-    /// length is damage goes to `damaged`, counted as none.
-    fn unit_lengths(
+    /// How walks decode `page`'s units ([`Plan`]), but the units of the tables `lost` names:
+    /// each piece's frame as `frame` finds it from its place among the page's units, a piece
+    /// whose frame is damage going to `damaged`, counted as none. A stream's unit is decoded as
+    /// it is read when `streams` allows it and that holds less than decoding it whole, a zstd
+    /// context taking `context` bytes. The plan's stored bytes are the most one piece takes.
+    fn plan(
         &self,
         page: &IndexPage,
         lost: &[(usize, io::Error)],
         damaged: &mut Vec<(Extent, io::Error)>,
-    ) -> io::Result<(usize, usize)> {
-        let (mut raw, mut stored) = (0_usize, 0_usize);
-        for extent in page.units.iter().filter(|extent| self.decodes(extent)) {
-            if gone(lost, extent) {
+        streams: bool,
+        context: usize,
+        frame: impl Fn(usize, &Extent) -> io::Result<Frame>,
+    ) -> io::Result<Plan> {
+        let mut plan = Plan::default();
+        // The stream of the unit being gathered, its pieces, raw bytes and largest window.
+        let mut open: Option<(u32, Range<usize>, usize, usize)> = None;
+        let close = |plan: &mut Plan, unit: Option<(u32, Range<usize>, usize, usize)>| {
+            let Some((_, slots, raw, window)) = unit else {
+                return Ok(());
+            };
+            let streaming = streaming_bytes(window, context);
+            let streamed = streams && streaming < raw;
+            if streamed {
+                plan.streams = plan.streams.saturating_add(streaming);
+            } else {
+                plan.raw = plan.raw.checked_add(raw).ok_or_else(engine_allocation::oom)?;
+            }
+            engine_allocation::reserve(&mut plan.units, 1)?;
+            plan.units.push((slots, streamed));
+            Ok::<(), io::Error>(())
+        };
+        for (slot, extent) in page.units.iter().enumerate() {
+            if !self.decodes(extent) || gone(lost, extent) {
                 continue;
             }
-            let length = match self.source.raw_length(extent) {
-                Ok(length) => length,
+            let held = match frame(slot, extent) {
+                Ok(held) => held,
                 Err(error) => {
                     let error = Damage::wrap(DamageScope::Extent(*extent), error);
                     if Damage::of(&error).is_none() {
@@ -514,11 +607,33 @@ impl Recording {
                     continue;
                 }
             };
-            raw = raw.checked_add(length).ok_or_else(engine_allocation::oom)?;
-            stored =
-                stored.max(usize::try_from(extent.stored).map_err(|_| engine_allocation::oom())?);
+            plan.stored =
+                plan.stored.max(usize::try_from(extent.stored).map_err(|_| engine_allocation::oom())?);
+            if let Some((_, slots, raw, window)) =
+                open.as_mut().filter(|unit| unit.0 == extent.stream)
+            {
+                slots.end = slot + 1;
+                *raw = raw.checked_add(held.raw).ok_or_else(engine_allocation::oom)?;
+                *window = (*window).max(held.window);
+                continue;
+            }
+            let unit = open.replace((extent.stream, slot..slot + 1, held.raw, held.window));
+            close(&mut plan, unit)?;
         }
-        Ok((raw, stored))
+        close(&mut plan, open)?;
+        Ok(plan)
+    }
+
+    /// The stored bytes of `page`'s units that walks decode and that lie within the
+    /// recording's extents, together: what a walker gathers of the page from a file.
+    fn gathered_bytes(&self, page: &IndexPage) -> io::Result<usize> {
+        let mut total = 0_usize;
+        for extent in page.units.iter().filter(|extent| self.decodes(extent)) {
+            if let Ok(length) = self.source.place(extent) {
+                total = total.checked_add(length).ok_or_else(engine_allocation::oom)?;
+            }
+        }
+        Ok(total)
     }
 
     /// The most decoded and stored bytes one of the tables walks restore from `restart`, of
@@ -547,7 +662,8 @@ impl Recording {
     /// Applies the selection to a walk's `state`, clearing any an earlier walk left.
     fn select_in(&self, state: &mut State) -> io::Result<()> {
         let skipped: [bool; TABLE_COUNT] = std::array::from_fn(|table| !self.selects(table));
-        state.skip(&skipped)
+        state.skip(&skipped)?;
+        state.keep_last(&super::keeps_last())
     }
 
     /// Makes every walk check each hour against the hour digest chain the pages hold.
@@ -808,7 +924,7 @@ impl Recording {
         state: &mut State,
         visit: impl FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
     ) -> io::Result<()> {
-        Walker::new(self, &NEVER)?.walk_runs(state, visit)
+        Walker::new(self)?.walk_runs(state, visit)
     }
 
     /// `segment`'s hours from its restart restored into `state`, or from empty tables at its
@@ -819,29 +935,24 @@ impl Recording {
         state: &mut State,
         visit: impl FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
     ) -> io::Result<()> {
-        let mut walker = Walker::new(self, &NEVER)?;
+        let mut walker = Walker::new(self)?;
         walker.begin(segment, state)?;
         walker.walk(segment, state, visit).map(drop)
     }
 
     /// Replaces `state` with what restart page `at` of `run` holds, as [`Walker::restore`].
     pub fn restore(&self, run: u32, at: usize, state: &mut State) -> io::Result<()> {
-        Walker::new(self, &NEVER)?.restore(run, at, state)
-    }
-
-    /// Wakes the walkers waiting for the budget, for those whose walk stopped to leave.
-    #[cfg(test)]
-    pub(crate) fn wake(&self) {
-        self.budget.wake();
+        Walker::new(self)?.restore(run, at, state)
     }
 }
 
-/// The most a walker's buffers hold for one segment's walk: decoded bytes, and stored bytes
-/// read from a file.
+/// The most a walker's buffers hold for one segment's walk: bytes decoded whole, stored bytes
+/// read from a file, and what its units decoded as they are read hold.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Reads {
     raw: usize,
     stored: usize,
+    streams: usize,
 }
 
 impl Reads {
@@ -850,13 +961,49 @@ impl Reads {
         Self {
             raw: self.raw.max(other.raw),
             stored: self.stored.max(other.stored),
+            streams: self.streams.max(other.streams),
         }
     }
+}
+
+/// How a page's units the walk decodes are decoded: each stream's pieces, among the page's
+/// units, and whether they are decoded as they are read; and what that holds.
+#[derive(Default)]
+struct Plan {
+    units: Vec<(Range<usize>, bool)>,
+    raw: usize,
+    stored: usize,
+    streams: usize,
 }
 
 /// The stored bytes of `run`'s page `at`'s index.
 fn index_bytes(run: &Run, at: usize) -> io::Result<usize> {
     usize::try_from(run.pages[at].stored).map_err(|_| engine_allocation::oom())
+}
+
+/// The bytes the walkers counted by it hold at once, and the most they held: a statistic,
+/// which nothing limits.
+#[derive(Debug, Default)]
+pub struct Tally {
+    held: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+impl Tally {
+    /// The most its walkers held at once.
+    pub fn peak(&self) -> usize {
+        self.peak.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn change(&self, from: usize, to: usize) {
+        use std::sync::atomic::Ordering;
+        if to >= from {
+            let held = self.held.fetch_add(to - from, Ordering::AcqRel) + (to - from);
+            self.peak.fetch_max(held, Ordering::AcqRel);
+        } else {
+            self.held.fetch_sub(from - to, Ordering::AcqRel);
+        }
+    }
 }
 
 /// Whether `extent` is a unit of a table `lost` names.
@@ -874,45 +1021,308 @@ fn skipped(recording: &Recording, lost: &[(usize, io::Error)]) -> [bool; TABLE_C
     })
 }
 
-/// One piece of a stream's unit: the ordinals it covers and where its raw bytes sit in the
-/// unit.
+/// zstd's largest block: what a unit decoded as it is read holds beyond its window, coming in
+/// and going out, and what it decodes ahead of the walk.
+const BLOCK_MAX: usize = 128 << 10;
+
+/// What decoding a unit as it is read holds, its largest frame's window `window`: a zstd
+/// context of `context` bytes with its window and a block in and out, and a block ahead.
+fn streaming_bytes(window: usize, context: usize) -> usize {
+    context
+        .saturating_add(window)
+        .saturating_add(window.min(BLOCK_MAX).saturating_mul(3))
+}
+
+/// One piece of a stream's unit: the ordinals it covers, where its raw bytes sit in the unit,
+/// its extent, and where its stored bytes begin in what the walk decodes them from.
 struct Piece {
     first: u64,
     end: u64,
     start: usize,
     stop: usize,
+    extent: Extent,
+    input: usize,
 }
 
-/// A stream's unit of the page a walker decoded: its bytes in the arena, and its pieces.
+/// A stream's unit of the page a walker decoded: its bytes in the arena, or the walker's
+/// stream `at`, which decodes it as it is read; and its pieces.
 #[derive(Clone)]
-struct Unit {
-    bytes: Range<usize>,
-    pieces: Range<usize>,
+enum Unit {
+    Whole {
+        bytes: Range<usize>,
+        pieces: Range<usize>,
+    },
+    Streamed {
+        at: usize,
+        pieces: Range<usize>,
+    },
 }
 
-/// A stream's unit as the walk reads it, hour after hour.
-struct Cursor<'a> {
-    reader: Reader<'a>,
+/// A unit decoded as the walk reads it, through its frames' windows: the bytes decoded that the
+/// walk has not passed, from a multiple of eight, so a reader over them aligns as one over the
+/// whole unit would.
+struct Stream {
+    context: DCtx<'static>,
+    buffer: Vec<u8>,
+    /// The unit's offsets of the buffer's first byte and of the walk, and its length.
+    base: usize,
+    at: usize,
     length: usize,
-    pieces: &'a [Piece],
+    /// The piece being decoded, its stored bytes taken in and its raw bytes given out.
+    piece: usize,
+    used: usize,
+    decoded: usize,
+}
+
+impl Stream {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            context: DCtx::try_create().ok_or_else(engine_allocation::oom)?,
+            buffer: Vec::new(),
+            base: 0,
+            at: 0,
+            length: 0,
+            piece: 0,
+            used: 0,
+            decoded: 0,
+        })
+    }
+
+    /// Starts a unit of `length` raw bytes.
+    fn start(&mut self, length: usize) -> io::Result<()> {
+        self.context
+            .reset(ResetDirective::SessionOnly)
+            .map_err(|code| invalid(zstd_safe::get_error_name(code)))?;
+        self.buffer.clear();
+        (self.base, self.at, self.length) = (0, 0, length);
+        (self.piece, self.used, self.decoded) = (0, 0, 0);
+        Ok(())
+    }
+
+    /// Whether the piece being decoded has given out all its raw bytes but is not yet checked
+    /// to end its frame there with all its stored bytes taken in.
+    fn closing(&self, pieces: &[Piece]) -> bool {
+        pieces
+            .get(self.piece)
+            .is_some_and(|piece| self.decoded == piece.extent.raw as usize)
+    }
+
+    /// Decodes until it holds the `count` bytes from the walk on, or through the unit's end;
+    /// a piece is taken only once its one frame ends exactly at its raw length and its last
+    /// stored byte, as a whole unit's decode takes it.
+    fn fill(&mut self, count: usize, pieces: &[Piece], input: &[u8]) -> io::Result<()> {
+        let want = self.at.saturating_add(count).min(self.length);
+        if self.base + self.buffer.len() >= want && !self.closing(pieces) {
+            return Ok(());
+        }
+        let passed = (self.at - self.base) & !7;
+        if passed > 0 {
+            self.buffer.drain(..passed);
+            self.base += passed;
+        }
+        let ahead = want.saturating_add(BLOCK_MAX).min(self.length) - self.base;
+        if self.buffer.capacity() < ahead {
+            let room = ahead - self.buffer.len();
+            engine_allocation::reserve_exact(&mut self.buffer, room)?;
+        }
+        while self.base + self.buffer.len() < want || self.closing(pieces) {
+            let piece = pieces
+                .get(self.piece)
+                .ok_or_else(|| invalid("decompresses to another length"))?;
+            let damaged = |error| Damage::wrap(DamageScope::Extent(piece.extent), error);
+            let stored = &input[piece.input..][..piece.extent.stored as usize];
+            let before = (self.buffer.len(), self.used);
+            let mut source = InBuffer::around(stored);
+            source.set_pos(self.used);
+            let ended = {
+                let mut out = OutBuffer::around_pos(&mut self.buffer, before.0);
+                self.context
+                    .decompress_stream(&mut out, &mut source)
+                    .map_err(|code| damaged(invalid(zstd_safe::get_error_name(code))))?
+                    == 0
+            };
+            let made = self.buffer.len() - before.0;
+            self.used = source.pos();
+            self.decoded += made;
+            let raw = piece.extent.raw as usize;
+            if self.decoded > raw {
+                return Err(damaged(invalid("decompresses to another length")));
+            }
+            if ended {
+                if self.used != stored.len() {
+                    return Err(damaged(invalid(TRAILING)));
+                }
+                if self.decoded != raw {
+                    return Err(damaged(invalid("decompresses to another length")));
+                }
+                (self.piece, self.used, self.decoded) = (self.piece + 1, 0, 0);
+            } else if made == 0 && self.used == before.1 {
+                return Err(damaged(invalid("decompresses to another length")));
+            }
+        }
+        Ok(())
+    }
+
+    /// A reader over what it holds, at the walk.
+    fn reader(&self) -> io::Result<Reader<'_>> {
+        let mut reader = Reader::new(&self.buffer);
+        reader.raw(self.at - self.base)?;
+        Ok(reader)
+    }
+}
+
+/// Where a record read from a unit lies in it: from its start, its own bytes from `body`, to
+/// its end.
+struct Read {
+    start: usize,
+    body: usize,
+    stop: usize,
+}
+
+/// A stream's unit as the walk reads it, hour after hour: from the arena, or as its stream
+/// decodes it from `input`.
+enum Cursor<'a> {
+    Whole {
+        bytes: &'a [u8],
+        reader: Reader<'a>,
+        pieces: &'a [Piece],
+    },
+    Streamed {
+        stream: &'a mut Stream,
+        input: &'a [u8],
+        pieces: &'a [Piece],
+    },
 }
 
 impl<'a> Cursor<'a> {
-    fn new(arena: &'a [u8], pieces: &'a [Piece], unit: &Unit) -> Self {
-        Self {
-            reader: Reader::new(&arena[unit.bytes.clone()]),
-            length: unit.bytes.len(),
-            pieces: &pieces[unit.pieces.clone()],
+    /// `unit`'s, from `arena`, or decoded by `stream` from `input`.
+    fn new(
+        arena: &'a [u8],
+        pieces: &'a [Piece],
+        stream: Option<&'a mut Stream>,
+        input: &'a [u8],
+        unit: &Unit,
+    ) -> Option<Self> {
+        Some(match unit {
+            Unit::Whole { bytes, pieces: held } => Self::Whole {
+                bytes: &arena[bytes.clone()],
+                reader: Reader::new(&arena[bytes.clone()]),
+                pieces: &pieces[held.clone()],
+            },
+            Unit::Streamed { pieces: held, .. } => Self::Streamed {
+                stream: stream?,
+                input,
+                pieces: &pieces[held.clone()],
+            },
+        })
+    }
+
+    fn pieces(&self) -> &[Piece] {
+        match self {
+            Self::Whole { pieces, .. } | Self::Streamed { pieces, .. } => pieces,
         }
     }
 
     /// Whether `start..stop` of the unit lies within the piece covering `ordinal`.
     fn holds(&self, ordinal: u64, start: usize, stop: usize) -> bool {
-        self.pieces.iter().any(|piece| {
+        self.pieces().iter().any(|piece| {
             (piece.first..piece.end).contains(&ordinal)
                 && piece.start <= start
                 && stop <= piece.stop
         })
+    }
+
+    /// The unit's bytes `start..stop`, which it read last.
+    fn slice(&self, start: usize, stop: usize) -> &[u8] {
+        match self {
+            Self::Whole { bytes, .. } => &bytes[start..stop],
+            Self::Streamed { stream, .. } => &stream.buffer[start - stream.base..stop - stream.base],
+        }
+    }
+
+    /// The next manifest of a manifest unit; none at its end.
+    fn next_manifest(&mut self) -> io::Result<Option<Read>> {
+        match self {
+            Self::Whole { bytes, reader, .. } => {
+                let start = reader.at();
+                Ok(framing::next_manifest(reader, bytes.len())?.map(|manifest| Read {
+                    start,
+                    body: reader.at() - manifest.len(),
+                    stop: reader.at(),
+                }))
+            }
+            Self::Streamed {
+                stream,
+                input,
+                pieces,
+            } => {
+                if stream.at == stream.length {
+                    return Ok(None);
+                }
+                // A varint takes ten bytes at most.
+                stream.fill(10, pieces, input)?;
+                let (count, prefix) = {
+                    let mut length = stream.reader()?;
+                    let count = length.count()?;
+                    (count, length.at() - (stream.at - stream.base))
+                };
+                stream.fill(prefix.saturating_add(count), pieces, input)?;
+                let (manifest, read) = {
+                    let mut reader = stream.reader()?;
+                    let manifest =
+                        framing::next_manifest(&mut reader, stream.length - stream.base)?
+                            .ok_or_else(|| invalid("holds no manifest where one begins"))?;
+                    (manifest.len(), reader.at())
+                };
+                let start = stream.at;
+                stream.at = stream.base + read;
+                Ok(Some(Read {
+                    start,
+                    body: stream.at - manifest,
+                    stop: stream.at,
+                }))
+            }
+        }
+    }
+
+    /// The next section of a table unit, `length` bytes: where its bytes begin and end.
+    fn next_section(&mut self, length: usize) -> io::Result<(usize, usize)> {
+        match self {
+            Self::Whole { reader, .. } => {
+                framing::next_section(reader, length)?;
+                Ok((reader.at() - length, reader.at()))
+            }
+            Self::Streamed {
+                stream,
+                input,
+                pieces,
+            } => {
+                let padding = stream.at.next_multiple_of(8) - stream.at;
+                stream.fill(padding.saturating_add(length), pieces, input)?;
+                let read = {
+                    let mut reader = stream.reader()?;
+                    framing::next_section(&mut reader, length)?;
+                    reader.at()
+                };
+                stream.at = stream.base + read;
+                Ok((stream.at - length, stream.at))
+            }
+        }
+    }
+
+    /// Refuses the unit's bytes after its last section but the padding it may end with.
+    fn finish(&mut self) -> io::Result<()> {
+        match self {
+            Self::Whole { reader, .. } => framing::finish_sections(reader),
+            Self::Streamed {
+                stream,
+                input,
+                pieces,
+            } => {
+                stream.fill(stream.length - stream.at, pieces, input)?;
+                framing::finish_sections(&stream.reader()?)
+            }
+        }
     }
 }
 
@@ -938,67 +1348,205 @@ fn lap(clock: &mut Option<Instant>) -> u64 {
 }
 
 /// What a worker walks a recording's segments with, kept from page to page and segment to
-/// segment: its decoder, its buffers, and the share of the budget they hold, which it gives
-/// back when it parks ([`Self::park`]) and, when it waits for its share, before it waits for
-/// a larger one.
+/// segment: its decoder and its buffers, which it gives back when it parks ([`Self::park`]).
 pub struct Walker<'r> {
     recording: &'r Recording,
-    budget: &'r Arc<Budget>,
-    /// What ends its wait for its share; none when it never waits, but takes a segment's
-    /// whole share before walking it ([`Self::hold`]).
-    stop: Option<&'r AtomicBool>,
     decoder: Decoder,
     /// The page read last.
     raw: Vec<u8>,
-    /// The page's units the walk reads, decoded, stream after stream.
+    /// The page's units it gathers from a file, as (offset, stored length, place among the
+    /// page's units), and where each one's stored bytes begin in its decoder's buffer.
+    spans: Vec<(u64, usize, usize)>,
+    starts: Vec<usize>,
+    /// The page's units the walk reads whole, decoded, stream after stream; and those it
+    /// decodes as it reads them, each through a stream of its own.
     arena: Vec<u8>,
     pieces: Vec<Piece>,
-    /// Each stream's unit in the arena.
+    streams: Vec<Stream>,
+    /// Each stream's unit.
     units: Vec<Option<Unit>>,
     /// Tables an isolating walk lost to damage of their own since it began, with the damage.
     lost: Vec<(usize, io::Error)>,
-    permit: Option<Permit>,
-    /// What the walk its share was taken for reads.
+    /// The walk its buffers are sized for ([`Self::hold`]), and what it counts of them.
     reads: Option<Reads>,
+    tally: Option<&'r Tally>,
+    counted: usize,
     timed: bool,
     timings: Timings,
 }
 
+impl Drop for Walker<'_> {
+    fn drop(&mut self) {
+        self.count(0);
+    }
+}
+
 impl<'r> Walker<'r> {
-    /// A walker of `recording`, whose wait for the budget ends once `stop` is set.
-    pub fn new(recording: &'r Recording, stop: &'r AtomicBool) -> io::Result<Self> {
-        Self::with(recording, &recording.budget, Some(stop))
-    }
-
-    /// A walker of `recording` under `budget` that never waits for its share:
-    /// [`Self::hold`] takes a walk's whole share before it starts, or cannot then.
-    pub(crate) fn without_waiting(
-        recording: &'r Recording,
-        budget: &'r Arc<Budget>,
-    ) -> io::Result<Self> {
-        Self::with(recording, budget, None)
-    }
-
-    fn with(
-        recording: &'r Recording,
-        budget: &'r Arc<Budget>,
-        stop: Option<&'r AtomicBool>,
-    ) -> io::Result<Self> {
+    /// A walker of `recording`.
+    pub fn new(recording: &'r Recording) -> io::Result<Self> {
         Ok(Self {
             recording,
-            budget,
-            stop,
             decoder: Decoder::new()?,
             raw: Vec::new(),
+            spans: Vec::new(),
+            starts: Vec::new(),
             arena: Vec::new(),
             pieces: Vec::new(),
+            streams: Vec::new(),
             units: engine_allocation::collect_vec((0..=TABLE_COUNT).map(|_| None))?,
             lost: Vec::new(),
-            permit: None,
             reads: None,
+            tally: None,
+            counted: 0,
             timed: false,
             timings: Timings::default(),
         })
+    }
+
+    /// A walker of `recording` whose buffers `tally` counts.
+    pub(crate) fn counted(recording: &'r Recording, tally: &'r Tally) -> io::Result<Self> {
+        let mut walker = Self::new(recording)?;
+        walker.tally = Some(tally);
+        Ok(walker)
+    }
+
+    fn count(&mut self, bytes: usize) {
+        if let Some(tally) = self.tally {
+            tally.change(self.counted, bytes);
+        }
+        self.counted = bytes;
+    }
+
+    /// Sizes it for a walk reading `reads`: its buffers are made to fit as the walk starts.
+    pub(crate) fn hold(&mut self, reads: Reads) -> bool {
+        self.reads = Some(reads);
+        let bytes = [reads.stored, reads.streams, self.decoder.context()]
+            .into_iter()
+            .fold(reads.raw, usize::saturating_add);
+        self.count(self.counted.max(bytes));
+        true
+    }
+
+    /// Whether it is sized for a walk.
+    pub(crate) fn holds(&self) -> bool {
+        self.reads.is_some()
+    }
+
+    /// Starts afresh but for the walk it is sized for: what a panic unwound through is not
+    /// used again.
+    pub(crate) fn renew(&mut self) -> io::Result<()> {
+        self.decoder = Decoder::new()?;
+        self.raw = Vec::new();
+        self.spans = Vec::new();
+        self.starts = Vec::new();
+        self.arena = Vec::new();
+        self.pieces = Vec::new();
+        self.streams = Vec::new();
+        self.units.fill(None);
+        self.lost.clear();
+        Ok(())
+    }
+
+    /// What restoring `segment`'s restart holds in its buffers at most, from its page's index:
+    /// its largest table the walk reads, and the index itself; nothing for a segment starting
+    /// its run. Damage counts as nothing read: a walk beginning there goes back before it.
+    pub(crate) fn measure_restart(&mut self, segment: &Segment) -> io::Result<Reads> {
+        let Some(at) = segment.restart else {
+            return Ok(Reads::default());
+        };
+        let recording = self.recording;
+        let kept = self.decoder.stored();
+        let mut reads = Reads {
+            stored: index_bytes(recording.run(segment.run)?, at)?,
+            ..Reads::default()
+        };
+        match recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw) {
+            Ok(page) => {
+                let restart = page
+                    .restart
+                    .as_ref()
+                    .ok_or_else(|| invalid("The page holds no restart"))?;
+                match recording.table_lengths(segment.run, restart) {
+                    Ok((raw, stored)) => {
+                        reads = reads.max(Reads {
+                            raw,
+                            stored,
+                            streams: 0,
+                        })
+                    }
+                    Err(error) if Damage::of(&error).is_some() => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) if Damage::of(&error).is_some() => {}
+            Err(error) => return Err(error),
+        }
+        Ok(self.measured(kept, reads))
+    }
+
+    /// What walking `segment`'s own pages holds in its buffers at most, from their indexes:
+    /// each page's units the walk reads, and the indexes themselves. Damage counts as nothing
+    /// read: a walk reaching it refuses what it covers there, as an isolating walk does.
+    pub(crate) fn measure_pages(&mut self, segment: &Segment) -> io::Result<Reads> {
+        let recording = self.recording;
+        let run = recording.run(segment.run)?;
+        let kept = self.decoder.stored();
+        let mut reads = Reads::default();
+        let mut damaged = Vec::new();
+        for at in run.pages_of(segment) {
+            reads = reads.max(Reads {
+                stored: index_bytes(run, at)?,
+                ..Reads::default()
+            });
+            let page = match recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw)
+            {
+                Ok(page) => page,
+                Err(error) if Damage::of(&error).is_some() => continue,
+                Err(error) => return Err(error),
+            };
+            let plan = recording.plan(
+                &page,
+                &[],
+                &mut damaged,
+                true,
+                self.decoder.context(),
+                |_, extent| recording.source.frame(extent),
+            )?;
+            damaged.clear();
+            let stored = recording.gathered_bytes(&page)?;
+            reads = reads.max(Reads {
+                raw: plan.raw,
+                stored,
+                streams: plan.streams,
+            });
+        }
+        Ok(self.measured(kept, reads))
+    }
+
+    /// `reads`, once the indexes read for them are given back: stored bytes count only for a
+    /// recording read from a file.
+    fn measured(&mut self, kept: usize, reads: Reads) -> Reads {
+        // The indexes read here are no part of what it is sized for.
+        if self.decoder.stored() > kept {
+            self.decoder.release();
+        }
+        if self.recording.source.reads_file() {
+            reads
+        } else {
+            Reads { stored: 0, ..reads }
+        }
+    }
+
+    /// Sizes its buffers for every read of the walk it is sized for, before the walk starts.
+    fn fit(&mut self) -> io::Result<()> {
+        let Some(reads) = self.reads else {
+            return Ok(());
+        };
+        if self.arena.capacity() < reads.raw {
+            self.arena = Vec::new();
+            self.arena = engine_allocation::vec(reads.raw)?;
+        }
+        self.decoder.reserve(reads.stored)
     }
 
     /// Times its walks from now, from zero.
@@ -1012,29 +1560,13 @@ impl<'r> Walker<'r> {
         self.timings
     }
 
-    /// Gives back its buffers, then its share of the budget.
+    /// Gives back its buffers, and the walk it was sized for.
     pub fn park(&mut self) {
         self.arena = Vec::new();
+        self.streams = Vec::new();
         self.decoder.release();
-        self.permit = None;
         self.reads = None;
-    }
-
-    /// Whether it holds a share of the budget.
-    pub(crate) fn holds(&self) -> bool {
-        self.permit.is_some()
-    }
-
-    /// Starts afresh but for its share and what it was taken for: what a panic unwound
-    /// through is not used again.
-    pub(crate) fn renew(&mut self) -> io::Result<()> {
-        self.decoder = Decoder::new()?;
-        self.raw = Vec::new();
-        self.arena = Vec::new();
-        self.pieces = Vec::new();
-        self.units.fill(None);
-        self.lost.clear();
-        Ok(())
+        self.count(0);
     }
 
     /// The tables its isolating walks lost since it last began a segment, each with its
@@ -1074,214 +1606,192 @@ impl<'r> Walker<'r> {
         Ok(())
     }
 
-    /// What restoring `segment`'s restart holds in its buffers at most, from its page's index:
-    /// its largest table the walk reads, and the index itself; nothing for a segment starting
-    /// its run. Damage counts as nothing read: a walk beginning there goes back before it.
-    pub(crate) fn measure_restart(&mut self, segment: &Segment) -> io::Result<Reads> {
-        let Some(at) = segment.restart else {
-            return Ok(Reads::default());
-        };
-        let recording = self.recording;
-        let kept = self.decoder.stored();
-        let mut reads = Reads {
-            raw: 0,
-            stored: index_bytes(recording.run(segment.run)?, at)?,
-        };
-        match recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw) {
-            Ok(page) => {
-                let restart = page
-                    .restart
-                    .as_ref()
-                    .ok_or_else(|| invalid("The page holds no restart"))?;
-                match recording.table_lengths(segment.run, restart) {
-                    Ok((raw, stored)) => reads = reads.max(Reads { raw, stored }),
-                    Err(error) if Damage::of(&error).is_some() => {}
-                    Err(error) => return Err(error),
-                }
-            }
-            Err(error) if Damage::of(&error).is_some() => {}
-            Err(error) => return Err(error),
-        }
-        Ok(self.measured(kept, reads))
-    }
-
-    /// What walking `segment`'s own pages holds in its buffers at most, from their indexes:
-    /// each page's units the walk reads, and the indexes themselves. Damage counts as nothing
-    /// read: a walk reaching it refuses what it covers there, as an isolating walk does.
-    pub(crate) fn measure_pages(&mut self, segment: &Segment) -> io::Result<Reads> {
-        let recording = self.recording;
-        let run = recording.run(segment.run)?;
-        let kept = self.decoder.stored();
-        let mut reads = Reads::default();
-        let mut damaged = Vec::new();
-        for at in run.pages_of(segment) {
-            reads = reads.max(Reads {
-                raw: 0,
-                stored: index_bytes(run, at)?,
-            });
-            let page = match recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw)
-            {
-                Ok(page) => page,
-                Err(error) if Damage::of(&error).is_some() => continue,
-                Err(error) => return Err(error),
-            };
-            let (raw, stored) = recording.unit_lengths(&page, &[], &mut damaged)?;
-            damaged.clear();
-            reads = reads.max(Reads { raw, stored });
-        }
-        Ok(self.measured(kept, reads))
-    }
-
-    /// `reads`, once the indexes read for them are given back: stored bytes count only for a
-    /// recording read from a file.
-    fn measured(&mut self, kept: usize, reads: Reads) -> Reads {
-        // The indexes read here are no part of the share it holds.
-        if self.decoder.stored() > kept {
-            self.decoder.release();
-        }
-        if self.recording.source.reads_file() {
-            reads
-        } else {
-            Reads { stored: 0, ..reads }
-        }
-    }
-
-    /// Takes the share of the budget a walk reading `reads` needs, its dictionary's too,
-    /// for a walker that never waits: false when it cannot now. A share it holds already
-    /// grows; its buffers fit within it as the walk starts.
-    pub(crate) fn hold(&mut self, reads: Reads) -> bool {
-        let share = [
-            reads.stored,
-            self.decoder.context(),
-            self.recording.dictionary_bytes,
-        ]
-        .into_iter()
-        .fold(reads.raw, usize::saturating_add);
-        let held = if let Some(permit) = &mut self.permit {
-            permit.bytes() >= share || permit.try_grow(share)
-        } else if let Some(permit) = self.budget.try_enter(share) {
-            self.permit = Some(permit);
-            true
-        } else {
-            false
-        };
-        if held {
-            self.reads = Some(reads);
-        }
-        held
-    }
-
-    /// Sizes its buffers for every read of the walk its share was taken for, within that
-    /// share, for a walker that never waits; one that waits sizes them read by read.
-    fn fit(&mut self) -> io::Result<()> {
-        if self.stop.is_some() {
-            return Ok(());
-        }
-        let (Some(permit), Some(reads)) = (&self.permit, self.reads) else {
-            return Err(io::Error::other(
-                "A walk starts without its share of the walkers' budget",
-            ));
-        };
-        if reads.raw <= self.arena.capacity() && reads.stored <= self.decoder.stored() {
-            return Ok(());
-        }
-        let kept = [
-            self.decoder.stored().max(reads.stored),
-            self.decoder.context(),
-            self.recording.dictionary_bytes,
-        ]
-        .into_iter()
-        .fold(self.arena.capacity().max(reads.raw), usize::saturating_add);
-        if kept > permit.bytes() {
-            self.arena = Vec::new();
-            self.decoder.release();
-        }
-        if self.arena.capacity() < reads.raw {
-            self.arena = Vec::new();
-            self.arena = engine_allocation::vec(reads.raw)?;
-        }
-        self.decoder.reserve(reads.stored)
-    }
-
-    /// Makes its buffers hold `raw` decoded and `stored` stored bytes under a share of the
-    /// budget covering them, its dictionary's budget too. A walker needing a larger share
-    /// gives back what it holds before it waits for it; one that never waits holds it
-    /// already.
+    /// Makes its buffers hold `raw` decoded bytes and, for a recording read from a file,
+    /// `stored` stored bytes.
     fn admit(&mut self, raw: usize, stored: usize) -> io::Result<()> {
-        let stored = if self.recording.source.reads_file() {
-            stored
-        } else {
-            0
-        };
-        if self.permit.is_some() && raw <= self.arena.capacity() && stored <= self.decoder.stored()
-        {
-            return Ok(());
+        if raw > self.arena.capacity() {
+            self.arena = Vec::new();
+            self.arena = engine_allocation::vec(raw)?;
         }
-        let Some(stop) = self.stop else {
-            return Err(io::Error::other(
-                "A walk reads more than the share of the walkers' budget its segment was \
-                 measured to need",
-            ));
-        };
-        let raw = raw.max(self.arena.capacity());
-        let stored = stored.max(self.decoder.stored());
-        self.park();
-        let bytes = [stored, self.decoder.held(), self.recording.dictionary_bytes]
-            .into_iter()
-            .try_fold(raw, usize::checked_add)
-            .ok_or_else(engine_allocation::oom)?;
-        let permit = self.budget.enter(bytes, stop)?;
-        self.arena = engine_allocation::vec(raw)?;
-        self.decoder.reserve(stored)?;
-        self.permit = Some(permit);
+        if self.recording.source.reads_file() && stored > self.decoder.stored() {
+            self.decoder.reserve(stored)?;
+        }
         Ok(())
     }
 
-    /// Decodes `page`'s units of the streams the walk reads into the arena, sized by their
-    /// frames' lengths; a walk that `isolate`s damage leaves out a table whose unit it cannot
-    /// read, and every later unit of a table it lost.
+    /// Reads from a file the stored bytes of `page`'s units the walk decodes, of no table it
+    /// lost and within the recording's extents, a run of them lying end to end at a time.
+    fn gather(&mut self, page: &IndexPage) -> io::Result<()> {
+        let recording = self.recording;
+        self.spans.clear();
+        self.starts.clear();
+        engine_allocation::resize(&mut self.starts, page.units.len(), usize::MAX)?;
+        for (slot, extent) in page.units.iter().enumerate() {
+            if !recording.decodes(extent) || gone(&self.lost, extent) {
+                continue;
+            }
+            if let Ok(length) = recording.source.place(extent) {
+                engine_allocation::reserve(&mut self.spans, 1)?;
+                self.spans.push((extent.offset, length, slot));
+            }
+        }
+        self.decoder
+            .gather(&recording.source, &mut self.spans, &mut self.starts)
+    }
+
+    /// Decodes `page`'s units of the streams the walk reads: into the arena, sized by their
+    /// frames' lengths, or each set to be decoded as it is read through a stream of its own when
+    /// that holds less ([`Recording::plan`]); a walk that `isolate`s damage leaves out a table
+    /// whose unit it cannot read, and every later unit of a table it lost.
     fn load(&mut self, page: &IndexPage, isolate: bool) -> io::Result<()> {
         let recording = self.recording;
+        let source = &recording.source;
         let mut damaged = Vec::new();
-        let (raw, stored) = recording.unit_lengths(page, &self.lost, &mut damaged)?;
+        // A gather that cannot be read leaves each unit to be read alone, as it refuses.
+        let gathered = source.reads_file() && self.gather(page).is_ok();
+        // A unit decoded as it is read keeps its stored bytes where the walk found them.
+        let streams = gathered || !source.reads_file();
+        let plan = {
+            let (decoder, starts) = (&self.decoder, &self.starts);
+            recording.plan(
+                page,
+                &self.lost,
+                &mut damaged,
+                streams,
+                decoder.context(),
+                |slot, extent| match starts.get(slot) {
+                    Some(&start) if gathered && start != usize::MAX => {
+                        decoder.gathered_frame(extent, start)
+                    }
+                    _ => source.frame(extent),
+                },
+            )?
+        };
         for (extent, error) in damaged {
             self.lose(&extent, error, isolate)?;
         }
-        self.admit(raw, stored)?;
+        self.admit(plan.raw, if gathered { 0 } else { plan.stored })?;
         self.arena.clear();
         self.pieces.clear();
         self.units.fill(None);
-        for extent in page.units.iter().filter(|extent| recording.decodes(extent)) {
-            if gone(&self.lost, extent) {
+        let mut streamed = 0;
+        for (slots, stream) in plan.units {
+            if gone(&self.lost, &page.units[slots.start]) {
                 continue;
             }
-            let start = self.arena.len();
-            if let Err(error) = self
-                .decoder
-                .append(&recording.source, extent, &mut self.arena)
-            {
-                // A stream's earlier pieces go with its damaged one.
-                self.arena.truncate(start);
-                self.units[extent.stream as usize] = None;
-                let error = Damage::wrap(DamageScope::Extent(*extent), error);
-                self.lose(extent, error, isolate)?;
+            if stream {
+                if self.stream(page, slots, gathered, streamed, isolate)? {
+                    streamed += 1;
+                }
                 continue;
             }
-            let unit = self.units[extent.stream as usize].get_or_insert(Unit {
-                bytes: start..start,
-                pieces: self.pieces.len()..self.pieces.len(),
-            });
-            engine_allocation::reserve(&mut self.pieces, 1)?;
-            self.pieces.push(Piece {
-                first: u64::from(extent.first),
-                end: u64::from(extent.first) + u64::from(extent.hours),
-                start: start - unit.bytes.start,
-                stop: self.arena.len() - unit.bytes.start,
-            });
-            unit.bytes.end = self.arena.len();
-            unit.pieces.end = self.pieces.len();
+            for slot in slots {
+                let extent = &page.units[slot];
+                if gone(&self.lost, extent) {
+                    continue;
+                }
+                let start = self.arena.len();
+                let decoded = match self.starts.get(slot) {
+                    Some(&at) if gathered && at != usize::MAX => {
+                        self.decoder.append_gathered(extent, at, &mut self.arena)
+                    }
+                    _ => self.decoder.append(source, extent, &mut self.arena),
+                };
+                if let Err(error) = decoded {
+                    // A stream's earlier pieces go with its damaged one.
+                    self.arena.truncate(start);
+                    self.units[extent.stream as usize] = None;
+                    let error = Damage::wrap(DamageScope::Extent(*extent), error);
+                    self.lose(extent, error, isolate)?;
+                    continue;
+                }
+                let unit = self.units[extent.stream as usize].get_or_insert(Unit::Whole {
+                    bytes: start..start,
+                    pieces: self.pieces.len()..self.pieces.len(),
+                });
+                let Unit::Whole { bytes, pieces } = unit else {
+                    return Err(invalid("A stream's unit is decoded two ways"));
+                };
+                engine_allocation::reserve(&mut self.pieces, 1)?;
+                self.pieces.push(Piece {
+                    first: u64::from(extent.first),
+                    end: u64::from(extent.first) + u64::from(extent.hours),
+                    start: start - bytes.start,
+                    stop: self.arena.len() - bytes.start,
+                    extent: *extent,
+                    input: 0,
+                });
+                bytes.end = self.arena.len();
+                pieces.end = self.pieces.len();
+            }
         }
         Ok(())
+    }
+
+    /// Sets `page`'s unit of pieces `slots` to be decoded as it is read, by its stream `at`,
+    /// their stored bytes `gathered` or in the recording's memory: whether it is, as its
+    /// pieces' digests hold. One that does not is lost as a unit decoded whole would be.
+    fn stream(
+        &mut self,
+        page: &IndexPage,
+        slots: Range<usize>,
+        gathered: bool,
+        at: usize,
+        isolate: bool,
+    ) -> io::Result<bool> {
+        let stream = page.units[slots.start].stream as usize;
+        let first = self.pieces.len();
+        let (mut length, mut failed) = (0_usize, None);
+        {
+            let input = match self.recording.source.memory() {
+                Some(memory) if !gathered => memory,
+                _ => self.decoder.gathered(),
+            };
+            for slot in slots {
+                let extent = page.units[slot];
+                let offset = match (gathered, self.starts.get(slot)) {
+                    (true, Some(&start)) => start,
+                    _ => usize::try_from(extent.offset).map_err(|_| engine_allocation::oom())?,
+                };
+                let stored = offset
+                    .checked_add(extent.stored as usize)
+                    .and_then(|end| input.get(offset..end));
+                let checked = stored
+                    .ok_or_else(|| invalid("lies outside the recording's extents"))
+                    .and_then(|stored| super::input::check(&extent, stored));
+                if let Err(error) = checked {
+                    failed = Some((extent, error));
+                    break;
+                }
+                let raw = usize::try_from(extent.raw).map_err(|_| engine_allocation::oom())?;
+                engine_allocation::reserve(&mut self.pieces, 1)?;
+                self.pieces.push(Piece {
+                    first: u64::from(extent.first),
+                    end: u64::from(extent.first) + u64::from(extent.hours),
+                    start: length,
+                    stop: length + raw,
+                    extent,
+                    input: offset,
+                });
+                length += raw;
+            }
+        }
+        if let Some((extent, error)) = failed {
+            self.pieces.truncate(first);
+            let error = Damage::wrap(DamageScope::Extent(extent), error);
+            self.lose(&extent, error, isolate)?;
+            return Ok(false);
+        }
+        if self.streams.len() <= at {
+            engine_allocation::reserve(&mut self.streams, 1)?;
+            self.streams.push(Stream::new()?);
+        }
+        self.streams[at].start(length)?;
+        self.units[stream] = Some(Unit::Streamed {
+            at,
+            pieces: first..self.pieces.len(),
+        });
+        Ok(true)
     }
 
     /// Puts into `state` what `segment`'s first hour applies to: its restart's tables, or
@@ -1293,8 +1803,7 @@ impl<'r> Walker<'r> {
             let recording = self.recording;
             let run = recording.shared(segment.run)?;
             *state = recording.state()?;
-            state.allow(Arc::clone(&recording.tables))?;
-            state.set_dictionary(Dictionary::run(run.clone(), recording.dictionary_bytes, 0));
+            state.set_dictionary(Dictionary::run(run.clone(), 0));
             return recording.select_in(state);
         };
         self.restore(segment.run, at, state)
@@ -1352,13 +1861,11 @@ impl<'r> Walker<'r> {
         self.admit(raw, stored)?;
         self.lose_withheld()?;
         *state = recording.state()?;
-        state.allow(Arc::clone(&recording.tables))?;
         recording.select_in(state)?;
-        state.set_dictionary(Dictionary::run(
-            held.clone(),
-            recording.dictionary_bytes,
-            len,
-        ));
+        state.set_dictionary(Dictionary::run(held.clone(), len));
+        // One walk decodes a restart while the others starting there wait to share it.
+        let entry = recording.restarts.entry(run, at)?;
+        let mut decoded = locked(&entry);
         let mut declared = Vec::new();
         for table in tables() {
             declared.clear();
@@ -1368,20 +1875,28 @@ impl<'r> Walker<'r> {
                 engine_allocation::reserve(&mut declared, 1)?;
                 declared.push(held.restarts[at].ids);
             }
+            let index = table.table as usize;
             let damaged = |error: io::Error| Damage::wrap(scope(table.table), error);
+            let restoring =
+                engine_allocation::labels::kind(engine_allocation::labels::Kind::WalkerTables);
+            let shared = match decoded.iter().find(|(held, _)| *held == index) {
+                Some((_, restored)) => restored.upgrade()?,
+                None => None,
+            };
+            if let Some(restored) = shared {
+                state.restore_restored(index, restored).map_err(damaged)?;
+                continue;
+            }
             self.arena.clear();
             self.decoder
                 .append(&recording.source, &table.extent, &mut self.arena)
                 .map_err(damaged)?;
-            let restoring = engine_allocation::labels::kind(
-                engine_allocation::labels::Kind::WalkerTables,
-            );
-            state
-                .restore(table.table as usize, &self.arena)
-                .map_err(damaged)?;
+            let restored = state.decode(index, &self.arena).map_err(damaged)?;
+            let weak = restored.downgrade()?;
+            state.restore_restored(index, restored).map_err(damaged)?;
             drop(restoring);
             state
-                .text_ids(table.table as usize, |id| {
+                .text_ids(index, |id| {
                     let at = declared.partition_point(|&(first, _)| first <= id);
                     match at.checked_sub(1) {
                         Some(at) if id - declared[at].0 < declared[at].1 => Ok(()),
@@ -1389,7 +1904,11 @@ impl<'r> Walker<'r> {
                     }
                 })
                 .map_err(damaged)?;
+            decoded.retain(|(held, _)| *held != index);
+            engine_allocation::reserve(&mut *decoded, 1)?;
+            decoded.push((index, weak));
         }
+        drop(decoded);
         state.trim_dictionary()
     }
 
@@ -1505,26 +2024,31 @@ impl<'r> Walker<'r> {
             }
             self.timings.decompress_ns += lap(&mut clock);
             let (arena, pieces) = (&self.arena[..], &self.pieces[..]);
-            let mut manifests = match &self.units[0] {
-                Some(unit) => Cursor::new(arena, pieces, unit),
-                None => return Err(damaged(invalid("holds no manifests"))),
+            let input = recording.source.memory().unwrap_or(self.decoder.gathered());
+            let mut streams =
+                engine_allocation::collect_vec(self.streams.iter_mut().map(Some))?;
+            let units = &self.units;
+            let mut cursor = |unit: Option<&Unit>| {
+                let unit = unit?;
+                let stream = match unit {
+                    Unit::Whole { .. } => None,
+                    Unit::Streamed { at, .. } => Some(streams.get_mut(*at)?.take()?),
+                };
+                Cursor::new(arena, pieces, stream, input, unit)
             };
-            let mut tables: [Option<Cursor<'_>>; TABLE_COUNT] = std::array::from_fn(|table| {
-                self.units[table + 1]
-                    .as_ref()
-                    .map(|unit| Cursor::new(arena, pieces, unit))
-            });
+            let mut manifests = cursor(units[0].as_ref())
+                .ok_or_else(|| damaged(invalid("holds no manifests")))?;
+            let mut tables: [Option<Cursor<'_>>; TABLE_COUNT] =
+                std::array::from_fn(|table| cursor(units[table + 1].as_ref()));
             let mut ordinal = u64::from(page.first);
             loop {
-                let start = manifests.reader.at();
-                let Some(bytes) = framing::next_manifest(&mut manifests.reader, manifests.length)
-                    .map_err(damaged)?
-                else {
+                let Some(read) = manifests.next_manifest().map_err(damaged)? else {
                     break;
                 };
-                if ordinal >= end || !manifests.holds(ordinal, start, manifests.reader.at()) {
+                if ordinal >= end || !manifests.holds(ordinal, read.start, read.stop) {
                     return Err(damaged(invalid("holds a manifest off its ordinals")));
                 }
+                let bytes = manifests.slice(read.body, read.stop);
                 let manifest = Manifest::read(bytes, &columns).map_err(damaged)?;
                 if manifest.branch != run.branch || i64::from(manifest.hour) != hour(ordinal) {
                     return Err(damaged(invalid(
@@ -1532,7 +2056,7 @@ impl<'r> Walker<'r> {
                     )));
                 }
                 // A manifest names each table once, so its sections are no more than the tables.
-                let mut sections: [&[u8]; TABLE_COUNT] = [&[][..]; TABLE_COUNT];
+                let mut found: [Option<(usize, usize)>; TABLE_COUNT] = [None; TABLE_COUNT];
                 for (index, section) in manifest.sections.iter().enumerate() {
                     if !recording.verify && state.skips(section.table) {
                         continue;
@@ -1543,17 +2067,17 @@ impl<'r> Walker<'r> {
                         .ok_or_else(|| {
                             damaged(invalid("holds a section of a table with no unit"))
                         })?;
-                    let read = framing::next_section(&mut cursor.reader, section.bytes as usize)
-                        .and_then(|held| {
-                            let at = cursor.reader.at();
-                            if cursor.holds(ordinal, at - held.len(), at) {
-                                Ok(held)
+                    let read = cursor
+                        .next_section(section.bytes as usize)
+                        .and_then(|(start, stop)| {
+                            if cursor.holds(ordinal, start, stop) {
+                                Ok((start, stop))
                             } else {
                                 Err(invalid("holds a section outside its hour's piece"))
                             }
                         });
                     match read {
-                        Ok(held) => sections[index] = held,
+                        Ok(held) => found[index] = Some(held),
                         Err(error) if !isolate => return Err(damaged(error)),
                         Err(error) => {
                             let error = Damage::wrap(unit(section.table), error);
@@ -1565,6 +2089,14 @@ impl<'r> Walker<'r> {
                             self.lost.push((section.table, error));
                             state.skip(&skipped(recording, &self.lost))?;
                         }
+                    }
+                }
+                let mut sections: [&[u8]; TABLE_COUNT] = [&[][..]; TABLE_COUNT];
+                for (index, section) in manifest.sections.iter().enumerate() {
+                    if let (Some((start, stop)), Some(Some(cursor))) =
+                        (found[index], tables.get(section.table))
+                    {
+                        sections[index] = cursor.slice(start, stop);
                     }
                 }
                 if recording.verify {
@@ -1595,10 +2127,13 @@ impl<'r> Walker<'r> {
                 return Err(damaged(invalid("does not hold exactly its hours")));
             }
             let losing = self.lost.len();
-            for (table, cursor) in tables.iter().enumerate() {
-                if cursor
-                    .as_ref()
-                    .is_some_and(|cursor| framing::finish_sections(&cursor.reader).is_err())
+            for (table, cursor) in tables.iter_mut().enumerate() {
+                let finished = cursor.as_mut().map_or(Ok(()), |cursor| cursor.finish());
+                match finished {
+                    Err(error) if error.kind() != io::ErrorKind::InvalidData => return Err(error),
+                    Err(_) => {}
+                    Ok(()) => continue,
+                }
                 {
                     let error = invalid("does not hold exactly its hours");
                     if !isolate {

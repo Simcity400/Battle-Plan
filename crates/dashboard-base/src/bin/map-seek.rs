@@ -13,9 +13,8 @@
 //! and full.
 
 use dashboard_base::map_tables::selected_tables;
-use engine_allocation::credit::MemoryBudget;
 use replay::{
-    columnar_frames::{Limits, Recording},
+    columnar_frames::Recording,
     columnar_runs::{self, IndexFile, Layout, Snapshots, Whole},
     container::Parallel,
 };
@@ -226,7 +225,7 @@ impl Moves {
         hour: i32,
     ) -> io::Result<DecodedFrame> {
         let started = Instant::now();
-        if !snapshots.move_to(branch, hour, parallel.on_worker, &|| false)? {
+        if !snapshots.move_to(branch, hour, parallel.on_worker)? {
             return Err(invalid(format!(
                 "No run holds hour {hour} of branch {branch}"
             )));
@@ -281,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         path.push(".h4runs");
         PathBuf::from(path)
     });
-    let mut recording = Recording::open_path(&options.file, Limits::default())?;
+    let mut recording = Recording::open_path(&options.file)?;
     recording.select(tables);
     let hours = recording.hours();
     let file_bytes = recording.len();
@@ -355,7 +354,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format,
         mode,
         options.workers,
-        MemoryBudget::new(usize::MAX / 4),
     )?
     .with_change_facts();
     let mut random = Random(options.seed);

@@ -20,7 +20,7 @@ use crate::{
     },
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -298,11 +298,10 @@ struct Built {
 
 /// A publication built from projected hours, cut after each of `cuts`' hours; when `resume`
 /// names one of them, the emit is saved there and goes on from the publication.
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(content());
     let mut root = 0;
     let mut generation = 0;
@@ -316,7 +315,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -330,8 +328,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(content(), &directory, &saved).unwrap();
         }
@@ -418,9 +416,7 @@ fn owned(frames: &[DecodedFrame]) -> BTreeMap<(String, i32), Option<i128>> {
 
 /// Holds the publication `built` to the row scan of `frames`.
 fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let scan = scanned(frames);
     let actors = query::actors(&directory);
@@ -545,14 +541,13 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
 #[test]
 fn the_publication_holds_what_the_row_scan_reads_across_starts_cuts_and_a_resume() {
     let frames: Vec<DecodedFrame> = hours().into_iter().map(frame).collect();
-    let budget = Budget::new(64 << 20);
     for (label, starts, cuts, resume) in [
         ("one segment", &[][..], &[140][..], None),
         ("segments", &[106, 113, 126, 134][..], &[140][..], None),
         ("cuts", &[110][..], &[104, 115, 119, 122, 140][..], None),
         ("resume", &[118, 130][..], &[109, 125, 140][..], Some(125)),
     ] {
-        let built = build(projected(&frames, starts), cuts, resume, &budget);
+        let built = build(projected(&frames, starts), cuts, resume);
         check(&built, &frames, label);
     }
 }

@@ -4,7 +4,7 @@
 use super::*;
 use crate::products::air_superiority::daily::{Day, Operands, Pair, Roster, Theatres};
 use crate::products::air_superiority::daily::{self, Group};
-use dashboard_base::prepared::facts::{Checkpoint, Facts, Limits, MemoryBudget, ReadPages};
+use dashboard_base::prepared::facts::{Checkpoint, Facts, Limits, ReadPages};
 use dashboard_base::prepared::facts::{Namespace, Status};
 
 // The column names the writer opens; a reader restores them from its checkpoints.
@@ -20,7 +20,6 @@ const ACTIVITY: &str = "air-superiority-activity";
 fn limits() -> Limits {
     Limits {
         write_bytes: 1 << 20,
-        cache_bytes: 0,
         page_bytes: 64 << 10,
     }
 }
@@ -49,16 +48,16 @@ pub(super) struct Columns {
 }
 
 impl Columns {
-    fn new(branch: u64, budget: &MemoryBudget) -> io::Result<Self> {
+    fn new(branch: u64) -> io::Result<Self> {
         let open = |column| Namespace::new(FAMILY, branch, column);
         Ok(Self {
-            days: Facts::new(open(DAYS)?, budget.clone(), limits())?,
-            sets: Facts::new(open(SETS)?, budget.clone(), limits())?,
-            rosters: Facts::new(open(ROSTERS)?, budget.clone(), limits())?,
-            operands: Facts::new(open(OPERANDS)?, budget.clone(), limits())?,
-            theatres: Facts::new(open(THEATRES)?, budget.clone(), limits())?,
-            pairs: Facts::new(open(PAIRS)?, budget.clone(), limits())?,
-            activity: Facts::new(open(ACTIVITY)?, budget.clone(), limits())?,
+            days: Facts::new(open(DAYS)?, limits())?,
+            sets: Facts::new(open(SETS)?, limits())?,
+            rosters: Facts::new(open(ROSTERS)?, limits())?,
+            operands: Facts::new(open(OPERANDS)?, limits())?,
+            theatres: Facts::new(open(THEATRES)?, limits())?,
+            pairs: Facts::new(open(PAIRS)?, limits())?,
+            activity: Facts::new(open(ACTIVITY)?, limits())?,
         })
     }
 
@@ -66,22 +65,30 @@ impl Columns {
     pub fn restore<R: ReadPages>(
         source: &mut R,
         saved: &Checkpoints,
-        budget: &MemoryBudget,
-        cache_bytes: usize,
     ) -> io::Result<Self> {
-        let limits = Limits {
-            cache_bytes,
-            ..limits()
-        };
+        let limits = limits();
         Ok(Self {
-            days: Facts::restore(source, &saved.days, budget.clone(), limits)?,
-            sets: Facts::restore(source, &saved.sets, budget.clone(), limits)?,
-            rosters: Facts::restore(source, &saved.rosters, budget.clone(), limits)?,
-            operands: Facts::restore(source, &saved.operands, budget.clone(), limits)?,
-            theatres: Facts::restore(source, &saved.theatres, budget.clone(), limits)?,
-            pairs: Facts::restore(source, &saved.pairs, budget.clone(), limits)?,
-            activity: Facts::restore(source, &saved.activity, budget.clone(), limits)?,
+            days: Facts::restore(source, &saved.days, limits)?,
+            sets: Facts::restore(source, &saved.sets, limits)?,
+            rosters: Facts::restore(source, &saved.rosters, limits)?,
+            operands: Facts::restore(source, &saved.operands, limits)?,
+            theatres: Facts::restore(source, &saved.theatres, limits)?,
+            pairs: Facts::restore(source, &saved.pairs, limits)?,
+            activity: Facts::restore(source, &saved.activity, limits)?,
         })
+    }
+}
+
+impl Columns {
+    /// The bytes the columns' open and buffered values hold.
+    pub fn held_bytes(&self) -> usize {
+        self.days.held_bytes()
+            + self.sets.held_bytes()
+            + self.rosters.held_bytes()
+            + self.operands.held_bytes()
+            + self.theatres.held_bytes()
+            + self.pairs.held_bytes()
+            + self.activity.held_bytes()
     }
 }
 
@@ -244,11 +251,10 @@ impl Ledger {
 
     /// Append the pending facts and checkpoint every column.
     pub fn flush(&mut self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
-        let budget = MemoryBudget::preparation();
         if self.columns.is_none() {
             self.columns = Some(Box::new(match &self.checkpoints {
-                Some(saved) => Columns::restore(writer, saved, &budget, 0)?,
-                None => Columns::new(branch, &budget)?,
+                Some(saved) => Columns::restore(writer, saved)?,
+                None => Columns::new(branch)?,
             }));
         }
         let columns = self.columns.as_mut().expect("opened columns");

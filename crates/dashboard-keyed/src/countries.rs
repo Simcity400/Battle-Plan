@@ -4,9 +4,9 @@
 //! country `TAG@slot`, so a tag reused by another country, or a slot holding
 //! another tag, is never merged with the country that held it before.
 
-use replay_data::{rows::CountryRow, rows::tables};
-use replay_frame::frame::DecodedFrame;
-use std::collections::HashMap;
+use replay_data::rows::{CountryLinkRow, CountryRow, TableId, column, mask, tables};
+use replay_frame::frame::{ColumnFrame, DecodedFrame, Tables};
+use std::{collections::HashMap, io};
 
 /// One hour's country links and tags.
 #[derive(Default)]
@@ -24,6 +24,64 @@ impl Countries {
             links.iter().map(|link| (link.id, link.canonical_slot)),
             countries,
         ))
+    }
+
+    /// [`Self::read`] of an hour read through a walk's views.
+    pub fn read_walked(frame: &ColumnFrame<'_>) -> io::Result<Option<Self>> {
+        const LINKED: usize = column::<CountryLinkRow>("canonical_slot");
+        const SLOT: usize = column::<CountryRow>("canonical_slot");
+        const TAG: usize = column::<CountryRow>("tag");
+        let (Ok(links), Ok(countries)) = (
+            frame.complete(TableId::CountryLinks),
+            frame.complete(TableId::Countries),
+        ) else {
+            return Ok(None);
+        };
+        let mut read = Self::default();
+        read.links.reserve(links.len());
+        for &at in links.slots() {
+            read.links
+                .insert(links.key(at) as u32, links.value::<u32>(at, LINKED)?);
+        }
+        read.tags.reserve(countries.len());
+        for &at in countries.slots() {
+            let tag = countries.bytes(at, TAG)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "A country's tag was not recorded")
+            })?;
+            read.tags.insert(
+                countries.value::<u32>(at, SLOT)?,
+                String::from_utf8_lossy(tag).into_owned(),
+            );
+        }
+        Ok(Some(read))
+    }
+
+    /// [`Self::read`] of any frame's tables, a walk's views among them: the links' slots and the
+    /// countries' slots and tags alone.
+    pub fn read_tables<F: Tables + ?Sized>(frame: &F) -> io::Result<Option<Self>> {
+        const LINKED: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+        const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+        let (Ok(links), Ok(countries)) = (
+            frame.complete_rows::<tables::CountryLinks>(LINKED),
+            frame.complete_rows::<tables::Countries>(COUNTRY),
+        ) else {
+            return Ok(None);
+        };
+        let mut read = Self::default();
+        read.links.reserve(links.len());
+        for link in links.iter() {
+            let link = link?;
+            read.links.insert(link.id, link.canonical_slot);
+        }
+        read.tags.reserve(countries.len());
+        for row in countries.iter() {
+            let row = row?;
+            read.tags.insert(
+                row.canonical_slot,
+                String::from_utf8_lossy(&row.tag).into_owned(),
+            );
+        }
+        Ok(Some(read))
     }
 
     pub fn from_rows(

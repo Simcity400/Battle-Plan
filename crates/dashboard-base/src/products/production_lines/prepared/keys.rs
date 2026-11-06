@@ -1,5 +1,5 @@
 //! Each history's keyed values beyond those its fold holds: a handle's latest lifetime once
-//! its line closed, a variant's last design read and icon, an organisation's last version.
+//! its line closed, a variant's last design read, an organisation's last version.
 //! They lie in a copy-on-write B+ tree in `production-ledger`, one root per history, its
 //! nodes shared by forks and by every later root. A history holds only the values read or
 //! changed since the sweep before; a sweep writes the rest into its tree, in one batch.
@@ -13,14 +13,11 @@ pub(super) type Key = (u8, u64);
 pub(super) const HANDLE: u8 = 0;
 pub(super) const DESIGN: u8 = 1;
 pub(super) const ORGANISATION: u8 = 2;
-pub(super) const ICON: u8 = 3;
 
 /// A node's most entries or children.
 const FANOUT: usize = 64;
 /// A leaf's most value bytes, beyond its first entry.
 const LEAF_BYTES: usize = 8 * 1024;
-/// Decoded nodes kept in each of the cache's two generations.
-const CACHED_NODES: usize = 4096;
 /// The range a node names a child written in its own range by.
 const SAME: u64 = u64::MAX;
 /// Deeper than any tree of 2^64 keys.
@@ -104,26 +101,18 @@ fn read_node(pages: &mut dyn Pages, section: &str, at: NodeRef) -> io::Result<No
     }
 }
 
-/// Decoded nodes, the recent ones kept: two generations, the older dropped at a bound.
+/// The nodes decoded since the last sweep: those on the paths to the values the histories
+/// read since, which they hold until that sweep. A sweep lets them go.
 #[derive(Default)]
-struct Nodes {
-    hot: HashMap<NodeRef, Arc<Node>>,
-    cold: HashMap<NodeRef, Arc<Node>>,
-}
+struct Nodes(HashMap<NodeRef, Arc<Node>>);
 
 impl Nodes {
     fn get(&mut self, pages: &mut dyn Pages, section: &str, at: NodeRef) -> io::Result<Arc<Node>> {
-        if let Some(node) = self.hot.get(&at) {
+        if let Some(node) = self.0.get(&at) {
             return Ok(Arc::clone(node));
         }
-        let node = match self.cold.remove(&at) {
-            Some(node) => node,
-            None => Arc::new(read_node(pages, section, at)?),
-        };
-        if self.hot.len() >= CACHED_NODES {
-            self.cold = std::mem::take(&mut self.hot);
-        }
-        self.hot.insert(at, Arc::clone(&node));
+        let node = Arc::new(read_node(pages, section, at)?);
+        self.0.insert(at, Arc::clone(&node));
         Ok(node)
     }
 }
@@ -135,7 +124,7 @@ pub(super) struct Trees {
     /// Where the absence's unread spans are paged.
     pub absence: String,
     nodes: Nodes,
-    pub generation: u64,
+    generation: u64,
 }
 
 impl Trees {
@@ -148,10 +137,21 @@ impl Trees {
         }
     }
 
+    /// The sweep generation reads mark their values with.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Ends a sweep: the next reads begin a generation, and the nodes read before go.
+    pub fn swept(&mut self) {
+        self.generation += 1;
+        self.nodes.0 = HashMap::new();
+    }
+
     /// The nodes held decoded.
     #[cfg(test)]
     pub fn cached(&self) -> usize {
-        self.nodes.hot.len() + self.nodes.cold.len()
+        self.nodes.0.len()
     }
 }
 
@@ -510,23 +510,16 @@ impl<V: product_codec::Product + Clone> Resident<V> {
             .filter_map(|(id, entry)| Some((*id, entry.value.as_ref()?)))
     }
 
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Values a ledger record holds, which the tree it names may not.
     pub fn restore(&mut self, values: impl IntoIterator<Item = (u64, V)>) {
         for (id, value) in values {
             self.put(id, value, 0);
         }
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// The values read or changed since sweep `generation` began.
-    fn warm(&self, generation: u64) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| entry.seen >= generation)
-            .count()
     }
 
     /// Lets go of the values not read since sweep `generation` (every value when `all`),
@@ -571,7 +564,6 @@ pub(super) struct Keys {
     pub designs: Resident<(DesignRead, u64)>,
     /// Each organisation's last version, and the chunk it was pushed in.
     pub organisations: Resident<(RawOrganisation, u64)>,
-    pub icons: Resident<IconChoice>,
 }
 
 impl Default for Keys {
@@ -581,22 +573,14 @@ impl Default for Keys {
             handles: Resident::new(HANDLE),
             designs: Resident::new(DESIGN),
             organisations: Resident::new(ORGANISATION),
-            icons: Resident::new(ICON),
         }
     }
 }
 
 impl Keys {
+    #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.handles.len() + self.designs.len() + self.organisations.len() + self.icons.len()
-    }
-
-    /// The values read or changed since sweep `generation` began.
-    pub fn warm(&self, generation: u64) -> usize {
-        self.handles.warm(generation)
-            + self.designs.warm(generation)
-            + self.organisations.warm(generation)
-            + self.icons.warm(generation)
+        self.handles.len() + self.designs.len() + self.organisations.len()
     }
 
     /// Writes the values not read since sweep `generation` (every value when `all`) into
@@ -614,7 +598,6 @@ impl Keys {
         let mut went = self.handles.sweep(generation, all, &mut batch)?;
         went |= self.designs.sweep(generation, all, &mut batch)?;
         went |= self.organisations.sweep(generation, all, &mut batch)?;
-        went |= self.icons.sweep(generation, all, &mut batch)?;
         self.root = insert(pages, trees, self.root, &batch, out)?;
         Ok(went)
     }
@@ -714,7 +697,8 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(trees.cached() <= 2 * CACHED_NODES);
+        trees.swept();
+        assert_eq!(trees.cached(), 0);
     }
 
     #[test]

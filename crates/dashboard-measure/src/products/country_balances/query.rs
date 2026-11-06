@@ -340,10 +340,22 @@ pub fn cells<P: PageRead>(
     measure_name: &str,
     hour: i32,
 ) -> io::Result<Vec<Option<i128>>> {
+    cells_by(directory, tags, measure_name, &mut |key| {
+        Ok(engine::run_at(snapshot, key, hour)?.map(|(run, _)| run.value))
+    })
+}
+
+/// [`cells`], each key's value at the hour given by `read`.
+pub fn cells_by(
+    directory: &Directory,
+    tags: &[&str],
+    measure_name: &str,
+    read: &mut dyn FnMut(u64) -> io::Result<Option<i128>>,
+) -> io::Result<Vec<Option<i128>>> {
     let measure = measure(measure_name).ok_or_else(|| invalid("Unknown balance measure"))?;
     tags.iter()
         .map(|tag| match key(directory, tag, measure) {
-            Some((key, _)) => Ok(engine::run_at(snapshot, key, hour)?.map(|(run, _)| run.value)),
+            Some((key, _)) => read(key),
             None => Ok(None),
         })
         .collect()

@@ -12,6 +12,25 @@ use std::{
     io::{self, Read, Write},
 };
 
+/// The bytes `live` cells of a `kind` column hold, a list's or opaque cell's items aside:
+/// bools one bit each, lists and opaque cells one `u32` end each in their page.
+fn cells_bytes(kind: Kind, live: u64) -> u64 {
+    match kind {
+        Kind::Bool => live.div_ceil(64) * 8,
+        Kind::U8 | Kind::I8 => live,
+        Kind::U16 | Kind::I16 => live * 2,
+        Kind::U32
+        | Kind::I32
+        | Kind::Bytes
+        | Kind::OptionalI32
+        | Kind::OptionalU32
+        | Kind::U32List
+        | Kind::U64List
+        | Kind::Opaque => live * 4,
+        Kind::U64 | Kind::I64 | Kind::OptionalI64 | Kind::OptionalU64 => live * 8,
+    }
+}
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Footprint {
     pub keys_bytes: u64,
@@ -269,7 +288,7 @@ impl Census {
                     kind,
                     Kind::OptionalI32 | Kind::OptionalU32 | Kind::OptionalI64 | Kind::OptionalU64
                 );
-                self.values[offset + 1 + field] = live * kind.slot_bytes() as u64
+                self.values[offset + 1 + field] = cells_bytes(kind, live)
                     + meter.payload[field]
                     + live.div_ceil(64) * 8 * u64::from(optional);
                 self.values[offset + 1 + meter.id.schema().len() + field] = live.div_ceil(64) * 8;

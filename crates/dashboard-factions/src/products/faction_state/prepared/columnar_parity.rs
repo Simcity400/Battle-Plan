@@ -20,6 +20,44 @@ use replay_data::{format::FormatVersion, rows::*};
 
 const FORMAT: FormatVersion = FormatVersion::CURRENT;
 
+/// The supplying reads a walk does not hold, sought in the row recording's frames.
+struct Recorded<'a>(&'a Source);
+
+impl columnar::Earlier for Recorded<'_> {
+    fn read(
+        &self,
+        branch: u64,
+        (lo, hi): (i32, i32),
+        cat: Option<&catalogue::Catalogue>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<columnar::Kept>> {
+        let mut walks = Supplying::new(self.0, branch);
+        let Some(hour) = walks
+            .read_hour((branch, hi), cancelled)?
+            .filter(|&hour| hour >= lo)
+        else {
+            return Ok(None);
+        };
+        let Some(narrow) = walks.frame(hour, false, cancelled)? else {
+            return Ok(None);
+        };
+        let wide = cat.is_some_and(|cat| {
+            selectors::read_names_scripted(replay_frame::frame::HourFrame::from(&*narrow), cat)
+        });
+        let frame = match wide {
+            true => walks
+                .frame(hour, true, cancelled)?
+                .ok_or_else(|| io::Error::other("The read's scripted-text tables are not recorded"))?,
+            false => narrow,
+        };
+        Ok(Some(columnar::Kept { hour, wide, frame }))
+    }
+}
+
+fn projector<'a>(source: &'a Source, context: &LoadContext) -> Projector<'a> {
+    Projector::new(FORMAT, catalogued(source, context), Arc::new(Recorded(source))).unwrap()
+}
+
 macro_rules! rows {
     ($frame:expr, $table:ident) => {
         match &mut *$frame.tables[TableId::$table.index()] {
@@ -363,12 +401,10 @@ fn parity_in(
     let mut row = Walked::default();
     let mut projected = Walked::default();
     let mut tracker = FrameChangeTracker::new();
-    let mode = replay_data::scope::CaptureMode::Full;
-    let projector = || Projector::new((FORMAT, mode), source, catalogued(source, context)).unwrap();
     let tables = columnar::tables();
     let mut walk = Synthetic::new(tables, branch, inputs[0].hour).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
-    let mut segment = projector();
+    let mut segment = projector(source, context);
     let mut hours: Vec<columnar::Hour> = Vec::new();
     segment
         .start(Start::Run { continues: false }, branch, inputs[0].hour)
@@ -379,7 +415,7 @@ fn parity_in(
         if ordinal > 0 && opens {
             segment.end(&mut hours).unwrap();
             emit(&mut hours, &mut projected, &projected_sections, reload);
-            segment = projector();
+            segment = projector(source, context);
             let start = if run {
                 Start::Run { continues: true }
             } else {
@@ -998,17 +1034,8 @@ fn held_dynamic_texts_let_an_hour_moving_only_unread_fields_idle_without_a_trigg
     }
     let (_, evaluated, built) = projected(&source, &context, &inputs);
     assert_eq!(evaluated, 3, "the start, the viewer and its renaming");
-    let at = |hour: i32| built[(hour - 100) as usize].0;
-    let anew = |hour: i32| built[(hour - 100) as usize].1;
+    let at = |hour: i32| built[(hour - 100) as usize];
     assert!(at(100) > 0, "the first hour evaluates the held texts");
-    assert!(anew(100) > 0, "the first frame builds its tables");
-    for hour in 101..109 {
-        assert_eq!(
-            anew(hour),
-            anew(100),
-            "{hour}: a later frame patches or keeps the tables the first built"
-        );
-    }
     for hour in [101, 102, 103, 105, 107, 108] {
         assert_eq!(
             at(hour),
@@ -1118,18 +1145,16 @@ fn world_hour(hour: i32) -> DecodedFrame {
 }
 
 /// One segment's projection of `inputs` read with `context`, from a run's start; how many hours
-/// it evaluated, and how many frames for dynamic texts, and trigger tables built anew for them,
-/// it had built after each hour.
+/// it evaluated, and how many frames for dynamic texts it had built after each hour.
 fn projected(
     source: &Source,
     context: &LoadContext,
     inputs: &[DecodedFrame],
-) -> (Vec<columnar::Hour>, usize, Vec<(usize, u32)>) {
+) -> (Vec<columnar::Hour>, usize, Vec<usize>) {
     let branch = inputs[0].branch;
     let mut walk = Synthetic::new(columnar::tables(), branch, inputs[0].hour).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
-    let mode = replay_data::scope::CaptureMode::Full;
-    let mut segment = Projector::new((FORMAT, mode), source, catalogued(source, context)).unwrap();
+    let mut segment = projector(source, context);
     segment
         .start(Start::Run { continues: false }, branch, inputs[0].hour)
         .unwrap();
@@ -1168,7 +1193,7 @@ fn projected(
                 .unwrap();
         })
         .unwrap();
-        built.push((segment.trigger_frames(), segment.trigger_tables_anew()));
+        built.push(segment.trigger_frames());
     }
     segment.end(&mut hours).unwrap();
     (hours, segment.evaluated, built)

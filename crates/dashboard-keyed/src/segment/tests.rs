@@ -7,7 +7,7 @@ use replay_data::{
     rows::{ShipRow, TableRows, TableSchema, VariantDefinitionRow, tables},
     scope::CaptureMode,
 };
-use replay_frame::frame::TableView;
+use replay_frame::frame::{DecodedFrame, TableView};
 
 /// A family reading its ships' strength and the designs' reads.
 struct Toy;
@@ -43,19 +43,24 @@ struct Seeing;
 impl Reader<Toy> for Seeing {
     fn read(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         _: &FrameChanges,
         touched: &Touched,
     ) -> io::Result<(Seen, usize)> {
-        let ships = frame
-            .complete::<tables::Ships>()
-            .map(|rows| rows.iter().map(|row| (row.id, row.strength)).collect())
-            .unwrap_or_default();
-        let designs = &frame.tables[TableId::VariantDefinitions.index()];
-        let complete = matches!(&**designs, TableView::Complete(_));
+        let strength = replay_data::rows::column::<ShipRow>("strength");
+        let ships = match frame.complete(TableId::Ships) {
+            Ok(rows) => rows
+                .slots()
+                .iter()
+                .map(|&slot| Ok((rows.key(slot) as u64, rows.value::<i64>(slot, strength)?)))
+                .collect::<io::Result<_>>()?,
+            Err(_) => Vec::new(),
+        };
+        let complete = frame.view(TableId::VariantDefinitions).is_complete();
         let touch = touched.of(TableId::Ships);
         let written = (!touch.restated).then(|| touch.written.iter().map(|&(key, _)| key).collect());
-        Ok(((ships, designs.sampled_at(), complete, written), 1))
+        let designs = frame.sampled_at(TableId::VariantDefinitions);
+        Ok(((ships, designs, complete, written), 1))
     }
 }
 

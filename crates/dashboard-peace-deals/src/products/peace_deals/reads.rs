@@ -5,9 +5,13 @@
 //! the row path (the test oracle's scan of row frames) share the reader.
 
 use super::{CountryTags, exact::missing_reason, state_action_key};
-use dashboard_text::metadata::country_tables;
-use replay_data::rows::{PeaceSettlementRow, TABLE_COUNT, TableId, tables};
-use replay_frame::frame::{DecodedFrame, TableView};
+use replay_data::rows::{
+    CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
+    LexicalTokenRow, PeaceConferenceRow, PeaceSettlementRow, PoliticalPartyRow, PoliticsRow,
+    ProvinceRow, StateRow, SubjectRow, TABLE_COUNT, TableId, TableSchema, WarRelationRow, mask,
+    tables,
+};
+use replay_frame::frame::{OperandStatus, Tables};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -403,15 +407,40 @@ fn rows<T: Clone + PartialEq>(
     change
 }
 
-/// Each row of `T`'s complete table as `project` reads it: none when it cannot be read whole.
-fn read<T: replay_data::rows::TableSchema, R>(
-    frame: &DecodedFrame,
+/// Each row of `T`'s complete table as `project` reads it, of the fields `mask` names: none
+/// when it cannot be read whole.
+fn read<T: TableSchema, R>(
+    frame: &impl Tables,
+    mask: u64,
     project: impl Fn(&T::Row) -> R,
-) -> Option<Vec<R>> {
-    frame
-        .complete::<T>()
-        .ok()
-        .map(|rows| rows.iter().map(project).collect())
+) -> io::Result<Option<Vec<R>>> {
+    let Ok(rows) = frame.complete_rows::<T>(mask) else {
+        return Ok(None);
+    };
+    let mut read = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        read.push(project(&*row?));
+    }
+    Ok(Some(read))
+}
+
+/// The countries, each its id, canonical slot and tag, and the links, each its raw id and
+/// canonical slot: none when either cannot be read whole.
+fn country_tables(frame: &impl Tables) -> io::Result<Option<CountryTags>> {
+    let countries = read::<tables::Countries, _>(
+        frame,
+        mask::<CountryRow>(&["canonical_slot", "tag"]),
+        |row| (row.id, row.canonical_slot, row.tag.clone()),
+    )?;
+    let links = read::<tables::CountryLinks, _>(
+        frame,
+        mask::<CountryLinkRow>(&["canonical_slot"]),
+        |row| (row.id, row.canonical_slot),
+    )?;
+    Ok(match (countries, links) {
+        (Some(countries), Some(links)) => CountryTags::resolve(&countries, &links),
+        _ => None,
+    })
 }
 
 /// Reads each table an hour may have changed as the observer does, and hands on what they give
@@ -440,15 +469,13 @@ impl Reader {
     /// The tables `frame` holds whose `changed` flag is set, read again.
     pub(super) fn read(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &impl Tables,
         changed: &[bool; TABLE_COUNT],
-    ) -> HourReads {
+    ) -> io::Result<HourReads> {
         let changed = |table: TableId| changed[table.index()];
         let mut hour = HourReads::default();
         if changed(TableId::Countries) || changed(TableId::CountryLinks) {
-            let new = country_tables(frame)
-                .ok()
-                .and_then(|(countries, links)| CountryTags::resolve(countries, links));
+            let new = country_tables(frame)?;
             if self.countries.as_ref().is_none_or(|sent| sent.as_deref() != new.as_ref()) {
                 let new = new.map(Arc::new);
                 self.countries = Some(new.clone());
@@ -456,57 +483,77 @@ impl Reader {
             }
         }
         if changed(TableId::States) {
-            let new = read::<tables::States, _>(frame, |row| (row.id, row.owner));
+            let new = read::<tables::States, _>(frame, mask::<StateRow>(&["owner"]), |row| {
+                (row.id, row.owner)
+            })?;
             hour.owners = rows(&mut self.owners, new, owner_key);
         }
         if changed(TableId::WarRelations) {
-            let new = read::<tables::WarRelations, _>(frame, |row| {
-                (row.first_country, row.second_country, row.start_hour, row.end_hour)
-            });
+            let new = read::<tables::WarRelations, _>(
+                frame,
+                mask::<WarRelationRow>(&["start_hour", "end_hour"]),
+                |row| (row.first_country, row.second_country, row.start_hour, row.end_hour),
+            )?;
             hour.wars = rows(&mut self.wars, new, war_key);
         }
         if changed(TableId::Subjects) {
-            let new = read::<tables::Subjects, _>(frame, |row| {
-                (
-                    row.overlord,
-                    row.subject,
-                    row.start_hour,
-                    row.end_hour,
-                    row.cancel,
-                    row.state.clone(),
-                )
-            });
+            let new = read::<tables::Subjects, _>(
+                frame,
+                mask::<SubjectRow>(&["start_hour", "end_hour", "cancel", "state"]),
+                |row| {
+                    (
+                        row.overlord,
+                        row.subject,
+                        row.start_hour,
+                        row.end_hour,
+                        row.cancel,
+                        row.state.clone(),
+                    )
+                },
+            )?;
             hour.subjects = rows(&mut self.subjects, new, subject_key);
         }
         if changed(TableId::CountryCounterInputs) {
-            let new = read::<tables::CountryCounterInputs, _>(frame, |row| {
-                (row.country, row.owned_state_count > 0)
-            });
+            let new = read::<tables::CountryCounterInputs, _>(
+                frame,
+                mask::<CountryCounterInputRow>(&["owned_state_count"]),
+                |row| (row.country, row.owned_state_count > 0),
+            )?;
             hour.existence = rows(&mut self.existence, new, existence_key);
         }
         if changed(TableId::Politics) {
-            let new = read::<tables::Politics, _>(frame, |row| (row.country, row.ruling_party));
+            let new = read::<tables::Politics, _>(
+                frame,
+                mask::<PoliticsRow>(&["ruling_party"]),
+                |row| (row.country, row.ruling_party),
+            )?;
             hour.politics = rows(&mut self.politics, new, politics_key);
         }
         if changed(TableId::PoliticalParties) {
-            let new = read::<tables::PoliticalParties, _>(frame, |row| {
-                (row.country, row.id, row.token.clone())
-            });
+            let new = read::<tables::PoliticalParties, _>(
+                frame,
+                mask::<PoliticalPartyRow>(&["token"]),
+                |row| (row.country, row.id, row.token.clone()),
+            )?;
             hour.parties = rows(&mut self.parties, new, party_key);
         }
         if changed(TableId::CountryAppearance) {
-            let new = read::<tables::CountryAppearance, _>(frame, |row| {
-                (row.country, row.leader_ideology.clone())
-            });
+            let new = read::<tables::CountryAppearance, _>(
+                frame,
+                mask::<CountryAppearanceRow>(&["leader_ideology"]),
+                |row| (row.country, row.leader_ideology.clone()),
+            )?;
             hour.appearances = rows(&mut self.appearances, new, appearance_key);
         }
         if changed(TableId::Provinces) {
-            hour.vps = self.victory_points(frame);
+            hour.vps = self.victory_points(frame)?;
         }
         if changed(TableId::PeaceConferences) {
-            let new = read::<tables::PeaceConferences, _>(frame, |row| {
-                (row.id, row.current_turn, row.finalized)
-            });
+            let new = read::<tables::PeaceConferences, _>(
+                frame,
+                mask::<PeaceConferenceRow>(&["current_turn", "finalized"]),
+                |row| (row.id, row.current_turn, row.finalized),
+            )?;
             hour.roster = rows(&mut self.roster, new, conference_key);
         }
         if changed(TableId::LexicalTokens) {
@@ -517,25 +564,30 @@ impl Reader {
             }
         }
         if changed(TableId::PeaceSettlements) {
-            self.settlements(frame, &mut hour);
+            self.settlements(frame, &mut hour)?;
         }
-        hour
+        Ok(hour)
     }
 
     /// The victory points summed by state, where a province's state or points moved.
-    fn victory_points(&mut self, frame: &DecodedFrame) -> Change<Rows<(u32, i64)>> {
-        let Ok(provinces) = frame.complete::<tables::Provinces>() else {
+    fn victory_points(&mut self, frame: &impl Tables) -> io::Result<Change<Rows<(u32, i64)>>> {
+        let Some(fields) = read::<tables::Provinces, _>(
+            frame,
+            mask::<ProvinceRow>(&["state", "victory_points"]),
+            |row| (row.state, row.victory_points),
+        )?
+        else {
             self.provinces = None;
-            return rows(&mut self.vps, None, vp_key);
+            return Ok(rows(&mut self.vps, None, vp_key));
         };
-        let fields = provinces.iter().map(|row| (row.state, row.victory_points));
+        let fields = fields.iter().copied();
         if self.vps.as_ref().is_some_and(Option::is_some)
             && self
                 .provinces
                 .as_ref()
                 .is_some_and(|held| fields.clone().eq(held.iter().copied()))
         {
-            return None;
+            return Ok(None);
         }
         let mut totals = HashMap::new();
         for (state, victory_points) in fields.clone() {
@@ -550,20 +602,14 @@ impl Reader {
             }
             None => self.provinces = Some(fields.collect()),
         }
-        rows(&mut self.vps, Some(totals), vp_key)
+        Ok(rows(&mut self.vps, Some(totals), vp_key))
     }
 
     /// The finalizer table's status where it changed, and its rows not handed on before.
-    fn settlements(&mut self, frame: &DecodedFrame, hour: &mut HourReads) {
-        let view = &*frame.tables[TableId::PeaceSettlements.index()];
-        let rows = match view {
-            TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-                rows.rows::<tables::PeaceSettlements>()
-            }
-            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => None,
-        };
+    fn settlements(&mut self, frame: &impl Tables, hour: &mut HourReads) -> io::Result<()> {
+        let rows = frame.rows::<tables::PeaceSettlements>(TableId::PeaceSettlements.full_mask());
         let finalizers = Finalizers {
-            reason: missing_reason(view),
+            reason: missing_reason(frame.table_status(TableId::PeaceSettlements)),
             readable: rows.is_some(),
         };
         if self.finalizers.as_ref() != Some(&finalizers) {
@@ -571,32 +617,34 @@ impl Reader {
             hour.finalizers = Some(finalizers);
         }
         let Some(rows) = rows else {
-            return;
+            return Ok(());
         };
-        let tokens = frame.complete::<tables::LexicalTokens>().ok();
-        for row in rows {
+        let tokens = frame
+            .complete_rows::<tables::LexicalTokens>(mask::<LexicalTokenRow>(&["literal"]))
+            .ok();
+        for row in rows.iter() {
+            let row = row?;
             if !self.seen.insert(row.sequence) {
                 continue;
             }
-            let tokens = row
-                .actions
-                .iter()
-                .filter_map(|action| {
-                    let tokens = tokens?;
-                    let index = tokens
-                        .binary_search_by_key(&action.token, |token| token.token)
-                        .ok()?;
-                    Some((
-                        action.token,
-                        std::str::from_utf8(&tokens[index].literal).ok()?.to_owned(),
-                    ))
-                })
-                .collect();
+            let mut spelled = Vec::new();
+            for action in &row.actions {
+                let Some(tokens) = &tokens else {
+                    continue;
+                };
+                let Some(token) = tokens.get(u128::from(action.token))? else {
+                    continue;
+                };
+                if let Ok(literal) = std::str::from_utf8(&token.literal) {
+                    spelled.push((action.token, literal.to_owned()));
+                }
+            }
             hour.settled.push(Settled {
-                row: row.clone(),
-                tokens,
+                row: row.into_owned(),
+                tokens: spelled.into_iter().collect(),
             });
         }
+        Ok(())
     }
 
     /// The bytes the reads it handed on hold.

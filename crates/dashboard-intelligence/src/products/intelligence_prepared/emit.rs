@@ -84,7 +84,7 @@ impl Emit {
             self.frame.tables[TableId::CountryLinks.index()] = links;
         }
         self.frame.hour = at;
-        self.reads.apply(&mut hour);
+        let touched = self.reads.apply(&mut hour);
         let reads = [
             (TableId::OperativeMemberships, facts::MEMBERSHIPS_READ),
             (TableId::Operations, facts::OPERATIONS_READ),
@@ -119,7 +119,7 @@ impl Emit {
                 inputs.source,
                 inputs.content,
                 &self.frame,
-                (hour.flags, &self.reads),
+                (hour.flags, &self.reads, &touched),
                 (&changes, roster.as_ref()),
                 &rebuilt,
                 Some((&store, &key)),
@@ -130,7 +130,7 @@ impl Emit {
                 inputs.source,
                 inputs.content,
                 &self.frame,
-                (hour.flags, &self.reads),
+                (hour.flags, &self.reads, &touched),
                 (&changes, roster.as_ref()),
                 &rebuilt,
                 None,

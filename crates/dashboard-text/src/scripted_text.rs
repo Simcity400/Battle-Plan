@@ -23,12 +23,100 @@ use job_priority::SpawnCarried as _;
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 
-use crate::scope::{RecordedScopes, table as rows};
+use crate::scope::{RecordedScopes, table_in as rows};
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::{localisation::Localisation, localisation::crt_case_text};
-use replay_data::{rows::TableSchema, rows::tables};
+use replay_data::rows::{
+    CharacterRow, CountryAppearanceRow, CountryLinkRow, CountryRow, FactionRow,
+    IndustrialOrganisationRow, IntelligenceAgencyRow, LexicalTokenRow, LocalPlayerRow,
+    PartyLeaderRow, PoliticalPartyRow, PoliticsRow, ProvinceNameRow, ProvinceRow, RowCodec,
+    StateResistanceRow, StateRow, TableSchema, column, mask, tables,
+};
+use replay_frame::frame::{HourFrame, OperandStatus, Rowset};
+use std::borrow::Cow;
 #[cfg(test)]
 use replay_frame::frame::TableView;
+
+/// The fields of each table scripted text reads.
+const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["owner", "token", "name"]);
+pub(super) const CHARACTER: u64 =
+    mask::<CharacterRow>(&["country", "name_token_id", "name", "token", "gender"]);
+pub(super) const POLITICS: u64 =
+    mask::<PoliticsRow>(&["capital", "original_capital", "ruling_party", "last_election"]);
+pub(super) const APPEARANCE: u64 = mask::<CountryAppearanceRow>(&[
+    "overlord",
+    "old_name",
+    "old_adjective",
+    "old_definite_name",
+]);
+pub(super) const STATE: u64 = mask::<StateRow>(&[
+    "owner",
+    "controller",
+    "manpower_available",
+    "custom_name",
+    "owner_name",
+    "continent",
+    "best_vp_index",
+]);
+pub(super) const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const PLAYER: u64 = mask::<LocalPlayerRow>(&["country", "observer_country"]);
+pub(super) const PARTY: u64 = mask::<PoliticalPartyRow>(&[
+    "popularity",
+    "token",
+    "tag",
+    "name_default",
+    "name",
+    "long_name",
+]);
+const FACTION: u64 = mask::<FactionRow>(&["name", "template_token"]);
+const UNIT_LEADER: u64 = mask::<replay_data::rows::UnitLeaderRow>(&["character_id"]);
+pub(super) const PARTY_LEADER: u64 = mask::<PartyLeaderRow>(&["character"]);
+pub(super) const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "manpower_residual"]);
+pub(super) const AGENCY: u64 = mask::<IntelligenceAgencyRow>(&["name", "created"]);
+pub(super) const PROVINCE: u64 = mask::<ProvinceRow>(&["state", "owner", "controller"]);
+pub(super) const PROVINCE_NAME: u64 = mask::<ProvinceNameRow>(&["name"]);
+pub(super) const RESISTANCE: u64 = mask::<StateResistanceRow>(&["country"]);
+const SEED: u64 = mask::<replay_data::rows::ClockRow>(&["seed"]);
+pub(super) const LITERAL: usize = column::<LexicalTokenRow>("literal");
+pub(super) const PROVINCE_NAME_COLUMN: usize = column::<ProvinceNameRow>("name");
+
+/// A walked row's failure to build, refused where it is reached.
+pub(super) fn built(why: std::io::Error) -> String {
+    why.to_string()
+}
+
+/// The row of `rows` keyed `key`.
+pub(super) fn keyed<'r, R: RowCodec + Clone>(
+    rows: &Rowset<'r, R>,
+    key: u128,
+) -> Result<Option<Cow<'r, R>>, String> {
+    rows.get(key).map_err(built)
+}
+
+/// The first row of `rows` whose key `keep` passes; a walk builds only that one.
+pub(super) fn first<'r, R: RowCodec + Clone + 'r>(
+    rows: &Rowset<'r, R>,
+    keep: impl FnMut(u128) -> bool,
+) -> Result<Option<Cow<'r, R>>, String> {
+    rows.keyed(keep).next().transpose().map_err(built)
+}
+
+/// Each row of `rows`, a walked row's failure to build refused.
+pub(super) fn each<'r, R: RowCodec + Clone + 'r>(
+    rows: Rowset<'r, R>,
+) -> impl DoubleEndedIterator<Item = Result<Cow<'r, R>, String>> + 'r {
+    rows.iter().map(|row| row.map_err(built))
+}
+
+/// LexicalTokens' spelling of `token`, borrowed where it is held.
+pub(super) fn spelled<'r>(
+    lexical: &Rowset<'r, LexicalTokenRow>,
+    token: u32,
+) -> Result<Option<&'r [u8]>, String> {
+    lexical
+        .text(u128::from(token), |row| &row.literal, LITERAL)
+        .map_err(built)
+}
 
 /// Recorded inputs for authored country-scoped scripted text: every table its triggers and properties read.
 /// Consumers that see a scripted `[` in resolved content decode this set once
@@ -565,12 +653,16 @@ pub fn stored_text(
 pub struct ScriptedText<'a> {
     localisation: &'a Localisation,
     content: &'a ScriptedContent,
-    scopes: std::sync::Arc<RecordedScopes>,
+    scopes: std::sync::Arc<RecordedScopes<'a>>,
     names: std::sync::Arc<recorded_names::RecordedNames<'a>>,
-    lexical_names: std::sync::Arc<crate::faction_names::LexicalNames>,
-    frame: &'a dyn replay_frame::frame::DecodedSource,
+    lexical_names: std::sync::Arc<crate::faction_names::LexicalNames<'a>>,
+    frame: HourFrame<'a>,
+    /// Raw zero's tag, read on first use.
+    reserved_tag: std::sync::OnceLock<Result<String, String>>,
     root: u32,
     pub(crate) nato_counters: bool,
+    /// The walk's lexer folds, given to the trigger world it builds.
+    lexicon: Option<&'a dashboard_world::Lexicon>,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
 }
 
@@ -579,9 +671,12 @@ fn named(segment: &str, name: &str) -> bool {
     segment.eq_ignore_ascii_case(name)
 }
 
-/// Whether the frame holds the whole table.
-fn complete<T: TableSchema>(frame: &dyn replay_frame::frame::DecodedSource) -> bool {
-    frame.complete_status(T::ID).is_ok()
+/// Whether the frame holds the whole table, whatever its rows' layout.
+fn complete<T: TableSchema>(frame: HourFrame<'_>) -> bool {
+    matches!(
+        frame.status(T::ID),
+        OperandStatus::Complete | OperandStatus::WrongLayout
+    )
 }
 
 /// A recorded query of a scripted text's own hour reads ([`crate::triggers::inputs`]).
@@ -735,13 +830,27 @@ impl ScriptedText<'_> {
 
     pub(crate) fn countries_gap_unrecorded(&self) -> Option<String> {
         (!complete::<tables::Countries>(self.frame))
-            .then(|| rows::<tables::Countries>(self.frame).1)
+            .then(|| rows::<tables::Countries>(self.frame, 0).1)
     }
 }
 
 /// The hour's Clock random seed, if recorded.
 pub fn clock_seed(frame: &dyn replay_frame::frame::RecordedSource) -> Option<u32> {
     frame.clock_seed().ok().flatten().map(|seed| seed as u32)
+}
+
+/// [`clock_seed`] of any frame's tables, a walk's views among them.
+pub fn clock_seed_in(frame: HourFrame<'_>) -> Option<u32> {
+    match frame.decoded() {
+        Some(decoded) => clock_seed(decoded),
+        None => frame
+            .complete::<tables::Clock>(SEED)
+            .ok()?
+            .iter()
+            .next()?
+            .ok()
+            .map(|row| row.seed as u32),
+    }
 }
 
 impl<'a> ScriptedText<'a> {
@@ -754,12 +863,22 @@ impl<'a> ScriptedText<'a> {
         content: &'a ScriptedContent,
         root: u32,
     ) -> Self {
-        Self::with_scopes(
+        Self::new_in(HourFrame::Decoded(frame), localisation, content, root)
+    }
+
+    /// [`Self::new`] of any frame's tables, a walk's views among them.
+    pub fn new_in(
+        frame: HourFrame<'a>,
+        localisation: &'a Localisation,
+        content: &'a ScriptedContent,
+        root: u32,
+    ) -> Self {
+        Self::with_scopes_in(
             frame,
             localisation,
             content,
             root,
-            RecordedScopes::read(frame, std::sync::Arc::clone(&content.tag_aliases)),
+            RecordedScopes::read_in(frame, std::sync::Arc::clone(&content.tag_aliases)),
         )
     }
 
@@ -771,22 +890,33 @@ impl<'a> ScriptedText<'a> {
         localisation: &'a Localisation,
         content: &'a ScriptedContent,
         root: u32,
-        scopes: RecordedScopes,
+        scopes: RecordedScopes<'a>,
     ) -> Self {
+        Self::with_scopes_in(HourFrame::Decoded(frame), localisation, content, root, scopes)
+    }
+
+    /// [`Self::with_scopes`] of any frame's tables, a walk's views among them.
+    pub fn with_scopes_in(
+        frame: HourFrame<'a>,
+        localisation: &'a Localisation,
+        content: &'a ScriptedContent,
+        root: u32,
+        scopes: RecordedScopes<'a>,
+    ) -> Self {
+        let names = CountryNames::read(&frame, localisation);
         Self {
             localisation,
             content,
             scopes: std::sync::Arc::new(scopes),
-            names: std::sync::Arc::new(recorded_names::RecordedNames(CountryNames::read(
-                frame,
-                localisation,
-            ))),
-            lexical_names: std::sync::Arc::new(crate::faction_names::LexicalNames::from_source(
-                frame,
-            )),
+            names: std::sync::Arc::new(recorded_names::RecordedNames(names)),
+            lexical_names: std::sync::Arc::new(
+                crate::faction_names::LexicalNames::from_tables(frame),
+            ),
             frame,
+            reserved_tag: std::sync::OnceLock::new(),
             root,
             nato_counters: installed_content_settings::settings::Counters::default().nato == 1,
+            lexicon: None,
             world: std::sync::OnceLock::new(),
         }
     }
@@ -800,10 +930,19 @@ impl<'a> ScriptedText<'a> {
             names: std::sync::Arc::clone(&self.names),
             lexical_names: std::sync::Arc::clone(&self.lexical_names),
             frame: self.frame,
+            reserved_tag: std::sync::OnceLock::new(),
             root,
             nato_counters: self.nato_counters,
+            lexicon: self.lexicon,
             world: std::sync::OnceLock::new(),
         }
+    }
+
+    /// This text on a walk's frame, its trigger world finding tokens by the walk's lexer folds
+    /// ([`crate::triggers::World::with_lexicon`]).
+    pub fn with_lexicon(mut self, lexicon: Option<&'a dashboard_world::Lexicon>) -> Self {
+        self.lexicon = lexicon;
+        self
     }
 
     /// Unit-bonus icons, including nested effect descriptions, follow the view.
@@ -833,22 +972,16 @@ impl<'a> ScriptedText<'a> {
     pub fn organisation_template(&self, reference: u64) -> Result<(String, EventScopes), String> {
         let organisations = self
             .frame
-            .complete::<tables::IndustrialOrganisations>()
+            .complete::<tables::IndustrialOrganisations>(ORGANISATION)
             .map_err(|why| why.to_string())?;
-        let row = organisations
-            .iter()
-            .find(|row| row.organisation == reference)
+        let row = keyed(&organisations, u128::from(reference))?
             .ok_or_else(|| format!("IndustrialOrganisations lacks organisation {reference:#x}"))?;
         let name = if row.name.is_empty() {
-            let tokens = self.frame.lexical().map_err(|why| why.to_string())?;
-            let at = tokens
-                .binary_search_by_key(&row.token, |token| token.token)
-                .map_err(|_| "LexicalTokens lacks industrial organisation name")?;
-            tokens
-                .get(at)
-                .expect("located lexical token")
-                .literal
-                .as_slice()
+            let tokens = self
+                .frame
+                .complete::<tables::LexicalTokens>(0)
+                .map_err(|why| why.to_string())?;
+            spelled(&tokens, row.token)?.ok_or("LexicalTokens lacks industrial organisation name")?
         } else {
             row.name.as_slice()
         };
@@ -1059,10 +1192,11 @@ impl<'a> ScriptedText<'a> {
         (result, session)
     }
 
-    pub fn recorded(&self) -> &RecordedScopes {
+    pub fn recorded(&self) -> &RecordedScopes<'a> {
         &self.scopes
     }
-    pub fn frame(&self) -> &'a dyn replay_frame::frame::DecodedSource {
+    /// The hour's tables, a decoded frame's or a walk's views.
+    pub fn tables(&self) -> HourFrame<'a> {
         self.frame
     }
 
@@ -1076,7 +1210,7 @@ impl<'a> ScriptedText<'a> {
         use crate::triggers::inputs::Key;
         match key {
             Key::Table(_) | Key::Fields(..) | Key::FocusTag(_) => None,
-            Key::ClockSeed => Some(crate::triggers::inputs::digest(&clock_seed(self.frame))),
+            Key::ClockSeed => Some(crate::triggers::inputs::digest(&clock_seed_in(self.frame))),
             Key::World(query) => self.trigger_world().ok().map(|world| world.reread(query)),
             Key::Scopes(query) => Some(self.scopes.reread(query)),
             Key::Names(query) => Some(self.names.reread(query)),
@@ -1126,7 +1260,13 @@ impl<'a> ScriptedText<'a> {
 
     pub(crate) fn country_tag_unrecorded(&self, country: u32) -> Result<&str, String> {
         if country == 0 {
-            installed_content_country_names::country_names::reserved_zero_tag(self.frame)
+            self.reserved_tag
+                .get_or_init(|| {
+                    installed_content_country_names::country_names::reserved_zero_tag_in(&self.frame)
+                        .map(Cow::into_owned)
+                })
+                .as_deref()
+                .map_err(Clone::clone)
         } else {
             self.scopes
                 .tag(country)
@@ -1724,15 +1864,10 @@ impl<'a> ScriptedText<'a> {
         if is("GetName") {
             // Character GetName copies the stored name directly;
             // party leaders instead use the token fallback.
-            let (characters, gap) = (
-                self.frame.character_rows(),
-                self.frame.row_gap(tables::Characters::ID),
-            );
-            let row = characters
-                .iter()
-                .find(|row| row.id == id)
+            let (characters, gap) = rows::<tables::Characters>(self.frame, CHARACTER);
+            let row = keyed(&characters, u128::from(id))?
                 .ok_or_else(|| format!("character {id} has no Characters row: {gap}"))?;
-            return self.stored_character_name(row).map(Some);
+            return self.stored_character_name(&row).map(Some);
         }
         if is("GetIdeology") || is("GetIdeologyGroup") {
             return Err(format!(
@@ -1756,16 +1891,11 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn character_name_unrecorded(&self, id: u32) -> Result<String, String> {
-        let (characters, gap) = (
-            self.frame.character_rows(),
-            self.frame.row_gap(tables::Characters::ID),
-        );
-        let row = characters
-            .iter()
-            .find(|row| row.id == id)
+        let (characters, gap) = rows::<tables::Characters>(self.frame, CHARACTER);
+        let row = keyed(&characters, u128::from(id))?
             .ok_or_else(|| format!("character {id} has no Characters row: {gap}"))?;
         if !row.name.is_empty() {
-            return self.stored_character_name(row);
+            return self.stored_character_name(&row);
         }
         self.localisation
             .localise(&row.token)
@@ -1795,10 +1925,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn capital_unrecorded(&self, slot: u32, original: bool) -> Result<Object, String> {
-        let (politics, gap) = rows::<tables::Politics>(self.frame);
-        let row = politics
-            .iter()
-            .find(|row| self.scopes.slot(row.country) == Some(slot))
+        let (politics, gap) = rows::<tables::Politics>(self.frame, POLITICS);
+        let row = first(&politics, |key| self.scopes.slot(key as u32) == Some(slot))?
             .ok_or_else(|| {
                 format!("the capital of country slot {slot} is unknown: Politics {gap}")
             })?;
@@ -1820,10 +1948,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn overlord_unrecorded(&self, slot: u32) -> Result<Option<u32>, String> {
-        let (appearance, gap) = rows::<tables::CountryAppearance>(self.frame);
-        let row = appearance
-            .iter()
-            .find(|row| self.scopes.slot(row.country) == Some(slot))
+        let (appearance, gap) = rows::<tables::CountryAppearance>(self.frame, APPEARANCE);
+        let row = first(&appearance, |key| self.scopes.slot(key as u32) == Some(slot))?
             .ok_or_else(|| {
                 format!("the overlord of country slot {slot} is unknown: CountryAppearance {gap}")
             })?;
@@ -1833,7 +1959,7 @@ impl<'a> ScriptedText<'a> {
             Ok(link) if link > 0 => link,
             _ => return Ok(None),
         };
-        let (_, links) = rows::<tables::CountryLinks>(self.frame);
+        let (_, links) = rows::<tables::CountryLinks>(self.frame, 0);
         self.scopes.slot(link).map(Some).ok_or_else(|| {
             format!(
                 "the overlord link {link} of country slot {slot} resolves to no country: CountryLinks {links}"
@@ -1841,34 +1967,31 @@ impl<'a> ScriptedText<'a> {
         })
     }
 
-    /// The row of country `slot` in table `T`, whose rows name their country
-    /// by `link`; `None` only where the frame proves there is none: the table
+    /// The row of country `slot` in table `T`, keyed by its raw country link alone, holding
+    /// the fields `mask` names; `None` only where the frame proves there is none: the table
     /// is whole, and CountryLinks is whole or every row's link resolves.
     fn country_row<T: TableSchema>(
         &self,
         slot: u32,
-        link: impl Fn(&T::Row) -> u32,
-    ) -> Result<Option<&'a T::Row>, String> {
-        let (found, gap) = rows::<T>(self.frame);
-        if let Some(row) = found
-            .iter()
-            .find(|row| self.scopes.slot(link(row)) == Some(slot))
-        {
+        mask: u64,
+    ) -> Result<Option<Cow<'a, T::Row>>, String> {
+        let (found, gap) = rows::<T>(self.frame, mask);
+        if let Some(row) = first(&found, |key| self.scopes.slot(key as u32) == Some(slot))? {
             return Ok(Some(row));
         }
         if !complete::<T>(self.frame) {
             return Err(format!("{:?} {gap}", T::ID));
         }
         if !complete::<tables::CountryLinks>(self.frame)
-            && let Some(row) = found
-                .iter()
-                .find(|row| self.scopes.slot(link(row)).is_none())
+            && let Some(link) = found
+                .keys()
+                .map(|key| key as u32)
+                .find(|&link| self.scopes.slot(link).is_none())
         {
-            let (_, links) = rows::<tables::CountryLinks>(self.frame);
+            let (_, links) = rows::<tables::CountryLinks>(self.frame, 0);
             return Err(format!(
-                "a {:?} row's country link {} resolves to no country: CountryLinks {links}",
+                "a {:?} row's country link {link} resolves to no country: CountryLinks {links}",
                 T::ID,
-                link(row)
             ));
         }
         Ok(None)
@@ -1884,9 +2007,9 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn state_record_unrecorded(&self, id: u32) -> (bool, bool, String) {
-        let (states, gap) = rows::<tables::States>(self.frame);
+        let (states, gap) = rows::<tables::States>(self.frame, 0);
         (
-            states.iter().any(|state| state.id == id),
+            states.contains(u128::from(id)),
             complete::<tables::States>(self.frame),
             gap,
         )
@@ -1900,10 +2023,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn state_country_unrecorded(&self, id: u32, owner: bool) -> Result<Object, String> {
-        let (states, gap) = rows::<tables::States>(self.frame);
-        let state = states
-            .iter()
-            .find(|state| state.id == id)
+        let (states, gap) = rows::<tables::States>(self.frame, STATE);
+        let state = keyed(&states, u128::from(id))?
             .ok_or_else(|| format!("state {id} has no States row: {gap}"))?;
         let link = if owner { state.owner } else { state.controller };
         self.scopes
@@ -1920,13 +2041,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn character_country_unrecorded(&self, id: u32) -> Result<Object, String> {
-        let (characters, gap) = (
-            self.frame.character_rows(),
-            self.frame.row_gap(tables::Characters::ID),
-        );
-        let row = characters
-            .iter()
-            .find(|row| row.id == id)
+        let (characters, gap) = rows::<tables::Characters>(self.frame, CHARACTER);
+        let row = keyed(&characters, u128::from(id))?
             .ok_or_else(|| format!("character {id} has no Characters row: {gap}"))?;
         self.scopes
             .slot(row.country)
@@ -1963,21 +2079,8 @@ impl<'a> ScriptedText<'a> {
             | EventObject::CountryUnitLeader {
                 leader: reference, ..
             } => {
-                let leaders = self.frame.leader_rows();
-                let gap = match self.frame.leader_status() {
-                    replay_frame::frame::OperandStatus::WrongLayout => {
-                        replay_frame::frame::OperandStatus::Complete.gap()
-                    }
-                    replay_frame::frame::OperandStatus::TruncatedWrongLayout(missing) => {
-                        replay_frame::frame::OperandStatus::Truncated(missing).gap()
-                    }
-                    status => status.gap(),
-                };
-                let row = leaders
-                    .iter()
-                    .find(|row| {
-                        (u64::from(row.id) << 32 | u64::from(row.reference_type)) == reference
-                    })
+                let (leaders, gap) = rows::<tables::UnitLeaders>(self.frame, UNIT_LEADER);
+                let row = keyed(&leaders, u128::from(reference))?
                     .ok_or_else(|| {
                         format!(
                             "{name}: unit leader {reference:#x} is not recorded: UnitLeaders {gap}"
@@ -2009,18 +2112,22 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn local_player_unrecorded(&self) -> Result<u32, String> {
-        let (players, gap) = rows::<tables::LocalPlayer>(self.frame);
+        let (players, gap) = rows::<tables::LocalPlayer>(self.frame, PLAYER);
         if !complete::<tables::LocalPlayer>(self.frame) {
             return Err(format!(
                 "the local player's country is not recorded this hour: LocalPlayer {gap}"
             ));
         }
-        let [player] = players else {
+        if players.len() != 1 {
             return Err(format!(
                 "LocalPlayer holds {} rows where the game state holds one local player",
                 players.len()
             ));
-        };
+        }
+        let player = each(players)
+            .next()
+            .transpose()?
+            .ok_or("LocalPlayer holds no row")?;
         let raw = if (player.country as i32) > 0 {
             player.country
         } else {
@@ -2091,26 +2198,28 @@ impl<'a> ScriptedText<'a> {
             }
             (_, EventObject::Province(_)) => None,
         };
-        let (characters, gap) = (
-            self.frame.character_rows(),
-            self.frame.row_gap(tables::Characters::ID),
-        );
-        let lexical = self.frame.lexical_rows();
-        let lexical_gap = self.frame.row_gap(tables::LexicalTokens::ID);
+        let (characters, gap) = rows::<tables::Characters>(self.frame, CHARACTER);
+        let (lexical, lexical_gap) = rows::<tables::LexicalTokens>(self.frame, 0);
         let links_whole = complete::<tables::CountryLinks>(self.frame);
         // With every link recorded, a character is the country's exactly when
         // its link is one of the country's links: other rows are skipped
         // without resolving them.
-        let country_links: Option<Vec<u32>> = country.filter(|_| links_whole).map(|slot| {
-            rows::<tables::CountryLinks>(self.frame)
-                .0
-                .iter()
-                .filter(|link| link.canonical_slot == slot)
-                .map(|link| link.id)
-                .collect()
-        });
+        let country_links: Option<Vec<u32>> = country
+            .filter(|_| links_whole)
+            .map(|slot| -> Result<Vec<u32>, String> {
+                let mut links = Vec::new();
+                for link in each(rows::<tables::CountryLinks>(self.frame, LINK).0) {
+                    let link = link?;
+                    if link.canonical_slot == slot {
+                        links.push(link.id);
+                    }
+                }
+                Ok(links)
+            })
+            .transpose()?;
         let mut unknown = None;
-        for row in characters {
+        for row in each(characters) {
+            let row = row?;
             if let Some(links) = &country_links {
                 if !links.contains(&row.country) {
                     continue;
@@ -2120,7 +2229,7 @@ impl<'a> ScriptedText<'a> {
                     _ if country.is_none() => {}
                     Some(slot) if Some(slot) == country => {}
                     None if !links_whole => {
-                        let (_, links) = rows::<tables::CountryLinks>(self.frame);
+                        let (_, links) = rows::<tables::CountryLinks>(self.frame, 0);
                         unknown.get_or_insert_with(|| {
                             format!(
                                 "character {}'s country link {} resolves to no country: CountryLinks {links}",
@@ -2136,8 +2245,8 @@ impl<'a> ScriptedText<'a> {
             let Ok(token) = u32::try_from(row.name_token_id) else {
                 continue;
             };
-            match lexical.binary_search_by_key(&token, |entry| entry.token) {
-                Ok(index) if lexical[index].literal == segment.as_bytes() => {
+            match spelled(&lexical, token)? {
+                Some(literal) if literal == segment.as_bytes() => {
                     if country.is_none() {
                         return Err(format!(
                             "{segment} names character {}, and the event scope's country, which character lookup searches, is not known here",
@@ -2146,8 +2255,8 @@ impl<'a> ScriptedText<'a> {
                     }
                     return Ok(Some(row.id));
                 }
-                Ok(_) => {}
-                Err(_) => {
+                Some(_) => {}
+                None => {
                     unknown.get_or_insert_with(|| {
                         format!(
                             "character {}'s script token {token} is not spelled: LexicalTokens {lexical_gap}",
@@ -2157,7 +2266,7 @@ impl<'a> ScriptedText<'a> {
                 }
             }
         }
-        let unknown = if self.frame.character_status().is_table_complete() {
+        let unknown = if self.frame.status(tables::Characters::ID).is_table_complete() {
             unknown
         } else {
             Some(format!("Characters {gap}"))
@@ -2193,22 +2302,18 @@ impl<'a> ScriptedText<'a> {
         tag: &str,
         long: bool,
     ) -> Result<String, String> {
-        let (politics, gap) = rows::<tables::Politics>(self.frame);
-        let politics = politics
-            .iter()
-            .find(|row| self.scopes.slot(row.country) == Some(slot))
+        let (politics, gap) = rows::<tables::Politics>(self.frame, POLITICS);
+        let politics = first(&politics, |key| self.scopes.slot(key as u32) == Some(slot))?
             .ok_or_else(|| format!("the ruling party of {tag} is unknown: Politics {gap}"))?;
         let Some(party) = politics.ruling_party else {
             return Err(format!("{tag} has no ruling party"));
         };
-        let (parties, gap) = rows::<tables::PoliticalParties>(self.frame);
-        let party = parties
-            .iter()
-            .find(|row| row.country == politics.country && row.id == party)
+        let (parties, gap) = rows::<tables::PoliticalParties>(self.frame, PARTY);
+        let party = keyed(&parties, u128::from(politics.country) << 32 | u128::from(party))?
             .ok_or_else(|| {
                 format!("the ruling party of {tag} has no PoliticalParties row: {gap}")
             })?;
-        self.party_name(party, tag, long)
+        self.party_name(&party, tag, long)
     }
 
     pub(crate) fn party_name(
@@ -2249,7 +2354,10 @@ impl<'a> ScriptedText<'a> {
                 // party key misses, without the name generator's dynamic gate.
                 crate::party_names::party_key_with_selected_tag(
                     &naming,
-                    installed_content_country_names::country_names::original_or_own_tag(self.frame, slot)?,
+                    &installed_content_country_names::country_names::original_or_own_tag_in(
+                        &self.frame,
+                        slot,
+                    )?,
                     defines,
                 )
                 .ok_or_else(|| {
@@ -2293,16 +2401,14 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn faction_name_by_id_unrecorded(&self, id: u64) -> Result<String, String> {
-        let (factions, gap) = rows::<tables::Factions>(self.frame);
-        let faction = factions
-            .iter()
-            .find(|row| row.id == id)
+        let (factions, gap) = rows::<tables::Factions>(self.frame, FACTION);
+        let faction = keyed(&factions, u128::from(id))?
             .ok_or_else(|| format!("faction {id} has no Factions row: {gap}"))?;
         // Only a nonnull fallback template needs content or a lexer dictionary.
         let (spelling, templates) = if faction.name.is_empty() && faction.template_token.is_some() {
             crate::catalogue::used(crate::catalogue::Reader::FactionTemplates);
             (
-                crate::faction_names::template_spelling(self.frame, faction.template_token),
+                crate::faction_names::template_spelling_in(&self.frame, faction.template_token),
                 self.content.layers.layers.faction_templates(),
             )
         } else {

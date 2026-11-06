@@ -1,4 +1,4 @@
-//! A columnar recording file (`H4COLUMN` version 3, [`replay_columnar::envelope`]) written run
+//! A columnar recording file (`H4COLUMN` version 4, [`replay_columnar::envelope`]) written run
 //! by run. Each hour's manifest and sections go to their streams' units. A full unit position
 //! closes with its index page, and every [`Settings::restart_units`] positions also with a
 //! restart: the run's strings first used since its previous restart, then each table's state.
@@ -366,7 +366,7 @@ impl Unfinished {
             || &start[..8] != envelope::MAGIC
             || start[8..] != envelope::VERSION.to_le_bytes()
         {
-            return Err(invalid("Not a version 3 H4COLUMN recording"));
+            return Err(invalid("Not a version 4 H4COLUMN recording"));
         }
         let magic = envelope::FOOTER_MAGIC.len();
         let mut block = engine_allocation::filled(BLOCK, 0_u8)?;

@@ -4,6 +4,8 @@ use super::*;
 use dashboard_text::metadata::validate_campaign;
 use dashboard_text::metadata::{check_cancel, tagged_countries};
 use dashboard_text::triggers::inputs::{self as reuse, ReuseCounts, Since, TableChanges};
+use dashboard_world::{Mark, Viewed};
+use replay_frame::frame::HourFrame;
 #[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
 use replay_data::rows::CountryRow;
@@ -430,7 +432,8 @@ impl BranchScan {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Default)]
 pub(super) struct Scans {
-    branches: Vec<(u64, Arc<BranchScan>)>,
+    /// One scan per branch, extended as appends add blocks.
+    branches: std::collections::BTreeMap<u64, Arc<BranchScan>>,
     #[cfg(any(test, feature = "test-support"))]
     pub decoded_blocks: usize,
 }
@@ -445,15 +448,13 @@ pub(super) fn cached(
     // the new revision. A rewritten prefix inherits no state (Source contract).
     let state = source.append_state::<Scans>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    let index = state.branches.iter().position(|(id, _)| *id == branch);
-    if let Some(index) = index
-        && state.branches[index].1.blocks == source.replay_ref().index.len()
+    let held = state.branches.get(&branch);
+    if let Some(held) = held
+        && held.blocks == source.replay_ref().index.len()
     {
-        return Ok(Arc::clone(&state.branches[index].1));
+        return Ok(Arc::clone(held));
     }
-    let mut scan = index
-        .map(|index| (*state.branches[index].1).clone())
-        .unwrap_or_default();
+    let mut scan = held.map(|held| (**held).clone()).unwrap_or_default();
     let decoded = scan.extend(source.replay_ref(), branch, cancelled)?;
     #[cfg(any(test, feature = "test-support"))]
     {
@@ -462,14 +463,7 @@ pub(super) fn cached(
     #[cfg(not(test))]
     let _ = decoded;
     let scan = Arc::new(scan);
-    if let Some(index) = index {
-        state.branches.remove(index);
-    }
-    state.branches.push((branch, Arc::clone(&scan)));
-    // Branch retention only. Every requested actor remains projectable.
-    if state.branches.len() > 4 {
-        state.branches.remove(0);
-    }
+    state.branches.insert(branch, Arc::clone(&scan));
     Ok(scan)
 }
 
@@ -639,8 +633,9 @@ pub(super) struct NameScan {
     actors: BTreeMap<Vec<u8>, Actor>,
     #[serde(skip)]
     keys: BTreeMap<(u32, String), Option<String>>,
+    /// The LexicalTokens `keys` were resolved from.
     #[serde(skip)]
-    lexical_view: Option<ViewIdentity>,
+    lexical: Option<Mark>,
     #[serde(skip)]
     active: BTreeSet<(u32, String)>,
     pub(super) names: Names,
@@ -703,7 +698,7 @@ impl NameScan {
     /// one not named then, another name or refusal, or a name it no longer has.
     pub(super) fn observe(
         &mut self,
-        frame: &DecodedFrame,
+        viewed: Viewed<'_>,
         input: &Actors,
         read: bool,
         content: &Content,
@@ -711,35 +706,39 @@ impl NameScan {
         cancelled: &AtomicBool,
     ) -> io::Result<BTreeSet<String>> {
         check_cancel(cancelled)?;
+        let frame = viewed.frame;
+        let hour = frame.hour();
         let before = std::mem::take(&mut self.active);
         let mut countries = BTreeSet::new();
-        let Ok(rows) = frame.complete::<tables::Countries>() else {
+        // Its keys alone: whether a country is recorded.
+        let Ok(rows) = frame.complete::<tables::Countries>(0) else {
             countries.extend(before.into_iter().map(|(_, tag)| tag));
             return Ok(countries);
         };
-        let projects = frame.complete::<tables::Projects>().ok();
-        let lexical = &frame.tables[TableId::LexicalTokens.index()];
+        let projects = frame
+            .complete::<tables::Projects>(TableId::Projects.full_mask())
+            .ok();
+        let lexical = TableId::LexicalTokens;
         if self
-            .lexical_view
+            .lexical
             .as_ref()
-            .is_none_or(|seen| !seen.is(lexical))
+            .is_none_or(|seen| !viewed.is(lexical, seen))
         {
             self.keys.clear();
-            self.lexical_view = Some(lexical.identity());
+            self.lexical = Some(viewed.mark(lexical));
         }
         for (tag, &(id, slot)) in &input.tags {
-            let Ok(index) = rows.binary_search_by_key(&id, |country| country.id) else {
+            if !rows.contains(u128::from(id)) {
                 continue;
-            };
-            let country = &rows[index];
-            let identity = (slot, country.id);
+            }
+            let identity = (slot, id);
             let uncertain = self.uncertain;
             let actor = self.actors.entry(tag.clone()).or_insert_with(|| Actor {
                 seeding: uncertain,
                 ..Actor::default()
             });
-            if actor.last.is_none_or(|(old, hour)| {
-                old != identity || hour.checked_add(1) != Some(frame.hour)
+            if actor.last.is_none_or(|(old, last)| {
+                old != identity || last.checked_add(1) != Some(hour)
             }) {
                 actor.admitted = false;
             }
@@ -749,7 +748,7 @@ impl NameScan {
                 actor.seeding = false;
             }
             actor.identity = Some(identity);
-            actor.last = Some((identity, frame.hour));
+            actor.last = Some((identity, hour));
             let Some(projects) = projects else {
                 actor.admitted = false;
                 continue;
@@ -766,7 +765,17 @@ impl NameScan {
             let seeding = std::mem::take(&mut actor.seeding);
             let mut next = BTreeSet::new();
             let mut possible = BTreeSet::new();
-            for project in owned_rows(projects, links, slot, |row| row.owner) {
+            // Projects rows are keyed by owner, then project.
+            let owned = links
+                .iter()
+                .filter(|link| link.canonical_slot == slot)
+                .flat_map(|link| {
+                    let first = u128::from(link.id) << 32;
+                    projects.span(first, first | u128::from(u32::MAX)).iter()
+                });
+            for project in owned {
+                let project = project?;
+                let project = &*project;
                 let key = (project.local_id, project.definition_id);
                 let open = actor.open.contains(&key);
                 let provisional = !open
@@ -797,7 +806,7 @@ impl NameScan {
                     &mut self.reuse,
                     (tag, slot, project.definition_id),
                     key,
-                    frame,
+                    viewed,
                     content,
                     reuse,
                 );
@@ -806,8 +815,8 @@ impl NameScan {
                 if self
                     .previous
                     .get(&at)
-                    .is_none_or(|(hour, _)| *hour != frame.hour)
-                    && changed(&mut self.previous, &at, frame.hour, &value)
+                    .is_none_or(|(last, _)| *last != hour)
+                    && changed(&mut self.previous, &at, hour, &value)
                 {
                     countries.insert(tag.to_owned());
                 }
@@ -815,7 +824,7 @@ impl NameScan {
                     self.provisional
                         .push((at.clone(), (project.local_id, project.definition_id), value.clone()));
                 }
-                self.names.observe(at, frame.hour, value, !provisional);
+                self.names.observe(at, hour, value, !provisional);
             }
             actor.open = next;
             actor.provisional = possible;
@@ -823,7 +832,7 @@ impl NameScan {
         // A name a project known open has is no provisional one.
         let names = &self.names;
         self.provisional
-            .retain(|(at, _, _)| !names.counted_at(at, frame.hour));
+            .retain(|(at, _, _)| !names.counted_at(at, hour));
         countries.extend(
             before
                 .difference(&self.active)
@@ -845,16 +854,12 @@ impl NameScan {
     }
 }
 fn scope_key(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     content: &Content,
     definition: u32,
     tag: &str,
 ) -> Option<String> {
-    let tokens = frame.complete::<tables::LexicalTokens>().ok()?;
-    let token = tokens
-        .binary_search_by_key(&definition, |row| row.token)
-        .ok()
-        .and_then(|index| std::str::from_utf8(&tokens[index].literal).ok())?;
+    let token = spelled(frame, definition)?;
     let definition = content.definitions.projects.get(token)?;
     if content.definitions.unsettled.is_some() || definition.refusal.is_some() {
         return None;
@@ -862,28 +867,30 @@ fn scope_key(
     let key = country_key(&content.catalogue, tag, project_name_key(definition, token));
     needs_scope(&content.catalogue.localisation, &key).then_some(key)
 }
-fn name_at(frame: &DecodedFrame, slot: u32, key: &str, content: &Content) -> Name {
-    evaluated_name(frame, slot, key, content).0
+fn name_at(viewed: Viewed<'_>, slot: u32, key: &str, content: &Content) -> Name {
+    evaluated_name(viewed, slot, key, content).0
 }
 
 /// [`name_at`], and when it expanded scripted text, every input the
 /// expansion read. The hour's text context is built outside the recorded
 /// evaluation: what it holds is read only through recorded queries.
 fn evaluated_name(
-    frame: &DecodedFrame,
+    viewed: Viewed<'_>,
     slot: u32,
     key: &str,
     content: &Content,
 ) -> (Name, Option<reuse::Inputs>) {
+    let frame = viewed.frame;
     match content.catalogue.scripted_content() {
         Ok(scripted) => {
-            let context = dashboard_text::scripted_text::ScriptedText::new(
+            let context = dashboard_text::scripted_text::ScriptedText::new_in(
                 frame,
                 &content.catalogue.localisation,
                 scripted,
                 slot,
-            );
-            let ((text, mut findings), inputs) = reuse::capture(frame, || {
+            )
+            .with_lexicon(viewed.lexicon);
+            let ((text, mut findings), inputs) = reuse::capture_in(frame, || {
                 catalogue::localised_in_details(&content.catalogue.localisation, key, &[], &context)
             });
             let text = text.map_err(|finding| findings.push(*finding)).ok();
@@ -920,30 +927,32 @@ fn reused_name(
     counts: &mut ReuseCounts,
     (owner, slot, definition): (&str, u32, u32),
     key: &str,
-    frame: &DecodedFrame,
+    viewed: Viewed<'_>,
     content: &Content,
     reuse: Reuse<'_>,
 ) -> Name {
     let changes = match reuse {
-        Reuse::Every => return name_at(frame, slot, key, content),
+        Reuse::Every => return name_at(viewed, slot, key, content),
         Reuse::Confirm(changes) => changes,
     };
+    let frame = viewed.frame;
     let at = (owner.to_owned(), slot, definition);
-    let since = Since::hour_before(frame, changes);
+    let since = Since::hour_before_in(frame, changes);
     let confirmed = match (
         evaluations.get_mut(&at),
         content.catalogue.scripted_content(),
     ) {
         (Some(last), Ok(scripted)) if last.key == key => {
             let text = std::cell::OnceCell::new();
-            last.inputs.confirm_since(frame, since.as_ref(), |read| {
+            last.inputs.confirm_since_in(frame, since.as_ref(), |read| {
                 text.get_or_init(|| {
-                    dashboard_text::scripted_text::ScriptedText::new(
+                    dashboard_text::scripted_text::ScriptedText::new_in(
                         frame,
                         &content.catalogue.localisation,
                         scripted,
                         slot,
                     )
+                    .with_lexicon(viewed.lexicon)
                 })
                 .reread(read)
             })
@@ -956,7 +965,7 @@ fn reused_name(
             return evaluations[&at].name.clone();
         }
     }
-    let (name, inputs) = evaluated_name(frame, slot, key, content);
+    let (name, inputs) = evaluated_name(viewed, slot, key, content);
     if confirmed {
         // Check mode: the reused name, evaluated anyway, must not change.
         counts.checked += 1;
@@ -965,7 +974,7 @@ fn reused_name(
             #[cfg(test)]
             panic!(
                 "{owner}'s project {definition} name {key}: a reused evaluation changed at hour {}",
-                frame.hour
+                frame.hour()
             );
         }
     } else {
@@ -1039,7 +1048,7 @@ pub(super) fn scoped_names(
                         continue;
                     };
                     observer.observe(
-                        frame,
+                        Viewed::decoded(frame),
                         &span.inputs.actors,
                         span.reads.binary_search(&frame.hour).is_ok(),
                         content,

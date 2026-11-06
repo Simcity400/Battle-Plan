@@ -79,7 +79,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
@@ -141,7 +141,7 @@ impl Emit {
     }
 
     /// Numbers `tag` from `hour` on, with both its keys.
-    fn enlist(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn enlist(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         let actor = self.actors.actor(writer, tag.as_bytes(), hour)?;
         let mut keys = [0; 2];
         for (at, measure) in MEASURES.into_iter().enumerate() {
@@ -165,7 +165,7 @@ impl Emit {
 
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         adjacent: bool,
         tag: &str,
@@ -187,7 +187,7 @@ impl Emit {
     /// One balance's value at `hour` under `holder`: a drop where it falls within its segment.
     fn balance(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         (actor, at): (u64, usize),
         (slot, country): (u32, u32),
@@ -247,7 +247,7 @@ impl Emit {
     }
 
     /// Ends `actor`'s runs at `hour`: no resolved country holds its tag.
-    fn release(&mut self, writer: &mut Writer<'_>, hour: i32, actor: u64) -> io::Result<()> {
+    fn release(&mut self, writer: &mut Writer, hour: i32, actor: u64) -> io::Result<()> {
         let state = &mut self.states[actor as usize];
         state.holder = None;
         for at in 0..2 {
@@ -261,7 +261,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)
     }
 

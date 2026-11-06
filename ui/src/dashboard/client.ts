@@ -2,9 +2,10 @@ import type { PreparationRequest, PreparationReply, PreparationPreferences } fro
 import type { RecorderSettings as PanelRecorderSettings } from '../recorder/status';
 import type { Compression } from '../recorder/compression';
 import type { ContentFolders, MapBounds, MapOptions, ReplayMetadata } from '../shell/api';
-import type { CampaignMapSettings, HistoryCacheReply, MapSettingsReply } from '../generated/dashboard';
+import type { CampaignMapSettings, MapSettingsReply, PreparedHole } from '../generated/dashboard';
+import { noteReplyGaps } from './replyGaps.ts';
 
-export type { CampaignMapSettings, HistoryCacheReply, MapGraphics, MapSettingsReply } from '../generated/dashboard';
+export type { CampaignMapSettings, MapGraphics, MapSettingsReply } from '../generated/dashboard';
 
 /** Runtime source identity. Saved layouts keep source roles, not these handles. */
 export interface DashboardSource {
@@ -31,6 +32,8 @@ export interface ProductReply<T> {
   /** A pending or partial prepared reply's gate: the preparation status entries it waits for,
    * `walk` for the status's `coverage` or a family prepared on its own, listed in its `families`. */
   gate?: string[];
+  /** The requested hours a family it reads will not answer; those marked `gap` it went on past. */
+  holes?: PreparedHole[];
 }
 
 /** The status entry of the hourly walk's coverage in a prepared reply's gate. */
@@ -44,12 +47,15 @@ export interface PreparedQueryOptions {
   gate?: (entries: readonly string[] | undefined) => void;
 }
 
-/** A validated prepared reply's data, after handing its gate to the caller. */
-export function preparedReplyData<T>(reply: ProductReply<T>, options: PreparedQueryOptions): T {
+/** A validated prepared reply's data, after handing its gate to the caller and keeping the lost
+ * spans its holes name for its product on the branch `params` asks, which no chart of it draws
+ * across. */
+export function preparedReplyData<T>(reply: ProductReply<T>, options: PreparedQueryOptions, params?: unknown): T {
   const gate: unknown = reply.gate;
   if (gate !== undefined && !(Array.isArray(gate) && gate.every(entry => typeof entry === 'string' && entry.length > 0)))
     throw new Error('The prepared reply gate is malformed.');
   options.gate?.(gate);
+  if (reply.holes !== undefined) noteReplyGaps(reply.sourceId, reply.product, params, reply.holes);
   return reply.data;
 }
 
@@ -123,8 +129,6 @@ export interface DashboardClient {
   /** Flips a setting of the target's stored choices on the service, under the lock its saves take: the opposite of
    * its value when the flip runs, every other choice untouched. */
   flipMapSetting?(sourceId: string, revision: string, setting: 'dayNight' | 'alliedPlans', signal: AbortSignal, target: MapSettingsTarget): Promise<MapSettingsReply>;
-  /** The widget history cache's size, after clearing it when asked. */
-  historyCache?(clear: boolean, signal: AbortSignal): Promise<HistoryCacheReply>;
   contentFolders?(signal: AbortSignal): Promise<ContentFolders>;
   chooseContentFolder?(kind: 'game' | 'user', initial: string): Promise<string | null>;
   setContentFolders?(game: string, user: string): Promise<ContentFolders>;

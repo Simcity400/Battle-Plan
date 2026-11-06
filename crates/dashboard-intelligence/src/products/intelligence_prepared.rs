@@ -101,15 +101,17 @@ pub(super) fn joins() -> usize {
 /// operator hands it on ([`facts`]) and a branch's emit holds it.
 #[derive(Default)]
 pub struct Reads {
-    pub(crate) cipher: super::decryption::CipherRead,
+    pub(crate) cipher: super::decryption::CipherHeld,
     /// The census of the last membership read the placements resolve.
     pub(crate) placements: Option<super::operative_placements::PlacementRead>,
     pub(crate) agencies: super::agency_comparison::AgencyRead,
     pub(crate) roster: super::operatives_roster::RosterRead,
     /// The last operations census read of a complete table.
-    pub(crate) operations: Option<super::espionage_log::CensusRead>,
+    pub(crate) operations: super::espionage_log::CensusHeld,
     /// The completions, each with its definition's name: none where incomplete.
     pub(crate) completions: Option<Vec<super::espionage_log::Completion>>,
+    /// The completions as held before those last handed on.
+    pub(crate) before: Option<Vec<super::espionage_log::Completion>>,
 }
 
 #[derive(Default)]
@@ -199,14 +201,15 @@ impl Observer {
     }
 
     /// Observes `frame`'s hour from `reads`, as [`Self::observe`] observes a decoded frame:
-    /// `frame` holds only the countries, `flags` what the hour read of the census.
+    /// `frame` holds only the countries, `flags` what the hour read of the census, `touched`
+    /// what the hour changed of the reads.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe_reads(
         &mut self,
         source: &Source,
         content: &Content,
         frame: &DecodedFrame,
-        (flags, reads): (super::operatives_roster::Flags, &Reads),
+        (flags, reads, touched): (super::operatives_roster::Flags, &Reads, &facts::Touched),
         (changes, roster): (&FrameChanges, Option<&FrameChanges>),
         rebuilt: &dyn Fn(TableId) -> bool,
         history: Option<(&store::Store, &store::SourceKey)>,
@@ -218,9 +221,8 @@ impl Observer {
         self.countries.update(frame, Some(changes));
         self.decryption.observe_read(
             hour,
-            changes,
-            self.countries.changed,
-            Some(&reads.cipher),
+            &reads.cipher,
+            &touched.cipher,
             content.defines.as_ref().copied().map_err(String::as_str),
             &content.warnings,
         )?;
@@ -235,6 +237,7 @@ impl Observer {
             &self.countries,
             &content.catalogue,
             reads.placements.as_ref(),
+            &touched.placements,
         )?;
         self.agencies.observe_read(
             source,
@@ -246,6 +249,7 @@ impl Observer {
                 complete: flags.memberships,
             },
             &reads.agencies,
+            &touched.agencies,
         )?;
         self.roster.observe_read(
             hour,
@@ -254,12 +258,23 @@ impl Observer {
             roster.unwrap_or(changes),
             &self.countries,
             &content.operative,
+            &touched.members,
         )?;
         let census = super::espionage_log::Census {
             complete: flags.operations,
             read: flags.operations_read,
         };
-        let read = (reads.operations.as_ref(), reads.completions.as_deref());
+        let read = super::espionage_log::prepared::Given {
+            census: &reads.operations,
+            touched: &touched.census,
+            completions: reads.completions.as_deref(),
+            // Completions not handed on this hour are those of the hour before.
+            before: if touched.completions {
+                reads.before.as_deref()
+            } else {
+                reads.completions.as_deref()
+            },
+        };
         let at = (frame.branch, hour);
         if self.reads_history_of(changes, reads) {
             let (store, key) = history

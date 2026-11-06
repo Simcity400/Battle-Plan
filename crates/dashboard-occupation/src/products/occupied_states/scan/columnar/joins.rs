@@ -386,13 +386,14 @@ impl Joins {
     /// refusal is noted once however many reads meet it.
     pub(super) fn refuse(
         &mut self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         refused: &mut Refusals,
     ) -> io::Result<()> {
-        recorded_rows::<tables::StateGarrisons>(frame)?;
-        recorded_rows::<tables::StateOccupationLaws>(frame)?;
-        recorded_rows::<tables::OccupationSettings>(frame)?;
-        recorded_rows::<tables::StateAssignedManpower>(frame)?;
+        // Their statuses alone: a table not recorded fails the read.
+        recorded_rows_in::<tables::StateGarrisons>(frame, 0)?;
+        recorded_rows_in::<tables::StateOccupationLaws>(frame, 0)?;
+        recorded_rows_in::<tables::OccupationSettings>(frame, 0)?;
+        recorded_rows_in::<tables::StateAssignedManpower>(frame, 0)?;
         for key in std::mem::take(&mut self.unrefused) {
             let (reason, identity) = &self.failures[&key];
             refused.note(reason, identity);
@@ -454,18 +455,18 @@ impl Joins {
 }
 
 impl ReadInputs for Joins {
-    fn garrison<'a>(&'a self, _: &'a DecodedFrame, key: StateKey) -> Option<&'a StateGarrisonRow> {
+    fn garrison<'a>(&'a self, _: HourFrame<'a>, key: StateKey) -> Option<&'a StateGarrisonRow> {
         self.garrisons
             .get(&key)?
             .last_key_value()
             .map(|(_, row)| row)
     }
-    fn law<'a>(&'a self, _: &'a DecodedFrame, key: StateKey) -> Option<&'a StateOccupationLawRow> {
+    fn law<'a>(&'a self, _: HourFrame<'a>, key: StateKey) -> Option<&'a StateOccupationLawRow> {
         self.laws.get(&key)?.last_key_value().map(|(_, row)| row)
     }
     fn settings<'a>(
         &'a self,
-        _: &'a DecodedFrame,
+        _: HourFrame<'a>,
         country: u32,
     ) -> Option<&'a OccupationSettingsRow> {
         let rows = self.settings.get(&country)?;

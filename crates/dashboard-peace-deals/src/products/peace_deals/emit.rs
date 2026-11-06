@@ -77,7 +77,7 @@ impl Emit {
         }
     }
 
-    fn keys(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 2]> {
+    fn keys(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 2]> {
         if let Some(keys) = self.keys {
             return Ok(keys);
         }
@@ -100,7 +100,7 @@ impl Emit {
 
     /// `bytes` as an event of `kind` on `key` at `at`.
     fn event(
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         kind: u64,
@@ -120,7 +120,7 @@ impl Emit {
     }
 
     /// The events the observer left at `at`, in the order it left them.
-    fn publish(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn publish(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         if self.events.is_empty() {
             return Ok(());
         }
@@ -136,7 +136,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("peace.emit", None);
         let at = hour.hour;
         if self.last.is_some_and(|last| at <= last) {
@@ -164,7 +164,7 @@ impl Emit {
     }
 
     /// Steps the observer through the hours after the last frame not yet stepped through.
-    fn settle(&mut self, writer: &mut Writer<'_>) -> io::Result<()> {
+    fn settle(&mut self, writer: &mut Writer) -> io::Result<()> {
         let Some((first, last, reads)) = self.quiet.take() else {
             return Ok(());
         };
@@ -182,7 +182,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next: the observer's continuation, and the hours since the last cut as known.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.settle(writer)?;
         let [_, key] = self.keys(writer)?;
         let continuation = self.prepared.continuation()?;

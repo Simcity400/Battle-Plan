@@ -635,20 +635,6 @@ pub fn apply(
     scratch: &mut Scratch,
     changes: &mut Changes,
 ) -> io::Result<()> {
-    apply_admitted(bytes, kinds, truncated, table, scratch, changes, &mut |_| Ok(()))
-}
-
-/// [`apply`], `admit` given the slots the table spans once the section's inserts are made, before
-/// anything is changed: refused there, the table is left as it was.
-pub fn apply_admitted(
-    bytes: &[u8],
-    kinds: &[Kind],
-    truncated: bool,
-    table: &mut Table,
-    scratch: &mut Scratch,
-    changes: &mut Changes,
-    admit: &mut dyn FnMut(usize) -> io::Result<()>,
-) -> io::Result<()> {
     let mut reader = Reader::new(bytes);
     changes.truncated = truncated;
     changes.read.clear();
@@ -658,8 +644,6 @@ pub fn apply_admitted(
     reader.slots(&mut changes.changed)?;
     reader.slots(&mut changes.deleted)?;
     reader.slots(&mut changes.inserted)?;
-    let extent = table.slots();
-    admit(extent + changes.inserted.iter().filter(|&&slot| slot as usize >= extent).count())?;
     changes.masks.clear();
     engine_allocation::reserve(&mut changes.masks, changes.changed.len())?;
     changes.masks.resize(changes.changed.len(), 0);

@@ -48,9 +48,12 @@ pub struct Run {
     pub chained: usize,
     pub deferred: usize,
     pub segments_held: usize,
-    /// The most its items and parked operators held on disk at once, and wrote in all.
+    /// The most its items and parked operators held on disk at once, and wrote in all: as
+    /// stored, and raw.
     pub spool_bytes_held: u64,
+    pub spool_raw_bytes_held: u64,
     pub spooled_bytes: u64,
+    pub spooled_raw_bytes: u64,
     pub carry_bytes_held: usize,
     pub carry_scratch_bytes_held: usize,
     pub parked: usize,
@@ -72,7 +75,9 @@ impl From<replay::segments::Stats> for Run {
             deferred: stats.deferred,
             segments_held: stats.segments,
             spool_bytes_held: stats.spool_bytes,
+            spool_raw_bytes_held: stats.spool_raw_bytes,
             spooled_bytes: stats.spooled,
+            spooled_raw_bytes: stats.spooled_raw,
             carry_bytes_held: stats.carry_bytes,
             carry_scratch_bytes_held: stats.carry_scratch,
             parked: stats.parked,

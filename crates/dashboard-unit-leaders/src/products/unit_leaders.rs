@@ -49,25 +49,25 @@ use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::products::{Product, country_groups::HourSpan, politics_content};
 use dashboard_base::{catalogue, source::Source};
 use dashboard_core::{config::LoadContext, protocol::validate_tag};
-use dashboard_text::identity::character_script_token;
+use dashboard_text::identity::character_script_token_in;
 use dashboard_text::{
     catalogue::{Catalogue, View},
-    metadata::{LinkTags, link_slot, slot_read, validate_campaign},
+    metadata::{LinkTags, link_slot_in, slot_read, validate_campaign},
     scripted_text::ScriptedContent,
-    triggers::{Eval, Evaluator, LeaderVisibility, World, core_gap},
+    triggers::{Eval, Evaluator, LeaderVisibility, World, core_gap, world::core_gap_in},
 };
 use replay::container::Replay;
 use replay_data::{
     format::FormatVersion, rows::CharacterPortraitRow, rows::CharacterRow, rows::CountryRow,
     rows::LandCombatDetailsRow, rows::LexicalTokenRow, rows::NavalCombatDetailsRow, rows::Recorded,
     rows::TableId, rows::UnitLeaderRow, rows::UnitLeaderTraitExperienceRow,
-    rows::UnitLeaderTraitRow, rows::full_mask, rows::tables,
+    rows::RowCodec, rows::UnitLeaderTraitRow, rows::full_mask, rows::tables,
 };
-use replay_frame::{
-    frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::ViewIdentity,
-};
+use dashboard_world::{Mark as TableMark, Viewed};
+use replay_frame::frame::{DecodedFrame, FrameDecoder, HourFrame, Rowset};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     cell::{Cell, OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -78,7 +78,6 @@ use std::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use std::{
-    collections::VecDeque,
     sync::{Condvar, Mutex},
     time::Duration,
 };
@@ -502,15 +501,6 @@ impl LeaderWithheld {
             self.detail.as_deref(),
         )
     }
-
-    fn heap_bytes(&self) -> usize {
-        self.reference.capacity()
-            + self.owner.as_ref().map_or(0, String::capacity)
-            + self.name.as_ref().map_or(0, String::capacity)
-            + self.reason.capacity()
-            + self.detail.as_ref().map_or(0, String::capacity)
-            + self.spans.capacity() * std::mem::size_of::<HourSpan>()
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
@@ -566,6 +556,68 @@ pub struct LeaderChoicesReply {
     pub branch_id: String,
     pub choices: Vec<LeaderChoice>,
     pub cursor: Option<String>,
+}
+
+/// A leaderboard's rows at `hour` as playback reads them ([`prepared::Careers::hour`]): every
+/// row, or, against the hour asked before, the rows that differ there.
+#[derive(Clone, Debug, Default, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitLeadersHourReply {
+    pub branch_id: String,
+    pub first_hour: i32,
+    pub hour: i32,
+    /// The index the rows' people, roles and traits are numbered by, which a later request names
+    /// as `held`; none for a reply numbered on its own.
+    pub index: Option<String>,
+    /// The hour asked before that the rows are read against; none for every row.
+    pub since: Option<i32>,
+    /// The rows at `hour`, each as a leaderboard at that hour shows it, of every leader whose row
+    /// differs from `since`'s, in the order of the leaders.
+    pub leaders: Vec<LeaderCareer>,
+    /// The leaders with a row at `since` and none at `hour`.
+    pub ended: Vec<String>,
+    /// The people, roles and traits the rows name by number that the rows at `since` did not.
+    pub people: Vec<(u32, LeaderPerson)>,
+    pub roles: Vec<(u32, LeaderRole)>,
+    pub traits: Vec<(u32, LeaderTraitInfo)>,
+    pub observed: Vec<LeaderObservation>,
+    pub withheld: Vec<LeaderWithheld>,
+    pub results_missing: String,
+    pub navy_commands_missing: String,
+    /// A countries selection's aliases, sent with every row; `since`'s stand otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub selection_tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub preparing: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl UnitLeadersHourReply {
+    /// A leaderboard at `hour` answered whole and numbered on its own.
+    pub fn alone(reply: UnitLeadersReply, hour: i32) -> Self {
+        let numbered = |count: usize| (0..count).map(|index| index as u32);
+        Self {
+            branch_id: reply.branch_id,
+            first_hour: reply.first_hour,
+            hour,
+            index: None,
+            since: None,
+            leaders: reply.leaders,
+            ended: Vec::new(),
+            people: numbered(reply.people.len()).zip(reply.people).collect(),
+            roles: numbered(reply.roles.len()).zip(reply.roles).collect(),
+            traits: numbered(reply.traits.len()).zip(reply.traits).collect(),
+            observed: reply.observed,
+            withheld: reply.withheld,
+            results_missing: reply.results_missing,
+            navy_commands_missing: reply.navy_commands_missing,
+            selection_tags: reply.selection_tags,
+            preparing: reply.preparing,
+            warnings: reply.warnings,
+        }
+    }
 }
 
 /// The page of `choices` (sorted by reference) from `cursor`, as
@@ -826,12 +878,7 @@ fn append_command(
     kind: LeaderFormationKind,
     name: Option<&str>,
     hour: i32,
-) -> (usize, bool, usize) {
-    let before = state.career.commands.len();
-    let unknown_before = state
-        .command_indices
-        .get(&formation)
-        .map_or(0, |&index| state.career.commands[index].name_unknown.len());
+) -> (usize, bool) {
     let repeated = state
         .command_indices
         .get(&formation)
@@ -874,28 +921,16 @@ fn append_command(
             name: name.map(str::to_owned),
         });
     }
-    let index = state.command_indices[&formation];
-    let unknown = if state.career.commands.len() == before {
-        state.career.commands[index]
-            .name_unknown
-            .len()
-            .saturating_sub(unknown_before)
-    } else {
-        state.career.commands[index].name_unknown.len()
-    };
-    (
-        index,
-        repeated,
-        (state.career.commands.len() - before) * std::mem::size_of::<LeaderCommand>()
-            + unknown * std::mem::size_of::<HourSpan>(),
-    )
+    (state.command_indices[&formation], repeated)
 }
 
 /// The hour's trigger inputs, read when a leader first needs them: the World
 /// and core-table check of `ScriptedText::world`, without its text context.
 struct HourWorld<'a> {
     content: &'a ScriptedContent,
-    frame: &'a DecodedFrame,
+    frame: HourFrame<'a>,
+    /// The walk's lexer folds, for a walked frame.
+    lexicon: Option<&'a dashboard_world::Lexicon>,
     world: OnceCell<Result<World<'a>, String>>,
     /// The core-table check, read without the World.
     gap: OnceCell<Option<String>>,
@@ -1055,14 +1090,14 @@ impl<'a> Kept<'a> {
 
     /// The first evaluation that requires the whole frame, with its
     /// differing input tables named separately in measured CPU labels.
-    fn block_inputs(&self, inputs: &Inputs, frame: &DecodedFrame) {
+    fn block_inputs(&self, inputs: &Inputs, frame: HourFrame<'_>) {
         if self.blocked() && self.wanted.is_none() {
             return;
         }
-        let since = Since::span(
-            frame.branch,
-            frame.hour,
-            frame.hour,
+        let since = Since::span_in(
+            frame.branch(),
+            frame.hour(),
+            frame.hour(),
             Some(frame),
             self.reduced,
         );
@@ -1088,13 +1123,13 @@ impl<'a> Kept<'a> {
     /// on `frame`'s branch, reads on `frame` what it reads on the hour's
     /// whole frame: each declares its dependence and none reads a field,
     /// row key or table this frame does not keep as the whole frame holds it.
-    fn reads_whole(&self, inputs: &Inputs, frame: &DecodedFrame, from: i32) -> bool {
+    fn reads_whole(&self, inputs: &Inputs, frame: HourFrame<'_>, from: i32) -> bool {
         inputs.unchanged(&self.span(frame, from))
     }
 
     /// How `frame` differs from the hour's whole frame, as an input last read at `from` sees it.
-    fn span<'s>(&'s self, frame: &'s DecodedFrame, from: i32) -> Since<'s> {
-        Since::span(frame.branch, from, frame.hour, Some(frame), self.reduced)
+    fn span<'s>(&'s self, frame: HourFrame<'s>, from: i32) -> Since<'s> {
+        Since::span_in(frame.branch(), from, frame.hour(), Some(frame), self.reduced)
     }
 
     /// Whether the tables a leader's template visibility reads
@@ -1109,14 +1144,11 @@ impl<'a> Kept<'a> {
 }
 
 impl<'a> HourWorld<'a> {
-    fn new(
-        content: &'a ScriptedContent,
-        frame: &'a DecodedFrame,
-        kept: Option<&'a Kept<'a>>,
-    ) -> Self {
+    fn new(content: &'a ScriptedContent, frame: Viewed<'a>, kept: Option<&'a Kept<'a>>) -> Self {
         Self {
             content,
-            frame,
+            frame: frame.frame,
+            lexicon: frame.lexicon,
             world: OnceCell::new(),
             gap: OnceCell::new(),
             kept,
@@ -1130,7 +1162,7 @@ impl<'a> HourWorld<'a> {
         let Some(kept) = self.kept else {
             return true;
         };
-        let (read, since) = self.spans[usize::from(from == self.frame.hour)]
+        let (read, since) = self.spans[usize::from(from == self.frame.hour())]
             .get_or_init(|| (from, kept.span(self.frame, from)));
         if *read == from {
             inputs.unchanged(since)
@@ -1142,7 +1174,11 @@ impl<'a> HourWorld<'a> {
     fn get(&self) -> Result<&World<'a>, String> {
         let world = self
             .world
-            .get_or_init(|| self.content.recorded_world(self.frame))
+            .get_or_init(|| {
+                self.content
+                    .recorded_world_in(self.frame)
+                    .map(|world| world.with_lexicon(self.lexicon))
+            })
             .as_ref()
             .map_err(Clone::clone)?;
         self.gap()?;
@@ -1152,7 +1188,7 @@ impl<'a> HourWorld<'a> {
     /// Why the hour's core tables are not complete ([`World::core_gap`]).
     fn gap(&self) -> Result<(), String> {
         self.gap
-            .get_or_init(|| core_gap(self.frame))
+            .get_or_init(|| core_gap_in(self.frame))
             .clone()
             .map_or(Ok(()), Err)
     }
@@ -1198,7 +1234,7 @@ type Rereads = HashMap<dashboard_text::triggers::inputs::Key, Option<u64>>;
 fn reread(
     rereads: &mut Rereads,
     world: &World<'_>,
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     key: &dashboard_text::triggers::inputs::Key,
 ) -> Option<u64> {
     use dashboard_text::triggers::inputs::{Key, digest};
@@ -1208,7 +1244,7 @@ fn reread(
     let read = match key {
         Key::World(query) => Some(world.reread(query)),
         Key::Scopes(query) => Some(world.recorded().reread(query)),
-        Key::ClockSeed => Some(digest(&dashboard_text::scripted_text::clock_seed(frame))),
+        Key::ClockSeed => Some(digest(&dashboard_text::scripted_text::clock_seed_in(frame))),
         Key::Table(_) | Key::Fields(..) | Key::Names(_) | Key::Text(_) | Key::FocusTag(_) => None,
     };
     rereads.insert(key.clone(), read);
@@ -1250,8 +1286,8 @@ impl Reuse<'_> {
             }
             // On a kept frame an input is read again only where it reads
             // what it reads on the whole frame.
-            let whole = hour.reads_whole(&last.inputs, frame.hour.saturating_sub(1));
-            last.inputs.confirm_since(frame, since, |key| {
+            let whole = hour.reads_whole(&last.inputs, frame.hour().saturating_sub(1));
+            last.inputs.confirm_since_in(frame, since, |key| {
                 if !whole {
                     return None;
                 }
@@ -1263,12 +1299,12 @@ impl Reuse<'_> {
             counts.reused += 1;
             if !check_reuse() {
                 let last = evaluation.as_mut().expect("confirmed evaluation");
-                last.hour = frame.hour;
+                last.hour = frame.hour();
                 return Ok(last.value.clone());
             }
         }
         let world = hour.get()?;
-        let (value, inputs) = dashboard_text::triggers::inputs::capture(frame, || {
+        let (value, inputs) = dashboard_text::triggers::inputs::capture_in(frame, || {
             Evaluator::new(world, None).decide_leader_visibility(row, visibility.clone(), true)
         });
         // An evaluation on a kept frame gives the whole frame's verdict when
@@ -1278,7 +1314,7 @@ impl Reuse<'_> {
         if let Some(kept) = hour.kept {
             if check_reuse() {
                 kept.block_whole("leaders.reject.check-mode");
-            } else if !hour.reads_whole(&inputs, frame.hour) {
+            } else if !hour.reads_whole(&inputs, frame.hour()) {
                 kept.block_inputs(&inputs, frame);
             }
         }
@@ -1290,7 +1326,8 @@ impl Reuse<'_> {
                 #[cfg(test)]
                 panic!(
                     "leader {}: a reused visibility evaluation changed at hour {}",
-                    row.id, frame.hour
+                    row.id,
+                    frame.hour()
                 );
             }
         } else {
@@ -1301,7 +1338,7 @@ impl Reuse<'_> {
             visibility: visibility.clone(),
             value: value.clone(),
             inputs,
-            hour: frame.hour,
+            hour: frame.hour(),
         });
         Ok(value)
     }
@@ -1584,23 +1621,21 @@ fn withheld_name<'a>(
     cached: &'a mut Option<WithheldNameRead>,
     character_id: u32,
     epoch: u64,
-    characters: Option<&[CharacterRow]>,
-    lexical: Option<&[LexicalTokenRow]>,
+    characters: Option<Rowset<'_, CharacterRow>>,
+    lexical: Option<Rowset<'_, LexicalTokenRow>>,
     content: Option<&Content>,
 ) -> &'a Option<String> {
     if cached
         .as_ref()
         .is_none_or(|read| read.epoch != epoch || read.character_id != character_id)
     {
-        let character = characters.and_then(|rows| {
-            rows.binary_search_by_key(&character_id, |row| row.id)
-                .ok()
-                .map(|at| &rows[at])
-        });
+        let character =
+            characters.and_then(|rows| rows.get(u128::from(character_id)).ok().flatten());
+        let character = character.as_deref();
         let saved = character.map(|row| row.token.as_slice());
         let token = character
             .zip(lexical)
-            .and_then(|(row, lexical)| character_script_token(row, lexical));
+            .and_then(|(row, lexical)| character_script_token_in(row, lexical));
         let name = if let Some(read) = cached
             .as_ref()
             .filter(|read| read.saved.as_deref() == saved && read.token.as_deref() == token)
@@ -1642,7 +1677,7 @@ fn owner_refusal_detail(raw: u32, slot: Option<u32>, country: Option<&CountryRow
 }
 
 fn person(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     row: &UnitLeaderRow,
     character: Option<&CharacterRow>,
     token: Option<&str>,
@@ -1663,7 +1698,7 @@ fn person(
         character_id: row.character_id,
         token,
         name,
-        portrait_hour: frame.hour,
+        portrait_hour: frame.hour(),
         portrait_reference: handle(row).to_string(),
     }
 }
@@ -1734,7 +1769,7 @@ impl IdentityChanges {
         &self,
         state: &mut LeaderState,
         row: &UnitLeaderRow,
-        characters: Option<&[CharacterRow]>,
+        characters: Option<Rowset<'_, CharacterRow>>,
         before: u64,
         epoch: u64,
         visibility_epoch: Option<u64>,
@@ -1749,13 +1784,12 @@ impl IdentityChanges {
         // Unchanged this hour, so the row the earlier reads read.
         let character = OnceCell::new();
         let character = || {
-            *character.get_or_init(|| {
-                characters.and_then(|rows| {
-                    rows.binary_search_by_key(&row.character_id, |character| character.id)
-                        .ok()
-                        .map(|at| &rows[at])
+            character
+                .get_or_init(|| {
+                    characters
+                        .and_then(|rows| rows.get(u128::from(row.character_id)).ok().flatten())
                 })
-            })
+                .as_deref()
         };
         let mut renewed = 0;
         if let Some(read) = &mut state.visibility {
@@ -1916,6 +1950,61 @@ fn append_stored_run(
     hour: i32,
     start: i32,
 ) {
+    note_trait_gains(state, runs, &value, hour, start);
+    if let Some(i) = state.last_run {
+        let last = &mut runs[i].run;
+        if last.last_hour.checked_add(1) == Some(hour) && last.value == value {
+            last.last_hour = hour;
+            return;
+        }
+    }
+    push_run(state, runs, value, hour);
+}
+
+/// [`append_stored_run`] of a projected run whose progress its event writes as `written`. Only a
+/// run still open at its segment's end holds its progress as a value too, so progress is
+/// compared as written: equal values write equal bytes.
+fn append_written_run(
+    state: &mut LeaderState,
+    (runs, progress): (&mut Vec<StoredRun>, &mut HashMap<usize, Arc<[u8]>>),
+    value: LeaderValues,
+    written: Arc<[u8]>,
+    (hour, start): (i32, i32),
+) -> io::Result<()> {
+    note_trait_gains(state, runs, &value, hour, start);
+    if let Some(i) = state.last_run {
+        let last = &runs[i].run;
+        let alike = last.last_hour.checked_add(1) == Some(hour)
+            && last.value.person == value.person
+            && last.value.role == value.role
+            && last.value.skill == value.skill
+            && last.value.components == value.components
+            && last.value.traits == value.traits
+            && match progress.get(&i) {
+                Some(held) => **held == *written,
+                None => serde_json::to_vec(&last.value.progress)?.as_slice() == &*written,
+            };
+        if alike {
+            let last = &mut runs[i].run;
+            last.last_hour = hour;
+            if value.progress.is_some() {
+                last.value.progress = value.progress;
+            }
+            return Ok(());
+        }
+    }
+    push_run(state, runs, value, hour);
+    progress.insert(runs.len() - 1, written);
+    Ok(())
+}
+
+fn note_trait_gains(
+    state: &mut LeaderState,
+    runs: &[StoredRun],
+    value: &LeaderValues,
+    hour: i32,
+    start: i32,
+) {
     let previous = state.last_run.map(|i| &runs[i].run);
     let last_known = state
         .last_known_run
@@ -1927,13 +2016,9 @@ fn append_stored_run(
         hour,
         change_date(previous, hour, start),
     );
-    if let Some(i) = state.last_run {
-        let last = &mut runs[i].run;
-        if last.last_hour.checked_add(1) == Some(hour) && last.value == value {
-            last.last_hour = hour;
-            return;
-        }
-    }
+}
+
+fn push_run(state: &mut LeaderState, runs: &mut Vec<StoredRun>, value: LeaderValues, hour: i32) {
     let known = value.traits.is_some();
     let index = runs.len();
     runs.push(StoredRun {
@@ -1951,20 +2036,124 @@ fn append_stored_run(
     }
 }
 
-/// The training rows of the leader `reference`, which lead their key.
+/// The training rows of the leader `reference`, whose handle leads their key.
 fn training_rows(
-    rows: &[UnitLeaderTraitExperienceRow],
+    rows: Rowset<'_, UnitLeaderTraitExperienceRow>,
     reference: u64,
-) -> &[UnitLeaderTraitExperienceRow] {
-    let first = rows.partition_point(|p| p.leader_reference < reference);
-    let last = rows.partition_point(|p| p.leader_reference <= reference);
-    &rows[first..last]
+) -> io::Result<Cow<'_, [UnitLeaderTraitExperienceRow]>> {
+    led_by(rows, reference, 33)
 }
 
-fn trait_slice<'a>(rows: &'a [UnitLeaderTraitRow], reference: u64) -> &'a [UnitLeaderTraitRow] {
-    let first = rows.partition_point(|row| row.leader_reference < reference);
-    let last = rows.partition_point(|row| row.leader_reference <= reference);
-    &rows[first..last]
+fn trait_slice(
+    rows: Rowset<'_, UnitLeaderTraitRow>,
+    reference: u64,
+) -> io::Result<Cow<'_, [UnitLeaderTraitRow]>> {
+    led_by(rows, reference, 32)
+}
+
+/// The rows whose key `reference` leads, above its low `shift` bits.
+fn led_by<R: RowCodec + Clone>(
+    rows: Rowset<'_, R>,
+    reference: u64,
+    shift: u32,
+) -> io::Result<Cow<'_, [R]>> {
+    let low = u128::from(reference) << shift;
+    rows.slice(low, low | ((1_u128 << shift) - 1))
+}
+
+/// The training rows of `reference` `cell` holds, read from `rows` when first asked.
+fn training_of<'c, 'r: 'c>(
+    cell: &'c OnceCell<Option<Cow<'r, [UnitLeaderTraitExperienceRow]>>>,
+    rows: Option<Rowset<'r, UnitLeaderTraitExperienceRow>>,
+    reference: u64,
+) -> io::Result<Option<&'c [UnitLeaderTraitExperienceRow]>> {
+    if cell.get().is_none() {
+        let _ = cell.set(rows.map(|rows| training_rows(rows, reference)).transpose()?);
+    }
+    Ok(cell.get().and_then(|read| read.as_deref()))
+}
+
+/// The mask a whole row is read with.
+const ALL: u64 = u64::MAX;
+
+/// The column of a token's spelling.
+const TOKEN_LITERAL: usize = replay_data::rows::column::<LexicalTokenRow>("literal");
+
+/// The decoded frame of an hour the row path reads; a walk's hour is read only by a projection.
+fn row_path(frame: HourFrame<'_>) -> io::Result<&DecodedFrame> {
+    frame
+        .decoded()
+        .map(|frame| frame.decoded_frame())
+        .ok_or_else(|| dashboard_core::invalid("Only a projection reads a walk's leaders hour"))
+}
+
+/// Whether the hour reads each kind's battles, as [`battle_tables`] finds them.
+pub(crate) fn battles_read(format: FormatVersion, frame: HourFrame<'_>) -> [bool; 2] {
+    let hour = frame.hour();
+    [
+        frame.complete::<tables::LandCombatDetails>(0).is_ok()
+            && slot_read(format, frame.metrics(), TableId::LandCombatDetails, hour),
+        frame.complete::<tables::NavalCombatDetails>(0).is_ok()
+            && slot_read(format, frame.metrics(), TableId::NavalCombatDetails, hour),
+    ]
+}
+
+/// Whether any leader's visibility is decided in its owner's scope.
+fn any_scoped(rows: Rowset<'_, UnitLeaderRow>) -> io::Result<bool> {
+    for row in rows.iter() {
+        let row = row?;
+        if row.visibility_choice != 0 || row.template_visibility != 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether every fleet records its leader.
+fn leaders_recorded(fleets: Rowset<'_, replay_data::rows::FleetRow>) -> io::Result<bool> {
+    for fleet in fleets.iter() {
+        if matches!(fleet?.leader, Recorded::NotRecorded) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Each country by its slot, the last of a slot's rows where several name it.
+fn countries_by_slot(
+    countries: Rowset<'_, CountryRow>,
+) -> io::Result<BTreeMap<u32, Cow<'_, CountryRow>>> {
+    let mut by_slot = BTreeMap::new();
+    for row in countries.iter() {
+        let row = row?;
+        by_slot.insert(row.canonical_slot, row);
+    }
+    Ok(by_slot)
+}
+
+/// [`LinkTags::update`] of any hour's tables: a walk's tells the countries and links unchanged by
+/// their marks, as a decoded frame tells them by their views.
+fn update_owners(
+    tags: &mut LinkTags,
+    marks: &mut Option<[TableMark; 2]>,
+    frame: Viewed<'_>,
+) -> io::Result<bool> {
+    const TABLES: [TableId; 2] = [TableId::Countries, TableId::CountryLinks];
+    if let Some(decoded) = frame.frame.decoded() {
+        return tags.update(decoded.decoded_frame());
+    }
+    if marks.as_ref().is_some_and(|held| {
+        TABLES
+            .iter()
+            .zip(held)
+            .all(|(&table, mark)| frame.is(table, mark))
+    }) {
+        return Ok(false);
+    }
+    *marks = None;
+    let rebuilt = tags.update_tables(&frame.frame)?;
+    *marks = Some(TABLES.map(|table| frame.mark(table)));
+    Ok(rebuilt)
 }
 
 /// The tables a scan decodes: its own, and the trigger kit leader visibility
@@ -2030,8 +2219,6 @@ pub(crate) struct Scan {
     reply: UnitLeadersReply,
     withheld_active: BTreeMap<u64, usize>,
     #[serde(skip)]
-    withheld_bytes: usize,
-    #[serde(skip)]
     projection: Option<columnar::Work>,
     #[serde(skip)]
     validity: Option<(bool, Option<String>)>,
@@ -2058,8 +2245,6 @@ pub(crate) struct Scan {
         dashboard_text::metadata::CountryKeys,
         BTreeMap<String, (u32, u32)>,
     )>,
-    #[serde(skip)]
-    pending_bytes: usize,
     #[cfg(test)]
     #[serde(skip)]
     #[spool(skip)]
@@ -2102,21 +2287,24 @@ pub(crate) struct Scan {
     #[serde(skip)]
     identity_epoch: u64,
     #[serde(skip)]
-    identity_tables: Option<[ViewIdentity; 3]>,
+    identity_tables: Option<[TableMark; 3]>,
     /// Saved as the projection it was built from, so a restored scan keeps
     /// its cached owners exactly when a continued one would.
     #[serde(with = "owner_projection", default)]
     owner_tags: LinkTags,
+    /// The countries and links `owner_tags` were last read from.
+    #[serde(skip)]
+    owner_marks: Option<[TableMark; 2]>,
     #[serde(skip)]
     owner_epoch: u64,
     #[serde(skip)]
-    trait_table: Option<(ViewIdentity, bool)>,
+    trait_table: Option<(TableMark, bool)>,
     #[serde(skip)]
     trait_epoch: u64,
     /// The training rows' and the tokens' views at the last read, and how
     /// often each changed at the hours read, as `identity_epoch` counts.
     #[serde(skip)]
-    progress_tables: Option<[ViewIdentity; 2]>,
+    progress_tables: Option<[TableMark; 2]>,
     #[serde(skip)]
     progress_epochs: [u64; 2],
     #[serde(skip)]
@@ -2356,7 +2544,6 @@ impl Scan {
                 (reference, index)
             })
             .collect();
-        self.recount_withheld();
     }
 
     fn seal_withheld(&mut self, through: i32) {
@@ -2367,76 +2554,55 @@ impl Scan {
         }
     }
 
-    fn recount_pending(&mut self) {
-        self.recount_withheld();
-        self.pending_bytes = self.stored_runs.len() * std::mem::size_of::<StoredRun>()
-            + self
-                .battle_hours
-                .values()
-                .map(|rows| rows.len() * std::mem::size_of::<(i32, i32, bool, u8, u64, u8)>())
-                .sum::<usize>()
-            + self
-                .leaders
-                .iter()
-                .flat_map(|leader| &leader.career.commands)
-                .map(|command| {
-                    std::mem::size_of::<LeaderCommand>()
-                        + command.name_unknown.len() * std::mem::size_of::<HourSpan>()
-                })
-                .sum::<usize>();
-    }
-
-    fn recount_withheld(&mut self) {
-        self.withheld_bytes = self.reply.withheld.capacity()
-            * std::mem::size_of::<LeaderWithheld>()
-            + self
-                .reply
-                .withheld
-                .iter()
-                .map(LeaderWithheld::heap_bytes)
-                .sum::<usize>();
-    }
     /// Read the admission holders again when the countries' slots and tags
     /// or the links may have changed (`moved`); whether they changed.
     fn refresh_holders(
         &mut self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         moved: &dyn Fn(&TableRead) -> bool,
-    ) -> bool {
+    ) -> io::Result<bool> {
         let [countries_read, links_read] = reads().holders;
         let links_moved = moved(&links_read);
         if self.holders.is_some() && !links_moved && !moved(&countries_read) {
-            return false;
+            return Ok(false);
         }
         let (Ok(countries), Ok(links)) = (
-            frame.complete::<tables::Countries>(),
-            frame.complete::<tables::CountryLinks>(),
+            frame.complete::<tables::Countries>(replay_data::rows::mask::<CountryRow>(&[
+                "canonical_slot",
+                "tag",
+            ])),
+            frame.complete::<tables::CountryLinks>(ALL),
         ) else {
-            return self.holders.take().is_some();
+            return Ok(self.holders.take().is_some());
         };
         if !links_moved && let Some((keys, _)) = &self.holders {
             #[cfg(test)]
             {
                 self.work.row_visits += countries.len();
             }
-            if keys.same(countries) {
-                return false;
+            if keys.same_in(countries) {
+                return Ok(false);
             }
         }
         #[cfg(test)]
         {
             self.work.row_visits += countries.len() * 2;
         }
-        let holders = dashboard_text::metadata::tagged_countries(countries, links)
+        // Each tag's first country whose links agree on its slot, as `tagged_countries` finds it.
+        let mut tagged = BTreeMap::<Vec<u8>, Option<(u32, u32)>>::new();
+        for country in countries.iter() {
+            let country = country?;
+            let found = tagged.entry(country.tag.clone()).or_insert(None);
+            if found.is_none()
+                && let Some(slot) = link_slot_in(&links, country.id)
+                    .filter(|&slot| slot == country.canonical_slot)
+            {
+                *found = Some((slot, country.id));
+            }
+        }
+        let holders = tagged
             .into_iter()
-            .filter_map(|(tag, country)| match country {
-                dashboard_text::metadata::TaggedCountry::Found(country, slot) => {
-                    std::str::from_utf8(tag)
-                        .ok()
-                        .map(|tag| (tag.to_owned(), (slot, country.id)))
-                }
-                _ => None,
-            })
+            .filter_map(|(tag, found)| Some((String::from_utf8(tag).ok()?, found?)))
             .collect();
         let changed = links_moved
             || self
@@ -2444,10 +2610,10 @@ impl Scan {
                 .as_ref()
                 .is_none_or(|(_, before)| before != &holders);
         self.holders = Some((
-            dashboard_text::metadata::CountryKeys::read(countries),
+            dashboard_text::metadata::CountryKeys::read_in(countries)?,
             holders,
         ));
-        changed
+        Ok(changed)
     }
     /// Only authenticated consecutive observations can carry an open career.
     fn advance(&mut self, hour: i32) {
@@ -2647,7 +2813,7 @@ impl Scan {
         let cpu = ::replay_frame::cpu::scope_phase("leaders:carry_proof");
         let since = Since::hour_before(decoded, tables);
         let moved = |read: &TableRead| since.as_ref().is_none_or(|since| since.changed(read));
-        let holders_changed = self.refresh_holders(decoded, &moved);
+        let holders_changed = self.refresh_holders(HourFrame::from(decoded), &moved)?;
         let career = params.view == LeaderView::Career;
         let inputs = LEADER_TABLES
             .iter()
@@ -2727,7 +2893,7 @@ impl Scan {
                     return Ok(true);
                 }
                 if career && available {
-                    self.observe_battles(decoded, format, land, navy, tables);
+                    self.observe_battles(HourFrame::from(decoded), format, tables)?;
                     return Ok(true);
                 }
             }
@@ -2738,7 +2904,7 @@ impl Scan {
         self.materialized = Some(decoded.hour);
         self.read_mask = Some(mask);
         self.observe_rows(
-            decoded,
+            Viewed::decoded(decoded),
             format,
             params,
             content,
@@ -2760,14 +2926,17 @@ impl Scan {
     /// reach them either: only the results are read.
     fn observe_battles(
         &mut self,
-        decoded: &DecodedFrame,
+        frame: HourFrame<'_>,
         format: FormatVersion,
-        land: Option<&[LandCombatDetailsRow]>,
-        navy: Option<&[NavalCombatDetailsRow]>,
         tables: &dyn TableChanges,
-    ) {
+    ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("leaders:battles");
-        let hour = decoded.hour;
+        let hour = frame.hour();
+        let decoded = match self.projection {
+            Some(_) => None,
+            None => Some(row_path(frame)?),
+        };
+        let (land, navy) = decoded.map_or((None, None), |decoded| battle_tables(format, decoded));
         #[cfg(not(test))]
         let eager = false;
         #[cfg(test)]
@@ -2785,9 +2954,9 @@ impl Scan {
             }
         }
         if let Some(work) = &mut self.projection {
-            work.results(format, decoded, tables);
+            work.results(format, frame, tables)?;
         }
-        let visits = if self.projection.is_none() {
+        let visits = if let Some(decoded) = decoded {
             record_results(
                 format,
                 decoded,
@@ -2807,9 +2976,9 @@ impl Scan {
         let _ = visits;
         if self.walked {
             if let Some(work) = &mut self.projection {
-                work.battles(format, decoded, tables, &self.leader_indices);
+                work.battles(format, frame, tables, &self.leader_indices)?;
             }
-            let visits = if self.projection.is_none() {
+            let visits = if let Some(decoded) = decoded {
                 record_battles(
                     format,
                     decoded,
@@ -2822,7 +2991,6 @@ impl Scan {
                     &mut self.battle_hours,
                     &mut self.battle_indices,
                     &mut self.previous_combats,
-                    &mut self.pending_bytes,
                 )
             } else {
                 0
@@ -2852,6 +3020,7 @@ impl Scan {
         if eager {
             self.seal();
         }
+        Ok(())
     }
 
     /// Carry the scan through the quiet hours `first..=last` that follow its
@@ -2980,7 +3149,7 @@ impl Scan {
         let Ok(scripted) = content.catalogue.scripted_content() else {
             return false;
         };
-        let hour = HourWorld::new(scripted, decoded, kept);
+        let hour = HourWorld::new(scripted, Viewed::decoded(decoded), kept);
         if hour.gap().is_err() {
             return false;
         }
@@ -3000,7 +3169,7 @@ impl Scan {
                             return None;
                         }
                         let world = hour.get().ok()?;
-                        reread(&mut rereads, world, decoded, key)
+                        reread(&mut rereads, world, HourFrame::from(decoded), key)
                     })
                 })
         });
@@ -3042,7 +3211,7 @@ impl Scan {
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<()> {
         self.observe_rows(
-            decoded,
+            Viewed::decoded(decoded),
             replay.format,
             params,
             content,
@@ -3067,7 +3236,7 @@ impl Scan {
     #[allow(clippy::too_many_arguments)]
     fn observe_rows(
         &mut self,
-        decoded: &DecodedFrame,
+        frame: Viewed<'_>,
         format: FormatVersion,
         params: &UnitLeadersParams,
         content: Option<&Content>,
@@ -3101,18 +3270,17 @@ impl Scan {
         let Self {
             reply,
             withheld_active,
-            withheld_bytes,
             projection,
             leader_indices,
             leaders,
             stored_runs,
-            run_progress,
             row_indices,
             people,
             last_people,
             identity_epoch,
             identity_tables,
             owner_tags,
+            owner_marks,
             owner_epoch,
             trait_table,
             trait_epoch,
@@ -3140,7 +3308,6 @@ impl Scan {
             holders: admission_holders,
             scoped_visibility,
             frontier,
-            pending_bytes,
             reuse: reuse_counts,
             evaluated,
             read_gap,
@@ -3150,16 +3317,21 @@ impl Scan {
                 renewed: renewed_reads,
             ..
         } = self;
-        let hour = decoded.hour;
+        let views = frame.frame;
+        let hour = views.hour();
+        let decoded = match projection {
+            Some(_) => None,
+            None => Some(row_path(views)?),
+        };
         let full = selected.is_none();
         if let Some(work) = projection {
             if full {
                 work.live.clear();
             }
             work.lazy = !full;
-            work.results(format, decoded, changes.expect("projected table changes"));
+            work.results(format, views, changes.expect("projected table changes"))?;
         }
-        let visits = if projection.is_none() {
+        let visits = if let Some(decoded) = decoded {
             record_results(
                 format,
                 decoded,
@@ -3178,23 +3350,23 @@ impl Scan {
         #[cfg(not(test))]
         let _ = visits;
         // Failed table reads allocate errors: resolve each once, never per leader.
-        let characters = decoded.complete::<tables::Characters>().ok();
-        let holders = decoded.complete::<tables::CharacterPortraits>().ok();
-        let lexical = decoded.complete::<tables::LexicalTokens>().ok();
-        let now_identity = [
+        let characters = views.complete::<tables::Characters>(ALL).ok();
+        let holders = views.complete::<tables::CharacterPortraits>(ALL).ok();
+        let lexical = views.complete::<tables::LexicalTokens>(ALL).ok();
+        const IDENTITY: [TableId; 3] = [
             TableId::Characters,
             TableId::CharacterPortraits,
             TableId::LexicalTokens,
-        ]
-        .map(|t| &decoded.tables[t.index()]);
+        ];
         let identity_before = *identity_epoch;
         if identity_tables.as_ref().is_none_or(|last| {
-            last.iter()
-                .zip(now_identity)
-                .any(|(last, now)| !last.is(now))
+            IDENTITY
+                .iter()
+                .zip(last)
+                .any(|(&table, last)| !frame.is(table, last))
         }) {
             *identity_epoch += 1;
-            *identity_tables = Some(now_identity.map(SharedView::identity));
+            *identity_tables = Some(IDENTITY.map(|table| frame.mark(table)));
         }
         let visibility_epoch =
             (characters.is_some() && lexical.is_some()).then_some(*identity_epoch);
@@ -3206,45 +3378,46 @@ impl Scan {
             .and_then(IdentityChanges::read);
         // The hour's rereads of recorded inputs, shared by every evaluation.
         let mut rereads = Rereads::new();
-        let (land, navy) = battle_tables(format, decoded);
-        if projection.is_none() {
+        let (land, navy) = decoded.map_or((None, None), |decoded| battle_tables(format, decoded));
+        let battles = match decoded {
+            Some(_) => [land.is_some(), navy.is_some()],
+            None => battles_read(format, views),
+        };
+        if decoded.is_some() {
             *combats = [land.map(land_commanders), navy.map(naval_commanders)];
         }
-        for (i, known) in [land.is_some(), navy.is_some()].into_iter().enumerate() {
+        for (i, known) in battles.into_iter().enumerate() {
             if !known {
                 missing_battles[i] = Some(hour);
             }
         }
+        let metrics = views.metrics();
         let mut land_commands = career
-            && slot_read(format, &decoded.metrics, TableId::OrdersGroups, hour)
-            && decoded.complete::<tables::OrdersGroups>().is_ok();
-        let fleet_rows = career
-            .then(|| decoded.complete::<tables::Fleets>().ok())
-            .flatten()
-            .filter(|_| slot_read(format, &decoded.metrics, TableId::Fleets, hour));
-        let fleet_commands = fleet_rows.filter(|rows| {
-            rows.iter()
-                .all(|row| !matches!(row.leader, Recorded::NotRecorded))
-        });
+            && slot_read(format, metrics, TableId::OrdersGroups, hour)
+            && views.complete::<tables::OrdersGroups>(0).is_ok();
+        let fleet_rows = if career && slot_read(format, metrics, TableId::Fleets, hour) {
+            views.complete::<tables::Fleets>(ALL).ok()
+        } else {
+            None
+        };
+        let fleet_commands = match fleet_rows {
+            Some(rows) if leaders_recorded(rows)? => Some(rows),
+            _ => None,
+        };
         let mut naval_commands = fleet_commands.is_some()
             || career
-                && slot_read(
-                    format,
-                    &decoded.metrics,
-                    TableId::NavalMissionTaskForces,
-                    hour,
-                )
-                && slot_read(format, &decoded.metrics, TableId::TaskForces, hour)
-                && decoded.complete::<tables::NavalMissionTaskForces>().is_ok()
-                && decoded.complete::<tables::TaskForces>().is_ok();
-        if !slot_read(format, &decoded.metrics, TableId::UnitLeaders, hour) {
+                && slot_read(format, metrics, TableId::NavalMissionTaskForces, hour)
+                && slot_read(format, metrics, TableId::TaskForces, hour)
+                && views.complete::<tables::NavalMissionTaskForces>(0).is_ok()
+                && views.complete::<tables::TaskForces>(0).is_ok();
+        if !slot_read(format, metrics, TableId::UnitLeaders, hour) {
             withheld_active.clear();
             observe(
                 &mut reply.observed,
                 hour,
                 false,
-                land.is_some(),
-                navy.is_some(),
+                battles[0],
+                battles[1],
                 land_commands,
                 naval_commands,
             );
@@ -3258,17 +3431,17 @@ impl Scan {
             return Ok(true);
         }
         let (Ok(rows), Ok(countries), Ok(links)) = (
-            decoded.complete::<tables::UnitLeaders>(),
-            decoded.complete::<tables::Countries>(),
-            decoded.complete::<tables::CountryLinks>(),
+            views.complete::<tables::UnitLeaders>(ALL),
+            views.complete::<tables::Countries>(ALL),
+            views.complete::<tables::CountryLinks>(ALL),
         ) else {
             withheld_active.clear();
             observe(
                 &mut reply.observed,
                 hour,
                 false,
-                land.is_some(),
-                navy.is_some(),
+                battles[0],
+                battles[1],
                 land_commands,
                 naval_commands,
             );
@@ -3290,48 +3463,46 @@ impl Scan {
         if let Some(work) = projection {
             work.owner_read = true;
         }
-        if owner_tags.update(decoded)? {
+        if update_owners(owner_tags, owner_marks, frame)? {
             *owner_epoch += 1;
         }
         let needs_visibility = if frontier.is_some() {
             *scoped_visibility
         } else {
-            rows.iter()
-                .any(|row| row.visibility_choice != 0 || row.template_visibility != 0)
+            any_scoped(rows)?
         };
         let world = content.filter(|_| needs_visibility).and_then(|c| {
             match c.catalogue.scripted_content() {
-                Ok(scripted) => Some(HourWorld::new(scripted, decoded, kept)),
+                Ok(scripted) => Some(HourWorld::new(scripted, frame, kept)),
                 Err(reason) => {
                     refusals.note(reason, "leader visibility content");
                     None
                 }
             }
         });
-        let traits = decoded
-            .complete::<tables::UnitLeaderTraits>()
+        let traits = views
+            .complete::<tables::UnitLeaderTraits>(ALL)
             .ok()
-            .filter(|_| slot_read(format, &decoded.metrics, TableId::UnitLeaderTraits, hour));
-        let progress_rows = decoded.complete::<tables::UnitLeaderTraitExperience>().ok();
-        let progress_tokens = decoded.complete::<tables::LexicalTokens>().ok();
-        let now_progress = [TableId::UnitLeaderTraitExperience, TableId::LexicalTokens]
-            .map(|t| &decoded.tables[t.index()]);
-        for (at, now) in now_progress.iter().enumerate() {
+            .filter(|_| slot_read(format, metrics, TableId::UnitLeaderTraits, hour));
+        let progress_rows = views
+            .complete::<tables::UnitLeaderTraitExperience>(ALL)
+            .ok();
+        let progress_tokens = views.complete::<tables::LexicalTokens>(ALL).ok();
+        const PROGRESS: [TableId; 2] = [TableId::UnitLeaderTraitExperience, TableId::LexicalTokens];
+        for (at, &table) in PROGRESS.iter().enumerate() {
             if progress_tables
                 .as_ref()
-                .is_none_or(|last| !last[at].is(now))
+                .is_none_or(|last| !frame.is(table, &last[at]))
             {
                 progress_epochs[at] += 1;
             }
         }
-        *progress_tables = Some(now_progress.map(SharedView::identity));
-        let now_traits = &decoded.tables[TableId::UnitLeaderTraits.index()];
-        if trait_table
-            .as_ref()
-            .is_none_or(|(last, known)| *known != traits.is_some() || !last.is(now_traits))
-        {
+        *progress_tables = Some(PROGRESS.map(|table| frame.mark(table)));
+        if trait_table.as_ref().is_none_or(|(last, known)| {
+            *known != traits.is_some() || !frame.is(TableId::UnitLeaderTraits, last)
+        }) {
             *trait_epoch += 1;
-            *trait_table = Some((now_traits.identity(), traits.is_some()));
+            *trait_table = Some((frame.mark(TableId::UnitLeaderTraits), traits.is_some()));
         }
         // Every leader's visibility first, so a kept frame that cannot give
         // a verdict stops the hour before any career changes.
@@ -3348,7 +3519,9 @@ impl Scan {
             if let Some(work) = projection.as_mut() {
                 work.resolved += 1;
             }
-            let row = &rows[row_index];
+            let row = rows
+                .nth(row_index)?
+                .ok_or_else(|| dashboard_core::invalid("A read leader is past the roster"))?;
             #[cfg(test)]
             {
                 work.row_visits += 1;
@@ -3356,7 +3529,7 @@ impl Scan {
             if !params.leaders.includes(row.kind) {
                 continue;
             }
-            let reference = handle(row);
+            let reference = handle(&row);
             if only.is_some_and(|wanted| wanted != reference) {
                 continue;
             }
@@ -3383,7 +3556,7 @@ impl Scan {
             if let Some(identity) = &identity_changes {
                 let renewed = identity.renew(
                     state,
-                    row,
+                    &row,
                     characters,
                     identity_before,
                     *identity_epoch,
@@ -3407,7 +3580,7 @@ impl Scan {
                 .as_ref()
                 .filter(|last| last.owner_epoch == *owner_epoch && last.row.owner == row.owner)
                 .map(|last| last.owner_slot)
-                .unwrap_or_else(|| link_slot(links, row.owner));
+                .unwrap_or_else(|| link_slot_in(&links, row.owner));
             let owner_known = if owner_unchanged {
                 reply.roles[state.last_read.as_ref().expect("cached owner").role as usize]
                     .owner
@@ -3431,7 +3604,7 @@ impl Scan {
                 state.admitted = true;
             }
             let decided = visible_reusing(
-                row,
+                &row,
                 world.as_ref(),
                 &mut state.visibility,
                 if reusing {
@@ -3454,7 +3627,7 @@ impl Scan {
             {
                 evaluated.push(index);
             }
-            planned.push((row_index, index, owner_unchanged, owner_slot, decided));
+            planned.push((row, index, owner_unchanged, owner_slot, decided));
         }
         if let Some(kept) = kept
             && kept.blocked()
@@ -3479,8 +3652,8 @@ impl Scan {
         // Each projected leader read, whether it was visible and the kind it was read with.
         let mut commanders = Vec::new();
         let owner_countries = OnceCell::new();
-        for (row_index, index, owner_unchanged, owner_slot, decided) in planned {
-            let row = &rows[row_index];
+        for (row, index, owner_unchanged, owner_slot, decided) in planned {
+            let row: &UnitLeaderRow = &row;
             let reference = handle(row);
             let state = &mut leaders[index];
             let previous_withheld = withheld_active.remove(&reference);
@@ -3529,23 +3702,23 @@ impl Scan {
                     lexical,
                     content,
                 );
-                let detail = owner.is_none().then(|| {
-                    owner_refusal_detail(
-                        row.owner,
-                        owner_slot,
-                        owner_slot.and_then(|slot| {
+                let detail = if owner.is_none() {
+                    let country = match owner_slot {
+                        Some(slot) => {
+                            if owner_countries.get().is_none() {
+                                let _ = owner_countries.set(countries_by_slot(countries)?);
+                            }
                             owner_countries
-                                .get_or_init(|| {
-                                    countries
-                                        .iter()
-                                        .map(|row| (row.canonical_slot, row))
-                                        .collect::<BTreeMap<_, _>>()
-                                })
-                                .get(&slot)
-                                .copied()
-                        }),
-                    )
-                });
+                                .get()
+                                .and_then(|by_slot| by_slot.get(&slot))
+                                .map(|country| &**country)
+                        }
+                        None => None,
+                    };
+                    Some(owner_refusal_detail(row.owner, owner_slot, country))
+                } else {
+                    None
+                };
                 let existing = previous_withheld.filter(|&index| {
                     let last = &reply.withheld[index];
                     last.owner.as_ref() == owner
@@ -3556,7 +3729,6 @@ impl Scan {
                 });
                 let index = existing.unwrap_or_else(|| {
                     let index = reply.withheld.len();
-                    let capacity = reply.withheld.capacity();
                     reply.withheld.push(LeaderWithheld {
                         reference: reference.to_string(),
                         owner: owner.cloned(),
@@ -3566,15 +3738,9 @@ impl Scan {
                         detail,
                         spans: Vec::new(),
                     });
-                    *withheld_bytes += (reply.withheld.capacity() - capacity)
-                        * std::mem::size_of::<LeaderWithheld>()
-                        + reply.withheld[index].heap_bytes();
                     index
                 });
-                let spans = &mut reply.withheld[index].spans;
-                let capacity = spans.capacity();
-                span_push(spans, hour);
-                *withheld_bytes += (spans.capacity() - capacity) * std::mem::size_of::<HourSpan>();
+                span_push(&mut reply.withheld[index].spans, hour);
                 withheld_active.insert(reference, index);
                 continue;
             }
@@ -3611,19 +3777,14 @@ impl Scan {
             {
                 cached.person
             } else {
-                let character = characters.and_then(|cs| {
-                    cs.binary_search_by_key(&row.character_id, |c| c.id)
-                        .ok()
-                        .map(|i| &cs[i])
-                });
-                let holder = holders.and_then(|ps| {
-                    ps.binary_search_by_key(&row.character_id, |p| p.character)
-                        .ok()
-                        .map(|i| &ps[i])
-                });
+                let character = characters
+                    .and_then(|rows| rows.get(u128::from(row.character_id)).ok().flatten());
+                let holder = holders
+                    .and_then(|rows| rows.get(u128::from(row.character_id)).ok().flatten());
+                let (character, holder) = (character.as_deref(), holder.as_deref());
                 let token = character
                     .zip(lexical)
-                    .and_then(|(c, lex)| character_script_token(c, lex));
+                    .and_then(|(c, lex)| character_script_token_in(c, lex));
                 // Stable character/holder reads reuse identity without formatting or decoding artwork each hour.
                 let cached = last_people
                     .get(&(row.character_id, row.kind))
@@ -3654,7 +3815,7 @@ impl Scan {
                         index
                     } else {
                         let before = reply.warnings.len();
-                        let person = person(decoded, row, character, token, content, reply);
+                        let person = person(views, row, character, token, content, reply);
                         let index = reply.people.len() as u32;
                         if let Some(work) = projection {
                             work.person_warnings
@@ -3683,48 +3844,58 @@ impl Scan {
             } else {
                 owner_tags.get(row.owner).map(String::as_str)
             };
-            let raw_traits = traits.map(|ts| trait_slice(ts, reference));
+            let raw_traits = traits
+                .map(|ts| trait_slice(ts, reference))
+                .transpose()?;
+            let training_read = OnceCell::new();
             // Progress is a function of these fields, the leader's training
             // rows and the tokens naming them: equal to the last read's, it
             // is the last run's.
-            let progress_same = state.last_run.is_some()
-                && state.last_read.as_ref().is_some_and(|last| {
-                    (
-                        last.row.experience,
-                        last.row.skill_status,
-                        last.row.skill_level,
-                        last.row.category,
-                    ) == (
-                        row.experience,
-                        row.skill_status,
-                        row.skill_level,
-                        row.category,
-                    ) && last.progress_epochs[1] == progress_epochs[1]
-                        && (last.progress_epochs[0] == progress_epochs[0]
-                            || last.training.as_deref()
-                                == progress_rows.map(|rows| training_rows(rows, reference)))
-                });
-            let progress = (!progress_same).then(|| {
+            let progress_same = match state.last_read.as_ref() {
+                Some(last)
+                    if state.last_run.is_some()
+                        && (
+                            last.row.experience,
+                            last.row.skill_status,
+                            last.row.skill_level,
+                            last.row.category,
+                        ) == (
+                            row.experience,
+                            row.skill_status,
+                            row.skill_level,
+                            row.category,
+                        )
+                        && last.progress_epochs[1] == progress_epochs[1] =>
+                {
+                    last.progress_epochs[0] == progress_epochs[0]
+                        || last.training.as_deref()
+                            == training_of(&training_read, progress_rows, reference)?
+                }
+                _ => false,
+            };
+            let spelled = |token: u32| {
+                progress_tokens
+                    .and_then(|tokens| {
+                        tokens
+                            .text(u128::from(token), |t| &t.literal, TOKEN_LITERAL)
+                            .ok()
+                            .flatten()
+                    })
+                    .and_then(|literal| {
+                        std::str::from_utf8(installed_content_core::parser::c_string(literal)).ok()
+                    })
+            };
+            let progress = if progress_same {
+                None
+            } else {
                 #[cfg(test)]
                 PROGRESS_BUILDS.with(|builds| builds.set(builds.get() + 1));
-                let training = progress_rows.map(|rows| {
-                    training_rows(rows, reference)
-                        .iter()
+                let read = training_of(&training_read, progress_rows, reference)?;
+                let training = read.map(|rows| {
+                    rows.iter()
                         .filter(|p| p.list == 0)
                         .map(|p| {
-                            let token = progress_tokens
-                                .and_then(|tokens| {
-                                    tokens
-                                        .binary_search_by_key(&(p.token_id as u32), |t| t.token)
-                                        .ok()
-                                        .map(|i| &tokens[i])
-                                })
-                                .and_then(|t| {
-                                    std::str::from_utf8(installed_content_core::parser::c_string(
-                                        &t.literal,
-                                    ))
-                                    .ok()
-                                });
+                            let token = spelled(p.token_id as u32);
                             if token.is_none() {
                                 refusals.note(
                                     "Training trait token is unavailable",
@@ -3745,24 +3916,11 @@ impl Scan {
                         })
                         .collect()
                 });
-                let factors = progress_rows.map(|rows| {
-                    training_rows(rows, reference)
-                        .iter()
+                let factors = read.map(|rows| {
+                    rows.iter()
                         .filter(|p| p.list == 1)
                         .map(|p| {
-                            let token = progress_tokens
-                                .and_then(|tokens| {
-                                    tokens
-                                        .binary_search_by_key(&(p.token_id as u32), |t| t.token)
-                                        .ok()
-                                        .map(|i| &tokens[i])
-                                })
-                                .and_then(|t| {
-                                    std::str::from_utf8(installed_content_core::parser::c_string(
-                                        &t.literal,
-                                    ))
-                                    .ok()
-                                });
+                            let token = spelled(p.token_id as u32);
                             if token.is_none() {
                                 refusals.note(
                                     "Training trait token is unavailable",
@@ -3779,7 +3937,7 @@ impl Scan {
                         })
                         .collect()
                 });
-                Some(LeaderProgress {
+                Some(Some(LeaderProgress {
                     experience_raw: row.experience.to_string(),
                     next_required_raw: (row.skill_status != 0)
                         .then_some(content)
@@ -3793,10 +3951,13 @@ impl Scan {
                         .map(|v| (i64::from(v) * 100_000).to_string()),
                     training,
                     factors,
-                })
-            });
-            let training = (!progress_same)
-                .then(|| progress_rows.map(|rows| training_rows(rows, reference).to_vec()));
+                }))
+            };
+            let training = if progress_same {
+                None
+            } else {
+                Some(training_of(&training_read, progress_rows, reference)?.map(<[_]>::to_vec))
+            };
             let leader = &mut state.career;
             if state.last_run.is_none() {
                 if let Some(work) = projection {
@@ -3811,15 +3972,15 @@ impl Scan {
                 missing_battles[usize::from(row.kind - 1)].is_some_and(|m| m >= h)
             });
             let current_battles_missing = if row.kind == engine_native::cunit_leader::KIND_ARMY {
-                land.is_none()
+                !battles[0]
             } else {
-                navy.is_none()
+                !battles[1]
             };
             if leader.partial_from.is_none() && (gap || battle_gap || current_battles_missing) {
                 leader.partial_from = Some(hour);
             }
             let traits_unchanged = state.last_read.as_ref().is_some_and(|last| {
-                last.trait_epoch == *trait_epoch || last.traits.as_deref() == raw_traits
+                last.trait_epoch == *trait_epoch || last.traits.as_deref() == raw_traits.as_deref()
             });
             let unchanged = state.last_read.as_ref().is_some_and(|last| {
                 last.row.category == row.category
@@ -3864,7 +4025,7 @@ impl Scan {
             let held = if traits_unchanged {
                 previous_run.expect("last trait read").value.traits.clone()
             } else {
-                raw_traits.and_then(|ts| {
+                raw_traits.as_deref().and_then(|ts| {
                     let mut held = Vec::with_capacity(ts.len());
                     for t in ts {
                         let token = match std::str::from_utf8(&t.token) {
@@ -3965,7 +4126,7 @@ impl Scan {
             if let Some(last) = &mut state.last_read {
                 last.row.clone_from(row);
                 if !traits_unchanged {
-                    last.traits = raw_traits.map(<[_]>::to_vec);
+                    last.traits = raw_traits.as_deref().map(<[_]>::to_vec);
                 }
                 last.role = role;
                 last.person = person_id;
@@ -3981,7 +4142,7 @@ impl Scan {
             } else {
                 state.last_read = Some(LastRead {
                     row: row.clone(),
-                    traits: raw_traits.map(<[_]>::to_vec),
+                    traits: raw_traits.as_deref().map(<[_]>::to_vec),
                     role,
                     person: person_id,
                     person_epoch: *identity_epoch,
@@ -3990,9 +4151,11 @@ impl Scan {
                     trait_epoch: *trait_epoch,
                     holder,
                     progress_epochs: *progress_epochs,
-                    training: training.unwrap_or_else(|| {
-                        progress_rows.map(|rows| training_rows(rows, reference).to_vec())
-                    }),
+                    training: match training {
+                        Some(training) => training,
+                        None => training_of(&training_read, progress_rows, reference)?
+                            .map(<[_]>::to_vec),
+                    },
                 });
             }
             let progress = progress.unwrap_or_else(|| {
@@ -4008,17 +4171,12 @@ impl Scan {
                 traits: held,
             };
             let before = stored_runs.len();
+            let known = state.last_known_run;
             append_stored_run(state, stored_runs, value, hour, start);
-            *pending_bytes = pending_bytes
-                .saturating_add((stored_runs.len() - before) * std::mem::size_of::<StoredRun>());
-            // A projected run's progress is written on its worker, for the publication to copy.
             if let Some(work) = projection.as_mut()
                 && stored_runs.len() > before
             {
-                work.runs += 1;
-                let at = stored_runs.len() - 1;
-                let progress = serde_json::to_vec(&stored_runs[at].run.value.progress)?;
-                run_progress.insert(at, Arc::from(progress));
+                work.begin(state, stored_runs, known)?;
             }
             if admission_changed {
                 admit(reference, &reply.roles[role as usize], holder);
@@ -4047,7 +4205,7 @@ impl Scan {
         if let Some(work) = projection.as_mut() {
             [land_commands, naval_commands] = work.bind_commands(
                 columnar::CommandHour {
-                    frame: decoded,
+                    frame: views,
                     changes: changes.expect("projected table changes"),
                     hour,
                     full,
@@ -4060,8 +4218,8 @@ impl Scan {
                 formation_names,
                 content,
                 refusals,
-            );
-        } else {
+            )?;
+        } else if let Some(decoded) = decoded {
             if land_commands {
                 let plans = decoded
                     .complete::<tables::OrdersGroupPlans>()
@@ -4105,16 +4263,16 @@ impl Scan {
                         } else {
                             LeaderFormationKind::Army
                         };
-                        let (command, repeated, bytes) =
+                        let (command, repeated) =
                             append_command(state, group.handle, kind, name, hour);
-                        *pending_bytes = pending_bytes.saturating_add(bytes);
                         *commands_continuous &= !repeated;
                         active_commands.push((index, command));
                     }
                 }
             }
             if let Some(fleets) = fleet_commands {
-                for fleet in fleets {
+                for fleet in fleets.iter() {
+                    let fleet = fleet?;
                     #[cfg(test)]
                     {
                         work.row_visits += 1;
@@ -4150,9 +4308,8 @@ impl Scan {
                     };
                     let name =
                         formation_name(formation_names, fleet.id, raw_name, content, refusals);
-                    let (command, repeated, bytes) =
+                    let (command, repeated) =
                         append_command(state, fleet.id, LeaderFormationKind::Fleet, name, hour);
-                    *pending_bytes = pending_bytes.saturating_add(bytes);
                     *commands_continuous &= !repeated;
                     active_commands.push((index, command));
                 }
@@ -4201,9 +4358,8 @@ impl Scan {
                             last.row.kind == engine_native::cunit_leader::KIND_NAVY
                         })
                     {
-                        let (command, repeated, bytes) =
+                        let (command, repeated) =
                             append_command(state, fleet, LeaderFormationKind::Fleet, None, hour);
-                        *pending_bytes = pending_bytes.saturating_add(bytes);
                         *commands_continuous &= !repeated;
                         active_commands.push((index, command));
                     }
@@ -4214,20 +4370,20 @@ impl Scan {
             &mut reply.observed,
             hour,
             true,
-            land.is_some(),
-            navy.is_some(),
+            battles[0],
+            battles[1],
             land_commands,
             naval_commands,
         );
         if let Some(work) = projection {
             work.battles(
                 format,
-                decoded,
+                views,
                 changes.expect("projected table changes"),
                 leader_indices,
-            );
+            )?;
         }
-        let visits = if projection.is_none() {
+        let visits = if let Some(decoded) = decoded {
             record_battles(
                 format,
                 decoded,
@@ -4240,7 +4396,6 @@ impl Scan {
                 battle_hours,
                 battle_indices,
                 previous_combats,
-                pending_bytes,
             )
         } else {
             0
@@ -4519,11 +4674,6 @@ fn scan(
     scan.finish(params, content)
 }
 
-// Retention limits cached snapshots, never the inventory a request may ask for.
-#[cfg(any(test, feature = "test-support"))]
-const CACHED_BRANCHES: usize = 2;
-#[cfg(any(test, feature = "test-support"))]
-const CACHED_REPLIES: usize = 4;
 #[cfg(any(test, feature = "test-support"))]
 type CachedReply = Result<Arc<UnitLeadersReply>, (io::ErrorKind, String)>;
 
@@ -4541,7 +4691,8 @@ fn recalled(result: CachedReply) -> io::Result<Arc<UnitLeadersReply>> {
 struct BranchState {
     scan: Option<CachedReply>,
     scanning: bool,
-    replies: VecDeque<(UnitLeadersParams, CachedReply)>,
+    /// The branch's latest reply.
+    reply: Option<(UnitLeadersParams, CachedReply)>,
 }
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
@@ -4590,28 +4741,25 @@ impl BranchSlot {
     }
 
     fn reply(&self, params: &UnitLeadersParams) -> Option<CachedReply> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let index = state.replies.iter().position(|(key, _)| key == params)?;
-        let entry = state.replies.remove(index)?;
-        let reply = entry.1.clone();
-        state.replies.push_back(entry);
-        Some(reply)
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state
+            .reply
+            .as_ref()
+            .filter(|(key, _)| key == params)
+            .map(|(_, reply)| reply.clone())
     }
     fn remember(&self, params: &UnitLeadersParams, reply: CachedReply) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.replies.retain(|(key, _)| key != params);
-        state.replies.push_back((params.clone(), reply));
-        while state.replies.len() > CACHED_REPLIES {
-            state.replies.pop_front();
-        }
+        state.reply = Some((params.clone(), reply));
     }
 }
 
+/// Each branch's slot under the catalogue it read; another catalogue replaces them all.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Cache {
     catalogue: Option<Arc<Catalogue>>,
-    branches: VecDeque<(String, Arc<BranchSlot>)>,
+    branches: HashMap<String, Arc<BranchSlot>>,
 }
 #[cfg(any(test, feature = "test-support"))]
 impl Cache {
@@ -4625,19 +4773,7 @@ impl Cache {
             self.branches.clear();
             self.catalogue = catalogue;
         }
-        if let Some(index) = self.branches.iter().position(|(key, _)| key == branch) {
-            let entry = self.branches.remove(index).expect("cached branch");
-            let slot = Arc::clone(&entry.1);
-            self.branches.push_back(entry);
-            return slot;
-        }
-        let slot = Arc::new(BranchSlot::default());
-        self.branches
-            .push_back((branch.to_owned(), Arc::clone(&slot)));
-        while self.branches.len() > CACHED_BRANCHES {
-            self.branches.pop_front();
-        }
-        slot
+        Arc::clone(self.branches.entry(branch.to_owned()).or_default())
     }
 }
 
@@ -4900,7 +5036,6 @@ fn record_battles(
     battle_hours: &mut BattleHours,
     battle_indices: &mut HashMap<(u64, u8, u64), usize>,
     previous_combats: &mut [Option<(i32, Vec<u64>)>; 2],
-    pending_bytes: &mut usize,
 ) -> usize {
     let hour = decoded.hour;
     let mut visits = 0;
@@ -5002,8 +5137,6 @@ fn record_battles(
                 combat,
                 side,
             ));
-            *pending_bytes =
-                pending_bytes.saturating_add(std::mem::size_of::<(i32, i32, bool, u8, u64, u8)>());
         }
     }
     *previous_combats = combat_sets.map(|set| set.map(|set| (hour, set)));
@@ -5174,62 +5307,74 @@ pub fn load_choices(
     )
 }
 
-/// [`project`], a leaderboard cut at `at` as [`leaderboard_at`] cuts it, copying only what the
-/// hour keeps of each career; its battles are counted from `visible`, each leader's
-/// [`visible_battles`] in `scanned`'s order, when given.
-pub(crate) fn project_at(
-    scanned: &UnitLeadersReply,
-    params: &UnitLeadersParams,
-    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
-    at: Option<i32>,
-    visible: Option<&[[Option<Vec<i64>>; 3]]>,
-) -> UnitLeadersReply {
-    let at = at.filter(|_| params.view == LeaderView::Leaderboard);
-    let requested: BTreeSet<_> = match &params.selection {
-        LeaderSelection::Countries { tags } => history
-            .map_or_else(
-                || tags.clone(),
-                |history| {
-                    dashboard_base::products::country_history::selected_aliases(history, tags)
-                },
-            )
-            .into_iter()
-            .collect(),
-        _ => BTreeSet::new(),
-    };
-    let selected = history.and_then(|history| {
-        let LeaderSelection::Countries { tags } = &params.selection else {
-            return None;
+/// The leaders and withheld rows `params` selects, whatever hour they are read at: their kinds,
+/// and their owners' identities among the selected countries' when `history` names them.
+pub(crate) struct Selector {
+    selection: LeaderSelection,
+    kinds: LeaderKinds,
+    /// The selected countries' aliases.
+    requested: BTreeSet<String>,
+    /// Each alias's identities among the selected countries', where `history` was given.
+    identities: Option<
+        BTreeMap<String, Vec<dashboard_base::products::country_history::CountryIdentityRun>>,
+    >,
+}
+
+impl Selector {
+    pub(crate) fn new(
+        params: &UnitLeadersParams,
+        history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    ) -> Self {
+        let requested: BTreeSet<String> = match &params.selection {
+            LeaderSelection::Countries { tags } => history
+                .map_or_else(
+                    || tags.clone(),
+                    |history| {
+                        dashboard_base::products::country_history::selected_aliases(history, tags)
+                    },
+                )
+                .into_iter()
+                .collect(),
+            _ => BTreeSet::new(),
         };
-        let identities =
-            dashboard_base::products::country_history::selected_identities(history, tags);
-        Some(
-            requested
-                .iter()
-                .map(|tag| {
-                    let runs = history.countries[tag]
-                        .identities
-                        .iter()
-                        .filter(|identity| {
-                            identities.contains(&(identity.slot, identity.country_id))
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    (tag.as_str(), runs)
-                })
-                .collect::<BTreeMap<_, _>>(),
-        )
-    });
-    let leaders: Vec<_> = scanned
-        .leaders
-        .iter()
-        .enumerate()
-        .filter(|(_, leader)| {
-            leader.runs.iter().any(|run| {
-                params
-                    .leaders
-                    .includes(scanned.roles[run.value.role as usize].kind)
-            }) && match &params.selection {
+        let identities = history.and_then(|history| {
+            let LeaderSelection::Countries { tags } = &params.selection else {
+                return None;
+            };
+            let selected =
+                dashboard_base::products::country_history::selected_identities(history, tags);
+            Some(
+                requested
+                    .iter()
+                    .map(|tag| {
+                        let runs = history.countries[tag]
+                            .identities
+                            .iter()
+                            .filter(|identity| {
+                                selected.contains(&(identity.slot, identity.country_id))
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        (tag.clone(), runs)
+                    })
+                    .collect(),
+            )
+        });
+        Self {
+            selection: params.selection.clone(),
+            kinds: params.leaders,
+            requested,
+            identities,
+        }
+    }
+
+    /// Whether `leader` of `scanned` is selected.
+    pub(crate) fn admits(&self, scanned: &UnitLeadersReply, leader: &LeaderCareer) -> bool {
+        leader
+            .runs
+            .iter()
+            .any(|run| self.kinds.includes(scanned.roles[run.value.role as usize].kind))
+            && match &self.selection {
                 LeaderSelection::All => true,
                 LeaderSelection::Leader { reference } => &leader.reference == reference,
                 LeaderSelection::Countries { .. } => leader.runs.iter().any(|run| {
@@ -5237,8 +5382,8 @@ pub(crate) fn project_at(
                         .owner
                         .as_deref()
                         .is_some_and(|owner| {
-                            requested.contains(owner)
-                                && selected.as_ref().is_none_or(|selected| {
+                            self.requested.contains(owner)
+                                && self.identities.as_ref().is_none_or(|selected| {
                                     let identities = &selected[owner];
                                     let first = identities.partition_point(|identity| {
                                         identity.last_hour < run.first_hour
@@ -5250,53 +5395,104 @@ pub(crate) fn project_at(
                         })
                 }),
             }
+    }
+
+    /// Whether the withheld `row` is selected.
+    pub(crate) fn admits_withheld(&self, row: &LeaderWithheld) -> bool {
+        self.kinds.includes(row.kind)
+            && match &self.selection {
+                LeaderSelection::All => true,
+                LeaderSelection::Leader { reference } => &row.reference == reference,
+                LeaderSelection::Countries { .. } => row
+                    .owner
+                    .as_ref()
+                    .is_none_or(|owner| self.requested.contains(owner)),
+            }
+    }
+
+    /// Names what the selection resolved to: equal selectors admit the same rows.
+    pub(crate) fn fingerprint(&self) -> String {
+        let resolved = (&self.selection, self.kinds, &self.requested, &self.identities);
+        let bytes = serde_json::to_vec(&resolved).expect("a selection serialises");
+        blake3::hash(&bytes).to_hex()[..32].to_owned()
+    }
+
+    /// The aliases a countries selection names, as its reply lists them.
+    pub(crate) fn selection_tags(&self) -> Option<Vec<String>> {
+        matches!(self.selection, LeaderSelection::Countries { .. })
+            .then(|| self.requested.iter().cloned().collect())
+    }
+}
+
+/// `leader`'s leaderboard row at `hour`: the run covering it, its trait gains through it and its
+/// battles counted from `visible` (its [`visible_battles`]) then; none where no run covers it.
+pub(crate) fn leader_at(
+    leader: &LeaderCareer,
+    visible: &[Option<Vec<i64>>; 3],
+    hour: i32,
+) -> Option<LeaderCareer> {
+    let index = leader.runs.partition_point(|run| run.last_hour < hour);
+    let run = leader.runs.get(index).filter(|run| run.first_hour <= hour)?;
+    let [fought, won, lost] = visible;
+    let count = |hours: &Option<Vec<i64>>| {
+        hours.as_ref().map(|hours| {
+            let shown = hours.partition_point(|&shown| shown <= i64::from(hour));
+            u32::try_from(shown).expect("battle count fits the reply")
         })
+    };
+    Some(LeaderCareer {
+        reference: leader.reference.clone(),
+        runs: vec![run.clone()],
+        trait_gains: leader
+            .trait_gains
+            .iter()
+            .filter(|gain| gain.hour <= hour)
+            .cloned()
+            .collect(),
+        commands: Vec::new(),
+        battle_starts: None,
+        battle_start_read_hours: None,
+        unknown_battle_starts: None,
+        battle_won: None,
+        battle_result_hours: None,
+        battle_result_read_hours: None,
+        fought_hours: None,
+        won_hours: None,
+        lost_hours: None,
+        partial_from: leader.partial_from,
+        at_hour: Some(LeaderAtHour {
+            hour,
+            first_seen_hour: leader.runs[0].first_hour,
+            fought: count(fought).expect("leaderboard participations"),
+            won: count(won),
+            lost: count(lost),
+        }),
+    })
+}
+
+/// [`project`], a leaderboard cut at `at` as [`leaderboard_at`] cuts it, copying only what the
+/// hour keeps of each career; its battles are counted from `visible`, each leader's
+/// [`visible_battles`] in `scanned`'s order, when given.
+pub(crate) fn project_at(
+    scanned: &UnitLeadersReply,
+    params: &UnitLeadersParams,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    at: Option<i32>,
+    visible: Option<&[[Option<Vec<i64>>; 3]]>,
+) -> UnitLeadersReply {
+    let at = at.filter(|_| params.view == LeaderView::Leaderboard);
+    let selector = Selector::new(params, history);
+    let leaders: Vec<_> = scanned
+        .leaders
+        .iter()
+        .enumerate()
+        .filter(|(_, leader)| selector.admits(scanned, leader))
         .filter_map(|(position, leader)| {
             if let Some(hour) = at {
-                let index = leader.runs.partition_point(|run| run.last_hour < hour);
-                let run = leader.runs.get(index).filter(|run| run.first_hour <= hour)?;
-                let computed;
-                let [fought, won, lost] = match visible {
-                    Some(visible) => &visible[position],
-                    None => {
-                        computed = visible_battles(leader);
-                        &computed
-                    }
+                return match visible {
+                    Some(visible) => leader_at(leader, &visible[position], hour),
+                    None => leader_at(leader, &visible_battles(leader), hour),
                 };
-                let count = |hours: &Option<Vec<i64>>| {
-                    hours.as_ref().map(|hours| {
-                        let shown = hours.partition_point(|&shown| shown <= i64::from(hour));
-                        u32::try_from(shown).expect("battle count fits the reply")
-                    })
-                };
-                return Some(LeaderCareer {
-                    reference: leader.reference.clone(),
-                    runs: vec![run.clone()],
-                    trait_gains: leader
-                        .trait_gains
-                        .iter()
-                        .filter(|gain| gain.hour <= hour)
-                        .cloned()
-                        .collect(),
-                    commands: Vec::new(),
-                    battle_starts: None,
-                    battle_start_read_hours: None,
-                    unknown_battle_starts: None,
-                    battle_won: None,
-                    battle_result_hours: None,
-                    battle_result_read_hours: None,
-                    fought_hours: None,
-                    won_hours: None,
-                    lost_hours: None,
-                    partial_from: leader.partial_from,
-                    at_hour: Some(LeaderAtHour {
-                        hour,
-                        first_seen_hour: leader.runs[0].first_hour,
-                        fought: count(fought).expect("leaderboard participations"),
-                        won: count(won),
-                        lost: count(lost),
-                    }),
-                });
             }
             let career = params.view == LeaderView::Career;
             let [fought_hours, won_hours, lost_hours] = if params.view == LeaderView::Leaderboard {
@@ -5349,21 +5545,8 @@ pub(crate) fn project_at(
                 .collect(),
             None => scanned.observed.clone(),
         },
-        withheld: withheld_at(&scanned.withheld, at, |row| {
-            params.leaders.includes(row.kind)
-                && match &params.selection {
-                    LeaderSelection::All => true,
-                    LeaderSelection::Leader { reference } => &row.reference == reference,
-                    LeaderSelection::Countries { .. } => row
-                        .owner
-                        .as_ref()
-                        .is_none_or(|owner| requested.contains(owner)),
-                }
-        }),
-        selection_tags: match &params.selection {
-            LeaderSelection::Countries { .. } => Some(requested.into_iter().collect()),
-            _ => None,
-        },
+        withheld: withheld_at(&scanned.withheld, at, |row| selector.admits_withheld(row)),
+        selection_tags: selector.selection_tags(),
         preparing: scanned.preparing.clone(),
         results_missing: scanned.results_missing.clone(),
         navy_commands_missing: scanned.navy_commands_missing.clone(),
@@ -5595,6 +5778,7 @@ impl Product for UnitLeaders {
             UnitLeadersReply::decl(),
             LeaderChoice::decl(),
             LeaderChoicesReply::decl(),
+            UnitLeadersHourReply::decl(),
         ]
     }
     #[cfg(any(test, feature = "test-support"))]

@@ -33,12 +33,9 @@ fn text(served: &Served) -> String {
     assert_eq!(text.len(), served.len());
     text
 }
-/// What `answer` serves with `lines`, the same from the answer as from it kept and read back.
+/// What `answer` serves with `lines`.
 fn serve(answer: &Answer, lines: Vec<String>, refresh: fn(&mut Vec<String>)) -> String {
-    let fresh = text(&Served::decorate(answer, lines.clone(), refresh));
-    let (kept, ()) = Answer::kept(answer.keep(())().unwrap()).unwrap();
-    assert_eq!(text(&Served::decorate(&kept, lines, refresh)), fresh);
-    fresh
+    text(&Served::decorate(answer, lines, refresh))
 }
 fn check(data: Value, product: &str, name: &str) {
     let lines = vec!["presented".into(), "presented".into(), "kept".into()];
@@ -170,12 +167,9 @@ fn served_field_inserts_or_replaces_only_at_root_in_value_key_order() {
             .unwrap()
             .insert("served".into(), json!(["fresh"]));
         let answer = Answer::new(&data, &[&["warnings"]], true, &AtomicBool::new(false)).unwrap();
-        let (kept, ()) = Answer::kept(answer.keep(())().unwrap()).unwrap();
-        for answer in [&answer, &kept] {
-            let mut view = Served::decorate(answer, vec![], |_| {});
-            view.served = Some(json!(["fresh"]).to_string());
-            assert_eq!(text(&view), serde_json::to_string(&old).unwrap());
-        }
+        let mut view = Served::decorate(&answer, vec![], |_| {});
+        view.served = Some(json!(["fresh"]).to_string());
+        assert_eq!(text(&view), serde_json::to_string(&old).unwrap());
     }
     // Only an object takes the field.
     let answer = Answer::new(&json!([{"served":1}]), &[], true, &AtomicBool::new(false)).unwrap();
@@ -260,20 +254,4 @@ fn writing_an_answer_stops_once_its_request_is_cancelled_or_its_text_passes_the_
         .unwrap();
     assert!(error.to_string().contains("budget"), "{error}");
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-}
-#[test]
-fn kept_answers_whose_marks_do_not_fit_their_text_are_refused() {
-    let answer = Answer::new(
-        &json!({"warnings":["a"]}),
-        &[&["warnings"]],
-        false,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let json = answer.keep(())().unwrap();
-    assert!(Answer::kept::<()>(json.clone()).is_some());
-    // Cut short, the text no longer holds the lists its marks name; without its line, no marks.
-    let line = json.rfind('\n').unwrap();
-    assert!(Answer::kept::<()>(json[line - 3..].to_owned()).is_none());
-    assert!(Answer::kept::<()>(json[..line].to_owned()).is_none());
 }

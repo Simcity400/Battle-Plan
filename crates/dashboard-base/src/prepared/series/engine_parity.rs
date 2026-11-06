@@ -108,10 +108,8 @@ fn engine_answers_points_ranges_charts_navigation_and_events_as_the_reader_does(
     let streams = streams(&mut seed, last);
     let fixture = tests::Fixture::new();
     let mut values = Accumulator::default();
-    let budget = engine::Budget::new(256 * 1024 * 1024);
-    let cache = engine::Cache::new(&budget);
     let mut pages = Pages::default();
-    let mut writer = engine::Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = engine::Writer::new(identity(), 0).unwrap();
     let keys: Vec<u64> = (0..KEYS)
         .map(|actor| {
             writer
@@ -197,12 +195,12 @@ fn engine_answers_points_ranges_charts_navigation_and_events_as_the_reader_does(
             )
             .unwrap();
         let sealed = pending.seal(&mut pages).unwrap();
-        root = writer.publish(&mut pages, &cache, sealed).unwrap();
+        root = writer.publish(&mut pages, sealed).unwrap();
         first = end + 1;
     }
     let cancelled = AtomicBool::new(false);
     let mut reader = Reader::new(&fixture.store, &fixture.key, SECTION.into(), &cancelled).unwrap();
-    let mut snapshot = engine::Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let mut snapshot = engine::Snapshot::open(pages, root, identity()).unwrap();
     let selection = |key: u64| engine::Selection {
         key,
         membership: None,
@@ -631,10 +629,8 @@ fn engine_navigates_backdated_ordered_contributions_as_the_reader_does() {
     streams.push(vec![(0, 2, 1, true, false), (5, 5, 2, true, false), (0, 10, 3, true, false)]);
     let fixture = tests::Fixture::new();
     let mut values = Accumulator::default();
-    let budget = engine::Budget::new(256 * 1024 * 1024);
-    let cache = engine::Cache::new(&budget);
     let mut pages = Pages::default();
-    let mut writer = engine::Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = engine::Writer::new(identity(), 0).unwrap();
     let keys: Vec<u64> = (0..streams.len() as u64)
         .map(|actor| {
             writer
@@ -705,12 +701,12 @@ fn engine_navigates_backdated_ordered_contributions_as_the_reader_does() {
             )
             .unwrap();
         let sealed = pending.seal(&mut pages).unwrap();
-        root = writer.publish(&mut pages, &cache, sealed).unwrap();
+        root = writer.publish(&mut pages, sealed).unwrap();
         first = end + 1;
     }
     let cancelled = AtomicBool::new(false);
     let mut reader = Reader::new(&fixture.store, &fixture.key, SECTION.into(), &cancelled).unwrap();
-    let mut snapshot = engine::Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let mut snapshot = engine::Snapshot::open(pages, root, identity()).unwrap();
     let selection = |key: u64| engine::Selection {
         key,
         membership: None,

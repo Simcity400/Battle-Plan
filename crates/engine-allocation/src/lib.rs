@@ -1,6 +1,5 @@
 //! Checked heap growth shared by native capture and its replay writer.
 
-pub mod credit;
 pub mod labels;
 
 use std::alloc::{Layout, alloc};

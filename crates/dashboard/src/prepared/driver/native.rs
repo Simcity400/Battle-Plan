@@ -2,8 +2,10 @@
 //! the recording's segments in one run of the segment executor ([`segments::run_in`]): each
 //! walk decodes the union of their tables once and advances one world of what its families read,
 //! and each family's ordered emit publishes through a stage of its own of the one publisher
-//! ([`Publisher`]), which ownership guards. The change-run index the viewer's map reads is
-//! prepared before the run ([`crate::prepared::change_runs`]). A family prepared ahead ([`registry::Descriptor::ahead`]) walks the whole
+//! ([`Publisher`]), which ownership guards. The change-run index the viewer's map reads, when
+//! due and of this recording, is one more lane of the union run, the walks decoding its tables
+//! too ([`crate::prepared::change_runs::Riding`]), and is put in place once the run ends. A
+//! family prepared ahead ([`registry::Descriptor::ahead`]) walks the whole
 //! recording first, in a run of its own that decodes its tables alone ([`walk_all`]). A
 //! recording-wide job with a native backend is a member of the run as a family is. Every other
 //! family, and every recording-wide job without a native
@@ -41,7 +43,10 @@ use super::{
 use crate::{
     Source,
     config::{ContentOptions, LoadContext},
-    prepared::pipeline::Accepted,
+    prepared::{
+        change_runs::{Due, Riding, Rode},
+        pipeline::Accepted,
+    },
 };
 use backend::{Floor, Going, Member, Taken, Walked, Walking};
 use content::Content;
@@ -54,7 +59,7 @@ use dashboard_world::{Needs, World};
 use engine_allocation::labels::{self, Kind, Owner};
 use measure::{Clock, Counted, Lap, Narrow, working_set};
 use replay::{
-    columnar_frames::{Limits, Recording, Segment},
+    columnar_frames::{Recording, Segment},
     columnar_runs,
     segments::{self, Outcome, Settings},
 };
@@ -121,7 +126,7 @@ pub(crate) fn recording(source: &Source) -> io::Result<Option<Recording>> {
     let campaign = &source.replay_ref().campaign_id;
     let candidates = crate::prepared::change_runs::native_files(source.path(), campaign)?;
     for candidate in candidates {
-        let recording = match Recording::open_path(&candidate, Limits::default()) {
+        let recording = match Recording::open_path(&candidate) {
             Ok(recording) => recording,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => continue,
             Err(error) => return Err(error),
@@ -158,24 +163,44 @@ struct Options<'a> {
     walk_only: bool,
 }
 
-/// Prepares `source` from its native `recording`, reporting each commit to `accepted`. A recording
-/// whose Campaign rows name another campaign than it is refused whole, before anything is
-/// published ([`campaign::check`]).
+/// Prepares `source` from its native `recording`, reporting each commit to `accepted`, and the
+/// change-run index `index` of it, when due ([`Due::rides`]): as a lane of the union run, or alone
+/// when the families fail before it starts. A recording whose Campaign rows name another
+/// campaign than it is refused whole, before anything is published ([`campaign::check`]).
 pub(crate) fn prepare(
     source: &Source,
     content: Option<&ContentOptions>,
     recording: Recording,
+    mut index: Option<Due>,
     cancelled: &AtomicBool,
     accepted: &mut dyn FnMut(&Accepted),
 ) -> io::Result<Accepted> {
-    let done = run(
+    let ran = run(
         source,
         content,
         recording,
         &Options::default(),
+        &mut index,
         cancelled,
         accepted,
-    )?;
+    );
+    // An index the run never took is prepared all the same, as it was before the families.
+    let done = match (ran, index) {
+        (ran, None) => ran?,
+        (Ok(done), Some(due)) => {
+            due.alone(cancelled)?;
+            done
+        }
+        (Err(error), Some(due)) => {
+            return match due.alone(cancelled) {
+                Ok(_) => Err(error),
+                Err(unindexed) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; {unindexed}"),
+                )),
+            };
+        }
+    };
     match done.failure {
         None => Ok(done.accepted),
         Some(failure) => {
@@ -186,18 +211,22 @@ pub(crate) fn prepare(
 }
 
 /// Prepares `source` from `recording`, its replay's native recording, as [`prepare`] does: of the
-/// families `families` names, or every one with a native backend, on `threads` workers, measured.
-/// A family that failed fails its status rows, which say why. `walk_only` walks the runs for
-/// their tables and worlds alone, preparing nothing ([`Floor`]).
+/// families `families` names, or every one with a native backend, on `threads` workers, measured,
+/// with `index` as a lane of the union run when due ([`Due::rides`]). A family that failed fails
+/// its status rows, which say why; what the job would fail with besides, the index's failure
+/// among it, is returned. `walk_only` walks the runs for their tables and worlds alone,
+/// preparing nothing ([`Floor`]).
+#[allow(clippy::too_many_arguments)]
 pub fn measure(
     source: &Source,
     content: Option<&ContentOptions>,
     recording: Recording,
+    mut index: Option<Due>,
     families: Option<&[&str]>,
     threads: usize,
     walk_only: bool,
     cancelled: &AtomicBool,
-) -> io::Result<(Accepted, Measured)> {
+) -> io::Result<(Accepted, Measured, Option<io::Error>)> {
     if !pairs(source, &recording)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -210,11 +239,19 @@ pub fn measure(
         measure: true,
         walk_only,
     };
-    let done = run(source, content, recording, &options, cancelled, &mut |_| {})?;
+    let done = run(
+        source,
+        content,
+        recording,
+        &options,
+        &mut index,
+        cancelled,
+        &mut |_| {},
+    )?;
     let measured = done
         .measured
         .ok_or_else(|| io::Error::other("The run was not measured"))?;
-    Ok((done.accepted, measured))
+    Ok((done.accepted, measured, done.failure))
 }
 
 /// What a complete native preparation of `source` from `recording` accepted, read from its
@@ -356,12 +393,17 @@ fn taken(
             .committed(family, branch)
             .ok_or_else(|| io::Error::other("A family's committed publication is missing"))?;
         let carry = roots::carry(stage.pages()?, family.name(), branch, &published)?;
+        // It goes on past hours it lost, which carried nothing on: it starts where it can.
+        let lost = frontier.holes.last().is_some_and(|hole| {
+            hole.held == roots::Held::Lost && hole.last_hour == frontier.last_hour
+        });
         going.push(Going {
             branch,
             run: frontier.next.run,
             ordinal: frontier.next.ordinal,
             published,
             carry,
+            lost,
         });
     }
     Ok((passes, going))
@@ -383,6 +425,7 @@ fn run(
     content: Option<&ContentOptions>,
     mut recording: Recording,
     options: &Options<'_>,
+    due: &mut Option<Due>,
     cancelled: &AtomicBool,
     accepted: &mut dyn FnMut(&Accepted),
 ) -> io::Result<Done> {
@@ -407,7 +450,7 @@ fn run(
     };
     let memory = labels::enter(Owner::RUN, Kind::Content);
     let extents = dashboard_text::metadata::Extents::native(source.replay_ref(), &recording)?;
-    let loading = Content::new(source, &context, extents);
+    let loading = Content::new(source, &context, extents, recording.selecting(&[])?);
     let caller = Caller::current();
     drop(span);
     let span = replay_frame::timeline::span("content");
@@ -545,6 +588,8 @@ fn run(
         )
     };
     let settings = Settings::new(threads);
+    // Taken now: an index the run never starts with is prepared apart ([`prepare`]).
+    let mut index = due.take().map(Due::ride).transpose()?;
     // Each lane's batch seals and commits beside it while it goes on with the next.
     let sealers = members.len().min(threads);
     let walked = publisher.sealing(sealers, || {
@@ -553,6 +598,7 @@ fn run(
         let walk = Walk {
             shape: &shape,
             members: &mut members,
+            index: index.as_mut(),
             world: (replay.format, replay.capture_mode),
             settings: &settings,
             spool: &spool,
@@ -580,6 +626,20 @@ fn run(
         }
     };
     failed.append(&mut walked.failed);
+    // The index the union run wrote goes in place once its lane went past every segment.
+    let indexed = match index {
+        Some(index) => {
+            let span = replay_frame::timeline::span("index");
+            let rode = match walked.ran.index.take() {
+                Some(outcome) => Rode::Ran(outcome),
+                None => Rode::Stopped,
+            };
+            let finished = index.finish(&recording, rode);
+            drop(span);
+            finished
+        }
+        None => Ok(()),
+    };
     let ended_with = if options.measure { working_set()? } else { 0 };
     let worked = if options.walk_only { &[][..] } else { &members[..] };
     let spent: Vec<(&'static str, backend::Spent)> = worked
@@ -632,10 +692,19 @@ fn run(
             })
         })
         .transpose()?;
+    let failure = match (unshown.is_empty(), indexed) {
+        (true, Ok(())) => None,
+        (true, Err(error)) => Some(error),
+        (false, Ok(())) => Some(io::Error::other(unshown.join("; "))),
+        (false, Err(error)) => Some(io::Error::other(format!(
+            "{}; {error}",
+            unshown.join("; ")
+        ))),
+    };
     Ok(Done {
         accepted: done,
         measured,
-        failure: (!unshown.is_empty()).then(|| io::Error::other(unshown.join("; "))),
+        failure,
     })
 }
 
@@ -781,6 +850,8 @@ impl Drop for Ended<'_> {
 pub(crate) struct Walk<'w, 'm> {
     pub shape: &'w Shape,
     pub members: &'w mut [Box<dyn Member + 'm>],
+    /// The change-run index the union run writes as one more lane, when due.
+    pub index: Option<&'w mut Riding>,
     /// The format and capture mode the walks' worlds read.
     pub world: (FormatVersion, CaptureMode),
     pub settings: &'w Settings,
@@ -798,6 +869,8 @@ pub(crate) struct Ran {
     pub stats: segments::Stats,
     /// What became of each member, in their order; None for one with nothing to do.
     pub outcomes: Vec<Option<Outcome>>,
+    /// What became of the change-run index's lane, when the run carried it.
+    pub index: Option<Outcome>,
     /// Cycles the walks' worlds took, when measured.
     pub world: u64,
     /// The most each segment's walks charged their tables, by segment.
@@ -882,21 +955,28 @@ fn decoded(reads: impl IntoIterator<Item = TableId>) -> Vec<TableId> {
     tables
 }
 
-/// Makes `recording`'s walks decode what `members` with something to do read ([`decoded`]).
-fn select(recording: &mut Recording, shape: &Shape, members: &[Box<dyn Member + '_>]) {
+/// Makes `recording`'s walks decode what `members` with something to do read, and `also`
+/// ([`decoded`]).
+fn select(
+    recording: &mut Recording,
+    shape: &Shape,
+    members: &[Box<dyn Member + '_>],
+    also: &[TableId],
+) {
     recording.select(&decoded(
         members
             .iter()
             .filter(|member| !member.idle(shape))
-            .flat_map(|member| member.tables().iter().copied()),
+            .flat_map(|member| member.tables().iter().copied())
+            .chain(also.iter().copied()),
     ));
 }
 
 /// Runs `walk`'s members over `recording`, the first `ahead` of them, those of families prepared
 /// ahead ([`ahead_first`]), before the rest: in a narrow run of their own over the whole recording
-/// that decodes their tables alone, their last batches committed as it ends; then the rest in the
-/// union run, theirs committed as it ends ([`settle`]). A cancelled narrow run leaves the union
-/// run undone.
+/// that decodes their tables alone, their last batches committed as it ends; then the rest, and
+/// the change-run index when it rides, in the union run, theirs committed as it ends
+/// ([`settle`]). A cancelled narrow run leaves the union run undone.
 pub(crate) fn walk_all(
     recording: &mut Recording,
     ahead: usize,
@@ -905,6 +985,7 @@ pub(crate) fn walk_all(
     let Walk {
         shape,
         members,
+        index,
         world,
         settings,
         spool,
@@ -919,12 +1000,13 @@ pub(crate) fn walk_all(
     let mut first = None;
     if narrow.iter().any(|member| !member.idle(shape)) {
         labels::phase("ahead run");
-        select(recording, shape, narrow);
+        select(recording, shape, narrow, &[]);
         let span = replay_frame::timeline::span("ahead run");
         let clock = Clock::start();
         let alone = Walk {
             shape,
             members: narrow,
+            index: None,
             world,
             settings,
             spool,
@@ -950,12 +1032,14 @@ pub(crate) fn walk_all(
         first = Some((ran.stats, ran.world, lap, ran.tables));
     }
     labels::phase("union run");
-    select(recording, shape, union);
+    let indexed = index.as_ref().map_or(&[][..], |index| index.tables());
+    select(recording, shape, union, indexed);
     let span = replay_frame::timeline::span("union run");
     let clock = Clock::start();
     let together = Walk {
         shape,
         members: union,
+        index,
         world,
         settings,
         spool,
@@ -980,12 +1064,14 @@ pub(crate) fn walk_all(
     })
 }
 
-/// Runs every member of `walk` with something to do over `recording` in one run of the executor,
-/// on a thread of its own: this thread reports the commits it makes.
+/// Runs every member of `walk` with something to do, and its change-run index's lane when it has
+/// one, over `recording` in one run of the executor, on a thread of its own: this thread reports
+/// the commits it makes.
 pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<Ran> {
     let Walk {
         shape,
         members,
+        mut index,
         world: (format, mode),
         settings,
         spool,
@@ -998,18 +1084,23 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
         .filter(|&at| !members[at].idle(shape))
         .collect();
     let mut outcomes: Vec<Option<Outcome>> = members.iter().map(|_| None).collect();
-    if places.is_empty() {
+    if places.is_empty() && index.is_none() {
         return Ok(Ran {
             stats: segments::Stats::default(),
             outcomes,
+            index: None,
             world: 0,
             tables: Vec::new(),
             cancelled: false,
         });
     }
-    let mut needs = Vec::with_capacity(places.len());
+    let mut needs = Vec::with_capacity(places.len() + 1);
     for &at in &places {
         needs.push(members[at].needs()?);
+    }
+    // The index's lane, last, reads none of the world.
+    if index.is_some() {
+        needs.push(Needs::default());
     }
     let cancellation = segments::Cancellation::default();
     let walking = Walking {
@@ -1025,7 +1116,7 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
     // Begun before the run, which may end before this thread waits.
     let mut seen = commits.start();
     let ran = std::thread::scope(|scope| {
-        let running = scope.spawn(|| {
+        let running = scope.spawn(|| -> io::Result<segments::Ran> {
             let _ended = Ended(commits);
             let _memory = labels::enter(Owner::RUN, Kind::Executor);
             caller.enter();
@@ -1040,6 +1131,9 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
                         .lane(&walking)
                         .refuses(|error| crate::refusal(error).is_some()),
                 );
+            }
+            if let Some(index) = index.as_deref_mut() {
+                lanes.push(index.lane(cancelled, walking.job.clone())?);
             }
             let worlds = |_: &Segment, visited: &[usize]| {
                 let union = Needs::union(visited.iter().map(|&lane| &needs[lane]));
@@ -1061,9 +1155,15 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
     for &at in &places {
         outcomes[at] = ran_outcomes.next();
     }
+    let indexed = if index.is_some() {
+        ran_outcomes.next()
+    } else {
+        None
+    };
     Ok(Ran {
         stats: ran.stats,
         outcomes,
+        index: indexed,
         world: walking.world.into_inner(),
         tables: ran.tables,
         cancelled: ran.cancelled || cancellation.is_cancelled(),

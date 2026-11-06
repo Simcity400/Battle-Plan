@@ -281,7 +281,12 @@ impl Projector {
 
     /// The country owning the division at Divisions `slot`: its expeditionary owner when
     /// positive, else its roster owner, through its link; None when the owner names no link.
-    fn owner(&self, countries: &Roster, owners: (&[u32], &[u32]), slot: u32) -> Option<u32> {
+    fn owner(
+        &self,
+        countries: &Roster,
+        owners: (&replay::columns::Paged<u32>, &replay::columns::Paged<u32>),
+        slot: u32,
+    ) -> Option<u32> {
         let at = slot as usize;
         let owner = match owners.1.get(at) {
             Some(&owner) if owner as i32 > 0 => owner,

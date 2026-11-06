@@ -3,12 +3,23 @@
 
 use crate::{
     catalogue::{Catalogue, View},
-    metadata::link_slot,
+    metadata::link_slot_in,
 };
 use replay_data::{
     rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
-    rows::VariantDefinitionRow, rows::tables,
+    rows::SimulationFeatureRow, rows::VariantDefinitionRow, rows::VariantUpgradeRow,
+    rows::column, rows::mask, rows::tables,
 };
+use replay_frame::frame::{HourFrame, Rowset};
+
+/// The fields of each table the variant operands read.
+const DLC: u64 = mask::<SimulationFeatureRow>(&["dlc_mask"]);
+const LEVEL: u64 = mask::<VariantUpgradeRow>(&["level"]);
+const LINK_SLOT: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const COUNTRY_SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
+const COUNTRY_TAG: usize = column::<CountryRow>("tag");
+const NAME_TAG: usize = column::<CountryAppearanceRow>("name_tag");
+const LITERAL: usize = column::<LexicalTokenRow>("literal");
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -61,19 +72,23 @@ pub fn compare_variants(
 }
 
 /// Whether the equipment type has module slots enabled by the recorded DLC mask.
-pub fn enabled_module_slots(
+pub fn enabled_module_slots<'f>(
     database: &installed_content_core::equipment::Database,
     index: usize,
-    frame: &dyn replay_frame::frame::DecodedSource,
+    frame: impl Into<HourFrame<'f>>,
 ) -> Result<bool, String> {
+    let frame = frame.into();
     let kind = &database.equipment[index];
     if kind.module_slots.is_empty() {
         return Ok(false);
     }
     let dlc = frame
-        .complete::<tables::SimulationFeatures>()
+        .complete::<tables::SimulationFeatures>(DLC)
         .map_err(|why| why.to_string())?
-        .first()
+        .iter()
+        .next()
+        .transpose()
+        .map_err(|why| why.to_string())?
         .ok_or("SimulationFeatures lacks the DLC mask")?
         .dlc_mask;
     let mask = if dlc & (1 << 4) != 0 { 0x80004001C0 } else { 0 }
@@ -84,12 +99,13 @@ pub fn enabled_module_slots(
 
 /// Recorded operands used to rank equipment variants; an unread operand
 /// refuses the rank rather than changing the winning design.
-pub fn variant_order(
+pub fn variant_order<'f>(
     database: &installed_content_core::equipment::Database,
     index: usize,
     variant: &VariantDefinitionRow,
-    frame: &dyn replay_frame::frame::DecodedSource,
+    frame: impl Into<HourFrame<'f>>,
 ) -> Result<VariantOrder, String> {
+    let frame = frame.into();
     let kind = &database.equipment[index];
     let archetype = kind
         .archetype
@@ -99,19 +115,21 @@ pub fn variant_order(
     } else {
         // Upgrade levels are unsigned; their i32 sum wraps.
         let upgrades = frame
-            .complete::<tables::VariantUpgrades>()
+            .complete::<tables::VariantUpgrades>(LEVEL)
             .map_err(|why| why.to_string())?;
-        let first = upgrades.partition_point(|row| row.variant < variant.id);
-        let count = upgrades[first..].partition_point(|row| row.variant == variant.id);
-        upgrades[first..first + count]
-            .iter()
-            .fold(0_i32, |sum, row| sum.wrapping_add(i32::from(row.level)))
+        // The variant is the key's high bits, above its 32-bit ordinal.
+        let low = u128::from(variant.id) << 32;
+        let mut sum = 0_i32;
+        for row in upgrades.span(low, low | u128::from(u32::MAX)).iter() {
+            sum = sum.wrapping_add(i32::from(row.map_err(|why| why.to_string())?.level));
+        }
+        sum
     };
     let creator = variant.creator_link as i32;
     let creator_slot = if creator > 0 {
-        link_slot(
-            frame
-                .complete::<tables::CountryLinks>()
+        link_slot_in(
+            &frame
+                .complete::<tables::CountryLinks>(LINK_SLOT)
                 .map_err(|why| why.to_string())?,
             variant.creator_link,
         )
@@ -219,7 +237,7 @@ impl RawVariant {
 /// The countries' tags at one hour, by canonical slot: each tag, and the original
 /// tag a dynamic country is named after (`CountryAppearance.name_tag`).
 pub struct Tags<'a> {
-    links: &'a [CountryLinkRow],
+    links: Rowset<'a, CountryLinkRow>,
     tags: BTreeMap<u32, Result<String, String>>,
     /// Original tags by slot, empty when not dynamic; `None` when CountryAppearance is unread.
     original: Option<BTreeMap<u32, Result<String, String>>>,
@@ -232,24 +250,66 @@ impl<'a> Tags<'a> {
         links: &'a [CountryLinkRow],
         appearance: Option<&[CountryAppearanceRow]>,
     ) -> Self {
-        let tags = countries
-            .iter()
-            .map(|country| {
-                (
-                    country.canonical_slot,
-                    text(&country.tag, "equipment country tag"),
-                )
+        Self::of(
+            countries
+                .iter()
+                .map(|country| (country.canonical_slot, country.tag.as_slice())),
+            Rowset::Decoded(links),
+            appearance.map(|rows| rows.iter().map(|row| (row.country, row.name_tag.as_slice()))),
+        )
+    }
+
+    /// [`Self::new`] of any frame's complete Countries and CountryLinks, and its complete
+    /// CountryAppearance when `appearance`; refused, saying why, as each table refuses.
+    pub fn from_tables(frame: HourFrame<'a>, appearance: bool) -> Result<Self, String> {
+        let failed = |why: std::io::Error| why.to_string();
+        let countries = frame
+            .complete::<tables::Countries>(COUNTRY_SLOT)
+            .map_err(failed)?;
+        let links = frame
+            .complete::<tables::CountryLinks>(LINK_SLOT)
+            .map_err(failed)?;
+        let looks = appearance
+            .then(|| frame.complete::<tables::CountryAppearance>(0))
+            .transpose()
+            .map_err(failed)?;
+        let countries = countries
+            .with_text(|row| &row.tag, COUNTRY_TAG)
+            .map(|pair| pair.map(|(row, tag)| (row.canonical_slot, tag)))
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(failed)?;
+        let looks = looks
+            .map(|rows| {
+                rows.keys()
+                    .zip(rows.texts(|row| &row.name_tag, NAME_TAG))
+                    .map(|(key, tag)| tag.map(|tag| (key as u32, tag)))
+                    .collect::<std::io::Result<Vec<_>>>()
             })
+            .transpose()
+            .map_err(failed)?;
+        Ok(Self::of(
+            countries.into_iter(),
+            links,
+            looks.map(Vec::into_iter),
+        ))
+    }
+
+    fn of<'t>(
+        countries: impl Iterator<Item = (u32, &'t [u8])>,
+        links: Rowset<'a, CountryLinkRow>,
+        appearance: Option<impl Iterator<Item = (u32, &'t [u8])>>,
+    ) -> Self {
+        let tags = countries
+            .map(|(slot, tag)| (slot, text(tag, "equipment country tag")))
             .collect();
         let original = appearance.map(|rows| {
-            rows.iter()
-                .filter_map(|row| {
-                    Some((
-                        link_slot(links, row.country)?,
-                        text(&row.name_tag, "equipment original country tag"),
-                    ))
-                })
-                .collect()
+            rows.filter_map(|(country, name_tag)| {
+                Some((
+                    link_slot_in(&links, country)?,
+                    text(name_tag, "equipment original country tag"),
+                ))
+            })
+            .collect()
         });
         Self {
             links,
@@ -260,7 +320,7 @@ impl<'a> Tags<'a> {
 
     /// The tag of the country a raw link names.
     pub fn tag_of(&self, raw: u32) -> Option<String> {
-        let slot = link_slot(self.links, raw)?;
+        let slot = link_slot_in(&self.links, raw)?;
         crate::triggers::refusal::reference(
             self.tags
                 .get(&slot)
@@ -279,7 +339,7 @@ impl<'a> Tags<'a> {
     /// Its original tag when its appearance row makes it dynamic, else its tag; unknown without the row.
     /// A named country the recording can't place is unknown, never no country.
     fn naming_tag(&self, raw: u32, original: bool) -> Result<Option<String>, String> {
-        let Some(slot) = link_slot(self.links, raw) else {
+        let Some(slot) = link_slot_in(&self.links, raw) else {
             return if raw == 0 {
                 Ok(None)
             } else {
@@ -327,6 +387,34 @@ pub fn raw_variant<'a>(
     lexical: impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>,
 ) -> RawVariant {
     let lexical = lexical.into();
+    let literal = lexical
+        .binary_search_by_key(&definition.equipment_token, |row| row.token)
+        .ok()
+        .map(|index| &lexical[index].literal[..]);
+    raw_variant_spelled(definition, hour, tags, literal)
+}
+
+/// [`raw_variant`] of any frame's LexicalTokens, a walk's views among them.
+pub fn raw_variant_in(
+    definition: &VariantDefinitionRow,
+    hour: i32,
+    tags: &Tags,
+    lexical: &Rowset<'_, LexicalTokenRow>,
+) -> RawVariant {
+    let literal = lexical
+        .text(u128::from(definition.equipment_token), |row| &row.literal, LITERAL)
+        .ok()
+        .flatten();
+    raw_variant_spelled(definition, hour, tags, literal)
+}
+
+/// [`raw_variant`] given its equipment token's spelling, where LexicalTokens holds it.
+pub fn raw_variant_spelled(
+    definition: &VariantDefinitionRow,
+    hour: i32,
+    tags: &Tags,
+    literal: Option<&[u8]>,
+) -> RawVariant {
     // The origin when set (a signed id of at least 1), else the creator, by its
     // original tag when it is a dynamic country.
     let mut refusals = Vec::new();
@@ -338,9 +426,7 @@ pub fn raw_variant<'a>(
         }
     };
     let token = crate::triggers::refusal::reference(
-        lexical
-            .binary_search_by_key(&definition.equipment_token, |row| row.token)
-            .ok(),
+        literal,
         definition.equipment_token != 0,
         || {
             crate::triggers::refusal::missing_reference(
@@ -349,7 +435,7 @@ pub fn raw_variant<'a>(
             )
         },
     )
-    .map(|index| checked("token", &lexical[index].literal, "equipment type token"))
+    .map(|literal| checked("token", literal, "equipment type token"))
     .unwrap_or_default();
     let display_name = checked(
         "display name",

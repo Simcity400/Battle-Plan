@@ -2,11 +2,14 @@
 //! (`replay::segments`): integers as LEB128 (signed ones zigzagged), floats as their bits,
 //! lengths before contents, an enum's variant as its index.
 //!
+//! A slice of plain numbers is written as their little-endian bytes, end to end.
+//!
 //! A stream keeps the allocations it shares: an `Arc` (or `Weak`) met again in the stream is
 //! written as the one met before, and read back as one allocation again, so what compared by
 //! address before it was written compares alike after it is read. The writer forgets an
-//! allocation once nothing else holds it, and tells the reader to ([`Shared::released`]): a
-//! reader holds no more of them than the walk did at that point.
+//! allocation once nothing else holds it, and tells the reader to ([`Shared::released`]):
+//! those an item alone held as it is written, and the rest once as many again are held as
+//! after the last look at them ([`Shared::sweep_recent`]).
 //!
 //! An allocation of a resident type ([`Spooled::RESIDENT`]), such as the game content a run
 //! loads once, is handed to the reader as it is, beside the bytes ([`Shared::take_resident`],
@@ -21,14 +24,51 @@ use std::{
     any::Any,
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
-    hash::{BuildHasher, Hash},
+    hash::{BuildHasher, Hash, Hasher},
     io,
     marker::PhantomData,
+    mem::size_of,
     num::{NonZeroU8, NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize},
     ops::{Range, RangeInclusive},
     sync::{Arc, Weak},
     time::Duration,
 };
+
+/// Hashes the addresses and ids a stream keys its allocations by: one multiply, its high bits
+/// folded down, as aligned addresses leave the low bits empty.
+#[derive(Clone, Copy, Default)]
+struct Mix;
+
+#[derive(Default)]
+struct Mixed(u64);
+
+impl BuildHasher for Mix {
+    type Hasher = Mixed;
+    fn build_hasher(&self) -> Mixed {
+        Mixed(0)
+    }
+}
+
+impl Hasher for Mixed {
+    fn finish(&self) -> u64 {
+        let mixed = self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        mixed ^ (mixed >> 32)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 ^= value;
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.0 ^= value as u64;
+    }
+}
 
 #[cfg(test)]
 mod tests;
@@ -97,16 +137,23 @@ struct Entry {
     weakly: bool,
 }
 
+/// Live allocations past which [`Shared::sweep_recent`] looks at every one again.
+const SWEEP_FLOOR: usize = 32;
+
 /// The allocations a stream wrote, by address, each kept from reuse by a `Weak` while known.
 #[derive(Default)]
 pub struct Shared {
     /// Resident allocations met, by address, each held for the stream, and those not handed
     /// on yet.
-    resident_ids: HashMap<usize, u64>,
+    resident_ids: HashMap<usize, u64, Mix>,
     resident_held: Vec<Arc<dyn Any + Send + Sync>>,
     resident_new: Vec<Arc<dyn Any + Send + Sync>>,
-    ids: HashMap<usize, u64>,
+    ids: HashMap<usize, u64, Mix>,
+    /// Allocations alive at the last look, and those met since.
     live: Vec<Entry>,
+    young: Vec<Entry>,
+    /// The live allocations at which every one is looked at again.
+    full_at: usize,
     /// Dead allocations a `Weak` may yet name, kept from reuse.
     dead: Vec<Box<dyn Held>>,
     next: u64,
@@ -117,6 +164,38 @@ impl Shared {
     /// Forgets what nothing else holds any more, for the reader to: a dead allocation a
     /// `Weak` may yet name it keeps, as dead, and the reader drops its contents.
     pub fn sweep(&mut self) -> io::Result<()> {
+        self.sweep_young()?;
+        self.sweep_live()
+    }
+
+    /// [`Self::sweep`] of the allocations met since the last look, which an item alone held as
+    /// a rule, and of every other once twice as many are alive as after the last look at them:
+    /// a constant cost an allocation met, however many stay alive.
+    pub fn sweep_recent(&mut self) -> io::Result<()> {
+        self.sweep_young()?;
+        if self.live.len() >= self.full_at {
+            self.sweep_live()?;
+        }
+        Ok(())
+    }
+
+    fn sweep_young(&mut self) -> io::Result<()> {
+        reserve(&mut self.live, self.young.len())?;
+        let mut young = std::mem::take(&mut self.young);
+        let swept = young.drain(..).try_for_each(|entry| {
+            if entry.held.alive() {
+                self.live.push(entry);
+                Ok(())
+            } else {
+                self.release(entry)
+            }
+        });
+        // Its allocation is kept for the next item's.
+        self.young = young;
+        swept
+    }
+
+    fn sweep_live(&mut self) -> io::Result<()> {
         let mut index = 0;
         while index < self.live.len() {
             if self.live[index].held.alive() {
@@ -124,15 +203,21 @@ impl Shared {
                 continue;
             }
             let entry = self.live.swap_remove(index);
-            reserve(&mut self.released, 1)?;
-            // The low bit says dead rather than gone.
-            self.released.push(entry.id << 1 | u64::from(entry.weakly));
-            if entry.weakly {
-                reserve(&mut self.dead, 1)?;
-                self.dead.push(entry.held);
-            } else {
-                self.ids.remove(&entry.address);
-            }
+            self.release(entry)?;
+        }
+        self.full_at = self.live.len().saturating_mul(2).max(SWEEP_FLOOR);
+        Ok(())
+    }
+
+    fn release(&mut self, entry: Entry) -> io::Result<()> {
+        reserve(&mut self.released, 1)?;
+        // The low bit says dead rather than gone.
+        self.released.push(entry.id << 1 | u64::from(entry.weakly));
+        if entry.weakly {
+            reserve(&mut self.dead, 1)?;
+            self.dead.push(entry.held);
+        } else {
+            self.ids.remove(&entry.address);
         }
         Ok(())
     }
@@ -175,8 +260,8 @@ impl Shared {
         self.ids.try_reserve(1).map_err(|_| oom())?;
         self.ids.insert(address, id);
         if alive {
-            reserve(&mut self.live, 1)?;
-            self.live.push(Entry {
+            reserve(&mut self.young, 1)?;
+            self.young.push(Entry {
                 address,
                 id,
                 held: Box::new(weak),
@@ -223,7 +308,7 @@ impl<T: ?Sized + Send + Sync + 'static> Slot for Dead<T> {
 /// The allocations a stream read, by the order it met them.
 #[derive(Default)]
 pub struct Restored {
-    slots: HashMap<u64, Box<dyn Slot>>,
+    slots: HashMap<u64, Box<dyn Slot>, Mix>,
     next: u64,
     resident: Vec<Arc<dyn Any + Send + Sync>>,
 }
@@ -301,25 +386,51 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    pub fn varint(&mut self, mut value: u128) -> io::Result<()> {
-        let mut buffer = [0_u8; 19];
-        let mut length = 0;
-        loop {
-            let byte = (value & 0x7f) as u8;
-            value >>= 7;
-            if value == 0 {
-                buffer[length] = byte;
-                length += 1;
-                break;
-            }
-            buffer[length] = byte | 0x80;
-            length += 1;
+    pub fn varint(&mut self, value: u128) -> io::Result<()> {
+        if let Ok(value) = u64::try_from(value) {
+            return self.varint64(value);
         }
-        self.bytes(&buffer[..length])
+        reserve(self.bytes, 19)?;
+        let mut value = value;
+        while value >= 0x80 {
+            self.bytes.push(value as u8 | 0x80);
+            value >>= 7;
+        }
+        self.bytes.push(value as u8);
+        Ok(())
+    }
+
+    /// [`Self::varint`] of a value of 64 bits at most: the same bytes.
+    #[inline]
+    pub fn varint64(&mut self, mut value: u64) -> io::Result<()> {
+        reserve(self.bytes, 10)?;
+        while value >= 0x80 {
+            self.bytes.push(value as u8 | 0x80);
+            value >>= 7;
+        }
+        self.bytes.push(value as u8);
+        Ok(())
+    }
+
+    /// Plain values of `WIDTH` bytes each, end to end, as `bytes` gives them.
+    #[inline]
+    pub fn plain<const WIDTH: usize>(
+        &mut self,
+        count: usize,
+        values: impl Iterator<Item = [u8; WIDTH]>,
+    ) -> io::Result<()> {
+        reserve(
+            self.bytes,
+            count.checked_mul(WIDTH).ok_or_else(oom)?,
+        )?;
+        for value in values {
+            self.bytes.extend_from_slice(&value);
+        }
+        Ok(())
     }
 
     pub fn length(&mut self, length: usize) -> io::Result<()> {
-        self.varint(length as u128)
+        self.varint64(length as u64)
     }
 
     /// An enum's variant, by its index.
@@ -441,8 +552,54 @@ impl<'a> Reader<'a> {
         Err(invalid("A spooled integer runs too long"))
     }
 
+    /// [`Self::varint`] of a value of 64 bits at most.
+    #[inline]
+    pub fn varint64(&mut self) -> io::Result<u64> {
+        let mut value = 0_u64;
+        let mut shift = 0_u32;
+        loop {
+            let Some(&byte) = self.bytes.get(self.at) else {
+                return Err(invalid("A spooled value runs past its bytes"));
+            };
+            self.at += 1;
+            let low = u64::from(byte & 0x7f);
+            if shift == 63 && low > 1 {
+                return Err(invalid("A spooled integer overflows"));
+            }
+            value |= low << shift;
+            if byte & 0x80 == 0 {
+                return Ok(value);
+            }
+            shift += 7;
+            if shift > 63 {
+                return Err(invalid("A spooled integer overflows"));
+            }
+        }
+    }
+
+    /// `count` plain values of `WIDTH` bytes each, as [`Writer::plain`] wrote them.
+    #[inline]
+    pub fn plain<const WIDTH: usize, T>(
+        &mut self,
+        count: usize,
+        value: impl Fn([u8; WIDTH]) -> io::Result<T>,
+    ) -> io::Result<Vec<T>> {
+        let length = count
+            .checked_mul(WIDTH)
+            .ok_or_else(|| invalid("A spooled slice passes the address space"))?;
+        let bytes = self.take(length)?;
+        let mut values = Vec::new();
+        reserve(&mut values, count)?;
+        for chunk in bytes.chunks_exact(WIDTH) {
+            let mut raw = [0_u8; WIDTH];
+            raw.copy_from_slice(chunk);
+            values.push(value(raw)?);
+        }
+        Ok(values)
+    }
+
     pub fn length(&mut self) -> io::Result<usize> {
-        usize::try_from(self.varint()?).map_err(|_| invalid("A spooled length overflows"))
+        usize::try_from(self.varint64()?).map_err(|_| invalid("A spooled length overflows"))
     }
 
     pub fn tag(&mut self) -> io::Result<usize> {
@@ -456,8 +613,7 @@ impl<'a> Reader<'a> {
     ) -> io::Result<Arc<T>> {
         match self.byte()? {
             SAME => {
-                let id =
-                    u64::try_from(self.varint()?).map_err(|_| invalid("A spooled id overflows"))?;
+                let id = self.varint64()?;
                 self.shared
                     .slot(id)?
                     .as_any()
@@ -482,7 +638,7 @@ impl<'a> Reader<'a> {
 
     /// A resident allocation [`Writer::resident`] wrote.
     pub fn resident<T: Send + Sync + 'static>(&mut self) -> io::Result<Arc<T>> {
-        let id = usize::try_from(self.varint()?).map_err(|_| invalid("A spooled id overflows"))?;
+        let id = usize::try_from(self.varint64()?).map_err(|_| invalid("A spooled id overflows"))?;
         let held =
             self.shared.resident.get(id).ok_or_else(|| {
                 invalid("The spool names a resident allocation it never handed on")
@@ -500,8 +656,7 @@ impl<'a> Reader<'a> {
         match self.byte()? {
             NONE => Ok(Weak::new()),
             SAME => {
-                let id =
-                    u64::try_from(self.varint()?).map_err(|_| invalid("A spooled id overflows"))?;
+                let id = self.varint64()?;
                 let slot = self.shared.slot(id)?.as_any();
                 if let Some(strong) = slot.downcast_ref::<Strong<T>>() {
                     return Ok(Arc::downgrade(&strong.0));
@@ -566,47 +721,126 @@ impl Spooled for bool {
     }
 }
 
+// A slice of plain numbers goes as their little-endian bytes: copied, never varint-coded.
+macro_rules! plain_slices {
+    ($ty:ty) => {
+        fn spool_slice(values: &[Self], out: &mut Writer<'_>) -> io::Result<()> {
+            out.plain(values.len(), values.iter().map(|value| value.to_le_bytes()))
+        }
+        fn unspool_vec(count: usize, input: &mut Reader<'_>) -> io::Result<Vec<Self>> {
+            input.plain::<{ size_of::<$ty>() }, Self>(count, |raw| Ok(<$ty>::from_le_bytes(raw)))
+        }
+    };
+}
+
 macro_rules! unsigned {
     ($($ty:ty),*) => {$(
         impl Spooled for $ty {
             fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
-                out.varint(*self as u128)
+                out.varint64(u64::from(*self))
             }
             fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
-                <$ty>::try_from(input.varint()?).map_err(|_| invalid("A spooled integer overflows"))
+                <$ty>::try_from(input.varint64()?).map_err(|_| invalid("A spooled integer overflows"))
             }
+            plain_slices!($ty);
         }
     )*};
 }
-unsigned!(u16, u32, u64, u128, usize);
+unsigned!(u16, u32, u64);
+
+impl Spooled for u128 {
+    fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
+        out.varint(*self)
+    }
+    fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
+        input.varint()
+    }
+    plain_slices!(u128);
+}
+
+// A usize goes as 64 bits, whatever the platform.
+impl Spooled for usize {
+    fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
+        out.varint64(*self as u64)
+    }
+    fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
+        usize::try_from(input.varint64()?).map_err(|_| invalid("A spooled integer overflows"))
+    }
+    fn spool_slice(values: &[Self], out: &mut Writer<'_>) -> io::Result<()> {
+        out.plain(
+            values.len(),
+            values.iter().map(|&value| (value as u64).to_le_bytes()),
+        )
+    }
+    fn unspool_vec(count: usize, input: &mut Reader<'_>) -> io::Result<Vec<Self>> {
+        input.plain::<8, Self>(count, |raw| {
+            usize::try_from(u64::from_le_bytes(raw))
+                .map_err(|_| invalid("A spooled integer overflows"))
+        })
+    }
+}
 
 macro_rules! signed {
     ($($ty:ty => $unsigned:ty),*) => {$(
         impl Spooled for $ty {
             fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
                 let zigzag = ((*self << 1) ^ (*self >> (<$ty>::BITS - 1))) as $unsigned;
-                out.varint(zigzag as u128)
+                out.varint64(u64::from(zigzag))
             }
             fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
-                let zigzag = <$unsigned>::try_from(input.varint()?)
+                let zigzag = <$unsigned>::try_from(input.varint64()?)
                     .map_err(|_| invalid("A spooled integer overflows"))?;
                 Ok((zigzag >> 1) as $ty ^ -((zigzag & 1) as $ty))
             }
+            plain_slices!($ty);
         }
     )*};
 }
-signed!(i16 => u16, i32 => u32, i64 => u64, i128 => u128, isize => usize);
+signed!(i16 => u16, i32 => u32, i64 => u64);
+
+impl Spooled for i128 {
+    fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
+        let zigzag = ((*self << 1) ^ (*self >> (i128::BITS - 1))) as u128;
+        out.varint(zigzag)
+    }
+    fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
+        let zigzag = input.varint()?;
+        Ok((zigzag >> 1) as i128 ^ -((zigzag & 1) as i128))
+    }
+    plain_slices!(i128);
+}
+
+impl Spooled for isize {
+    fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
+        (*self as i64).spool(out)
+    }
+    fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
+        isize::try_from(i64::unspool(input)?).map_err(|_| invalid("A spooled integer overflows"))
+    }
+    fn spool_slice(values: &[Self], out: &mut Writer<'_>) -> io::Result<()> {
+        out.plain(
+            values.len(),
+            values.iter().map(|&value| (value as i64).to_le_bytes()),
+        )
+    }
+    fn unspool_vec(count: usize, input: &mut Reader<'_>) -> io::Result<Vec<Self>> {
+        input.plain::<8, Self>(count, |raw| {
+            isize::try_from(i64::from_le_bytes(raw))
+                .map_err(|_| invalid("A spooled integer overflows"))
+        })
+    }
+}
 
 impl Spooled for f32 {
     fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
         out.bytes(&self.to_bits().to_le_bytes())
     }
     fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
-        let bytes = input.take(4)?;
-        Ok(Self::from_bits(u32::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-        ])))
+        let mut bits = [0_u8; 4];
+        bits.copy_from_slice(input.take(4)?);
+        Ok(Self::from_bits(u32::from_le_bytes(bits)))
     }
+    plain_slices!(f32);
 }
 
 impl Spooled for f64 {
@@ -618,6 +852,7 @@ impl Spooled for f64 {
         bits.copy_from_slice(input.take(8)?);
         Ok(Self::from_bits(u64::from_le_bytes(bits)))
     }
+    plain_slices!(f64);
 }
 
 impl Spooled for char {

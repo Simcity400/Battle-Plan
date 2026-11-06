@@ -35,8 +35,6 @@ pub fn country_name(names: &CountryNames<'_>, slot: u32) -> Result<String, Strin
 
 /// Most countries one request may name.
 const MAX_TAGS: usize = 64;
-/// Hours kept per source, so a chart's legend and its labels share one decode.
-const RECENT_HOURS: usize = 4;
 /// The tables an hour's styles are read from; the seek adds the campaign.
 pub(crate) const STYLE_TABLES: &[TableId] = &installed_content_country_names::country_names::TABLES;
 
@@ -221,25 +219,24 @@ impl Product for CountryStyles {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
+        let branch = params
+            .branch_id
+            .parse::<u64>()
+            .map_err(|_| invalid("Invalid country style branch"))?;
         let localisation = content::name_localisation(source, context.content.as_ref());
         let key = HourKey {
-            branch_id: params.branch_id.clone(),
+            branch,
             hour: params.hour,
             localisation: localisation.as_ref().ok().cloned(),
         };
         let shared = source.state::<StyleState>();
-        let cached = {
-            let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
-            state
-                .recent
-                .iter()
-                .position(|(cached, _)| cached.matches(&key))
-                .map(|index| {
-                    let entry = state.recent.remove(index);
-                    state.recent.insert(0, entry);
-                    Arc::clone(&state.recent[0].1)
-                })
-        };
+        let cached = shared
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .latest
+            .get(&branch)
+            .filter(|(cached, _)| cached.matches(&key))
+            .map(|(_, hour)| Arc::clone(hour));
         // The lock is not held while reading the recording, so other hours wait for nothing.
         let hour = match cached {
             Some(hour) => hour,
@@ -247,10 +244,6 @@ impl Product for CountryStyles {
                 if cancelled.load(Ordering::Acquire) {
                     return Err(invalid("Country style request cancelled"));
                 }
-                let branch = params
-                    .branch_id
-                    .parse::<u64>()
-                    .map_err(|_| invalid("Invalid country style branch"))?;
                 // Preparation's runs give the requested tags' share of the hour, kept for no
                 // other request.
                 let mut prepared = None;
@@ -281,8 +274,7 @@ impl Product for CountryStyles {
                     };
                     let hour = Arc::new(HourStyles::read(&frame, key.localisation.as_deref())?);
                     let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
-                    state.recent.insert(0, (key, Arc::clone(&hour)));
-                    state.recent.truncate(RECENT_HOURS);
+                    state.latest.insert(branch, (key, Arc::clone(&hour)));
                     hour
                 }
             }
@@ -329,14 +321,14 @@ impl Product for CountryStyles {
 /// identity: a new language or a settings file that became readable loads a new
 /// one, so the hour is named again. Holding it keeps its address from being reused.
 struct HourKey {
-    branch_id: String,
+    branch: u64,
     hour: i32,
     localisation: Option<Arc<Localisation>>,
 }
 
 impl HourKey {
     fn matches(&self, other: &HourKey) -> bool {
-        self.branch_id == other.branch_id
+        self.branch == other.branch
             && self.hour == other.hour
             && match (&self.localisation, &other.localisation) {
                 (None, None) => true,
@@ -346,10 +338,10 @@ impl HourKey {
     }
 }
 
+/// Each branch's latest hour read, so a chart's legend and its labels share one decode.
 #[derive(Default)]
 struct StyleState {
-    /// Most recently used first.
-    recent: Vec<(HourKey, Arc<HourStyles>)>,
+    latest: HashMap<u64, (HourKey, Arc<HourStyles>)>,
 }
 
 /// What one hour's styles are built from ([`HourStyles::build`]): as a frame records them

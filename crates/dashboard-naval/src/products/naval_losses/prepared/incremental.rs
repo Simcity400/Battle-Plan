@@ -187,6 +187,20 @@ impl Channel {
 }
 
 impl Prepared {
+    /// Hours after the last it observed were lost from the recording: every contribution
+    /// pending at them is dropped with them, and every tally, correction and rank restarts,
+    /// counting only what is read after them. Its open values close at the next hour it is
+    /// given, which does not follow its last.
+    pub fn lost(&mut self) {
+        for state in &mut self.channels {
+            state.incremental = Channel::default();
+            state.ledger.clear();
+            state.month = None;
+            state.rank_tail.clear();
+            state.rank_inputs.clear();
+        }
+    }
+
     /// The holders live at the last observed hour, for an observer restored
     /// without them. Only live holders keep an open per-holder value: a holder
     /// that leaves has every value closed. Any other previous holder has no
@@ -337,7 +351,7 @@ impl Prepared {
                     if params.period == NavalPeriod::Running {
                         first
                     } else {
-                        scan.first_ship_read
+                        scan.stretch_ship_read
                     },
                     &scan.ship_unread,
                     &retention.ship_loss,
@@ -349,7 +363,7 @@ impl Prepared {
                     if params.period == NavalPeriod::Running {
                         first
                     } else {
-                        scan.first_convoy_read
+                        scan.stretch_convoy_read
                     },
                     &scan.convoy_unread,
                     &retention.convoy_loss,

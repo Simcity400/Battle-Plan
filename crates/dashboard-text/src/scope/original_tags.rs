@@ -4,23 +4,71 @@
 use crate::triggers::Failure;
 
 use replay_data::{Hour, rows::TableSchema, rows::tables};
-use replay_frame::{frame::SharedView, frame::TableView};
-use std::collections::BTreeMap;
+use replay_frame::{frame::ColumnView, frame::SharedView, frame::TableView};
+use std::{collections::BTreeMap, sync::OnceLock};
 
-#[derive(Clone, Debug, Default)]
-pub struct OriginalTagLists {
-    table: Option<SharedView>,
+#[derive(Clone, Default)]
+pub struct OriginalTagLists<'a> {
+    table: Lists<'a>,
 }
 
-impl OriginalTagLists {
+/// Where the lists are read: a decoded frame's shared view, or a walk's view, its one row
+/// decoded only once a trigger reads the lists.
+#[derive(Clone)]
+enum Lists<'a> {
+    Shared(Option<SharedView>),
+    Walked(ColumnView<'a>, OnceLock<Option<SharedView>>),
+}
+
+impl Default for Lists<'_> {
+    fn default() -> Self {
+        Self::Shared(None)
+    }
+}
+
+impl std::fmt::Debug for OriginalTagLists<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OriginalTagLists")
+            .field("table", self.table())
+            .finish()
+    }
+}
+
+impl<'a> OriginalTagLists<'a> {
     pub fn read(frame: &dyn replay_frame::frame::DecodedSource) -> Self {
         Self {
-            table: Some(frame.shared(tables::ReservedCountryNaming::ID.index())),
+            table: Lists::Shared(Some(
+                frame.shared(tables::ReservedCountryNaming::ID.index()),
+            )),
+        }
+    }
+
+    /// [`Self::read`] of any frame's tables: a walk's view is borrowed for the hour.
+    pub fn read_in(frame: replay_frame::frame::HourFrame<'a>) -> Self {
+        match frame {
+            replay_frame::frame::HourFrame::Decoded(frame) => Self::read(frame),
+            replay_frame::frame::HourFrame::Walked(columns) => Self {
+                table: Lists::Walked(
+                    columns.view(tables::ReservedCountryNaming::ID),
+                    OnceLock::new(),
+                ),
+            },
+        }
+    }
+
+    fn table(&self) -> &Option<SharedView> {
+        match &self.table {
+            Lists::Shared(table) => table,
+            Lists::Walked(view, table) => table.get_or_init(|| {
+                view.to_table_view(tables::ReservedCountryNaming::ID.full_mask())
+                    .ok()
+                    .map(SharedView::from)
+            }),
         }
     }
 
     fn row(&self) -> Result<&replay_data::rows::ReservedCountryNamingRow, Failure> {
-        let table = self.table.as_deref().ok_or_else(|| {
+        let table = self.table().as_deref().ok_or_else(|| {
             Failure::input(
                 replay_data::rows::TableId::ReservedCountryNaming,
                 "",
@@ -186,7 +234,7 @@ impl OriginalTagLists {
         branch: replay_data::BranchId,
         hours: &std::collections::BTreeSet<Hour>,
         cancelled: &std::sync::atomic::AtomicBool,
-    ) -> std::io::Result<BTreeMap<Hour, Self>> {
+    ) -> std::io::Result<BTreeMap<Hour, OriginalTagLists<'static>>> {
         let selected = [tables::ReservedCountryNaming::ID];
         let mut out = BTreeMap::new();
         for block in replay.index.iter().filter(|block| {
@@ -206,7 +254,7 @@ impl OriginalTagLists {
             for frame in replay.read_block_selected(block, &selected)? {
                 let decoded = decoder.advance(&frame)?;
                 if hours.contains(&decoded.hour) {
-                    out.insert(decoded.hour, Self::read(decoded));
+                    out.insert(decoded.hour, OriginalTagLists::read(decoded));
                 }
             }
         }

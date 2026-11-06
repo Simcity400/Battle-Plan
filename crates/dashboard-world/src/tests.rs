@@ -206,6 +206,7 @@ fn needs() -> Needs {
         owners: true,
         divisions: false,
         naming: false,
+        lexicon: false,
         flags: false,
         frame: vec![
             (

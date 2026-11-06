@@ -43,7 +43,8 @@ export function validateDivisionManifest(v: unknown): DivisionLogManifestReply {
   return v as unknown as DivisionLogManifestReply;
 }
 export function validateDivisionTotals(v: unknown): DivisionLogTotalsReply {
-  if (!object(v) || ![v.created, v.lost, v.transferred].every(n => int(n) && n >= 0 || n === null && fieldPreparing(v, 'created')) || !warnings(v.warnings))
+  if (!object(v) || ![v.created, v.lost, v.transferred].every(n => int(n) && n >= 0 || n === null && fieldPreparing(v, 'created'))
+    || !(v.since === null || int(v.since)) || !warnings(v.warnings))
     throw new Error('The division log totals are malformed.');
   return v as unknown as DivisionLogTotalsReply;
 }

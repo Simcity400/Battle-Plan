@@ -1,5 +1,5 @@
 use super::*;
-use crate::movement_timing::{CAPACITY, EtaCache, Report};
+use crate::movement_timing::{EtaCache, Report};
 use std::{
     io,
     sync::{
@@ -237,20 +237,19 @@ fn the_public_cache_does_not_wait_on_a_worker_and_its_first_publication_wins() {
 }
 
 #[test]
-fn a_ticket_keeps_its_success_even_after_the_public_cache_evicts_it() {
+fn a_ticket_keeps_its_success_and_the_public_cache_its_held_hour() {
     let gate = WorkerEtas::default();
     let cache = EtaCache::default();
     let worker = gate
         .get_or_try_init(|| cache.get_or_insert_with((1, 0), || Ok::<_, io::Error>(value())))
         .unwrap();
-    for hour in 1..=CAPACITY {
+    for hour in 1..=8 {
         cache
-            .get_or_insert_with((1, hour as replay_data::Hour), || {
-                Ok::<_, io::Error>(Etas::default())
-            })
+            .get_or_insert_with((1, hour), || Ok::<_, io::Error>(Etas::default()))
             .unwrap();
     }
-    assert!(cache.get((1, 0)).is_none());
+    // The ticket holds hour 0, so the cache still answers it with the same derivation.
+    assert!(Arc::ptr_eq(&worker, &cache.get((1, 0)).unwrap()));
     let joined = gate
         .get_or_try_init(|| -> io::Result<_> { panic!("same ticket already published") })
         .unwrap();

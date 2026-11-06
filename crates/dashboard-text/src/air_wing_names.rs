@@ -6,16 +6,20 @@
 use replay_frame::frame::DecodedFrame;
 
 use crate::catalogue::Refusals;
-use replay_data::{
-    rows::AirWingRow, rows::RaidRow, rows::RaidTooltipOperandRow, rows::Recorded, rows::tables,
+use replay_data::rows::{
+    AirWingRow, RaidRow, RaidTooltipOperandRow, Recorded, TableId, mask, tables,
 };
-use std::collections::{HashMap, HashSet};
+use replay_frame::frame::Tables;
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 #[cfg(test)]
 mod tests;
 
-pub fn recorded_names(
-    frame: &dyn replay_frame::frame::DecodedSource,
+pub fn recorded_names<F: Tables + ?Sized>(
+    frame: &F,
     requested: &HashSet<u64>,
     refusals: &mut Refusals,
 ) -> HashMap<u64, Vec<u8>> {
@@ -23,7 +27,7 @@ pub fn recorded_names(
     if requested.is_empty() {
         return names;
     }
-    let wings = match frame.complete::<tables::AirWings>() {
+    let wings = match frame.complete_rows::<tables::AirWings>(mask::<AirWingRow>(&["name"])) {
         Ok(rows) => rows,
         Err(why) => {
             for reference in requested {
@@ -32,19 +36,14 @@ pub fn recorded_names(
             return names;
         }
     };
-    let mut selected: HashMap<u64, Option<&AirWingRow>> = HashMap::new();
-    for wing in wings.iter().filter(|wing| requested.contains(&wing.id)) {
-        selected
-            .entry(wing.id)
-            .and_modify(|row| *row = None)
-            .or_insert(Some(wing));
-    }
     let mut legacy = HashSet::new();
     for &reference in requested {
-        let reason = match selected.get(&reference) {
-            None => Some(format!("AirWings lacks WING {reference:#x}")),
-            Some(None) => Some("AirWings has duplicate wing references".into()),
-            Some(Some(wing)) => match &wing.name {
+        // Wings are keyed by id: a reference names one row or none.
+        let wing = wings.get(u128::from(reference));
+        let reason = match wing {
+            Err(why) => Some(why.to_string()),
+            Ok(None) => Some(format!("AirWings lacks WING {reference:#x}")),
+            Ok(Some(wing)) => match &wing.name {
                 Recorded::Value(Some(bytes)) => {
                     names.insert(reference, bytes.clone());
                     None
@@ -74,8 +73,8 @@ pub fn recorded_names(
     names
 }
 
-pub(crate) fn raid_name(
-    frame: &dyn replay_frame::frame::DecodedSource,
+pub(crate) fn raid_name<F: Tables + ?Sized>(
+    frame: &F,
     reference: u64,
 ) -> Result<Vec<u8>, String> {
     raid_names(frame, &HashSet::from([reference]))
@@ -83,15 +82,16 @@ pub(crate) fn raid_name(
         .expect("requested wing name")
 }
 
-fn raid_names(
-    frame: &dyn replay_frame::frame::DecodedSource,
+fn raid_names<F: Tables + ?Sized>(
+    frame: &F,
     requested: &HashSet<u64>,
 ) -> HashMap<u64, Result<Vec<u8>, String>> {
     let mut names = HashMap::new();
     if requested.is_empty() {
         return names;
     }
-    let raids = match frame.complete::<tables::Raids>() {
+    let read = mask::<RaidRow>(&["air_wing", "phase", "unit"]);
+    let raids = match frame.complete_rows::<tables::Raids>(read) {
         Ok(rows) => rows,
         Err(why) => {
             for &reference in requested {
@@ -100,21 +100,40 @@ fn raid_names(
             return names;
         }
     };
-    let mut selected: HashMap<u64, Vec<&RaidRow>> = HashMap::new();
+    let mut selected: HashMap<u64, Vec<Cow<'_, RaidRow>>> = HashMap::new();
     let mut ids = HashSet::new();
-    for raid in raids.iter().filter(|raid| {
-        raid.air_wing != 0
+    for raid in raids.iter() {
+        let raid = match raid {
+            Ok(raid) => raid,
+            Err(why) => {
+                for &reference in requested {
+                    names.insert(reference, Err(why.to_string()));
+                }
+                return names;
+            }
+        };
+        if raid.air_wing != 0
             && requested.contains(&raid.air_wing)
             && raid.phase != engine_native::craid_instance::PHASE_ENDED
-    }) {
-        selected.entry(raid.air_wing).or_default().push(raid);
-        ids.insert(u64::from(raid.id) << 32 | u64::from(raid.reference_type));
+        {
+            ids.insert(u64::from(raid.id) << 32 | u64::from(raid.reference_type));
+            selected.entry(raid.air_wing).or_default().push(raid);
+        }
     }
-    let operands = frame.complete::<tables::RaidTooltipOperands>();
-    let mut by_raid: HashMap<u64, Vec<&RaidTooltipOperandRow>> = HashMap::new();
+    let operands = frame
+        .complete_rows::<tables::RaidTooltipOperands>(TableId::RaidTooltipOperands.full_mask());
+    let mut by_raid: HashMap<u64, Vec<Cow<'_, RaidTooltipOperandRow>>> = HashMap::new();
+    let mut unread = None;
     if let Ok(rows) = &operands {
-        for row in rows.iter().filter(|row| ids.contains(&row.raid)) {
-            by_raid.entry(row.raid).or_default().push(row);
+        // An operand's raid is its key's high bits.
+        for row in rows.keyed(|key| ids.contains(&((key >> 32) as u64))) {
+            match row {
+                Ok(row) => by_raid.entry(row.raid).or_default().push(row),
+                Err(why) => {
+                    unread = Some(why.to_string());
+                    break;
+                }
+            }
         }
     }
     for &reference in requested {
@@ -123,6 +142,9 @@ fn raid_names(
                 format!("WING {reference:#x} name outside selected active raids is not recorded")
             })?;
             operands.as_ref().map_err(|why| why.to_string())?;
+            if let Some(why) = &unread {
+                return Err(why.clone());
+            }
             let mut name = None;
             for raid in selected {
                 let id = u64::from(raid.id) << 32 | u64::from(raid.reference_type);
@@ -147,7 +169,7 @@ fn raid_names(
 fn raid_bytes(
     raid: &RaidRow,
     reference: u64,
-    rows: &[&RaidTooltipOperandRow],
+    rows: &[Cow<'_, RaidTooltipOperandRow>],
 ) -> Result<Vec<u8>, String> {
     use engine_native::{
         raid_tooltip_operands::ARMY_RESOLVED, raid_tooltip_operands::NAME,

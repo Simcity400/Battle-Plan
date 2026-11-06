@@ -13,6 +13,8 @@ import { axisFraction, hitZone, keyedHour, plotFrame, pointerHour, STRIP_GAP, wh
 import { actionHour, hoverAt, keyedStop, keyStopMemo, NO_HOVER, pointerMenu, pointerTarget, reduceHover } from './hover';
 import type { HoverEvent, HoverState, KeyStop } from './hover';
 import { intervalIndexOf } from './intervalIndex';
+import { clipGaps, drawGaps, lostAt, lostTooltip } from './gaps';
+import type { LostSpan } from './gaps';
 import type { ChartStrip } from './strip';
 import type { Padding, PlotFrame } from './frame';
 import { ChartPicks } from './pick';
@@ -37,6 +39,9 @@ export interface ChartLayer {
   draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
   /** The values this layer shows inside a time range, for auto-fitting the value axis. */
   extent?(x: Range): Range | null;
+  /** The lost spans of the reply this layer draws, the union of each product's where it draws
+   * several: it is cut there alone. Without it, the chart's own ([`TimeChartProps::gaps`]). */
+  gaps?: readonly LostSpan[];
 }
 
 export type { ChartStrip } from './strip';
@@ -67,6 +72,10 @@ export interface TimeChartProps {
   /** Room around the plot. Without a `left`, the left side grows to fit the widest value label. */
   padding?: Partial<Padding>;
   layers: readonly ChartLayer[];
+  /** The lost spans of the reply every layer draws, in hour order: no layer or strip draws
+   * across them, they are hatched as unknown, and their hours' tooltips say so. A layer drawing
+   * another product's reply names its own ([`ChartLayer::gaps`]). */
+  gaps?: readonly LostSpan[];
   /** A strip under the plot; hovering it hovers the hour above. */
   strip?: ChartStrip;
   /** A value-axis label; `ticks` is every tick drawn with it, for a precision that keeps
@@ -299,17 +308,27 @@ export default function TimeChart(props: TimeChartProps) {
       // Callers pass each event category once, as summary or badge, so both are drawn, hit and spoken.
       const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])].filter(summary => markSummaryMatches(summary, frame!, until));
       const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
-        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, ...summaries];
+        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, p.gaps, ...summaries];
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
       if (!painted || painted.length !== baseKey.length || !painted.every((value, index) => Object.is(value, baseKey[index]))) {
         context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
         context.clearRect(0, 0, layoutWidth, layoutHeight);
         drawAxes(context, frame, tokens, (p.formatValue ?? formatAxisValue), p.rows?.labels);
-        context.save();
-        clipToPlot(context, frame);
-        for (const layer of p.layers) layer.draw(context, frame, tokens, { playhead: until });
-        context.restore();
-        if (p.strip && frame.strip) p.strip.draw(context, frame, tokens, { playhead: until });
+        const gaps = p.gaps ?? [];
+        for (const layer of p.layers) {
+          context.save();
+          clipToPlot(context, frame);
+          clipGaps(context, frame, layer.gaps ?? gaps);
+          layer.draw(context, frame, tokens, { playhead: until });
+          context.restore();
+        }
+        drawGaps(context, frame, tokens, gaps);
+        if (p.strip && frame.strip) {
+          context.save();
+          clipGaps(context, frame, gaps);
+          p.strip.draw(context, frame, tokens, { playhead: until });
+          context.restore();
+        }
         if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
         for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary);
         if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
@@ -407,9 +426,11 @@ export default function TimeChart(props: TimeChartProps) {
         const row = Math.max(0, Math.min((p.rows?.labels.length ?? 1) - 1, rowRef.current));
         if (overlayContext) { drawCrosshair(overlayContext, frame, tokens, at.hour); overlaid = true; }
         const hour = Math.floor(at.describes);
+        const lost = lostAt(p.gaps ?? [], hour);
         if (!hovered || hovered.hour !== hour || hovered.row !== row || hovered.rows !== p.rows || hovered.tooltip !== p.tooltip || hovered.revision !== p.revision || hovered.cluster !== pointed?.cluster || hovered.markTooltip !== p.markTooltip || !sameBadges(hovered.badges, at.badges)) {
           hovered = { hour, row, badges: at.badges, cluster: pointed?.cluster, markTooltip: p.markTooltip, rows: p.rows, tooltip: p.tooltip, revision: p.revision,
-            content: pointed?.cluster ? p.markTooltip?.(pointed.cluster) ?? null : p.rows ? p.rows.tooltip(row, hour) : p.tooltip?.(hour, frame, p.badgesAtHour?.(hour) ?? at.badges) ?? null,
+            content: pointed?.cluster ? p.markTooltip?.(pointed.cluster) ?? null : lost ? lostTooltip(lost, dayLabel)
+              : p.rows ? p.rows.tooltip(row, hour) : p.tooltip?.(hour, frame, p.badgesAtHour?.(hour) ?? at.badges) ?? null,
             key: `${hour}:${at.badges.map(badge => `${badge.hour}|${badge.label}`).join(',')}` };
         }
         // The keyboard hover's tooltip sits at the top of its crosshair; layout pixels

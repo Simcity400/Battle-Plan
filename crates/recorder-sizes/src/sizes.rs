@@ -164,7 +164,7 @@ fn copy_native_captures(
     replay: &Replay,
 ) -> Result<usize, String> {
     use replay::columnar_file::{campaign_folder, published_of};
-    use replay::columnar_frames::{Limits, Recording};
+    use replay::columnar_frames::Recording;
     use replay::columnar_runs::{captures, recorded_runs, whole};
     let at = |path: &Path, error: io::Error| format!("{}: {error}", path.display());
     let canonical = |folder: &Path| fs::canonicalize(folder).map_err(|error| at(folder, error));
@@ -191,7 +191,7 @@ fn copy_native_captures(
     let (mut paired, mut paths) = (Vec::new(), Vec::new());
     for (_, _, path) in found {
         // An unreadable one pairs with no session; any hours it held are refused as missing.
-        let recording = match Recording::open_path(&path, Limits::default()) {
+        let recording = match Recording::open_path(&path) {
             Ok(recording) => recording,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => continue,
             Err(error) => return Err(at(&path, error)),

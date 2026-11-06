@@ -506,10 +506,7 @@ mod tests {
         for id in (0..1501u32).map(|i| i * 997 % 1501) {
             let text = id.to_string();
             tree = tree
-                .inserted(
-                    id,
-                    RetainedValue::build(text.len(), || text.clone()).unwrap(),
-                )
+                .inserted(id, RetainedValue::new(text.clone()))
                 .unwrap();
             oracle.insert(id, text);
             checked(&tree);
@@ -525,10 +522,7 @@ mod tests {
         for id in (1..1501u32).step_by(7) {
             let text = format!("changed {id}");
             tree = tree
-                .inserted(
-                    id,
-                    RetainedValue::build(text.len(), || text.clone()).unwrap(),
-                )
+                .inserted(id, RetainedValue::new(text.clone()))
                 .unwrap();
             oracle.insert(id, text);
         }
@@ -573,7 +567,7 @@ mod tests {
                     let value = (key % (round + 2) != 0).then(|| format!("{round}:{key}"));
                     (
                         key,
-                        value.map(|value| RetainedValue::build(value.len(), || value).unwrap()),
+                        value.map(RetainedValue::new),
                     )
                 })
                 .collect();

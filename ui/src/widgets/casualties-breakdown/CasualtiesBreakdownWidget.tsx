@@ -37,6 +37,7 @@ import type { LossRow } from './casualtiesBreakdownData';
 import { casualtyCountryCell, casualtyEnemyName } from './casualtyFlags';
 import { definition, DETAIL } from './definition';
 import './casualtiesBreakdown.css';
+import { useReplyGaps } from '../../dashboard/replyGaps';
 
 const ROOT = { id: 'positive-losses', label: 'Positive known losses' };
 const TEXT: SunburstText = { format: (value, exact) => exactLosses(exact ?? BigInt(Math.round(value))), unit: 'casualties', valueLabel: 'Positive amounts' };
@@ -57,6 +58,8 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const [visible, setVisible] = useState<readonly LossRow[]>([]);
   const [chartRange, setChartRange] = useState<readonly [number, number] | null>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  // Its charts draw casualty-breakdown replies: cut only where the families they read lost hours.
+  const gaps = useReplyGaps(track?.source.id, track?.branch.id, 'casualty-breakdown');
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = window?.lastHour ?? track?.branch.lastHour ?? 0;
@@ -163,7 +166,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
               { label: 'Losses taken', value: lossText(row), strong: true },
               { label: 'Enemy key', value: row.enemyTag },
             ] }], height)} /></div></>}
-    <div className="casualty-breakdown-history"><TimeChart label="Positive recorded casualties by war over time"
+    <div className="casualty-breakdown-history"><TimeChart gaps={gaps} label="Positive recorded casualties by war over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
       playhead={effectiveDrill.follow ? clockHour : null} playback="cursor" hoursPerSecond={speed}
       axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}

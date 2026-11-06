@@ -4,22 +4,30 @@
 //! command power allocations it changed; and the census and links from the walk's world
 //! ([`dashboard_world`]). A segment's first hour, and any after a skipped hour, hands every row.
 //!
-//! What only an hour's frame says of a row (its item's operands, names and scripted text,
-//! [`items`]) is read for the rows dated at the hour, from the walk's frame asked at that hour
-//! alone. Rows a capture may publish a read late are dated the hour before: after a read whose
-//! capture interval starts at the hour, its frame is kept for the next hour.
+//! What only an hour's tables say of a row (its item's operands, names and scripted text,
+//! [`items`]) is read for the rows dated at the hour, from the walk's views at that hour alone;
+//! scripted text and trigger conditions read the kit's decoded rows, asked of the walk only once
+//! an item reaches them ([`items::TextFrame`]). Rows a capture may publish a read late are dated
+//! the hour before: after a read whose capture interval starts at the hour, the kit is copied
+//! for the next hour, and copied again only where a following such hour moved it.
 
-use super::items::{self, Dated, FrameTexts, Item, NamedCountry};
+use super::items::{self, Dated, FrameTexts, Item, NamedCountry, TextFrame};
+use super::lens;
 use super::*;
 use dashboard_base::products::idea_format;
 use dashboard_base::products::politics_content::PoliticsContent;
-use dashboard_world::{Hold, Needs, Roster, World};
+use dashboard_world::{Copies, Hold, Needs, Roster, World};
 use replay::{
     columns,
     segments::{self, Operator, Sink, State},
 };
 use replay_data::format::FormatVersion;
-use std::sync::LazyLock;
+use replay_frame::frame::Tables;
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+};
 
 /// The ledger's own tables: what the accounting reads besides the world's roster.
 const NATIVE: [TableId; 8] = [
@@ -34,7 +42,7 @@ const NATIVE: [TableId; 8] = [
 ];
 
 /// The tables an item's operands, names and scripted text read at its hour.
-fn kit() -> &'static [TableId] {
+pub(super) fn kit() -> &'static [TableId] {
     static KIT: LazyLock<Vec<TableId>> = LazyLock::new(|| {
         let mut tables = vec![
             TableId::CharacterPortraits,
@@ -78,7 +86,7 @@ pub fn tables() -> &'static [TableId] {
     &TABLES
 }
 
-/// What the family reads of its walk's world: the countries, and the frame of its item tables.
+/// What the family reads of its walk's world: the countries, and views of its item tables.
 pub fn needs() -> Needs {
     Needs {
         countries: true,
@@ -121,53 +129,149 @@ pub struct Captures {
 }
 
 /// A power or cost row and what its hour says of its item.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[derive(replay_spool::Spooled)]
 pub struct Dating {
-    /// Its item's facts at its hour, encoded; None where no frame of its hour was read.
-    pub dated: Option<DatedFacts>,
+    /// Its item's facts at its hour; None where no frame of its hour was read.
+    pub dated: Option<Arc<DatedFacts>>,
     /// The category its payment is spent in, for a payment.
     pub category: Option<Arc<str>>,
 }
 
-/// An item's facts at its hour, MessagePack, and their digest.
-#[derive(Clone, Debug)]
+/// An item's facts at its hour, MessagePack, and their digest: one allocation for the rows
+/// repeating them.
+#[derive(Debug)]
 #[derive(replay_spool::Spooled)]
 pub struct DatedFacts {
-    pub bytes: Arc<[u8]>,
+    pub bytes: Vec<u8>,
     pub digest: [u8; 32],
-}
-
-impl DatedFacts {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self {
-            digest: *blake3::hash(&bytes).as_bytes(),
-            bytes: Arc::from(bytes),
-        }
-    }
 }
 
 impl Dating {
     fn digest(&self) -> Option<&[u8; 32]> {
         self.dated.as_ref().map(|dated| &dated.digest)
     }
+
+    /// Whether it reads as `other` does.
+    fn same(&self, other: &Self) -> bool {
+        let dated = match (&self.dated, &other.dated) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || (a.digest == b.digest && a.bytes == b.bytes),
+            (None, None) => true,
+            _ => false,
+        };
+        dated && self.category == other.category
+    }
 }
 
+/// A power row and what its hour says of its item. The spool writes its sequence, hour and
+/// amounts, and the rest as a [`PowerShape`] the rows repeating it share.
 #[derive(Clone, Debug)]
-#[derive(replay_spool::Spooled)]
 pub struct Power {
     pub row: CountryPowerChangeRow,
     pub dating: Dating,
     /// Its item and holder, worked out with its facts; None to work them out when recorded.
     pub resolved: Option<Resolved>,
+    /// What it shares with the rows repeating it, where the projection shared it.
+    pub shape: Option<Arc<PowerShape>>,
 }
 
 /// What a power row's facts make of it ([`rows::power_item`], [`rows::holder`]).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[derive(replay_spool::Spooled)]
 pub struct Resolved {
     pub(super) item: [u8; 32],
     pub(super) holder: Option<rows::Holder>,
+}
+
+/// What a power row holds but for its sequence, hour and amounts.
+#[derive(Debug)]
+#[derive(replay_spool::Spooled)]
+pub struct PowerShape {
+    instance: u32,
+    epoch: u64,
+    currency: PowerCurrency,
+    operation: PowerOperation,
+    cause: PowerCause,
+    site: PowerSite,
+    identity: PowerIdentity,
+    dating: Dating,
+    resolved: Option<Resolved>,
+}
+
+impl PowerShape {
+    fn of(power: &Power) -> Self {
+        let row = &power.row;
+        Self {
+            instance: row.instance,
+            epoch: row.epoch,
+            currency: row.currency,
+            operation: row.operation,
+            cause: row.cause,
+            site: row.site,
+            identity: row.identity.clone(),
+            dating: power.dating.clone(),
+            resolved: power.resolved.clone(),
+        }
+    }
+
+    fn fits(&self, power: &Power) -> bool {
+        let row = &power.row;
+        self.instance == row.instance
+            && self.epoch == row.epoch
+            && self.currency == row.currency
+            && self.operation == row.operation
+            && self.cause == row.cause
+            && self.site == row.site
+            && self.identity == row.identity
+            && self.dating.same(&power.dating)
+            && self.resolved == power.resolved
+    }
+}
+
+impl replay_spool::Spooled for Power {
+    fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        let row = &self.row;
+        row.country.spool(out)?;
+        row.sequence.spool(out)?;
+        row.hour.spool(out)?;
+        row.balance_before_raw.spool(out)?;
+        row.balance_after_raw.spool(out)?;
+        row.requested_delta_raw.spool(out)?;
+        match self.shape.as_ref().filter(|shape| shape.fits(self)) {
+            Some(shape) => shape.spool(out),
+            None => Arc::new(PowerShape::of(self)).spool(out),
+        }
+    }
+
+    fn unspool(input: &mut replay_spool::Reader<'_>) -> io::Result<Self> {
+        let country = u32::unspool(input)?;
+        let sequence = u64::unspool(input)?;
+        let hour = i32::unspool(input)?;
+        let balance_before_raw = i64::unspool(input)?;
+        let balance_after_raw = i64::unspool(input)?;
+        let requested_delta_raw = Option::<i64>::unspool(input)?;
+        let shape = Arc::<PowerShape>::unspool(input)?;
+        Ok(Self {
+            row: CountryPowerChangeRow {
+                country,
+                instance: shape.instance,
+                sequence,
+                epoch: shape.epoch,
+                hour,
+                currency: shape.currency,
+                operation: shape.operation,
+                balance_before_raw,
+                balance_after_raw,
+                requested_delta_raw,
+                cause: shape.cause,
+                site: shape.site,
+                identity: shape.identity.clone(),
+            },
+            dating: shape.dating.clone(),
+            resolved: shape.resolved.clone(),
+            shape: Some(shape),
+        })
+    }
 }
 
 impl Power {
@@ -176,7 +280,7 @@ impl Power {
             item: rows::power_item(&self.row, self.dating.digest()),
             holder: rows::holder(
                 &self.row,
-                self.dating.dated.as_ref().map(|dated| &*dated.bytes),
+                self.dating.dated.as_ref().map(|dated| &dated.bytes[..]),
             ),
         }
     }
@@ -185,17 +289,106 @@ impl Power {
     pub fn undate(&mut self) {
         self.dating.dated = None;
         self.resolved = None;
+        self.shape = None;
     }
 }
 
+/// A cost row and what its hour says of its item. The spool writes its key, day and sequence,
+/// and the rest as a [`CostShape`] the rows repeating it share.
 #[derive(Clone, Debug)]
-#[derive(replay_spool::Spooled)]
 pub struct Cost {
     pub row: CountryPowerDailyCostRow,
     pub dating: Dating,
     /// Its item ([`rows::cost_item`]), worked out with its facts; None to work it out when
     /// recorded.
     pub item: Option<[u8; 32]>,
+    /// What it shares with the rows repeating it, where the projection shared it.
+    pub shape: Option<Arc<CostShape>>,
+}
+
+/// What a cost row holds but for its key, day and sequence.
+#[derive(Debug)]
+#[derive(replay_spool::Spooled)]
+pub struct CostShape {
+    instance: u32,
+    epoch: u64,
+    component: PowerDailyCostKind,
+    cost_raw: i64,
+    cause: PowerCause,
+    site: PowerSite,
+    identity: PowerIdentity,
+    dating: Dating,
+    item: Option<[u8; 32]>,
+}
+
+impl CostShape {
+    fn of(cost: &Cost) -> Self {
+        let row = &cost.row;
+        Self {
+            instance: row.instance,
+            epoch: row.epoch,
+            component: row.component,
+            cost_raw: row.cost_raw,
+            cause: row.cause,
+            site: row.site,
+            identity: row.identity.clone(),
+            dating: cost.dating.clone(),
+            item: cost.item,
+        }
+    }
+
+    fn fits(&self, cost: &Cost) -> bool {
+        let row = &cost.row;
+        self.instance == row.instance
+            && self.epoch == row.epoch
+            && self.component == row.component
+            && self.cost_raw == row.cost_raw
+            && self.cause == row.cause
+            && self.site == row.site
+            && self.identity == row.identity
+            && self.dating.same(&cost.dating)
+            && self.item == cost.item
+    }
+}
+
+impl replay_spool::Spooled for Cost {
+    fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        let row = &self.row;
+        row.country.spool(out)?;
+        row.ordinal.spool(out)?;
+        row.day_hour.spool(out)?;
+        row.pp_sequence.spool(out)?;
+        match self.shape.as_ref().filter(|shape| shape.fits(self)) {
+            Some(shape) => shape.spool(out),
+            None => Arc::new(CostShape::of(self)).spool(out),
+        }
+    }
+
+    fn unspool(input: &mut replay_spool::Reader<'_>) -> io::Result<Self> {
+        let country = u32::unspool(input)?;
+        let ordinal = u32::unspool(input)?;
+        let day_hour = i32::unspool(input)?;
+        let pp_sequence = u64::unspool(input)?;
+        let shape = Arc::<CostShape>::unspool(input)?;
+        Ok(Self {
+            row: CountryPowerDailyCostRow {
+                country,
+                instance: shape.instance,
+                ordinal,
+                epoch: shape.epoch,
+                day_hour,
+                pp_sequence,
+                component: shape.component,
+                cost_raw: shape.cost_raw,
+                cause: shape.cause,
+                site: shape.site,
+                identity: shape.identity.clone(),
+            },
+            dating: shape.dating.clone(),
+            item: shape.item,
+            shape: Some(shape),
+        })
+    }
 }
 
 impl Cost {
@@ -207,6 +400,55 @@ impl Cost {
     pub fn undate(&mut self) {
         self.dating.dated = None;
         self.item = None;
+        self.shape = None;
+    }
+}
+
+/// Values met on the native day of `day` and on the day before, by key: a row repeating one
+/// hands on the same allocation, which the spool writes once.
+struct Recent<K, V> {
+    day: Option<i32>,
+    held: [HashMap<K, Arc<V>>; 2],
+}
+
+impl<K, V> Default for Recent<K, V> {
+    fn default() -> Self {
+        Self {
+            day: None,
+            held: [HashMap::new(), HashMap::new()],
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq, V> Recent<K, V> {
+    /// The value held for `key` that `fits`, as met at `hour`.
+    fn get(&mut self, hour: i32, key: &K, fits: impl Fn(&V) -> bool) -> Option<Arc<V>> {
+        let day = hour.div_euclid(24);
+        if self.day != Some(day) {
+            if self.day.and_then(|held| held.checked_add(1)) == Some(day) {
+                self.held.swap(0, 1);
+                self.held[0].clear();
+            } else {
+                self.held = [HashMap::new(), HashMap::new()];
+            }
+            self.day = Some(day);
+        }
+        if let Some(held) = self.held[0].get(key) {
+            return fits(&**held).then(|| Arc::clone(held));
+        }
+        let (key, held) = self.held[1].remove_entry(key)?;
+        if !fits(&*held) {
+            return None;
+        }
+        self.held[0].insert(key, Arc::clone(&held));
+        Some(held)
+    }
+
+    /// `value`, held for `key` from now.
+    fn put(&mut self, key: K, value: V) -> Arc<V> {
+        let value = Arc::new(value);
+        self.held[0].insert(key, Arc::clone(&value));
+        value
     }
 }
 
@@ -243,6 +485,10 @@ pub struct Hour {
     pub command: Vec<(u32, Option<i64>)>,
     /// `command` holds every live allocation: one held before that it omits left.
     pub command_whole: bool,
+    /// What the segment's lens hands the emit with the hour ([`super::lens`]).
+    pub(super) lens: Option<Box<lens::Part>>,
+    /// Whether it only hands the lens's countries back, after hour `hour`.
+    pub(super) handover: bool,
 }
 
 /// Columns read in place.
@@ -264,16 +510,24 @@ pub struct Projector {
     complete: u16,
     /// The last extension list handed.
     extended: Arc<[u32]>,
-    /// The item frame of the hour before, kept after a read whose capture may publish rows a
-    /// read late.
-    held: Option<DecodedFrame>,
-    /// The recorded modifier definitions by name, as the item frame last indexed them, with
-    /// the views they were read from.
-    modifiers: Option<(
-        replay_frame::frame::ViewIdentity,
-        replay_frame::frame::ViewIdentity,
-        Option<Arc<BTreeMap<String, ModifierDefinitionRow>>>,
-    )>,
+    /// The kit copied at the hour `carried_at` names, after a read whose capture may publish
+    /// rows a read late; cleared at the next hour that is not such a read.
+    carried: Option<Copies>,
+    carried_at: Option<(u64, i32)>,
+    /// The recorded modifier definitions by name, as the walk's views last indexed them, while
+    /// neither table moves; None inside where the views hold them in part.
+    modifiers: Option<Option<Arc<BTreeMap<String, ModifierDefinitionRow>>>>,
+    /// The item facts dated lately, by digest, and the shapes of the rows handed lately, by
+    /// item and capture.
+    facts: Recent<[u8; 32], DatedFacts>,
+    powers: Recent<([u8; 32], u32, u64), PowerShape>,
+    costs: Recent<([u8; 32], u32, u64), CostShape>,
+    /// Every category spelling handed on, shared alike.
+    categories: HashSet<Arc<str>>,
+    /// The segment's fold of every country, the branch it walks, and the last hour handed on.
+    lens: Option<lens::Lens>,
+    branch: u64,
+    kept: Option<i32>,
 }
 
 /// The slots `table`'s hour inserted, or wrote any of `mask` at, ascending.
@@ -332,9 +586,37 @@ impl Projector {
             last: None,
             complete: 0,
             extended: Arc::from(Vec::new()),
-            held: None,
+            carried: None,
+            carried_at: None,
             modifiers: None,
+            facts: Recent::default(),
+            powers: Recent::default(),
+            costs: Recent::default(),
+            categories: HashSet::new(),
+            lens: None,
+            branch: 0,
+            kept: None,
         })
+    }
+
+    /// Item facts dated at `hour`, sharing the allocation of equal facts dated that native day
+    /// or the day before.
+    fn dated(&mut self, hour: i32, bytes: Vec<u8>) -> Arc<DatedFacts> {
+        let digest = *blake3::hash(&bytes).as_bytes();
+        match self.facts.get(hour, &digest, |held| held.bytes == bytes) {
+            Some(held) => held,
+            None => self.facts.put(digest, DatedFacts { bytes, digest }),
+        }
+    }
+
+    /// `text` as the category spelling every row handed on shares.
+    fn category(&mut self, text: &str) -> Arc<str> {
+        if let Some(held) = self.categories.get(text) {
+            return Arc::clone(held);
+        }
+        let shared: Arc<str> = Arc::from(text);
+        self.categories.insert(Arc::clone(&shared));
+        shared
     }
 
     /// `table`'s rows the hour inserted or wrote, every live row when `whole`, and the keys it
@@ -555,35 +837,36 @@ impl Projector {
         Ok(String::from_utf8(bytes).ok())
     }
 
-    /// The modifier definitions `frame` records by name; None unless it holds both tables.
-    fn modifier_index(
+    /// The modifier definitions `frame` records by name; None unless it holds both tables
+    /// whole. The walk's views' index is kept while neither table moves.
+    fn modifier_index<F: Tables + ?Sized>(
         &mut self,
-        frame: &DecodedFrame,
-    ) -> Option<Arc<BTreeMap<String, ModifierDefinitionRow>>> {
-        let definitions = &frame.tables[TableId::ModifierDefinitions.index()];
-        let lexical = &frame.tables[TableId::LexicalTokens.index()];
-        if let Some((held_definitions, held_lexical, index)) = &self.modifiers
-            && held_definitions.is(definitions)
-            && held_lexical.is(lexical)
-        {
-            return index.clone();
+        frame: &F,
+        walked: bool,
+    ) -> io::Result<Option<Arc<BTreeMap<String, ModifierDefinitionRow>>>> {
+        if walked && let Some(index) = &self.modifiers {
+            return Ok(index.clone());
         }
         let index = match (
-            frame.complete::<tables::ModifierDefinitions>(),
-            frame.complete::<tables::LexicalTokens>(),
+            frame.complete_rows::<tables::ModifierDefinitions>(u64::MAX),
+            frame.complete_rows::<tables::LexicalTokens>(items::LITERAL),
         ) {
-            (Ok(rows), Ok(tokens)) => Some(Arc::new(idea_format::index_recorded(rows, tokens))),
+            (Ok(rows), Ok(tokens)) => Some(Arc::new(idea_format::index_rowsets(rows, tokens)?)),
             _ => None,
         };
-        self.modifiers = Some((definitions.identity(), lexical.identity(), index.clone()));
-        index
+        if walked {
+            self.modifiers = Some(index.clone());
+        }
+        Ok(index)
     }
 
-    /// What `frame`, the read at the rows' own hour, says of `rows`' items; `current` names
-    /// countries through the walk's roster, the hour before's frame through its own links.
-    fn date(
+    /// What `frame`, the read at the rows' own hour, and `scripted`, its scripted text's frame, say
+    /// of `rows`' items; `current`, the walk's views, names countries through the walk's
+    /// roster, the hour before's copies through their own links.
+    fn date<F: Tables + ?Sized>(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &F,
+        scripted: &TextFrame<'_>,
         roster: &Roster,
         current: bool,
         rows: &mut [(
@@ -607,7 +890,7 @@ impl Projector {
                 PowerCause::Idea | PowerCause::Advisor | PowerCause::AdvisorRemoval
             )
         }) {
-            self.modifier_index(frame)
+            self.modifier_index(frame, current)?
         } else {
             None
         };
@@ -622,7 +905,7 @@ impl Projector {
             let mut modifier_rows = None;
             if let Some(content) = content.as_deref() {
                 facts.text =
-                    items::item_text(own.as_ref(), item, &facts, content, Some(frame), &texts);
+                    items::item_text(own.as_ref(), item, &facts, content, Some(scripted), &texts);
                 if matches!(
                     item.cause,
                     PowerCause::Idea | PowerCause::Advisor | PowerCause::AdvisorRemoval
@@ -638,10 +921,10 @@ impl Projector {
                         modifier_rows = None;
                     }
                 }
-                dating.category = dating
-                    .category
-                    .take()
-                    .map(|_| category(item, &facts, *component, Some(content)));
+                if dating.category.is_some() {
+                    let text = category(item, &facts, *component, Some(content));
+                    dating.category = Some(self.category(&text));
+                }
             }
             let value = Dated {
                 facts,
@@ -649,40 +932,44 @@ impl Projector {
                 target,
                 modifiers: modifier_rows,
             };
-            dating.dated = Some(DatedFacts::new(dashboard_base::prepared::codec::encode(
-                &value,
-            )?));
+            let bytes = dashboard_base::prepared::codec::encode(&value)?;
+            dating.dated = Some(self.dated(frame.at_hour(), bytes));
         }
         Ok(())
     }
 
     /// The names at `frame`'s hour of `raws`.
-    fn names(
+    fn names<F: Tables + ?Sized>(
         &self,
-        frame: &DecodedFrame,
+        frame: &F,
         roster: &Roster,
         current: bool,
         raws: &BTreeSet<u32>,
     ) -> BTreeMap<u32, NamedCountry> {
-        let links = frame.complete::<tables::CountryLinks>().ok();
-        let countries = frame.complete::<tables::Countries>().unwrap_or_default();
-        let slots: Vec<(u32, &CountryRow)> = raws
+        let links = frame
+            .complete_rows::<tables::CountryLinks>(items::LINK)
+            .ok();
+        let countries = frame
+            .complete_rows::<tables::Countries>(items::COUNTRY)
+            .ok();
+        let slots: Vec<(u32, CountryRow)> = raws
             .iter()
             .filter_map(|&raw| {
                 let country = if current {
                     let id = roster.at_slot(roster.slot_of(raw)?).last()?.id;
-                    countries
-                        .binary_search_by_key(&id, |row| row.id)
-                        .ok()
-                        .map(|index| &countries[index])
+                    countries?.get(u128::from(id)).ok().flatten()?.into_owned()
                 } else {
-                    let slot =
-                        links.and_then(|links| dashboard_text::metadata::link_slot(links, raw))?;
-                    countries
+                    let slot = links
+                        .as_ref()
+                        .and_then(|links| dashboard_text::metadata::link_slot_in(links, raw))?;
+                    // A canonical slot's last row, in key order.
+                    countries?
                         .iter()
-                        .rev()
-                        .find(|row| row.canonical_slot == slot)
-                }?;
+                        .filter_map(Result::ok)
+                        .filter(|row| row.canonical_slot == slot)
+                        .last()?
+                        .into_owned()
+                };
                 Some((raw, country))
             })
             .collect();
@@ -692,15 +979,71 @@ impl Projector {
     }
 }
 
+/// The rows `power` and `costs` date at `at`, as [`Projector::date`] reads them.
+#[allow(clippy::type_complexity)]
+fn dated_at<'r>(
+    power: &'r mut [Power],
+    costs: &'r mut [Cost],
+    at: i32,
+) -> Vec<(
+    Item<'r>,
+    Option<u32>,
+    u32,
+    Option<PowerDailyCostKind>,
+    &'r mut Dating,
+)> {
+    let mut dated = Vec::new();
+    for power in power
+        .iter_mut()
+        .filter(|power| power.row.hour == at && named(&power.row))
+    {
+        dated.push((
+            Item {
+                cause: power.row.cause,
+                identity: &power.row.identity,
+            },
+            power.row.identity.target_country,
+            power.row.country,
+            None,
+            &mut power.dating,
+        ));
+    }
+    for cost in costs
+        .iter_mut()
+        .filter(|cost| cost.row.day_hour == at && cost.row.cost_raw != 0)
+    {
+        dated.push((
+            Item {
+                cause: cost.row.cause,
+                identity: &cost.row.identity,
+            },
+            cost.row.identity.target_country,
+            cost.row.country,
+            Some(cost.row.component),
+            &mut cost.dating,
+        ));
+    }
+    dated
+}
+
+/// What the late rows' copies hold: the kit and Campaign, whole, as the walk's frame held them.
+fn carried_asks() -> Vec<(TableId, Hold)> {
+    kit()
+        .iter()
+        .chain(&[TableId::Campaign])
+        .map(|&table| (table, Hold::Whole))
+        .collect()
+}
+
 /// The category a payment of `item` is spent in.
 fn category(
     item: &Item<'_>,
     facts: &items::EventFacts,
     component: Option<PowerDailyCostKind>,
     content: Option<&PoliticsContent>,
-) -> Arc<str> {
+) -> Cow<'static, str> {
     if component.is_some() && item.cause == PowerCause::DailyGain {
-        return Arc::from(match component {
+        return Cow::Borrowed(match component {
             Some(PowerDailyCostKind::MioResearch | PowerDailyCostKind::MioProduction) => {
                 "organisationUpkeep"
             }
@@ -708,26 +1051,45 @@ fn category(
         });
     }
     let token = items::recorded_token(facts, item.identity);
-    Arc::from(present::category_of(item.cause, token, content).0)
+    Cow::Owned(present::category_of(item.cause, token, content).0)
 }
 
-impl Operator<World> for Projector {
-    type Output = Hour;
+impl Projector {
+    /// Hands the lens's countries back after the hour it handed on last.
+    fn hand_over(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        if let Some(mut lens) = self.lens.take()
+            && let Some(last) = self.kept
+            && let Some(part) = lens.hand_over(last)
+        {
+            out.push(Hour {
+                branch: self.branch,
+                hour: last,
+                lens: Some(part),
+                handover: true,
+                ..Hour::default()
+            })?;
+        }
+        Ok(())
+    }
 
-    fn hour(
-        &mut self,
-        walked: &segments::Hour<'_, World>,
-        out: &mut dyn Sink<Hour>,
-    ) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope("politics_ledger.facts", None);
+    /// Hour `walked`'s facts; `whole` hands every table.
+    fn project(&mut self, walked: &segments::Hour<'_, World>, whole: bool) -> io::Result<Hour> {
         let state = walked.state;
         let hour = walked.hour;
-        let whole = walked.starts
-            || self
-                .last
-                .is_none_or(|last| last.checked_add(1) != Some(hour));
-        let held = std::mem::take(&mut self.held)
-            .filter(|held| held.branch == walked.branch && held.hour.checked_add(1) == Some(hour));
+        // The copies carried from the hour before date its late rows; an hour that refuses
+        // carries none on.
+        let follows = self
+            .carried_at
+            .take()
+            .is_some_and(|(branch, at)| branch == walked.branch && at.checked_add(1) == Some(hour));
+        let mut carried = self.carried.take();
+        // The modifier index kept from the views lasts while neither of its tables moves.
+        if whole
+            || walked.world.touched(TableId::ModifierDefinitions, u64::MAX)
+            || walked.world.touched(TableId::LexicalTokens, u64::MAX)
+        {
+            self.modifiers = None;
+        }
         self.last = Some(hour);
         let roster = walked.world.countries()?;
         let mut complete = 0;
@@ -789,15 +1151,17 @@ impl Operator<World> for Projector {
         )?;
         let command_whole = whole_of(TableId::CountryCommandPower);
         let command = self.command(state, command_whole)?;
+        let unnamed = self.category("");
         let mut power: Vec<Power> = power
             .into_iter()
             .map(|row| Power {
                 dating: Dating {
                     dated: None,
-                    category: rows::charge(&row).map(|_| Arc::from("")),
+                    category: rows::charge(&row).map(|_| Arc::clone(&unnamed)),
                 },
                 row,
                 resolved: None,
+                shape: None,
             })
             .collect();
         let mut costs: Vec<Cost> = costs
@@ -805,72 +1169,41 @@ impl Operator<World> for Projector {
             .map(|row| Cost {
                 dating: Dating {
                     dated: None,
-                    category: (row.cost_raw != 0).then(|| Arc::from("")),
+                    category: (row.cost_raw != 0).then(|| Arc::clone(&unnamed)),
                 },
                 row,
                 item: None,
+                shape: None,
             })
             .collect();
-        // The rows dated at the hour, and at the hour before when its frame is held.
-        for (at, frame) in [(hour, None), (hour.saturating_sub(1), held.as_ref())] {
-            if at != hour && frame.is_none() {
-                continue;
-            }
-            let wanted = power
+        let held = carried
+            .as_ref()
+            .filter(|_| follows)
+            .map(Copies::frame);
+        let wanted = |at: i32| {
+            power
                 .iter()
                 .any(|power| power.row.hour == at && named(&power.row))
                 || costs
                     .iter()
-                    .any(|cost| cost.row.day_hour == at && cost.row.cost_raw != 0);
-            if !wanted {
-                continue;
-            }
-            let current;
-            let frame = match frame {
-                Some(frame) => frame,
-                None => {
-                    current = walked.world.frame(state, kit())?;
-                    &current
-                }
-            };
-            let mut dated: Vec<(
-                Item<'_>,
-                Option<u32>,
-                u32,
-                Option<PowerDailyCostKind>,
-                &mut Dating,
-            )> = Vec::new();
-            for power in power
-                .iter_mut()
-                .filter(|power| power.row.hour == at && named(&power.row))
-            {
-                dated.push((
-                    Item {
-                        cause: power.row.cause,
-                        identity: &power.row.identity,
-                    },
-                    power.row.identity.target_country,
-                    power.row.country,
-                    None,
-                    &mut power.dating,
-                ));
-            }
-            for cost in costs
-                .iter_mut()
-                .filter(|cost| cost.row.day_hour == at && cost.row.cost_raw != 0)
-            {
-                dated.push((
-                    Item {
-                        cause: cost.row.cause,
-                        identity: &cost.row.identity,
-                    },
-                    cost.row.identity.target_country,
-                    cost.row.country,
-                    Some(cost.row.component),
-                    &mut cost.dating,
-                ));
-            }
-            self.date(frame, roster, at == hour, &mut dated)?;
+                    .any(|cost| cost.row.day_hour == at && cost.row.cost_raw != 0)
+        };
+        let before = hour.saturating_sub(1);
+        let (now, late) = (wanted(hour), before != hour && wanted(before));
+        // The rows dated at the hour, from its views.
+        if now {
+            let columns = walked.world.columns(state);
+            let text = TextFrame::walked(walked.world, state);
+            let mut dated = dated_at(&mut power, &mut costs, hour);
+            self.date(&columns, &text, roster, true, &mut dated)?;
+            drop(dated);
+            text.finish()?;
+        }
+        // And at the hour before, from the copies carried from it.
+        if let Some(frame) = held.filter(|_| late) {
+            let text = TextFrame::Carried(frame);
+            let mut dated = dated_at(&mut power, &mut costs, before);
+            self.date(frame, &text, roster, false, &mut dated)?;
         }
         // A frameless payment's category reads its recorded key alone.
         let content = self.content.clone();
@@ -895,20 +1228,30 @@ impl Operator<World> for Projector {
         {
             if dating.dated.is_none() && dating.category.is_some() {
                 let (cause, identity, component) = row;
-                let facts = items::event_facts(None, identity, cause, component);
-                dating.category = Some(category(
-                    &Item { cause, identity },
-                    &facts,
-                    component,
-                    content.as_deref(),
-                ));
+                let facts = items::event_facts::<DecodedFrame>(None, identity, cause, component);
+                let text = category(&Item { cause, identity }, &facts, component, content.as_deref());
+                dating.category = Some(self.category(&text));
             }
         }
         for power in &mut power {
-            power.resolved = Some(power.resolve());
+            let resolved = power.resolve();
+            let key = (resolved.item, power.row.instance, power.row.epoch);
+            power.resolved = Some(resolved);
+            let shape = match self.powers.get(hour, &key, |held| held.fits(power)) {
+                Some(held) => held,
+                None => self.powers.put(key, PowerShape::of(power)),
+            };
+            power.shape = Some(shape);
         }
         for cost in &mut costs {
-            cost.item = Some(cost.resolve());
+            let item = cost.resolve();
+            let key = (item, cost.row.instance, cost.row.epoch);
+            cost.item = Some(item);
+            let shape = match self.costs.get(hour, &key, |held| held.fits(cost)) {
+                Some(held) => held,
+                None => self.costs.put(key, CostShape::of(cost)),
+            };
+            cost.shape = Some(shape);
         }
         let mut handed_governments = Vec::with_capacity(governments.len());
         for row in governments {
@@ -918,7 +1261,7 @@ impl Operator<World> for Projector {
                 };
                 if row.hour == hour {
                     self.spelling(state, token)
-                } else if let Some(frame) = held.as_ref().filter(|frame| frame.hour == row.hour) {
+                } else if let Some(frame) = held.filter(|frame| frame.hour == row.hour) {
                     Ok(items::lexical_token(frame, token))
                 } else {
                     Ok(None)
@@ -933,10 +1276,25 @@ impl Operator<World> for Projector {
                 .changed
                 .iter()
                 .any(|row| row.since_hour == hour && row.through_hour == hour);
-        if discontinuous {
-            self.held = Some(walked.world.frame(state, kit())?);
+        // Copies are brought on only from the hour before; any others are let go.
+        if let Some(copies) = carried.as_mut()
+            && !(discontinuous && follows)
+        {
+            copies.clear();
         }
-        out.push(Hour {
+        if discontinuous {
+            let mut copies = match carried {
+                Some(copies) => copies,
+                None => Copies::new(carried_asks())?,
+            };
+            copies.hour(walked.world, state)?;
+            self.carried = Some(copies);
+            self.carried_at = Some((walked.branch, hour));
+        } else {
+            self.carried = carried;
+            self.carried_at = None;
+        }
+        Ok(Hour {
             branch: walked.branch,
             hour,
             whole,
@@ -956,7 +1314,58 @@ impl Operator<World> for Projector {
             ],
             command,
             command_whole,
+            lens: None,
+            handover: false,
         })
+    }
+}
+
+impl Operator<World> for Projector {
+    type Output = Hour;
+
+    fn hour(
+        &mut self,
+        walked: &segments::Hour<'_, World>,
+        out: &mut dyn Sink<Hour>,
+    ) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope("politics_ledger.facts", None);
+        let hour = walked.hour;
+        let whole = walked.starts
+            || self
+                .last
+                .is_none_or(|last| last.checked_add(1) != Some(hour));
+        // A whole hour starts the lens over: what it folded goes back first.
+        if whole {
+            self.hand_over(out).map_err(segments::family_failure)?;
+        }
+        self.branch = walked.branch;
+        // Only the hour's own read refuses, before the lens folds any of it: the lens hands back
+        // exactly the hours before, as the emit holds the countries it folds itself.
+        let mut projected = match self.project(walked, whole) {
+            Ok(projected) => projected,
+            Err(error) => {
+                self.hand_over(out).map_err(segments::family_failure)?;
+                return Err(error);
+            }
+        };
+        // The lens fails only where its fold is wrong: never a refusal of the hour.
+        (|| -> io::Result<()> {
+            if whole {
+                self.lens = Some(lens::Lens::start(hour, self.content.clone()));
+            }
+            if let Some(lens) = &mut self.lens {
+                lens.hour(&projected)?;
+                projected.lens = lens.part();
+            }
+            out.push(projected)?;
+            self.kept = Some(hour);
+            Ok(())
+        })()
+        .map_err(segments::family_failure)
+    }
+
+    fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        self.hand_over(out).map_err(segments::family_failure)
     }
 
     fn carried(&self) -> Option<usize> {

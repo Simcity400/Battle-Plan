@@ -8,7 +8,7 @@
 //! and answers nothing, and the engine of the segment before answers those hours.
 
 use super::super::{Placed, UNLINKED_DIVISION, find};
-use super::{CADENCE, KeptReason, NamingOperands, kept_artwork, kept_naming};
+use super::{CADENCE, KeptReason, NamingOperands};
 use crate::products::{
     army_content::{self, DefinitionsOf, Holder, TemplateArtwork},
     division_needs,
@@ -16,27 +16,25 @@ use crate::products::{
 use dashboard_base::products::equipment::{self, RawVariant};
 use dashboard_series::hash::{FastMap, Words};
 use dashboard_text::{
-    catalogue::Catalogue,
-    metadata::link_slot,
-    subunit_requirements::{Content, SourceIndex, Sources},
+    catalogue::Catalogue, metadata::link_slot, subunit_requirements::Content,
     template_facts::TemplateNaming,
 };
 use dashboard_world::Division;
-use replay::columnar_frames::view_heap_bytes;
 use replay_data::{
     codec::{Decoder, put_varint},
     rows::{
-        CountryLinkRow, LexicalTokenRow, RowCodec, TableId, TableRows, VariantDefinitionRow, tables,
+        CountryAppearanceRow, CountryLinkRow, CountryRow, LexicalTokenRow, TableId, TableRows,
+        VariantDefinitionRow, tables,
     },
 };
-use replay_frame::frame::{DecodedFrame, SharedView, TableView, not_selected};
+use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_selected};
+use serde::{Deserialize, Serialize};
 use std::{
-    cell::OnceCell,
+    borrow::Cow,
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::BuildHasherDefault,
     io,
-    mem::size_of,
     sync::Arc,
 };
 
@@ -76,18 +74,6 @@ pub(crate) enum Rows<T> {
     Changed(Vec<T>, Vec<u128>),
 }
 
-impl<T> Rows<T> {
-    fn heap(&self) -> usize {
-        match self {
-            Self::Same => 0,
-            Self::Whole(rows) => rows.capacity() * size_of::<T>(),
-            Self::Changed(rows, gone) => {
-                rows.capacity() * size_of::<T>() + gone.capacity() * size_of::<u128>()
-            }
-        }
-    }
-}
-
 /// A pool or stockpile row as the walk gives it: its key (owner and ordinal), design and
 /// signed amount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,18 +108,6 @@ pub(crate) struct Countries {
     pub(crate) ids: Option<BTreeMap<u32, u32>>,
 }
 
-impl Countries {
-    fn heap(&self) -> usize {
-        self.links.capacity() * size_of::<CountryLinkRow>()
-            + self
-                .holders
-                .iter()
-                .map(|(tag, _)| size_of::<(Arc<str>, Option<Holder>)>() + 16 + tag.len())
-                .sum::<usize>()
-            + self.ids.as_ref().map_or(0, |ids| ids.len() * 32)
-    }
-}
-
 /// One hour as an engine reads it.
 #[derive(replay_spool::Spooled)]
 pub(crate) struct Input {
@@ -159,37 +133,116 @@ pub(crate) struct Input {
     pub(crate) tokens: Tokens,
     /// Local sub-units changed.
     pub(crate) subunits: bool,
-    /// The countries' identity, links, tokens, local sub-units and templates, when one
-    /// changed.
-    pub(crate) frame: Option<DecodedFrame>,
-    /// [`super::DESIGNS`] at an hour that reads them.
-    pub(crate) designs: Option<DecodedFrame>,
+    /// The templates' facts, when the countries' identity, links, tokens, local sub-units or
+    /// templates may have changed them.
+    pub(crate) context: Option<Context>,
+    /// What an hour that reads the designs gives of them.
+    pub(crate) designs: Option<Designs>,
     /// Designs whose definitions the hour changed; none when any may have.
     pub(crate) definitions: Option<Vec<u64>>,
 }
 
-impl Input {
-    /// The bytes it owns, its frames' views too: a lead outlives the walk that read it.
-    pub(crate) fn heap(&self) -> usize {
-        self.divisions.heap()
-            + self.maxima.heap()
-            + self.manpower.heap()
-            + self.new.heap()
-            + self.daily.heap()
-            + self.stock.heap()
-            + self
-                .countries
-                .as_ref()
-                .map_or(0, |countries| countries.heap())
-            + self
-                .templates
-                .as_ref()
-                .map_or(0, |keys| keys.capacity() * 8)
-            + self
-                .definitions
-                .as_ref()
-                .map_or(0, |keys| keys.capacity() * 8)
-            + views(self.frame.iter().chain(&self.designs))
+/// A template's facts at the hour its tables were last given, before the engine numbers their
+/// operands: its need, required manpower, naming and artwork, and whether its naming was
+/// sampled for that hour alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct TemplateFacts {
+    pub(crate) need: Result<Vec<(String, i64)>, KeptReason>,
+    pub(crate) required: Option<i64>,
+    pub(crate) naming: Result<TemplateNaming, KeptReason>,
+    pub(crate) artwork: Result<TemplateArtwork, KeptReason>,
+    pub(crate) hourly: bool,
+}
+
+/// What the tables say of a template they hold no row of: each part's refusal where it stops
+/// before the template's row is looked up; else the template's own, which names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Absent {
+    pub(crate) need: Option<KeptReason>,
+    /// DivisionTemplates' refusal; else the template's dictionary is missing.
+    pub(crate) naming: Option<KeptReason>,
+    /// DivisionTemplateIcons' refusal; else its artwork operands are missing.
+    pub(crate) artwork: Option<KeptReason>,
+}
+
+impl Absent {
+    /// The facts of `handle`, a template no table holds, in its readers' own words.
+    pub(crate) fn facts(&self, handle: u64) -> TemplateFacts {
+        fn refused<T>(kept: &Option<KeptReason>, own: &dyn Fn() -> String) -> Result<T, KeptReason> {
+            Err(kept.clone().unwrap_or_else(|| KeptReason::literal(own())))
+        }
+        TemplateFacts {
+            need: refused(&self.need, &|| {
+                format!("Template {handle} equipment composition was not recorded")
+            }),
+            required: None,
+            naming: refused(&self.naming, &|| format!("template {handle} dictionary missing")),
+            artwork: refused(&self.artwork, &|| {
+                "Template artwork operands not recorded".to_owned()
+            }),
+            hourly: false,
+        }
+    }
+}
+
+/// The templates' facts given at an hour that may have changed them.
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Context {
+    /// Whether LexicalTokens, CountryLocalSubunits, DivisionTemplates and DivisionTemplateIcons
+    /// each held every row.
+    pub(crate) wholes: [bool; 4],
+    /// `facts` holds every template the tables hold, in place of those held.
+    pub(crate) whole: bool,
+    pub(crate) facts: Vec<(u64, Arc<TemplateFacts>)>,
+    /// Templates the tables no longer hold.
+    pub(crate) gone: Vec<u64>,
+    pub(crate) absent: Arc<Absent>,
+}
+
+/// What an hour that reads the designs gives of them.
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Designs {
+    pub(crate) definitions: DefinitionRows,
+    /// The spellings of the equipment tokens the definitions name, by token; none where
+    /// LexicalTokens did not hold every row.
+    pub(crate) tokens: Option<Vec<LexicalTokenRow>>,
+    /// The countries a lookup names designs for; none where Countries or CountryLinks did not
+    /// hold every row.
+    pub(crate) tags: Option<Arc<DesignTags>>,
+}
+
+/// The definitions a designs read gives, each in the fields a design's lookup reads.
+#[derive(replay_spool::Spooled)]
+pub(crate) enum DefinitionRows {
+    /// Every definition, by design.
+    Whole(Vec<Arc<VariantDefinitionRow>>),
+    /// Those of the designs changed since the last designs read; none for one gone.
+    Changed(Vec<(u64, Option<Arc<VariantDefinitionRow>>)>),
+}
+
+/// The countries a design's lookup names it for: their slots and tags, the links, and the
+/// original tag a dynamic country is named after where CountryAppearance held every row.
+#[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct DesignTags {
+    pub(crate) countries: Vec<CountryRow>,
+    pub(crate) links: Vec<CountryLinkRow>,
+    pub(crate) appearance: Option<Vec<CountryAppearanceRow>>,
+}
+
+impl DesignTags {
+    /// The tags a saved read's frame holds.
+    fn saved(frame: &DecodedFrame) -> Option<Self> {
+        Some(Self {
+            countries: frame.complete::<tables::Countries>().ok()?.to_vec(),
+            links: frame.complete::<tables::CountryLinks>().ok()?.to_vec(),
+            appearance: frame
+                .complete::<tables::CountryAppearance>()
+                .ok()
+                .map(<[_]>::to_vec),
+        })
     }
 }
 
@@ -380,10 +433,6 @@ impl Changes {
         self.bytes.shrink_to_fit();
         self
     }
-
-    fn heap(&self) -> usize {
-        self.bytes.capacity()
-    }
 }
 
 /// The bytes of [`Changes`] not yet read back.
@@ -502,17 +551,6 @@ pub(crate) struct Output {
     /// The countries given whole, all of them with `whole`: their other values end.
     pub(crate) listed: Vec<u32>,
     pub(crate) changes: Changes,
-}
-
-impl Output {
-    /// The bytes it owns; its operands are the engine's too.
-    pub(crate) fn heap(&self) -> usize {
-        self.operands.capacity() * size_of::<(u32, Operand)>()
-            + self.tags.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.tags.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self.listed.capacity() * 4
-            + self.changes.heap()
-    }
 }
 
 /// One supplying read, by the hour of its read: unknown before a cold start's own.
@@ -719,15 +757,24 @@ struct Template {
     hourly: bool,
 }
 
-/// A listed type: its holding, and its need, capped holding and shortfall where compared.
+/// A listed type: its holding, and its need where compared (else zero), from which its capped
+/// holding and shortfall follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 struct TypeShare {
     kind: u32,
     held: i128,
-    need: i128,
-    filled: i128,
-    shortfall: i128,
+    need: i64,
+}
+
+impl TypeShare {
+    fn filled(&self) -> i128 {
+        self.held.clamp(0, i128::from(self.need.max(0)))
+    }
+
+    fn shortfall(&self) -> i128 {
+        (i128::from(self.need) - self.held).max(0)
+    }
 }
 
 /// A division's part of its replies: its pool compared with its template's need, and its
@@ -742,7 +789,6 @@ struct Share {
     /// The need and capped holding compared; none while the comparison is unknown.
     compared: Option<(i128, i128)>,
     notes: Vec<u32>,
-    handles: Vec<u64>,
     required: Option<i64>,
 }
 
@@ -760,13 +806,11 @@ impl Share {
             variants,
             compared,
             notes,
-            handles,
             required,
         } = self;
         types.clear();
         variants.clear();
         notes.clear();
-        handles.clear();
         if template.required.is_none() {
             notes.push(fixed.required);
         }
@@ -801,8 +845,6 @@ impl Share {
             }
             same
         });
-        handles.extend(variants.iter().map(|&(_, handle, _)| handle));
-        handles.sort_unstable();
         let need = template.need.as_deref().unwrap_or(&[]);
         let known = template.need.is_ok() && pool.is_some() && classified;
         let (mut needed, mut filled) = (0, 0);
@@ -820,20 +862,16 @@ impl Share {
             }
             let amount = needs
                 .next_if(|wanted| wanted.0 == kind)
-                .map_or(0, |&(_, amount)| i128::from(amount));
+                .map_or(0, |&(_, amount)| amount);
             let mut part = TypeShare {
                 kind,
                 held: in_pool,
                 need: 0,
-                filled: 0,
-                shortfall: 0,
             };
             if known {
                 part.need = amount;
-                part.filled = in_pool.clamp(0, amount.max(0));
-                part.shortfall = (amount - in_pool).max(0);
-                needed += amount;
-                filled += part.filled;
+                needed += i128::from(amount);
+                filled += part.filled();
             }
             types.push(part);
         }
@@ -843,15 +881,23 @@ impl Share {
 
     /// Whether a compared type falls short.
     fn short(&self) -> bool {
-        self.types.iter().any(|part| part.shortfall > 0)
+        self.shorts().next().is_some()
     }
 
-    /// The kinds it falls short of.
+    /// The kinds it falls short of, where compared.
     fn shorts(&self) -> impl Iterator<Item = u32> + '_ {
+        let known = self.compared.is_some();
         self.types
             .iter()
-            .filter(|part| part.shortfall > 0)
+            .filter(move |part| known && part.shortfall() > 0)
             .map(|part| part.kind)
+    }
+
+    /// Its designs, sorted, into `into`.
+    fn handles(&self, into: &mut Vec<u64>) {
+        into.clear();
+        into.extend(self.variants.iter().map(|&(_, handle, _)| handle));
+        into.sort_unstable();
     }
 }
 
@@ -988,29 +1034,31 @@ struct Fixed {
     stock_unclassified: u32,
 }
 
-/// A designs read: its countries' identity and whether it read its definitions and tokens whole,
-/// with the spellings of the tokens its definitions name; its definitions are kept by design.
+/// A designs read: its countries' tags, and whether it read its tokens whole, with the
+/// spellings of the tokens its definitions name; its definitions are kept by design.
 #[derive(replay_spool::Spooled)]
 struct Read {
-    /// Its frame without its definitions and tokens, so the walk changes theirs in place.
-    identity: DecodedFrame,
-    defined: bool,
+    tags: Option<Arc<DesignTags>>,
     spelled: bool,
     /// Sorted by token.
     tokens: Arc<[LexicalTokenRow]>,
 }
 
 impl Read {
-    /// Designs frame `frame` as a read, its token rows those `history` names.
-    fn of(frame: &DecodedFrame, history: &mut History) -> Self {
-        let tokens = frame.complete::<tables::LexicalTokens>().ok();
-        let mut identity = frame.clone();
-        for table in [TableId::VariantDefinitions, TableId::LexicalTokens] {
-            identity.tables[table.index()] = not_selected();
-        }
+    /// The read `designs` gives, its token rows those `history` names.
+    fn of(designs: &Designs, history: &mut History) -> Self {
         Self {
-            identity,
-            defined: frame.complete::<tables::VariantDefinitions>().is_ok(),
+            tags: designs.tags.clone(),
+            spelled: designs.tokens.is_some(),
+            tokens: history.spelled(designs.tokens.as_deref().unwrap_or(&[])),
+        }
+    }
+
+    /// The read a save kept as `frame`, its token rows those `history` names.
+    fn from_saved(frame: &DecodedFrame, history: &mut History) -> Self {
+        let tokens = frame.complete::<tables::LexicalTokens>().ok();
+        Self {
+            tags: DesignTags::saved(frame).map(Arc::new),
             spelled: tokens.is_some(),
             tokens: history.spelled(tokens.unwrap_or(&[])),
         }
@@ -1033,18 +1081,162 @@ impl Read {
             }
             .into()
         };
-        let mut frame = self.identity.clone();
-        frame.tables[TableId::VariantDefinitions.index()] = if self.defined {
-            TableView::Complete(TableRows::VariantDefinitions(history.rows_at(hour))).into()
-        } else {
-            unread()
+        let complete = |rows: TableRows| -> SharedView { TableView::Complete(rows).into() };
+        let mut frame = DecodedFrame {
+            branch: 0,
+            hour,
+            tables: std::array::from_fn(|_| not_selected()),
+            metrics: Metrics::default(),
         };
+        let tags = self.tags.as_deref();
+        frame.tables[TableId::Countries.index()] = tags.map_or_else(unread, |tags| {
+            complete(TableRows::Countries(tags.countries.clone()))
+        });
+        frame.tables[TableId::CountryLinks.index()] = tags.map_or_else(unread, |tags| {
+            complete(TableRows::CountryLinks(tags.links.clone()))
+        });
+        frame.tables[TableId::CountryAppearance.index()] = tags
+            .and_then(|tags| tags.appearance.as_ref())
+            .map_or_else(unread, |rows| {
+                complete(TableRows::CountryAppearance(rows.clone()))
+            });
+        frame.tables[TableId::VariantDefinitions.index()] =
+            complete(TableRows::VariantDefinitions(history.rows_at(hour)));
         frame.tables[TableId::LexicalTokens.index()] = if self.spelled {
-            TableView::Complete(TableRows::LexicalTokens(self.tokens.to_vec())).into()
+            complete(TableRows::LexicalTokens(self.tokens.to_vec()))
         } else {
             unread()
         };
         frame
+    }
+}
+
+/// The fields of a definition a design's lookup reads.
+#[derive(PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
+struct Looked {
+    equipment_token: u32,
+    creator_link: u32,
+    origin_link: u32,
+    append_variant_name: u8,
+    display_name: Vec<u8>,
+    variant_name: Vec<u8>,
+}
+
+/// A design's definition as kept: the fields a lookup reads where the row holds no other, else
+/// the row whole.
+#[derive(replay_spool::Spooled)]
+enum Definition {
+    Looked(Looked),
+    Whole(Arc<VariantDefinitionRow>),
+}
+
+/// The fields of `row` a lookup reads.
+fn fields(row: &VariantDefinitionRow) -> (u32, u32, u32, u8, &[u8], &[u8]) {
+    (
+        row.equipment_token,
+        row.creator_link,
+        row.origin_link,
+        row.append_variant_name,
+        &row.display_name,
+        &row.variant_name,
+    )
+}
+
+/// Whether every field of `row` a lookup does not read holds its default.
+fn looked_only(row: &VariantDefinitionRow) -> bool {
+    let VariantDefinitionRow {
+        id: _,
+        equipment_token: _,
+        creator_link: _,
+        origin_link: _,
+        append_variant_name: _,
+        obsolete,
+        classifier_flags,
+        mission_mask,
+        display_name: _,
+        variant_name: _,
+        explicit_entity,
+        archetype_token,
+        icon_active,
+        icon_kind,
+        icon,
+        version,
+        design,
+    } = row;
+    let unset = VariantDefinitionRow::default();
+    *obsolete == unset.obsolete
+        && *classifier_flags == unset.classifier_flags
+        && *mission_mask == unset.mission_mask
+        && *explicit_entity == unset.explicit_entity
+        && *archetype_token == unset.archetype_token
+        && *icon_active == unset.icon_active
+        && *icon_kind == unset.icon_kind
+        && *icon == unset.icon
+        && *version == unset.version
+        && *design == unset.design
+}
+
+impl Definition {
+    fn of(row: &Arc<VariantDefinitionRow>) -> Self {
+        if !looked_only(row) {
+            return Self::Whole(Arc::clone(row));
+        }
+        Self::Looked(Looked {
+            equipment_token: row.equipment_token,
+            creator_link: row.creator_link,
+            origin_link: row.origin_link,
+            append_variant_name: row.append_variant_name,
+            display_name: row.display_name.clone(),
+            variant_name: row.variant_name.clone(),
+        })
+    }
+
+    fn token(&self) -> u32 {
+        match self {
+            Self::Looked(looked) => looked.equipment_token,
+            Self::Whole(row) => row.equipment_token,
+        }
+    }
+
+    /// The fields a lookup reads.
+    fn looked(&self) -> (u32, u32, u32, u8, &[u8], &[u8]) {
+        match self {
+            Self::Looked(looked) => (
+                looked.equipment_token,
+                looked.creator_link,
+                looked.origin_link,
+                looked.append_variant_name,
+                &looked.display_name,
+                &looked.variant_name,
+            ),
+            Self::Whole(row) => fields(row),
+        }
+    }
+
+    /// Whether it is `row`'s.
+    fn is(&self, row: &VariantDefinitionRow) -> bool {
+        match self {
+            Self::Looked(_) => looked_only(row) && self.looked() == fields(row),
+            Self::Whole(held) => **held == *row,
+        }
+    }
+
+    /// Design `id`'s row.
+    fn row(&self, id: u64) -> Cow<'_, VariantDefinitionRow> {
+        match self {
+            Self::Looked(looked) => Cow::Owned(VariantDefinitionRow {
+                id,
+                equipment_token: looked.equipment_token,
+                creator_link: looked.creator_link,
+                origin_link: looked.origin_link,
+                append_variant_name: looked.append_variant_name,
+                display_name: looked.display_name.clone(),
+                variant_name: looked.variant_name.clone(),
+                ..VariantDefinitionRow::default()
+            }),
+            Self::Whole(row) => Cow::Borrowed(row),
+        }
     }
 }
 
@@ -1053,7 +1245,7 @@ impl Read {
 #[derive(Default)]
 #[derive(replay_spool::Spooled)]
 struct History {
-    versions: FastMap<u64, Vec<(i32, Option<Arc<VariantDefinitionRow>>)>>,
+    versions: FastMap<u64, Vec<(i32, Option<Definition>)>>,
     /// Designs holding more than one version.
     varied: Vec<u64>,
     /// The equipment tokens the latest definitions name, with how many name each.
@@ -1066,33 +1258,30 @@ struct History {
 }
 
 impl History {
-    /// The definitions of designs frame `frame` at `hour`: those of `changed` designs where the
-    /// frame before was read and they are known, else every design's.
-    fn read(&mut self, frame: &DecodedFrame, hour: i32, changed: Option<&[u64]>) {
-        let Ok(rows) = frame.complete::<tables::VariantDefinitions>() else {
-            self.based = false;
-            return;
-        };
-        let defined = |id: u64| {
-            let at = rows.binary_search_by_key(&id, |row| row.id).ok()?;
-            rows.get(at)
-        };
-        match changed.filter(|_| self.based) {
-            Some(changed) => {
-                for &id in changed {
-                    self.set(id, defined(id), hour);
+    /// The definitions a designs read gives at `hour`: every design's, or those of the designs
+    /// it changed since the read before, which this history must hold.
+    fn read(&mut self, rows: &DefinitionRows, hour: i32) -> io::Result<()> {
+        match rows {
+            DefinitionRows::Changed(_) if !self.based => {
+                return Err(invalid(
+                    "A designs read gave the definitions it changed to an engine holding none",
+                ));
+            }
+            DefinitionRows::Changed(changed) => {
+                for (id, row) in changed {
+                    self.set(*id, row.as_ref(), hour);
                 }
             }
-            None => {
+            DefinitionRows::Whole(rows) => {
                 for row in rows {
                     self.set(row.id, Some(row), hour);
                 }
+                let defined = |id: u64| rows.binary_search_by_key(&id, |row| row.id).is_ok();
                 let gone: Vec<u64> = self
                     .versions
                     .iter()
                     .filter(|&(&id, versions)| {
-                        versions.last().is_some_and(|(_, row)| row.is_some())
-                            && defined(id).is_none()
+                        versions.last().is_some_and(|(_, row)| row.is_some()) && !defined(id)
                     })
                     .map(|(&id, _)| id)
                     .collect();
@@ -1102,19 +1291,25 @@ impl History {
             }
         }
         self.based = true;
+        Ok(())
     }
 
     /// Design `id`'s definition from `hour` on; a version only where it differs.
-    fn set(&mut self, id: u64, row: Option<&VariantDefinitionRow>, hour: i32) {
+    fn set(&mut self, id: u64, row: Option<&Arc<VariantDefinitionRow>>, hour: i32) {
         let latest = self
             .versions
             .get(&id)
             .and_then(|versions| versions.last())
-            .and_then(|(_, row)| row.as_deref());
-        if latest == row {
+            .and_then(|(_, row)| row.as_ref());
+        let same = match (latest, row) {
+            (None, None) => true,
+            (Some(latest), Some(row)) => latest.is(row),
+            _ => false,
+        };
+        if same {
             return;
         }
-        if let Some(token) = latest.map(|latest| latest.equipment_token) {
+        if let Some(token) = latest.map(Definition::token) {
             let named = self.named.entry(token).or_default();
             *named -= 1;
             if *named == 0 {
@@ -1124,7 +1319,7 @@ impl History {
         if let Some(row) = row {
             *self.named.entry(row.equipment_token).or_default() += 1;
         }
-        let row = row.map(|row| Arc::new(row.clone()));
+        let row = row.map(Definition::of);
         let versions = self.versions.entry(id).or_default();
         match versions.last_mut() {
             Some((at, held)) if *at == hour => *held = row,
@@ -1138,10 +1333,10 @@ impl History {
     }
 
     /// Design `id`'s definition at the read at `hour`.
-    fn at(&self, id: u64, hour: i32) -> Option<&VariantDefinitionRow> {
+    fn at(&self, id: u64, hour: i32) -> Option<&Definition> {
         let versions = self.versions.get(&id)?;
         let after = versions.partition_point(|&(at, _)| at <= hour);
-        versions.get(after.checked_sub(1)?)?.1.as_deref()
+        versions.get(after.checked_sub(1)?)?.1.as_ref()
     }
 
     /// The rows of `tokens`, a read's, that the latest definitions name: the last read's rows
@@ -1193,28 +1388,10 @@ impl History {
         let mut rows: Vec<VariantDefinitionRow> = self
             .versions
             .keys()
-            .filter_map(|&id| self.at(id, hour).cloned())
+            .filter_map(|&id| self.at(id, hour).map(|row| row.row(id).into_owned()))
             .collect();
         rows.sort_unstable_by_key(|row| row.id);
         rows
-    }
-
-    fn heap(&self) -> usize {
-        self.versions.capacity()
-            * (size_of::<(u64, Vec<(i32, Option<Arc<VariantDefinitionRow>>)>)>() + 1)
-            + self
-                .versions
-                .values()
-                .flatten()
-                .map(|(_, row)| {
-                    size_of::<(i32, Option<Arc<VariantDefinitionRow>>)>()
-                        + row.as_ref().map_or(0, |row| {
-                            16 + size_of::<VariantDefinitionRow>() + row.heap_bytes()
-                        })
-                })
-                .sum::<usize>()
-            + self.varied.capacity() * 8
-            + self.named.len() * 24
     }
 }
 
@@ -1225,8 +1402,10 @@ struct AsOf<'a> {
 }
 
 impl DefinitionsOf for AsOf<'_> {
-    fn definition(&self, variant: u64) -> Option<&VariantDefinitionRow> {
-        self.history.at(variant, self.hour)
+    fn definition(&self, variant: u64) -> Option<Cow<'_, VariantDefinitionRow>> {
+        self.history
+            .at(variant, self.hour)
+            .map(|definition| definition.row(variant))
     }
 }
 
@@ -1234,90 +1413,30 @@ impl DefinitionsOf for AsOf<'_> {
 /// are alike: each reads every table a lookup needs, with the same countries' slots and tags,
 /// links and appearance.
 fn designs_alike(a: &Read, b: &Read) -> bool {
-    let read = a.defined && a.spelled && b.defined && b.spelled;
-    let (a, b) = (&a.identity, &b.identity);
-    let (Ok(countries), Ok(others)) = (
-        a.complete::<tables::Countries>(),
-        b.complete::<tables::Countries>(),
-    ) else {
+    let read = a.spelled && b.spelled;
+    let (Some(a), Some(b)) = (&a.tags, &b.tags) else {
         return false;
     };
-    let (Ok(links), Ok(other_links)) = (
-        a.complete::<tables::CountryLinks>(),
-        b.complete::<tables::CountryLinks>(),
-    ) else {
-        return false;
-    };
-    let appearance = match (
-        a.complete::<tables::CountryAppearance>(),
-        b.complete::<tables::CountryAppearance>(),
-    ) {
-        (Ok(a), Ok(b)) => {
+    if Arc::ptr_eq(a, b) {
+        return read;
+    }
+    let appearance = match (&a.appearance, &b.appearance) {
+        (Some(a), Some(b)) => {
             a.len() == b.len()
                 && a.iter()
                     .zip(b)
                     .all(|(a, b)| (a.country, &a.name_tag) == (b.country, &b.name_tag))
         }
-        (Err(_), Err(_)) => true,
+        (None, None) => true,
         _ => false,
     };
     read && appearance
-        && links == other_links
-        && countries.len() == others.len()
-        && countries
+        && a.links == b.links
+        && a.countries.len() == b.countries.len()
+        && a.countries
             .iter()
-            .zip(others)
+            .zip(&b.countries)
             .all(|(a, b)| (a.canonical_slot, &a.tag) == (b.canonical_slot, &b.tag))
-}
-
-/// Needs whose hour's sources are read only at a template's first need, and then from the
-/// links and local sub-units kept since their tables last changed.
-struct LazyNeeds<'f> {
-    content: Result<Arc<Content>, String>,
-    frame: &'f DecodedFrame,
-    index: Option<Arc<SourceIndex>>,
-    sources: OnceCell<Result<Sources<'f>, String>>,
-}
-
-impl<'f> LazyNeeds<'f> {
-    fn sources(&self) -> &Result<Sources<'f>, String> {
-        self.sources.get_or_init(|| match &self.index {
-            Some(index) => division_needs::reused_sources(self.frame, Arc::clone(index)),
-            None => division_needs::sources(self.frame),
-        })
-    }
-
-    /// A template's need, or its refusal as kept: refused at its composition read, after its
-    /// content and sources were read, that read's refusal, which names the hour.
-    fn template(&self, handle: u64) -> Result<Vec<(String, i64)>, KeptReason> {
-        let frame = self.frame;
-        let need = division_needs::template(&self.content, || self.sources(), frame, handle);
-        need.map_err(|why| {
-            if self.content.is_ok()
-                && self.sources().is_ok()
-                && let Err(error) = frame.complete::<tables::DivisionTemplateIcons>()
-            {
-                let kept = KeptReason::unreadable(
-                    division_needs::COMPOSITION_UNAVAILABLE,
-                    frame,
-                    TableId::DivisionTemplateIcons,
-                    &error,
-                );
-                if kept.at(frame.hour) == why {
-                    return kept;
-                }
-            }
-            KeptReason::literal(why)
-        })
-    }
-
-    /// The sources it read, to keep for the hours after while their tables last.
-    fn index(&self) -> Option<Arc<SourceIndex>> {
-        match self.sources.get() {
-            Some(Ok(sources)) => Some(Arc::clone(sources.index())),
-            _ => None,
-        }
-    }
 }
 
 /// Adds `value` times `sign` to `total`.
@@ -1392,7 +1511,6 @@ static NO_SHARE: Share = Share {
     variants: Vec::new(),
     compared: None,
     notes: Vec::new(),
-    handles: Vec::new(),
     required: None,
 };
 
@@ -1401,8 +1519,8 @@ fn shift_sums(
     sums: &mut Sums,
     dirty: &mut Dirty,
     template: u64,
-    was: Option<(&Share, &Numbers)>,
-    now: Option<(&Share, &Numbers)>,
+    (was, now): (Option<(&Share, &Numbers)>, Option<(&Share, &Numbers)>),
+    handles: &[Vec<u64>; 2],
     (manpower, maximum): (u32, u32),
 ) {
     let (old, new) = (
@@ -1444,7 +1562,7 @@ fn shift_sums(
     );
     // A type's part: its holding, and its comparison where known.
     let part = |part: &TypeShare, known: bool| {
-        let compared = known.then_some((part.need, part.filled, part.shortfall));
+        let compared = known.then(|| (i128::from(part.need), part.filled(), part.shortfall()));
         (part.held, compared)
     };
     let known = (old.compared.is_some(), new.compared.is_some());
@@ -1541,8 +1659,8 @@ fn shift_sums(
         }
     }
     merged(
-        &old.handles,
-        &new.handles,
+        &handles[0],
+        &handles[1],
         |&handle| handle,
         |handle, gone, come| {
             let sign = match (gone, come) {
@@ -1599,12 +1717,12 @@ pub(crate) struct Engine {
     stock_rows: FastMap<u64, Arc<[Row]>>,
     stock: Option<StockRead>,
     countries: Arc<Countries>,
-    /// The small tables as last given, until the hour that gives them again.
-    frame: Option<DecodedFrame>,
+    /// Each template's facts as last given, by template, until the hour that gives them again,
+    /// and what the tables say of one they hold no row of; none until first given.
+    facts: FastMap<u64, Arc<TemplateFacts>>,
+    absent: Option<Arc<Absent>>,
     /// Whether the needs' and templates' four tables were whole as last given.
     wholes: Option<[bool; 4]>,
-    /// The links, local sub-units and tokens the needs resolve through, while they last.
-    sources: Option<Arc<SourceIndex>>,
     /// Each designs read still looked up, its definitions, and the designs looked up there.
     reads: BTreeMap<i32, Read>,
     history: History,
@@ -1635,6 +1753,8 @@ pub(crate) struct Engine {
     notes_dirty: bool,
     /// The room the next division's part is made in.
     scratch: Share,
+    /// The room a shift sorts the designs of the parts it moves between in.
+    handles: [Vec<u64>; 2],
     /// A pool read with no rows.
     empty: Arc<[Row]>,
 }
@@ -1708,9 +1828,9 @@ impl Engine {
             stock_rows: FastMap::default(),
             stock: None,
             countries: Arc::default(),
-            frame: None,
+            facts: FastMap::default(),
+            absent: None,
             wholes: None,
-            sources: None,
             reads: BTreeMap::new(),
             history: History::default(),
             looks: FastMap::default(),
@@ -1734,6 +1854,7 @@ impl Engine {
             stock_dirty: BTreeSet::new(),
             notes_dirty: false,
             scratch: Share::default(),
+            handles: Default::default(),
             empty: Arc::from([]),
         };
         engine.unclassified = engine.kind(None);
@@ -1842,11 +1963,6 @@ impl Engine {
         self.supplies.own()
     }
 
-    /// Lets go of the small tables, so the walk changes their views in place, not copies.
-    pub(crate) fn release(&mut self) {
-        self.frame = None;
-    }
-
     /// Lets go of all but what the segment after cannot read itself: its reads, the pools as
     /// the table and their last read hold them, and its designs' lookups with the operands
     /// they name. Its next hour, the segment after's first, gives every other table whole and
@@ -1863,9 +1979,9 @@ impl Engine {
         self.new = FastMap::default();
         self.stock_rows = FastMap::default();
         self.countries = Arc::default();
-        self.frame = None;
+        self.facts = FastMap::default();
+        self.absent = None;
         self.wholes = None;
-        self.sources = None;
         self.templates = FastMap::default();
         self.hourly = BTreeSet::new();
         self.listed = BTreeMap::new();
@@ -2019,28 +2135,25 @@ impl Engine {
             touched.countries = true;
             self.countries = Arc::clone(countries);
         }
-        if let Some(frame) = &input.frame {
-            let wholes = [
-                TableId::LexicalTokens,
-                TableId::CountryLocalSubunits,
-                TableId::DivisionTemplates,
-                TableId::DivisionTemplateIcons,
-            ]
-            .map(|table| matches!(&*frame.tables[table.index()], TableView::Complete(_)));
-            if let Some(held) = self.wholes.replace(wholes) {
-                touched.sources = held[..2] != wholes[..2];
-                touched.templates = held[2..] != wholes[2..];
+        if let Some(context) = &input.context {
+            if let Some(held) = self.wholes.replace(context.wholes) {
+                touched.sources = held[..2] != context.wholes[..2];
+                touched.templates = held[2..] != context.wholes[2..];
             }
-            self.frame = Some(frame.clone());
+            if context.whole {
+                self.facts.clear();
+            }
+            for handle in &context.gone {
+                self.facts.remove(handle);
+            }
+            for (handle, facts) in &context.facts {
+                self.facts.insert(*handle, Arc::clone(facts));
+            }
+            self.absent = Some(Arc::clone(&context.absent));
         }
-        // Every designs frame given moves the definitions on, read or not.
+        // Every designs read given moves the definitions on, read or not.
         if let Some(designs) = &input.designs {
-            let changed = input.definitions.as_deref();
-            self.history.read(designs, input.hour, changed);
-        }
-        // The needs' sources are read from the links, local sub-units and tokens.
-        if touched.countries || touched.sources || input.subunits || input.tokens != Tokens::Same {
-            self.sources = None;
+            self.history.read(&designs.definitions, input.hour)?;
         }
         match &input.divisions {
             Rows::Same => {}
@@ -2163,12 +2276,10 @@ impl Engine {
         for division in self.divisions.values_mut() {
             division.added = None;
         }
-        let frame = self.frame()?;
-        let needs = self.needs(&frame);
+        self.given()?;
         for &id in &ids {
-            self.place(id, &frame, &needs)?;
+            self.place(id)?;
         }
-        self.keep_sources(&needs);
         let listed: Vec<(u32, Option<Holder>)> = self
             .listed
             .iter()
@@ -2198,64 +2309,48 @@ impl Engine {
         })
     }
 
-    /// The small tables as last given.
-    fn frame(&self) -> io::Result<DecodedFrame> {
-        self.frame
-            .clone()
-            .ok_or_else(|| invalid("Division equipment's tables were never given"))
-    }
-
-    /// The needs of the hour's templates, their sources read once and kept while they last.
-    fn needs<'f>(&self, frame: &'f DecodedFrame) -> LazyNeeds<'f> {
-        LazyNeeds {
-            content: self.content.clone(),
-            frame,
-            index: self.sources.clone(),
-            sources: OnceCell::new(),
+    /// Whether the templates' facts were ever given.
+    fn given(&self) -> io::Result<()> {
+        match self.absent {
+            Some(_) => Ok(()),
+            None => Err(invalid("Division equipment's tables were never given")),
         }
     }
 
-    fn keep_sources(&mut self, needs: &LazyNeeds<'_>) {
-        if self.sources.is_none() {
-            self.sources = needs.index();
-        }
-    }
-
-    fn template(&mut self, needs: &LazyNeeds<'_>, frame: &DecodedFrame, handle: u64) -> Template {
-        let need = match needs.template(handle) {
+    /// Template `handle` as its facts last given name it, its operands numbered.
+    fn template(&mut self, handle: u64) -> io::Result<Template> {
+        let facts = match self.facts.get(&handle) {
+            Some(facts) => Arc::clone(facts),
+            None => {
+                let absent = self
+                    .absent
+                    .as_deref()
+                    .ok_or_else(|| invalid("Division equipment's tables were never given"))?;
+                Arc::new(absent.facts(handle))
+            }
+        };
+        let need = match &facts.need {
             Ok(need) => {
                 let mut need: Vec<(u32, i64)> = need
-                    .into_iter()
-                    .map(|(key, amount)| (self.kind(Some(Arc::from(key))), amount))
+                    .iter()
+                    .map(|(key, amount)| (self.kind(Some(Arc::from(key.as_str()))), *amount))
                     .collect();
                 // A kind needed twice is compared at its first amount.
                 need.sort_by_key(|&(kind, _)| kind);
                 need.dedup_by_key(|&mut (kind, _)| kind);
                 Ok(need.into())
             }
-            Err(why) => Err(self.note(why)),
+            Err(why) => Err(self.note(why.clone())),
         };
-        let required = find(
-            frame.complete::<tables::DivisionTemplateIcons>().ok(),
-            handle,
-            |row| row.template,
-        )
-        .and_then(|icon| {
-            icon.settings
-                .require("template settings")
-                .ok()?
-                .as_ref()
-                .map(|settings| i64::from(settings.total_manpower))
-        });
-        let naming = self.naming(kept_naming(frame, handle));
-        let artwork = self.artwork(kept_artwork(frame, handle));
-        Template {
+        let naming = self.naming(facts.naming.clone());
+        let artwork = self.artwork(facts.artwork.clone());
+        Ok(Template {
             need,
-            required,
+            required: facts.required,
             naming,
             artwork,
-            hourly: army_content::template_naming_hourly(frame, handle),
-        }
+            hourly: facts.hourly,
+        })
     }
 
     fn keep_template(&mut self, handle: u64, template: Template) {
@@ -2276,8 +2371,7 @@ impl Engine {
         every: bool,
         before: Supplies,
     ) -> io::Result<Output> {
-        let frame = self.frame()?;
-        let needs = self.needs(&frame);
+        self.given()?;
         // Appended tokens spell only what was unspelled: only refused needs can change. Local
         // sub-units and tokens reach the needs alone. Asked in handle order: a template numbers
         // the operands it names first.
@@ -2311,7 +2405,7 @@ impl Engine {
         };
         let mut relabelled = BTreeSet::new();
         for handle in asked {
-            let now = self.template(&needs, &frame, handle);
+            let now = self.template(handle)?;
             let Some(held) = self.templates.get(&handle) else {
                 continue;
             };
@@ -2370,15 +2464,14 @@ impl Engine {
         refresh.sort_unstable();
         refresh.dedup();
         for &id in &refresh {
-            self.place(id, &frame, &needs)?;
+            self.place(id)?;
         }
-        self.keep_sources(&needs);
         let mut numeric = std::mem::take(&mut touched.numeric);
         numeric.sort_unstable();
         numeric.dedup();
         for id in numeric {
             if refresh.binary_search(&id).is_err() {
-                self.renumber(id, &frame, &needs)?;
+                self.renumber(id)?;
             }
         }
         // A new stockpile read gives again only the countries whose stockpile part it changes.
@@ -2451,7 +2544,7 @@ impl Engine {
     }
 
     /// Division `id`'s part made again, and what differs from what it added changed.
-    fn place(&mut self, id: u64, frame: &DecodedFrame, needs: &LazyNeeds<'_>) -> io::Result<()> {
+    fn place(&mut self, id: u64) -> io::Result<()> {
         let Some(state) = self.divisions.get_mut(&id) else {
             return Ok(());
         };
@@ -2464,7 +2557,7 @@ impl Engine {
             return Ok(());
         };
         if !self.templates.contains_key(&placed.template) {
-            let template = self.template(needs, frame, placed.template);
+            let template = self.template(placed.template)?;
             self.keep_template(placed.template, template);
         }
         let pool = self.pool(id);
@@ -2486,6 +2579,7 @@ impl Engine {
             (&self.fixed, self.unclassified),
         );
         let numbers = self.numbers_of(&facts);
+        // A part is kept as a copy of the room it was made in, holding no room past its size.
         let added = match was {
             Some(mut was) if was.placed == placed => {
                 if (&was.share, was.numbers) != (&share, numbers) {
@@ -2495,26 +2589,25 @@ impl Engine {
                         Some((&was.share, &was.numbers)),
                         Some((&share, &numbers)),
                     );
-                    std::mem::swap(&mut was.share, &mut share);
+                    was.share = share.clone();
                     was.numbers = numbers;
                 }
-                self.scratch = share;
                 was
             }
             was => {
                 if let Some(was) = was {
                     self.take(id, &was);
-                    self.scratch = was.share;
                 }
                 let added = Added {
                     placed,
-                    share,
+                    share: share.clone(),
                     numbers,
                 };
                 self.put(id, &added);
                 added
             }
         };
+        self.scratch = share;
         if let Some(state) = self.divisions.get_mut(&id) {
             state.added = Some(added);
         }
@@ -2523,7 +2616,7 @@ impl Engine {
 
     /// A division whose numbers changed alone: their differences into its template's sums,
     /// or its part again where one appeared or went.
-    fn renumber(&mut self, id: u64, frame: &DecodedFrame, needs: &LazyNeeds<'_>) -> io::Result<()> {
+    fn renumber(&mut self, id: u64) -> io::Result<()> {
         let Some(state) = self.divisions.get(&id) else {
             return Ok(());
         };
@@ -2538,7 +2631,7 @@ impl Engine {
         if held.maximum.is_some() != numbers.maximum.is_some()
             || held.manpower.is_some() != numbers.manpower.is_some()
         {
-            return self.place(id, frame, needs);
+            return self.place(id);
         }
         let (placed, template) = (added.placed, added.placed.template);
         for (side, slot) in placed.slots.into_iter().enumerate() {
@@ -2641,13 +2734,14 @@ impl Engine {
             }
             _ => {}
         }
-        let (old, new) = (
-            was.map_or(&NO_SHARE, |(share, _)| share),
-            now.map_or(&NO_SHARE, |(share, _)| share),
-        );
+        let mut handles = std::mem::take(&mut self.handles);
+        was.map_or(&NO_SHARE, |(share, _)| share)
+            .handles(&mut handles[0]);
+        now.map_or(&NO_SHARE, |(share, _)| share)
+            .handles(&mut handles[1]);
         merged(
-            &old.handles,
-            &new.handles,
+            &handles[0],
+            &handles[1],
             |&handle| handle,
             |handle, gone, come| match (gone, come) {
                 (Some(_), None) => {
@@ -2674,11 +2768,12 @@ impl Engine {
             };
             let sums = self.sums.entry((slot, side as u8)).or_default();
             let dirty = self.dirty.entry((slot, side as u8)).or_default();
-            shift_sums(sums, dirty, template, was, now, fixed);
+            shift_sums(sums, dirty, template, (was, now), &handles, fixed);
             if sums.divisions == 0 {
                 self.sums.remove(&(slot, side as u8));
             }
         }
+        self.handles = handles;
     }
 
     /// Whether reads `a` and `b` look a design up alike wherever its rows are alike.
@@ -2700,29 +2795,12 @@ impl Engine {
     fn reused(&self, other: i32, hour: i32, handle: u64) -> Option<Arc<Look>> {
         let look = self.looks.get(&Some(other))?.get(&handle)?;
         let (was, now) = (self.reads.get(&other)?, self.reads.get(&hour)?);
-        let defined =
-            |read: &Read, at: i32| read.defined.then(|| self.history.at(handle, at)).flatten();
-        let alike = match (defined(was, other), defined(now, hour)) {
+        let alike = match (self.history.at(handle, other), self.history.at(handle, hour)) {
             (None, None) => true,
             (Some(a), Some(b)) => {
-                (std::ptr::eq(a, b)
-                    || (
-                        a.equipment_token,
-                        a.creator_link,
-                        a.origin_link,
-                        a.append_variant_name,
-                        &a.display_name,
-                        &a.variant_name,
-                    ) == (
-                        b.equipment_token,
-                        b.creator_link,
-                        b.origin_link,
-                        b.append_variant_name,
-                        &b.display_name,
-                        &b.variant_name,
-                    ))
+                (std::ptr::eq(a, b) || a.looked() == b.looked())
                     && (Arc::ptr_eq(&was.tokens, &now.tokens)
-                        || was.spelling(b.equipment_token) == now.spelling(b.equipment_token))
+                        || was.spelling(b.token()) == now.spelling(b.token()))
             }
             _ => false,
         };
@@ -2814,14 +2892,14 @@ impl Engine {
                     hour,
                 });
                 let parts = kept.zip(as_of.as_ref()).and_then(|((hour, read), as_of)| {
-                    let identity = &read.identity;
-                    (read.defined && read.spelled).then_some(())?;
+                    read.spelled.then_some(())?;
+                    let tags = read.tags.as_deref()?;
                     Some((
                         hour,
                         equipment::Tags::new(
-                            identity.complete::<tables::Countries>().ok()?,
-                            identity.complete::<tables::CountryLinks>().ok()?,
-                            identity.complete::<tables::CountryAppearance>().ok(),
+                            &tags.countries,
+                            &tags.links,
+                            tags.appearance.as_deref(),
                         ),
                         army_content::Definitions::Kept(as_of),
                         &read.tokens[..],
@@ -3274,177 +3352,6 @@ impl Engine {
             self.stock_given.insert((tag, side), designs);
         }
     }
-
-    /// The bytes it holds on the heap, its frames' views too: handed on, it outlives the walk.
-    pub(crate) fn heap(&self) -> usize {
-        fn hashed<K, V, S>(map: &HashMap<K, V, S>) -> usize {
-            map.capacity() * (size_of::<(K, V)>() + 1)
-        }
-        fn ordered<K, V>(map: &BTreeMap<K, V>) -> usize {
-            map.len() * (size_of::<(K, V)>() + 8)
-        }
-        let rows = |map: &FastMap<u64, Arc<[Row]>>| {
-            hashed(map)
-                + map
-                    .values()
-                    .map(|rows| 16 + rows.len() * size_of::<Row>())
-                    .sum::<usize>()
-        };
-        let share = |share: &Share| {
-            share.types.capacity() * size_of::<TypeShare>()
-                + share.variants.capacity() * size_of::<(u32, u64, i128)>()
-                + share.notes.capacity() * 4
-                + share.handles.capacity() * 8
-        };
-        let mut bytes = hashed(&self.divisions)
-            + self
-                .divisions
-                .values()
-                .filter_map(|division| division.added.as_ref())
-                .map(|added| size_of::<Added>() + share(&added.share))
-                .sum::<usize>()
-            + share(&self.scratch)
-            + hashed(&self.maxima)
-            + hashed(&self.manpower)
-            + rows(&self.new)
-            + rows(&self.daily)
-            // A pool its last read left as the table holds it shares the table's rows.
-            + hashed(&self.pooled)
-            + self
-                .pooled
-                .iter()
-                .filter(|&(id, rows)| {
-                    !self
-                        .daily
-                        .get(id)
-                        .is_some_and(|daily| Arc::ptr_eq(daily, rows))
-                })
-                .map(|(_, rows)| 16 + rows.len() * size_of::<Row>())
-                .sum::<usize>()
-            + rows(&self.stock_rows)
-            + self.daily_since.capacity() * 9
-            + self.census.as_ref().map_or(0, |ids| ids.capacity() * 8)
-            + self.countries.heap();
-        bytes += self
-            .sums
-            .values()
-            .map(|sums| {
-                size_of::<Sums>()
-                    + ordered(&sums.types)
-                    + sums
-                        .types
-                        .values()
-                        .map(|total| ordered(&total.variants))
-                        .sum::<usize>()
-                    + ordered(&sums.templates)
-                    + sums
-                        .templates
-                        .values()
-                        .map(|total| ordered(&total.short))
-                        .sum::<usize>()
-                    + ordered(&sums.notes)
-                    + ordered(&sums.handles)
-            })
-            .sum::<usize>();
-        bytes += hashed(&self.by_template)
-            + hashed(&self.by_handle)
-            + self
-                .by_template
-                .values()
-                .chain(self.by_handle.values())
-                .map(|ids| ids.capacity() * 9)
-                .sum::<usize>();
-        bytes += hashed(&self.templates)
-            + self.hourly.len() * 24
-            + self
-                .templates
-                .values()
-                .map(|template| template.need.as_ref().map_or(0, |need| need.len() * 16))
-                .sum::<usize>();
-        bytes += self
-            .looks
-            .values()
-            .map(|looks| hashed(looks) + looks.len() * (size_of::<Look>() + 16))
-            .sum::<usize>();
-        bytes += self
-            .stock_parts
-            .values()
-            .map(|part| {
-                part.totals
-                    .as_ref()
-                    .map_or(0, |totals| totals.capacity() * size_of::<(u32, i128)>())
-                    + part.notes.capacity() * 8
-                    + part.designs.capacity() * 16
-            })
-            .sum::<usize>()
-            + self.stock.as_ref().map_or(0, |stock| {
-                stock.grouped.as_ref().map_or(0, |(slots, _)| {
-                    hashed(slots)
-                        + slots
-                            .values()
-                            .map(|rows| rows.capacity() * 16)
-                            .sum::<usize>()
-                })
-            });
-        bytes += self.given.values().map(ordered).sum::<usize>()
-            + self
-                .stock_given
-                .values()
-                .map(|designs| designs.capacity() * size_of::<(u64, u32)>())
-                .sum::<usize>();
-        bytes += self.tags.iter().map(|tag| 32 + tag.len()).sum::<usize>()
-            + hashed(&self.numbers)
-            + ordered(&self.listed)
-            + hashed(&self.slots);
-        // Operands, by their texts.
-        bytes += self
-            .notes
-            .keys()
-            .map(|note| {
-                64 + note
-                    .text
-                    .iter()
-                    .chain(&note.tables)
-                    .map(String::len)
-                    .sum::<usize>()
-            })
-            .sum::<usize>()
-            + (self.namings.len() + self.artworks.len()) * 128
-            + self
-                .designs
-                .keys()
-                .map(|design| 256 + design.0.token.len() + design.0.display_name.len())
-                .sum::<usize>()
-            + hashed(&self.kinds);
-        bytes += self.history.heap()
-            + self
-                .reads
-                .values()
-                .map(|read| {
-                    read.tokens
-                        .iter()
-                        .map(|row| 40 + row.literal.len())
-                        .sum::<usize>()
-                })
-                .sum::<usize>();
-        bytes
-            + views(
-                self.reads
-                    .values()
-                    .map(|read| &read.identity)
-                    .chain(&self.frame),
-            )
-    }
-}
-
-/// The bytes the views of `frames` hold, a view several of them share counted once.
-fn views<'f>(frames: impl Iterator<Item = &'f DecodedFrame>) -> usize {
-    let mut seen: HashSet<*const TableView> = HashSet::new();
-    frames
-        .flat_map(|frame| frame.tables.iter())
-        .filter(|view| seen.insert(SharedView::as_ptr(view)))
-        .map(|view| view_heap_bytes(view))
-        .sum()
 }
 
 fn damaged() -> io::Error {
@@ -3670,12 +3577,20 @@ impl Engine {
             read.saved(&self.history, hour).encode_checkpoint(out)?;
         }
         out.push(u8::from(self.bare));
-        // A lead gives the small tables only where they changed.
-        match &self.frame {
+        // A lead gives the templates' facts only where they changed.
+        match &self.absent {
             None => out.push(0),
-            Some(frame) => {
+            Some(absent) => {
                 out.push(1);
-                frame.encode_checkpoint(out)?;
+                let mut facts: Vec<(u64, &TemplateFacts)> = self
+                    .facts
+                    .iter()
+                    .map(|(&handle, facts)| (handle, &**facts))
+                    .collect();
+                facts.sort_unstable_by_key(|&(handle, _)| handle);
+                let bytes = dashboard_base::prepared::codec::encode(&(&**absent, facts))?;
+                put_count(out, bytes.len())?;
+                out.extend_from_slice(&bytes);
             }
         }
         Ok(())
@@ -3802,18 +3717,35 @@ impl Engine {
         let count = input.count(1)?;
         for _ in 0..count {
             let frame = DecodedFrame::decode_checkpoint(&mut input)?;
-            engine.history.read(&frame, frame.hour, None);
-            let read = Read::of(&frame, &mut engine.history);
+            let rows = frame
+                .complete::<tables::VariantDefinitions>()?
+                .iter()
+                .cloned()
+                .map(Arc::new)
+                .collect();
+            engine
+                .history
+                .read(&DefinitionRows::Whole(rows), frame.hour)?;
+            let read = Read::from_saved(&frame, &mut engine.history);
             engine.reads.insert(frame.hour, read);
         }
-        // The next designs frame follows one this engine never saw.
+        // The next designs read follows one this engine never saw.
         engine.history.based = false;
         engine.bare = input.bool()?;
-        engine.frame = match input.u8()? {
-            0 => None,
-            1 => Some(DecodedFrame::decode_checkpoint(&mut input)?),
+        match input.u8()? {
+            0 => {}
+            1 => {
+                let length = input.count(1)?;
+                let (absent, facts): (Absent, Vec<(u64, TemplateFacts)>) =
+                    dashboard_base::prepared::codec::decode(input.take(length)?)?;
+                engine.absent = Some(Arc::new(absent));
+                engine.facts = facts
+                    .into_iter()
+                    .map(|(handle, facts)| (handle, Arc::new(facts)))
+                    .collect();
+            }
             _ => return Err(damaged()),
-        };
+        }
         input.finish()?;
         engine.open = false;
         Ok(engine)

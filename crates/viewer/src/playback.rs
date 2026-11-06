@@ -301,12 +301,7 @@ impl Playback {
         Arc::clone(&self.replay)
     }
 
-    pub fn air_roster_source(
-        &self,
-    ) -> Option<(
-        Arc<replay::columnar_runs::IndexFile>,
-        engine_allocation::credit::MemoryBudget,
-    )> {
+    pub fn air_roster_source(&self) -> Option<Arc<replay::columnar_runs::IndexFile>> {
         self.map.as_ref().map(|map| map.roster_source())
     }
 
@@ -318,7 +313,7 @@ impl Playback {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(rosters) = held.as_ref().filter(|rosters| {
-            rosters.0.columnar().map(Arc::as_ptr) == source.as_ref().map(|(file, _)| Arc::as_ptr(file))
+            rosters.0.columnar().map(Arc::as_ptr) == source.as_ref().map(Arc::as_ptr)
         }) {
             return Arc::clone(rosters);
         }

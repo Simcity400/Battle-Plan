@@ -1,7 +1,8 @@
 //! Independent native map bodies on one eframe root and one graphics device.
 //!
-//! The host supplies absolute replay time and physical geometry. Source assets
-//! and decode/work resources are shared; mutable Scene state remains per view.
+//! The host supplies absolute replay time and physical geometry. Source assets,
+//! decode/work resources and the game textures are shared; each view's Scene keeps
+//! its hour state and the targets sized to it, which it lets go while hidden.
 
 use job_priority::SpawnCarried as _;
 use std::{
@@ -9,8 +10,8 @@ use std::{
     io,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread,
@@ -88,21 +89,19 @@ struct MapView {
     // temporaries. Moving several inline Viewers can exhaust the Windows UI stack.
     viewer: Box<Viewer>,
     loading: Option<SceneLoad>,
-    permit: Option<Arc<ScenePermit>>,
     error: Option<String>,
     admission_error: Option<String>,
 }
 
 impl MapView {
     fn retire(&mut self, frame: &eframe::Frame) {
-        // SceneLoad cancellation keeps the worker's permit charged until that
-        // job actually finishes. Resident permits leave with Scene on Dropper.
+        // A cancelled build's scene is dropped with its result, off the UI thread.
         let load = self.loading.take();
         if let Some(load) = &load {
             load.alive.store(false, Ordering::Release);
         }
-        if self.viewer.has_map() || self.permit.is_some() || load.is_some() {
-            self.viewer.retire_map(frame, (load, self.permit.take()));
+        if self.viewer.has_map() || load.is_some() {
+            self.viewer.retire_map(frame, load);
         }
     }
 
@@ -147,80 +146,11 @@ struct SceneLoad {
     content: std::sync::Weak<Content>,
     result: mpsc::Receiver<Result<(Document, Scene), String>>,
     alive: Arc<AtomicBool>,
-    // Declared after the receiver, so a queued Scene is dropped first.
-    permit: Arc<ScenePermit>,
 }
 
 impl Drop for SceneLoad {
     fn drop(&mut self) {
         self.alive.store(false, Ordering::Release);
-    }
-}
-
-#[derive(Default)]
-struct SceneUsage {
-    views: usize,
-    pixels: u64,
-}
-
-struct SceneBudget {
-    usage: Mutex<SceneUsage>,
-    views: usize,
-    pixels: u64,
-}
-
-impl SceneBudget {
-    fn acquire(self: &Arc<Self>, pixels: u64) -> Option<Arc<ScenePermit>> {
-        let mut used = self.usage.lock().unwrap_or_else(|error| error.into_inner());
-        if used.views >= self.views || used.pixels.saturating_add(pixels) > self.pixels {
-            return None;
-        }
-        used.views += 1;
-        used.pixels += pixels;
-        Some(Arc::new(ScenePermit {
-            budget: Arc::clone(self),
-            pixels: AtomicU64::new(pixels),
-        }))
-    }
-}
-
-struct ScenePermit {
-    budget: Arc<SceneBudget>,
-    pixels: AtomicU64,
-}
-
-impl ScenePermit {
-    fn reserve_pixels(&self, pixels: u64) -> bool {
-        let mut used = self
-            .budget
-            .usage
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous = self.pixels.load(Ordering::Relaxed);
-        // Keep the high-water charge until Scene is destroyed. Shrinking a
-        // widget alone does not prove its old targets have been released yet.
-        if pixels <= previous {
-            return true;
-        }
-        let next = used.pixels.saturating_add(pixels - previous);
-        if next > self.budget.pixels {
-            return false;
-        }
-        used.pixels = next;
-        self.pixels.store(pixels, Ordering::Relaxed);
-        true
-    }
-}
-
-impl Drop for ScenePermit {
-    fn drop(&mut self) {
-        let mut used = self
-            .budget
-            .usage
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        used.views -= 1;
-        used.pixels -= self.pixels.load(Ordering::Relaxed);
     }
 }
 
@@ -246,7 +176,6 @@ pub struct DashboardMaps {
     /// This frame's reports for it, reduced together once every map has drawn.
     visual_reports: Vec<crate::visual_fallback::Report>,
     limits: MapLimits,
-    budget: Arc<SceneBudget>,
     waiting_source: Option<PathBuf>,
     /// The host's diagnostics choice, passed on to every map.
     diagnostics: bool,
@@ -259,33 +188,17 @@ pub struct DashboardMaps {
     view_events: Vec<(String, crate::app::picker::ViewEvent)>,
 }
 
+/// What the graphics device itself can make: no map target can be larger.
 struct MapLimits {
-    views: usize,
-    pixels: u64,
     dimension: u32,
 }
 
 impl MapLimits {
     fn new(gpu: &Option<(wgpu::Device, wgpu::Queue)>) -> Self {
-        // Admission budgets, not a claim about total GPU memory: immutable
-        // Scene passes still own additional per-view resources in this prototype.
-        let views = std::env::var("BATTLE_PLAN_DASHBOARD_MAP_LIMIT").or_else(|_| std::env::var("HOI4_DASHBOARD_MAP_LIMIT"))
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .filter(|value| (1..=128).contains(value))
-            .unwrap_or(4);
-        let pixels = std::env::var("BATTLE_PLAN_DASHBOARD_MAP_PIXELS").or_else(|_| std::env::var("HOI4_DASHBOARD_MAP_PIXELS"))
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .filter(|value| (1..=128 * 1024 * 1024).contains(value))
-            .unwrap_or(8 * 1024 * 1024);
-        let dimension = gpu
-            .as_ref()
-            .map_or(0, |(device, _)| device.limits().max_texture_dimension_2d);
         Self {
-            views,
-            pixels,
-            dimension,
+            dimension: gpu
+                .as_ref()
+                .map_or(0, |(device, _)| device.limits().max_texture_dimension_2d),
         }
     }
 }
@@ -327,11 +240,6 @@ impl DashboardMaps {
         resources: Arc<Resources>,
     ) -> io::Result<Self> {
         let limits = MapLimits::new(&gpu);
-        let budget = Arc::new(SceneBudget {
-            usage: Mutex::new(SceneUsage::default()),
-            views: limits.views,
-            pixels: limits.pixels,
-        });
         Ok(Self {
             ui_scale: Default::default(),
             config,
@@ -348,7 +256,6 @@ impl DashboardMaps {
             fallbacks: Default::default(),
             visual_reports: Vec::new(),
             limits,
-            budget,
             waiting_source: None,
             diagnostics: false,
             muted: false,
@@ -688,7 +595,6 @@ impl DashboardMaps {
                     error,
                     loading: None,
                     admission_error: None,
-                    permit: None,
                     viewer: Box::new(Viewer::map_view(
                         self.config.clone(),
                         self.options.clone(),
@@ -736,54 +642,24 @@ impl DashboardMaps {
         ctx.request_repaint();
     }
 
+    /// Every view is admitted: each costs only its own targets beside its source's shared
+    /// textures. A view larger than the device can make a texture is refused, and a hidden one
+    /// lets its targets go.
     fn admit(&mut self, frame: &eframe::Frame) {
-        let mut used_views = 0;
-        let mut used_pixels = 0_u64;
-        // Retain hidden ready maps when there is room, after visible maps have
-        // been admitted. A demoted map keeps its camera and source binding.
-        for visible in [true, false] {
-            for id in &self.order {
-                let Some(view) = self.views.get_mut(id) else {
-                    continue;
-                };
-                let shown = view.target.visible
-                    && view.target.clip.width > 0
-                    && view.target.clip.height > 0;
-                if shown != visible {
-                    continue;
-                }
-                let size = view.target.bounds;
-                let pixels = u64::from(size.width)
-                    * u64::from(size.height)
-                    * u64::from(view.viewer.graphics.samples.div_ceil(4));
-                view.admission_error = if size.width > self.limits.dimension
-                    || size.height > self.limits.dimension
-                {
-                    Some("This map exceeds the graphics device's texture dimensions. Resize the widget.".into())
-                } else if used_views >= self.limits.views
-                    || used_pixels.saturating_add(pixels) > self.limits.pixels
-                {
-                    Some("The native map resource budget is full. Resize or close another map widget.".into())
-                } else {
-                    None
-                };
-                let permit = view
-                    .permit
-                    .as_ref()
-                    .or_else(|| view.loading.as_ref().map(|load| &load.permit));
-                if view.admission_error.is_none()
-                    && permit.is_some_and(|permit| !permit.reserve_pixels(pixels))
-                {
-                    // Logical admission is valid, but obsolete work still owns
-                    // some capacity. Retire this target and retry after release.
-                    view.retire(frame);
-                }
-                if view.admission_error.is_some() {
-                    view.retire(frame);
-                } else if shown || view.viewer.has_map() || view.loading.is_some() {
-                    used_views += 1;
-                    used_pixels += pixels;
-                }
+        for view in self.views.values_mut() {
+            let shown =
+                view.target.visible && view.target.clip.width > 0 && view.target.clip.height > 0;
+            let size = view.target.bounds;
+            view.admission_error = (size.width > self.limits.dimension
+                || size.height > self.limits.dimension)
+                .then(|| {
+                    "This map exceeds the graphics device's texture dimensions. Resize the widget."
+                        .to_owned()
+                });
+            if view.admission_error.is_some() {
+                view.retire(frame);
+            } else if !shown {
+                view.viewer.release_viewport(frame);
             }
         }
     }
@@ -1004,7 +880,6 @@ impl DashboardMaps {
                 match result {
                     _ if !still_current(&load.content, current) => {}
                     Ok((document, scene)) => {
-                        view.permit = Some(Arc::clone(&load.permit));
                         view.viewer
                             .install_map(document, scene, view.target.revision.clone());
                     }
@@ -1062,13 +937,6 @@ impl DashboardMaps {
                 .service
                 .widget_map_settings(&source.source.replay(), &view.target.id)
                 .graphics;
-            let pixels = u64::from(view.target.bounds.width)
-                * u64::from(view.target.bounds.height)
-                * u64::from(graphics.samples.div_ceil(4));
-            let Some(permit) = self.budget.acquire(pixels) else {
-                ctx.request_repaint_after(Duration::from_millis(16));
-                continue;
-            };
             let document = match Document::from_content(Arc::clone(content), source.source.replay())
             {
                 Ok(document) => document,
@@ -1081,11 +949,7 @@ impl DashboardMaps {
             let wake = ctx.clone();
             let alive = Arc::new(AtomicBool::new(true));
             let job_alive = Arc::clone(&alive);
-            let job_permit = Arc::clone(&permit);
             if self.resources.try_submit(move || {
-                // Both queued and running obsolete jobs keep this charge. The
-                // permit drops after a cancelled Scene or failed send drops.
-                let _permit = job_permit;
                 if !job_alive.load(Ordering::Acquire) {
                     return;
                 }
@@ -1105,7 +969,6 @@ impl DashboardMaps {
                     content: Arc::downgrade(content),
                     result: receiver,
                     alive,
-                    permit,
                 });
             } else {
                 ctx.request_repaint_after(Duration::from_millis(16));
@@ -1683,41 +1546,5 @@ mod tests {
     #[test]
     fn map_registry_entries_do_not_move_renderers_on_the_ui_stack() {
         assert!(std::mem::size_of::<MapView>() < 1024);
-    }
-
-    #[test]
-    fn cancelled_scene_keeps_capacity_until_worker_and_retirement_release_it() {
-        let budget = Arc::new(SceneBudget {
-            usage: Mutex::new(SceneUsage::default()),
-            views: 1,
-            pixels: 100,
-        });
-        let resident = budget.acquire(60).unwrap();
-        let worker = Arc::clone(&resident);
-        // Removing the widget alone cannot admit another Scene while a queued
-        // or running build still owns GPU allocations or its result envelope.
-        drop(resident);
-        assert!(budget.acquire(1).is_none());
-        drop(worker);
-        assert!(budget.acquire(100).is_some());
-    }
-
-    #[test]
-    fn resizing_cannot_overcommit_or_release_an_existing_scene_early() {
-        let budget = Arc::new(SceneBudget {
-            usage: Mutex::new(SceneUsage::default()),
-            views: 2,
-            pixels: 100,
-        });
-        let first = budget.acquire(60).unwrap();
-        let second = budget.acquire(40).unwrap();
-        assert!(!first.reserve_pixels(61));
-        assert!(first.reserve_pixels(10));
-        assert!(!second.reserve_pixels(41));
-        drop(first);
-        assert!(second.reserve_pixels(100));
-        assert!(budget.acquire(1).is_none());
-        drop(second);
-        assert!(budget.acquire(100).is_some());
     }
 }

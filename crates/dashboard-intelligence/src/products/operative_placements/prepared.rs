@@ -19,6 +19,17 @@ pub struct Prepared {
     last: Option<i32>,
     active: std::collections::BTreeSet<PairKey>,
     membership_dirty: bool,
+    /// Every pair has been told since this state was made or read back.
+    #[serde(skip)]
+    bound: bool,
+    /// The pairs the reads handed on changed since the read the history last took, or all.
+    #[serde(skip)]
+    pending: std::collections::BTreeSet<PairKey>,
+    #[serde(skip)]
+    pending_all: bool,
+    /// The row path's last read ([`Self::observe_bound`]).
+    #[serde(skip)]
+    held: Option<PlacementRead>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
@@ -71,21 +82,34 @@ impl Prepared {
         >,
     ) -> io::Result<()> {
         let census = Census::of(frame);
-        let read = if self.reads(frame.hour, census, changes, countries) {
+        let mut touched = PlacementTouched::default();
+        if self.reads(frame.hour, census, changes, countries) {
             let captured = recorded_operatives(frame).expect("a complete census");
             self.scan.load(content, captured.is_empty())?;
-            Some(read(
+            let read = read(
                 captured,
                 countries,
                 self.scan
                     .catalogue
                     .as_ref()
                     .map(|catalogue| catalogue.localisation.as_ref()),
-            ))
-        } else {
-            None
-        };
-        self.observe_read(frame.hour, census, changes, countries, content, read.as_ref())
+            );
+            if let Some(delta) = read.delta(self.held.as_ref()) {
+                PlacementRead::apply(&mut self.held, delta, &mut touched);
+            }
+        }
+        let held = self.held.take();
+        let result = self.observe_read(
+            frame.hour,
+            census,
+            changes,
+            countries,
+            content,
+            held.as_ref(),
+            &touched,
+        );
+        self.held = held;
+        result
     }
 
     /// Whether `hour` (whose census is `census`) is observed from the census read.
@@ -122,8 +146,9 @@ impl Prepared {
         (changed, needs_read)
     }
 
-    /// Observes `hour`, whose change facts are `changes`, its census `read` given where
-    /// [`Self::reads`].
+    /// Observes `hour`, whose change facts are `changes`, from the census `read` held, of which
+    /// `touched` names the pairs the hour changed.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe_read(
         &mut self,
         hour: i32,
@@ -135,32 +160,41 @@ impl Prepared {
             dashboard_text::catalogue::ContentError,
         >,
         read: Option<&PlacementRead>,
+        touched: &PlacementTouched,
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("intelligence:placements");
-        let previous = self.last;
         let is_read = census.read;
         let (changed, needs_read) = self.changes(hour, census, changes, countries.changed);
         self.membership_dirty |=
             countries.changed || changes.rows_changed[TableId::OperativeMemberships.index()];
         self.values.advance(hour)?;
+        self.pending_all |= touched.all || !self.bound;
+        self.pending.extend(touched.pairs.iter().cloned());
+        // The pairs told; None for every pair held.
+        let mut told = Some(Vec::new());
         if changed || needs_read {
-            if let Some(previous) = previous {
-                for key in &self.active {
-                    #[cfg(test)]
-                    super::super::intelligence_prepared::work(|work| work.history_visits += 1);
-                    if let Some(run) = self
-                        .scan
-                        .history
-                        .pairs
-                        .get_mut(key)
-                        .and_then(|pair| pair.runs.last_mut())
-                    {
-                        run.last_hour = previous;
-                    }
-                }
+            let patch: Option<Vec<PairKey>> =
+                (!self.pending_all).then(|| self.pending.iter().cloned().collect());
+            let observed = self.scan.observe_read(
+                hour,
+                census,
+                countries,
+                content,
+                read,
+                patch.as_deref(),
+                countries.changed || !self.bound,
+            )?;
+            self.bound = true;
+            // A read the history took leaves nothing pending.
+            if matches!(observed, Told::Pairs(_) | Told::Read) {
+                self.pending.clear();
+                self.pending_all = false;
             }
-            self.scan
-                .observe_read(hour, census, countries, content, read)?;
+            told = match observed {
+                Told::Pairs(keys) => Some(keys),
+                Told::Held => Some(Vec::new()),
+                Told::Read | Told::All => None,
+            };
         } else {
             self.scan.history.last_hour = Some(hour);
             self.scan
@@ -204,28 +238,42 @@ impl Prepared {
                 .event(MEMBERSHIP_READ, hour, &hour)?;
         }
         if changed || needs_read {
-            let active: std::collections::BTreeSet<_> = history
-                .held
-                .as_ref()
-                .into_iter()
-                .flatten()
-                .map(|(key, _)| key.clone())
-                .collect();
-            for removed in self.active.difference(&active) {
-                let pair = &history.pairs[removed];
-                self.values
-                    .observe(self.keys[&pair.id], hour, None, false);
-            }
-            for pair_key in &active {
+            let held = history.held.as_ref();
+            let told = match told {
+                Some(keys) => keys,
+                None => {
+                    let active: std::collections::BTreeSet<PairKey> = held
+                        .into_iter()
+                        .flat_map(|held| held.keys().cloned())
+                        .collect();
+                    let mut keys: Vec<PairKey> = self.active.difference(&active).cloned().collect();
+                    keys.extend(active);
+                    keys
+                }
+            };
+            for pair_key in &told {
+                if !held.is_some_and(|held| held.contains_key(pair_key)) {
+                    if self.active.remove(pair_key) {
+                        let pair = &history.pairs[pair_key];
+                        self.values.observe(self.keys[&pair.id], hour, None, false);
+                    }
+                    continue;
+                }
                 let pair = history
                     .pairs
                     .get_mut(pair_key)
                     .expect("live placement pair");
-                let next = u64::try_from(self.keys.len())
-                    .ok()
-                    .and_then(|len| len.checked_add(2))
-                    .ok_or_else(|| io::Error::other("Too many placement pairs"))?;
-                let key = *self.keys.entry(pair.id.clone()).or_insert(next);
+                let key = match self.keys.get(&pair.id) {
+                    Some(&key) => key,
+                    None => {
+                        let next = u64::try_from(self.keys.len())
+                            .ok()
+                            .and_then(|len| len.checked_add(2))
+                            .ok_or_else(|| io::Error::other("Too many placement pairs"))?;
+                        self.keys.insert(pair.id.clone(), next);
+                        next
+                    }
+                };
                 let run = pair.runs.last().expect("live placement run");
                 if run.first_hour == hour || !self.active.contains(pair_key) {
                     self.values.observe(
@@ -243,8 +291,8 @@ impl Prepared {
                 if pair.runs.len() > 1 {
                     pair.runs.drain(..pair.runs.len() - 1);
                 }
+                self.active.insert(pair_key.clone());
             }
-            self.active = active;
         }
         if history.periods.len() > 1 {
             history.periods.drain(..history.periods.len() - 1);

@@ -12,7 +12,7 @@ use dashboard_text::{cryptology, metadata::check_cancel};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::atomic::AtomicBool,
 };
@@ -32,13 +32,27 @@ pub struct Accumulator {
     first: Option<i32>,
     last: Option<i32>,
     content_warnings: Vec<String>,
+    /// The joined pairs observed through the last hour: a pair no hour changed goes on as it
+    /// was, its run and tags carried through each later hour.
     active: BTreeSet<(u32, u32)>,
-    next_clock: Option<i32>,
+    /// The hours a learned daily slope must be checked again, with the pairs due there.
+    #[serde(skip)]
+    clocks: BTreeMap<i32, BTreeSet<(u32, u32)>>,
+    #[serde(skip)]
+    scheduled: HashMap<(u32, u32), i32>,
+    /// Each pair's key in `keys`, found without spelling its name.
+    #[serde(skip)]
+    handles: HashMap<(u32, u32), u64>,
     #[serde(skip)]
     configured: bool,
-    /// The row path's reads ([`Self::observe_bound`]).
+    /// Every pair has been gone through since this state was made or read back.
+    #[serde(skip)]
+    bound: bool,
+    /// The row path's reads ([`Self::observe_bound`]), and the read they last gave.
     #[serde(skip)]
     reader: super::Reader,
+    #[serde(skip)]
+    held: super::CipherHeld,
     #[cfg(test)]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
@@ -82,7 +96,7 @@ impl Accumulator {
         result
     }
 
-    /// Observes `frame` of the row path, reading its tables where [`Self::reads`].
+    /// Observes `frame` of the row path, reading its tables where an input changed.
     pub fn observe_bound(
         &mut self,
         frame: &DecodedFrame,
@@ -91,27 +105,19 @@ impl Accumulator {
         defines: Result<cryptology::Defines, &str>,
         warnings: &[String],
     ) -> io::Result<()> {
-        let read = self
-            .reads(frame.hour, changes, countries.changed)
-            .then(|| {
-                self.reader
-                    .read(frame, defines.ok(), countries, Some(changes))
-            });
-        self.observe_read(
-            frame.hour,
-            changes,
-            countries.changed,
-            read.as_ref(),
-            defines,
-            warnings,
-        )
-    }
-
-    /// Whether `hour` reads the cipher tables: an input changed, or a learned slope is due to
-    /// be checked again.
-    fn reads(&self, hour: i32, changes: &FrameChanges, countries_changed: bool) -> bool {
-        Self::inputs_changed(self.last, hour, changes, countries_changed)
-            || self.next_clock.is_some_and(|at| hour >= at)
+        let mut touched = super::CipherTouched::default();
+        if matches!(self.held.read, super::CipherRead::Unread)
+            || Self::inputs_changed(self.last, frame.hour, changes, countries.changed)
+        {
+            let read = self
+                .reader
+                .read(frame, defines.ok(), countries, Some(changes));
+            self.held.replace(read, &mut touched);
+        }
+        let held = std::mem::take(&mut self.held);
+        let result = self.observe_read(frame.hour, &held, &touched, defines, warnings);
+        self.held = held;
+        result
     }
 
     fn inputs_changed(
@@ -128,14 +134,40 @@ impl Accumulator {
                 .any(|table| changes.rows_changed[table.index()])
     }
 
-    /// Observes `hour`, whose change facts are `changes`, from the scan's `read` of it, given
-    /// wherever the hour [`Self::reads`].
+    fn unschedule(&mut self, pair: (u32, u32)) {
+        if let Some(at) = self.scheduled.remove(&pair)
+            && let Some(due) = self.clocks.get_mut(&at)
+        {
+            due.remove(&pair);
+            if due.is_empty() {
+                self.clocks.remove(&at);
+            }
+        }
+    }
+
+    fn handle(&mut self, pair: (u32, u32)) -> io::Result<u64> {
+        if let Some(&key) = self.handles.get(&pair) {
+            return Ok(key);
+        }
+        let name = serde_json::to_string(&pair)?;
+        let next = u64::try_from(self.keys.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .and_then(|count| count.checked_mul(2))
+            .ok_or_else(|| io::Error::other("Too many cipher pairs"))?;
+        let key = *self.keys.entry(name).or_insert(next);
+        self.handles.insert(pair, key);
+        Ok(key)
+    }
+
+    /// Observes `hour` from the read `held`, of which `touched` names what the hour changed:
+    /// the pairs it changed, those gone, those a learned slope is due to be checked at, and
+    /// those several entries join; every pair where the hours or the read do not go on.
     pub(crate) fn observe_read(
         &mut self,
         hour: i32,
-        changes: &FrameChanges,
-        countries_changed: bool,
-        read: Option<&super::CipherRead>,
+        held: &super::CipherHeld,
+        touched: &super::CipherTouched,
         defines: Result<cryptology::Defines, &str>,
         warnings: &[String],
     ) -> io::Result<()> {
@@ -148,20 +180,68 @@ impl Accumulator {
         self.first.get_or_insert(hour);
         self.last = Some(hour);
         self.values.advance(hour)?;
-        let inputs_changed = Self::inputs_changed(previous, hour, changes, countries_changed);
-        let previous_coverage = self.scan.coverage.last().cloned();
-        if !inputs_changed && self.next_clock.is_none_or(|at| hour < at) {
-            self.scan
-                .cover(hour, previous_coverage.and_then(|coverage| coverage.reason));
-            return Ok(());
+        let (reason, rows) = match &held.read {
+            super::CipherRead::Unread => {
+                return Err(io::Error::other("The cipher tables were not read"));
+            }
+            super::CipherRead::Failed(kind, message) => {
+                return Err(io::Error::new(*kind, message.clone()));
+            }
+            super::CipherRead::Countries(error) => (
+                Some(format!("Country identity not recorded: {error}")),
+                false,
+            ),
+            super::CipherRead::Rows { incomplete, .. } => (
+                if held.unjoined > 0 {
+                    Some(super::UNJOINED.to_owned())
+                } else {
+                    incomplete.clone()
+                },
+                true,
+            ),
+        };
+        let all = touched.all
+            || !self.bound
+            || previous.is_none_or(|last| last.checked_add(1) != Some(hour));
+        self.bound = true;
+        let mut slots: BTreeSet<(u32, u32)> = BTreeSet::new();
+        if all || !rows {
+            slots.extend(self.active.iter().copied());
+            self.clocks.clear();
+            self.scheduled.clear();
         }
-        // Extend only live native operands, once when their inputs are reached.
-        // Closed pairs stay on disk and never participate in an hourly sweep.
+        if rows {
+            if all {
+                slots.extend(held.slots.keys().copied());
+            } else {
+                slots.extend(touched.slots.iter().copied());
+                slots.extend(
+                    touched
+                        .rows
+                        .iter()
+                        .filter_map(|key| held.pairs.get(key).and_then(super::PairRead::slots)),
+                );
+                slots.extend(held.crowded.iter().copied());
+                while let Some(due) = self.clocks.first_entry().filter(|due| *due.key() <= hour) {
+                    for pair in due.remove() {
+                        self.scheduled.remove(&pair);
+                        slots.insert(pair);
+                    }
+                }
+            }
+        }
+        // The runs of the pairs gone through close at the hour before, as one checked every hour
+        // would have extended them; closed pairs never take part.
         if let Some(previous) = previous {
-            for key in &self.active {
+            for slot in slots.iter().filter(|slot| self.active.contains(slot)) {
                 #[cfg(test)]
                 super::super::intelligence_prepared::work(|work| work.history_visits += 1);
-                let pair = &mut self.scan.pairs.get_mut(key).expect("live cipher pair").pair;
+                let pair = &mut self
+                    .scan
+                    .pairs
+                    .get_mut(slot)
+                    .expect("live cipher pair")
+                    .pair;
                 if let Some(run) = pair.runs.last_mut() {
                     run.last_hour = previous;
                 }
@@ -170,44 +250,67 @@ impl Accumulator {
                 }
             }
         }
-        let read = read.ok_or_else(|| io::Error::other("The cipher read was not given"))?;
-        let observed = self.scan.observe_read(hour, read, defines)?;
-        let active: BTreeSet<_> = observed.iter().map(|row| row.key).collect();
-        for removed in self.active.difference(&active) {
-            let key = self.keys[&serde_json::to_string(removed)?];
+        let previous_complete = self
+            .scan
+            .previous_complete
+            .and_then(|last| last.checked_add(1))
+            == Some(hour);
+        let mut observed = Vec::new();
+        if rows {
+            // In row order, as the read lists them; an unjoined entry is noted where it changed.
+            let mut keys: Vec<(u32, u32)> = if all {
+                held.pairs.keys().copied().collect()
+            } else {
+                let mut keys: Vec<(u32, u32)> = slots
+                    .iter()
+                    .filter_map(|slot| held.slots.get(slot))
+                    .flatten()
+                    .copied()
+                    .collect();
+                keys.extend(touched.rows.iter().copied().filter(|key| {
+                    held.pairs
+                        .get(key)
+                        .is_some_and(|pair| pair.slots().is_none())
+                }));
+                keys
+            };
+            keys.sort_unstable();
+            keys.dedup();
+            for key in keys {
+                if let Some(pair) =
+                    self.scan
+                        .observe_row(hour, &held.pairs[&key], defines, previous_complete)
+                {
+                    observed.push(pair);
+                }
+            }
+        }
+        let previous_coverage = self
+            .scan
+            .coverage
+            .last()
+            .map(|coverage| coverage.first_hour);
+        self.scan.cover(hour, reason);
+        let seen: BTreeSet<(u32, u32)> = observed.iter().map(|pair| pair.key).collect();
+        for slot in &slots {
+            if seen.contains(slot) || !self.active.remove(slot) {
+                continue;
+            }
+            self.unschedule(*slot);
+            let key = self.handle(*slot)?;
             self.values.observe(key, hour, None, false);
             self.values.observe(key + 1, hour, None, false);
         }
-        self.active = active;
-        self.next_clock = None;
         for observed in observed {
-            let name = serde_json::to_string(&observed.key)?;
-            let next = u64::try_from(self.keys.len())
-                .ok()
-                .and_then(|count| count.checked_add(1))
-                .and_then(|count| count.checked_mul(2))
-                .ok_or_else(|| io::Error::other("Too many cipher pairs"))?;
-            let key = *self.keys.entry(name).or_insert(next);
+            self.active.insert(observed.key);
+            self.unschedule(observed.key);
+            let key = self.handle(observed.key)?;
             let state = self
                 .scan
                 .pairs
                 .get_mut(&observed.key)
                 .expect("observed cipher pair");
             let run = state.pair.runs.last().expect("observed cipher run");
-            let mut observation = Observation {
-                run: run.clone(),
-                tags: state
-                    .pair
-                    .tag_runs
-                    .last()
-                    .expect("observed cipher tags")
-                    .clone(),
-                broken: state.pair.breaks.last().cloned(),
-            };
-            // Extension changes only the endpoint; it is represented by exact
-            // value coverage, rather than another copy of the event operands.
-            observation.run.last_hour = observation.run.first_hour;
-            observation.tags.last_hour = observation.tags.first_hour;
             for (key, value) in [
                 (key, run.amount_at(hour).map(i128::from)),
                 (key + 1, run.bonus_days_at(hour).map(i128::from)),
@@ -228,12 +331,27 @@ impl Accumulator {
             if run.step_raw_per_day != "0" || run.bonus_days_step_per_day != 0 {
                 let days = (i64::from(hour) - i64::from(run.first_hour)) / 24 + 1;
                 if let Ok(at) = i32::try_from(i64::from(run.first_hour) + days * 24) {
-                    self.next_clock = Some(self.next_clock.map_or(at, |old| old.min(at)));
+                    self.clocks.entry(at).or_default().insert(observed.key);
+                    self.scheduled.insert(observed.key, at);
                 }
             }
             if observed.changed {
                 #[cfg(test)]
                 super::super::intelligence_prepared::work(|work| work.emitted += 1);
+                let mut observation = Observation {
+                    run: run.clone(),
+                    tags: state
+                        .pair
+                        .tag_runs
+                        .last()
+                        .expect("observed cipher tags")
+                        .clone(),
+                    broken: state.pair.breaks.last().cloned(),
+                };
+                // Extension changes only the endpoint; it is represented by exact
+                // value coverage, rather than another copy of the event operands.
+                observation.run.last_hour = observation.run.first_hour;
+                observation.tags.last_hour = observation.tags.first_hour;
                 self.values.event(key, hour, &observation)?;
             }
             // The same scan supplies attempt continuity after a commit. Closed
@@ -249,10 +367,7 @@ impl Accumulator {
             }
         }
         let coverage = self.scan.coverage.last().expect("observed cipher coverage");
-        let starts = previous_coverage
-            .as_ref()
-            .is_none_or(|previous| previous.first_hour != coverage.first_hour);
-        if starts {
+        if previous_coverage != Some(coverage.first_hour) {
             self.values
                 .observe(0, hour, Some(i128::from(coverage.complete)), true);
             self.values.event(0, hour, coverage)?;

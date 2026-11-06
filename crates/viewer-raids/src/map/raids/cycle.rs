@@ -31,6 +31,7 @@ use replay_data::{BranchId, Hour, rows::RaidScope};
 use super::{
     RaidAssets,
     offers::{Accumulator, Evaluation, Province, Sweep},
+    paths::Held,
     script::Eval,
 };
 
@@ -46,6 +47,8 @@ struct Row {
     province: Option<u32>,
     /// Its last evaluation and the hour it was made at, since the reset.
     kept: Option<Arc<(Hour, Evaluation)>>,
+    /// The content searches that evaluation read: the row keeps them for its next.
+    held: Box<[Held]>,
 }
 
 /// One province's rows and what their kept evaluations show.
@@ -173,6 +176,7 @@ impl Cycle {
                 scope: target.scope.clone(),
                 province,
                 kept: None,
+                held: Box::default(),
             });
             self.len += 1;
         }
@@ -193,9 +197,10 @@ impl Cycle {
         let n = self.pending.min(sweep.batch);
         let rows: Vec<usize> = (0..n).map(|i| (self.cursor + i) % self.len).collect();
         let mut touched = BTreeSet::new();
-        for (at, evaluation) in rows.iter().zip(sweep.evaluate(&rows)) {
+        for (at, (evaluation, held)) in rows.iter().zip(sweep.evaluate(&rows)) {
             let row = self.row_mut(*at);
             row.kept = Some(Arc::new((hour, evaluation)));
+            row.held = held;
             touched.extend(row.province);
         }
         for province in touched {

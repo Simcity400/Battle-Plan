@@ -8,7 +8,7 @@ use replay::container::Replay;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, FrameDecoder};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     sync::{
         Arc,
@@ -24,8 +24,6 @@ pub const TABLES: &[TableId] = &[
     TableId::Autonomy,
     TableId::Subjects,
 ];
-
-pub const CACHED_BRANCHES: usize = 4;
 
 /// The links' canonical slots by raw id, and each resolved country's id and tag by slot.
 struct Holders {
@@ -269,9 +267,10 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     Ok(result.scanned)
 }
 
+/// Each branch's scan, kept for this source revision.
 #[derive(Default)]
 struct Cache {
-    entries: VecDeque<(u64, Arc<ScannedAutonomy>)>,
+    entries: BTreeMap<u64, Arc<ScannedAutonomy>>,
 }
 
 /// The row reply: the branch scanned once, kept for the next requests.
@@ -287,20 +286,14 @@ pub fn load(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .entries
-        .iter()
-        .find(|(cached, _)| *cached == branch)
-        .map(|(_, scanned)| Arc::clone(scanned));
+        .get(&branch)
+        .map(Arc::clone);
     let scanned = match cached {
         Some(scanned) => scanned,
         None => {
             let scanned = Arc::new(scan(source.replay_ref(), branch, cancelled)?);
             let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache.entries.retain(|(cached, _)| *cached != branch);
-            cache.entries.push_back((branch, Arc::clone(&scanned)));
-            while cache.entries.len() > CACHED_BRANCHES {
-                cache.entries.pop_front();
-            }
-            scanned
+            Arc::clone(cache.entries.entry(branch).or_insert(scanned))
         }
     };
     scanned

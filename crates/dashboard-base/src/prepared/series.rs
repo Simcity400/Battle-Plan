@@ -720,6 +720,72 @@ impl Accumulator {
             self.active.remove(&key);
         }
     }
+    /// [`Self::observe_boundary`] of `key` at each of `changes`' ascending hours, each an hour
+    /// an advance authenticated right after the hour before it, and with `events` an empty
+    /// event at each: the key is looked up once for them all.
+    pub fn changes(
+        &mut self,
+        key: u64,
+        changes: impl IntoIterator<Item = (i32, i128)>,
+        boundary: bool,
+        events: bool,
+    ) -> io::Result<()> {
+        if self.recorded.is_some() {
+            for (hour, value) in changes {
+                self.observe_boundary(key, hour, Some(value), false, boundary);
+                if events {
+                    self.event_raw(key, hour, Vec::new())?;
+                }
+            }
+            return Ok(());
+        }
+        let mut changes = changes.into_iter().peekable();
+        let Some(&(first, _)) = changes.peek() else {
+            return Ok(());
+        };
+        self.batch.through(first);
+        let state = self.states.entry(key).or_default();
+        let mut held = self.active.remove(&key);
+        let Batch { keys, bytes, .. } = &mut self.batch;
+        let rows = keys.entry(key).or_insert_with(|| Rows {
+            state: state.clone(),
+            ..Default::default()
+        });
+        let mut last = first;
+        for (hour, value) in changes {
+            let before = hour.checked_sub(1);
+            if held
+                && let Some(open) = state
+                    .last
+                    .filter(|run| before.is_some_and(|before| run.last_hour < before))
+            {
+                let through = before.expect("an hour after the open run");
+                let run = Run::new(open.last_hour + 1, through, open.value, false);
+                push_run(rows, state, bytes, run, false);
+            }
+            let starts = state
+                .last
+                .is_none_or(|run| run.last_hour.checked_add(1) != Some(hour));
+            let equal = state.last.is_some_and(|run| run.value == value);
+            // An equal value held on without a break extends, as an observation would.
+            let starts = starts && !(held && !boundary && equal);
+            push_run(rows, state, bytes, Run::new(hour, hour, value, starts), boundary);
+            held = true;
+            if events {
+                if rows.events.last().is_some_and(|(previous, _)| *previous > hour) {
+                    return Err(invalid("event hours reversed"));
+                }
+                *bytes += 32;
+                state.events += 1;
+                rows.events.push((hour, Vec::new()));
+                rows.state.events = state.events;
+            }
+            last = hour;
+        }
+        self.batch.through(last);
+        self.active.insert(key);
+        Ok(())
+    }
     pub fn event(&mut self, key: u64, hour: i32, row: &impl Serialize) -> io::Result<()> {
         self.event_raw(key, hour, serde_json::to_vec(row)?)
     }
@@ -1260,26 +1326,20 @@ pub fn read_catalogue<T: DeserializeOwned>(
 }
 
 /// [`read_catalogue`] parsed once for its pages: a query's scope keeps it for the next ask
-/// ([`query::reuse_value`]), charged what `bytes` says the parse holds.
+/// ([`query::reuse_value`]).
 pub fn read_shared_catalogue<T: DeserializeOwned + Send + Sync + 'static>(
     store: &store::Store,
     key: &store::SourceKey,
     family: &str,
     branch: u64,
-    bytes: impl FnOnce(&Catalogue<T>) -> usize,
 ) -> io::Result<Option<Arc<Catalogue<T>>>> {
     let Some((pages, text)) = catalogue_text(store, key, family, branch)? else {
         return Ok(None);
     };
-    query::reuse_value(pages, &(family, branch), bytes, || {
+    query::reuse_value(pages, &(family, branch), || {
         Ok(serde_json::from_slice(&text)?)
     })
     .map(Some)
-}
-
-/// The memory a parsed catalogue's keys hold, at most.
-pub fn catalogue_key_bytes(keys: &BTreeMap<String, u64>) -> usize {
-    btree_bytes::<String, u64>(keys.len()) + keys.keys().map(String::capacity).sum::<usize>()
 }
 
 /// What a `BTreeMap<K, V>` of `len` entries allocates at most: every node but the root holds at
@@ -1482,37 +1542,11 @@ impl Batch {
     }
     /// Keep supplying-read boundaries even when their amounts are equal.
     pub fn push_boundary(&mut self, key: u64, state: &mut KeyState, run: Run, boundary: bool) {
-        #[cfg(test)]
-        OBSERVATION_WORK.with(|work| work.set(work.get() + 1));
-        let canonical = if let Some(previous) = state
-            .last
-            .filter(|previous| !boundary && previous.continues(run))
-        {
-            Run {
-                last_hour: run.last_hour,
-                ..previous
-            }
-        } else {
-            state.runs += 1;
-            run
-        };
         let rows = self.keys.entry(key).or_insert_with(|| Rows {
             state: state.clone(),
             ..Default::default()
         });
-        if let Some(last) = rows
-            .runs
-            .last_mut()
-            .filter(|last| !boundary && last.continues(run))
-        {
-            last.last_hour = run.last_hour;
-        } else {
-            rows.runs.push(run);
-            self.bytes += std::mem::size_of::<Run>() * 2;
-        }
-        state.last = Some(canonical);
-        rows.state.last = state.last;
-        rows.state.runs = state.runs;
+        push_run(rows, state, &mut self.bytes, run, boundary);
     }
     pub fn event(
         &mut self,
@@ -1812,6 +1846,38 @@ impl Batch {
         }
         Ok(())
     }
+}
+
+/// Pushes `run` onto a key's batch `rows` and its canonical `state`; a boundary keeps it apart
+/// from an equal run before it.
+fn push_run(rows: &mut Rows, state: &mut KeyState, bytes: &mut usize, run: Run, boundary: bool) {
+    #[cfg(test)]
+    OBSERVATION_WORK.with(|work| work.set(work.get() + 1));
+    let canonical = if let Some(previous) = state
+        .last
+        .filter(|previous| !boundary && previous.continues(run))
+    {
+        Run {
+            last_hour: run.last_hour,
+            ..previous
+        }
+    } else {
+        state.runs += 1;
+        run
+    };
+    if let Some(last) = rows
+        .runs
+        .last_mut()
+        .filter(|last| !boundary && last.continues(run))
+    {
+        last.last_hour = run.last_hour;
+    } else {
+        rows.runs.push(run);
+        *bytes += std::mem::size_of::<Run>() * 2;
+    }
+    state.last = Some(canonical);
+    rows.state.last = state.last;
+    rows.state.runs = state.runs;
 }
 
 /// A key's payload before compression: its runs, then its events, then each
@@ -2495,9 +2561,6 @@ const DIRECTORY_SEARCHES: u64 = 16;
 /// of 64 bytes per entry, so by then the searches have cost about as much as
 /// the read, and a reader never spends more than about twice the cheaper way.
 const ENTRIES_PER_SEARCH: u64 = 256;
-/// Whole-directory bytes a reader keeps before it drops them and counts its
-/// searches again.
-const DIRECTORY_TABLE_BYTES: usize = 64 << 20;
 
 #[cfg(test)]
 pub(crate) mod directory_tests;
@@ -2516,26 +2579,6 @@ struct Cached {
 }
 /// Each summary level's buckets by alignment.
 type Summaries = [Vec<(i64, ChartBucket)>; 4];
-fn summaries_bytes(summaries: &Summaries) -> usize {
-    std::mem::size_of::<Summaries>()
-        + summaries
-            .iter()
-            .map(|rows| rows.capacity() * std::mem::size_of::<(i64, ChartBucket)>())
-            .sum::<usize>()
-}
-impl Cached {
-    fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.runs.capacity() * std::mem::size_of::<Run>()
-            + self.summaries.capacity()
-            + self.events.capacity() * std::mem::size_of::<(i32, Vec<u8>)>()
-            + self
-                .events
-                .iter()
-                .map(|(_, row)| row.capacity())
-                .sum::<usize>()
-    }
-}
 thread_local! {
     static DECODED_EVENT_ROWS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -2635,24 +2678,8 @@ impl Cached {
         Ok(buckets)
     }
 }
-/// Decoded summary levels a reader keeps before it starts again.
-const DECODED_BLOBS: usize = 256;
-/// The decoded blob bytes a reader keeps; beyond them the least recently used go first.
-const DECODED_BYTES: usize = 64 << 20;
 /// Keys a multi-key read decodes together, their blobs read at once.
 const DECODE_KEYS: usize = 1024;
-#[cfg(test)]
-thread_local! {
-    /// [`DECODED_BYTES`] for this thread's readers, which a test can lower.
-    pub(super) static TEST_DECODED_BYTES: std::cell::Cell<usize> =
-        const { std::cell::Cell::new(DECODED_BYTES) };
-}
-fn decoded_bytes() -> usize {
-    #[cfg(test)]
-    return TEST_DECODED_BYTES.get();
-    #[cfg(not(test))]
-    DECODED_BYTES
-}
 /// The most stored blob bytes one read takes, and the most unwanted bytes between two blobs it
 /// reads through rather than reading them apart.
 const DECODE_READ: u64 = 16 << 20;
@@ -2777,52 +2804,28 @@ fn hand(
     Ok(())
 }
 
-/// A reader's decoded blobs by batch and key, the least recently used dropped first once they
-/// hold more than [`DECODED_BYTES`], the latest always kept: a read sweeping thousands of keys
-/// window by window decodes each blob once rather than once a window.
+/// A reader's decoded blobs by batch and key, each kept while the reader lives: a read sweeping
+/// thousands of keys window by window decodes each blob once rather than once a window.
 #[derive(Default)]
 struct Decoded {
-    blobs: HashMap<(u64, u64), (Arc<Cached>, u64)>,
-    used: BTreeMap<u64, (u64, u64)>,
-    clock: u64,
-    bytes: usize,
+    blobs: HashMap<(u64, u64), Arc<Cached>>,
 }
 
 impl Decoded {
-    /// Whether `id` is held, marking it the most recently used if so.
     fn touch(&mut self, id: (u64, u64)) -> bool {
-        let Some((_, last)) = self.blobs.get_mut(&id) else {
-            return false;
-        };
-        self.used.remove(last);
-        self.clock += 1;
-        *last = self.clock;
-        self.used.insert(self.clock, id);
-        true
+        self.blobs.contains_key(&id)
     }
 
     fn insert(&mut self, id: (u64, u64), blob: Arc<Cached>) {
-        self.clock += 1;
-        self.bytes += blob.bytes();
-        if let Some((old, last)) = self.blobs.insert(id, (blob, self.clock)) {
-            self.bytes -= old.bytes();
-            self.used.remove(&last);
-        }
-        self.used.insert(self.clock, id);
-        while self.bytes > decoded_bytes() && self.used.len() > 1 {
-            let (_, oldest) = self.used.pop_first().expect("more than one blob is held");
-            let (blob, _) = self.blobs.remove(&oldest).expect("a used blob is held");
-            self.bytes -= blob.bytes();
-        }
+        self.blobs.insert(id, blob);
     }
 
     fn held(&self, id: (u64, u64)) -> &Arc<Cached> {
-        &self.blobs[&id].0
+        &self.blobs[&id]
     }
 
-    /// The blob held for `id`, marking it the most recently used.
     fn get(&mut self, id: (u64, u64)) -> Option<Arc<Cached>> {
-        self.touch(id).then(|| Arc::clone(self.held(id)))
+        self.blobs.get(&id).cloned()
     }
 }
 /// The most a blob read reserves before its first read.
@@ -2851,7 +2854,6 @@ pub struct Reader<'a> {
     /// Whole batch directories read so far; None for a batch whose header
     /// claims more entries than it holds.
     tables: HashMap<u64, Arc<Option<Table>>>,
-    table_bytes: usize,
     publication: Option<Arc<Vec<[u64; 3]>>>,
     event_walk: Option<EventWalk>,
     run_bounds: HashMap<u64, (u64, Run)>,
@@ -2901,7 +2903,6 @@ impl<'a> Reader<'a> {
             buckets: HashMap::new(),
             searches: HashMap::new(),
             tables: HashMap::new(),
-            table_bytes: 0,
             publication: None,
             event_walk: None,
             run_bounds: HashMap::new(),
@@ -2935,7 +2936,6 @@ impl<'a> Reader<'a> {
             buckets: HashMap::new(),
             searches: HashMap::new(),
             tables: HashMap::new(),
-            table_bytes: 0,
             publication: None,
             event_walk: None,
             run_bounds: HashMap::new(),
@@ -3021,18 +3021,6 @@ impl<'a> Reader<'a> {
                 Arc::new(Table::read(self.file(batch)?)?)
             }
         };
-        let bytes = table.as_ref().as_ref().map_or(0, |table| table.0.len());
-        if bytes > DIRECTORY_TABLE_BYTES {
-            // Too large to keep: this batch keeps single-key searches.
-            self.tables.insert(batch, Arc::new(None));
-            return Ok(None);
-        }
-        if self.table_bytes + bytes > DIRECTORY_TABLE_BYTES {
-            self.tables.clear();
-            self.searches.clear();
-            self.table_bytes = 0;
-        }
-        self.table_bytes += bytes;
         query::keep_table(id, &table);
         self.tables.insert(batch, table);
         Ok(self.tables[&batch].as_ref().as_ref())
@@ -3079,9 +3067,6 @@ impl<'a> Reader<'a> {
             let blob = Arc::clone(self.cached.held((batch, key)));
             let cancelled = self.cancelled;
             let decoded = query::summaries((id, key), || blob.decode_summaries(cancelled))?;
-            if self.buckets.len() >= DECODED_BLOBS {
-                self.buckets.clear();
-            }
             self.buckets.insert((batch, key), decoded);
         }
         Ok(&self.buckets[&(batch, key)])

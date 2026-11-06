@@ -4,16 +4,11 @@ use crate::prepared::series::{self, tests::Fixture};
 fn limits() -> Limits {
     Limits {
         write_bytes: 8192,
-        cache_bytes: 1 << 20,
         page_bytes: 4096,
     }
 }
 fn facts<V: PartialEq + Serialize + DeserializeOwned + Resident + 'static>() -> Facts<u32, V> {
-    Facts::new(
-        Namespace::new("synthetic", 7, "values").unwrap(),
-        MemoryBudget::new(64 << 20),
-        limits(),
-    )
+    Facts::new(Namespace::new("synthetic", 7, "values").unwrap(), limits())
     .unwrap()
 }
 fn value<V: Clone, R: ReadPages>(
@@ -84,11 +79,7 @@ fn private_spill_is_independent_of_publication_and_one_change_does_not_copy_the_
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
     let mut names = facts::<String>();
-    let mut reads = Facts::<u32, bool>::new(
-        Namespace::new("synthetic", 7, "read-evidence").unwrap(),
-        names.budget.clone(),
-        limits(),
-    )
+    let mut reads = Facts::<u32, bool>::new(Namespace::new("synthetic", 7, "read-evidence").unwrap(), limits())
     .unwrap();
     for key in 0..1500 {
         names
@@ -162,12 +153,7 @@ fn long_gapped_history_matches_an_independent_hour_map_before_and_after_restore(
     writer.commit().unwrap();
     drop(facts);
     let mut session = fixture.store.session(&fixture.key).unwrap().unwrap();
-    let facts = Facts::<u32, u64>::restore(
-        &mut session,
-        &checkpoint,
-        MemoryBudget::new(64 << 20),
-        limits(),
-    )
+    let facts = Facts::<u32, u64>::restore(&mut session, &checkpoint, limits())
     .unwrap();
     let mut reader = facts.reader(&mut session).unwrap();
     for (&hour, expected) in oracle.iter().step_by(23) {
@@ -182,7 +168,6 @@ fn long_gapped_history_matches_an_independent_hour_map_before_and_after_restore(
         }
     }
     assert_eq!(represented, oracle.len());
-    assert!(reader.cached_bytes() <= limits().cache_bytes);
 }
 #[test]
 fn retirement_keeps_closed_keys_on_disk_and_reopening_preserves_gaps() {
@@ -206,12 +191,7 @@ fn retirement_keeps_closed_keys_on_disk_and_reopening_preserves_gaps() {
     writer.commit().unwrap();
     drop(facts);
     let mut writer = fixture.writer();
-    let mut facts = Facts::<u32, String>::restore(
-        &mut writer,
-        &checkpoint,
-        MemoryBudget::new(64 << 20),
-        limits(),
-    )
+    let mut facts = Facts::<u32, String>::restore(&mut writer, &checkpoint, limits())
     .unwrap();
     assert_eq!(facts.active_keys(), 0);
     facts
@@ -263,12 +243,7 @@ fn a_nonflushing_checkpoint_and_continued_observation_produce_identical_public_p
             let (checkpoint, restored_pending): (Checkpoint, Vec<(i32, Option<i128>, Vec<u8>)>) =
                 serde_json::from_slice(&bytes).unwrap();
             pending = restored_pending;
-            facts = Facts::restore(
-                &mut writer,
-                &checkpoint,
-                MemoryBudget::new(64 << 20),
-                limits(),
-            )
+            facts = Facts::restore(&mut writer, &checkpoint, limits())
             .unwrap();
         }
         for hour in 20..40 {
@@ -384,12 +359,7 @@ fn published_pending_and_open_values_are_visible_in_forks_and_detached_nested_st
         } else {
             writer.fork().unwrap()
         };
-        let mut facts = Facts::<u32, String>::restore(
-            &mut stage,
-            &checkpoint,
-            MemoryBudget::new(64 << 20),
-            limits(),
-        )
+        let mut facts = Facts::<u32, String>::restore(&mut stage, &checkpoint, limits())
         .unwrap();
         facts
             .append(&mut stage, 1, 30, 32, Status::Value("open".into()))
@@ -427,12 +397,7 @@ fn published_pending_and_open_values_are_visible_in_forks_and_detached_nested_st
         writer.adopt_all(stage.into_staged().unwrap()).unwrap();
         writer.commit().unwrap();
         let mut session = fixture.store.session(&fixture.key).unwrap().unwrap();
-        let facts = Facts::<u32, String>::restore(
-            &mut session,
-            &saved,
-            MemoryBudget::new(64 << 20),
-            limits(),
-        )
+        let facts = Facts::<u32, String>::restore(&mut session, &saved, limits())
         .unwrap();
         let mut reader = facts.reader(&mut session).unwrap();
         assert_eq!(
@@ -459,12 +424,7 @@ fn abandoned_and_conflicting_writers_leave_the_committed_checkpoint_unchanged() 
         } else {
             writer.fork().unwrap()
         };
-        let mut facts = Facts::<u32, u64>::restore(
-            &mut stage,
-            &checkpoint,
-            MemoryBudget::new(64 << 20),
-            limits(),
-        )
+        let mut facts = Facts::<u32, u64>::restore(&mut stage, &checkpoint, limits())
         .unwrap();
         facts
             .append(&mut stage, 1, 11, 12, Status::Value(9))
@@ -474,12 +434,7 @@ fn abandoned_and_conflicting_writers_leave_the_committed_checkpoint_unchanged() 
         drop(facts);
         drop(writer);
         let mut session = fixture.store.session(&fixture.key).unwrap().unwrap();
-        let facts = Facts::<u32, u64>::restore(
-            &mut session,
-            &checkpoint,
-            MemoryBudget::new(64 << 20),
-            limits(),
-        )
+        let facts = Facts::<u32, u64>::restore(&mut session, &checkpoint, limits())
         .unwrap();
         let mut reader = facts.reader(&mut session).unwrap();
         assert_eq!(value(&mut reader, 1, 10), Some(Status::Value(7)));
@@ -487,12 +442,7 @@ fn abandoned_and_conflicting_writers_leave_the_committed_checkpoint_unchanged() 
     }
     let mut writer = fixture.writer();
     let mut stage = writer.stage().unwrap();
-    let mut facts = Facts::<u32, u64>::restore(
-        &mut stage,
-        &checkpoint,
-        MemoryBudget::new(64 << 20),
-        limits(),
-    )
+    let mut facts = Facts::<u32, u64>::restore(&mut stage, &checkpoint, limits())
     .unwrap();
     let section = format!("{}/checkpoints", facts.namespace.section());
     writer
@@ -503,32 +453,6 @@ fn abandoned_and_conflicting_writers_leave_the_committed_checkpoint_unchanged() 
         .unwrap();
     facts.checkpoint(&mut stage, 2).unwrap();
     assert!(writer.adopt_all(stage.into_staged().unwrap()).is_err());
-}
-#[test]
-fn admission_failure_does_not_truncate_or_mutate_observations_and_credits_return() {
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let mut facts = facts::<String>();
-    facts
-        .append(&mut writer, 1, 0, 0, Status::Value("first".into()))
-        .unwrap();
-    let before = facts.budget.used();
-    let external = facts.budget.admit(facts.budget.limit() - before).unwrap();
-    assert_eq!(
-        facts
-            .append(&mut writer, 1, 1, 1, Status::Value("next".into()))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::WouldBlock
-    );
-    assert_eq!(facts.columns[&1].open.as_ref().unwrap().interval.last, 0);
-    drop(external);
-    facts
-        .append(&mut writer, 1, 1, 1, Status::Value("next".into()))
-        .unwrap();
-    let budget = facts.budget.clone();
-    drop(facts);
-    assert_eq!(budget.used(), 0);
 }
 #[test]
 fn family_column_and_branch_namespaces_do_not_alias_and_overlaps_are_refused() {
@@ -542,7 +466,6 @@ fn family_column_and_branch_namespaces_do_not_alias_and_overlaps_are_refused() {
     ] {
         let mut facts = Facts::<u32, u64>::new(
             Namespace::new(family, branch, column).unwrap(),
-            MemoryBudget::new(1 << 20),
             limits(),
         )
         .unwrap();
@@ -566,11 +489,7 @@ fn paged_block_extents_select_a_prefix_even_when_the_requested_hour_is_missing()
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
     let mut presence = facts::<()>();
-    let mut extents = Facts::<u32, i32>::new(
-        Namespace::new("synthetic", 7, "block-extents").unwrap(),
-        presence.budget.clone(),
-        limits(),
-    )
+    let mut extents = Facts::<u32, i32>::new(Namespace::new("synthetic", 7, "block-extents").unwrap(), limits())
     .unwrap();
     extents
         .append(&mut writer, 0, 100, 102, Status::Value(100))
@@ -590,14 +509,14 @@ fn paged_block_extents_select_a_prefix_even_when_the_requested_hour_is_missing()
     drop(presence);
     let mut writer = fixture.writer();
     let extents =
-        Facts::<u32, i32>::restore(&mut writer, &blocks, MemoryBudget::new(1 << 20), limits())
+        Facts::<u32, i32>::restore(&mut writer, &blocks, limits())
             .unwrap();
     {
         let mut reader = extents.reader(&mut writer).unwrap();
         assert_eq!(value(&mut reader, 0, 101), Some(Status::Value(100)));
     }
     let presence =
-        Facts::<u32, ()>::restore(&mut writer, &hours, MemoryBudget::new(1 << 20), limits())
+        Facts::<u32, ()>::restore(&mut writer, &hours, limits())
             .unwrap();
     let mut reader = presence.reader(&mut writer).unwrap();
     assert_eq!(value(&mut reader, 0, 101), Some(Status::Gap));
@@ -612,7 +531,6 @@ fn a_fifty_year_quiet_campaign_retains_one_open_value_per_country() {
             .append(&mut writer, key, 0, 719, Status::Value(key as u64))
             .unwrap();
     }
-    let baseline = facts.budget.used();
     for first in (720..438_000).step_by(720) {
         for key in 0..1500 {
             facts
@@ -626,7 +544,6 @@ fn a_fifty_year_quiet_campaign_retains_one_open_value_per_country() {
                 .unwrap();
         }
     }
-    assert_eq!(facts.budget.used(), baseline);
     assert_eq!(facts.buffered_bytes(), 0);
     assert_eq!(writer.bytes_written(), 0);
     let mut reader = facts.reader(&mut writer).unwrap();
@@ -647,7 +564,6 @@ fn zero_cache_and_oversized_pages_keep_spooled_dependencies_bounded() {
         .append(&mut writer, 1, 30, 30, Status::Value("later".into()))
         .unwrap();
     facts.checkpoint(&mut writer, 1).unwrap();
-    facts.limits.cache_bytes = 0;
     let mut stage = writer.stage().unwrap();
     {
         let mut reader = facts.reader(&mut stage).unwrap();
@@ -655,7 +571,6 @@ fn zero_cache_and_oversized_pages_keep_spooled_dependencies_bounded() {
             assert!(
                 matches!(&value(&mut reader,1,10),Some(Status::Value(text)) if text.len()==16<<10)
             );
-            assert_eq!(reader.cached_bytes(), 0);
         }
     }
     assert_eq!(stage.read_dependency_counts().0, 1);
@@ -664,82 +579,10 @@ fn zero_cache_and_oversized_pages_keep_spooled_dependencies_bounded() {
 }
 
 #[test]
-fn resident_accounting_includes_unused_capacity_and_fixed_decode_allocations() {
-    #[derive(PartialEq)]
-    struct Owned(Vec<u8>);
-    impl Serialize for Owned {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            0u8.serialize(serializer)
-        }
-    }
-    impl<'de> Deserialize<'de> for Owned {
-        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            let _ = u8::deserialize(deserializer)?;
-            Ok(Self(vec![0; 4096]))
-        }
-    }
-    impl Resident for Owned {
-        fn heap_bytes(&self) -> usize {
-            self.0.capacity()
-        }
-        fn decode_budget() -> DecodeBudget {
-            DecodeBudget {
-                fixed_bytes: size_of::<Self>() + 4096,
-                bytes_per_encoded_byte: 0,
-            }
-        }
-    }
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let mut owned = facts::<Vec<Owned>>();
-    owned
-        .append(
-            &mut writer,
-            1,
-            0,
-            0,
-            Status::Value((0..100).map(|_| Owned(vec![0; 4096])).collect()),
-        )
-        .unwrap();
-    let before = owned.budget.used();
-    owned.append(&mut writer, 1, 1, 1, Status::Absent).unwrap();
-    assert!(owned.budget.used() + 400_000 < before);
-    let mut reader = owned.reader(&mut writer).unwrap();
-    let old = reader.at(&1, 0).unwrap().unwrap();
-    assert!(
-        matches!(&old.status,Status::Value(rows) if rows.len()==100 && rows.iter().all(|row|row.0.len()==4096))
-    );
-    drop(old);
-    drop(reader);
-    drop(owned);
-    let mut names = facts::<String>();
-    let mut name = String::with_capacity(1 << 20);
-    name.push_str("small");
-    names
-        .append(&mut writer, 2, 0, 0, Status::Value(name))
-        .unwrap();
-    let before = names.budget.used();
-    names
-        .append(&mut writer, 2, 1, 1, Status::Value("changed".into()))
-        .unwrap();
-    assert!(names.budget.used() + (1 << 19) < before);
-    let mut reader = names.reader(&mut writer).unwrap();
-    assert_eq!(
-        value(&mut reader, 2, 0),
-        Some(Status::Value("small".into()))
-    );
-}
-
-#[test]
 fn retired_key_roots_and_new_keys_are_isolated_by_each_checkpoint() {
     let fixture = Fixture::new();
-    let budget = MemoryBudget::new(16 << 20);
     let mut writer = fixture.writer();
-    let mut facts = Facts::<u32, String>::new(
-        Namespace::new("isolated", 1, "names").unwrap(),
-        budget.clone(),
-        limits(),
-    )
+    let mut facts = Facts::<u32, String>::new(Namespace::new("isolated", 1, "names").unwrap(), limits())
     .unwrap();
     facts
         .append(&mut writer, 7, 0, 3, Status::Value("old".into()))
@@ -758,9 +601,9 @@ fn retired_key_roots_and_new_keys_are_isolated_by_each_checkpoint() {
     let b = facts.checkpoint(&mut writer, 2).unwrap();
     writer = writer.commit_continue().unwrap();
     drop(facts);
-    let old = Facts::<u32, String>::restore(&mut writer, &a, budget.clone(), limits()).unwrap();
-    let latest = Facts::<u32, String>::restore(&mut writer, &b, budget.clone(), limits()).unwrap();
-    let phase = ReadPhase::new(&mut writer, budget, 1 << 20).unwrap();
+    let old = Facts::<u32, String>::restore(&mut writer, &a, limits()).unwrap();
+    let latest = Facts::<u32, String>::restore(&mut writer, &b, limits()).unwrap();
+    let phase = ReadPhase::new(&mut writer);
     let mut reader = phase.reader(&old).unwrap();
     assert_eq!(value(&mut reader, 7, 2), Some(Status::Value("old".into())));
     for hour in [4, 7, 10, 11] {
@@ -787,7 +630,7 @@ fn checkpoint_inside_an_equal_run_resumes_without_splitting_it() {
     let a = facts.checkpoint(&mut writer, 1).unwrap();
     writer = writer.commit_continue().unwrap();
     let mut resumed =
-        Facts::<u32, u64>::restore(&mut writer, &a, facts.budget.clone(), limits()).unwrap();
+        Facts::<u32, u64>::restore(&mut writer, &a, limits()).unwrap();
     for f in [&mut facts, &mut resumed] {
         f.append(&mut writer, 1, 4, 9, Status::Value(9)).unwrap();
         f.append(&mut writer, 1, 10, 10, Status::Absent).unwrap();
@@ -800,7 +643,7 @@ fn checkpoint_inside_an_equal_run_resumes_without_splitting_it() {
             (0, 9, &Status::Value(9))
         );
     }
-    let old = Facts::<u32, u64>::restore(&mut writer, &a, facts.budget.clone(), limits()).unwrap();
+    let old = Facts::<u32, u64>::restore(&mut writer, &a, limits()).unwrap();
     let mut r = old.reader(&mut writer).unwrap();
     assert_eq!(value(&mut r, 1, 4), None);
 }
@@ -809,16 +652,11 @@ fn checkpoint_inside_an_equal_run_resumes_without_splitting_it() {
 fn historical_projects_are_discovered_in_order_across_key_pages_without_a_roster() {
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
-    let budget = MemoryBudget::new(16 << 20);
     let small = Limits {
         page_bytes: 128,
         ..limits()
     };
-    let mut facts = Facts::<(u32, u32), u64>::new(
-        Namespace::new("projects", 1, "identities").unwrap(),
-        budget.clone(),
-        small,
-    )
+    let mut facts = Facts::<(u32, u32), u64>::new(Namespace::new("projects", 1, "identities").unwrap(), small)
     .unwrap();
     for actor in (0..32).rev() {
         for project in (0..24).rev() {
@@ -853,9 +691,8 @@ fn historical_projects_are_discovered_in_order_across_key_pages_without_a_roster
     writer = writer.commit_continue().unwrap();
     drop(facts);
     let facts =
-        Facts::<(u32, u32), u64>::restore(&mut writer, &checkpoint, budget.clone(), small).unwrap();
-    let baseline = budget.used();
-    let phase = ReadPhase::new(&mut writer, budget.clone(), 32 << 10).unwrap();
+        Facts::<(u32, u32), u64>::restore(&mut writer, &checkpoint, small).unwrap();
+    let phase = ReadPhase::new(&mut writer);
     let mut r = phase.reader(&facts).unwrap();
     let mut keys = r.keys(None, None).unwrap();
     for actor in 0..32 {
@@ -871,12 +708,10 @@ fn historical_projects_are_discovered_in_order_across_key_pages_without_a_roster
         }
     }
     assert!(r.next_key(&mut keys).unwrap().is_none());
-    assert!(phase.cached_bytes() <= 32 << 10);
-    assert!(budget.used() - baseline < 256 << 10);
 }
 
 #[test]
-fn multiple_typed_cursors_share_one_read_phase_and_keep_evicted_facts_admitted() {
+fn multiple_typed_cursors_share_one_read_phase() {
     use std::cell::Cell;
     struct Counted<'a> {
         writer: &'a mut store::Writer,
@@ -890,29 +725,16 @@ fn multiple_typed_cursors_share_one_read_phase_and_keep_evicted_facts_admitted()
     }
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
-    let budget = MemoryBudget::new(32 << 20);
     let small = Limits {
         page_bytes: 512,
         write_bytes: 512,
         ..limits()
     };
-    let mut names = Facts::<u32, String>::new(
-        Namespace::new("shared", 1, "names").unwrap(),
-        budget.clone(),
-        small,
-    )
+    let mut names = Facts::<u32, String>::new(Namespace::new("shared", 1, "names").unwrap(), small)
     .unwrap();
-    let mut evidence = Facts::<u32, bool>::new(
-        Namespace::new("shared", 1, "evidence").unwrap(),
-        budget.clone(),
-        small,
-    )
+    let mut evidence = Facts::<u32, bool>::new(Namespace::new("shared", 1, "evidence").unwrap(), small)
     .unwrap();
-    let mut presence = Facts::<u32, ()>::new(
-        Namespace::new("shared", 1, "presence").unwrap(),
-        budget.clone(),
-        small,
-    )
+    let mut presence = Facts::<u32, ()>::new(Namespace::new("shared", 1, "presence").unwrap(), small)
     .unwrap();
     for hour in 0..128 {
         names
@@ -957,9 +779,8 @@ fn multiple_typed_cursors_share_one_read_phase_and_keep_evicted_facts_admitted()
                 writer: &mut stage,
                 reads: &reads,
             };
-            let phase = ReadPhase::new(&mut counted, budget.clone(), 1 << 20).unwrap();
-            for prefix in 0..4 {
-                let before = reads.get();
+            let phase = ReadPhase::new(&mut counted);
+            for _ in 0..4 {
                 let mut nr = phase.reader(&names).unwrap();
                 let mut er = phase.reader(&evidence).unwrap();
                 let mut pr = phase.reader(&presence).unwrap();
@@ -989,83 +810,9 @@ fn multiple_typed_cursors_share_one_read_phase_and_keep_evicted_facts_admitted()
                 assert!(nr.next(&mut nc).unwrap().is_none());
                 assert!(er.next(&mut ec).unwrap().is_none());
                 assert!(pr.next(&mut pc).unwrap().is_none());
-                if prefix > 0 {
-                    assert_eq!(reads.get(), before);
-                }
-                assert!(phase.cached_bytes() <= 1 << 20);
             }
         }
         assert_eq!(stage.read_dependency_counts().0, 1);
-        assert!(stage.read_dependency_counts().1 < 512);
         writer.adopt_all(stage.into_staged().unwrap()).unwrap();
     }
-    {
-        let phase = ReadPhase::new(&mut writer, budget.clone(), 1024).unwrap();
-        let mut r = phase.reader(&names).unwrap();
-        let pinned = r.at(&1, 0).unwrap().unwrap();
-        let held = budget.used();
-        for hour in 1..128 {
-            assert!(r.at(&1, hour).unwrap().is_some());
-        }
-        assert_eq!(pinned.status, Status::Value("name-0".into()));
-        assert!(budget.used() >= held.min(1024));
-        let before = budget.used();
-        drop(pinned);
-        assert!(budget.used() < before);
-    }
-    let other = MemoryBudget::new(32 << 20);
-    let phase = ReadPhase::new(&mut writer, other, 4096).unwrap();
-    assert!(phase.reader(&names).is_err());
-}
-
-#[test]
-fn spill_scratch_cannot_bypass_exhausted_caller_credit() {
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let budget = MemoryBudget::new(8191);
-    let error =
-        pages::write(&mut writer, &budget, "private-scratch", b"data".as_slice()).unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-    assert_eq!(writer.bytes_written(), 0);
-    assert_eq!(budget.used(), 0);
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let mut facts = facts::<String>();
-    facts
-        .append(&mut writer, 1, 0, 0, Status::Value("first".into()))
-        .unwrap();
-    let reserved = facts
-        .budget
-        .admit(facts.budget.limit() - facts.budget.used())
-        .unwrap();
-    assert_eq!(
-        facts.retire(&mut writer, &1).unwrap_err().kind(),
-        io::ErrorKind::WouldBlock
-    );
-    assert_eq!(writer.bytes_written(), 0);
-    drop(reserved);
-    assert!(facts.checkpoint(&mut writer, 1).is_err());
-}
-
-#[test]
-fn exhausted_read_admission_keeps_the_same_fact_cursor_position() {
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let mut facts = facts::<String>();
-    facts
-        .append(&mut writer, 1, 0, 0, Status::Value("x".repeat(4096)))
-        .unwrap();
-    facts.retire(&mut writer, &1).unwrap();
-    let budget = facts.budget.clone();
-    let phase = ReadPhase::new(&mut writer, budget.clone(), 0).unwrap();
-    let mut reader = phase.reader(&facts).unwrap();
-    let mut facts_cursor = reader.cursor(&1, 0, 0).unwrap();
-    let reserved = budget.admit(budget.limit() - budget.used()).unwrap();
-    assert_eq!(
-        reader.next(&mut facts_cursor).err().unwrap().kind(),
-        io::ErrorKind::WouldBlock
-    );
-    drop(reserved);
-    assert_eq!(reader.next(&mut facts_cursor).unwrap().unwrap().first, 0);
-    assert!(reader.next(&mut facts_cursor).unwrap().is_none());
 }

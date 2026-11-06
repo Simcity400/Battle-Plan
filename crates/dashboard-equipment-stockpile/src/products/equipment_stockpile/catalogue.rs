@@ -11,7 +11,7 @@
 
 use super::{
     NEED_BOUND_RAW, StockType, UNRESOLVED_MARK,
-    content::{Published, Reading, Types, publication, text_bytes},
+    content::{Published, Reading, Types, publication},
     emit as layout,
     read::{self, Cells, DailyStream, Logistics, LogisticsStream},
 };
@@ -33,7 +33,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    mem::size_of,
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
@@ -263,30 +262,6 @@ struct Replay {
     counts: Vec<(i32, [u64; 11])>,
 }
 
-impl Replay {
-    fn bytes(&self) -> usize {
-        let spans = [&self.stock, &self.lines, &self.balance, &self.ai]
-            .iter()
-            .map(|spans| spans.capacity() * size_of::<HourSpan>())
-            .sum::<usize>();
-        let variants = self
-            .variants
-            .values()
-            .map(|changes| 64 + changes.capacity() * size_of::<(i32, Stock)>())
-            .sum::<usize>();
-        let logistics = self
-            .logistics
-            .values()
-            .map(|changes| 64 + changes.capacity() * size_of::<(i32, Option<Logistics>)>())
-            .sum::<usize>();
-        size_of::<Self>()
-            + spans
-            + variants
-            + logistics
-            + self.counts.capacity() * size_of::<(i32, [u64; 11])>()
-    }
-}
-
 fn known_spans(rows: Vec<Evidence>) -> Vec<HourSpan> {
     rows.iter()
         .filter(|row| read::known(Some(row)))
@@ -494,95 +469,6 @@ struct Model {
 }
 
 impl Model {
-    fn bytes(&self) -> usize {
-        // A map entry's node share, conservatively.
-        const ENTRY: usize = 64;
-        let names = self
-            .variants
-            .values()
-            .map(|member| {
-                ENTRY
-                    + size_of::<(u64, Member)>()
-                    + member.token.capacity()
-                    + member.archetype.as_ref().map_or(0, String::capacity)
-                    + member.names.capacity() * size_of::<StockVariantName>()
-                    + member
-                        .names
-                        .iter()
-                        .map(|name| {
-                            name.name.as_ref().map_or(0, String::capacity)
-                                + name.design.as_ref().map_or(0, String::capacity)
-                        })
-                        .sum::<usize>()
-                    + text_bytes(&member.designs)
-                    + (member.designs.capacity() - member.designs.len()) * size_of::<String>()
-            })
-            .sum::<usize>();
-        let groups = self.groups.capacity() * size_of::<Group>()
-            + self
-                .groups
-                .iter()
-                .map(|group| {
-                    group.wire.capacity()
-                        + group.key.capacity()
-                        + group.variants.capacity() * size_of::<u64>()
-                        + text_bytes(&group.types)
-                        + (group.types.capacity() - group.types.len()) * size_of::<String>()
-                })
-                .sum::<usize>();
-        let lines = self.lines.capacity() * size_of::<Vec<Lines>>()
-            + self
-                .lines
-                .iter()
-                .map(|holder| holder.capacity() * size_of::<Lines>())
-                .sum::<usize>()
-            + self
-                .lines
-                .iter()
-                .flatten()
-                .map(|lines| {
-                    lines.stock.capacity() * size_of::<Piece<i128>>()
-                        + lines.logistics.capacity() * size_of::<Piece<Balance>>()
-                })
-                .sum::<usize>();
-        let types = self.types.capacity() * size_of::<StockType>()
-            + self
-                .types
-                .iter()
-                .map(|kind| {
-                    kind.key.capacity()
-                        + kind.name.as_ref().map_or(0, String::capacity)
-                        + kind.need_note.as_ref().map_or(0, String::capacity)
-                })
-                .sum::<usize>();
-        // Its replays stay charged while it holds them, however long theirs are kept.
-        size_of::<Self>()
-            + self.replays.capacity() * size_of::<Arc<Replay>>()
-            + self.replays.iter().map(|replay| replay.bytes()).sum::<usize>()
-            + text_bytes(&self.tags)
-            + types
-            + names
-            + groups
-            + lines
-            + self
-                .logistics
-                .iter()
-                .map(|(key, (tokens, _))| {
-                    ENTRY
-                        + size_of::<(String, (Vec<u64>, bool))>()
-                        + key.capacity()
-                        + tokens.capacity() * size_of::<u64>()
-                })
-                .sum::<usize>()
-            + text_bytes(&self.warnings)
-            + (self.warnings.capacity() - self.warnings.len()) * size_of::<String>()
-            + self
-                .schedules
-                .iter()
-                .map(|runs| runs.capacity() * size_of::<(i32, i32, i32)>())
-                .sum::<usize>()
-    }
-
     fn group(&self, wire: &str) -> Option<usize> {
         self.groups.iter().position(|group| group.wire == wire)
     }
@@ -954,7 +840,6 @@ fn model<P: PageRead>(
         &(tags, included),
         &publication,
         cancelled,
-        Model::bytes,
         || {
             let mut replays = Vec::with_capacity(tags.len());
             for tag in tags {
@@ -964,7 +849,6 @@ fn model<P: PageRead>(
                     tag,
                     &publication,
                     cancelled,
-                    Replay::bytes,
                     || replay(snapshot, directory, tag, cancelled),
                 )?);
             }
@@ -1265,9 +1149,6 @@ pub fn query<P: PageRead>(
         &(&params.holders, &params.included),
         &publication,
         cancelled,
-        |reply: &StockpileCatalogueReply| {
-            dashboard_base::prepared::query::observations::serde_bytes(reply)
-        },
         || catalogue(snapshot, directory, branch, params, reading, cancelled),
     )?;
     Ok(StockpileCatalogueReply::clone(&reply))

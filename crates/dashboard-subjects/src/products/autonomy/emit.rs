@@ -155,12 +155,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 2]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 2]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -180,7 +180,7 @@ impl Emit {
     }
 
     /// The subject actor named `tag`, with its keys, made at `hour` when it is new.
-    fn subject(&mut self, writer: &mut Writer<'_>, tag: &Arc<str>, hour: i32) -> io::Result<u64> {
+    fn subject(&mut self, writer: &mut Writer, tag: &Arc<str>, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -240,7 +240,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("autonomy.emit", None);
         let at = hour.hour;
         let adjacent = match self.last {
@@ -349,7 +349,7 @@ impl Emit {
 
     /// `actor`'s sample observed at `at`: its band starts anew where its fields changed or its
     /// runs do not go on from the hour before, and each value changed starts a run.
-    fn observe(&mut self, writer: &mut Writer<'_>, actor: u64, at: i32, adjacent: bool) -> io::Result<()> {
+    fn observe(&mut self, writer: &mut Writer, actor: u64, at: i32, adjacent: bool) -> io::Result<()> {
         let index = actor as usize;
         let sample = self.subjects[index]
             .sample
@@ -428,7 +428,7 @@ impl Emit {
     }
 
     /// Ends `actor`'s runs before `at`, the hour after its last observation.
-    fn deactivate(&mut self, writer: &mut Writer<'_>, actor: u64, at: i32) -> io::Result<()> {
+    fn deactivate(&mut self, writer: &mut Writer, actor: u64, at: i32) -> io::Result<()> {
         let subject = &mut self.subjects[actor as usize];
         if !subject.active {
             return Ok(());
@@ -443,7 +443,7 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for subject in &mut self.subjects {
             if std::mem::take(&mut subject.active) {
@@ -456,7 +456,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

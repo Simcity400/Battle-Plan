@@ -381,7 +381,7 @@ struct Runs {
 
 impl Runs {
     /// Appends the piece of `run` no cut appended, through `last`.
-    fn append(writer: &mut Writer<'_>, key: KeyHandle, run: Open, last: i32) -> io::Result<()> {
+    fn append(writer: &mut Writer, key: KeyHandle, run: Open, last: i32) -> io::Result<()> {
         let first = match run.through {
             Some(through) => through.saturating_add(1),
             None => run.first,
@@ -402,7 +402,7 @@ impl Runs {
     /// going on without a break changes nothing.
     fn value(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         value: Option<i128>,
@@ -434,17 +434,22 @@ impl Runs {
     }
 
     /// Ends every open run after `last`.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         for (key, run) in std::mem::take(&mut self.open) {
             Self::append(writer, key, run, last)?;
         }
         Ok(())
     }
 
-    /// Appends every open run through `last`; they stay open.
-    fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    /// Takes every open run through `last`; they stay open. One that began since the last cut is
+    /// appended, one carried out of it held.
+    fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         for (&key, run) in &mut self.open {
-            Self::append(writer, key, *run, last)?;
+            match run.through {
+                None => Self::append(writer, key, *run, last)?,
+                Some(through) if through < last => writer.hold(key, last)?,
+                Some(_) => {}
+            }
             run.through = Some(last);
         }
         Ok(())
@@ -501,7 +506,7 @@ pub struct Emit {
 
 /// Writes an event of `key` at `hour`.
 fn event(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     key: KeyHandle,
     hour: i32,
     kind: u64,
@@ -520,7 +525,7 @@ fn event(
 
 /// Writes `value`, as JSON text, as the one field of an event of `key` at `hour`.
 fn json_event(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     key: KeyHandle,
     hour: i32,
     kind: u64,
@@ -534,7 +539,7 @@ fn json_event(
 /// The key of a family measure: one key, or one by `dimension`.
 fn family_key(
     actors: &mut Actors,
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     measure: u64,
     dimension: Option<u64>,
 ) -> io::Result<KeyHandle> {
@@ -553,7 +558,7 @@ fn family_key(
 /// Lists the project `key` among `window`'s members, at `hour`.
 fn member(
     actors: &mut Actors,
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     window: u64,
     hour: i32,
     key: KeyHandle,
@@ -570,7 +575,7 @@ fn amount(raw: &str) -> io::Result<i128> {
 }
 
 /// An output read's fields.
-fn output_cells(writer: &mut Writer<'_>, read: &ConstructionOutputRead) -> io::Result<Blob> {
+fn output_cells(writer: &mut Writer, read: &ConstructionOutputRead) -> io::Result<Blob> {
     let raw = |raw: &Option<String>| -> io::Result<Cell> {
         Ok(match raw {
             Some(raw) => Cell::Integer(amount(raw)?),
@@ -603,7 +608,7 @@ impl Emit {
     }
 
     /// A new project's key.
-    fn project_key(&mut self, writer: &mut Writer<'_>) -> io::Result<KeyHandle> {
+    fn project_key(&mut self, writer: &mut Writer) -> io::Result<KeyHandle> {
         let number = self.state.next_project;
         self.state.next_project += 1;
         let bytes = number.to_le_bytes();
@@ -624,7 +629,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: observed::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: observed::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("construction.emit", None);
         let at = hour.hour;
         let adjacent = match self.state.last {
@@ -671,7 +676,7 @@ impl Emit {
 
     /// Ends each window whose last hour was not walked, before `at`: what it carried is listed
     /// at `at`.
-    fn pass(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn pass(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         while self
             .windows
             .get(self.state.block)
@@ -688,7 +693,7 @@ impl Emit {
 
     /// A window's end at its last hour: its carried runs reach it, and every project carried
     /// or read in it is its member.
-    fn end_block(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn end_block(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.scan.seal();
         if let Some(hour) = self.scan.last {
             self.project(writer, hour)?;
@@ -701,7 +706,7 @@ impl Emit {
     }
 
     /// The branch ends at `last`, the last hour walked: the window it falls in ends there.
-    pub fn end(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn end(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if self.state.last == Some(last) && self.state.block < self.windows.len() {
             self.end_block(writer, last)?;
             self.state.block += 1;
@@ -710,7 +715,7 @@ impl Emit {
     }
 
     /// Publishes what the scan changed of its projects at `hour`.
-    fn project(&mut self, writer: &mut Writer<'_>, hour: i32) -> io::Result<()> {
+    fn project(&mut self, writer: &mut Writer, hour: i32) -> io::Result<()> {
         let dirty = std::mem::take(&mut self.scan.dirty);
         if dirty.is_empty() && self.scan.log.output_reads.is_empty() {
             return Ok(());
@@ -1044,7 +1049,7 @@ impl Emit {
     }
 
     /// Writes each final project's leaf entries and forgets it.
-    fn retire(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn retire(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         let kept = self.scan.kept();
         for (index, project) in self.scan.log.projects.iter().enumerate() {
             if kept.contains(&index) {
@@ -1090,7 +1095,7 @@ impl Emit {
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next: every final project's entries, each changed leaf, what the replies share where it
     /// changed, and the hours since the last cut as known.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.retire(writer, last)?;
         for (id, leaf) in &mut self.state.leaves {
             if !std::mem::take(&mut leaf.dirty) {
@@ -1117,7 +1122,7 @@ impl Emit {
     }
 
     /// The hours walked one after another since the last cut or break, through `last`, as known.
-    fn known(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if let Some(first) = self.state.first.take() {
             writer.domain(
                 DOMAIN,

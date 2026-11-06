@@ -94,7 +94,7 @@ impl ScriptedContent {
     }
     pub(super) fn lazy_world<'a>(
         &'a self,
-        frame: &'a dyn replay_frame::frame::DecodedSource,
+        frame: replay_frame::frame::HourFrame<'a>,
     ) -> Result<World<'a>, String> {
         let environment = self.prepared_environment().map_err(str::to_owned)?;
         #[cfg(any(test, feature = "test-support"))]
@@ -113,7 +113,7 @@ impl ScriptedContent {
             })
             .as_ref()
             .map_err(Clone::clone)?;
-        Ok(World::read(
+        Ok(World::read_in(
             frame,
             ContentFacts::content_only(
                 dlcs,

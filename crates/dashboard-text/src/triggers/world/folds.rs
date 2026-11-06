@@ -2,7 +2,6 @@
 //! each fold's literal once, lower-cased, in one buffer, found by its hash.
 
 use crate::triggers::{Failure, refusal::refused};
-use replay_data::rows::LexicalTokenRow;
 use std::collections::BTreeMap;
 
 /// Where `index` holds no fold.
@@ -30,6 +29,15 @@ pub(in crate::triggers) struct Folds {
     refused: BTreeMap<u32, Failure>,
 }
 
+/// Why a fold several literals share, `literal` the last by token, names no token: one token
+/// per fold natively.
+pub(super) fn several(literal: &[u8]) -> Failure {
+    refused(format!(
+        "{} names several lexer tokens",
+        String::from_utf8_lossy(literal)
+    ))
+}
+
 /// `literal`'s hash under the fold.
 fn hash(literal: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -40,44 +48,40 @@ fn hash(literal: &[u8]) -> u64 {
 }
 
 impl Folds {
-    /// The folds of `rows`, in their order.
-    pub(super) fn read<'a>(rows: impl ExactSizeIterator<Item = &'a LexicalTokenRow>) -> Self {
-        let slots = (rows.len() * 2).max(2).next_power_of_two();
+    /// The folds of `len` rows, each a token and its literal, in their order; refused where a
+    /// row does not read.
+    pub(super) fn read<'a>(
+        len: usize,
+        rows: impl Iterator<Item = Result<(u32, &'a [u8]), Failure>>,
+    ) -> Result<Self, Failure> {
+        let slots = (len * 2).max(2).next_power_of_two();
         let mut folds = Self {
             text: Vec::new(),
-            folds: Vec::with_capacity(rows.len()),
+            folds: Vec::with_capacity(len),
             index: vec![EMPTY; slots],
             shift: 64 - slots.trailing_zeros(),
             refused: BTreeMap::new(),
         };
         for row in rows {
-            let hash = hash(&row.literal);
-            match folds.find(hash, &row.literal) {
+            let (token, literal) = row?;
+            let hash = hash(literal);
+            match folds.find(hash, literal) {
                 Ok(at) => {
-                    // One token per fold natively: two are refused.
-                    folds.refused.insert(
-                        at,
-                        refused(format!(
-                            "{} names several lexer tokens",
-                            String::from_utf8_lossy(&row.literal)
-                        )),
-                    );
+                    folds.refused.insert(at, several(literal));
                 }
                 Err(slot) => {
                     folds.index[slot] = folds.folds.len() as u32;
                     folds.folds.push(Fold {
                         hash,
                         start: folds.text.len(),
-                        len: row.literal.len(),
-                        token: row.token,
+                        len: literal.len(),
+                        token,
                     });
-                    folds
-                        .text
-                        .extend(row.literal.iter().map(u8::to_ascii_lowercase));
+                    folds.text.extend(literal.iter().map(u8::to_ascii_lowercase));
                 }
             }
         }
-        folds
+        Ok(folds)
     }
 
     /// The token `name` names under the fold, or why it names none; None where no literal

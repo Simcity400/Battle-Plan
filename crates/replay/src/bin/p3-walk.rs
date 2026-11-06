@@ -1,4 +1,4 @@
-//! Walks a `p3-convert` file (version 3) from its first hour through replay-columnar's
+//! Walks a `p3-convert` file (version 4) from its first hour through replay-columnar's
 //! reader and reports, per recorded hour, the CPU of decompressing units, reading
 //! manifests and applying sections, then the time to start a walker at each restart.
 //! With `--rows`, also builds the recording's row values for every slot each hour
@@ -6,7 +6,7 @@
 //! table's live rows and changes per hour. Measurement only:
 //! `p3-walk <file> [repetitions] [--rows] [--table=<Name>]`.
 
-use replay::columnar_frames::{Limits, Recording, Walker};
+use replay::columnar_frames::{Recording, Walker};
 use replay_columnar::{
     state::{Cell, Kind as Column, Table},
     walk::{Dictionary, State},
@@ -19,7 +19,6 @@ use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::atomic::AtomicBool,
     time::Instant,
 };
 
@@ -207,7 +206,7 @@ fn main() -> io::Result<()> {
                 .ok_or_else(|| invalid(format!("No table {name}")))
         })
         .transpose()?;
-    let file = Recording::open_path(&path, Limits::default())?;
+    let file = Recording::open_path(&path)?;
     if let Some(damage) = file.damage().first() {
         return Err(invalid(damage.to_string()));
     }
@@ -227,10 +226,9 @@ fn main() -> io::Result<()> {
         }
     }
 
-    let stop = AtomicBool::new(false);
     let mut runs = Vec::new();
     for _ in 0..repetitions {
-        let mut walker = Walker::new(&file, &stop)?;
+        let mut walker = Walker::new(&file)?;
         walker.time();
         let mut state = State::new(schema.clone())?;
         let (mut hours, mut sections, mut changed, mut inserted, mut deleted, mut filled) =

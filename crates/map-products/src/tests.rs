@@ -1024,7 +1024,7 @@ fn fog_vision_ancillary_and_error_bytes_match_the_pre_extraction_builder() {
         let vision = old.ancillary_vision(&choice()).unwrap();
         assert_eq!(*hour.vision(&choice()).unwrap(), *vision);
         let fog = hour
-            .fog(&choice(), &FogMemos::new(8), &mut BuilderSpans::new(false))
+            .fog(&choice(), &FogMemos::new(), &mut BuilderSpans::new(false))
             .unwrap();
         assert_eq!(fog.intel.texels, [0, 0]);
         assert!(!fog.intel.fog);
@@ -1061,7 +1061,7 @@ fn fog_vision_ancillary_and_error_bytes_match_the_pre_extraction_builder() {
             hour_fraction: 0.,
         };
         let actual = hour
-            .fog(&choice(), &FogMemos::new(8), &mut BuilderSpans::new(false))
+            .fog(&choice(), &FogMemos::new(), &mut BuilderSpans::new(false))
             .err()
             .unwrap();
         let expected = old.fog_vision(&choice()).unwrap_err();
@@ -1350,7 +1350,7 @@ fn closed_fog_matches_independent_builder_for_countries_switches_and_source_gaps
                         hour_fraction: 0.5,
                     };
                     let expected = old.fog_display(&choice).unwrap();
-                    let memos = FogMemos::new(8);
+                    let memos = FogMemos::new();
                     let actual = ProductHour::new(&content, &frame, 0.5)
                         .fog(&choice, &memos, &mut BuilderSpans::new(false))
                         .unwrap();
@@ -1465,7 +1465,7 @@ fn snow_product_is_owned_deduplicates_equal_outputs_and_keeps_refresh_identity()
             weight: 1.0,
         }]],
     };
-    let memo = display::SnowMemo::new(8);
+    let memo = display::SnowMemo::new();
     let mut frame = frame(2);
     put(
         &mut frame,
@@ -1570,7 +1570,7 @@ fn snow_wire_and_status_match_the_frozen_scalar_for_gaps_edges_and_refresh() {
             }
             .into();
             let actual = ProductHour::new(&content, &frame, 0.0)
-                .snow(&cells, &winter, &display::SnowMemo::new(8))
+                .snow(&cells, &winter, &display::SnowMemo::new())
                 .unwrap();
             let expected = display_oracle::snow(&content.map, &perm, &frame, &winter).unwrap();
             let wire = product_codec::encode(&*actual).unwrap();
@@ -1593,7 +1593,7 @@ fn fog_products_and_memos_do_not_pin_their_source_tables() {
     let stack = fixture("products_no_source_pins");
     let content = content(&stack);
     let frame = frame(1500);
-    let memos = FogMemos::new(8);
+    let memos = FogMemos::new();
     let product = ProductHour::new(&content, &frame, 0.0)
         .fog(&choice(), &memos, &mut BuilderSpans::new(false))
         .unwrap();
@@ -1657,7 +1657,7 @@ fn direct_owned_vision_keeps_the_old_keyed_source_census_and_decisions() {
     let stack = fixture("products_vision_old_census");
     let content = content(&stack);
     let frame = frame(1500);
-    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES, 8);
+    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES);
     for fog in [false, true] {
         let choice = perspective::Choice {
             country: perspective::Country::Tag("Z1500".into()),
@@ -1820,7 +1820,7 @@ fn assert_frozen_fog(
     let reference = old.fog_vision(choice).unwrap();
     let hour = ProductHour::new(content, frame, 0.5);
     let actual = hour
-        .fog(choice, &FogMemos::new(8), &mut BuilderSpans::new(false))
+        .fog(choice, &FogMemos::new(), &mut BuilderSpans::new(false))
         .unwrap();
     assert_eq!(
         product_codec::encode(&actual.display()).unwrap(),
@@ -2126,7 +2126,7 @@ fn snow_interior_matches_frozen_scalar_with_mixed_provinces_and_permanent_snow()
         previous = Some(expected.texels.clone());
         let cells = map_snow::SnowCells::new(&content.map, &mask).unwrap();
         let actual = ProductHour::new(&content, &frame, 0.0)
-            .snow(&cells, &winter, &display::SnowMemo::new(8))
+            .snow(&cells, &winter, &display::SnowMemo::new())
             .unwrap();
         assert_eq!(
             product_codec::encode(&*actual).unwrap(),
@@ -2401,7 +2401,7 @@ fn shared_vision_keeps_the_enforced_census_and_rejects_changed_same_hour_inputs(
     let content = fog_content(&stack);
     let mut frame = fog_frame(1500);
     let choice = perspective::Choice::default();
-    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES, 8);
+    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES);
     let expected =
         perspective::cached_vision(&frame, &choice, FogContent::loaded(&content.fog), &memo)
             .unwrap();
@@ -2795,7 +2795,7 @@ fn snow_boundary_deltas_keep_refresh_only_changes_and_recover_after_refusal() {
 fn the_intel_map_follows_perspective_and_visibility_changes_against_frozen_output() {
     let stack = fixture("products_fog_delta_install");
     let content = fog_content(&stack);
-    let memos = FogMemos::new(8);
+    let memos = FogMemos::new();
     let mut frame = fog_frame(3);
     let mut previous: Option<Arc<IntelMap>> = None;
     for step in 0..8 {
@@ -2990,7 +2990,7 @@ fn incremental_fog_matches_frozen_bytes_and_knownness_without_population_sized_u
     let stack = fixture("fog_incremental_changes");
     for count in [3, 1500, 5000] {
         let content = fog_content(&stack);
-        let memos = FogMemos::new(8);
+        let memos = FogMemos::new();
         let choice = perspective::Choice::default();
         let mut certified = CertifiedFrames::default();
         let mut frame = fog_frame(count);
@@ -3159,7 +3159,7 @@ fn incremental_vision_keeps_fresh_empty_and_missing_views_change_proportional() 
     let stack = fixture("fog_fresh_absence_views");
     for count in [3, 1500, 5000] {
         let content = fog_content(&stack);
-        let memos = FogMemos::new(8);
+        let memos = FogMemos::new();
         for kind in 0..4 {
             let mut certified = CertifiedFrames::default();
             let mut frame = fog_frame(count);
@@ -3212,7 +3212,7 @@ fn incremental_vision_keeps_fresh_empty_and_missing_views_change_proportional() 
 fn incremental_vision_keeps_visibility_roots_when_changed_intel_leaves_province_bytes_equal() {
     let stack = fixture("fog_equal_visibility_roots");
     let content = fog_content(&stack);
-    let memos = FogMemos::new(8);
+    let memos = FogMemos::new();
     let mut certified = CertifiedFrames::default();
     let mut frame = fog_frame(3);
     let choice = perspective::Choice::default();
@@ -3242,7 +3242,7 @@ fn incremental_vision_keeps_visibility_roots_when_changed_intel_leaves_province_
 fn incremental_vision_refreshes_empty_descriptors_after_certified_insertions() {
     let stack = fixture("fog_empty_descriptor_refresh");
     let content = fog_content(&stack);
-    let memos = FogMemos::new(8);
+    let memos = FogMemos::new();
     let mut certified = CertifiedFrames::default();
     let mut frame = fog_frame(3);
     let rows = frame
@@ -3277,7 +3277,7 @@ fn incremental_fog_preserves_ordered_radar_network_fleet_volunteer_and_invasion_
         fog.defines.radar_effect = -225;
         fog.defines.map_cutoffs = vec![50_000, -500_000, 100_001, 500_000];
         let content = ProductContent::from_inputs(reads, inputs);
-        let memos = FogMemos::new(8);
+        let memos = FogMemos::new();
         let mut certified = CertifiedFrames::default();
         let mut frame = fog_frame(count);
         put(
@@ -3584,7 +3584,7 @@ fn incremental_fog_country_zero_packets_clocks_refusals_and_recovery_match_froze
         fog.topology.neighbors.insert(3, vec![2]);
         fog.defines.map_cutoffs = vec![50_000, -500_000, 100_001, 500_000];
         let content = ProductContent::from_inputs(reads, inputs);
-        let memos = FogMemos::new(8);
+        let memos = FogMemos::new();
         let mut certified = CertifiedFrames::default();
         let mut frame = fog_frame(count);
         let mut links = frame

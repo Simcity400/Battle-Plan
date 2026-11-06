@@ -194,12 +194,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 2]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 2]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -219,7 +219,7 @@ impl Emit {
     }
 
     /// The tag actor named `tag`, with its keys.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -248,7 +248,7 @@ impl Emit {
     /// Keeps one projected hour, its completions presented with `recorded`'s content.
     pub fn hour(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: facts::Hour,
         recorded: Option<&Recorded<'_>>,
     ) -> io::Result<()> {
@@ -427,7 +427,7 @@ impl Emit {
     }
 
     /// The id of the refusal set `read`, catalogued when it is new.
-    fn set(&mut self, writer: &mut Writer<'_>, read: &[TableRefusal]) -> io::Result<u64> {
+    fn set(&mut self, writer: &mut Writer, read: &[TableRefusal]) -> io::Result<u64> {
         let json = serde_json::to_vec(read)?;
         if let Some(&id) = self.sets.get(&json) {
             return Ok(id);
@@ -440,7 +440,7 @@ impl Emit {
     }
 
     /// `actor` is not observed from `at`: its runs end.
-    fn absent(&mut self, writer: &mut Writer<'_>, at: i32, actor: u64) -> io::Result<()> {
+    fn absent(&mut self, writer: &mut Writer, at: i32, actor: u64) -> io::Result<()> {
         let track = &mut self.tracks[actor as usize];
         if !track.live {
             return Ok(());
@@ -458,7 +458,7 @@ impl Emit {
     /// `actor` observed at `at` as `observed`.
     fn observe(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         observed: &facts::Observation,
@@ -528,7 +528,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn order(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         observed: &facts::Observation,
@@ -614,7 +614,7 @@ impl Emit {
             len: tokens.len() as u64,
         };
         if track.event.as_ref() != Some(&published) {
-            let text = |writer: &mut Writer<'_>, text: &Option<String>| -> io::Result<Cell> {
+            let text = |writer: &mut Writer, text: &Option<String>| -> io::Result<Cell> {
                 Ok(match text {
                     Some(text) => Cell::Text(writer.text(text)?),
                     None => Cell::Null,
@@ -648,7 +648,7 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for actor in self.live.drain() {
             let track = &mut self.tracks[actor as usize];
@@ -660,7 +660,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

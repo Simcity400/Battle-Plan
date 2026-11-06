@@ -46,7 +46,7 @@ use replay_data::{rows::TableId, rows::tables};
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -71,11 +71,6 @@ const TABLES: [TableId; 12] = [
     TableId::WarRelations,
     TableId::CountryCounterInputs,
 ];
-
-#[cfg(any(test, feature = "test-support"))]
-pub const CACHED_BRANCHES: usize = 2;
-#[cfg(any(test, feature = "test-support"))]
-const CACHED_COUNTRIES: usize = 8;
 
 /// An idea held over consecutive recorded hours. An advisor idea carries the
 /// seat and character the recording gave it for this span; a change of either
@@ -1771,10 +1766,11 @@ pub fn effect_keys<'a>(
     (modifier_keys, text_keys)
 }
 
+/// One scan per branch of the source revision.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct BranchCache {
-    entries: VecDeque<(u64, Arc<ScannedIdeaBranch>)>,
+    entries: BTreeMap<u64, Arc<ScannedIdeaBranch>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1784,23 +1780,18 @@ pub fn scanned_branch(
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<ScannedIdeaBranch>> {
     let state = source.state::<BranchCache>();
-    {
-        let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(index) = cache.entries.iter().position(|(key, _)| *key == branch) {
-            let entry = cache.entries.remove(index).expect("cached branch exists");
-            let scanned = Arc::clone(&entry.1);
-            cache.entries.push_back(entry);
-            return Ok(scanned);
-        }
+    let cached = state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entries
+        .get(&branch)
+        .map(Arc::clone);
+    if let Some(scanned) = cached {
+        return Ok(scanned);
     }
     let scanned = Arc::new(scan_all(&source.replay(), branch, cancelled)?);
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    cache.entries.retain(|(key, _)| *key != branch);
-    cache.entries.push_back((branch, Arc::clone(&scanned)));
-    while cache.entries.len() > CACHED_BRANCHES {
-        cache.entries.pop_front();
-    }
-    Ok(scanned)
+    Ok(Arc::clone(cache.entries.entry(branch).or_insert(scanned)))
 }
 
 /// What the event feed reads of the ideas family, from the row recording's scan: the parity
@@ -1846,10 +1837,7 @@ pub fn row_feed(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Res
 }
 
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Default)]
-struct Cache {
-    entries: VecDeque<((u64, String), Arc<ScannedIdeas>)>,
-}
+type Cache = crate::latest::BranchLatest<String, ScannedIdeas>;
 
 impl Product for IdeaHistory {
     const KEY: &'static str = "idea-history";
@@ -1890,21 +1878,11 @@ impl Product for IdeaHistory {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let content = politics_content(source, context.content()?)?;
-        let key = (params.branch(), params.tag.clone());
         let state = source.state::<Cache>();
-        let cached = {
-            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache
-                .entries
-                .iter()
-                .position(|(cached, _)| *cached == key)
-                .map(|index| {
-                    let entry = cache.entries.remove(index).expect("cached country exists");
-                    let scanned = Arc::clone(&entry.1);
-                    cache.entries.push_back(entry);
-                    scanned
-                })
-        };
+        let cached = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(params.branch(), &params.tag);
         // Keep the selected-country scan outside the cache lock.
         let scanned = match cached {
             Some(scanned) => scanned,
@@ -1915,12 +1893,10 @@ impl Product for IdeaHistory {
                     &params.tag,
                     cancelled,
                 )?);
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache.entries.retain(|(cached, _)| *cached != key);
-                cache.entries.push_back((key, Arc::clone(&scanned)));
-                while cache.entries.len() > CACHED_COUNTRIES {
-                    cache.entries.pop_front();
-                }
+                state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .put(params.branch(), params.tag.clone(), &scanned);
                 scanned
             }
         };

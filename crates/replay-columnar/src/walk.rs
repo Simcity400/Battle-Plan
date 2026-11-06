@@ -6,18 +6,11 @@ use crate::{
     invalid,
     leaf::{Reader, Writer},
     manifest::{Manifest, Status},
-    restart::{self, Acquisition},
+    restart::{self, Acquisition, Last, Restored},
     section::{self, Changes, Scratch},
     state::{Column, Kind, Table},
 };
-use std::{
-    collections::HashMap,
-    fmt, io,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{collections::HashMap, fmt, io, sync::Arc};
 
 #[cfg(test)]
 mod tests;
@@ -155,8 +148,9 @@ impl Sparse {
 
 /// The recording's strings by id, appended in order and never changed. A run's dictionary
 /// ([`Self::run`]) holds what its walk appended, the chunks it pinned and single strings;
-/// past its budget it drops what no live cell names ([`State::trim_dictionary`]) and reads
-/// a string back from its chunk when a cell names it again.
+/// once it holds twice what it kept at its last trim it drops what no live cell names
+/// ([`State::trim_dictionary`]) and reads a string back from its chunk when a cell names it
+/// again.
 #[derive(Default)]
 pub struct Dictionary {
     /// The strings appended since the walk's start or the last restart it crossed.
@@ -167,7 +161,6 @@ pub struct Dictionary {
     /// Some id below the log is held by no pin.
     gaps: bool,
     chunks: Option<Arc<dyn Chunks>>,
-    budget: usize,
     /// The bytes it held after its last trim.
     trimmed: usize,
 }
@@ -193,8 +186,8 @@ impl Eq for Dictionary {}
 
 impl Dictionary {
     /// A run's dictionary, holding none of the run's first `len` strings until they are
-    /// pinned, which reads what it dropped from `chunks` and trims past `budget` bytes.
-    pub fn run(chunks: Arc<dyn Chunks>, budget: usize, len: usize) -> Self {
+    /// pinned, which reads what it dropped from `chunks`.
+    pub fn run(chunks: Arc<dyn Chunks>, len: usize) -> Self {
         Self {
             log: Packed {
                 first: len,
@@ -202,7 +195,6 @@ impl Dictionary {
             },
             gaps: len != 0,
             chunks: Some(chunks),
-            budget,
             ..Self::default()
         }
     }
@@ -362,13 +354,9 @@ impl Dictionary {
         Ok(())
     }
 
-    /// Whether a run's dictionary holds more than its budget, and twice what it held after
-    /// its last trim.
+    /// Whether a run's dictionary holds more than twice what it held after its last trim.
     fn over(&self) -> bool {
-        self.chunks.is_some() && {
-            let held = self.held_bytes();
-            held > self.budget && held / 2 > self.trimmed
-        }
+        self.chunks.is_some() && self.held_bytes() / 2 > self.trimmed
     }
 
     /// Keeps of what is below the log only the strings `named` names (ascending, each once):
@@ -483,49 +471,8 @@ fn each_text_id(
     Ok(())
 }
 
-/// The table storage the states sharing it hold at once: each table's keys and cells over its
-/// slots, charged before a restart rebuilds a table and as a section grows one, so a recording
-/// naming more slots than it allows is refused before they are allocated.
-#[derive(Debug)]
-pub struct Allowance {
-    limit: usize,
-    held: AtomicUsize,
-}
-
-impl Allowance {
-    pub fn new(limit: usize) -> Arc<Self> {
-        Arc::new(Self {
-            limit,
-            held: AtomicUsize::new(0),
-        })
-    }
-
-    /// The bytes held now.
-    pub fn held(&self) -> usize {
-        self.held.load(Ordering::Acquire)
-    }
-
-    fn charge(&self, bytes: usize) -> io::Result<()> {
-        self.held
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| {
-                held.checked_add(bytes).filter(|&total| total <= self.limit)
-            })
-            .map(drop)
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::OutOfMemory,
-                    "The recording's tables need more memory than its reader allows",
-                )
-            })
-    }
-
-    fn release(&self, bytes: usize) {
-        self.held.fetch_sub(bytes, Ordering::AcqRel);
-    }
-}
-
-/// What a state's tables are charged: each table's, their sum, and the most that sum reached
-/// since it was last taken ([`State::take_charge_peak`]).
+/// What a state's tables' storage takes, counted: each table's, their sum, and the most that
+/// sum reached since it was last taken ([`State::take_charge_peak`]).
 struct Charged {
     tables: Vec<usize>,
     total: usize,
@@ -533,34 +480,15 @@ struct Charged {
 }
 
 impl Charged {
-    fn set(&mut self, table: usize, bytes: usize) {
-        self.total = self.total - self.tables[table] + bytes;
-        self.tables[table] = bytes;
+    /// Replaces both charges before taking the peak, so a page moving between them never
+    /// counts twice.
+    fn set_both(&mut self, first: (usize, usize), second: (usize, usize)) {
+        for (table, bytes) in [first, second] {
+            self.total = self.total - self.tables[table] + bytes;
+            self.tables[table] = bytes;
+        }
         self.peak = self.peak.max(self.total);
     }
-}
-
-/// Charges `table`, of `kinds`, over `slots` slots to `allowance` in place of what `charged`
-/// holds for it.
-fn charge_to(
-    allowance: Option<&Allowance>,
-    charged: &mut Charged,
-    table: usize,
-    kinds: &[Kind],
-    slots: usize,
-) -> io::Result<()> {
-    let Some(allowance) = allowance else {
-        return Ok(());
-    };
-    let bytes = Table::storage_bytes(kinds, slots)?;
-    let was = charged.tables[table];
-    if bytes > was {
-        allowance.charge(bytes - was)?;
-    } else {
-        allowance.release(was - bytes);
-    }
-    charged.set(table, bytes);
-    Ok(())
 }
 
 /// Every schema table while a branch is walked.
@@ -581,23 +509,16 @@ pub struct State {
     pub(crate) present: Vec<usize>,
     /// Tables whose sections are not applied: no reader of the walk reads them.
     skipped: Vec<bool>,
+    /// Tables whose last complete read it keeps ([`State::keep_last`]), and each one's.
+    keeps: Vec<bool>,
+    last: Vec<Option<Last>>,
     /// Tables a reader of the walk is told it cannot read, each with why.
     withheld: Vec<Option<String>>,
     pub(crate) dictionary: Dictionary,
     /// The ids a dictionary trim keeps.
     named: Vec<u32>,
     scratch: Scratch,
-    /// What its tables' storage is charged to, and each table's charge.
-    allowance: Option<Arc<Allowance>>,
     charged: Charged,
-}
-
-impl Drop for State {
-    fn drop(&mut self) {
-        if let Some(allowance) = &self.allowance {
-            allowance.release(self.charged.total);
-        }
-    }
 }
 
 impl State {
@@ -633,66 +554,51 @@ impl State {
             sampled: engine_allocation::filled(count, None)?,
             views: engine_allocation::collect_vec((0..count).map(|_| Vec::new()))?,
             skipped: engine_allocation::filled(count, false)?,
+            keeps: engine_allocation::filled(count, false)?,
+            last: engine_allocation::collect_vec((0..count).map(|_| None))?,
             withheld: engine_allocation::collect_vec((0..count).map(|_| None))?,
             kinds: schema,
             present: Vec::new(),
             dictionary: Dictionary::default(),
             named: Vec::new(),
             scratch: Scratch::default(),
-            allowance: None,
+            // A table's last complete read held apart is counted at its index past the tables.
             charged: Charged {
-                tables: engine_allocation::filled(count, 0)?,
+                tables: engine_allocation::filled(2 * count, 0)?,
                 total: 0,
                 peak: 0,
             },
         })
     }
 
-    /// Charges its tables' storage to `allowance` from now on, refusing what would pass it.
-    pub fn allow(&mut self, allowance: Arc<Allowance>) -> io::Result<()> {
-        let held: usize = self
-            .tables
-            .iter()
-            .zip(&self.kinds)
-            .map(|(table, kinds)| Table::storage_bytes(kinds, table.slots()))
-            .sum::<io::Result<usize>>()?;
-        allowance.charge(held)?;
-        if let Some(previous) = self.allowance.replace(allowance) {
-            previous.release(self.charged.total);
-        }
-        for (charged, (table, kinds)) in self
-            .charged
-            .tables
-            .iter_mut()
-            .zip(self.tables.iter().zip(&self.kinds))
-        {
-            *charged = Table::storage_bytes(kinds, table.slots())?;
-        }
-        self.charged.total = held;
-        self.charged.peak = self.charged.peak.max(held);
-        Ok(())
-    }
-
-    /// The most its tables were charged at once since this was last taken, or it was made.
+    /// The most its tables' storage took at once since this was last taken, or it was made.
     pub fn take_charge_peak(&mut self) -> usize {
         std::mem::replace(&mut self.charged.peak, self.charged.total)
     }
 
-    /// Counts none of what its tables are charged now in its peak, for tables about to be
-    /// replaced before more is charged.
+    /// Counts none of what its tables take now in its peak, for tables about to be replaced.
     pub fn forget_charge_peak(&mut self) {
         self.charged.peak = 0;
     }
 
-    /// Charges `table`'s storage over `slots` slots in place of what it was charged.
-    fn charge(&mut self, table: usize, slots: usize) -> io::Result<()> {
-        charge_to(
-            self.allowance.as_deref(),
-            &mut self.charged,
-            table,
-            &self.kinds[table],
-            slots,
-        )
+    /// What `table`'s last complete read held apart holds alone and the pages only it and the
+    /// table hold, which neither's own count holds; none when it holds none.
+    fn apart_bytes(&self, table: usize) -> usize {
+        match &self.last[table] {
+            Some(Last::Apart(apart, _)) => {
+                apart.owned_bytes() + apart.shared_bytes(&self.tables[table])
+            }
+            _ => 0,
+        }
+    }
+
+    /// Counts what `table` and its last complete read held apart hold, each page once.
+    fn charge_both(&mut self, table: usize) -> io::Result<()> {
+        let live = self.tables[table].owned_bytes();
+        let apart = self.apart_bytes(table);
+        let at = self.tables.len() + table;
+        self.charged.set_both((table, live), (at, apart));
+        Ok(())
     }
 
     /// Each table's column count the recording holds, as a manifest is read with.
@@ -713,6 +619,35 @@ impl State {
     /// Whether `table`'s sections are left unapplied.
     pub fn skips(&self, table: usize) -> bool {
         self.skipped.get(table).copied().unwrap_or(false)
+    }
+
+    /// Keeps the last complete read of the tables `keeps` marks, as their writers keep it for
+    /// restarts, from the next restore or hour on.
+    pub fn keep_last(&mut self, keeps: &[bool]) -> io::Result<()> {
+        if keeps.len() != self.keeps.len() {
+            return Err(invalid("A selection disagrees with the schema's tables"));
+        }
+        self.keeps.copy_from_slice(keeps);
+        let count = self.tables.len();
+        for at in 0..count {
+            if !keeps[at] && self.last[at].take().is_some() {
+                self.charge_both(at)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `table`'s last complete read, when it keeps one: its rows (the table's own while no hour
+    /// since changed them) and the hour of the read when known. A walk started at a restart
+    /// knows it without the hours before.
+    pub fn last_complete(&self, table: usize) -> Option<(&Table, Option<i32>)> {
+        if self.skips(table) || !self.keeps.get(table).copied().unwrap_or(false) {
+            return None;
+        }
+        match self.last.get(table)?.as_ref()? {
+            Last::Held(read) => Some((&self.tables[table], *read)),
+            Last::Apart(apart, read) => Some((&**apart, *read)),
+        }
     }
 
     /// Tells readers of the walk they cannot read `table`, and why; none clears it. What the
@@ -763,6 +698,7 @@ impl State {
     /// The bytes its tables and dictionary hold, chunks shared with other walkers included.
     pub fn held_bytes(&self) -> usize {
         self.tables.iter().map(Table::held_bytes).sum::<usize>()
+            + self.last.iter().flatten().map(Last::held_bytes).sum::<usize>()
             + self
                 .views
                 .iter()
@@ -787,7 +723,7 @@ impl State {
         self.dictionary.freeze()
     }
 
-    /// Once a run's dictionary holds more than its budget, drops the strings no recorded
+    /// Once a run's dictionary has doubled since its last trim, drops the strings no recorded
     /// text cell at a live slot, nor the reason of a status, of a table the walk reads names.
     pub fn trim_dictionary(&mut self) -> io::Result<()> {
         if !self.dictionary.over() {
@@ -798,6 +734,7 @@ impl State {
             text,
             statuses,
             skipped,
+            last,
             named,
             dictionary,
             ..
@@ -807,11 +744,15 @@ impl State {
             if skipped[at] {
                 continue;
             }
-            each_text_id(table, &text[at], statuses[at], |id| {
+            let mut name = |id: u32| -> io::Result<()> {
                 engine_allocation::reserve(named, 1)?;
                 named.push(id);
                 Ok(())
-            })?;
+            };
+            each_text_id(table, &text[at], statuses[at], &mut name)?;
+            if let Some(Last::Apart(apart, _)) = &last[at] {
+                each_text_id(apart, &text[at], Status::Complete, &mut name)?;
+            }
         }
         named.sort_unstable();
         named.dedup();
@@ -820,16 +761,21 @@ impl State {
 
     /// The dictionary ids `table`'s recorded text cells at live slots name, and its
     /// status's reason.
+    /// A last complete read held apart names its own.
     pub fn text_ids(
         &self,
         table: usize,
-        visit: impl FnMut(u32) -> io::Result<()>,
+        mut visit: impl FnMut(u32) -> io::Result<()>,
     ) -> io::Result<()> {
         let held = self
             .tables
             .get(table)
             .ok_or_else(|| invalid("Table past the schema"))?;
-        each_text_id(held, &self.text[table], self.statuses[table], visit)
+        each_text_id(held, &self.text[table], self.statuses[table], &mut visit)?;
+        if let Some(Last::Apart(apart, _)) = &self.last[table] {
+            each_text_id(apart, &self.text[table], Status::Complete, &mut visit)?;
+        }
+        Ok(())
     }
 
     /// Holds every string `table`'s last changes name, and its status's reason: what a run's
@@ -890,30 +836,60 @@ impl State {
         if table >= self.kinds.len() {
             return Err(invalid("Restart names a table past the schema"));
         }
-        // The table it replaces goes first, and the slots it names are charged before they are
-        // allocated.
-        let slots = restart::slots(bytes)?;
+        // The table it replaces goes first.
         self.tables[table] = Table::new(&self.kinds[table])?;
-        self.charge(table, 0)?;
-        self.charge(table, slots)?;
-        let (held, kinds) = self.kinds[table].split_at(self.columns[table]);
-        let restored = restart::read(bytes, held, &mut self.scratch).and_then(|mut restored| {
-            restored.table.widen(kinds)?;
-            Ok(restored)
-        });
-        let restored = match restored {
-            Ok(restored) => restored,
-            Err(error) => {
-                self.charge(table, 0)?;
-                return Err(error);
-            }
-        };
+        self.last[table] = None;
+        self.charge_both(table)?;
+        let restored = self.decode(table, bytes)?;
+        Ok(self.take(table, restored))
+    }
+
+    /// `table` as a restart's `bytes` hold it, for [`Self::restore_restored`]: the columns past
+    /// the recording's hold every row's cell unrecorded.
+    pub fn decode(&mut self, table: usize, bytes: &[u8]) -> io::Result<Restored> {
+        let kinds = self
+            .kinds
+            .get(table)
+            .ok_or_else(|| invalid("Restart names a table past the schema"))?;
+        let (held, appended) = kinds.split_at(self.columns[table]);
+        let mut restored = restart::read(bytes, held, &mut self.scratch)?;
+        restored.table.widen(appended)?;
+        if let Some(Last::Apart(apart, _)) = &mut restored.last {
+            apart.widen(appended)?;
+        }
+        Ok(restored)
+    }
+
+    /// Replaces `table` with `restored`, a restart's: one decoded once for every walk starting
+    /// there shares its pages with them, each copying only those its hours write.
+    pub fn restore_restored(
+        &mut self,
+        table: usize,
+        restored: Restored,
+    ) -> io::Result<Acquisition> {
+        if table >= self.kinds.len() {
+            return Err(invalid("Restart names a table past the schema"));
+        }
+        if !restored.table.kinds().eq(self.kinds[table].iter().copied()) {
+            return Err(invalid("Restart table's columns differ from its schema"));
+        }
+        Ok(self.take(table, restored))
+    }
+
+    fn take(&mut self, table: usize, restored: Restored) -> Acquisition {
         self.tables[table] = restored.table;
         self.statuses[table] = restored.status;
         self.sampled[table] = restored.acquisition.last_read;
         self.views[table] = restored.view;
         self.changes[table] = Changes::default();
-        Ok(restored.acquisition)
+        self.last[table] = if self.keeps[table] {
+            restored.last
+        } else {
+            None
+        };
+        // Counting what the tables hold never fails.
+        let _ = self.charge_both(table);
+        restored.acquisition
     }
 
     /// Replaces the dictionary with a restart's chunks, in order.
@@ -1003,26 +979,30 @@ impl State {
                 return Err(invalid("Section length differs from its manifest's"));
             }
             let truncated = matches!(self.statuses[table], Status::Truncated { .. });
-            let (allowance, kinds) = (self.allowance.as_deref(), &self.kinds[table]);
             let recorded = self.columns[table];
-            let charged = &mut self.charged;
-            // The slots its inserts add are charged before they are made.
-            let applied = section::apply_admitted(
+            if self.keeps[table] && matches!(self.last[table], Some(Last::Held(_))) {
+                Last::before(
+                    &mut self.last[table],
+                    &self.tables[table],
+                    self.statuses[table],
+                )?;
+                if matches!(self.last[table], Some(Last::Apart(..))) {
+                    self.charge_both(table)?;
+                }
+            }
+            section::apply(
                 bytes,
-                &kinds[..recorded],
+                &self.kinds[table][..recorded],
                 truncated,
                 &mut self.tables[table],
                 &mut self.scratch,
                 &mut self.changes[table],
-                &mut |slots| charge_to(allowance, charged, table, kinds, slots),
-            );
-            let held = charge_to(allowance, charged, table, kinds, self.tables[table].slots());
-            applied?;
-            held?;
+            )?;
             // The columns past the recording's hold no inserted row's cell.
-            for column in recorded..kinds.len() {
+            for column in recorded..self.kinds[table].len() {
                 self.tables[table].unrecord(column, &self.changes[table].inserted)?;
             }
+            self.charge_both(table)?;
             if truncated {
                 let changes = &self.changes[table];
                 let live = self.tables[table].live();
@@ -1040,6 +1020,23 @@ impl State {
             self.present.push(table);
             if self.dictionary.gaps {
                 self.hold_changed_text(table)?;
+            }
+        }
+        let count = self.tables.len();
+        for table in 0..count {
+            if !self.keeps[table] || self.skipped[table] {
+                continue;
+            }
+            let apart = matches!(self.last[table], Some(Last::Apart(..)));
+            let sectioned = self.present.contains(&table);
+            Last::after(
+                &mut self.last[table],
+                self.statuses[table],
+                sectioned,
+                self.sampled[table],
+            );
+            if apart && !matches!(self.last[table], Some(Last::Apart(..))) {
+                self.charge_both(table)?;
             }
         }
         Ok(())

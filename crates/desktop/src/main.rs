@@ -272,7 +272,6 @@ fn main() {
             dashboard_service::dashboard_cancel_preparation,
             dashboard_service::dashboard_clear_preparation,
             dashboard_service::dashboard_map_settings,
-            dashboard_service::dashboard_history_cache,
             dashboard_service::dashboard_cancel,
             dashboard_service::dashboard_release_source,
             perf::perf_enabled,

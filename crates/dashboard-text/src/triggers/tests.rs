@@ -1087,7 +1087,7 @@ fn cached_core_gaps_and_direct_table_reads_keep_one_source_identity() {
                     .unwrap()
                     .context(|why| format!("core preflight: {why}"));
                 world.table_gap("CountryLinks").unwrap();
-                assert!(super::world::table::<tables::CountryLinks>(world.frame()).is_err());
+                assert!(super::world::table::<tables::CountryLinks>(world.tables(), 0).is_err());
             });
             assert_eq!(failures.len(), 1, "{failures:?}");
             assert!(failures.first().unwrap().contains("CountryLinks"));
@@ -3683,19 +3683,17 @@ fn hours_reading_one_lexer_table_share_its_folds() {
     let aliases = Arc::new(TagAliases::default());
     let dlcs = BTreeSet::new();
     let read = |frame| World::read(frame, ContentFacts::content_only(&dlcs, &names, &aliases));
+    let folds = |world: &World| match world.names().unwrap() {
+        world::Names::Own(folds) => Arc::as_ptr(folds),
+        world::Names::Shared(..) => unreachable!("a decoded frame reads its own folds"),
+    };
     let (earlier, later) = (read(&first), read(&next));
-    assert!(std::ptr::eq(
-        earlier.names().unwrap(),
-        later.names().unwrap()
-    ));
+    assert_eq!(folds(&earlier), folds(&later));
     assert_eq!(later.token_of(b"X"), Ok(Some(900)));
     // A table read again is folded again.
     let mut reread = first.clone();
     let _ = &mut *reread.tables[TableId::LexicalTokens.index()];
-    assert!(!std::ptr::eq(
-        read(&reread).names().unwrap(),
-        earlier.names().unwrap()
-    ));
+    assert_ne!(folds(&read(&reread)), folds(&earlier));
 }
 
 /// A claimant evaluation on a world whose claims are already built records

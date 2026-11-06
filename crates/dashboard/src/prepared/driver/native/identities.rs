@@ -1,5 +1,6 @@
 //! The country identity history's native backend: each hour's operator hands its ordered emit
-//! the identity tables the hour may have changed, as the walk's world holds them, and the emit
+//! the identity tables the hour may have changed, copied from the walk's views in the fields the
+//! history reads, and the emit
 //! keeps the branch's frame of them and advances one [`HistoryScan`] an hour, a quiet step where
 //! no country key, link, counter key or gain key moved. Its published page, the sealed history
 //! a row preparation publishes, is also its continuation.
@@ -74,7 +75,7 @@ pub(crate) struct Hour {
     /// The walk reads every table whole at this hour.
     opens: bool,
     metrics: Metrics,
-    /// The tables the hour may have changed, as the walk's world holds them.
+    /// The tables the hour may have changed, in the fields the history reads.
     changes: Vec<(TableId, SharedView)>,
 }
 
@@ -100,22 +101,14 @@ impl Operator<World> for Projector {
         let opens = hour.starts || hour.opens;
         let mut changes = Vec::new();
         let campaign = (TableId::Campaign, Hold::Whole);
-        let moved: Vec<TableId> = std::iter::once(campaign)
-            .chain(self.asks)
-            .filter(|&(table, hold)| {
-                let fields = match hold {
-                    Hold::Whole => u64::MAX,
-                    Hold::Fields(fields) => fields,
-                };
-                opens || world.touched(table, fields)
-            })
-            .map(|(table, _)| table)
-            .collect();
-        if !moved.is_empty() {
-            let frame = world.frame_held(hour.state, &self.asks)?;
-            engine_allocation::reserve(&mut changes, moved.len())?;
-            for table in moved {
-                changes.push((table, frame.tables[table.index()].clone()));
+        for (table, hold) in std::iter::once(campaign).chain(self.asks) {
+            let fields = match hold {
+                Hold::Whole => u64::MAX,
+                Hold::Fields(fields) => fields,
+            };
+            if opens || world.touched(table, fields) {
+                engine_allocation::reserve(&mut changes, 1)?;
+                changes.push((table, world.copy(hour.state, table, hold)?));
             }
         }
         out.push(Hour {

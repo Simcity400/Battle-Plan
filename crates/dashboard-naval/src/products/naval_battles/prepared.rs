@@ -255,6 +255,14 @@ impl Scan {
         self.details.ships.finish_prepared(last);
     }
 
+    /// Hours after those it settled were lost from the recording: its sinking scan and naval
+    /// losses restart after them, and its next walk's seed is taken as the read it compares from.
+    pub(crate) fn lost(&mut self) {
+        self.details.ships.lost();
+        self.details.losses.lost();
+        self.reseed = true;
+    }
+
     pub fn configure(
         &mut self,
         source: &Source,
@@ -418,11 +426,19 @@ impl Scan {
         drop(cpu);
         let cpu = ::replay_frame::cpu::scope_phase("naval:sinkings_apply");
         if let Some(seeded) = hour.seeded
+            && std::mem::take(&mut self.reseed)
+        {
+            // After lost hours, the read the walk's restart holds is where comparison resumes.
+            self.details.ships.scan.last_ship_read = seeded;
+        } else if let Some(seeded) = hour.seeded
             && self.details.ships.scan.last_ship_read != seeded
         {
             return Err(io::Error::other(format!(
                 "The sunk ships a walk compares from at hour {at} are not those the naval scan read last"
             )));
+        }
+        if matches!(hour.ships, sinkings::ShipRead::Read { .. }) {
+            self.reseed = false;
         }
         let reads = self.details.ships.scan.ship_reads.len();
         let changes = self.details.ships.prepare_projected(

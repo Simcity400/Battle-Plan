@@ -4,7 +4,6 @@
 //! reader serves yet ([`unprepared`]).
 
 use crate::Source;
-use engine_allocation::credit::MemoryBudget;
 use replay::{
     columnar_runs::{IndexFile, Snapshots},
     container::Parallel,
@@ -56,10 +55,6 @@ struct Held {
     cursors: Vec<(Vec<TableId>, Cursor)>,
 }
 
-/// What one cursor's tables may hold. Each has its own budget: a move short of it waits only on
-/// what that cursor releases, never on another's idle tables.
-const CURSOR_MEMORY: usize = 1 << 30;
-
 /// The index serving `source` in its `held` state, opened anew when the file changed; refused
 /// unless it indexes the recording and holds `tables`.
 fn open(source: &Source, held: &mut Held, tables: &[TableId]) -> io::Result<Arc<IndexFile>> {
@@ -105,7 +100,6 @@ fn cursor(source: &Source, tables: &[TableId]) -> io::Result<Cursor> {
         replay.format,
         replay.capture_mode,
         workers,
-        MemoryBudget::new(CURSOR_MEMORY),
     )?;
     let cursor = Arc::new(Mutex::new(snapshots));
     held.cursors.push((tables.to_vec(), Arc::clone(&cursor)));
@@ -148,8 +142,10 @@ pub fn fill(
     let mut snapshots = cursor.lock().unwrap_or_else(PoisonError::into_inner);
     let (branch, hour) = (frame.branch, frame.hour);
     let alone = || {};
-    let stop = || cancelled.load(Ordering::Acquire);
-    if !snapshots.move_to(branch, hour, &alone, &stop)? {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(io::Error::from(io::ErrorKind::Interrupted));
+    }
+    if !snapshots.move_to(branch, hour, &alone)? {
         return Err(unheld(source, snapshots.file(), branch, hour));
     }
     let parallel = Parallel {

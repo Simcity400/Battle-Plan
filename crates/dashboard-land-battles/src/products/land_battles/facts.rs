@@ -5,7 +5,7 @@
 //! changed. A segment's first hour, and any hour after one the census could not read, carries
 //! its tables whole.
 
-use super::losses::{SideLossInputs, progress_inputs};
+use super::losses::{SideLossInputs, SideMove, progress_inputs};
 use dashboard_base::products::equipment::columnar::Naming;
 use dashboard_base::products::equipment::{RawVariant, VariantHour};
 use dashboard_text::metadata::{CountryKeys, slot_read};
@@ -22,11 +22,7 @@ use replay_data::{
         LandEventCoverageRow, TABLE_COUNT, TableId,
     },
 };
-use std::{
-    collections::{HashMap, HashSet},
-    io,
-    mem::size_of,
-};
+use std::{collections::HashMap, io, mem::size_of};
 
 /// The tables a projection reads.
 pub const TABLES: &[TableId] = &[
@@ -108,6 +104,45 @@ impl<T> Table<T> {
     }
 }
 
+/// A LandCombatProgress row written this hour, against the row its emit holds of its combat.
+#[derive(replay_spool::Spooled)]
+pub enum Loss {
+    /// The emit holds none: attacker then defender.
+    Whole([SideLossInputs; 2]),
+    Moved([SideMove; 2]),
+}
+
+/// LandCombatProgress, as the census mirrors it: each combat's counters.
+#[derive(replay_spool::Spooled)]
+pub enum Progress {
+    Incomplete,
+    Same,
+    /// Every row, by combat.
+    Whole(Vec<(u64, [SideLossInputs; 2])>),
+    /// The rows written or inserted and the combats deleted, each combat ascending as its
+    /// step from the one before; the deleted go first.
+    Changed {
+        rows: Vec<(u64, Loss)>,
+        deleted: Vec<u64>,
+    },
+}
+
+impl Progress {
+    /// Whether the hour changed the table, as the census decides to read it again.
+    pub fn changed(&self) -> bool {
+        !matches!(self, Self::Same)
+    }
+}
+
+/// `ids`, ascending, each as its step from the one before.
+fn steps(ids: &mut [u64]) {
+    ids.sort_unstable();
+    let mut last = 0;
+    for id in ids {
+        (*id, last) = (*id - last, *id);
+    }
+}
+
 /// The combats, as the census reads LandCombats.
 #[derive(replay_spool::Spooled)]
 pub enum Combats {
@@ -151,7 +186,7 @@ pub struct Hour {
     pub sides: Table<LandCombatSideRow>,
     pub combats: Combats,
     pub progress_read: bool,
-    pub progress: Table<(u64, [SideLossInputs; 2])>,
+    pub progress: Progress,
     pub results: Option<Box<Results>>,
 }
 
@@ -193,6 +228,8 @@ pub struct Projector {
     /// Whether the emit holds LandCombatSides and LandCombatProgress as of the hour before.
     sides: bool,
     progress: bool,
+    /// LandCombatProgress as the emit holds it, while `progress`.
+    losses: foldhash::HashMap<u64, [SideLossInputs; 2]>,
 }
 
 /// What [`Projector::save`] writes: nothing but that it restarts, since everything it holds is
@@ -236,7 +273,7 @@ fn live(state: &State, table: TableId) -> io::Result<Vec<u32>> {
 
 /// The distinct units of a roster, as the census counts them.
 fn distinct(handles: &[u64]) -> io::Result<u32> {
-    u32::try_from(handles.iter().collect::<HashSet<_>>().len())
+    u32::try_from(handles.iter().collect::<foldhash::HashSet<_>>().len())
         .map_err(|_| io::Error::other("Recorded roster exceeds its native count"))
 }
 
@@ -293,6 +330,7 @@ impl Projector {
             read: None,
             sides: false,
             progress: false,
+            losses: Default::default(),
         })
     }
 
@@ -377,13 +415,9 @@ impl Projector {
         Ok(sorted)
     }
 
-    fn progress(
-        &mut self,
-        state: &State,
-        whole: bool,
-    ) -> io::Result<Table<(u64, [SideLossInputs; 2])>> {
+    fn progress(&mut self, state: &State, whole: bool) -> io::Result<Progress> {
         let version = self.version();
-        let mut sorted = Self::table(
+        let table = Self::table(
             state,
             TableId::LandCombatProgress,
             &mut self.progress,
@@ -395,10 +429,45 @@ impl Projector {
                 Ok((row.combat, progress_inputs(&row)))
             },
         )?;
-        if let Table::Whole(rows) | Table::Changed { rows, .. } = &mut sorted {
-            rows.sort_unstable_by_key(|row: &(u64, [SideLossInputs; 2])| row.0);
-        }
-        Ok(sorted)
+        Ok(match table {
+            Table::Incomplete => {
+                self.losses = Default::default();
+                Progress::Incomplete
+            }
+            Table::Same => Progress::Same,
+            Table::Whole(mut rows) => {
+                rows.sort_unstable_by_key(|row| row.0);
+                self.losses = rows.iter().cloned().collect();
+                Progress::Whole(rows)
+            }
+            Table::Changed {
+                mut rows,
+                mut deleted,
+            } => {
+                rows.sort_unstable_by_key(|row| row.0);
+                for combat in &deleted {
+                    self.losses.remove(combat);
+                }
+                steps(&mut deleted);
+                let mut last = 0;
+                let mut moved = Vec::with_capacity(rows.len());
+                for (combat, now) in rows {
+                    let loss = match self.losses.get(&combat) {
+                        Some(held) => {
+                            Loss::Moved([held[0].moved(&now[0]), held[1].moved(&now[1])])
+                        }
+                        None => Loss::Whole(now.clone()),
+                    };
+                    self.losses.insert(combat, now);
+                    moved.push((combat - last, loss));
+                    last = combat;
+                }
+                Progress::Changed {
+                    rows: moved,
+                    deleted,
+                }
+            }
+        })
     }
 
     /// The combat at `slot`, read from its columns where they hold its counter and province.
@@ -490,8 +559,8 @@ impl Projector {
             deleted.push(key as u64);
         }
         let mut rows = Vec::new();
-        let inserted: HashSet<u32> = changes.inserted.iter().copied().collect();
-        let written: Vec<(u32, u64)> = changes
+        let inserted: foldhash::HashSet<u32> = changes.inserted.iter().copied().collect();
+        let mut written: Vec<(u32, u64)> = changes
             .changed
             .iter()
             .zip(&changes.masks)
@@ -499,11 +568,16 @@ impl Projector {
             .map(|(&slot, &mask)| (slot, mask))
             .chain(changes.inserted.iter().map(|&slot| (slot, u64::MAX)))
             .collect();
-        let mut masks: HashMap<u32, u64> = HashMap::with_capacity(written.len());
+        // Each slot once, its masks joined: by slot, as the rows are ordered by id after.
+        written.sort_unstable_by_key(|&(slot, _)| slot);
+        let mut masks: Vec<(u32, u64)> = Vec::with_capacity(written.len());
         for (slot, mask) in written {
-            *masks.entry(slot).or_default() |= mask;
+            match masks.last_mut() {
+                Some(last) if last.0 == slot => last.1 |= mask,
+                _ => masks.push((slot, mask)),
+            }
         }
-        for (&slot, &mask) in &masks {
+        for &(slot, mask) in &masks {
             let before = (!inserted.contains(&slot))
                 .then(|| self.combats.get(slot as usize).copied().flatten())
                 .flatten();
@@ -623,7 +697,14 @@ impl Projector {
     }
 
     fn heap(&self) -> usize {
-        self.combats.capacity() * size_of::<Option<Held>>() + self.naming.heap()
+        self.combats.capacity() * size_of::<Option<Held>>()
+            + self.naming.heap()
+            + self.losses.capacity() * size_of::<(u64, [SideLossInputs; 2])>()
+            + self
+                .losses
+                .values()
+                .map(|sides| sides[0].heap() + sides[1].heap())
+                .sum::<usize>()
     }
 }
 

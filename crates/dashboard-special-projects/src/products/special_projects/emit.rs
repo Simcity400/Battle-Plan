@@ -344,8 +344,6 @@ impl Completions {
         }
     }
 
-
-
     /// The completions `observed`'s `projects` change at `at`, each presented as the game showed
     /// it at its date: by the tag holding its holder then, named with that hour's scoped names;
     /// none, with why, at a date the recording holds no hour of (`unrecorded`) or whose holder
@@ -507,7 +505,7 @@ pub fn dimension(local_id: u32, definition_id: u32) -> u64 {
 }
 
 /// `entries`, what an hour added to a country's ledger, as the event of its LEDGER key `key`.
-fn entries_event(writer: &mut Writer<'_>, key: KeyHandle, at: i32, entries: &[Entry]) -> io::Result<()> {
+fn entries_event(writer: &mut Writer, key: KeyHandle, at: i32, entries: &[Entry]) -> io::Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
@@ -584,12 +582,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 3]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 3]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -609,7 +607,7 @@ impl Emit {
     }
 
     /// The country actor named `tag`, with its keys.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -640,7 +638,7 @@ impl Emit {
     }
 
     /// `actor`'s PROGRESS key of `dimension`.
-    fn progress(&mut self, writer: &mut Writer<'_>, actor: u64, dimension: u64) -> io::Result<KeyHandle> {
+    fn progress(&mut self, writer: &mut Writer, actor: u64, dimension: u64) -> io::Result<KeyHandle> {
         let held = &self.countries[actor as usize].progress;
         let at = held.partition_point(|&(held, _)| held < dimension);
         if let Some(&(held, key)) = held.get(at)
@@ -663,7 +661,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("projects.emit", None);
         let at = hour.hour;
         let adjacent = match self.last {
@@ -856,7 +854,7 @@ impl Emit {
     /// where a country's observation or progress began a run, or the revision's did (`revised`),
     /// and the piece before ends; a piece begun the hour before and going on takes its second
     /// hour.
-    fn advance(&mut self, writer: &mut Writer<'_>, at: i32, revised: bool) -> io::Result<()> {
+    fn advance(&mut self, writer: &mut Writer, at: i32, revised: bool) -> io::Result<()> {
         let mut moved = std::mem::take(&mut self.moved);
         if revised {
             moved.extend(
@@ -887,7 +885,7 @@ impl Emit {
     }
 
     /// `actor`'s piece from `at` on, the one before ending at the hour before.
-    fn begin(&mut self, writer: &mut Writer<'_>, at: i32, actor: u64) -> io::Result<()> {
+    fn begin(&mut self, writer: &mut Writer, at: i32, actor: u64) -> io::Result<()> {
         let index = actor as usize;
         let country = &self.countries[index];
         let track = &mut self.tracks[index];
@@ -950,7 +948,7 @@ impl Emit {
     /// differs from the last or does not go on from the hour before.
     fn observe(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         adjacent: bool,
         observed: &facts::Observed,
@@ -1059,7 +1057,7 @@ impl Emit {
     }
 
     /// Ends what `actor`'s runs hold: the countries no longer resolve it.
-    fn leave(&mut self, writer: &mut Writer<'_>, at: i32, actor: u64) -> io::Result<()> {
+    fn leave(&mut self, writer: &mut Writer, at: i32, actor: u64) -> io::Result<()> {
         let country = &mut self.countries[actor as usize];
         let Some(held) = country.identity.take() else {
             return Ok(());
@@ -1074,7 +1072,7 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         self.completions.close(last);
         for country in &mut self.countries {
@@ -1126,7 +1124,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

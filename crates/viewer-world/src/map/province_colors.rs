@@ -10,7 +10,8 @@ pub(crate) struct ProvinceColors {
     palette: wgpu::Buffer,
     tiles: wgpu::Buffer,
     uniform: wgpu::Buffer,
-    pipeline: wgpu::ComputePipeline,
+    /// The device's one stripe program, which every view's fill dispatches.
+    pipeline: Arc<wgpu::ComputePipeline>,
     group: wgpu::BindGroup,
     provinces: Arc<[Province]>,
     params: [u32; 8],
@@ -81,18 +82,21 @@ impl ProvinceColors {
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
             ..Default::default()
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("province stripe pixels"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("province stripe pixels"),
-            layout: None,
-            module: &shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let pipeline =
+            viewer_foundation::map::device_shared::shared(device, "province stripe pixels", || {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("province stripe pixels"),
+                    source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+                });
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("province stripe pixels"),
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("province stripe pixels"),
             layout: &pipeline.get_bind_group_layout(0),

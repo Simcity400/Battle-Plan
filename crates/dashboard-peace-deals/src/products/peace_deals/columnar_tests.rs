@@ -10,7 +10,7 @@ use super::{
     *,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -279,9 +279,7 @@ fn published(
     last: i32,
     prefix: bool,
 ) -> serde_json::Value {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let reply = super::query::reply(
         &mut snapshot,
@@ -305,11 +303,9 @@ fn build(
     resume: Option<i32>,
     label: &str,
 ) -> (Memory, u64) {
-    let budget = Budget::new(256 << 20);
-    let cache = Cache::new(&budget);
     let recording = recording();
     let mut pages = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), FIRST).unwrap();
+    let mut writer = Writer::new(identity(), FIRST).unwrap();
     let mut emit = Emit::new(&recording, 1).unwrap();
     let mut root = 0;
     let mut generation = 0;
@@ -323,7 +319,6 @@ fn build(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -342,8 +337,8 @@ fn build(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::resume(&directory, &saved).unwrap();
         }

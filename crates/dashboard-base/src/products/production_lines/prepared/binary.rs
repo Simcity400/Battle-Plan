@@ -57,7 +57,6 @@ product_codec::product! { impl KeysLedger {
     handles: Vec<(u64, Handle)>,
     designs: Vec<(u64, (DesignRead, u64))>,
     organisations: Vec<(u64, (RawOrganisation, u64))>,
-    icons: Vec<(u64, IconChoice)>,
 } default {} }
 product_codec::product! { impl HistoryLedger {
     parent: Option<(u64, u64)>,

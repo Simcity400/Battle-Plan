@@ -15,7 +15,13 @@ impl<'a> Reference<'a> {
             || {
                 // Keep the pre-change map collection independent of Lookup.
                 let literals = get(&self.literals, || {
-                    Ok(table::<tables::LexicalTokens>(self.frame)?
+                    let tokens = self.frame.complete::<tables::LexicalTokens>().map_err(|error| {
+                        let failure =
+                            Failure::input(TableId::LexicalTokens, "", None, error.to_string());
+                        failure.resolution_failed();
+                        failure
+                    })?;
+                    Ok(tokens
                         .iter()
                         .map(|row| (row.token, row.literal.as_slice()))
                         .collect())
@@ -122,7 +128,7 @@ fn token_lookup_matches_map_values_refusals_and_demand_across_hours() {
     ];
     for (hour, tokens) in cases.iter().enumerate() {
         let data = rows(tokens);
-        let lookup = Lookup::new(&data);
+        let lookup = Lookup::new(replay_frame::frame::Rowset::Decoded(&data));
         assert_eq!(
             matches!(lookup, Lookup::Sorted(_)),
             tokens.windows(2).all(|pair| pair[0] < pair[1])
@@ -132,7 +138,7 @@ fn token_lookup_matches_map_values_refusals_and_demand_across_hours() {
             .map(|row| (row.token, row.literal.as_slice()))
             .collect();
         for token in [0, 1, 2, 3, 7, 99, u32::MAX] {
-            assert_eq!(lookup.get(token), expected.get(&token).copied());
+            assert_eq!(lookup.get(token).unwrap(), expected.get(&token).copied());
         }
         check(&frame(
             hour as replay_data::Hour,

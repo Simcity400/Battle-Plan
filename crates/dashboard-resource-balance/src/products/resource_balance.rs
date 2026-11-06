@@ -64,8 +64,6 @@ pub use row::scan;
 /// The family the segment driver prepares resource balance as.
 pub const NAME: &str = "resources";
 
-#[cfg(any(test, feature = "test-support"))]
-const CACHED_COUNTRIES: usize = 8;
 /// A country's recorded pools of one resource over consecutive hours while they
 /// stay unchanged. Raw values are exact decimal strings with
 /// [`RESOURCE_DECIMALS`] places.
@@ -173,12 +171,9 @@ pub(crate) fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
     }
 }
 
-/// The countries the row oracle scanned last, by branch and tag.
+/// The country the row oracle scanned last on each branch, by tag.
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Default)]
-struct Cache {
-    entries: std::collections::VecDeque<((u64, String), std::sync::Arc<ScannedBalance>)>,
-}
+type Cache = dashboard_base::latest::BranchLatest<String, ScannedBalance>;
 
 impl Product for ResourceBalance {
     const KEY: &'static str = "resource-balance";
@@ -209,16 +204,11 @@ impl Product for ResourceBalance {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let key = (params.branch(), params.tag.clone());
         let state = source.state::<Cache>();
-        let cached = {
-            let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache
-                .entries
-                .iter()
-                .find(|(cached, _)| *cached == key)
-                .map(|(_, scanned)| std::sync::Arc::clone(scanned))
-        };
+        let cached = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(params.branch(), &params.tag);
         let scanned = match cached {
             Some(scanned) => scanned,
             None => {
@@ -228,12 +218,10 @@ impl Product for ResourceBalance {
                     &params.tag,
                     cancelled,
                 )?);
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache.entries.retain(|(cached, _)| *cached != key);
-                cache.entries.push_back((key, std::sync::Arc::clone(&scanned)));
-                while cache.entries.len() > CACHED_COUNTRIES {
-                    cache.entries.pop_front();
-                }
+                state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .put(params.branch(), params.tag.clone(), &scanned);
                 scanned
             }
         };

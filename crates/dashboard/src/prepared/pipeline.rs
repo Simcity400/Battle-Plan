@@ -239,8 +239,8 @@ pub(crate) fn published_coverage(
 
 /// The hours of `product`'s suppliers on `branch` through `through` (the
 /// branch's end when None) that their publications will not answer, in hour
-/// order: each supplier's first hole, from which no reply needing earlier
-/// observations answers, and every hour after its branch ended for it.
+/// order: each supplier's holes, a lost run it went on past marked a gap, and
+/// every hour after its branch ended for it.
 pub(crate) fn published_holes(
     published: &gates::Published,
     branch: u64,
@@ -261,16 +261,40 @@ pub(crate) fn published_holes(
         }
         let unanswered =
             dashboard_base::prepared::roots::holes(root, i32::MIN, through.unwrap_or(i32::MAX));
-        holes.extend(
-            unanswered
-                .iter()
-                .filter_map(|interval| super::coverage::Hole::of(family, interval)),
-        );
+        // Hours it prepared after a hole: it went on past it.
+        let tail = trailing(root);
+        holes.extend(unanswered.iter().filter_map(|interval| {
+            let gap = tail.is_none_or(|tail| interval.last_hour < tail);
+            super::coverage::Hole::of(family, interval, gap)
+        }));
     }
     holes.sort_by(|a, b| {
         (a.first_hour, a.last_hour, &a.family).cmp(&(b.first_hour, b.last_hour, &b.family))
     });
     Ok(holes)
+}
+
+/// The first hour of the holes `root` ends its processed hours with, through its branch's end
+/// for it: nothing it answers lies after it. None when its last processed hour is prepared and
+/// its branch goes on.
+fn trailing(root: &dashboard_base::prepared::roots::Published) -> Option<i32> {
+    let frontier = &root.frontier;
+    let mut from = frontier
+        .end
+        .as_ref()
+        .and_then(|_| frontier.last_hour.checked_add(1));
+    let mut reach = frontier.last_hour;
+    for hole in frontier.holes.iter().rev() {
+        if hole.last_hour != reach {
+            break;
+        }
+        from = Some(hole.first_hour);
+        match hole.first_hour.checked_sub(1) {
+            Some(before) => reach = before,
+            None => break,
+        }
+    }
+    from
 }
 
 /// Every family and job whose pages `product`'s replies read, in name order: those it waits
@@ -292,7 +316,7 @@ fn suppliers(product: &str) -> BTreeSet<&'static str> {
 
 /// What `product`'s queries read on `branch` through `through`, as
 /// `published` holds it: the coverage they wait for, ending before the first
-/// hole there, and the holes.
+/// hole there that its family does not go on past, and the holes.
 pub(crate) fn gated(
     published: &gates::Published,
     branch: u64,
@@ -301,7 +325,9 @@ pub(crate) fn gated(
 ) -> io::Result<super::coverage::Ranges> {
     let holes = published_holes(published, branch, product, through)?;
     let mut coverage = published_coverage(published, branch, product)?;
-    if let (Some(coverage), Some(first)) = (coverage.as_mut(), holes.first()) {
+    if let (Some(coverage), Some(first)) =
+        (coverage.as_mut(), holes.iter().find(|hole| !hole.gap))
+    {
         coverage.last_hour = coverage
             .last_hour
             .min(first.first_hour.saturating_sub(1))

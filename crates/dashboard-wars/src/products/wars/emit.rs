@@ -15,7 +15,10 @@
 //! their members (MEMBERS) and labels (LABELS), each defined once while some list holds it.
 //!
 //! The emit holds each input table as the packet last changing it, unpacked only when a
-//! segment's first hour compares it.
+//! segment's first hour compares it. A segment hands on the tables it changed after its first
+//! hour once, at its end ([`facts::Hour::ended`]): within a segment nothing reads them, and a
+//! segment that ended short hands nothing on, nor is its emit read again: its branch ends there,
+//! unsaved.
 
 use super::facts::{self, Relations};
 use super::inputs::{self, INPUTS};
@@ -301,7 +304,7 @@ impl Default for Emit {
 
 /// The text cell of an event's bytes, `head` then `tail`.
 fn text_cell(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     head: &[u8],
     tail: &[u8],
 ) -> io::Result<dashboard_series::Blob> {
@@ -336,12 +339,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<Keys> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<Keys> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -364,7 +367,7 @@ impl Emit {
     /// The counters' keys of the lifetime `relation`, named at `hour` when it is new.
     fn relation(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         relation: &WarRelationKey,
         hour: i32,
     ) -> io::Result<[KeyHandle; 4]> {
@@ -386,7 +389,7 @@ impl Emit {
     }
 
     fn event(
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         kind: u64,
@@ -404,7 +407,7 @@ impl Emit {
         })
     }
 
-    fn layer(writer: &mut Writer<'_>, key: KeyHandle, at: i32, bytes: &[u8]) -> io::Result<()> {
+    fn layer(writer: &mut Writer, key: KeyHandle, at: i32, bytes: &[u8]) -> io::Result<()> {
         Self::event(writer, key, at, kind::LAYER, (bytes, &[]))
     }
 
@@ -435,9 +438,22 @@ impl Emit {
         Ok(())
     }
 
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("wars.emit", None);
         let at = hour.hour;
+        if let Some((places, packet)) = hour.ended {
+            if self.last != Some(at) {
+                return Err(invalid("A wars segment ends past the last walked hour"));
+            }
+            let bytes = Arc::new(packet);
+            for place in inputs::places(places) {
+                self.held[place] = Some(Held {
+                    packet: Arc::clone(&bytes),
+                    view: None,
+                });
+            }
+            return Ok(());
+        }
         let gap = match self.last {
             Some(last) if last.checked_add(1) == Some(at) => false,
             Some(last) if at <= last => {
@@ -464,7 +480,6 @@ impl Emit {
             let facts::Facts {
                 whole,
                 changed: moved,
-                packet: packed,
                 next: read,
                 relations: joined,
                 parts: packed_parts,
@@ -500,17 +515,7 @@ impl Emit {
                         }
                     }
                 }
-                None if moved != 0 => {
-                    let bytes = Arc::new(packed.ok_or_else(saved_invalid)?);
-                    for place in inputs::places(moved) {
-                        self.held[place] = Some(Held {
-                            packet: Arc::clone(&bytes),
-                            view: None,
-                        });
-                    }
-                    changed = moved;
-                }
-                None => {}
+                None => changed = moved,
             }
         }
         if gap {
@@ -534,12 +539,7 @@ impl Emit {
         if let Some(next) = next {
             self.next = next;
         } else if dated {
-            self.unpack_held()?;
-            let place = inputs::input(TableId::Capitulation).ok_or_else(saved_invalid)?;
-            self.next = self.held[place]
-                .as_ref()
-                .and_then(|held| held.view.as_ref())
-                .and_then(|view| inputs::next_capitulation(view, at));
+            return Err(invalid("A dated wars hour names no next capitulation"));
         }
         if let Some(layered) = layered {
             self.layers(writer, keys, at, *layered)?;
@@ -591,7 +591,7 @@ impl Emit {
     /// Publishes what `layered` changed of the layers at `at`.
     fn layers(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         keys: Keys,
         at: i32,
         layered: Layered,
@@ -684,7 +684,7 @@ impl Emit {
     /// Publishes `identity`'s groups at `at` where they differ from those published.
     fn list(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         keys: Keys,
         at: i32,
         identity: Identity,
@@ -736,7 +736,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, and the hours since the last cut as known.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if self.last.is_none_or(|walked| last > walked) {
             return Err(invalid("A wars cut is past the last walked hour"));
         }

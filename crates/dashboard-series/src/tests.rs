@@ -1,6 +1,4 @@
 use crate::{
-    budget::Budget,
-    cache::Cache,
     codec::{Binary, Decode, Encode},
     pages::{self, Kind, PageRead, PageWrite},
     query::{Bucket, Cluster, EventView, Tail, Viewport},
@@ -111,17 +109,15 @@ fn selection(key: u64) -> Selection<'static> {
 }
 /// Cuts, seals and publishes the writer's open segment.
 fn publish(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     memory: &mut Memory,
-    cache: &Cache<'_>,
     publication: Publication,
     checkpoint: Blob,
 ) -> u64 {
     let pending = writer.cut(publication, checkpoint).unwrap();
     let sealed = pending.seal(memory).unwrap();
-    writer.publish(memory, cache, sealed).unwrap()
+    writer.publish(memory, sealed).unwrap()
 }
-const BIG: usize = 96 * 1024 * 1024;
 
 fn reference_add(a: U256, b: U256) -> U256 {
     let mut sum = [0; 4];
@@ -620,10 +616,8 @@ fn segment_of(cuts: &[i32], hour: i32) -> usize {
 /// Runs and evidence crossing a cut continue in the next segment; each key's
 /// events are appended in the segment holding hour 4, so earlier ones are late.
 fn fixture(cuts: &[i32]) -> (Memory, u64, Oracle, Vec<u64>) {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), -8).unwrap();
+    let mut writer = Writer::new(identity(), -8).unwrap();
     let mut oracle = Oracle {
         accepted: Some(span(-8, 12)),
         ..Oracle::default()
@@ -745,11 +739,9 @@ fn fixture(cuts: &[i32]) -> (Memory, u64, Oracle, Vec<u64>) {
             last,
             if end { 16 } else { last },
         );
-        let root = publish(&mut writer, &mut memory, &cache, publication, checkpoint);
+        let root = publish(&mut writer, &mut memory, publication, checkpoint);
         if end {
             drop(writer);
-            drop(cache);
-            assert_eq!(budget.used(), 0);
             return (memory, root, oracle, keys);
         }
         first = last + 1;
@@ -857,9 +849,7 @@ fn expected_tiles(
 fn every_point_batch_sample_range_and_evidence_edge_matches_logical_oracle() {
     for cuts in partitions() {
         let (memory, root, oracle, keys) = fixture(&cuts);
-        let budget = Budget::new(BIG);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         let hours: Vec<_> = (-10..=16).collect();
         for &hour in &hours {
             for &key in &keys {
@@ -984,9 +974,7 @@ fn every_point_batch_sample_range_and_evidence_edge_matches_logical_oracle() {
 fn all_chart_grids_membership_display_ties_and_top_rank_queries_match_oracle() {
     for cuts in partitions() {
         let (memory, root, oracle, keys) = fixture(&cuts);
-        let budget = Budget::new(BIG);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         let members = [span(-7, -4), span(0, 2), span(4, 11)];
         for within in [None, Some(&members[..]), Some(&[][..])] {
             for width in [1, 2, 7, 25, 100] {
@@ -1034,9 +1022,7 @@ fn all_chart_grids_membership_display_ties_and_top_rank_queries_match_oracle() {
 fn event_pages_storage_order_counts_latest_ordinals_clusters_and_as_of_match_oracle() {
     for cuts in [vec![12], every_hour()] {
         let (memory, root, oracle, keys) = fixture(&cuts);
-        let budget = Budget::new(BIG);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         let members = [span(-8, -3), span(3, 12)];
         for within in [None, Some(&members[..]), Some(&[][..])] {
             for as_of in [None, Some(-8), Some(4), Some(9), Some(12)] {
@@ -1148,10 +1134,8 @@ fn event_pages_storage_order_counts_latest_ordinals_clusters_and_as_of_match_ora
 
 #[test]
 fn typed_dictionary_catalogue_checkpoint_lists_and_giant_cells_are_bounded() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let text = vec![b'x'; 3 * pages::PAGE_BYTES + 19];
     let blob = writer.blob(&mut &text[..], text.len() as u64).unwrap();
     let mut cells = vec![
@@ -1198,11 +1182,10 @@ fn typed_dictionary_catalogue_checkpoint_lists_and_giant_cells_are_bounded() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 1, 1),
         child,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let mut buffer = [0; 4096];
     for offset in (0..text.len()).step_by(buffer.len()) {
         let count = buffer.len().min(text.len() - offset);
@@ -1265,10 +1248,8 @@ fn typed_dictionary_catalogue_checkpoint_lists_and_giant_cells_are_bounded() {
 
 #[test]
 fn shared_evidence_read_refreshes_identity_reuse_and_publication_prefixes_are_exact() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), -3).unwrap();
+    let mut writer = Writer::new(identity(), -3).unwrap();
     let key = writer
         .intern(spec(22, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -1285,12 +1266,11 @@ fn shared_evidence_read_refreshes_identity_reuse_and_publication_prefixes_are_ex
     let first = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, -3, 3, 6),
         Blob::EMPTY,
     );
     drop(writer);
-    let mut writer = Writer::resume(&mut memory, &cache, &budget, first, identity()).unwrap();
+    let mut writer = Writer::resume(&mut memory, first, identity()).unwrap();
     writer.run(key, span(4, 6), 0, false, false).unwrap();
     writer.domain(99, known(4, 6, Some(4), Some(888))).unwrap();
     let reused = writer
@@ -1301,11 +1281,10 @@ fn shared_evidence_read_refreshes_identity_reuse_and_publication_prefixes_are_ex
     let second = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(2, 1, -3, 6, 8),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory.clone(), &cache, second, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory.clone(), second, identity()).unwrap();
     assert!(matches!(
         snapshot.value_at(key, 4).unwrap(),
         Observation::Value {
@@ -1319,7 +1298,7 @@ fn shared_evidence_read_refreshes_identity_reuse_and_publication_prefixes_are_ex
             }
         }
     ));
-    let mut prefix = Snapshot::open(memory, &cache, second, identity())
+    let mut prefix = Snapshot::open(memory, second, identity())
         .unwrap()
         .through(4)
         .unwrap()
@@ -1416,10 +1395,8 @@ fn insertion_order_overlaps_and_backdated_endpoints_keep_ordered_contributions()
         ],
         vec![(4, 6, 1), (-5, 12, 2), (0, 1, 3), (7, 9, 4), (2, 2, 5)],
     ] {
-        let budget = Budget::new(BIG);
-        let cache = Cache::new(&budget);
         let mut memory = Memory::default();
-        let mut writer = Writer::new(&budget, identity(), -5).unwrap();
+        let mut writer = Writer::new(identity(), -5).unwrap();
         let key = writer
             .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
             .unwrap();
@@ -1447,11 +1424,10 @@ fn insertion_order_overlaps_and_backdated_endpoints_keep_ordered_contributions()
         let root = publish(
             &mut writer,
             &mut memory,
-            &cache,
             publication(1, 0, -5, 12, 12),
             Blob::EMPTY,
         );
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         let selections = [selection(key)];
         for width in [1, 5, 18] {
             let view = Viewport {
@@ -1491,10 +1467,8 @@ fn insertion_order_overlaps_and_backdated_endpoints_keep_ordered_contributions()
 
 #[test]
 fn backdated_contributions_navigate_as_the_reader_partition_point_does() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), -5).unwrap();
+    let mut writer = Writer::new(identity(), -5).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
         .unwrap();
@@ -1506,11 +1480,10 @@ fn backdated_contributions_navigate_as_the_reader_partition_point_does() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, -5, 12, 12),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let all = span(i32::MIN, i32::MAX);
     assert_eq!(
         snapshot.next_change(selection(key), 5, false, all).unwrap(),
@@ -1557,10 +1530,8 @@ fn partition_point_probes_rows_as_the_standard_search_does() {
 fn fifty_year_and_full_hour_domain_constants_cost_runs_and_exact_bytes() {
     let mut work = Vec::new();
     for extent in [span(0, 0), span(0, 438_000), span(i32::MIN, i32::MAX)] {
-        let budget = Budget::new(BIG);
-        let cache = Cache::new(&budget);
         let mut memory = Memory::default();
-        let mut writer = Writer::new(&budget, identity(), extent.first).unwrap();
+        let mut writer = Writer::new(identity(), extent.first).unwrap();
         let key = writer
             .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
             .unwrap();
@@ -1571,15 +1542,13 @@ fn fifty_year_and_full_hour_domain_constants_cost_runs_and_exact_bytes() {
         let root = publish(
             &mut writer,
             &mut memory,
-            &cache,
             publication(1, 0, extent.first, extent.last, extent.last),
             Blob::EMPTY,
         );
         work.push(memory.pages.len());
         memory.reads = 0;
         memory.bytes = 0;
-        let reader = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(memory, &reader, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         let mut count = 0;
         snapshot
             .summary_tiles(
@@ -1618,7 +1587,6 @@ fn fifty_year_and_full_hour_domain_constants_cost_runs_and_exact_bytes() {
 #[test]
 fn rank_builder_batches_ties_unknowns_extremes_and_displaced_actors_match_sort_oracle() {
     use crate::rank::{Actor, Amount, RankBuilder};
-    let budget = Budget::new(BIG);
     let actors = [
         Actor {
             identity: 1,
@@ -1640,7 +1608,7 @@ fn rank_builder_batches_ties_unknowns_extremes_and_displaced_actors_match_sort_o
     for descending in [false, true] {
         for include_unknown in [false, true] {
             let mut ranks =
-                RankBuilder::new(&budget, &actors, descending, include_unknown).unwrap();
+                RankBuilder::new(&actors, descending, include_unknown).unwrap();
             let mut amounts = vec![Amount::Unknown; actors.len()];
             let mut forward = BTreeMap::new();
             let mut inverse = BTreeMap::new();
@@ -1729,67 +1697,33 @@ fn rank_builder_batches_ties_unknowns_extremes_and_displaced_actors_match_sort_o
 }
 
 #[test]
-fn readers_take_room_for_their_working_memory_from_unpinned_cached_pages() {
+fn damaged_pages_bad_lengths_and_wrong_roots_are_errors() {
     let (memory, root, _, keys) = fixture(&[-3, 4, 12]);
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
-    {
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
-        snapshot.value_at(keys[0], 5).unwrap();
-    }
-    // The query's decoded pages stay cached, unpinned, once its snapshot is gone.
-    let cached = budget.used();
-    assert!(cached > 0);
-    let rest = BIG - cached;
-    assert!(budget.admit(rest + 1).is_err());
-    let lease = crate::budget::Admission::from(&cache)
-        .admit(rest + 1)
-        .unwrap();
-    assert!(budget.used() <= BIG);
-    drop(lease);
-    drop(cache);
-    assert_eq!(budget.used(), 0);
-}
-
-#[test]
-fn damaged_pages_bad_lengths_wrong_roots_and_admission_are_errors() {
-    let (memory, root, _, keys) = fixture(&[-3, 4, 12]);
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     for offset in [0, 8, 10, 12, 16, 20, 24, 55, 56] {
         let mut broken = memory.clone();
         broken.pages[root as usize][offset] ^= 0x80;
-        assert!(Snapshot::open(broken, &cache, root, identity()).is_err());
+        assert!(Snapshot::open(broken, root, identity()).is_err());
     }
     let mut broken = memory.clone();
     broken.pages[root as usize].pop();
-    assert!(Snapshot::open(broken, &cache, root, identity()).is_err());
-    let small = Budget::new(1);
-    assert!(Snapshot::open(memory.clone(), &Cache::new(&small), root, identity()).is_err());
+    assert!(Snapshot::open(broken, root, identity()).is_err());
     let mut wrong = identity();
     wrong.branch[0] ^= 1;
-    assert!(Snapshot::open(memory.clone(), &cache, root, wrong).is_err());
+    assert!(Snapshot::open(memory.clone(), root, wrong).is_err());
     let mut damaged = memory;
     for page in &mut damaged.pages {
         if page.len() > 60 && u16::from_le_bytes([page[10], page[11]]) == Kind::Rows as u16 {
             page[57] ^= 1;
         }
     }
-    let fresh = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(damaged, &fresh, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(damaged, root, identity()).unwrap();
     assert!(snapshot.value_at(keys[0], -8).is_err());
-    drop(snapshot);
-    drop(fresh);
-    drop(cache);
-    assert_eq!(budget.used(), 0);
 }
 
 #[test]
 fn failed_seal_retries_and_cursors_bind_every_query_operand() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -1803,8 +1737,8 @@ fn failed_seal_retries_and_cursors_bind_every_query_operand() {
     memory.fail = None;
     let sealed = pending.seal(&mut memory).unwrap();
     drop(pending);
-    let root = writer.publish(&mut memory, &cache, sealed).unwrap();
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let root = writer.publish(&mut memory, sealed).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let selections = [selection(key)];
     let view = Viewport {
         from: 0.0,
@@ -1846,10 +1780,8 @@ fn failed_seal_retries_and_cursors_bind_every_query_operand() {
 
 #[test]
 fn fifteen_hundred_keys_without_evidence_read_unknown_and_have_no_cap() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let mut keys = Vec::new();
     for country in 0..1500 {
         keys.push(
@@ -1861,11 +1793,10 @@ fn fifteen_hundred_keys_without_evidence_read_unknown_and_have_no_cap() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 1, 1),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let mut visited = 0;
     snapshot
         .values_at(&keys, 0, |_, value| {
@@ -1881,9 +1812,7 @@ fn fifteen_hundred_keys_without_evidence_read_unknown_and_have_no_cap() {
 fn navigation_home_end_membership_unknown_stops_and_reached_fallback_match_boundaries() {
     for cuts in partitions() {
         let (memory, root, oracle, keys) = fixture(&cuts);
-        let budget = Budget::new(BIG);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         let members = [span(-6, -3), span(2, 11)];
         for membership in [None, Some(&members[..]), Some(&[][..])] {
             let selections: Vec<_> = keys
@@ -1926,9 +1855,7 @@ fn navigation_home_end_membership_unknown_stops_and_reached_fallback_match_bound
 fn progressive_exact_and_approximate_tails_keep_pending_and_refuse_false_authentication() {
     use crate::query::TailRun;
     let (memory, root, oracle, keys) = fixture(&[12]);
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let tail = [TailRun {
         run: Run {
             span: span(13, 16),
@@ -2062,8 +1989,6 @@ fn codecs_enforce_declared_widths_and_late_cursor_generations_cannot_mix() {
         hours: span(-5, 5),
     });
     let (memory, root, _, keys) = fixture(&[-3, 4, 12]);
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let selections = [selection(keys[0])];
     let query = EventQuery {
         selection: &selections,
@@ -2071,7 +1996,7 @@ fn codecs_enforce_declared_widths_and_late_cursor_generations_cannot_mix() {
         as_of: None,
         order: EventOrder::Native,
     };
-    let mut snapshot = Snapshot::open(memory.clone(), &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory.clone(), root, identity()).unwrap();
     let cursor = snapshot
         .event_page(query, None, Event::SIZE + 1, |_| Ok(()))
         .unwrap()
@@ -2094,7 +2019,7 @@ fn codecs_enforce_declared_widths_and_late_cursor_generations_cannot_mix() {
     );
     drop(snapshot);
     let mut memory = memory;
-    let mut writer = Writer::resume(&mut memory, &cache, &budget, root, identity()).unwrap();
+    let mut writer = Writer::resume(&mut memory, root, identity()).unwrap();
     let sequence = writer.sequence().unwrap();
     writer
         .event(Event {
@@ -2109,11 +2034,10 @@ fn codecs_enforce_declared_widths_and_late_cursor_generations_cannot_mix() {
     let next = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(4, 3, -8, 13, 16),
         Blob::EMPTY,
     );
-    let mut newer = Snapshot::open(memory, &cache, next, identity()).unwrap();
+    let mut newer = Snapshot::open(memory, next, identity()).unwrap();
     assert_eq!(
         newer
             .event_page(query, Some(cursor), 4096, |_| Ok(()))
@@ -2175,10 +2099,8 @@ fn seeded_sparse_runs_have_partition_independent_points_ranges_tiles_and_stops()
         let mut cuts: Vec<i32> = (-40..end).filter(|h| (h + 40) % step == step - 1).collect();
         cuts.push(end);
         let (parts, logical) = split(&runs, &cuts, -40);
-        let budget = Budget::new(BIG);
-        let cache = Cache::new(&budget);
         let mut memory = Memory::default();
-        let mut writer = Writer::new(&budget, identity(), -40).unwrap();
+        let mut writer = Writer::new(identity(), -40).unwrap();
         let key = writer
             .intern(spec(case, 1), Blob::EMPTY, RunMode::Exact, 5)
             .unwrap();
@@ -2204,7 +2126,6 @@ fn seeded_sparse_runs_have_partition_independent_points_ranges_tiles_and_stops()
             root = publish(
                 &mut writer,
                 &mut memory,
-                &cache,
                 publication(segment as u64 + 1, segment as u64, -40, last, last + 1),
                 Blob::EMPTY,
             );
@@ -2224,7 +2145,7 @@ fn seeded_sparse_runs_have_partition_independent_points_ranges_tiles_and_stops()
                 ..Logical::default()
             },
         );
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         for h in -41..=end + 1 {
             assert_eq!(snapshot.value_at(key, h).unwrap(), oracle.value(key, h));
         }
@@ -2289,9 +2210,7 @@ fn seeded_sparse_runs_have_partition_independent_points_ranges_tiles_and_stops()
 fn aliases_and_publication_iteration_have_bounded_query_shapes() {
     use crate::query::Alias;
     let (memory, root, oracle, keys) = fixture(&[-3, 4, 12]);
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let aliases = [
         Alias {
             key: keys[0],
@@ -2377,7 +2296,6 @@ fn aliases_and_publication_iteration_have_bounded_query_shapes() {
 #[test]
 fn simultaneous_rank_swaps_skip_the_unchanged_middle() {
     use crate::rank::{Actor, Amount, RankBuilder};
-    let budget = Budget::new(BIG);
     let tags: Vec<_> = (0..1500).map(|i| format!("tag-{i:04}")).collect();
     let actors: Vec<_> = tags
         .iter()
@@ -2387,7 +2305,7 @@ fn simultaneous_rank_swaps_skip_the_unchanged_middle() {
             tag,
         })
         .collect();
-    let mut ranks = RankBuilder::new(&budget, &actors, false, false).unwrap();
+    let mut ranks = RankBuilder::new(&actors, false, false).unwrap();
     let changes: Vec<_> = (0..1500).map(|i| (i, Amount::Known(i as i128))).collect();
     ranks
         .changes(-1, &changes, |_, _| Ok(()), |_, _| Ok(()))
@@ -2415,10 +2333,8 @@ fn simultaneous_rank_swaps_skip_the_unchanged_middle() {
 
 #[test]
 fn hourly_overlaps_match_points_and_coarse_edges_match_the_current_reader() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), -16).unwrap();
+    let mut writer = Writer::new(identity(), -16).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
         .unwrap();
@@ -2455,11 +2371,10 @@ fn hourly_overlaps_match_points_and_coarse_edges_match_the_current_reader() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, -16, 31, 31),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     for view in [
         Viewport {
             from: -5.0,
@@ -2505,10 +2420,8 @@ fn hourly_overlaps_match_points_and_coarse_edges_match_the_current_reader() {
 
 #[test]
 fn repeating_overlap_blocks_preserve_last_origin_without_expanding_hours() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
         .unwrap();
@@ -2521,12 +2434,11 @@ fn repeating_overlap_blocks_preserve_last_origin_without_expanding_hours() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, last, last),
         Blob::EMPTY,
     );
     memory.reads = 0;
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     snapshot
         .summary_tiles(
             &[selection(key)],
@@ -2554,10 +2466,8 @@ fn repeating_overlap_blocks_preserve_last_origin_without_expanding_hours() {
 
 #[test]
 fn repeating_equal_overlap_blocks_keep_the_hour_their_value_began() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
         .unwrap();
@@ -2568,11 +2478,10 @@ fn repeating_equal_overlap_blocks_keep_the_hour_their_value_began() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 31, 31),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let mut seen = 0;
     snapshot
         .summary_tiles(
@@ -2601,10 +2510,8 @@ fn repeating_equal_overlap_blocks_keep_the_hour_their_value_began() {
 #[test]
 fn alias_boundaries_can_suppress_a_stored_cut_or_force_one_inside_a_run() {
     use crate::query::Alias;
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let mut keys = Vec::new();
     for (actor, extent, broken) in [
         (1, span(0, 15), true),
@@ -2623,11 +2530,10 @@ fn alias_boundaries_can_suppress_a_stored_cut_or_force_one_inside_a_run() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 31, 31),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let joined = [
         Alias {
             key: keys[0],
@@ -2767,10 +2673,8 @@ fn alias_boundaries_can_suppress_a_stored_cut_or_force_one_inside_a_run() {
 
 #[test]
 fn a_fifty_year_chart_reads_coalesced_coverage_without_hourly_evidence() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -2791,14 +2695,12 @@ fn a_fifty_year_chart_reads_coalesced_coverage_without_hourly_evidence() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, last, last),
         Blob::EMPTY,
     );
     memory.reads = 0;
     memory.kinds = [0; 8];
-    let cold = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(memory, &cold, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let mut bins = 0;
     snapshot
         .summary_tiles(
@@ -2828,7 +2730,7 @@ fn a_fifty_year_chart_reads_coalesced_coverage_without_hourly_evidence() {
     assert_eq!(bins, 1200);
     assert_eq!(memory.kinds[Kind::Rows as usize], 0);
     assert!(memory.reads < 50);
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let mut coverage = Vec::new();
     snapshot
         .coverage_page(key, span(0, last), None, Span::SIZE, |s| {
@@ -2863,10 +2765,8 @@ fn a_fifty_year_chart_reads_coalesced_coverage_without_hourly_evidence() {
 
 #[test]
 fn shared_coverage_survives_resume_and_prefixes_keep_their_own_roots() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -2886,11 +2786,10 @@ fn shared_coverage_survives_resume_and_prefixes_keep_their_own_roots() {
     let first = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 1023, 2047),
         Blob::EMPTY,
     );
-    let mut writer = Writer::resume(&mut memory, &cache, &budget, first, identity()).unwrap();
+    let mut writer = Writer::resume(&mut memory, first, identity()).unwrap();
     writer.run(key, span(1024, 2047), 5, false, false).unwrap();
     for h in 1024..2048 {
         writer
@@ -2906,11 +2805,10 @@ fn shared_coverage_survives_resume_and_prefixes_keep_their_own_roots() {
     let second = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(2, 1, 0, 2047, 2047),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory.clone(), &cache, second, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory.clone(), second, identity()).unwrap();
     assert_eq!(snapshot.batch_through(500).unwrap(), Some(1023));
     assert_eq!(snapshot.batch_through(1500).unwrap(), Some(2047));
     let mut spans = Vec::new();
@@ -2921,7 +2819,7 @@ fn shared_coverage_survives_resume_and_prefixes_keep_their_own_roots() {
         })
         .unwrap();
     assert_eq!(spans, [span(100, 1800)]);
-    let mut prefix = Snapshot::open(memory, &cache, second, identity())
+    let mut prefix = Snapshot::open(memory, second, identity())
         .unwrap()
         .through(1500)
         .unwrap()
@@ -2940,10 +2838,8 @@ fn shared_coverage_survives_resume_and_prefixes_keep_their_own_roots() {
 
 #[test]
 fn duplicate_date_pages_seek_full_positions_and_retain_the_frontier() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -2964,7 +2860,6 @@ fn duplicate_date_pages_seek_full_positions_and_retain_the_frontier() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 7, 7),
         Blob::EMPTY,
     );
@@ -2977,8 +2872,7 @@ fn duplicate_date_pages_seek_full_positions_and_retain_the_frontier() {
         as_of: None,
         order: EventOrder::Native,
     };
-    let cold = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(memory.clone(), &cold, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory.clone(), root, identity()).unwrap();
     let mut cursor = None;
     let mut rows = Vec::new();
     loop {
@@ -3000,8 +2894,7 @@ fn duplicate_date_pages_seek_full_positions_and_retain_the_frontier() {
     let mut rows = Vec::new();
     let mut pages = 0;
     loop {
-        let fresh = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(memory, &fresh, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         pages += 1;
         let page = snapshot
             .event_page(query, cursor, 127 * (Event::SIZE + 1), |row| {
@@ -3023,9 +2916,7 @@ fn duplicate_date_pages_seek_full_positions_and_retain_the_frontier() {
 fn exact_tails_reject_multiple_keys_before_emitting_any_bucket() {
     use crate::query::TailRun;
     let (memory, root, _, keys) = fixture(&[-3, 4, 12]);
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let tail = [TailRun {
         run: Run {
             span: span(13, 16),
@@ -3088,10 +2979,8 @@ fn exact_tails_reject_multiple_keys_before_emitting_any_bucket() {
 
 #[test]
 fn numeric_navigation_and_samples_ignore_read_only_refreshes() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -3109,11 +2998,10 @@ fn numeric_navigation_and_samples_ignore_read_only_refreshes() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 100, 101),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     assert_eq!(
         snapshot
             .next_change(selection(key), 0, true, span(0, 101))
@@ -3185,10 +3073,8 @@ fn numeric_navigation_and_samples_ignore_read_only_refreshes() {
 
 #[test]
 fn keyed_and_economy_windows_clip_ranges_while_hourly_charts_keep_original_runs() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -3200,11 +3086,10 @@ fn keyed_and_economy_windows_clip_ranges_while_hourly_charts_keep_original_runs(
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 100, 100),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let mut ranges = Vec::new();
     snapshot
         .run_page(selection(key), span(25, 75), None, Run::SIZE, |run| {
@@ -3294,10 +3179,8 @@ fn keyed_and_economy_windows_clip_ranges_while_hourly_charts_keep_original_runs(
 
 #[test]
 fn event_membership_unions_pixel_cells_and_unfiltered_ordinals_match_current_reader() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), -3).unwrap();
+    let mut writer = Writer::new(identity(), -3).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -3317,11 +3200,10 @@ fn event_membership_unions_pixel_cells_and_unfiltered_ordinals_match_current_rea
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, -3, 30, 30),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let members = [span(17, 20), span(5, 12), span(7, 9)];
     let selected = [Selection {
         key,
@@ -3410,10 +3292,8 @@ fn event_membership_unions_pixel_cells_and_unfiltered_ordinals_match_current_rea
 
 #[test]
 fn native_resume_orders_keys_before_duplicate_sequences_and_skips_finished_keys() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let a = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -3445,7 +3325,6 @@ fn native_resume_orders_keys_before_duplicate_sequences_and_skips_finished_keys(
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 8, 8),
         Blob::EMPTY,
     );
@@ -3459,7 +3338,7 @@ fn native_resume_orders_keys_before_duplicate_sequences_and_skips_finished_keys(
     let mut rows = Vec::new();
     let mut cursor = None;
     loop {
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         let page = snapshot
             .event_page(query, cursor, Event::SIZE + 1, |row| {
                 rows.push(row.sequence());
@@ -3480,10 +3359,8 @@ fn native_resume_orders_keys_before_duplicate_sequences_and_skips_finished_keys(
 #[test]
 fn top_spans_keep_zero_negative_display_ties_and_selected_exact_tails() {
     use crate::query::TailRun;
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), -1).unwrap();
+    let mut writer = Writer::new(identity(), -1).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -3503,11 +3380,10 @@ fn top_spans_keep_zero_negative_display_ties_and_selected_exact_tails() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, -1, 3, 6),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let mut all = Vec::new();
     snapshot
         .top_spans(selection(key), 9_007_199_254_740_992, span(-1, 3), |s| {
@@ -3550,10 +3426,8 @@ fn top_spans_keep_zero_negative_display_ties_and_selected_exact_tails() {
 /// event per ten hours and, from hour 40, one dated 37 hours earlier.
 /// `segments` hours per segment; every query must answer as one segment does.
 fn chained(segments: i32) -> (Memory, u64, u64) {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -3603,7 +3477,6 @@ fn chained(segments: i32) -> (Memory, u64, u64) {
             root = publish(
                 &mut writer,
                 &mut memory,
-                &cache,
                 publication(generation, generation - 1, 0, last, last),
                 Blob::EMPTY,
             );
@@ -3836,10 +3709,8 @@ fn same_answers<'a>(
 fn hierarchy_merges_late_tables_and_chains_answer_as_one_segment_does() {
     let (whole, whole_root, key) = chained(400);
     let (split, split_root, _) = chained(10);
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
-    let mut one = Snapshot::open(whole, &cache, whole_root, identity()).unwrap();
-    let mut many = Snapshot::open(split, &cache, split_root, identity()).unwrap();
+    let mut one = Snapshot::open(whole, whole_root, identity()).unwrap();
+    let mut many = Snapshot::open(split, split_root, identity()).unwrap();
     assert_eq!(many.reader.root().nodes.len(), 10);
     assert_eq!(many.reader.root().nodes[0].level, 1);
     assert!(matches!(
@@ -3905,10 +3776,8 @@ fn hierarchy_merges_late_tables_and_chains_answer_as_one_segment_does() {
 /// carried from there. An on-time event every seven hours, a late one every
 /// five, and catalogue values rewritten every hour.
 fn hourly(per: i32) -> (Memory, u64, [u64; 2]) {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let keys = [
         writer
             .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
@@ -3987,7 +3856,6 @@ fn hourly(per: i32) -> (Memory, u64, [u64; 2]) {
             root = publish(
                 &mut writer,
                 &mut memory,
-                &cache,
                 publication(generation, generation - 1, 0, hour, hour),
                 Blob::EMPTY,
             );
@@ -4001,10 +3869,8 @@ fn hourly(per: i32) -> (Memory, u64, [u64; 2]) {
 fn a_level_two_merge_answers_as_one_segment_does() {
     let (whole, whole_root, keys) = hourly(300);
     let (split, split_root, _) = hourly(1);
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
-    let mut one = Snapshot::open(whole, &cache, whole_root, identity()).unwrap();
-    let mut many = Snapshot::open(split, &cache, split_root, identity()).unwrap();
+    let mut one = Snapshot::open(whole, whole_root, identity()).unwrap();
+    let mut many = Snapshot::open(split, split_root, identity()).unwrap();
     let frontier = many.reader.root().nodes.clone();
     assert_eq!((frontier[0].level, frontier[0].segments), (2, 256));
     assert_eq!(frontier.len(), 15);
@@ -4079,10 +3945,8 @@ fn a_level_two_merge_answers_as_one_segment_does() {
 
 #[test]
 fn overlapping_contributions_chain_only_through_the_run_carried_out() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
         .unwrap();
@@ -4107,7 +3971,6 @@ fn overlapping_contributions_chain_only_through_the_run_carried_out() {
         root = publish(
             &mut writer,
             &mut memory,
-            &cache,
             publication(segment as u64 + 1, segment as u64, 0, first + 9, first + 9),
             Blob::EMPTY,
         );
@@ -4116,7 +3979,7 @@ fn overlapping_contributions_chain_only_through_the_run_carried_out() {
         Observation::Value { run, .. } => Some((run.span, run.value, run.canonical)),
         _ => None,
     };
-    let mut snapshot = Snapshot::open(memory.clone(), &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory.clone(), root, identity()).unwrap();
     assert_eq!(
         bounds(snapshot.value_at(key, 5).unwrap()),
         Some((span(0, 19), 1, 0))
@@ -4160,7 +4023,7 @@ fn overlapping_contributions_chain_only_through_the_run_carried_out() {
             Some(stop)
         );
     }
-    let mut prefix = Snapshot::open(memory, &cache, root, identity())
+    let mut prefix = Snapshot::open(memory, root, identity())
         .unwrap()
         .through(19)
         .unwrap()
@@ -4177,10 +4040,8 @@ fn overlapping_contributions_chain_only_through_the_run_carried_out() {
 
 #[test]
 fn ordered_contribution_pages_seek_their_position_and_decode_bounded_rows() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
         .unwrap();
@@ -4214,7 +4075,6 @@ fn ordered_contribution_pages_seek_their_position_and_decode_bounded_rows() {
         root = publish(
             &mut writer,
             &mut memory,
-            &cache,
             publication(
                 segment as u64 + 1,
                 segment as u64,
@@ -4226,7 +4086,7 @@ fn ordered_contribution_pages_seek_their_position_and_decode_bounded_rows() {
         );
     }
     assert_eq!(canonicals.len(), 8 * 40 + 1);
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let members = [span(150, 420), span(650, 1000)];
     for (window, membership, count) in [
         (span(0, 1199), None, 321),
@@ -4287,10 +4147,8 @@ fn ordered_contribution_pages_seek_their_position_and_decode_bounded_rows() {
 
 #[test]
 fn domain_presentations_append_through_their_row_handles() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -4321,7 +4179,6 @@ fn domain_presentations_append_through_their_row_handles() {
     publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 3, 3),
         Blob::EMPTY,
     );
@@ -4346,11 +4203,10 @@ fn domain_presentations_append_through_their_row_handles() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(2, 1, 0, 5, 5),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let selections = [selection(key)];
     let mut actual = Vec::new();
     snapshot
@@ -4374,10 +4230,8 @@ fn domain_presentations_append_through_their_row_handles() {
 
 #[test]
 fn a_domain_bound_after_a_run_covers_that_run() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -4389,11 +4243,10 @@ fn a_domain_bound_after_a_run_covers_that_run() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 5, 5),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     for hour in 0..=5 {
         assert_eq!(
             snapshot.value_at(key, hour).unwrap(),
@@ -4435,10 +4288,8 @@ fn a_domain_bound_after_a_run_covers_that_run() {
 
 #[test]
 fn seal_work_follows_the_segment_rows_not_the_history_and_runs_off_the_emit_thread() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let keys: Vec<_> = (0..200)
         .map(|actor| {
             writer
@@ -4479,7 +4330,7 @@ fn seal_work_follows_the_segment_rows_not_the_history_and_runs_off_the_emit_thre
         })
         .unwrap();
         drop(pending);
-        writer.publish(&mut memory, &cache, sealed).unwrap();
+        writer.publish(&mut memory, sealed).unwrap();
         work.push(counted);
     }
     let rows = 2 * keys.len() as u64;
@@ -4525,10 +4376,8 @@ fn seal_work_follows_the_segment_rows_not_the_history_and_runs_off_the_emit_thre
 
 #[test]
 fn runs_outside_known_coverage_and_rows_outside_their_segment_are_refused() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -4540,7 +4389,7 @@ fn runs_outside_known_coverage_and_rows_outside_their_segment_are_refused() {
     assert!(pending.seal(&mut memory).is_err());
     drop(pending);
 
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -4564,7 +4413,6 @@ fn runs_outside_known_coverage_and_rows_outside_their_segment_are_refused() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 6, 6),
         Blob::EMPTY,
     );
@@ -4594,7 +4442,7 @@ fn runs_outside_known_coverage_and_rows_outside_their_segment_are_refused() {
     }
     let pending = writer.cut(publication(2, 1, 0, 8, 8), Blob::EMPTY).unwrap();
     assert!(pending.seal(&mut memory).is_err());
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     assert!(matches!(
         snapshot.value_at(key, 5).unwrap(),
         Observation::Value { .. }
@@ -4602,178 +4450,10 @@ fn runs_outside_known_coverage_and_rows_outside_their_segment_are_refused() {
     assert_eq!(snapshot.value_at(key, 7).unwrap(), Observation::Pending);
 }
 
-fn refused<T: std::fmt::Debug>(result: io::Result<T>) {
-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
-}
-
-#[test]
-fn refused_appends_change_nothing_and_a_retry_continues_the_last_admitted_run() {
-    const LIMIT: usize = 1 << 20;
-    let budget = Budget::new(LIMIT);
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
-    let keys: Vec<_> = (0..8)
-        .map(|actor| {
-            writer
-                .intern(spec(actor, 1), Blob::EMPTY, RunMode::Exact, 0)
-                .unwrap()
-        })
-        .collect();
-    let key = keys[0];
-    writer.bind_domain(keys[7], 9).unwrap();
-    let shared = writer.domain(9, known(0, 0, Some(0), Some(1))).unwrap();
-    writer.run(key, span(0, 0), 0, true, false).unwrap();
-    let presented = writer.sequence().unwrap();
-    let family = writer.sequence().unwrap();
-    let hog = budget.admit(LIMIT - budget.used()).unwrap();
-    let mut hour = 1;
-    let cut = loop {
-        match writer.run(key, span(hour, hour), i128::from(hour), true, false) {
-            Ok(()) => hour += 1,
-            Err(error) => {
-                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-                break hour;
-            }
-        }
-    };
-    assert!(cut > 1);
-    refused(writer.run(key, span(cut + 1, cut + 1), i128::from(cut), false, false));
-    writer
-        .run(key, span(cut, cut), i128::from(cut - 1), false, false)
-        .unwrap();
-    let mut domain_hour = 1;
-    let domain_cut = loop {
-        match writer.domain(9, known(domain_hour, domain_hour, Some(domain_hour), Some(1))) {
-            Ok(_) => domain_hour += 1,
-            Err(error) => {
-                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-                break domain_hour;
-            }
-        }
-    };
-    refused(writer.evidence(key, known(0, cut + 1, None, None), None));
-    let event = Event {
-        key,
-        native_hour: 3,
-        read_hour: None,
-        sequence: family,
-        kind: 1,
-        fields: Blob::EMPTY,
-    };
-    refused(writer.event(event));
-    refused(writer.present_domain(keys[7], shared, presented));
-    refused(writer.catalogue(1, Cell::Integer(1)));
-    refused(writer.text("kept"));
-    refused(writer.intern(spec(99, 1), Blob::EMPTY, RunMode::Exact, 0));
-    drop(hog);
-
-    writer
-        .run(key, span(cut + 1, cut + 1), 99, true, false)
-        .unwrap();
-    writer
-        .domain(9, known(domain_cut, domain_cut, Some(domain_cut), Some(1)))
-        .unwrap();
-    writer
-        .evidence(key, known(0, cut + 1, None, None), None)
-        .unwrap();
-    writer.event(event).unwrap();
-    writer.present_domain(keys[7], shared, presented).unwrap();
-    writer.catalogue(1, Cell::Integer(1)).unwrap();
-    let text = writer.text("kept").unwrap();
-    assert_eq!(
-        writer
-            .intern(spec(99, 1), Blob::EMPTY, RunMode::Exact, 0)
-            .unwrap(),
-        8
-    );
-    let cache = Cache::new(&budget);
-    let mut memory = Memory::default();
-    let last = cut.max(domain_cut) + 1;
-    let root = publish(
-        &mut writer,
-        &mut memory,
-        &cache,
-        publication(1, 0, 0, last, last),
-        Blob::EMPTY,
-    );
-    drop(writer);
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
-    let mut runs = Vec::new();
-    snapshot
-        .run_page(selection(key), span(0, last), None, 1 << 16, |run| {
-            runs.push((run.span, run.value));
-            Ok(())
-        })
-        .unwrap();
-    let mut expected: Vec<_> = (0..cut - 1).map(|h| (span(h, h), i128::from(h))).collect();
-    expected.push((span(cut - 1, cut), i128::from(cut - 1)));
-    expected.push((span(cut + 1, cut + 1), 99));
-    assert_eq!(runs, expected);
-    let Observation::Value { run, .. } = snapshot.value_at(key, cut).unwrap() else {
-        panic!("the continued run is missing");
-    };
-    assert_eq!(
-        (run.canonical, run.sequence),
-        ((cut - 1) as u64, (cut - 1) as u64)
-    );
-    let selected = [selection(key), selection(keys[7])];
-    let mut events = Vec::new();
-    snapshot
-        .event_page(
-            EventQuery {
-                selection: &selected,
-                native: span(0, last),
-                as_of: None,
-                order: EventOrder::Publication,
-            },
-            None,
-            1 << 16,
-            |row| {
-                events.push(row);
-                Ok(())
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        events,
-        [
-            EventView::Evidence {
-                key: keys[7],
-                sequence: presented,
-                value: known(0, 0, Some(0), Some(1)),
-            },
-            EventView::Family(event),
-        ]
-    );
-    let mut metadata = Vec::new();
-    snapshot
-        .metadata_page(None, 1 << 16, |id, value| {
-            metadata.push((id, value));
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(metadata, [(1, Cell::Integer(1))]);
-    let mut bytes = [0; 4];
-    snapshot.cell_bytes(text, 0, &mut bytes).unwrap();
-    assert_eq!(&bytes, b"kept");
-    let mut defined = 0;
-    snapshot
-        .catalogue_page(None, None, 1 << 16, |_| {
-            defined += 1;
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(defined, 9);
-    drop(snapshot);
-    drop(cache);
-    assert_eq!(budget.used(), 0);
-}
-
 #[test]
 fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -4800,11 +4480,10 @@ fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence()
     let mut root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 3, 3),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory.clone(), &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory.clone(), root, identity()).unwrap();
     let mut extents = Vec::new();
     snapshot
         .evidence_page(key, span(0, 3), None, 1 << 16, |row| {
@@ -4814,7 +4493,7 @@ fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence()
         .unwrap();
     assert_eq!(extents, [span(0, 3)]);
     drop(snapshot);
-    let mut resumed = Writer::resume(&mut memory, &cache, &budget, root, identity()).unwrap();
+    let mut resumed = Writer::resume(&mut memory, root, identity()).unwrap();
     let mut presented = [0; 2];
     for (at, writer) in [&mut writer, &mut resumed].into_iter().enumerate() {
         let sequence = writer.sequence().unwrap();
@@ -4840,7 +4519,6 @@ fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence()
         root = publish(
             &mut writer,
             &mut memory,
-            &cache,
             publication(segment + 1, segment, 0, hour, hour),
             Blob::EMPTY,
         );
@@ -4848,7 +4526,7 @@ fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence()
     let sequence = writer.sequence().unwrap();
     writer.present_domain(key, handles[1], sequence).unwrap();
     drop(writer);
-    let mut resumed = Writer::resume(&mut memory, &cache, &budget, root, identity()).unwrap();
+    let mut resumed = Writer::resume(&mut memory, root, identity()).unwrap();
     let sequence = resumed.sequence().unwrap();
     assert!(resumed.present_domain(key, handles[0], sequence).is_err());
     resumed.present_domain(key, handles[1], sequence).unwrap();
@@ -4860,11 +4538,10 @@ fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence()
     root = publish(
         &mut resumed,
         &mut memory,
-        &cache,
         publication(18, 17, 0, 21, 21),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let selected = [selection(key)];
     let mut events = Vec::new();
     snapshot
@@ -4888,10 +4565,8 @@ fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence()
 
 #[test]
 fn an_ordered_contribution_ending_at_the_last_hour_does_not_end_its_page() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
         .unwrap();
@@ -4903,11 +4578,10 @@ fn an_ordered_contribution_ending_at_the_last_hour_does_not_end_its_page() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, i32::MAX, i32::MAX),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     for bytes in [Run::SIZE, 1 << 16] {
         let mut runs = Vec::new();
         let mut cursor = None;
@@ -4954,10 +4628,8 @@ fn hourly_pages(
 #[test]
 fn hourly_runs_keep_only_a_selection_starting_elsewhere_than_the_last_across_pages() {
     use crate::query::Alias;
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let mut keys = Vec::new();
     for (actor, rows) in [
         (1, [(span(0, 10), 1), (span(5, 5), 2), (span(0, 10), 3)]),
@@ -4984,11 +4656,10 @@ fn hourly_runs_keep_only_a_selection_starting_elsewhere_than_the_last_across_pag
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, 40, 40),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     for (hour, value) in [(4, 1), (5, 3)] {
         assert!(matches!(
             snapshot.value_at(keys[0], hour).unwrap(),
@@ -5048,10 +4719,8 @@ fn hourly_runs_keep_only_a_selection_starting_elsewhere_than_the_last_across_pag
 
 #[test]
 fn hourly_runs_list_each_grid_hours_point_selection_once_per_first_hour() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let mut seed = 0x2545_f491_4f6c_dd1d_u64;
     let mut next = move || {
         seed = seed
@@ -5115,13 +4784,12 @@ fn hourly_runs_list_each_grid_hours_point_selection_once_per_first_hour() {
         root = publish(
             &mut writer,
             &mut memory,
-            &cache,
             publication(segment as u64 + 1, segment as u64, 0, end, end),
             Blob::EMPTY,
         );
         first = end + 1;
     }
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let bounds = span(0, 99);
     let members = [span(5, 30), span(60, 85)];
     let sparse = [span(45, 50)];
@@ -5175,10 +4843,8 @@ fn hourly_runs_list_each_grid_hours_point_selection_once_per_first_hour() {
 
 #[test]
 fn fresh_snapshot_pages_at_one_date_decode_bounded_rows_in_both_streams() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::Exact, 0)
         .unwrap();
@@ -5203,7 +4869,6 @@ fn fresh_snapshot_pages_at_one_date_decode_bounded_rows_in_both_streams() {
         root = publish(
             &mut writer,
             &mut memory,
-            &cache,
             publication(segment + 1, segment, 0, read, read),
             Blob::EMPTY,
         );
@@ -5222,7 +4887,7 @@ fn fresh_snapshot_pages_at_one_date_decode_bounded_rows_in_both_streams() {
     let (mut most, mut total, mut pages) = (0, 0, 0);
     loop {
         let before = decoded();
-        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
         let page = snapshot
             .event_page(query, cursor, Event::SIZE + 1, |row| {
                 rows.push((row.native_hour(), row.sequence()));
@@ -5246,10 +4911,8 @@ fn fresh_snapshot_pages_at_one_date_decode_bounded_rows_in_both_streams() {
 
 #[test]
 fn hourly_ordered_runs_decode_rows_linear_in_the_segment() {
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let key = writer
         .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
         .unwrap();
@@ -5265,11 +4928,10 @@ fn hourly_ordered_runs_decode_rows_linear_in_the_segment() {
     let root = publish(
         &mut writer,
         &mut memory,
-        &cache,
         publication(1, 0, 0, n - 1, n - 1),
         Blob::EMPTY,
     );
-    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(memory, root, identity()).unwrap();
     let view = Viewport {
         from: 0.0,
         to: f64::from(n - 1),
@@ -5418,11 +5080,9 @@ fn malformed_deltas_lengths_and_indices_are_invalid_data_not_overflow() {
     crowded.extend([0; 16]);
     malformed(read::entry_count(&crowded));
 
-    let budget = Budget::new(BIG);
-    let cache = Cache::new(&budget);
     let mut memory = Memory::default();
     let index = pages::seal(&mut memory, Kind::List, &[0; 8]).unwrap();
-    let mut reader = read::Reader::detached(&cache);
+    let mut reader = read::Reader::detached();
     let list = List {
         root: index,
         levels: 1,
@@ -5502,14 +5162,12 @@ fn malformed_deltas_lengths_and_indices_are_invalid_data_not_overflow() {
 
 #[test]
 fn a_writer_holds_what_its_open_segment_appended() {
-    let budget = Budget::new(BIG);
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let before = writer.held_bytes();
     for id in 0..4_096u64 {
         writer.catalogue(id, Cell::Integer(i128::from(id))).unwrap();
     }
     assert!(writer.held_bytes() > before);
-    assert!(writer.held_bytes() <= budget.used());
 }
 
 #[test]

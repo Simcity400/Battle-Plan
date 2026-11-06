@@ -265,6 +265,38 @@ fn a_sprite_batch_draws_only_what_its_images_do_not_hold() {
     );
 }
 
+/// Only the frames a strip declares are kept: a frame past it is drawn again each time it is
+/// asked, refusal included, and never batched.
+#[test]
+fn sprite_images_keep_only_the_strips_frames() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folders) = texture_catalogue(
+        &[(
+            "interface/art.gfx",
+            "spriteTypes = { spriteType = { name = GFX_strip textureFile = gfx/absent.png noOfFrames = 2 } }",
+        )],
+        &[],
+    );
+    let layers = &catalogue.content.layers;
+    let sprite = catalogue.sprites.lookup("GFX_strip").unwrap();
+    let decode = Decode::default();
+    let images = layers.presentation().derived::<SpriteImages>();
+    for frame in [1, 2, 7, u32::MAX] {
+        let why = sprite_frame_png(layers, sprite, decode, frame, 96).unwrap_err();
+        assert!(why.to_string().contains("absent.png"), "{why}");
+        assert_eq!(
+            images.contains(&sprite_image_key(sprite, decode, frame, 96)),
+            frame < 2,
+            "{frame}"
+        );
+    }
+    sprite_frames_png(layers, &[(sprite, 2), (sprite, 3)], decode, 96).unwrap();
+    for frame in [2, 3] {
+        assert!(!images.contains(&sprite_image_key(sprite, decode, frame, 96)));
+    }
+}
+
 /// A mod replaces a base sprite with a PNG strip. Padding is part of the native
 /// frame pitch, including when the resulting width does not divide by the frame count.
 #[test]

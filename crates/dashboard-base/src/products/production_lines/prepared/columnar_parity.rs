@@ -118,9 +118,18 @@ fn native(replay: &Replay, frames: &[DecodedFrame], tags: &[&str], run: &Run) ->
     let mut branch = Branch::new(replay, 1, tags.iter().map(|tag| (*tag).to_owned()), None);
     let last = frames.last().unwrap().hour;
     let mut resumed = false;
+    // A segment's walk ends before the next begins, and where its batch is published.
+    let end = |projector: &mut Projector, branch: &mut Branch, pages: &mut fixtures::FixturePages| {
+        let mut ended = Vec::new();
+        projector.end(&mut ended).unwrap();
+        for hour in ended {
+            branch.observe(pages, hour, None).unwrap();
+        }
+    };
     for (ordinal, frame) in (0..).zip(frames) {
         let cold = std::mem::take(&mut resumed) || run.starts.contains(&frame.hour);
         if cold {
+            end(&mut projector, &mut branch, &mut pages);
             projector = fresh();
         }
         write_hour(&mut walk, frame);
@@ -158,8 +167,12 @@ fn native(replay: &Replay, frames: &[DecodedFrame], tags: &[&str], run: &Run) ->
             branch.observe(&mut pages, hour, None).unwrap();
         }
         if frame.hour == last {
+            end(&mut projector, &mut branch, &mut pages);
             branch.publish(&mut pages, replay, Some(last), &flag).unwrap();
         } else if run.cuts.contains(&frame.hour) {
+            end(&mut projector, &mut branch, &mut pages);
+            projector = fresh();
+            resumed = true;
             branch.publish(&mut pages, replay, None, &flag).unwrap();
             if run.resume == Some(frame.hour) {
                 branch = Branch::resume(&mut pages, replay, 1, None).unwrap();

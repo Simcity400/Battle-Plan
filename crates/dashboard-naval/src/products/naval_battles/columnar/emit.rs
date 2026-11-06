@@ -453,7 +453,7 @@ impl Branch {
     }
 
     /// Appends the naval losses the last hour observed changed to the branch's series.
-    pub fn append(&mut self, series: &mut Writer<'_>) -> io::Result<()> {
+    pub fn append(&mut self, series: &mut Writer) -> io::Result<()> {
         let Some(at) = self.last else {
             return Ok(());
         };
@@ -462,13 +462,23 @@ impl Branch {
     }
 
     /// Cuts the branch's series through the last hour observed, its catalogue brought there.
-    pub fn cut(&mut self, series: &mut Writer<'_>, cancelled: &AtomicBool) -> io::Result<()> {
+    pub fn cut(&mut self, series: &mut Writer, cancelled: &AtomicBool) -> io::Result<()> {
         let Some(last) = self.last.take() else {
             return Ok(());
         };
         self.scan.settle(last);
         let (losses, scan) = self.scan.losses();
         self.losses.cut(series, losses, scan, last, cancelled)
+    }
+
+    /// Hours after its last cut were lost from the recording: it goes on after them, its
+    /// sinkings and naval losses counted afresh from the reads after them.
+    pub fn lost(&mut self) -> io::Result<()> {
+        if self.last.is_some() {
+            return Err(io::Error::other("A naval branch loses hours only after a cut"));
+        }
+        self.scan.lost();
+        Ok(())
     }
 
     /// What the branch goes on with after its last cut: its scan and the next window to

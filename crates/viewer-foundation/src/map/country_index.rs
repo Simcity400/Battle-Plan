@@ -104,9 +104,9 @@ impl CountryIndex {
         memo.get_or_build(frame, Self::read)
     }
 
-    /// A memo for [`CountryIndex::settled`] holding `capacity` recent hours.
-    pub fn memo(capacity: usize) -> Settled<Self> {
-        Settled::new(TABLES, capacity)
+    /// A memo for [`CountryIndex::settled`].
+    pub fn memo() -> Settled<Self> {
+        Settled::new(TABLES)
     }
 
     pub fn links(&self) -> &BTreeMap<u32, u32> {
@@ -242,7 +242,7 @@ mod tests {
                 ],
             )
         };
-        let memo = CountryIndex::memo(4);
+        let memo = CountryIndex::memo();
         let known = CountryIndex::settled(
             &memo,
             &hour(1, b"GEN", Recorded::Value(Some(b"ORI".to_vec()))),
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn hourly_values_do_not_change_the_settled_index() {
-        let memo = CountryIndex::memo(4);
+        let memo = CountryIndex::memo();
         let first = CountryIndex::settled(&memo, &frame(1, &tables(40, 1))).unwrap();
         assert_eq!(first.tags().len(), 40);
         // Every table is a new allocation and the power values moved, but no

@@ -11,7 +11,7 @@ use dashboard_base::{
     test_fixtures,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Identity, Publication, Snapshot, Span, Writer,
+    Blob, Identity, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -228,11 +228,9 @@ fn identity() -> Identity {
 /// is saved and goes on from the publication, as a preparation of a grown recording does: the
 /// hour after one starts a segment, as a grown recording's next segment does.
 fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: &[i32]) -> (Memory, u64) {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = emit::Emit::new();
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -248,12 +246,12 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: &[i32]) -> (Memory, u64)
             reached: cut,
             refusal: None,
         };
-        root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+        root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
         if resume.contains(&cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
             emit = emit::Emit::load(&directory, &saved).unwrap();
         }
@@ -308,9 +306,7 @@ impl Prepared {
     /// The reply through `last`, read from the publication of the last cut by then, as a query
     /// pins the gate's prefix.
     fn reply(&self, value: serde_json::Value, last: i32) -> std::io::Result<serde_json::Value> {
-        let budget = Budget::new(1 << 30);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(self.pages.clone(), &cache, self.root, identity())
+        let mut snapshot = Snapshot::open(self.pages.clone(), self.root, identity())
             .unwrap()
             .through(last)
             .unwrap()
@@ -342,10 +338,8 @@ impl Prepared {
         dimension: Option<&DiplomacyCountry>,
         hour: i32,
     ) -> Option<dashboard_series::Run> {
-        let budget = Budget::new(1 << 30);
-        let cache = Cache::new(&budget);
         let mut snapshot =
-            Snapshot::open(self.pages.clone(), &cache, self.root, identity()).unwrap();
+            Snapshot::open(self.pages.clone(), self.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
         let actor_of = |country| directory.actor(&emit::country_name(country)).unwrap();
         let key = directory.key(actor_of(actor), measure, dimension.map(actor_of))?;
@@ -1339,8 +1333,7 @@ fn a_departed_identity_keeps_off_the_carry_what_its_return_reads() {
     // The read it left with, which proves nothing now.
     assert_eq!(back["owners"][0]["readHour"], 0);
     assert_eq!(back["owners"][0]["known"], false);
-    let budget = Budget::new(1 << 30);
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let mut emit = emit::Emit::new();
     let mut open = Vec::new();
     for hour in project(&frames[..4], &[]) {
@@ -1456,8 +1449,7 @@ fn a_handle_held_across_interruptions_ends_every_episode_at_its_absence_alone() 
             .all(|p| p["goneBy"].is_null())
     );
     // Only present proposals are held past a cut, however many episodes the handle had.
-    let budget = Budget::new(1 << 30);
-    let mut writer = Writer::new(&budget, identity(), 22).unwrap();
+    let mut writer = Writer::new(identity(), 22).unwrap();
     let mut emit = emit::Emit::new();
     let mut held = Vec::new();
     for hour in project(&frames, &[]) {

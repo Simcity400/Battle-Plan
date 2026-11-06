@@ -4,14 +4,14 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchCoverage {
     pub first_hour: i32,
     pub last_hour: i32,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub enum ResearchOutcome {
     Active,
@@ -20,7 +20,7 @@ pub enum ResearchOutcome {
     Unknown,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchEntry {
     pub token: String,
@@ -46,7 +46,7 @@ pub struct ResearchEntry {
     pub outcome: ResearchOutcome,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchSlotHistory {
     pub index: u32,
@@ -60,7 +60,7 @@ pub struct ResearchSlotHistory {
     pub progress: Vec<ResearchProgress>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchProgress {
     pub first_hour: i32,
@@ -74,7 +74,7 @@ pub struct ResearchProgress {
     pub progress_raw: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchSlotState {
     pub first_hour: i32,
@@ -91,7 +91,7 @@ pub struct ResearchSlotState {
     pub details: Option<ResearchDetails>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchDetails {
     /// Ceiling at the segment's first hour. Subtract complete days elapsed within
@@ -175,7 +175,7 @@ pub struct ResearchDefinitionText {
     pub description: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchHistory {
     pub coverage: Vec<ResearchCoverage>,

@@ -187,9 +187,7 @@ fn cell<T: columns::Plain + Copy>(
     field: usize,
     slot: u32,
 ) -> io::Result<T> {
-    columns::plain::<T>(columns::table(state, table)?, field)?
-        .get(slot as usize)
-        .copied()
+    columns::value::<T>(columns::table(state, table)?, field, slot)?
         .ok_or_else(|| io::Error::other("A trade column holds no cell at a live slot"))
 }
 

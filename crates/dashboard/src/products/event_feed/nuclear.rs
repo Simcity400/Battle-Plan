@@ -8,7 +8,7 @@ use crate::{metadata::validate_campaign, products::country_history::NativeNames 
 use replay_data::{
     rows::NuclearStrikePart, rows::NuclearStrikeRow, rows::RowCodec, rows::TableId, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::TableView};
+use replay_frame::frame::{HourFrame, OperandStatus};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
 #[cfg(test)]
@@ -97,14 +97,16 @@ fn detail(strike: &NuclearStrikeRow) -> EventFeedStrike {
 
 /// Retained strike facts and refusals from one supplying read.
 pub(super) fn read(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     builder: &mut Builder,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<NuclearStrikeRow>> {
-    let read = match &*frame.tables[TableId::NuclearStrikes.index()] {
-        TableView::Unavailable { reason } => Err(reason.to_string()),
+    let hour = frame.hour();
+    let read = match frame.status(TableId::NuclearStrikes) {
+        OperandStatus::Unavailable(reason) => Err(reason.to_string()),
+        // Every field: a strike is handed on whole.
         _ => frame
-            .complete::<tables::NuclearStrikes>()
+            .complete::<tables::NuclearStrikes>(u64::MAX)
             .map_err(|error| error.to_string()),
     };
     let rows = match read {
@@ -114,8 +116,7 @@ pub(super) fn read(
                 "nuclearStrikeCoverage",
                 "Nuclear strikes",
                 format!(
-                    "Strikes up to the read at {} are not recorded: {reason}. Missing rows do not prove no strike occurred.",
-                    frame.hour
+                    "Strikes up to the read at {hour} are not recorded: {reason}. Missing rows do not prove no strike occurred."
                 ),
                 1,
             );
@@ -123,15 +124,16 @@ pub(super) fn read(
         }
     };
     let mut accepted = Vec::new();
-    for strike in rows {
+    for strike in rows.iter() {
         check_cancel(cancelled)?;
-        if strike.hour > frame.hour {
+        let strike = strike?;
+        if strike.hour > hour {
             builder.sampled_unavailable(
                 "nuclearStrikeCoverage",
                 "Nuclear strikes",
                 format!(
-                    "Strike {} is dated after its supplying read at {}.",
-                    strike.id, frame.hour
+                    "Strike {} is dated after its supplying read at {hour}.",
+                    strike.id
                 ),
                 1,
             );
@@ -261,7 +263,7 @@ pub(super) fn scan(
                 );
                 continue;
             }
-            for strike in read(frame, builder, cancelled)? {
+            for strike in read(frame.into(), builder, cancelled)? {
                 strikes.push((frame.hour, strike));
             }
         }

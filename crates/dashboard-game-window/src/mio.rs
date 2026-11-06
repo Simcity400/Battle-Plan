@@ -29,7 +29,7 @@
 //! attached) is shown on hover.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -520,14 +520,11 @@ pub struct Hour {
     pub warnings: Vec<String>,
 }
 
-/// The hours a source's choosers were last read at, by artwork session, branch, hour and
-/// organisation: scrolling or reopening a window at an hour reads it once.
+/// Each branch's latest hour read, by artwork session, with the choosers its windows read
+/// then by organisation: scrolling or reopening a window at that hour reads it once.
 #[derive(Default)]
 #[allow(clippy::type_complexity)]
-struct Hours(std::collections::VecDeque<((String, u64, i32, u64), Arc<Hour>)>);
-
-/// The hours [`Hours`] keeps.
-const KEPT_HOURS: usize = 32;
+struct Hours(HashMap<u64, ((String, i32), HashMap<u64, Arc<Hour>>)>);
 
 /// The chooser's rows of `organisation` at `hour`, or why the hour gives none.
 fn hour(
@@ -643,29 +640,27 @@ pub fn bind(
             .unwrap_or_else(|error| error.into_inner())
             .id
             .clone(),
-        branch,
         at,
-        organisation,
     );
     let hours = source.state::<Hours>();
-    let kept = {
-        let hours = hours.lock().unwrap_or_else(|error| error.into_inner());
-        hours
-            .0
-            .iter()
-            .find(|(kept, _)| *kept == key)
-            .map(|(_, read)| Arc::clone(read))
-    };
+    let kept = hours
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .0
+        .get(&branch)
+        .filter(|(held, _)| *held == key)
+        .and_then(|(_, read)| read.get(&organisation).map(Arc::clone));
     let read = match kept {
         Some(read) => read,
         None => match hour(source, catalogue, branch, at, organisation, cancelled)? {
             Ok(read) => {
                 let read = Arc::new(read);
                 let mut hours = hours.lock().unwrap_or_else(|error| error.into_inner());
-                if hours.0.len() == KEPT_HOURS {
-                    hours.0.pop_front();
+                let held = hours.0.entry(branch).or_default();
+                if held.0 != key {
+                    *held = (key, HashMap::new());
                 }
-                hours.0.push_back((key, Arc::clone(&read)));
+                held.1.insert(organisation, Arc::clone(&read));
                 read
             }
             Err(why) => {

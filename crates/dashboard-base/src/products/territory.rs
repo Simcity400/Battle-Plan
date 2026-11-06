@@ -30,7 +30,7 @@ use replay_frame::frame::FrameDecoder;
 use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
@@ -1427,16 +1427,18 @@ fn selected_series(
     Ok(reply)
 }
 
+/// A branch's scan, with the content it was read under.
 #[cfg(any(test, feature = "test-support"))]
-pub type CachedScan = (u64, Option<ContentKey>, Arc<Scan>);
+pub type CachedScan = (Option<ContentKey>, Arc<Scan>);
 type CachedAreas = (
     Arc<installed_content_core::ResolvedContent>,
     Result<Arc<ProvinceAreas>, String>,
 );
 #[derive(Default)]
 pub struct Cache {
+    /// One scan per branch; another content replaces it.
     #[cfg(any(test, feature = "test-support"))]
-    pub scans: VecDeque<CachedScan>,
+    pub scans: BTreeMap<u64, CachedScan>,
     areas: Option<CachedAreas>,
 }
 
@@ -1485,9 +1487,9 @@ pub fn cached_scan(
     let find = |cache: &Cache| {
         cache
             .scans
-            .iter()
-            .find(|(old_branch, old_key, _)| *old_branch == branch && *old_key == key)
-            .map(|(_, _, scan)| Arc::clone(scan))
+            .get(&branch)
+            .filter(|(old_key, _)| *old_key == key)
+            .map(|(_, scan)| Arc::clone(scan))
     };
     if let Some(scan) = find(&state.lock().unwrap_or_else(|error| error.into_inner())) {
         return Ok(scan);
@@ -1499,10 +1501,7 @@ pub fn cached_scan(
     if let Some(first) = find(&cache) {
         return Ok(first);
     }
-    cache.scans.push_back((branch, key, Arc::clone(&scanned)));
-    while cache.scans.len() > 2 {
-        cache.scans.pop_front();
-    }
+    cache.scans.insert(branch, (key, Arc::clone(&scanned)));
     Ok(scanned)
 }
 

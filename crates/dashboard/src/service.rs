@@ -714,20 +714,6 @@ impl Service {
                 };
                 self.inner.submit(request, LoadJob::MapSettings(job));
             }
-            DataCommand::HistoryCache { id, clear } => {
-                let Some(request) = self.inner.begin(id) else {
-                    return;
-                };
-                let Some(content) = self.configured_content(&request) else {
-                    return;
-                };
-                let job = LoadJob::HistoryCache {
-                    request: Arc::clone(&request),
-                    clear,
-                    options: content.options,
-                };
-                self.inner.submit(request, job);
-            }
             DataCommand::Open { id, path, revision } => {
                 let Some(request) = self.inner.begin(id) else {
                     return;

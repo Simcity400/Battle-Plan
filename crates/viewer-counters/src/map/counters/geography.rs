@@ -60,10 +60,8 @@ pub(super) struct Memo {
 
 impl Default for Memo {
     fn default() -> Self {
-        // As with the other hour-product memos, eviction only rebuilds a value;
-        // this bounds retained projections, not the admitted province/state counts.
         Self {
-            recent: Recent::new(8),
+            recent: Recent::new(),
         }
     }
 }

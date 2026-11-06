@@ -13,7 +13,7 @@ use dashboard_base::{
     test_fixtures::{CAMPAIGN, continuation_records, file_source, records, source},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -325,11 +325,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -343,7 +342,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -357,8 +355,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -377,9 +375,8 @@ fn recording(frames: Vec<DecodedFrame>) -> Replay {
 }
 
 /// `params`' reply from `built`, its coverage the whole branch.
-fn ask(source: &Source, built: &Built, budget: &Budget, params: Value) -> Value {
-    let cache = Cache::new(budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+fn ask(source: &Source, built: &Built, params: Value) -> Value {
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let accepted = Coverage {
         schema: dashboard_base::prepared::coverage::SCHEMA,
@@ -421,7 +418,6 @@ fn expected(source: &Source, tag: &str) -> (ScannedParties, Value) {
 
 #[test]
 fn the_publication_holds_the_row_history_across_starts_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     let (_, frames) = projected(&hours, &[]);
     let (source, root) = file_source(recording(frames));
@@ -432,13 +428,12 @@ fn the_publication_holds_the_row_history_across_starts_cuts_and_a_resume() {
         (&[110, 140][..], &[109, 139, 150][..], Some(139)),
     ] {
         let (projected, _) = projected(&hours, starts);
-        let built = build(projected, cuts, resume, &budget);
+        let built = build(projected, cuts, resume);
         for tag in ["GER", "ENG", "FRA"] {
             let label = format!("{tag} at starts {starts:?}, cuts {cuts:?}");
             let history = ask(
                 &source,
                 &built,
-                &budget,
                 json!({"branchId": "1", "tag": tag, "mode": "history"}),
             );
             let (_, wanted) = expected(&source, tag);
@@ -450,10 +445,9 @@ fn the_publication_holds_the_row_history_across_starts_cuts_and_a_resume() {
 
 #[test]
 fn states_marks_and_navigation_read_the_row_runs() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     let (projected, frames) = projected(&hours, &[113]);
-    let built = build(projected, &[112, 150], Some(112), &budget);
+    let built = build(projected, &[112, 150], Some(112));
     let (source, root) = file_source(recording(frames));
     let (scanned, _) = expected(&source, "GER");
     let holding = |first: i32, last: i32, hour: i32| first <= hour && hour <= last;
@@ -461,7 +455,6 @@ fn states_marks_and_navigation_read_the_row_runs() {
         let state = ask(
             &source,
             &built,
-            &budget,
             json!({"branchId": "1", "tag": "GER", "mode": "state", "hours": [hour]}),
         );
         let reply = &state["reply"];
@@ -497,7 +490,6 @@ fn states_marks_and_navigation_read_the_row_runs() {
         ask(
             &source,
             &built,
-            &budget,
             json!({"branchId": "1", "tag": "GER", "mode": "events", "field": field,
                 "from": 100, "to": 150}),
         )
@@ -524,7 +516,6 @@ fn states_marks_and_navigation_read_the_row_runs() {
         ask(
             &source,
             &built,
-            &budget,
             json!({"branchId": "1", "tag": "GER", "mode": "next", "fields": fields,
                 "values": values, "navigation": {"key": "ArrowRight", "from": from,
                 "firstHour": 100, "lastHour": 150}}),

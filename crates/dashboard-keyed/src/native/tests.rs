@@ -1,7 +1,7 @@
 use super::testing::{assert_published_as_walked, operate, publish_hours, resuming, write};
 use crate::tests::{Changing, Mines, frame};
 use dashboard_series::{
-    Blob, Budget, Cache, Evidence, Identity, KeySpec, Knownness, Observation, Publication, RunMode,
+    Blob, Evidence, Identity, KeySpec, Knownness, Observation, Publication, RunMode,
     Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
@@ -570,15 +570,13 @@ fn changes_read_from_runs_are_those_each_hours_lookup_gives() {
         assert_eq!(read, looked, "hours {hours:?}");
     }
 
-    let budget = Budget::new(16 << 20);
-    let cache = Cache::new(&budget);
     let identity = Identity {
         source: [1; 32],
         content: [2; 32],
         branch: [3; 32],
         schema: super::SCHEMA,
     };
-    let mut writer = Writer::new(&budget, identity, 90).unwrap();
+    let mut writer = Writer::new(identity, 90).unwrap();
     let mut handles = Vec::new();
     for actor in 0..2 {
         let key = writer
@@ -624,7 +622,6 @@ fn changes_read_from_runs_are_those_each_hours_lookup_gives() {
     let root = publish(
         &mut writer,
         &mut pages,
-        &cache,
         Publication {
             generation: 1,
             segment: 0,
@@ -635,7 +632,7 @@ fn changes_read_from_runs_are_those_each_hours_lookup_gives() {
         Blob::EMPTY,
     )
     .unwrap();
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity).unwrap();
+    let mut snapshot = Snapshot::open(pages, root, identity).unwrap();
     let keys = [0, 1, 2];
     for hours in [
         vec![99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109],

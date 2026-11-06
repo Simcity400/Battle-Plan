@@ -5,6 +5,7 @@ pub mod atlas_pages;
 pub mod camera;
 pub mod count_math;
 pub mod country_index;
+pub mod device_shared;
 pub mod directed_wars;
 pub mod frame;
 pub mod free_icons;

@@ -68,8 +68,10 @@ test('template handles are scoped to campaign and branch, and unavailable choice
 test('malformed replies and future presentation dates refuse', () => {
   assert.throws(() => validateDivisionLog(reply([entry(), entry()])), /malformed/);
   assert.throws(() => validateDivisionLog(reply([{ ...entry(), presentationHour: 13 }])), /malformed/);
-  assert.throws(() => validateDivisionTotals({ created: -1, lost: 0, transferred: 0, warnings: [] }), /malformed/);
-  assert.equal(validateDivisionTotals({ created: 5000, lost: 3, transferred: 2, warnings: [] }).created, 5000);
+  assert.throws(() => validateDivisionTotals({ created: -1, lost: 0, transferred: 0, since: null, warnings: [] }), /malformed/);
+  assert.throws(() => validateDivisionTotals({ created: 1, lost: 0, transferred: 0, since: 1.5, warnings: [] }), /malformed/);
+  assert.equal(validateDivisionTotals({ created: 5000, lost: 3, transferred: 2, since: null, warnings: [] }).created, 5000);
+  assert.equal(validateDivisionTotals({ created: 5, lost: 0, transferred: 0, since: 400, warnings: [] }).since, 400);
   assert.throws(() => validateDivisionManifest({ windows: [], available: true, lossesAvailable: true,
     templates: [{ id: '99', name: 'A' }, { id: '99', name: 'B' }], contentWarnings: [] }), /malformed/);
 });

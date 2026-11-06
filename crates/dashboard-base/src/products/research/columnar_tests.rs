@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{ResearchHistory, ResearchProgress, test_fixtures::fixture_research_inputs};
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -276,9 +276,10 @@ fn write(walk: &mut Synthetic, frame: &DecodedFrame) {
     }
 }
 
-/// The projected hours of `frames`, a projector starting cold at each of `starts` and at each
-/// walk's first hour (after a gap, the walk starts again).
-fn projected(frames: &[DecodedFrame], starts: &[i32]) -> Vec<facts::Hour> {
+/// The projected hours of `frames`, a projector starting cold at each of `starts`, after each of
+/// `cuts` (a publisher cuts at a segment's end) and at each walk's first hour (after a gap, the
+/// walk starts again).
+fn projected(frames: &[DecodedFrame], starts: &[i32], cuts: &[i32]) -> Vec<facts::Hour> {
     let mut out = Vec::new();
     let mut walk: Option<Synthetic> = None;
     let mut world = None;
@@ -291,8 +292,11 @@ fn projected(frames: &[DecodedFrame], starts: &[i32]) -> Vec<facts::Hour> {
         last = Some(frame.hour);
         let walk = walk.as_mut().unwrap();
         write(walk, frame);
-        let cold = starts.contains(&frame.hour);
+        let cold = starts.contains(&frame.hour)
+            || cuts.iter().any(|&cut| cut.checked_add(1) == Some(frame.hour));
         if cold {
+            // A segment's end: its lens hands its countries back.
+            projector.end(&mut out).unwrap();
             projector = Projector::new(FormatVersion::CURRENT, CaptureMode::Full).unwrap();
         }
         walk.end(|state, manifest, decoded, first| {
@@ -325,6 +329,7 @@ fn projected(frames: &[DecodedFrame], starts: &[i32]) -> Vec<facts::Hour> {
         })
         .unwrap();
     }
+    projector.end(&mut out).unwrap();
     // As its emit is handed them: written to the spool and read back.
     replay_spool::respool(out).unwrap()
 }
@@ -344,12 +349,10 @@ fn build(
     hours: Vec<facts::Hour>,
     cuts: &[i32],
     resume: Option<i32>,
-    budget: &Budget,
 ) -> (Memory, u64) {
-    let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -363,7 +366,6 @@ fn build(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -377,8 +379,8 @@ fn build(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -546,10 +548,8 @@ fn columnar_research_publishes_what_the_row_scan_reads() {
     let cancelled = AtomicBool::new(false);
     for &(starts, cuts, resume) in PLACEMENTS {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
-        let budget = Budget::new(64 << 20);
-        let (pages, root) = build(projected(&frames, starts), cuts, resume, &budget);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+        let (pages, root) = build(projected(&frames, starts, cuts), cuts, resume);
+        let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let (prepared, unjoined) = history(&mut snapshot, &directory, TAG, &cancelled).unwrap();
         assert_eq!(prepared, expected.history, "{label}");

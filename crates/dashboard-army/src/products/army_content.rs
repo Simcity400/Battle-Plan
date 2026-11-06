@@ -194,6 +194,58 @@ pub fn template_naming(frame: &DecodedFrame, handle: u64) -> Result<TemplateNami
     dashboard_text::template_facts::display_naming(frame, handle)
 }
 
+/// [`template_naming`] of any frame's tables, a walk's views among them.
+pub fn template_naming_in(
+    frame: replay_frame::frame::HourFrame<'_>,
+    handle: u64,
+) -> Result<TemplateNaming, String> {
+    dashboard_text::template_facts::display_naming_in(frame, handle)
+}
+
+/// [`template_naming_hourly`] of any frame's tables, a walk's views among them.
+pub fn template_naming_hourly_in(frame: replay_frame::frame::HourFrame<'_>, handle: u64) -> bool {
+    if let Some(decoded) = frame.decoded() {
+        return template_naming_hourly(decoded.decoded_frame(), handle);
+    }
+    const NAME: u64 =
+        replay_data::rows::mask::<replay_data::rows::DivisionTemplateIconRow>(&["display_name"]);
+    frame
+        .complete::<tables::DivisionTemplateIcons>(NAME)
+        .ok()
+        .and_then(|rows| rows.get(u128::from(handle)).ok().flatten())
+        .is_some_and(|row| {
+            matches!(&row.display_name, replay_data::rows::Recorded::Value(Some(name)) if name.sample_hour.stamp().is_some())
+        })
+}
+
+/// [`template_artwork`] of any frame's tables, a walk's views among them.
+pub fn template_artwork_in(
+    frame: replay_frame::frame::HourFrame<'_>,
+    handle: u64,
+) -> Result<TemplateArtwork, String> {
+    if let Some(decoded) = frame.decoded() {
+        return template_artwork(decoded.decoded_frame(), handle);
+    }
+    const ARTWORK: u64 = replay_data::rows::mask::<replay_data::rows::DivisionTemplateIconRow>(&[
+        "priority_unit",
+        "custom_icon",
+        "priority_unit_name",
+    ]);
+    let rows = frame
+        .complete::<tables::DivisionTemplateIcons>(ARTWORK)
+        .map_err(|why| format!("{ARTWORK_UNAVAILABLE}{why}"))?;
+    let row = rows
+        .get(u128::from(handle))
+        .ok()
+        .flatten()
+        .ok_or("Template artwork operands not recorded")?;
+    Ok(TemplateArtwork {
+        priority_unit: row.priority_unit,
+        custom_icon: row.custom_icon,
+        unit: row.priority_unit_name.clone(),
+    })
+}
+
 /// Whether a template's naming operands were sampled for this hour only.
 pub fn template_naming_hourly(frame: &DecodedFrame, handle: u64) -> bool {
     frame
@@ -297,7 +349,10 @@ pub fn localised(cat: Option<&Arc<Catalogue>>, key: &str) -> Result<String, Stri
 
 /// A read's design definitions kept by design, not as the read's rows.
 pub trait DefinitionsOf {
-    fn definition(&self, variant: u64) -> Option<&replay_data::rows::VariantDefinitionRow>;
+    fn definition(
+        &self,
+        variant: u64,
+    ) -> Option<std::borrow::Cow<'_, replay_data::rows::VariantDefinitionRow>>;
 }
 
 /// A read's design definitions.
@@ -308,11 +363,14 @@ pub enum Definitions<'a> {
 }
 
 impl<'a> Definitions<'a> {
-    fn definition(self, variant: u64) -> Option<&'a replay_data::rows::VariantDefinitionRow> {
+    fn definition(
+        self,
+        variant: u64,
+    ) -> Option<std::borrow::Cow<'a, replay_data::rows::VariantDefinitionRow>> {
         match self {
             Self::Rows(rows) => {
                 let at = rows.binary_search_by_key(&variant, |row| row.id).ok()?;
-                rows.get(at)
+                rows.get(at).map(std::borrow::Cow::Borrowed)
             }
             Self::Kept(kept) => kept.definition(variant),
         }
@@ -397,7 +455,7 @@ impl<'a> Designs<'a> {
             refusals.note("An equipment design has no recorded definition");
             return None;
         };
-        let raw = equipment::raw_variant(definition, *hour, tags, *lexical);
+        let raw = equipment::raw_variant(&definition, *hour, tags, *lexical);
         let archetype = match self
             .types
             .as_ref()

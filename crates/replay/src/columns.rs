@@ -5,12 +5,11 @@
 //! changes: reading them is refused.
 
 use crate::rows::{RowCodec, TableId};
-pub use replay_columnar::manifest::Status;
-use replay_columnar::{
-    section::Changes,
-    state::{Bits, Column, Table},
-    walk::State,
+pub use replay_columnar::{
+    manifest::Status,
+    state::{Bools, Paged, PagedBits, Table},
 };
+use replay_columnar::{section::Changes, state::Column, walk::State};
 use std::io;
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -68,6 +67,39 @@ pub fn truncated(state: &State, table: TableId) -> Option<&[u32]> {
     .flatten()
 }
 
+/// `table`'s last complete read and the hour of that read when known: its view when complete,
+/// else, for a table every restart keeps it of ([`crate::columnar_frames::LAST_COMPLETE`]), the
+/// rows it last read whole. None when no complete read is known: never read whole since the
+/// run's start or the restart the walk started at.
+pub fn last_complete(state: &State, table: TableId) -> io::Result<Option<(&Table, Option<i32>)>> {
+    read(state, table)?;
+    let index = table.index();
+    if let Some(last) = state.last_complete(index) {
+        return Ok(Some(last));
+    }
+    Ok(complete(state, table)
+        .then(|| state.table(index).map(|held| (held, state.sampled_at(index))))
+        .flatten())
+}
+
+/// The row `held`, one of `table`'s states the walk holds ([`last_complete`]), holds at its live
+/// `slot`, as [`row`] builds it.
+pub fn row_in<R: RowCodec>(
+    state: &State,
+    held: &Table,
+    table: TableId,
+    slot: u32,
+    format: u16,
+) -> io::Result<R> {
+    read(state, table)?;
+    let key = held
+        .key(slot)
+        .ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))?;
+    R::from_wire(key, &mut |column| {
+        crate::columnar_frames::wire(held, state.dictionary(), slot, column, format)
+    })
+}
+
 /// What the hour changed in `table`.
 pub fn changes(state: &State, table: TableId) -> io::Result<&Changes> {
     read(state, table)?;
@@ -76,19 +108,27 @@ pub fn changes(state: &State, table: TableId) -> io::Result<&Changes> {
         .ok_or_else(|| invalid(format!("The walker holds no {table:?}")))
 }
 
-/// A field kind held as one value per slot.
-pub trait Plain: Sized {
-    fn values(column: &Column) -> Option<&[Self]>;
+/// A field kind held as one value per slot, read by slot: `values.get(slot as usize)` or
+/// `values[slot as usize]`. Values are held in pages ([`Paged`]), bools a bit each.
+pub trait Plain: Sized + Copy {
+    type Values<'a>;
+    fn values(column: &Column) -> Option<Self::Values<'_>>;
+    /// Slot `at`'s value of `values`; None past the slots.
+    fn at(values: &Self::Values<'_>, at: usize) -> Option<Self>;
 }
 
 macro_rules! plain {
     ($($type:ty => $variant:ident),* $(,)?) => {
         $(impl Plain for $type {
-            fn values(column: &Column) -> Option<&[Self]> {
+            type Values<'a> = &'a Paged<$type>;
+            fn values(column: &Column) -> Option<Self::Values<'_>> {
                 match column {
                     Column::$variant(values) => Some(values),
                     _ => None,
                 }
+            }
+            fn at(values: &Self::Values<'_>, at: usize) -> Option<Self> {
+                values.get(at).copied()
             }
         })*
     };
@@ -103,19 +143,31 @@ plain!(
     i32 => I32,
     u64 => U64,
     i64 => I64,
-    bool => Bool,
 );
+
+impl Plain for bool {
+    type Values<'a> = &'a Bools;
+    fn values(column: &Column) -> Option<Self::Values<'_>> {
+        match column {
+            Column::Bool(values) => Some(values),
+            _ => None,
+        }
+    }
+    fn at(values: &Self::Values<'_>, at: usize) -> Option<Self> {
+        values.get(at).copied()
+    }
+}
 
 /// A field kind held as a value and a presence bit per slot: a slot without its bit holds
 /// no value, never zero.
 pub trait Optional: Sized {
-    fn values(column: &Column) -> Option<(&[Self], &Bits)>;
+    fn values(column: &Column) -> Option<(&Paged<Self>, &PagedBits)>;
 }
 
 macro_rules! optional {
     ($($type:ty => $variant:ident),* $(,)?) => {
         $(impl Optional for $type {
-            fn values(column: &Column) -> Option<(&[Self], &Bits)> {
+            fn values(column: &Column) -> Option<(&Paged<Self>, &PagedBits)> {
                 match column {
                     Column::$variant(values, present) => Some((values, present)),
                     _ => None,
@@ -133,15 +185,20 @@ optional!(
 );
 
 /// `field`'s values by slot. A slot past the end has never been written.
-pub fn plain<T: Plain>(table: &Table, field: usize) -> io::Result<&[T]> {
+pub fn plain<T: Plain>(table: &Table, field: usize) -> io::Result<T::Values<'_>> {
     table
         .column(field)
         .and_then(T::values)
         .ok_or_else(|| invalid(format!("column {field} is not of the asked kind")))
 }
 
+/// Slot `slot`'s value of `field`; None past the slots.
+pub fn value<T: Plain>(table: &Table, field: usize, slot: u32) -> io::Result<Option<T>> {
+    Ok(T::at(&plain::<T>(table, field)?, slot as usize))
+}
+
 /// `field`'s values and presence by slot.
-pub fn optional<T: Optional>(table: &Table, field: usize) -> io::Result<(&[T], &Bits)> {
+pub fn optional<T: Optional>(table: &Table, field: usize) -> io::Result<(&Paged<T>, &PagedBits)> {
     table
         .column(field)
         .and_then(T::values)
@@ -149,7 +206,7 @@ pub fn optional<T: Optional>(table: &Table, field: usize) -> io::Result<(&[T], &
 }
 
 /// `field`'s dictionary ids by slot: a text field's strings are the walker's dictionary's.
-pub fn text(table: &Table, field: usize) -> io::Result<&[u32]> {
+pub fn text(table: &Table, field: usize) -> io::Result<&Paged<u32>> {
     match table.column(field) {
         Some(Column::Bytes(ids)) => Ok(ids),
         _ => Err(invalid(format!("column {field} is not text"))),

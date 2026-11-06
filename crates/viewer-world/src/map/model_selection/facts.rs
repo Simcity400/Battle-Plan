@@ -18,7 +18,7 @@ const INPUTS: &[TableId] = &[TableId::VariantDefinitions, TableId::LexicalTokens
 pub(super) struct Retained(Arc<Keyed<Bank>>);
 impl Default for Retained {
     fn default() -> Self {
-        Self(Arc::new(Keyed::new(INPUTS, 8)))
+        Self(Arc::new(Keyed::new(INPUTS)))
     }
 }
 impl fmt::Debug for Retained {

@@ -1,5 +1,6 @@
 //! Generals' and admirals' served replies, as the widgets ask them: every page of the choices
-//! over the branch and of every country's, the leaderboards at each hour, every country's
+//! over the branch and of every country's, the leaderboards at each hour whole and as playback
+//! reads their rows, every country's
 //! leaders at the last hour, and some leaders' careers.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
@@ -49,6 +50,23 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
                     "unit-leaders",
                     leaders(&id, all.clone(), "leaderboard", kind, Some(hour)),
                 )?;
+            }
+        }
+        // Playback's rows: each hour's whole, then each read against the hour before.
+        for kind in KINDS {
+            let mut before: Option<(i32, Value)> = None;
+            for hour in branch.hours() {
+                let mut params = leaders(&id, all.clone(), "leaderboard", kind, Some(hour));
+                params["rows"] = json!(true);
+                let whole = ask.ask("unit-leaders", params.clone())?;
+                if let Some((since, index)) = before.take()
+                    && index.is_string()
+                {
+                    params["since"] = json!(since);
+                    params["held"] = index;
+                    ask.ask("unit-leaders", params)?;
+                }
+                before = whole.map(|reply| (hour, reply["index"].clone()));
             }
         }
         let countries = ask.countries(branch.id)?;

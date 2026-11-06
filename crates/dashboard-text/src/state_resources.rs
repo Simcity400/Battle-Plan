@@ -8,9 +8,27 @@ use std::{collections::BTreeMap, io, sync::OnceLock};
 
 use installed_content_core::{buildings::Buildings, defines::Defines, parser::Operator};
 use replay_data::{
-    rows::CountryBuildingResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,
-    rows::TableSchema, rows::tables,
+    rows::BuildingRow, rows::CountryBuildingResourceRow, rows::ResourceDefinitionRow,
+    rows::StateBaseResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,
+    rows::TableSchema, rows::mask, rows::tables,
 };
+use replay_frame::frame::{HourFrame, Rowset};
+
+/// The fields of each table the resource operands read.
+const ACTIVE: u64 = mask::<ResourceDefinitionRow>(&["token", "active"]);
+const INPUT: u64 = mask::<StateResourceInputRow>(&[
+    "gate",
+    "global_factor",
+    "origin",
+    "infrastructure_level",
+    "infrastructure_modifier",
+    "supply_route",
+]);
+const STORED: u64 = mask::<StateResourceRow>(&["pool", "additive", "factor", "cost"]);
+const BASE: u64 = mask::<StateBaseResourceRow>(&["amount"]);
+const HEALTHY: u64 = mask::<BuildingRow>(&["healthy_level"]);
+const OVERRIDE: u64 =
+    mask::<CountryBuildingResourceRow>(&["building", "count", "resource", "amount"]);
 
 type Index<T> = OnceLock<crate::triggers::refusal::Resolved<Result<T, crate::triggers::Failure>>>;
 /// Building type token to its `local_resources` grants by resource token.
@@ -167,7 +185,7 @@ pub trait Links {
 /// One hour's recorded state resource operands, each index built on first
 /// use.
 pub struct StateResources<'a> {
-    frame: &'a dyn replay_frame::frame::DecodedSource,
+    frame: HourFrame<'a>,
     /// Building types, for their `local_resources_<resource>` grants.
     buildings: &'a Buildings,
     /// `NBuildings` `INFRASTRUCTURE_RESOURCE_BONUS` and
@@ -175,22 +193,26 @@ pub struct StateResources<'a> {
     resource_bonuses: [i64; 2],
     /// Resource token to its `active` byte.
     resources: Index<BTreeMap<u32, u8>>,
-    resource_inputs: Index<BTreeMap<u32, &'a StateResourceInputRow>>,
-    state_resources: Index<BTreeMap<(u32, u32), &'a StateResourceRow>>,
-    base_resources: Index<BTreeMap<(u32, u32), i64>>,
     /// Each state's buildings: type token and healthy level.
     state_buildings: Index<BTreeMap<u32, Vec<(u32, i16)>>>,
-    /// Each canonical country's overrides in native order.
-    overrides: Index<BTreeMap<u32, Vec<&'a CountryBuildingResourceRow>>>,
+    /// Each canonical country's overrides in native order: building, count, resource and
+    /// amount.
+    overrides: Index<BTreeMap<u32, Vec<(u32, u32, u32, u32, i64)>>>,
     grants: Index<Grants>,
 }
 
 fn table<T: TableSchema>(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<&[T::Row], crate::triggers::Failure> {
+    frame: HourFrame<'_>,
+    mask: u64,
+) -> Result<Rowset<'_, T::Row>, crate::triggers::Failure> {
     frame
-        .complete::<T>()
+        .complete::<T>(mask)
         .map_err(|error| crate::triggers::Failure::input(T::ID, "", None, error.to_string()))
+}
+
+/// `rows`' failure to build a row of `T`, refused where it is reached.
+fn walked<T: TableSchema>(why: io::Error) -> crate::triggers::Failure {
+    crate::triggers::refusal::input_error(T::ID, why)
 }
 
 fn get<T>(
@@ -210,18 +232,15 @@ fn get<T>(
 
 impl<'a> StateResources<'a> {
     pub fn new(
-        frame: &'a dyn replay_frame::frame::DecodedSource,
+        frame: impl Into<HourFrame<'a>>,
         buildings: &'a Buildings,
         resource_bonuses: [i64; 2],
     ) -> Self {
         Self {
-            frame,
+            frame: frame.into(),
             buildings,
             resource_bonuses,
             resources: OnceLock::new(),
-            resource_inputs: OnceLock::new(),
-            state_resources: OnceLock::new(),
-            base_resources: OnceLock::new(),
             state_buildings: OnceLock::new(),
             overrides: OnceLock::new(),
             grants: OnceLock::new(),
@@ -231,10 +250,13 @@ impl<'a> StateResources<'a> {
     /// The recorded resource database: each resource token's `active` byte.
     pub fn resource_database(&self) -> Result<&BTreeMap<u32, u8>, crate::triggers::Failure> {
         get(&self.resources, || {
-            Ok(table::<tables::ResourceDefinitions>(self.frame)?
+            table::<tables::ResourceDefinitions>(self.frame, ACTIVE)?
                 .iter()
-                .map(|row| (row.token, row.active))
-                .collect())
+                .map(|row| {
+                    row.map(|row| (row.token, row.active))
+                        .map_err(walked::<tables::ResourceDefinitions>)
+                })
+                .collect()
         })
     }
 
@@ -297,13 +319,12 @@ impl<'a> StateResources<'a> {
         controller: Option<u32>,
         links: &impl Links,
     ) -> Result<ResourceOperands, crate::triggers::Failure> {
-        let inputs = get(&self.resource_inputs, || {
-            Ok(table::<tables::StateResourceInputs>(self.frame)?
-                .iter()
-                .map(|row| (row.state, row))
-                .collect())
-        })?;
-        let input = inputs.get(&state).ok_or_else(|| {
+        // Each table is keyed by the state, and the resource after it.
+        let key = (u128::from(state) << 32) | u128::from(resource);
+        let input = table::<tables::StateResourceInputs>(self.frame, INPUT)?
+            .get(u128::from(state))
+            .map_err(walked::<tables::StateResourceInputs>)?
+            .ok_or_else(|| {
             crate::triggers::Failure::input(
                 replay_data::rows::TableId::StateResourceInputs,
                 "",
@@ -315,22 +336,16 @@ impl<'a> StateResources<'a> {
         // family reads every state and country a hooked writer touched),
         // except the supply-route flag, the value at the state's last read,
         // up to a day old.
-        let resources = get(&self.state_resources, || {
-            Ok(table::<tables::StateResources>(self.frame)?
-                .iter()
-                .map(|row| ((row.state, row.resource), row))
-                .collect())
-        })?;
-        let base = get(&self.base_resources, || {
-            Ok(table::<tables::StateBaseResources>(self.frame)?
-                .iter()
-                .map(|row| ((row.state, row.resource), row.amount))
-                .collect())
-        })?;
-        let stored = resources.get(&(state, resource));
-        let operand = |field: fn(&StateResourceRow) -> i64| stored.map_or(0, |row| field(row));
+        let stored = table::<tables::StateResources>(self.frame, STORED)?
+            .get(key)
+            .map_err(walked::<tables::StateResources>)?;
+        let base = table::<tables::StateBaseResources>(self.frame, BASE)?
+            .get(key)
+            .map_err(walked::<tables::StateBaseResources>)?;
+        let operand =
+            |field: fn(&StateResourceRow) -> i64| stored.as_deref().map_or(0, |row| field(row));
         Ok(ResourceOperands {
-            template: base.get(&(state, resource)).copied().unwrap_or(0),
+            template: base.map_or(0, |row| row.amount),
             pool: operand(|row| row.pool),
             gate: input.gate != 0,
             additive: operand(|row| row.additive),
@@ -358,7 +373,8 @@ impl<'a> StateResources<'a> {
     ) -> Result<i64, crate::triggers::Failure> {
         let buildings = get(&self.state_buildings, || {
             let mut out: BTreeMap<u32, Vec<(u32, i16)>> = BTreeMap::new();
-            for row in table::<tables::StateBuildings>(self.frame)? {
+            for row in table::<tables::StateBuildings>(self.frame, HEALTHY)?.iter() {
+                let row = row.map_err(walked::<tables::StateBuildings>)?;
                 out.entry(row.location)
                     .or_default()
                     .push((row.building_type, row.healthy_level));
@@ -366,14 +382,21 @@ impl<'a> StateResources<'a> {
             Ok(out)
         })?;
         let overrides = get(&self.overrides, || {
-            let mut out: BTreeMap<u32, Vec<&CountryBuildingResourceRow>> = BTreeMap::new();
-            for row in table::<tables::CountryBuildingResources>(self.frame)? {
+            let mut out: BTreeMap<u32, Vec<(u32, u32, u32, u32, i64)>> = BTreeMap::new();
+            for row in table::<tables::CountryBuildingResources>(self.frame, OVERRIDE)?.iter() {
+                let row = row.map_err(walked::<tables::CountryBuildingResources>)?;
                 if let Some(slot) = links.slot(row.country) {
-                    out.entry(slot).or_default().push(row);
+                    out.entry(slot).or_default().push((
+                        row.ordinal,
+                        row.building,
+                        row.count,
+                        row.resource,
+                        row.amount,
+                    ));
                 }
             }
             for rows in out.values_mut() {
-                rows.sort_by_key(|row| row.ordinal);
+                rows.sort_by_key(|row| row.0);
             }
             Ok(out)
         })?;
@@ -400,15 +423,13 @@ impl<'a> StateResources<'a> {
             // The amounts are the country's at the frame's hour.
             let bonus = overrides
                 .iter()
-                .find(|row| row.building == building)
-                .filter(|row| row.count != 0)
+                .find(|row| row.1 == building)
+                .filter(|row| row.2 != 0)
                 .map(|_| {
                     overrides
                         .iter()
-                        .find(|row| {
-                            row.building == building && row.count != 0 && row.resource == resource
-                        })
-                        .map_or(0, |row| row.amount)
+                        .find(|row| row.1 == building && row.2 != 0 && row.3 == resource)
+                        .map_or(0, |row| row.4)
                 });
             total = total.wrapping_add(building_grant(healthy, amount, bonus));
         }

@@ -636,7 +636,7 @@ fn certified_anchor_changes_match_full_validation_and_keep_witness_refusals() {
             .states_changed(
                 branch,
                 hour,
-                &frame,
+                frame.as_slice(),
                 Ok(&content),
                 consecutive.then_some(keys.as_slice()),
             )
@@ -674,8 +674,7 @@ fn certified_anchor_changes_match_full_validation_and_keep_witness_refusals() {
 }
 
 #[test]
-fn minimum_signed_window_admits_every_committed_edit_before_native_update() {
-    use engine_allocation::credit::MemoryBudget;
+fn minimum_signed_window_reserves_every_committed_edit_before_native_update() {
     let count = 9;
     let content = Content {
         provinces: (0..count)
@@ -700,20 +699,10 @@ fn minimum_signed_window_admits_every_committed_edit_before_native_update() {
         };
         count
     ];
-    let expected_bytes = count * size_of::<(u32, i64, i64)>();
     let mut memo = Memo::default();
-    let denied = MemoryBudget::new(expected_bytes - 1);
-    assert_eq!(
-        memo.admit_changes_in(&content, &denied).unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
-    );
-    assert_eq!(denied.used(), 0);
-    assert_eq!(memo.changed.capacity(), 0);
-    let budget = MemoryBudget::new(expected_bytes);
-    memo.admit_changes_in(&content, &budget).unwrap();
+    memo.reserve_changes(&content).unwrap();
     let capacity = memo.changed.capacity();
     assert_eq!(capacity, count);
-    assert_eq!(budget.used(), expected_bytes);
     assert_eq!(
         window(3, i32::MIN, count as i32),
         Ok((vec![3, 4, 5, 6, 7, 8, 0, 1, 2], 3))
@@ -737,13 +726,9 @@ fn minimum_signed_window_admits_every_committed_edit_before_native_update() {
     );
     assert_eq!(memo.changed.len(), count);
     assert_eq!(memo.changed.capacity(), capacity);
-    assert_eq!(budget.used(), expected_bytes);
-    assert_eq!(budget.peak(), expected_bytes);
     for &(_, before, now) in &memo.changed {
         assert_eq!((before, now), (10, 20));
     }
-    drop(memo);
-    assert_eq!(budget.used(), 0);
 }
 
 /// The planned pass stages, commits and refuses exactly as the content's own, refusals in the
@@ -817,10 +802,10 @@ fn the_planned_pass_and_moved_witness_match_the_content_pass() {
             let hour = anchor + step as i32;
             let changed = (step > 0).then_some(&[0_u128][..]);
             let expected = reference
-                .states_changed(1, hour, &frame, Ok(content), changed)
+                .states_changed(1, hour, frame.as_slice(), Ok(content), changed)
                 .map(<[State]>::to_vec);
             let actual = memo
-                .states_changed(1, hour, &frame, Ok(&planned), changed)
+                .states_changed(1, hour, frame.as_slice(), Ok(&planned), changed)
                 .map(<[State]>::to_vec);
             assert_eq!(actual, expected, "variant {variant}, step {step}");
             assert_eq!(

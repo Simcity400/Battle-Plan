@@ -1,6 +1,6 @@
 //! A family emit's live edges: each key's open run and open evidence. An edge is appended to
-//! the writer when it changes, and through the last hour at a cut, so neither a segment nor a
-//! page ever breaks a run; a cut appends only what is open, never every key.
+//! the writer when it changes, and at a cut through the last hour when it began since the cut
+//! before; one carried out of that cut is held, so a segment refers to it where it began.
 
 use crate::{
     codec::Decode,
@@ -85,7 +85,7 @@ impl Carry {
     /// starts at `hour`; an equal value continuing without a break changes nothing.
     pub fn value(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         value: Option<i128>,
@@ -113,7 +113,7 @@ impl Carry {
     /// even where the run before holds the same value, apart from it by a supplying boundary.
     pub fn supplied(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         value: i128,
@@ -140,7 +140,7 @@ impl Carry {
     /// The evidence of `key` from `hour` on: None ends it before `hour`. An equal read continues.
     pub fn evidence(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         read: Option<Read>,
@@ -171,7 +171,7 @@ impl Carry {
 
     /// Ends every open run and evidence after `last`: the hour after it is not the next one
     /// read.
-    pub fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.append(writer, last)?;
         for &key in &self.open {
             let at = key as usize;
@@ -182,18 +182,36 @@ impl Carry {
         Ok(())
     }
 
-    /// Appends every open run and evidence through `last`, the last hour of the segment a cut
-    /// closes; they stay open.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
-        self.append(writer, last)?;
+    /// Takes every open run and evidence through `last`, the last hour of the segment a cut
+    /// closes; they stay open. One that began since the last cut is appended; one carried out
+    /// of it is held, so the segment refers to it where it began.
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         let mut kept = 0;
         for at in 0..self.open.len() {
             let key = self.open[at];
             let edge = &mut self.edges[key as usize];
             if let Some(run) = &mut edge.run {
+                match run.through {
+                    None => {
+                        if let Some(span) = piece(run.first, None, last) {
+                            write_run(writer, key, *run, span)?;
+                        }
+                    }
+                    Some(through) if through < last => writer.hold(key, last)?,
+                    Some(_) => {}
+                }
                 run.through = Some(last);
             }
             if let Some(held) = &mut edge.evidence {
+                match held.through {
+                    None => {
+                        if let Some(span) = piece(held.first, None, last) {
+                            append(writer, key, *held, span)?;
+                        }
+                    }
+                    Some(through) if through < last => writer.hold_evidence(key, last)?,
+                    Some(_) => {}
+                }
                 held.through = Some(last);
             }
             if edge.run.is_some() || edge.evidence.is_some() {
@@ -207,7 +225,7 @@ impl Carry {
         Ok(())
     }
 
-    fn append(&self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn append(&self, writer: &mut Writer, last: i32) -> io::Result<()> {
         for &key in &self.open {
             let edge = self.edges[key as usize];
             if let Some(run) = edge.run
@@ -329,7 +347,7 @@ impl Carry {
 }
 
 /// Appends what the open `run` holds before `hour`, which a cut has not appended.
-fn end_run(writer: &mut Writer<'_>, key: KeyHandle, run: Option<Run>, hour: i32) -> io::Result<()> {
+fn end_run(writer: &mut Writer, key: KeyHandle, run: Option<Run>, hour: i32) -> io::Result<()> {
     if let Some(run) = run
         && let Some(span) = hour
             .checked_sub(1)
@@ -341,7 +359,7 @@ fn end_run(writer: &mut Writer<'_>, key: KeyHandle, run: Option<Run>, hour: i32)
 }
 
 /// `run`'s piece `span`: only its first piece starts it, with its break and boundary.
-fn write_run(writer: &mut Writer<'_>, key: KeyHandle, run: Run, span: Span) -> io::Result<()> {
+fn write_run(writer: &mut Writer, key: KeyHandle, run: Run, span: Span) -> io::Result<()> {
     let first = run.through.is_none();
     writer.run(
         key,
@@ -352,7 +370,7 @@ fn write_run(writer: &mut Writer<'_>, key: KeyHandle, run: Run, span: Span) -> i
     )
 }
 
-fn append(writer: &mut Writer<'_>, key: KeyHandle, held: Held, span: Span) -> io::Result<()> {
+fn append(writer: &mut Writer, key: KeyHandle, held: Held, span: Span) -> io::Result<()> {
     let presentation = (held.read.presented && held.through.is_none())
         .then(|| writer.sequence())
         .transpose()?;

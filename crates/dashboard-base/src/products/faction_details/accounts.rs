@@ -95,7 +95,7 @@ pub(super) fn attach(
                 .map(|row| String::from_utf8_lossy(&row.tag).into_owned());
             let mut upgrades = Vec::new();
             for (&group, &token) in row.upgrade_groups.iter().zip(&row.upgrade_tokens) {
-                let value = selectors::upgrade(frame, group, token, cat);
+                let value = selectors::upgrade(replay_frame::frame::HourFrame::from(frame), group, token, cat);
                 if let Some(why) = &value.reason {
                     reply.warnings.push(why.clone());
                 }

@@ -52,7 +52,7 @@ impl Coverage {
     /// `status` from `hour` on; one held already changes nothing.
     fn set(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         status: Status,
@@ -62,7 +62,7 @@ impl Coverage {
                 return Ok(());
             }
             if from < hour {
-                append(writer, key, held, from, hour - 1)?;
+                append(writer, key, held, from, hour - 1, false)?;
             }
         }
         self.open = Some((status, hour));
@@ -70,11 +70,11 @@ impl Coverage {
     }
 
     /// Appends what is open through `last`, which stays open.
-    fn cut(&mut self, writer: &mut Writer<'_>, key: KeyHandle, last: i32) -> io::Result<()> {
+    fn cut(&mut self, writer: &mut Writer, key: KeyHandle, last: i32) -> io::Result<()> {
         if let Some((held, from)) = &mut self.open
             && *from <= last
         {
-            append(writer, key, *held, *from, last)?;
+            append(writer, key, *held, *from, last, true)?;
             *from = last + 1;
         }
         Ok(())
@@ -82,27 +82,29 @@ impl Coverage {
 }
 
 fn append(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     key: KeyHandle,
     status: Status,
     first: i32,
     last: i32,
+    cut: bool,
 ) -> io::Result<()> {
     let (known, supplying_read) = match status {
         Status::Known(read) => (Knownness::Known, read),
         Status::Unknown(reason) => (Knownness::Unknown(reason), None),
     };
-    writer.evidence(
-        key,
-        Evidence {
-            span: Span::new(first, last)?,
-            known,
-            supplying_read,
-            holder: None,
-            identity_first: None,
-        },
-        None,
-    )
+    let evidence = Evidence {
+        span: Span::new(first, last)?,
+        known,
+        supplying_read,
+        holder: None,
+        identity_first: None,
+    };
+    if cut {
+        writer.continue_evidence(key, evidence)
+    } else {
+        writer.evidence(key, evidence, None)
+    }
 }
 
 /// A held cell: a token as its number, a list as its cells.
@@ -200,11 +202,11 @@ impl<V: View> Emit<V> {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors.key(writer, place, (RunMode::Exact, 0), None)
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 2]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 2]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -224,7 +226,7 @@ impl<V: View> Emit<V> {
     }
 
     /// Keeps one hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: Hour<V>) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: Hour<V>) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("naval-yards.emit", None);
         let at = hour.hour;
         match self.last {
@@ -269,7 +271,7 @@ impl<V: View> Emit<V> {
     }
 
     /// Ends what is open after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         self.walking = false;
         self.next = None;
@@ -287,7 +289,7 @@ impl<V: View> Emit<V> {
     /// missed ends it.
     fn schedule(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         read: bool,
@@ -335,7 +337,7 @@ impl<V: View> Emit<V> {
     }
 
     /// Each source table's coverage from `at`.
-    fn sources(&mut self, writer: &mut Writer<'_>, at: i32, sources: &Sources) -> io::Result<()> {
+    fn sources(&mut self, writer: &mut Writer, at: i32, sources: &Sources) -> io::Result<()> {
         for (at_source, source) in sources.tables.iter().enumerate() {
             let status = match &source.missing {
                 Some(why) => {
@@ -373,7 +375,7 @@ impl<V: View> Emit<V> {
     }
 
     /// The number of the token `label` spells, numbered and spelled at `at` when it is new.
-    fn token(&mut self, writer: &mut Writer<'_>, at: i32, label: &Label) -> io::Result<u64> {
+    fn token(&mut self, writer: &mut Writer, at: i32, label: &Label) -> io::Result<u64> {
         let digest = digest(&label.key);
         if let Some(&number) = self.tokens.get(&digest) {
             return Ok(number);
@@ -398,7 +400,7 @@ impl<V: View> Emit<V> {
     /// The actors of `owners`, by their number there.
     fn actors(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         owners: &Arc<[String]>,
     ) -> io::Result<Vec<u64>> {
@@ -415,7 +417,7 @@ impl<V: View> Emit<V> {
         Ok(actors)
     }
 
-    fn held(&mut self, writer: &mut Writer<'_>, at: i32, cell: &Spelled) -> io::Result<Held> {
+    fn held(&mut self, writer: &mut Writer, at: i32, cell: &Spelled) -> io::Result<Held> {
         Ok(match cell {
             Spelled::Null => Held::Null,
             Spelled::Integer(value) => Held::Integer(*value),
@@ -435,7 +437,7 @@ impl<V: View> Emit<V> {
     /// `starts`, every stream starts a chain, and one holding rows writes its keyframe.
     fn rows(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         read: Option<i32>,
         rows: Rows,
@@ -553,7 +555,7 @@ impl<V: View> Emit<V> {
     /// of them, or a keyframe where the chain needs one or where coverage `starts` on rows held.
     fn write(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         read: Option<i32>,
@@ -593,7 +595,7 @@ impl<V: View> Emit<V> {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some([observed, _]) = self.family {
             self.observed.cut(writer, observed, last)?;
@@ -719,7 +721,7 @@ impl<V: View> Emit<V> {
 
 /// Appends the row `number` holds, or its removal, to an event's cells.
 fn push_row(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     cells: &mut Vec<Cell>,
     number: u64,
     row: Option<&Box<[Held]>>,
@@ -740,7 +742,7 @@ fn push_row(
     Ok(())
 }
 
-fn cell(writer: &mut Writer<'_>, held: &Held) -> io::Result<Cell> {
+fn cell(writer: &mut Writer, held: &Held) -> io::Result<Cell> {
     Ok(match held {
         Held::Null => Cell::Null,
         Held::Integer(value) => Cell::Integer(*value),
@@ -756,7 +758,7 @@ fn cell(writer: &mut Writer<'_>, held: &Held) -> io::Result<Cell> {
 }
 
 fn event(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     key: KeyHandle,
     hour: i32,
     read: Option<i32>,

@@ -248,6 +248,8 @@ pub struct Content {
 
     /// Perspective-independent compute resources, weakly cached per graphics device.
     pub political_gpu: viewer_world::map::political_gpu::Cache,
+    /// The game textures scenes of this content draw, weakly cached per graphics device.
+    pub scene_textures: viewer_world::map::scene::TextureCache,
     pub texture_quality: u8,
     pub visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
     /// What the mounted visual mods held when this content loaded
@@ -399,21 +401,6 @@ pub struct Content {
     /// How long that one pass over `map/provinces.bmp` took, for reporting.
     pub province_geometry_build: Duration,
 }
-
-/// What one hour's [`perspective::Vision`] reads besides its tables: the hour
-/// decides which wars are ongoing, and the viewing choice.
-/// Hours whose visibility the builders share: the pool builds up to one hour
-/// per builder at once, each with one perspective. An entry holds only the
-/// vision tables of its hour.
-const VISION_MEMO: usize = 8;
-
-/// Battle plans kept for the hours in flight and a step back, as
-/// [`VISION_MEMO`].
-const ORDER_MEMO: usize = 8;
-
-/// Type-icon relations kept as [`VISION_MEMO`].
-const TYPE_TINT_MEMO: usize = 8;
-const MISSION_MEMO: usize = 8;
 
 /// One recorded hour of a document: its decoded frame, the fraction past it,
 /// and the content it is drawn with. Everything built per hour is built here,
@@ -2565,7 +2552,7 @@ impl Document {
         let battle_name_provinces = Arc::new(battle_name_provinces);
         let state_name_keys = Arc::new(state_name_keys);
         let eta_cache = Arc::new(EtaCache::default());
-        let vision_memo = Arc::new(Keyed::new(perspective::VISION_TABLES, VISION_MEMO));
+        let vision_memo = Arc::new(Keyed::new(perspective::VISION_TABLES));
         let modifier_names = Arc::new(combat::modifier_text::name_index_cache());
         let regions = Arc::new(regions);
         let counters = Arc::new(counters);
@@ -2803,11 +2790,12 @@ impl Document {
             // orders: the recorded player's battle plan
             orders: order_assets,
             political_gpu: viewer_world::map::political_gpu::Cache::default(),
+            scene_textures: viewer_world::map::scene::TextureCache::default(),
             eta_cache,
-            order_memo: Recent::new(ORDER_MEMO),
-            trade_route_memo: Recent::new(ORDER_MEMO),
-            type_tint_memo: Keyed::new(counters::type_tint::TABLES, TYPE_TINT_MEMO),
-            mission_memo: Recent::new(MISSION_MEMO),
+            order_memo: Recent::new(),
+            trade_route_memo: Recent::new(),
+            type_tint_memo: Keyed::new(counters::type_tint::TABLES),
+            mission_memo: Recent::new(),
             movement,
             province_geometry,
             province_geometry_build,
@@ -4994,7 +4982,7 @@ mod tests {
                 frame,
                 choice,
                 FogContent::loaded(fog),
-                &Keyed::new(perspective::VISION_TABLES, 1),
+                &Keyed::new(perspective::VISION_TABLES),
             )
             .unwrap()
         };

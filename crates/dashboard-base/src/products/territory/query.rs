@@ -942,13 +942,27 @@ pub fn owned_states<P: PageRead>(
     tags: &[&str],
     hour: i32,
 ) -> io::Result<Vec<Option<i128>>> {
+    owned_states_by(directory, tags, &mut |key| {
+        Ok(run_at(snapshot, Some(key), hour)?.map(|run| run.value))
+    })
+}
+
+/// [`owned_states`], each key's value at the hour given by `read`.
+pub fn owned_states_by(
+    directory: &Directory,
+    tags: &[&str],
+    read: &mut dyn FnMut(u64) -> io::Result<Option<i128>>,
+) -> io::Result<Vec<Option<i128>>> {
     let keys = Keys { directory };
     tags.iter()
         .map(|tag| {
-            let key = directory
+            match directory
                 .actor(tag.as_bytes())
-                .and_then(|actor| keys.value(actor, super::emit::NATIVE_OWNED_STATES));
-            Ok(run_at(snapshot, key, hour)?.map(|run| run.value))
+                .and_then(|actor| keys.value(actor, super::emit::NATIVE_OWNED_STATES))
+            {
+                Some(key) => read(key),
+                None => Ok(None),
+            }
         })
         .collect()
 }

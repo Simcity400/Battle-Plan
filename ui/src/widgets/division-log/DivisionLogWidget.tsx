@@ -29,6 +29,7 @@ import type { DivisionLogManifestReply, DivisionLogReply, DivisionLogTotalsReply
 import { battleWindowIndex, battleWindows } from '../land-battles/landBattlesData';
 import { placeKey, validatePlaceNamesReply } from '../../dashboard/placeNamesData';
 import { OPTIONS } from './definition';
+import { sinceLabel } from '../../dashboard/stretch';
 import { divisionName, divisionStatus, divisionRows, divisionTooltip, selectedTemplates, templateToken,
   validateDivisionLog, validateDivisionManifest, validateDivisionTotals } from './divisionLogData.ts';
 import type { DivisionLogItem } from './divisionLogData';
@@ -177,6 +178,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
         {events !== 'lost' && <span><b>{(totals.data.created?.toLocaleString() ?? 'Still being prepared')}</b> created</span>}
         {events !== 'created' && <><span><b>{manifest.data.lossesAvailable ? (totals.data.lost?.toLocaleString() ?? 'Still being prepared') : 'Not recorded'}</b> lost / removed</span>
           <span><b>{manifest.data.lossesAvailable ? (totals.data.transferred?.toLocaleString() ?? 'Still being prepared') : 'Not recorded'}</b> transferred / merged</span></>}
+        {totals.data.since !== null && <span className="division-log-since">{sinceLabel(totals.data.since)}, after hours the recording lost</span>}
       </>}
     </div>}
     {!manifest.data.lossesAvailable && events !== 'created' && <p className="division-log-note">Losses and transfers: {preparedPrefix(manifest.data)?.pending.length ? 'Still being prepared.' : 'Not in this recording.'}</p>}

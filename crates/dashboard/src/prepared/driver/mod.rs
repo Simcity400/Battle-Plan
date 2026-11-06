@@ -1,9 +1,10 @@
 //! The preparation driver: the one family registry, the plan selecting the
 //! backend of every family ([`plan`]), the publication every family commits
 //! through ([`publication`]), and the entry ordinary preparation and its
-//! restoration go through. A recording's change-run index is prepared first
-//! ([`super::change_runs`]). A recording with a native columnar recording beside
-//! it is then prepared from that, every family by its native backend or refused
+//! restoration go through. A recording's change-run index ([`super::change_runs`])
+//! is written by a lane of the families' union run over the native recording
+//! it indexes, or else prepared first. A recording with a native columnar recording
+//! beside it is prepared from that, every family by its native backend or refused
 //! by name ([`native`]); any other refuses every family and job by name ([`rows`]).
 
 pub mod native;
@@ -35,10 +36,10 @@ pub fn prepare(
     // The families' content resolves beside the index, which reads none of it.
     let options = content.map(|content| &content.options);
     source.resolving_ahead(options, cancelled, || -> io::Result<Accepted> {
-        // The index first: the viewer serves the map from it while the families prepare. Native
-        // recordings refused for it are the campaign map's refusal alone, named in its status,
-        // from the first progress the families report on.
-        let refused = change_runs::prepare(source, cancelled)?.refused;
+        // Native recordings refused for the index are the campaign map's refusal alone, named
+        // in its status, from the first progress the families report on.
+        let index = change_runs::plan(source)?;
+        let refused = index.refused().map(str::to_owned);
         let mut forward = |done: &Accepted| match &refused {
             Some(reason) => {
                 let mut done = done.clone();
@@ -47,9 +48,13 @@ pub fn prepare(
             }
             None => accepted(done),
         };
-        let mut done = match native::recording(source)? {
+        let recording = native::recording(source)?;
+        // An index of the recording the families walk is one more lane of their union run: the
+        // recording is walked once. Any other is prepared first, in runs of its own.
+        let (riding, _) = index.take(recording.as_ref(), cancelled)?;
+        let mut done = match recording {
             Some(recording) => {
-                native::prepare(source, content, recording, cancelled, &mut forward)?
+                native::prepare(source, content, recording, riding, cancelled, &mut forward)?
             }
             None => {
                 let done = rows::prepare(source, content, cancelled)?;

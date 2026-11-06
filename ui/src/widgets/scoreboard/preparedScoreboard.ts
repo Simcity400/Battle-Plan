@@ -1,11 +1,11 @@
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { fieldPreparing, preparedPrefix } from '../../dashboard/preparedPrefix.ts';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries.ts';
 import { int, object } from '../../dashboard/validation.ts';
-import type { ScoreboardColumnKey, ScoreboardPreparedParams, ScoreboardPreparedReply } from '../../generated/dashboard';
+import type { ScoreboardColumnKey, ScoreboardPreparedParams, ScoreboardPreparedReply, ScoreboardSeries } from '../../generated/dashboard';
 import { scoreboardModel, scoreboardRows, validateScoreboardReply } from './scoreboardData.ts';
 import type { ScoreboardRow } from './scoreboardData';
 
@@ -22,7 +22,35 @@ export function validatePreparedScoreboard(value: unknown): ScoreboardPreparedRe
       .some(span => span.firstHour !== value.hour || span.lastHour !== value.hour))) throw new Error('Invalid prepared scoreboard moment.');
   preparedPrefix(value);
   if (value.preparing !== undefined && (!Array.isArray(value.preparing) || !value.preparing.every(key => data.columns.some(column => column.key === key)))) throw new Error('Invalid preparing scoreboard columns.');
-  return { ...value, hour: value.hour, data, maxima: value.maxima as ScoreboardPreparedReply['maxima'] };
+  if (value.since !== undefined && !(int(value.since) && Array.isArray(value.ended) && value.ended.every(tag => typeof tag === 'string')
+    && value.ended.every(tag => !data.series.some(series => series.tag === tag)))) throw new Error('Invalid prepared scoreboard rows.');
+  return { ...value, hour: value.hour, data, maxima: value.maxima as ScoreboardPreparedReply['maxima'],
+    ...(value.since === undefined ? {} : { since: value.since as number, ended: value.ended as string[] }) };
+}
+
+/** Whether an index answers every row and cell of its hour for good: what a later hour's rows are read against. */
+const completeIndex = (reply: ScoreboardPreparedReply) => !['pending', 'coverage', 'approximate', 'preparing'].some(field => field in reply);
+
+/** A row read at one moment as the same row reads at `hour`: its spans that hour, and a read supplied every hour supplied then. */
+function restampedRow(series: ScoreboardSeries, hour: number): ScoreboardSeries {
+  const at = <T extends { firstHour: number; lastHour: number }>(span: T): T => ({ ...span, firstHour: hour, lastHour: hour });
+  return { ...series, segments: series.segments.map(at), identities: series.identities.map(at), membership: series.membership && series.membership.map(at),
+    columns: series.columns.map(column => ({ ...column, runs: column.runs.map(at),
+      readRuns: column.readRuns.map(read => ({ ...at(read), readHour: read.hourly ? hour : read.readHour })) })) };
+}
+
+/** `reply` joined to `held`, the complete index at the hour it was read against: the index a whole reply at its hour
+ * gives. Null when it was read against another hour than the one held. */
+export function joinScoreboardHour(held: ScoreboardPreparedReply | undefined, reply: ScoreboardPreparedReply): ScoreboardPreparedReply | null {
+  if (reply.since === undefined) return reply;
+  if (!held || held.hour !== reply.since || held.data.branchId !== reply.data.branchId) return null;
+  const sent = new Set(reply.data.series.map(series => series.tag));
+  const ended = new Set(reply.ended ?? []);
+  const rows = new Set(held.data.series.map(series => series.tag));
+  if ([...ended].some(tag => !rows.has(tag))) return null;
+  const series = [...held.data.series.filter(row => !sent.has(row.tag) && !ended.has(row.tag)).map(row => restampedRow(row, reply.hour)), ...reply.data.series];
+  const { since: _since, ended: _ended, ...whole } = reply;
+  return { ...whole, data: { ...reply.data, series } };
 }
 
 /** Index values own sorting; a page supplies only this moment's mounted cells. */
@@ -69,14 +97,25 @@ export function usePreparedScoreboard(client: DashboardClient, source: Dashboard
   const [state, setState] = useState<{ client: DashboardClient; owner: string; index?: ScoreboardPreparedReply; page?: ScoreboardPreparedReply; pending: boolean; error?: Failure }>();
   const [cellFailure, setCellFailure] = useState<{ client: DashboardClient; owner: string; key: string; attempt: number; error: Failure }>();
   const owned = state?.client === client && state.owner === owner ? state : undefined;
+  const heldIndex = useRef<ScoreboardPreparedReply | undefined>(undefined);
+  heldIndex.current = owned?.index;
   useEffect(() => {
     if (!active || !source || !request) return;
     const controller = new AbortController();
+    // Another hour's rows are read against the complete index held, and joined to it.
+    const held = heldIndex.current;
+    const base = held && request.index && held.hour !== request.hour && completeIndex(held) ? held : undefined;
+    const asked = base ? { ...request, since: base.hour } : request;
     setState(previous => ({ client, owner, index: previous?.client === client && previous.owner === owner ? previous.index : undefined,
       page: previous?.client === client && previous.owner === owner ? previous.page : undefined, pending: true }));
-    void queryScoreboard(client, source, request, controller.signal, attempt > 0, index => {
-      if (!controller.signal.aborted) setState(previous => ({ client, owner, index,
-        page: previous?.client === client && previous.owner === owner ? previous.page : undefined, pending: false }));
+    void queryScoreboard(client, source, asked, controller.signal, attempt > 0, reply => {
+      if (controller.signal.aborted) return;
+      const index = joinScoreboardHour(base, reply);
+      setState(previous => {
+        const page = previous?.client === client && previous.owner === owner ? previous.page : undefined;
+        return index ? { client, owner, index, page, pending: false }
+          : { ...previous, client, owner, pending: false, error: asFailure(new Error('The scoreboard rows were read against another hour.')) };
+      });
     }).catch(error => { if (!controller.signal.aborted) setState(previous => ({ ...previous, client, owner, pending: false, error: asFailure(error) })); });
     return () => controller.abort();
   }, [client, source?.id, source?.revision, owner, moment, active, attempt]);

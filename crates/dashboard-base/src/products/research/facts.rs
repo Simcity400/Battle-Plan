@@ -2,7 +2,9 @@
 //! country step ([`super::Scan`]) reads of each hour, as the hourly walk's index step found it
 //! in the hour's frame (the holders, owners and read hours by slot where they changed, the slots
 //! to observe again, and each fresh read's rows), and each tag's grant facts where they changed.
-//! What every country holds is the ordered emit's ([`super::emit`]): every segment starts cold.
+//! Every segment starts cold. Its lens ([`super::lens`]) folds every country from its last read
+//! before the segment's first hour, and hands the ordered emit ([`super::emit`]) what each
+//! country publishes from its first read a day into the segment; the emit folds the rest.
 //!
 //! A fresh read sends its slots' rows, what its bonus and modifier rows attribute to each slot,
 //! and the inventory rows its assignments can ask for. Attributions are derived here from the
@@ -16,9 +18,9 @@
 //! keeps its owner's whole inventory, shared by its reads while no row of it changes.
 
 use super::{
-    Attribution, CountryRows, IndexChanges, Technology, attributed_bonuses,
+    Attribution, CountryRows, IndexChanges, Indexes, Technology, attributed_bonuses,
     grants::{self, GrantInventory},
-    modifiers, valid_inputs,
+    lens, modifiers, valid_inputs,
 };
 use crate::{ResearchBonus, ResearchModifiers};
 use dashboard_world::{Needs, Roster, Tag, Tagged, World};
@@ -77,8 +79,6 @@ pub struct Fresh {
     /// the read is not this hour's or its slots are refused.
     pub(super) derived: Vec<Derived>,
     pub(super) inventory: Option<Inventory>,
-    /// The bytes it brings onto the heap: shared values once, by the read that first holds them.
-    heap: usize,
 }
 
 /// What a slot's bonus and modifier rows attribute to it: None where they were not read with
@@ -123,7 +123,8 @@ pub struct Changed {
     pub(crate) dirty: BTreeSet<u32>,
     pub(crate) countries_changed: bool,
     pub(crate) changes: IndexChanges,
-    /// Every slot one of whose owners was read at the hour.
+    /// Every slot one of whose owners was read at the hour; its shared attributions and
+    /// inventory go to the spool once while the projection holds them.
     pub(crate) fresh: BTreeMap<u32, Fresh>,
 }
 
@@ -249,67 +250,47 @@ pub struct Grants {
     pub facts: Vec<(String, Grant)>,
 }
 
-/// One hour of a segment.
+/// One hour of a segment, or what the segment's lens hands back after the hour it folded last.
 #[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub index: Index,
     pub grants: Option<Box<Grants>>,
-    /// The bytes it brings onto the heap.
-    heap: usize,
+    /// What the lens hands the emit with the hour.
+    pub(super) lens: Option<Box<lens::Part>>,
+    /// Whether it only hands the lens's countries back, after hour `hour`.
+    pub(super) handover: bool,
 }
 
-fn rows_heap<T>(rows: &[T], extra: impl Fn(&T) -> usize) -> usize {
-    rows.len() * size_of::<T>() + rows.iter().map(extra).sum::<usize>()
+impl Hour {
+    /// What the lens hands back after `hour`.
+    fn handed(branch: u64, hour: i32, part: Box<lens::Part>) -> Self {
+        Self {
+            branch,
+            hour,
+            index: Index::Quiet,
+            grants: None,
+            lens: Some(part),
+            handover: true,
+        }
+    }
 }
 
 fn bonuses_heap(bonuses: &[ResearchBonus]) -> usize {
     size_of::<Vec<ResearchBonus>>()
-        + rows_heap(bonuses, |bonus| {
-            texts_heap(&[
-                &bonus.token,
-                &bonus.name,
-                &bonus.speed_bonus_raw,
-                &bonus.cost_reduction_raw,
-                &bonus.ahead_reduction_years_raw,
-            ])
-        })
-}
-
-fn index_heap(index: &Index) -> usize {
-    let Index::Changed(changed) = index else {
-        return 0;
-    };
-    let changes = &changed.changes;
-    let holders = changes.countries.as_ref().map_or(0, |(slots, rows)| {
-        slots.len() * 16
-            + rows
-                .values()
-                .flatten()
-                .map(|(_, _, tag)| size_of::<(usize, u32, Vec<u8>)>() + tag.len())
-                .sum::<usize>()
-    });
-    let lists = |lists: &BTreeMap<u32, Vec<(u32, i32)>>| -> usize {
-        lists.values().map(|list| 48 + list.len() * 8).sum()
-    };
-    size_of::<Changed>()
-        + changed.dirty.len() * 8
-        + holders
-        + changes
-            .owners
-            .as_ref()
-            .map_or(0, |owners| owners.values().map(|ids| 48 + ids.len() * 4).sum())
-        + changes.dates.as_ref().map_or(0, lists)
-        + changes
-            .slot_dates
+        + bonuses.len() * size_of::<ResearchBonus>()
+        + bonuses
             .iter()
-            .map(|(_, dates)| 48 + dates.as_ref().map_or(0, |dates| dates.len() * 8))
-            .sum::<usize>()
-        + changed
-            .fresh
-            .values()
-            .map(|fresh| size_of::<Fresh>() + 16 + fresh.heap)
+            .map(|bonus| {
+                texts_heap(&[
+                    &bonus.token,
+                    &bonus.name,
+                    &bonus.speed_bonus_raw,
+                    &bonus.cost_reduction_raw,
+                    &bonus.ahead_reduction_years_raw,
+                ])
+            })
             .sum::<usize>()
 }
 
@@ -738,11 +719,11 @@ struct Assembled {
     spells: bool,
 }
 
-/// `value`, the one `old` holds where they are equal, and whether it is new.
-fn share<T: PartialEq>(old: Option<&Arc<T>>, value: T) -> (Arc<T>, bool) {
+/// `value`, the one `old` holds where they are equal.
+fn share<T: PartialEq>(old: Option<&Arc<T>>, value: T) -> Arc<T> {
     match old {
-        Some(old) if **old == value => (Arc::clone(old), false),
-        _ => (Arc::new(value), true),
+        Some(old) if **old == value => Arc::clone(old),
+        _ => Arc::new(value),
     }
 }
 
@@ -795,6 +776,9 @@ pub struct Projector {
     found: Vec<u32>,
     shared_rows: Vec<ResearchModifierRow>,
     slot_rows: Vec<ResearchModifierRow>,
+    /// The segment's fold of every country, and the branch it walks.
+    lens: Option<lens::Lens>,
+    branch: u64,
 }
 
 /// What [`Projector::save`] writes: nothing but that it restarts, since everything it holds is
@@ -849,6 +833,8 @@ impl Projector {
             found: Vec::new(),
             shared_rows: Vec::new(),
             slot_rows: Vec::new(),
+            lens: None,
+            branch: 0,
         })
     }
 
@@ -884,14 +870,19 @@ impl Projector {
     /// The hour's index step, as the hourly walk's ([`super::Scan`]'s `refresh`) takes it from
     /// the hour's frame: the holders, links, research rows and read hours by slot, refreshed by
     /// the hour's changes or rebuilt.
-    fn index(&mut self, state: &State, roster: &Roster, at: i32) -> io::Result<Index> {
+    fn index(
+        &mut self,
+        state: &State,
+        roster: &Roster,
+        at: i32,
+    ) -> io::Result<(Index, BTreeMap<u32, Fresh>)> {
         let complete = roster.complete()
             && columns::complete(state, TableId::ResearchInputs)
             && columns::complete(state, TableId::SliceReads);
         if !complete {
             // Indexes this hour's rows did not refresh are rebuilt at the next.
             self.ready = false;
-            return Ok(Index::Incomplete);
+            return Ok((Index::Incomplete, BTreeMap::new()));
         }
         let forced = !self.ready;
         let links_changed = forced || roster.rebuilt() || !roster.changed_links().is_empty();
@@ -1036,15 +1027,106 @@ impl Projector {
             && changes.slot_dates.is_empty()
             && fresh.is_empty();
         Ok(if quiet {
-            Index::Quiet
+            (Index::Quiet, fresh)
         } else {
-            Index::Changed(Box::new(Changed {
+            let changed = Changed {
                 dirty,
                 countries_changed,
                 changes,
-                fresh,
-            }))
+                fresh: BTreeMap::new(),
+            };
+            (Index::Changed(Box::new(changed)), fresh)
         })
+    }
+
+    /// Each country's read before hour `at`, the lens's first, that its rows still hold: as the
+    /// country step took it fresh at its own hour ([`Self::fresh`]), with the owner's whole
+    /// inventory. A slot more tags hold is folded by the emit alone, and so is one whose rows
+    /// the walk cannot read, which the hourly walk never read here: no read of them refuses.
+    fn virgins(&mut self, state: &State, at: i32) -> io::Result<Vec<lens::Virgin>> {
+        let mut virgins = Vec::new();
+        let slots: Vec<(u32, u32, Vec<u8>)> = self
+            .country_rows
+            .iter()
+            .filter_map(|(&slot, rows)| match rows.as_slice() {
+                [(_, id, tag)] => Some((slot, *id, tag.clone())),
+                _ => None,
+            })
+            .collect();
+        for (slot, id, tag) in slots {
+            let Ok(tag) = String::from_utf8(tag) else {
+                continue;
+            };
+            if tag.is_empty() || tag.len() > 512 {
+                continue;
+            }
+            match self.virgin(state, at, slot) {
+                Ok(Some((read, fresh))) => virgins.push(lens::Virgin {
+                    tag,
+                    identity: (id, slot),
+                    read,
+                    fresh,
+                }),
+                Ok(None) => {}
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(virgins)
+    }
+
+    /// `slot`'s read before hour `at` that its rows still hold, as [`Self::virgins`] takes it.
+    fn virgin(&mut self, state: &State, at: i32, slot: u32) -> io::Result<Option<(i32, Fresh)>> {
+        let owners = self.owners.get(&slot).cloned().unwrap_or_default();
+        let inputs = self.input_rows(state, &owners)?;
+        let stamp = |owner: u32| self.stamps.read(INPUTS, owner);
+        let read = match inputs.first() {
+            Some(input) => stamp(input.country)
+                .filter(|&read| inputs.iter().all(|input| stamp(input.country) == Some(read))),
+            None => owners.iter().filter_map(|&owner| stamp(owner)).max(),
+        };
+        let Some(read) = read.filter(|&read| read < at) else {
+            return Ok(None);
+        };
+        let owner = inputs
+            .first()
+            .map(|input| input.country)
+            .or_else(|| owners.iter().copied().find(|&owner| stamp(owner) == Some(read)));
+        let mut derived = Vec::new();
+        let refs: Vec<&ResearchInputRow> = inputs.iter().collect();
+        if valid_inputs(&refs) {
+            let bonuses = self.joined(state, &self.bonuses, BONUSES, &owners, read);
+            let modifiers = self.joined(state, &self.modifiers, MODIFIERS, &owners, read);
+            derived.reserve_exact(inputs.len());
+            for input in &inputs {
+                derived.push(self.derive(state, input, bonuses, modifiers)?);
+            }
+        }
+        let inventory = match owner
+            .filter(|_| columns::complete(state, TableId::ResearchTechnologies))
+        {
+            Some(owner) => Some(self.inventory(state, at, slot, owner, &inputs)?),
+            None => None,
+        };
+        Ok(Some((
+            read,
+            Fresh {
+                inputs,
+                read: Some(read),
+                derived,
+                inventory,
+            },
+        )))
+    }
+
+    /// Hands the lens's countries back after the hour it folded last, `last`.
+    fn hand_over(&mut self, last: i32, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        if let Some(mut lens) = self.lens.take()
+            && let Some(part) = lens.hand_over()?
+        {
+            out.push(Hour::handed(self.branch, last, part))?;
+        }
+        Ok(())
     }
 
     /// Whether `keyed`'s table is complete and every one of `owners` holding rows of it was read
@@ -1089,18 +1171,16 @@ impl Projector {
     }
 
     /// What `input`'s slot's bonus and modifier rows attribute to it, those that were read with
-    /// it, derived again only where a row it reads or its technology changed; and the bytes the
-    /// values it newly holds bring.
+    /// it, derived again only where a row it reads or its technology changed.
     fn derive(
         &mut self,
         state: &State,
         input: &ResearchInputRow,
         bonuses_joined: bool,
         modifiers_joined: bool,
-    ) -> io::Result<(Derived, usize)> {
+    ) -> io::Result<Derived> {
         let key = (input.country, input.index);
         let mut derived = Derived::default();
-        let mut heap = 0;
         if bonuses_joined {
             let group = scope(input.country, input.index);
             let from = (
@@ -1122,13 +1202,7 @@ impl Projector {
                         &mut rows,
                     )?;
                     let old = self.attributions.get(&key).and_then(|held| held.value.as_ref());
-                    let value = attributed_bonuses(input, &rows).map(|value| {
-                        let (value, new) = share(old, value);
-                        if new {
-                            heap += bonuses_heap(&value);
-                        }
-                        value
-                    });
+                    let value = attributed_bonuses(input, &rows).map(|value| share(old, value));
                     self.attributions.insert(
                         key,
                         Attributed {
@@ -1175,13 +1249,7 @@ impl Projector {
                         .then(|| modifiers::scoped(input, &self.shared_rows, &self.slot_rows))
                         .flatten();
                     let old = self.breakdowns.get(&key).and_then(|held| held.value.as_ref());
-                    let value = breakdown.map(|value| {
-                        let (value, new) = share(old, value);
-                        if new {
-                            heap += size_of::<ResearchModifiers>() + modifiers::bytes(&value);
-                        }
-                        value
-                    });
+                    let value = breakdown.map(|value| share(old, value));
                     self.breakdowns.insert(
                         key,
                         Breakdown {
@@ -1193,7 +1261,7 @@ impl Projector {
                 }
             };
         }
-        Ok((derived, heap))
+        Ok(derived)
     }
 
     /// A reader of the inventory fields of ResearchTechnologies' live slots.
@@ -1243,7 +1311,6 @@ impl Projector {
             .filter(|&owner| fresh(owner) && inputs.iter().all(|input| fresh(input.country)))
             .map(|_| at);
         let mut derived = Vec::new();
-        let mut heap = 0;
         let mut inventory = None;
         if let Some(read) = read {
             let refs: Vec<&ResearchInputRow> = inputs.iter().collect();
@@ -1253,17 +1320,13 @@ impl Projector {
                 let modifiers = self.joined(state, &self.modifiers, MODIFIERS, &owners, read);
                 derived.reserve_exact(inputs.len());
                 for input in &inputs {
-                    let (kept, bytes) = self.derive(state, input, bonuses, modifiers)?;
-                    derived.push(kept);
-                    heap += bytes;
+                    derived.push(self.derive(state, input, bonuses, modifiers)?);
                 }
             }
             if let Some(owner) =
                 owner.filter(|_| columns::complete(state, TableId::ResearchTechnologies))
             {
-                let (kept, bytes) = self.inventory(state, at, slot, owner, &inputs)?;
-                inventory = Some(kept);
-                heap += bytes;
+                inventory = Some(self.inventory(state, at, slot, owner, &inputs)?);
             }
         }
         let seen = self.seen.entry(slot).or_default();
@@ -1275,19 +1338,15 @@ impl Projector {
             seen.pop_front();
         }
         let inputs = if read.is_some() { inputs } else { Vec::new() };
-        heap += rows_heap(&inputs, |row| row.token.capacity())
-            + derived.capacity() * size_of::<Derived>();
         Ok(Fresh {
             inputs,
             read,
             derived,
             inventory,
-            heap,
         })
     }
 
-    /// `owner`'s inventory as `slot`'s read at `at` holding `inputs` joins it, and the bytes it
-    /// newly holds.
+    /// `owner`'s inventory as `slot`'s read at `at` holding `inputs` joins it.
     fn inventory(
         &mut self,
         state: &State,
@@ -1295,7 +1354,7 @@ impl Projector {
         slot: u32,
         owner: u32,
         inputs: &[ResearchInputRow],
-    ) -> io::Result<(Inventory, usize)> {
+    ) -> io::Result<Inventory> {
         let held = columns::table(state, TableId::ResearchTechnologies)?;
         let technology = self.technologies(state)?;
         if at.saturating_sub(REACH) < self.first {
@@ -1303,7 +1362,7 @@ impl Projector {
             if let Some((when, rows)) = self.inventories.get(&owner)
                 && *when == changed
             {
-                return Ok((Inventory::Owner(Arc::clone(rows)), 0));
+                return Ok(Inventory::Owner(Arc::clone(rows)));
             }
             self.technologies
                 .members(state, u64::from(owner), &mut self.found)?;
@@ -1314,8 +1373,7 @@ impl Projector {
             }
             let rows: Arc<[(u32, Technology)]> = rows.into();
             self.inventories.insert(owner, (changed, Arc::clone(&rows)));
-            let bytes = rows.len() * size_of::<(u32, Technology)>();
-            return Ok((Inventory::Owner(rows), bytes));
+            return Ok(Inventory::Owner(rows));
         }
         let mut covered: BTreeSet<u32> = occurrences(inputs).collect();
         for (hour, held) in self.seen.get(&slot).into_iter().flatten() {
@@ -1329,8 +1387,7 @@ impl Projector {
                 rows.push((index, technology(found)?));
             }
         }
-        let bytes = rows.capacity() * size_of::<(u32, Technology)>();
-        Ok((Inventory::Rows(rows), bytes))
+        Ok(Inventory::Rows(rows))
     }
 
     /// The literal LexicalTokens holds for `token`, as a grant restriction spells it.
@@ -1441,7 +1498,7 @@ impl Projector {
             None => {
                 let (content, spells) = self.assemble(state, aliases)?;
                 let old = self.assembled.get(name).map(|held| &held.content);
-                let (content, _) = share(old, content);
+                let content = share(old, content);
                 let from = aliases
                     .iter()
                     .map(|&owner| (owner, self.modifiers.changed(group(owner))))
@@ -1469,13 +1526,13 @@ impl Projector {
     /// The tags whose grant facts the hour may have changed, read again and sent where they
     /// did: every tag where the countries or a table's completeness changed, else those of the
     /// slots whose owners' rows or read hours changed, and those spelling a token where the
-    /// tokens changed. The facts sent, and the bytes their contents newly hold.
+    /// tokens changed. The facts sent.
     fn grants(
         &mut self,
         hour: &segments::Hour<'_, World>,
         roster: &Roster,
         cold: bool,
-    ) -> io::Result<(Option<Box<Grants>>, usize)> {
+    ) -> io::Result<Option<Box<Grants>>> {
         let state = hour.state;
         let lexical = TableId::LexicalTokens;
         // An incomplete LexicalTokens' reason is every inventory's refusal: a new one reads all.
@@ -1534,7 +1591,6 @@ impl Projector {
             }
         }
         let mut facts = Vec::new();
-        let mut heap = 0;
         for name in tags {
             let (grant, spells) = match roster.tag_of(name.as_bytes()) {
                 Some(tag) => self.grant(state, roster, &name, tag)?,
@@ -1553,27 +1609,38 @@ impl Projector {
             if sent.is_some_and(|sent| sent.same(&grant)) {
                 continue;
             }
-            let shared = sent.and_then(|sent| sent.content.as_ref());
-            if let Some(content) = &grant.content
-                && !shared.is_some_and(|shared| Arc::ptr_eq(shared, content))
-            {
-                heap += size_of::<Content>() + 16 + content.heap();
-            }
-            heap += size_of::<(String, Grant)>() + name.capacity();
             self.granted.insert(name.clone(), grant.clone());
             facts.push((name, grant));
         }
         // A cold projector sent nothing before, so it names every tag the roster holds.
         let whole = cold;
         if !(whole || complete.is_some() || !facts.is_empty()) {
-            return Ok((None, 0));
+            return Ok(None);
         }
-        let grants = Box::new(Grants {
+        Ok(Some(Box::new(Grants {
             complete,
             whole,
             facts,
-        });
-        Ok((Some(grants), heap + size_of::<Grants>()))
+        })))
+    }
+
+    /// Hour `hour`'s index step, fresh reads and grant facts.
+    fn project(
+        &mut self,
+        hour: &segments::Hour<'_, World>,
+        cold: bool,
+    ) -> io::Result<(Index, BTreeMap<u32, Fresh>, Option<Box<Grants>>)> {
+        let state = hour.state;
+        let at = hour.hour;
+        let roster = hour.world.countries()?;
+        self.inputs.update(state, cold, at)?;
+        self.technologies.update(state, cold, at)?;
+        self.bonuses.update(state, cold, at)?;
+        self.modifiers.update(state, cold, at)?;
+        self.stamps.update(state, cold, self.sample_hour)?;
+        let (index, fresh) = self.index(state, roster, at)?;
+        let grants = self.grants(hour, roster, cold)?;
+        Ok((index, fresh, grants))
     }
 
     fn heap(&self) -> usize {
@@ -1689,29 +1756,77 @@ impl Operator<World> for Projector {
         let _cpu = replay_frame::cpu::scope("research.columnar", Some("research"));
         let state = hour.state;
         let at = hour.hour;
-        let roster = hour.world.countries()?;
         let cold = hour.starts
             || hour.opens
             || self.last.and_then(|last| last.checked_add(1)) != Some(at);
         if cold {
+            if let Some(last) = self.last {
+                self.hand_over(last, out)
+                    .map_err(segments::family_failure)?;
+            }
             self.cold(at)?;
         }
+        self.branch = hour.branch;
+        // Only the hour's own read refuses, before the lens folds any of it: the lens hands back
+        // exactly the hours before, as the emit holds the countries it folds itself.
+        let (index, fresh, grants) = match self.project(hour, cold) {
+            Ok(projected) => projected,
+            Err(error) => {
+                if let Some(last) = self.last {
+                    self.hand_over(last, out)
+                        .map_err(segments::family_failure)?;
+                }
+                return Err(error);
+            }
+        };
         self.last = Some(at);
-        self.inputs.update(state, cold, at)?;
-        self.technologies.update(state, cold, at)?;
-        self.bonuses.update(state, cold, at)?;
-        self.modifiers.update(state, cold, at)?;
-        self.stamps.update(state, cold, self.sample_hour)?;
-        let index = self.index(state, roster, at)?;
-        let (grants, granted) = self.grants(hour, roster, cold)?;
-        let heap = index_heap(&index) + granted;
-        out.push(Hour {
-            branch: hour.branch,
-            hour: at,
-            index,
-            grants,
-            heap,
-        })
+        // What the lens adds, and handing the hour on, fail only where the fold itself is
+        // wrong: never a refusal, so no country keeps a part of the hour another lacks.
+        (|| -> io::Result<()> {
+            if cold {
+                let virgins = self.virgins(state, at)?;
+                self.lens = Some(lens::Lens::start(at, virgins));
+            }
+            let part = match &mut self.lens {
+                Some(lens) => {
+                    // The lens reads the indexes this step left, as the emit's adopt of it would.
+                    let indexes = Indexes {
+                        slots: self.held.then_some(&*self.slots),
+                        rows: &self.country_rows,
+                        owners: &self.owners,
+                        dates: &self.input_dates,
+                    };
+                    lens.hour(at, &index, indexes, &fresh)?;
+                    lens.part()
+                }
+                None => None,
+            };
+            let index = match index {
+                Index::Changed(mut changed) => {
+                    changed.fresh = fresh;
+                    Index::Changed(changed)
+                }
+                index => index,
+            };
+            out.push(Hour {
+                branch: hour.branch,
+                hour: at,
+                index,
+                grants,
+                lens: part,
+                handover: false,
+            })
+        })()
+        .map_err(segments::family_failure)
+    }
+
+    fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        match self.last {
+            Some(last) => self
+                .hand_over(last, out)
+                .map_err(segments::family_failure),
+            None => Ok(()),
+        }
     }
 
     fn carried(&self) -> Option<usize> {

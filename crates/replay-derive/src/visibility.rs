@@ -3,7 +3,7 @@
 use replay_frame::frame::DecodedFrame;
 
 use crate::{
-    frame::DecodedSource,
+    frame::{DecodedSource, Tables},
     rows::{
         CountryIntelRow, Recorded, RelationLinkRow, ReservedCountryNamingRow, ZeroSubjectInputs,
         tables,
@@ -80,6 +80,21 @@ fn complete<'a, T: crate::rows::TableSchema>(
     name: &'static str,
 ) -> Result<&'a [T::Row], &'static str> {
     frame.complete::<T>().map_err(|_| name)
+}
+/// Each row of `T` when complete, wherever `frame` holds it; refused as `name` otherwise.
+fn each<T: crate::rows::TableSchema, F: Tables + ?Sized>(
+    frame: &F,
+    name: &'static str,
+    mut row: impl FnMut(&T::Row) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    for held in frame
+        .complete_rows::<T>(T::ID.full_mask())
+        .map_err(|_| name)?
+        .iter()
+    {
+        row(&*held.map_err(|_| name)?)?;
+    }
+    Ok(())
 }
 /// A zero maximum or reserved raw lane produces zero-extended -1, exceeding every cutoff.
 pub fn intel_fraction(raw: i64, maximum: i64) -> Result<i64, &'static str> {
@@ -654,6 +669,39 @@ impl Families {
         Ok(())
     }
 
+    /// [`Self::read_factions`] of any frame's tables, a walk's views among them.
+    pub fn read_factions_tables<F: Tables + ?Sized>(
+        &mut self,
+        frame: &F,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<(), &'static str> {
+        each::<tables::FactionMembers, F>(frame, "FactionMembers", |row| {
+            let country = if row.country == 0 {
+                0
+            } else {
+                link(links, row.country, "FactionMembers country")?
+            };
+            self.factions.insert(country, row.faction);
+            Ok(())
+        })
+    }
+
+    /// [`Self::read_subjects`] of any frame's tables, a walk's views among them.
+    pub fn read_subjects_tables<F: Tables + ?Sized>(
+        &mut self,
+        frame: &F,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<(), &'static str> {
+        each::<tables::Subjects, F>(frame, "Subjects", |row| {
+            let (a, b) = (
+                link(links, row.overlord, "Subjects country")?,
+                link(links, row.subject, "Subjects country")?,
+            );
+            self.subjects.extend([(a, b), (b, a)]);
+            Ok(())
+        })
+    }
+
     /// Relations where each pair shares a faction of its own.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn factions_for_tests(pairs: &[(u32, u32)]) -> Self {
@@ -756,6 +804,25 @@ impl Relations {
         Ok(self)
     }
 
+    /// [`Self::read`] of any frame's tables, a walk's views among them.
+    pub fn read_tables<F: Tables + ?Sized>(
+        frame: &F,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<Self, &'static str> {
+        let mut out = Self::default();
+        out.families.read_factions_tables(frame, links)?;
+        each::<tables::WarRelations, F>(frame, "WarRelations", |row| {
+            let (a, b) = (
+                link(links, row.first_country, "WarRelations country")?,
+                link(links, row.second_country, "WarRelations country")?,
+            );
+            out.wars.extend([(a, b), (b, a)]);
+            Ok(())
+        })?;
+        out.families.read_subjects_tables(frame, links)?;
+        Ok(out)
+    }
+
     /// Distinct countries with an active war relation.
     pub fn at_war(&self, a: u32, b: u32) -> bool {
         a != b && self.wars.contains(&(a, b))
@@ -792,6 +859,25 @@ pub struct AccessLinks {
 }
 
 impl AccessLinks {
+    /// [`Self::read`] of any frame's tables, a walk's views among them.
+    pub fn read_tables<F: Tables + ?Sized>(
+        frame: &F,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<Self, &'static str> {
+        let mut out = Self::default();
+        each::<tables::RelationLinks, F>(frame, "RelationLinks", |row| {
+            let holder = *links.get(&row.country).ok_or("RelationLinks country")?;
+            if row.links & RelationLinkRow::MILITARY_ACCESS != 0 {
+                out.military.insert((holder, row.target_index));
+            }
+            if row.links & RelationLinkRow::DOCKING_RIGHTS != 0 {
+                out.docking.insert((holder, row.target_index));
+            }
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
     pub fn read(
         frame: &dyn DecodedSource,
         links: &BTreeMap<u32, u32>,

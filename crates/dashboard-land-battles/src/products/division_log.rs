@@ -42,6 +42,9 @@ mod newest;
 pub mod prepared;
 pub mod served;
 
+/// The prepared family publishing the division log.
+pub const FAMILY: &str = "divisions";
+
 /// The template read hour a walk holds before its first read of the templates, which only the
 /// ordered scan knows: its presentations are dated with it until then, and the scan dates them.
 const INHERITED: i32 = i32::MIN;
@@ -162,6 +165,9 @@ pub struct DivisionLogTotalsReply {
     pub created: Option<usize>,
     pub lost: Option<usize>,
     pub transferred: Option<usize>,
+    /// The first hour these totals count from when hours the recording lost lie in the range:
+    /// totals restart after them, so they count from there to its last hour.
+    pub since: Option<i32>,
     pub warnings: Vec<String>,
 }
 impl dashboard_base::products::ReplyWarnings for DivisionLogTotalsReply {
@@ -440,6 +446,12 @@ impl Scan {
         self.previous_hour = None;
         self.previous_census = None;
         self.template_hour = None;
+    }
+    /// Hours from `first` on were lost from the recording: what it read before goes no further,
+    /// and every total restarts after them.
+    pub fn lost(&mut self, first: i32) -> io::Result<()> {
+        self.gap();
+        self.counts.restart(first)
     }
     fn row(
         &self,
@@ -911,8 +923,8 @@ struct Cache {
     branch: Option<(u64, Arc<Scan>)>,
     catalogue: Option<Arc<Catalogue>>,
     names: Option<DivisionNameGroups>,
+    /// Each template icon drawn for this content, by its operands.
     icons: HashMap<IconOperands, catalogue::Drawn<Result<String, String>>>,
-    icon_bytes: usize,
     #[cfg(any(test, feature = "test-support"))]
     totals: Option<Totals>,
 }
@@ -925,7 +937,6 @@ impl Cache {
         {
             self.names = None;
             self.icons.clear();
-            self.icon_bytes = 0;
             self.catalogue = Some(Arc::clone(cat));
         }
     }
@@ -1005,7 +1016,7 @@ impl<'a> Selection<'a> {
     }
 }
 fn totals_reply([created, lost, transferred]: [usize; 3]) -> io::Result<DivisionLogTotalsReply> {
-    bounded(DivisionLogTotalsReply { created: Some(created), lost: Some(lost), transferred: Some(transferred),
+    bounded(DivisionLogTotalsReply { created: Some(created), lost: Some(lost), transferred: Some(transferred), since: None,
         warnings: vec!["Totals count observed appearances and witnessed removals in the selected time; missed events are not zero.".into()] })
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -1230,20 +1241,7 @@ fn icon(
         |cat| template_sprite(cat, priority_unit, custom, unit),
     );
     let result = drawn.get().clone();
-    let bytes = operands.2.len()
-        + 8
-        + result
-            .as_ref()
-            .map_or_else(|reason| reason.len(), |value| value.len());
-    if bytes <= dashboard_base::products::artwork::MAX_RETAINED_ARTWORK_BYTES {
-        if cache.icon_bytes + bytes > dashboard_base::products::artwork::MAX_RETAINED_ARTWORK_BYTES
-        {
-            cache.icons.clear();
-            cache.icon_bytes = 0;
-        }
-        cache.icon_bytes += bytes;
-        cache.icons.insert(operands, drawn);
-    }
+    cache.icons.insert(operands, drawn);
     result
 }
 

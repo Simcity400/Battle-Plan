@@ -673,6 +673,17 @@ pub trait RowCodec: Default + Clone + Eq {
         let _ = (mask, wire);
         Ok(false)
     }
+    /// The row keyed `key` holding the schema fields `mask` names as `wire` hands them, every
+    /// other default, for a reader of those fields alone: whole, as [`Self::from_wire`] builds
+    /// it, where `mask` names every field or the row type is built only whole.
+    fn from_wire_fields<'a>(
+        key: u128,
+        mask: u64,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<Self> {
+        let _ = mask;
+        Self::from_wire(key, wire)
+    }
     fn recorded_fields_bytes(&self) -> io::Result<usize>;
     fn delta(&self, previous: Option<&Self>) -> io::Result<Option<DeltaRow>>;
     /// Encode one changed row directly, including its key difference and mask.
@@ -834,6 +845,16 @@ macro_rules! define_tables {
                 wire: &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
             ) -> io::Result<TableRows> {
                 Ok(match self { $(Self::$table => TableRows::$table(rows_from_wire_typed::<$row>(keys, wire)?)),+ })
+            }
+            /// [`Self::rows_from_wire`] holding only the fields `mask` names, every other default
+            /// ([`RowCodec::from_wire_fields`]).
+            pub fn rows_from_wire_fields<'a>(
+                self,
+                keys: &[u128],
+                mask: u64,
+                wire: &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
+            ) -> io::Result<TableRows> {
+                Ok(match self { $(Self::$table => TableRows::$table(rows_from_wire_fields_typed::<$row>(keys, mask, wire)?)),+ })
             }
         }
         impl TableRows {
@@ -1989,6 +2010,17 @@ fn rows_from_wire_typed<'a, T: RowCodec>(
     }
     Ok(rows)
 }
+fn rows_from_wire_fields_typed<'a, T: RowCodec>(
+    keys: &[u128],
+    mask: u64,
+    wire: &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
+) -> io::Result<Vec<T>> {
+    let mut rows = allocation::vec(keys.len())?;
+    for (at, &key) in keys.iter().enumerate() {
+        rows.push(T::from_wire_fields(key, mask, &mut |field| wire(at, field))?);
+    }
+    Ok(rows)
+}
 fn decode_typed<T: RowCodec>(count: usize, input: &mut Decoder<'_>) -> io::Result<Vec<T>> {
     let mut rows = allocation::vec(count)?;
     let mut previous = 0;
@@ -2796,6 +2828,53 @@ fn visit_wire_field<T: NativeValue>(
         Some(step) => visit(index, value.to_units(step)?.field()),
     }
 }
+/// Table `table`'s schema field `column` from the wire form a columnar walk holds it in, as
+/// the row decoder reads it: step units become native units.
+pub fn field_from_wire<T: NativeValue>(
+    table: TableId,
+    column: usize,
+    field: Field<'_>,
+) -> io::Result<T> {
+    from_wire_field(field, table.display_step(column))
+}
+
+/// `R`'s schema field `name`'s column; a name `R` does not hold fails to compile in a const.
+pub const fn column<R: Fields>(name: &str) -> usize {
+    let mut at = 0;
+    while at < R::NAMES.len() {
+        if same_name(R::NAMES[at], name) {
+            return at;
+        }
+        at += 1;
+    }
+    panic!("no such schema field")
+}
+
+/// The change-mask bits of `R`'s schema fields `names` ([`column`]).
+pub const fn mask<R: Fields>(names: &[&str]) -> u64 {
+    let (mut mask, mut at) = (0_u64, 0);
+    while at < names.len() {
+        mask |= 1 << column::<R>(names[at]);
+        at += 1;
+    }
+    mask
+}
+
+const fn same_name(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut at = 0;
+    while at < a.len() {
+        if a[at] != b[at] {
+            return false;
+        }
+        at += 1;
+    }
+    true
+}
+
 /// A declared field from the wire form [`visit_wire_field`] hands: step units become native.
 fn from_wire_field<T: NativeValue>(field: Field<'_>, step: Option<Step>) -> io::Result<T> {
     if matches!(field, Field::NotRecorded) {
@@ -3158,6 +3237,19 @@ macro_rules! typed_codec {
                 })+
                 self.check_key_fields()?;
                 Ok(true)
+            }
+            // A partial row's other fields are defaults, which its whole-row checks do not hold.
+            #[allow(clippy::field_reassign_with_default)]
+            fn from_wire_fields<'a>(key: u128, mask: u64, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<Self> {
+                let all = full_mask(Self::SCHEMA.len());
+                if mask & all == all { return Self::from_wire(key, wire); }
+                check_native_key(key, Self::KEY_BITS)?;
+                let $key_name = key;
+                let mut row = $initial;
+                $(if mask & (1_u64 << $index) != 0 {
+                    row.$($field)+ = from_wire_field(wire($index)?, $crate::value::display_step!($($step)?)).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", key, stringify!($($field)+))))?;
+                })+
+                Ok(row)
             }
             #[allow(clippy::field_reassign_with_default)]
             fn from_wire<'a>(key: u128, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<Self> {

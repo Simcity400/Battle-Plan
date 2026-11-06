@@ -5,7 +5,7 @@
 use super::*;
 use dashboard_base::prepared::frame_changes::FrameChangeTracker;
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -581,11 +581,9 @@ fn build(
 ) -> Built {
     let format = replay_data::format::FormatVersion::CURRENT;
     let mut bound = binding(&catalogue);
-    let budget = Budget::new(256 << 20);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
     let first = runs[0][0].hour;
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = bound.emit();
     let mut oracle = Oracle::new(catalogue.clone());
     let mut projector = bound.projector(format, CaptureMode::Full).unwrap();
@@ -616,7 +614,7 @@ fn build(
                 let world = dashboard_world::World::at(
                     &mut world_held,
                     walk_starts,
-                    &columnar::needs(),
+                    &bound.needs(),
                     (format, CaptureMode::Full),
                     state,
                     manifest,
@@ -652,7 +650,6 @@ fn build(
             root = publish(
                 &mut writer,
                 &mut pages,
-                &cache,
                 Publication {
                     generation,
                     segment: generation - 1,
@@ -671,9 +668,9 @@ fn build(
             if placement.round_trip {
                 let mut saved = Vec::new();
                 emit.save(&mut saved).unwrap();
-                writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
+                writer = Writer::resume(&mut pages, root, identity()).unwrap();
                 let mut snapshot =
-                    Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+                    Snapshot::open(pages.clone(), root, identity()).unwrap();
                 let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
                 // A later run binds its content anew, its texts named afresh.
                 bound = binding(&catalogue);
@@ -747,10 +744,8 @@ fn canonical<P: dashboard_series::PageRead>(
 /// The publication `built` holds what its row scan reads: each window, the manifest's laws and
 /// warnings, the trend's warnings, and every occupier's runs, means and ranks.
 fn check_built(built: &mut Built, label: &str) {
-    let budget = Budget::new(256 << 20);
-    let cache = Cache::new(&budget);
     let mut snapshot =
-        Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+        Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let history = built.oracle.snapshot();
     for (index, &interval) in built.windows.iter().enumerate() {
@@ -870,8 +865,7 @@ fn walk_both(
 ) {
     let format = replay_data::format::FormatVersion::CURRENT;
     let bound = binding(&catalogue);
-    let budget = Budget::new(64 << 20);
-    let mut writer = Writer::new(&budget, identity(), hours[0].hour).unwrap();
+    let mut writer = Writer::new(identity(), hours[0].hour).unwrap();
     let mut emit = bound.emit();
     let mut oracle = Oracle::new(catalogue.clone());
     let mut projector = bound.projector(format, CaptureMode::Full).unwrap();
@@ -884,7 +878,7 @@ fn walk_both(
             let world = dashboard_world::World::at(
                 &mut world_held,
                 starts,
-                &columnar::needs(),
+                &bound.needs(),
                 (format, CaptureMode::Full),
                 state,
                 manifest,
@@ -986,16 +980,15 @@ fn missing_join_table_refuses_by_the_row_paths_name() {
     .into();
     let mut walk = Synthetic::new(&observed_tables(false), 1, 100).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
-    let mut projector = binding(&None)
-        .projector(format, CaptureMode::Full)
-        .unwrap();
+    let bound = binding(&None);
+    let mut projector = bound.projector(format, CaptureMode::Full).unwrap();
     let mut out: Vec<columnar::Hour> = Vec::new();
     write_hour(&mut walk, &input);
     walk.end(|state, manifest, frame, starts| {
         let world = dashboard_world::World::at(
             &mut world_held,
             starts,
-            &columnar::needs(),
+            &bound.needs(),
             (format, CaptureMode::Full),
             state,
             manifest,
@@ -1137,10 +1130,8 @@ fn a_gap_ends_occupation_series_at_the_hour_before_it() {
     let runs = [vec![frame(100, true)], vec![after]];
     for placement in placements(1) {
         let mut built = build(&runs, None, &placement);
-        let budget = Budget::new(64 << 20);
-        let cache = Cache::new(&budget);
         let mut snapshot =
-            Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+            Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let actor = read::occupiers(&directory)["country 0001"];
         let key = read::key(&directory, actor, MEANS[0]).unwrap();

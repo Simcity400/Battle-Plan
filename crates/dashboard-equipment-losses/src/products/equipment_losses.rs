@@ -123,10 +123,7 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, FrameDecoder};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
-use std::{
-    collections::VecDeque,
-    sync::{Arc, atomic::Ordering},
-};
+use std::sync::{Arc, atomic::Ordering};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -148,6 +145,7 @@ use oracle::{observe, selected, selected_country};
 pub struct EquipmentLosses;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub enum LandSource {
     #[default]
@@ -241,11 +239,13 @@ fn destruction_label(cause: EquipmentDestructionCause) -> &'static str {
 
 /// Units per equipment of every amount (fixed5).
 pub const AMOUNT_SCALE: i64 = 100_000;
-#[cfg(test)]
-const CACHED_SCANS: usize = 8;
+
+/// The prepared family publishing equipment losses.
+pub const FAMILY: &str = "equipment_losses";
 
 /// Where a cause's amounts come from.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "reason")]
 pub enum LossSource {
     /// A Combat Log reason (0 to 3) of land equipment.
@@ -315,6 +315,7 @@ pub struct LossName {
 
 /// Why a cause's amounts are unknown over a span of hours.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub enum UnknownReason {
     /// The cause's record was not read completely at these hours (not
@@ -332,6 +333,7 @@ pub enum UnknownReason {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct UnknownSpan {
     pub first_hour: i32,
@@ -396,6 +398,7 @@ pub struct LossDesign {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub enum Coverage {
     Logged,
@@ -406,6 +409,7 @@ pub enum Coverage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageSpan {
     pub first_hour: i32,
@@ -415,6 +419,7 @@ pub struct CoverageSpan {
 
 /// Actual drain availability at an hour; earlier missing events do not recover.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct DestructionCoverageSpan {
     pub first_hour: i32,
@@ -451,6 +456,7 @@ pub type LeafKey = (LossSource, Option<u32>);
 
 /// The recorded table a cause's amounts come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub enum LossRecord {
     CombatLog,
     SunkShips,
@@ -486,6 +492,7 @@ impl LossSource {
 
 /// A lend-lease exchange of the country that ended after its last read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct EndedExchange {
     /// The first hour after the last read that showed it.
     pub from: i32,
@@ -495,10 +502,12 @@ pub struct EndedExchange {
 
 /// What one branch recorded of one country, before naming.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Scanned {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
+    #[spool(skip)]
     pub(crate) format: replay_data::format::FormatVersion,
     /// (source, variant) to (hour, delta) events, in scan order.
     #[serde(with = "dashboard_core::map_pairs")]
@@ -520,6 +529,7 @@ pub struct Scanned {
     pub convoy_drops: usize,
     /// Shared read-dated names and design identities of every variant.
     #[serde(skip)]
+    #[spool(skip)]
     pub variants: VariantCatalogue,
     /// Raw country references of loss rows the recorded links did not resolve.
     pub unresolved: BTreeSet<u32>,
@@ -663,17 +673,17 @@ impl Scanned {
         }
         if self.destruction_counted_from.is_some() {
             let reason = "Equipment destruction drain is missing in a recorded gap or unread frame";
-            self.destruction_cover(first, last, Some(reason.to_owned()));
-            self.destruction_unknown(first, UnknownReason::DestructionGap, reason.to_owned());
+            self.destruction_cover(first, last, Some(reason));
+            self.destruction_unknown(first, UnknownReason::DestructionGap, reason);
         }
         self.last_hour = Some(last);
         // The missing interval's uncertainty is dated at its first hour.
         self.destruction_active.clear();
     }
 
-    fn destruction_cover(&mut self, first: i32, last_hour: i32, reason: Option<String>) {
+    fn destruction_cover(&mut self, first: i32, last_hour: i32, reason: Option<&str>) {
         if let Some(last) = self.destruction_coverage.last_mut()
-            && last.reason == reason
+            && last.reason.as_deref() == reason
             && i64::from(last.last_hour) + 1 >= i64::from(first)
         {
             last.last_hour = last.last_hour.max(last_hour);
@@ -682,15 +692,20 @@ impl Scanned {
         self.destruction_coverage.push(DestructionCoverageSpan {
             first_hour: first,
             last_hour,
-            reason,
+            reason: reason.map(str::to_owned),
         });
     }
 
-    fn destruction_unknown(&mut self, hour: i32, reason: UnknownReason, detail: String) {
+    fn destruction_unknown(&mut self, hour: i32, reason: UnknownReason, detail: &str) {
         // Equal reason/details share one persistent uncertainty span. Counts
         // never enter these keys; supplemental-hook diagnostics keep their names.
-        let key = (reason, detail.clone());
-        if let Some(&index) = self.destruction_unknown_index.get(&key) {
+        // The keys are a branch's few distinct reasons: found without hashing a new key.
+        let held = self
+            .destruction_unknown_index
+            .iter()
+            .find(|((kind, text), _)| *kind == reason && text == detail)
+            .map(|(_, &index)| index);
+        if let Some(index) = held {
             // Each missing destruction event affects the remainder of this
             // branch, so equal reason/details overlap regardless of recovery hours.
             self.destruction_unknown[index].last_hour = hour;
@@ -700,12 +715,12 @@ impl Scanned {
         self.destruction_active
             .insert(self.destruction_unknown.len());
         self.destruction_unknown_index
-            .insert(key, self.destruction_unknown.len());
+            .insert((reason, detail.to_owned()), self.destruction_unknown.len());
         self.destruction_unknown.push(UnknownSpan {
             first_hour: hour,
             last_hour: hour,
             reason,
-            detail: Some(detail),
+            detail: Some(detail.to_owned()),
         });
     }
 }
@@ -881,9 +896,22 @@ fn ship_counts(scanned: &mut Scanned, state: &mut State, counts: &[ShipRead]) {
     }
 }
 
-fn convoy_rows(scanned: &mut Scanned, state: &mut State, hour: i32, rows: &[ConvoyRead]) {
+/// A country's SunkConvoys read; `first` is told each read of a key the state held none of.
+fn convoy_rows(
+    scanned: &mut Scanned,
+    state: &mut State,
+    hour: i32,
+    rows: &[ConvoyRead],
+    mut first: impl FnMut((u32, i32, u32), i32),
+) {
     for &(key, convoys) in rows {
-        let last = state.convoys.entry(key).or_default();
+        let last = match state.convoys.entry(key) {
+            std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
+            std::collections::btree_map::Entry::Vacant(vacant) => {
+                first(key, convoys);
+                vacant.insert(0)
+            }
+        };
         let delta = if convoys < *last {
             scanned.convoy_drops += 1;
             i64::from(convoys)
@@ -955,6 +983,7 @@ fn lend_lease_rows(scanned: &mut Scanned, state: &mut State, hour: i32, amounts:
 const VARIANT_TYPE: u32 = engine_native::cequipment_variant::REFERENCE_TYPE;
 
 const DESTRUCTION_TRUNCATED: &str = "Equipment destruction drain is truncated; branch unavailable";
+const SUPPLEMENTAL_NOT_RECORDED: &str = "EquipmentDestruction supplemental coverage not recorded";
 
 #[derive(Default)]
 #[derive(replay_spool::Spooled)]
@@ -988,7 +1017,7 @@ fn destruction_inputs(
         .is_some()
         || rows.iter().any(|row| row.not_recorded_fields() != 0)
     {
-        Some("EquipmentDestruction supplemental coverage not recorded".to_owned())
+        Some(SUPPLEMENTAL_NOT_RECORDED.to_owned())
     } else if let Some(marker) = marker {
         Some(
             marker
@@ -1075,7 +1104,7 @@ fn destruction_ready(
     inputs: &DestructionInputs,
 ) -> io::Result<bool> {
     if let Some(reason) = &state.destruction_withheld {
-        scanned.destruction_cover(hour, hour, Some(reason.clone()));
+        scanned.destruction_cover(hour, hour, Some(reason));
         return Ok(false);
     }
     match table {
@@ -1095,28 +1124,28 @@ fn destruction_ready(
                 UnknownReason::DestructionWithheld
             };
             let detail = if reason.starts_with(replay_frame::frame::TRUNCATED_KEYFRAME_REASON) {
-                DESTRUCTION_TRUNCATED.to_owned()
+                DESTRUCTION_TRUNCATED
             } else {
-                reason.clone()
+                reason.as_str()
             };
-            scanned.destruction_cover(hour, hour, Some(detail.clone()));
-            scanned.destruction_unknown(hour, kind, detail.clone());
+            scanned.destruction_cover(hour, hour, Some(detail));
+            scanned.destruction_unknown(hour, kind, detail);
             if !partial {
-                state.destruction_withheld = Some(detail);
+                state.destruction_withheld = Some(detail.to_owned());
             }
             return Ok(false);
         }
         replay_frame::frame::TableView::Truncated { .. } => {
-            let reason = DESTRUCTION_TRUNCATED.to_owned();
-            scanned.destruction_cover(hour, hour, Some(reason.clone()));
-            scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason.clone());
-            state.destruction_withheld = Some(reason);
+            let reason = DESTRUCTION_TRUNCATED;
+            scanned.destruction_cover(hour, hour, Some(reason));
+            scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason);
+            state.destruction_withheld = Some(reason.to_owned());
             return Ok(false);
         }
         replay_frame::frame::TableView::NotRecorded { mode } => {
             let reason = format!("EquipmentDestruction is not recorded in a {mode} recording");
-            scanned.destruction_cover(hour, hour, Some(reason.clone()));
-            scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason.clone());
+            scanned.destruction_cover(hour, hour, Some(&reason));
+            scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, &reason);
             state.destruction_withheld = Some(reason);
             return Ok(false);
         }
@@ -1128,12 +1157,12 @@ fn destruction_ready(
         return Ok(false);
     }
     let supplemental_reason = if state.destruction_coverage_not_recorded {
-        Some("EquipmentDestruction supplemental coverage not recorded".to_owned())
+        Some(SUPPLEMENTAL_NOT_RECORDED)
     } else {
-        inputs.supplemental.clone()
+        inputs.supplemental.as_deref()
     };
-    if let Some(reason) = &supplemental_reason {
-        scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason.clone());
+    if let Some(reason) = supplemental_reason {
+        scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason);
     }
 
     // An empty complete drain proves no hooked removals for any country;
@@ -1143,25 +1172,27 @@ fn destruction_ready(
         return Ok(false);
     }
     let Selection::Found(_) = country else {
-        let reason = "Equipment destruction ownership is unknown: country identity or CountryLinks unavailable".to_owned();
-        scanned.destruction_cover(hour, hour, Some(reason.clone()));
+        let reason = "Equipment destruction ownership is unknown: country identity or CountryLinks unavailable";
+        scanned.destruction_cover(hour, hour, Some(reason));
         scanned.destruction_unknown(hour, UnknownReason::DestructionUnresolved, reason);
         return Ok(false);
     };
-    let unresolved = inputs.unresolved.clone();
-    let owner_reason = (!unresolved.is_empty()).then(|| {
-        "Equipment destruction ownership is unknown: raw country references have no CountryLink"
-            .to_owned()
-    });
-    let reason = match (owner_reason.clone(), supplemental_reason) {
-        (Some(owner), Some(supplemental)) => Some(format!("{owner}; {supplemental}")),
+    let owner_reason = (!inputs.unresolved.is_empty()).then_some(
+        "Equipment destruction ownership is unknown: raw country references have no CountryLink",
+    );
+    let both;
+    let reason = match (owner_reason, supplemental_reason) {
+        (Some(owner), Some(supplemental)) => {
+            both = format!("{owner}; {supplemental}");
+            Some(both.as_str())
+        }
         (owner, supplemental) => owner.or(supplemental),
     };
     if let Some(reason) = owner_reason {
         scanned.destruction_unknown(hour, UnknownReason::DestructionUnresolved, reason);
     }
     scanned.destruction_cover(hour, hour, reason);
-    scanned.unresolved.extend(unresolved);
+    scanned.unresolved.extend(inputs.unresolved.iter().copied());
     Ok(true)
 }
 
@@ -1304,9 +1335,22 @@ fn land_read(decoded: &DecodedFrame) -> bool {
 /// Equipment losses add signed pre-minus-post pool differences. A fall within
 /// the same monthly key is a correction; a new month is already a different
 /// key. Never count the falling value anew.
-fn combat_rows(scanned: &mut Scanned, state: &mut State, hour: i32, rows: &[LogRead]) {
+/// A country's Combat Log read; `first` is told each read of a key the state held none of.
+fn combat_rows(
+    scanned: &mut Scanned,
+    state: &mut State,
+    hour: i32,
+    rows: &[LogRead],
+    mut first: impl FnMut(LogKey, i64),
+) {
     for &(key, amount) in rows {
-        let last = state.log.entry(key).or_default();
+        let last = match state.log.entry(key) {
+            std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
+            std::collections::btree_map::Entry::Vacant(vacant) => {
+                first(key, amount);
+                vacant.insert(0)
+            }
+        };
         let delta = i128::from(amount) - i128::from(*last);
         *last = amount;
         let (_, kind, _, variant) = key;
@@ -1874,14 +1918,10 @@ pub fn reply(
     }
 }
 
+/// Each branch's latest country scan; an earlier one lives only while a request holds it.
 #[cfg(test)]
-type ScanKey = (u64, String, LandSource, Option<LossCountry>);
-
-#[derive(Default)]
-#[cfg(test)]
-struct Cache {
-    entries: VecDeque<(ScanKey, Arc<Scanned>)>,
-}
+type Cache =
+    dashboard_base::latest::BranchLatest<(String, LandSource, Option<LossCountry>), Scanned>;
 
 impl Product for EquipmentLosses {
     const KEY: &'static str = "equipment-losses";
@@ -1947,21 +1987,12 @@ impl Product for EquipmentLosses {
                 ));
             }
         }
-        let key = (
-            params.branch(),
-            params.tag.clone(),
-            params.land_source,
-            params.country,
-        );
+        let key = (params.tag.clone(), params.land_source, params.country);
         let state = source.state::<Cache>();
-        let cached = {
-            let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache
-                .entries
-                .iter()
-                .find(|(cached, _)| *cached == key)
-                .map(|(_, scanned)| Arc::clone(scanned))
-        };
+        let cached = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(params.branch(), &key);
         let scanned = match cached {
             Some(scanned) => scanned,
             None => {
@@ -1973,12 +2004,10 @@ impl Product for EquipmentLosses {
                     params.country,
                     cancelled,
                 )?);
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache.entries.retain(|(cached, _)| *cached != key);
-                cache.entries.push_back((key, Arc::clone(&scanned)));
-                while cache.entries.len() > CACHED_SCANS {
-                    cache.entries.pop_front();
-                }
+                state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .put(params.branch(), key, &scanned);
                 scanned
             }
         };

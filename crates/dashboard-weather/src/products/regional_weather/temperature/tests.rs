@@ -127,7 +127,7 @@ fn observation(content: Arc<Bound>) -> Observation {
         status: Some("available".into()),
         inverse: Some(
             content
-                .lease_inverse(&MemoryBudget::preparation(), &mut || Ok(()))
+                .lease_inverse(&mut || Ok(()))
                 .unwrap(),
         ),
         content: Some(content),
@@ -1187,15 +1187,13 @@ fn inverse_leases_retire_while_source_and_old_bindings_stay_cached() {
     let source = source(vec![frame(10, Some(vec![row(71)]))]);
     let options = install_cached(&source, bound(&[(71, vec![1, 1]), (72, vec![2])], 3));
     let cached = cached_bound(&source, &options);
-    let expected = Inverse::allocation_bytes(3).unwrap();
-    let budget = MemoryBudget::new(expected);
     let mut first = Observation::default();
     let mut second = Observation::default();
     first
-        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .bind_in(&source, Some(&options), &mut || Ok(()))
         .unwrap();
     second
-        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .bind_in(&source, Some(&options), &mut || Ok(()))
         .unwrap();
     assert!(Arc::ptr_eq(
         first.inverse.as_ref().unwrap().index.as_ref().unwrap(),
@@ -1204,18 +1202,15 @@ fn inverse_leases_retire_while_source_and_old_bindings_stay_cached() {
     let old = crate::allocation_watch::Watch::new(Arc::as_ptr(
         first.inverse.as_ref().unwrap().index.as_ref().unwrap(),
     ));
-    assert_eq!(budget.used(), expected);
     first.retire();
-    assert_eq!(budget.used(), expected);
     assert!(!old.freed());
     drop(second);
-    assert_eq!(budget.used(), 0);
     assert!(old.freed());
     drop(old);
     assert!(cached.inverse.lock().unwrap().is_none());
 
     first
-        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .bind_in(&source, Some(&options), &mut || Ok(()))
         .unwrap();
     let retired = crate::allocation_watch::Watch::new(Arc::as_ptr(
         first.inverse.as_ref().unwrap().index.as_ref().unwrap(),
@@ -1231,12 +1226,11 @@ fn inverse_leases_retire_while_source_and_old_bindings_stay_cached() {
         })
         .unwrap();
     first
-        .bind_in(&source, Some(&other_options), &mut || Ok(()), &budget)
+        .bind_in(&source, Some(&other_options), &mut || Ok(()))
         .unwrap();
     assert!(retired.freed());
     drop(retired);
     assert!(cached.inverse.lock().unwrap().is_none());
-    assert_eq!(budget.used(), expected);
     assert_eq!(
         first
             .inverse
@@ -1247,7 +1241,6 @@ fn inverse_leases_retire_while_source_and_old_bindings_stay_cached() {
         [72, 72]
     );
     first.retire();
-    assert_eq!(budget.used(), 0);
     assert!(
         cached_bound(&source, &other_options)
             .inverse
@@ -1258,74 +1251,38 @@ fn inverse_leases_retire_while_source_and_old_bindings_stay_cached() {
 }
 
 #[test]
-fn inverse_denial_and_cancelled_initialization_release_credit_without_caching_failure() {
+fn cancelled_initialization_caches_no_failure() {
     let source = source(vec![frame(10, Some(vec![row(71)]))]);
     let options = install_cached(&source, bound(&[(71, vec![1, 2])], 3));
     let cached = cached_bound(&source, &options);
-    let budget = MemoryBudget::new(Inverse::allocation_bytes(2).unwrap());
     let mut observer = Observation::default();
-    let denied = observer
-        .bind_in(
-            &source,
-            Some(&options),
-            &mut || Ok(()),
-            &MemoryBudget::new(0),
-        )
-        .unwrap_err();
-    assert_eq!(denied.kind(), io::ErrorKind::WouldBlock);
-    assert!(denied.to_string().contains("shared inverse membership"));
-    assert!(observer.inverse.is_none());
-    assert!(cached.inverse.lock().unwrap().is_none());
-    let cancelled = observer
-        .bind_in(
-            &source,
-            Some(&options),
-            &mut || {
-                if budget.used() > 0 {
-                    Err(io::ErrorKind::Interrupted.into())
-                } else {
-                    Ok(())
-                }
-            },
-            &budget,
-        )
-        .unwrap_err();
-    assert_eq!(cancelled.kind(), io::ErrorKind::Interrupted);
-    assert_eq!(budget.used(), 0);
-    assert!(observer.inverse.is_none());
     assert!(cached.inverse.lock().unwrap().is_none());
     observer
-        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .bind_in(&source, Some(&options), &mut || Ok(()))
         .unwrap();
-    assert!(budget.used() > 0);
     let cancelled = observer
         .bind_in(
             &source,
             Some(&options),
             &mut || Err(io::ErrorKind::Interrupted.into()),
-            &budget,
         )
         .unwrap_err();
     assert_eq!(cancelled.kind(), io::ErrorKind::Interrupted);
     assert!(observer.inverse.is_none());
-    assert_eq!(budget.used(), 0);
     assert!(cached.inverse.lock().unwrap().is_none());
     observer
-        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .bind_in(&source, Some(&options), &mut || Ok(()))
         .unwrap();
     assert!(observer.inverse.is_some());
     drop(observer);
-    assert_eq!(budget.used(), 0);
 }
 
 #[test]
-fn concurrent_inverse_binders_share_one_credit_and_retire_the_last_lease() {
+fn concurrent_inverse_binders_share_one_index_and_retire_the_last_lease() {
     use std::sync::Barrier;
     let source = source(vec![frame(10, Some(vec![row(71)]))]);
     let options = install_cached(&source, bound(&[(71, vec![1, 1]), (72, vec![1, 2])], 3));
     let cached = cached_bound(&source, &options);
-    let expected = Inverse::allocation_bytes(4).unwrap();
-    let budget = MemoryBudget::new(expected);
     let start = Barrier::new(4);
     let observers = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..4)
@@ -1334,7 +1291,7 @@ fn concurrent_inverse_binders_share_one_credit_and_retire_the_last_lease() {
                     start.wait();
                     let mut observer = Observation::default();
                     observer
-                        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+                        .bind_in(&source, Some(&options), &mut || Ok(()))
                         .unwrap();
                     observer
                 })
@@ -1357,8 +1314,6 @@ fn concurrent_inverse_binders_share_one_credit_and_retire_the_last_lease() {
             observer.inverse.as_ref().unwrap().index.as_ref().unwrap()
         ));
     }
-    assert_eq!(budget.used(), expected);
-    assert_eq!(budget.peak(), expected);
     assert_eq!(
         observers[0]
             .inverse
@@ -1369,7 +1324,6 @@ fn concurrent_inverse_binders_share_one_credit_and_retire_the_last_lease() {
         [71, 71, 72]
     );
     drop(observers);
-    assert_eq!(budget.used(), 0);
     assert!(cached.inverse.lock().unwrap().is_none());
 }
 
@@ -1388,11 +1342,9 @@ fn source_cached_cancelled_drill_never_holds_an_aggregate_inverse_lease() {
     let source = source(vec![frame.clone()]);
     let options = install_cached(&source, content);
     let cached = cached_bound(&source, &options);
-    let expected = Inverse::allocation_bytes(2).unwrap();
-    let budget = MemoryBudget::new(expected);
     let mut prepared = Observation::default();
     prepared
-        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .bind_in(&source, Some(&options), &mut || Ok(()))
         .unwrap();
     let allocation = crate::allocation_watch::Watch::new(Arc::as_ptr(
         prepared.inverse.as_ref().unwrap().index.as_ref().unwrap(),
@@ -1441,7 +1393,6 @@ fn source_cached_cancelled_drill_never_holds_an_aggregate_inverse_lease() {
     }
     assert!(!allocation.freed());
     prepared.retire();
-    assert_eq!(budget.used(), 0);
     assert!(allocation.freed());
     assert!(cached.inverse.lock().unwrap().is_none());
     assert_eq!(source.state::<Temperatures>().lock().unwrap().0.len(), 1);
@@ -1453,10 +1404,8 @@ fn final_inverse_retirement_and_concurrent_rebind_fit_one_allocation() {
     let source = source(vec![frame(10, Some(vec![row(71)]))]);
     let options = install_cached(&source, bound(&[(71, vec![1, 1]), (72, vec![2])], 3));
     let cached = cached_bound(&source, &options);
-    let expected = Inverse::allocation_bytes(3).unwrap();
-    let budget = MemoryBudget::new(expected);
     let mut old = Observation::default();
-    old.bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+    old.bind_in(&source, Some(&options), &mut || Ok(()))
         .unwrap();
     let gate = Barrier::new(2);
     let gate = &gate;
@@ -1469,15 +1418,13 @@ fn final_inverse_retirement_and_concurrent_rebind_fit_one_allocation() {
             gate.wait();
             let mut current = Observation::default();
             current
-                .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+                .bind_in(&source, Some(&options), &mut || Ok(()))
                 .unwrap();
             current
         });
         retiring.join().unwrap();
         binding.join().unwrap()
     });
-    assert_eq!(budget.used(), expected);
-    assert_eq!(budget.peak(), expected);
     assert_eq!(
         current
             .inverse
@@ -1491,7 +1438,6 @@ fn final_inverse_retirement_and_concurrent_rebind_fit_one_allocation() {
         current.inverse.as_ref().unwrap().index.as_ref().unwrap(),
     ));
     drop(current);
-    assert_eq!(budget.used(), 0);
     assert!(allocation.freed());
     assert!(cached.inverse.lock().unwrap().is_none());
 }

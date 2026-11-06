@@ -1,6 +1,6 @@
 //! The division observer supplies block replies and cumulative selection endpoints.
 use super::*;
-use dashboard_base::prepared::series;
+use dashboard_base::prepared::{coverage, series};
 use serde_json::Value;
 
 pub fn first_view(
@@ -142,7 +142,8 @@ pub fn first_view(
             let mut data = if accepted.is_some() && typed.first_hour <= typed.last_hour {
                 serde_json::to_value(totals(&typed, &store, &key, branch, cancelled)?)?
             } else {
-                serde_json::json!({"created":null,"lost":null,"transferred":null,"warnings":[]})
+                serde_json::json!({"created":null,"lost":null,"transferred":null,"since":null,
+                    "warnings":[]})
             };
             if accepted.is_none()
                 || !prefix.coverage.complete && requested > prefix.coverage.last_hour
@@ -237,6 +238,23 @@ impl Counts {
             let counter = self.keys.get_mut(&key).expect("observed division counter");
             self.series
                 .event(id, hour, &[counter.total, counter.late])?;
+        }
+        Ok(())
+    }
+    /// Every counter restarts at `first`, the first hour the recording lost: each reads 0 from
+    /// there, so a range after the lost hours counts from its own start.
+    pub(super) fn restart(&mut self, first: i32) -> io::Result<()> {
+        self.series.through(first);
+        for (key, counter) in &mut self.keys {
+            if counter.total == 0 && counter.late == 0 {
+                continue;
+            }
+            *counter = Counter::default();
+            let id = *self
+                .pages
+                .get(&serde_json::to_string(key)?)
+                .ok_or_else(|| dashboard_core::invalid("A division counter has no page"))?;
+            self.series.event(id, first, &[0_usize, 0])?;
         }
         Ok(())
     }
@@ -490,6 +508,20 @@ pub(super) fn totals(
     branch: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<DivisionLogTotalsReply> {
+    // Totals restart after hours the recording lost: a range across them counts from there.
+    let since = coverage::since(super::FAMILY, params.last_hour)
+        .filter(|&since| since > params.first_hour);
+    let stretch;
+    let params = match since {
+        Some(since) => {
+            stretch = DivisionLogTotalsParams {
+                first_hour: since,
+                ..params.clone()
+            };
+            &stretch
+        }
+        None => params,
+    };
     let selection = Selection::new(params);
     let templates: Vec<_> = match &selection.templates {
         None => vec![Dimension::All],
@@ -554,7 +586,9 @@ pub(super) fn totals(
             )?;
         }
     }
-    totals_reply(totals)
+    let mut reply = totals_reply(totals)?;
+    reply.since = since;
+    Ok(reply)
 }
 pub fn query(
     source: &Source,

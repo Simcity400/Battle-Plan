@@ -12,7 +12,7 @@ use super::{
 use crate::products::test_support::{fixture, frame as row_frame, set};
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -285,11 +285,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -303,7 +302,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -317,8 +315,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::resume(&directory, &saved).unwrap();
         }
@@ -340,9 +338,7 @@ const HOLDERS: [Option<&str>; 7] = [
 
 /// Holds the publication `built` to the row preparation's replies through `through`.
 fn check(built: &Built, mut prepared: row::Prepared, through: i32, label: &str) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let flag = AtomicBool::new(false);
     let fixture = fixture();
@@ -367,7 +363,6 @@ fn check(built: &Built, mut prepared: row::Prepared, through: i32, label: &str) 
 /// Every placement of segment starts, cuts and a resume answers as the row preparation does.
 #[test]
 fn the_replies_are_the_row_preparations_across_segments_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     let walked: Vec<i32> = hours.iter().map(|tables| tables.hour).collect();
     for (starts, cuts, resume) in [
@@ -377,7 +372,7 @@ fn the_replies_are_the_row_preparations_across_segments_cuts_and_a_resume() {
         (&walked[1..], &walked[..], Some(110)),
     ] {
         let label = format!("starts {starts:?}");
-        let built = build(projected(&hours, starts), cuts, resume, &budget);
+        let built = build(projected(&hours, starts), cuts, resume);
         check(&built, row_prepared(&hours, starts), 140, &label);
         check(&built, row_prepared(&hours, starts), 126, &format!("{label}, through 126"));
     }
@@ -387,11 +382,9 @@ fn the_replies_are_the_row_preparations_across_segments_cuts_and_a_resume() {
 /// rename and the refusals.
 #[test]
 fn the_scenarios_replies_hold_what_they_are_held_to() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
-    let built = build(projected(&hours, &[]), &[140], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(projected(&hours, &[]), &[140], None);
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let flag = AtomicBool::new(false);
     let ask = |snapshot: &mut Snapshot<'_, Memory>, holder: Option<&str>| {

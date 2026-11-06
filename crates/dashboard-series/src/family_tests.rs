@@ -1,6 +1,4 @@
 use crate::{
-    budget::Budget,
-    cache::Cache,
     carry::{Carry, Read},
     codec::Binary,
     family::{Actors, Directory, Place, Scalar},
@@ -65,10 +63,8 @@ fn next(seed: &mut u64) -> u64 {
 /// across every cut, and a cut appends only the keys open.
 #[test]
 fn carried_edges_join_runs_across_cuts_and_resume_and_read_back_by_place() {
-    let budget = Budget::new(512 << 20);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let mut actors = Actors::new(SCHEMA);
     let mut carry = Carry::default();
     let mut models: BTreeMap<u64, Model> = BTreeMap::new();
@@ -166,7 +162,6 @@ fn carried_edges_join_runs_across_cuts_and_resume_and_read_back_by_place() {
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -181,8 +176,8 @@ fn carried_edges_join_runs_across_cuts_and_resume_and_read_back_by_place() {
             let mut saved = Vec::new();
             carry.save(&mut saved).unwrap();
             carry = Carry::load(&saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             actors = Actors::resume(SCHEMA, &directory).unwrap();
             assert_eq!(actors.len(), 1500);
@@ -192,7 +187,7 @@ fn carried_edges_join_runs_across_cuts_and_resume_and_read_back_by_place() {
     for model in models.values_mut() {
         model.end(*cuts.last().unwrap());
     }
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     assert_eq!(directory.actors.len(), 1500);
     assert_eq!(&*directory.actors[0].name, b"C0000");
@@ -263,8 +258,7 @@ fn carried_edges_join_runs_across_cuts_and_resume_and_read_back_by_place() {
 /// A carry saved and loaded holds the same edges.
 #[test]
 fn a_saved_carry_loads_back_the_same() {
-    let budget = Budget::new(64 << 20);
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let mut actors = Actors::new(SCHEMA);
     let mut carry = Carry::default();
     for actor in 0..5 {
@@ -319,10 +313,8 @@ fn a_saved_carry_loads_back_the_same() {
 /// across a cut and a saved carry, while the equal values read between continue it.
 #[test]
 fn supplied_values_start_their_own_runs_across_a_cut_and_a_saved_carry() {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut writer = Writer::new(identity(), 0).unwrap();
     let mut actors = Actors::new(SCHEMA);
     let mut carry = Carry::default();
     let actor = actors.actor(&mut writer, b"T", 0).unwrap();
@@ -367,7 +359,6 @@ fn supplied_values_start_their_own_runs_across_a_cut_and_a_saved_carry() {
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -382,7 +373,7 @@ fn supplied_values_start_their_own_runs_across_a_cut_and_a_saved_carry() {
         carry.save(&mut saved).unwrap();
         carry = Carry::load(&saved).unwrap();
     }
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
     for (hour, expected) in [
         (10, Some((0, 23, true))),
         (30, Some((24, 47, false))),

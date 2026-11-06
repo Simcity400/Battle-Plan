@@ -22,7 +22,7 @@ pub fn text_reads() -> usize {
     TEXT_READS.get()
 }
 
-/// Page reads and numeric folds held with one reply and charged to its LRU entry.
+/// Page reads and numeric folds held with one reply, the latest of its lineage.
 /// Only entries used by that request survive its next publication.
 #[derive(Clone, Default)]
 pub struct SummaryCache {
@@ -37,76 +37,18 @@ pub struct SummaryCache {
 
 struct Retained {
     value: Arc<dyn std::any::Any + Send + Sync>,
-    bytes: usize,
 }
 
 impl SummaryCache {
-    pub fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self
-                .folds
-                .iter()
-                .map(|(key, fold)| {
-                    2 * std::mem::size_of::<(Vec<u8>, Arc<Fold>)>()
-                        + key.capacity()
-                        + 2 * std::mem::size_of::<usize>()
-                        + fold.bytes()
-                })
-                .sum::<usize>()
-            + self
-                .values
-                .iter()
-                .map(|((_, ids, params), value)| {
-                    2 * std::mem::size_of::<(ValueKey, Arc<Retained>)>()
-                        + ids.capacity() * std::mem::size_of::<[u64; 3]>()
-                        + params.capacity()
-                        + std::mem::size_of::<Retained>()
-                        + 4 * std::mem::size_of::<usize>()
-                        + value.bytes
-                })
-                .sum::<usize>()
-            + self
-                .tables
-                .values()
-                .map(|table| {
-                    2 * std::mem::size_of::<([u64; 3], Arc<Option<Table>>)>()
-                        + 2 * std::mem::size_of::<usize>()
-                        + std::mem::size_of::<Option<Table>>()
-                        + table
-                            .as_ref()
-                            .as_ref()
-                            .map_or(0, |table| table.0.capacity())
-                })
-                .sum::<usize>()
-            + self
-                .blobs
-                .values()
-                .map(|blob| {
-                    2 * std::mem::size_of::<(([u64; 3], u64), Arc<Cached>)>()
-                        + 2 * std::mem::size_of::<usize>()
-                        + blob.bytes()
-                })
-                .sum::<usize>()
-            + self
-                .summaries
-                .values()
-                .map(|summaries| {
-                    2 * std::mem::size_of::<(([u64; 3], u64), Arc<Summaries>)>()
-                        + 2 * std::mem::size_of::<usize>()
-                        + summaries_bytes(summaries)
-                })
-                .sum::<usize>()
-            + self
-                .texts
-                .iter()
-                .map(|((_, ids), text)| {
-                    2 * std::mem::size_of::<((TextKind, Vec<[u64; 3]>), Arc<Vec<u8>>)>()
-                        + ids.capacity() * std::mem::size_of::<[u64; 3]>()
-                        + 2 * std::mem::size_of::<usize>()
-                        + std::mem::size_of::<Vec<u8>>()
-                        + text.capacity()
-                })
-                .sum::<usize>()
+    /// The entries it holds.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.folds.len()
+            + self.blobs.len()
+            + self.summaries.len()
+            + self.tables.len()
+            + self.texts.len()
+            + self.values.len()
     }
 }
 
@@ -142,7 +84,7 @@ impl Drop for CacheScope {
     }
 }
 
-/// These entries live with the query's ordinary bounded LRU reply. Retain
+/// These entries live with the query's reply, the latest of its lineage. Retain
 /// only pages used by the current ask, and compare immutable identities rather
 /// than batch ordinals: a rewritten prefix must never reuse its former bytes.
 fn current() -> Option<Rc<RefCell<State>>> {
@@ -150,11 +92,10 @@ fn current() -> Option<Rc<RefCell<State>>> {
 }
 
 /// A projected immutable page value retained with this request. The caller
-/// names every supplying page and projection input and charges owned capacity.
+/// names every supplying page and projection input.
 pub fn reuse_value<T: Send + Sync + 'static>(
     pages: Vec<[u64; 3]>,
     params: &impl serde::Serialize,
-    bytes: impl FnOnce(&T) -> usize,
     read: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<Arc<T>> {
     let Some(scope) = current() else {
@@ -170,10 +111,8 @@ pub fn reuse_value<T: Send + Sync + 'static>(
         id,
         |cache| &mut cache.values,
         || {
-            let value = read()?;
             Ok(Retained {
-                bytes: bytes(&value),
-                value: Arc::new(value),
+                value: Arc::new(read()?),
             })
         },
     )?;
@@ -291,16 +230,6 @@ struct Fold {
     pages: Arc<Vec<[u64; 3]>>,
     ranges: Vec<Option<(i32, i32)>>,
     buckets: Vec<Option<ChartBucket>>,
-}
-
-impl Fold {
-    fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + 2 * std::mem::size_of::<usize>()
-            + self.pages.capacity() * std::mem::size_of::<[u64; 3]>()
-            + self.ranges.capacity() * std::mem::size_of::<Option<(i32, i32)>>()
-            + self.buckets.capacity() * std::mem::size_of::<Option<ChartBucket>>()
-    }
 }
 
 impl Reader<'_> {

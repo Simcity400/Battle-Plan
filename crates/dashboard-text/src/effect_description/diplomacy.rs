@@ -1,5 +1,18 @@
 use super::*;
-use replay_data::rows::tables;
+use replay_data::rows::{
+    AutonomyRow, CountryAppearanceRow, CountryWargoalRow, PoliticalPartyRow, PoliticsRow,
+    SimulationFeatureRow, UnitLeaderRow, WargoalTargetRow, tables,
+};
+
+/// The fields of each table the diplomacy descriptions read.
+const RULING: u64 = mask::<PoliticsRow>(&["ruling_party"]);
+const PARTY_TOKEN: u64 = mask::<PoliticalPartyRow>(&["token"]);
+const GOAL: u64 = mask::<CountryWargoalRow>(&["handle", "recipient", "goal_type"]);
+const TARGET_VALUE: u64 = mask::<WargoalTargetRow>(&["value"]);
+const SUBJECTS: u64 = mask::<CountryAppearanceRow>(&["overlord", "subjects"]);
+const FEATURES: u64 = mask::<SimulationFeatureRow>(&["dlc_mask"]);
+const SCORES: u64 = mask::<AutonomyRow>(&["lower_score", "upper_score"]);
+const LEADER_CHARACTER: u64 = mask::<UnitLeaderRow>(&["character_id"]);
 
 /// A reached inventory predicate requires both complete goal tables.
 pub(super) const CREATE_WARGOAL_UNRECORDED: &str =
@@ -105,22 +118,23 @@ impl Renderer<'_, '_, '_> {
             Err(why) if why != super::politics::NULL_IDEOLOGY => return Err(why),
             // tests the result's valid byte, not operand presence.
             Ok(None) | Err(_) => {
-                let frame = self.context.text.frame();
-                let id = frame
-                    .complete::<tables::Politics>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .find(|row| self.context.text.recorded().slot(row.country) == Some(country))
+                let recorded = self.context.text.recorded();
+                let id = self
+                    .complete::<tables::Politics>(RULING)?
+                    .keyed(|key| recorded.slot(key as u32) == Some(country))
+                    .next()
+                    .transpose()
+                    .map_err(built)?
                     .and_then(|row| row.ruling_party)
                     .ok_or("Politics lacks civil-war fallback ruling ideology")?;
-                let token = frame
-                    .complete::<tables::PoliticalParties>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .find(|row| {
-                        self.context.text.recorded().slot(row.country) == Some(country)
-                            && row.id == id
+                let token = self
+                    .complete::<tables::PoliticalParties>(PARTY_TOKEN)?
+                    .keyed(|key| {
+                        recorded.slot((key >> 32) as u32) == Some(country) && key as u32 == id
                     })
+                    .next()
+                    .transpose()
+                    .map_err(built)?
                     .ok_or("PoliticalParties lacks civil-war fallback ruling ideology")?;
                 self.politics_ideology(Some(&token.token), scopes)?
             }
@@ -189,12 +203,12 @@ impl Renderer<'_, '_, '_> {
             return Err("create_wargoal needs reserved country zero diplomacy/name inputs".into());
         }
         let world = self.context.world()?;
-        let frame = self.context.text.frame();
+        let frame = self.tables();
         let goals = frame
-            .complete::<tables::CountryWargoals>()
+            .complete::<tables::CountryWargoals>(GOAL)
             .map_err(|_| CREATE_WARGOAL_UNRECORDED.to_string())?;
         let targets = frame
-            .complete::<tables::WargoalTargets>()
+            .complete::<tables::WargoalTargets>(TARGET_VALUE)
             .map_err(|_| CREATE_WARGOAL_UNRECORDED.to_string())?;
         // Definition identity matters only if every other covering-goal
         // predicate succeeds. Non-covering inventories remain decidable.
@@ -213,17 +227,20 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .map(|state| scalar_operand(state).map(integer))
             .collect::<Result<Vec<_>, _>>()?;
-        for member in targets
-            .iter()
-            .filter(|row| row.kind == 3 && world.recorded().slot(row.country) == Some(source))
-        {
+        // WargoalTargets' key is country, kind, goal and ordinal; CountryWargoals' country and
+        // ordinal.
+        for member in targets.keyed(|key| {
+            (key >> 64) as u8 == 3 && world.recorded().slot((key >> 72) as u32) == Some(source)
+        }) {
+            let member = member.map_err(built)?;
             if member.value == 0 {
                 return Err("create_wargoal unused goal reference is null".into());
             }
-            let owned = goals
-                .iter()
-                .find(|row| row.country == member.country && row.handle == member.value)
-                .ok_or("create_wargoal unused goal object is not recorded")?;
+            let low = u128::from(member.country) << 32;
+            let owned = find(goals.span(low, low | u128::from(u32::MAX)), |row| {
+                row.handle == member.value
+            })?
+            .ok_or("create_wargoal unused goal object is not recorded")?;
             let recipient = world
                 .recorded()
                 .slot(owned.recipient)
@@ -232,10 +249,12 @@ impl Renderer<'_, '_, '_> {
                 true
             } else {
                 let target_row = frame
-                    .complete::<tables::CountryAppearance>()
+                    .complete::<tables::CountryAppearance>(SUBJECTS)
                     .map_err(|why| why.to_string())?
-                    .iter()
-                    .find(|row| world.recorded().slot(row.country) == Some(target))
+                    .keyed(|key| world.recorded().slot(key as u32) == Some(target))
+                    .next()
+                    .transpose()
+                    .map_err(built)?
                     .ok_or("create_wargoal target subjects are not recorded")?;
                 let mut found = false;
                 for &raw in target_row.subjects.require("CountryAppearance.subjects")? {
@@ -263,19 +282,18 @@ impl Renderer<'_, '_, '_> {
             {
                 continue;
             }
-            let states = targets
-                .iter()
-                .filter(|r| r.country == owned.country && r.kind == 0 && r.goal == owned.ordinal)
-                .collect::<Vec<_>>();
+            let low = u128::from(owned.country) << 72 | u128::from(owned.ordinal) << 32;
+            let states = each(targets.span(low, low | u128::from(u32::MAX)))
+                .collect::<Result<Vec<_>, _>>()?;
             let covers = if states.is_empty() || requested.is_empty() {
                 true
             } else {
                 let recorded_states = frame
-                    .complete::<tables::States>()
+                    .complete::<tables::States>(0)
                     .map_err(|why| why.to_string())?;
                 requested.iter().all(|id| {
                     let resolved =
-                        if *id > 0 && recorded_states.iter().any(|row| row.id == *id as u32) {
+                        if *id > 0 && recorded_states.contains(u128::from(*id as u32)) {
                             *id as u64
                         } else {
                             0
@@ -374,11 +392,13 @@ impl Renderer<'_, '_, '_> {
         let source_faction = world.faction(source).map_err(|why| why.to_string())?;
         let target_faction = world.faction(target).map_err(|why| why.to_string())?;
         let appearance = world
-            .frame()
-            .complete::<tables::CountryAppearance>()
+            .tables()
+            .complete::<tables::CountryAppearance>(SUBJECTS)
             .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| world.recorded().slot(row.country) == Some(target))
+            .keyed(|key| world.recorded().slot(key as u32) == Some(target))
+            .next()
+            .transpose()
+            .map_err(built)?
             .ok_or("CountryAppearance lacks ordered target subjects")?;
         // The ordered subject roster is reached only inside a removal or join
         // branch. A same-faction nonleader needs no subject roster.
@@ -819,13 +839,8 @@ impl Renderer<'_, '_, '_> {
 
     // The autonomy feature accepts any runtime DLC mask bit 1, 2 or 3.
     fn diplomacy_autonomy_feature(&self) -> Result<bool, String> {
-        let [features] = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::SimulationFeatures>()
-            .map_err(|why| why.to_string())?
-        else {
+        let features = self.complete::<tables::SimulationFeatures>(FEATURES)?;
+        let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
             return Err("SimulationFeatures lacks a unique autonomy feature mask".into());
         };
         Ok(features.dlc_mask & 0xE != 0)
@@ -854,15 +869,13 @@ impl Renderer<'_, '_, '_> {
             };
             // Country -> diplomacy is current autonomy status;
             // a complete Autonomy table's absent row is a null pointer.
-            let statuses = self
-                .context
-                .text
-                .frame()
-                .complete::<tables::Autonomy>()
-                .map_err(|why| why.to_string())?;
+            let statuses = self.complete::<tables::Autonomy>(SCORES)?;
+            let recorded = self.context.text.recorded();
             let Some(status) = statuses
-                .iter()
-                .find(|row| self.context.text.recorded().slot(row.subject) == Some(current))
+                .keyed(|key| recorded.slot(key as u32) == Some(current))
+                .next()
+                .transpose()
+                .map_err(built)?
             else {
                 return Ok(String::new());
             };
@@ -943,17 +956,12 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn diplomacy_remove_exile_tag(&self, scopes: Scopes) -> Result<String, String> {
-        let frame = self.context.text.frame();
+        let frame = self.tables();
         let character = match scopes.this {
             Scope::Character(character) => character,
             Scope::Leader(reference) | Scope::CountryLeader { leader: reference, .. } => {
-                let row = frame
-                    .leaders()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .find(|row| {
-                        ((u64::from(row.id) << 32) | u64::from(row.reference_type)) == reference
-                    })
+                let leaders = self.complete::<tables::UnitLeaders>(LEADER_CHARACTER)?;
+                let row = keyed(&leaders, u128::from(reference))?
                     .ok_or_else(|| format!("UnitLeaders lacks scope leader {reference:#x}"))?;
                 row.character_id
             }
@@ -962,7 +970,7 @@ impl Renderer<'_, '_, '_> {
             }
             _ => return Err("remove_exile_tag needs the carried character; this projected scope does not expose it".into()),
         };
-        let tables = crate::character_scope::Tables::read(frame);
+        let tables = crate::character_scope::Tables::read_in(frame);
         let positive = match tables.unit_leader(character).map_err(|why| why.to_string())? {
             Some(crate::character_scope::UnitLeader::Direct(row)) => {
                 *row.exile_country.require("UnitLeaders.exile_country")? > 0

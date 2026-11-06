@@ -1,6 +1,10 @@
 use super::*;
 use installed_content_core::parser;
 use replay_data::{rows::VariantDefinitionRow, rows::tables};
+
+/// The fields of each table the unit descriptions read.
+const VARIANT: u64 = tables::VariantDefinitions::ID.full_mask();
+const ROSTER_VARIANT: u64 = mask::<replay_data::rows::AvailableEquipmentVariantRow>(&["variant"]);
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
@@ -375,31 +379,16 @@ impl Renderer<'_, '_, '_> {
         &self,
         variant: &VariantDefinitionRow,
     ) -> Result<crate::variant_names::RawVariant, String> {
-        let frame = self.context.text.frame();
+        let frame = self.tables();
         let empty = crate::variant_names::Tags::new(&[], &[], None);
         let raw = if variant.display_name.is_empty() {
-            let tags = crate::variant_names::Tags::new(
-                frame
-                    .complete::<tables::Countries>()
-                    .map_err(|why| why.to_string())?,
-                frame
-                    .complete::<tables::CountryLinks>()
-                    .map_err(|why| why.to_string())?,
-                if (variant.origin_link as i32) >= 1 {
-                    None
-                } else {
-                    Some(
-                        frame
-                            .complete::<tables::CountryAppearance>()
-                            .map_err(|why| why.to_string())?,
-                    )
-                },
-            );
-            let raw = crate::variant_names::raw_variant(
+            let tags =
+                crate::variant_names::Tags::from_tables(frame, (variant.origin_link as i32) < 1)?;
+            let raw = crate::variant_names::raw_variant_in(
                 variant,
                 frame.hour(),
                 &tags,
-                frame.lexical().map_err(|why| why.to_string())?,
+                &self.complete::<tables::LexicalTokens>(0)?,
             );
             if raw.name_tag.is_none() {
                 raw.check("name tag")?;
@@ -426,35 +415,30 @@ impl Renderer<'_, '_, '_> {
     fn units_available_variants(
         &self,
         country: u32,
-    ) -> Result<Vec<Option<&VariantDefinitionRow>>, String> {
+    ) -> Result<Vec<Option<Cow<'_, VariantDefinitionRow>>>, String> {
         let world = self.context.world()?;
         if world.raw_country(country).is_none() {
             return Err(format!(
                 "Countries lacks equipment roster country slot {country}"
             ));
         }
-        let frame = self.context.text.frame();
-        let mut roster = frame
-            .complete::<tables::AvailableEquipmentVariants>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .filter(|row| row.roster_kind == 0 && world.slot(row.country) == Some(country))
-            .collect::<Vec<_>>();
+        // The key is the country, the roster kind's two bits, then the ordinal.
+        let mut roster = Vec::new();
+        for row in self
+            .complete::<tables::AvailableEquipmentVariants>(ROSTER_VARIANT)?
+            .keyed(|key| (key >> 32) & 3 == 0 && world.slot((key >> 34) as u32) == Some(country))
+        {
+            roster.push(row.map_err(built)?);
+        }
         roster.sort_by_key(|row| row.ordinal);
         if roster.is_empty() {
             return Ok(Vec::new());
         }
-        let mut definitions = BTreeMap::new();
-        for variant in frame
-            .complete::<tables::VariantDefinitions>()
-            .map_err(|why| why.to_string())?
-        {
-            definitions.entry(variant.id).or_insert(variant);
-        }
-        Ok(roster
+        let definitions = self.complete::<tables::VariantDefinitions>(VARIANT)?;
+        roster
             .into_iter()
-            .map(|row| definitions.get(&row.variant).copied())
-            .collect()) // Preserve primary roster order.
+            .map(|row| keyed(&definitions, u128::from(row.variant)))
+            .collect() // Preserve primary roster order.
     }
 
     pub(super) fn units_stockpile(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -494,7 +478,8 @@ impl Renderer<'_, '_, '_> {
             };
             let world = self.context.world()?;
             let mut selected = None;
-            for variant in self.units_available_variants(country)? {
+            let held = self.units_available_variants(country)?;
+            for variant in held.iter().map(Option::as_deref) {
                 let variant = variant.ok_or(
                     "AvailableEquipmentVariants references an absent VariantDefinitions row",
                 )?;
@@ -576,11 +561,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn units_enabled_module_slots(&self, index: usize) -> Result<bool, String> {
-        crate::variant_names::enabled_module_slots(
-            self.units_equipment()?,
-            index,
-            self.context.text.frame(),
-        )
+        crate::variant_names::enabled_module_slots(self.units_equipment()?, index, self.tables())
     }
 
     fn units_variant_order(
@@ -592,7 +573,7 @@ impl Renderer<'_, '_, '_> {
             self.units_equipment()?,
             index,
             variant,
-            self.context.text.frame(),
+            self.tables(),
         )
     }
 
@@ -643,7 +624,7 @@ impl Renderer<'_, '_, '_> {
         key: &[u8],
     ) -> Result<String, String> {
         // Only resolved variants evaluate their amounts.
-        let mut pool: Vec<(usize, usize, &VariantDefinitionRow, i64)> = Vec::new();
+        let mut pool: Vec<(usize, usize, Cow<'_, VariantDefinitionRow>, i64)> = Vec::new();
         for entry in entries.iter().filter(|entry| entry.keyword_is("equipment")) {
             let fields = children(entry);
             let index = self.units_equipment_type(fields, &["type"], scopes)?;
@@ -696,7 +677,8 @@ impl Renderer<'_, '_, '_> {
             } else {
                 parser::text(name).map_err(|why| why.to_string())?
             };
-            let mut roster = self.units_available_variants(country)?;
+            let held = self.units_available_variants(country)?;
+            let mut roster: Vec<_> = held.iter().map(Option::as_ref).collect();
             if !kind.is_archetype && !named {
                 roster.reverse();
             }
@@ -733,7 +715,7 @@ impl Renderer<'_, '_, '_> {
                         {
                             continue;
                         }
-                        let mut base = (*variant).clone();
+                        let mut base = (**variant).clone();
                         base.append_variant_name = 0;
                         if self.units_variant_name(&base)? != name {
                             continue;
@@ -777,12 +759,12 @@ impl Renderer<'_, '_, '_> {
             if let Some(start) = pool.iter().position(|(kind, _, _, _)| *kind == archetype) {
                 let mut insert = start;
                 let mut equal = false;
-                for (offset, &(kind, prior_index, prior, _)) in pool[start..].iter().enumerate() {
-                    if kind != archetype {
+                for (offset, (kind, prior_index, prior, _)) in pool[start..].iter().enumerate() {
+                    if *kind != archetype {
                         break;
                     }
                     insert = start + offset;
-                    match self.units_pool_variant_order(prior, prior_index, variant, at)? {
+                    match self.units_pool_variant_order(prior, *prior_index, variant, at)? {
                         Ordering::Less => insert += 1,
                         Ordering::Equal => {
                             equal = true;
@@ -802,7 +784,7 @@ impl Renderer<'_, '_, '_> {
                         (
                             archetype,
                             at,
-                            variant,
+                            variant.clone(),
                             amount.clamp(-0x53e2d620fb40, 0x53e2d620fb40),
                         ),
                     );
@@ -812,7 +794,7 @@ impl Renderer<'_, '_, '_> {
                 pool.push((
                     archetype,
                     at,
-                    variant,
+                    variant.clone(),
                     amount.clamp(-0x53e2d620fb40, 0x53e2d620fb40),
                 ));
             }
@@ -829,7 +811,7 @@ impl Renderer<'_, '_, '_> {
                 self.context.perspective,
                 scopes,
             )?;
-            let raw = self.units_variant_raw(variant)?;
+            let raw = self.units_variant_raw(&variant)?;
             let name = match raw.own_name(Some(&EquipmentTexts(
                 self.context.localisation,
                 self.context.text.recorded_language(),
@@ -951,7 +933,8 @@ impl Renderer<'_, '_, '_> {
         } else {
             let world = self.context.world()?;
             let mut found = false;
-            for variant in self.units_available_variants(country)? {
+            let held = self.units_available_variants(country)?;
+            for variant in held.iter().map(Option::as_deref) {
                 let variant = variant.ok_or(
                     "AvailableEquipmentVariants references an absent VariantDefinitions row",
                 )?;
@@ -1508,13 +1491,19 @@ impl Renderer<'_, '_, '_> {
         if self.valid_state(state)?.is_none() {
             return Ok(None);
         }
+        // War and subject pairs are their rows' keys.
+        const ACCESS: u64 = mask::<replay_data::rows::RelationLinkRow>(&["links"]);
+        const OCCUPANTS: u64 = mask::<replay_data::rows::ProvinceUnitOrderRow>(&["mixed", "naval"]);
+        const LAND: u64 = mask::<replay_data::rows::DivisionRow>(&["province"]);
         let evaluator = self.evaluator()?;
         let world = evaluator.world();
-        let frame = world.frame();
+        let frame = world.tables();
         frame
-            .complete::<tables::CountryLinks>()
+            .complete::<tables::CountryLinks>(0)
             .map_err(|why| why.to_string())?;
-        frame.provinces().map_err(|why| why.to_string())?;
+        frame
+            .complete::<tables::Provinces>(0)
+            .map_err(|why| why.to_string())?;
         let fields = children(item);
         let priority = integer_field(fields, "prioritize_location", 0) as u32;
         let enemy = parser::read_bool_field(fields, "allow_spawning_on_enemy_provs", false);
@@ -1556,9 +1545,11 @@ impl Renderer<'_, '_, '_> {
         };
         let war = |controller| -> Result<bool, String> {
             for row in frame
-                .complete::<tables::WarRelations>()
+                .complete::<tables::WarRelations>(0)
                 .map_err(|why| why.to_string())?
+                .iter()
             {
+                let row = row.map_err(|why| why.to_string())?;
                 let pair = (country(row.first_country)?, country(row.second_country)?);
                 if pair == (controller, owner) || pair == (owner, controller) {
                     return Ok(true);
@@ -1573,17 +1564,18 @@ impl Renderer<'_, '_, '_> {
             if war(controller)? {
                 return Ok(false);
             }
-            let access = frame
-                .complete::<tables::RelationLinks>()
+            for row in frame
+                .complete::<tables::RelationLinks>(ACCESS)
                 .map_err(|why| why.to_string())?
                 .iter()
-                .any(|row| {
-                    world.slot(row.country) == Some(controller)
-                        && row.target_index == owner
-                        && row.links & replay_data::rows::RelationLinkRow::MILITARY_ACCESS != 0
-                });
-            if access {
-                return Ok(true);
+            {
+                let row = row.map_err(|why| why.to_string())?;
+                if world.slot(row.country) == Some(controller)
+                    && row.target_index == owner
+                    && row.links & replay_data::rows::RelationLinkRow::MILITARY_ACCESS != 0
+                {
+                    return Ok(true);
+                }
             }
             if let Some(faction) = world.faction(controller).map_err(|why| why.to_string())?
                 && faction != 0
@@ -1592,9 +1584,11 @@ impl Renderer<'_, '_, '_> {
                 return Ok(true);
             }
             for row in frame
-                .complete::<tables::Subjects>()
+                .complete::<tables::Subjects>(0)
                 .map_err(|why| why.to_string())?
+                .iter()
             {
+                let row = row.map_err(|why| why.to_string())?;
                 let pair = (country(row.overlord)?, country(row.subject)?);
                 if pair == (controller, owner) || pair == (owner, controller) {
                     return Ok(true);
@@ -1633,11 +1627,19 @@ impl Renderer<'_, '_, '_> {
                 if ignore_occupants {
                     return Ok(true);
                 }
-                let occupants = frame
-                    .complete::<tables::ProvinceUnitOrder>()
+                let mut occupants = None;
+                for row in frame
+                    .complete::<tables::ProvinceUnitOrder>(OCCUPANTS)
                     .map_err(|why| why.to_string())?
                     .iter()
-                    .find(|row| row.province == province.id)
+                {
+                    let row = row.map_err(|why| why.to_string())?;
+                    if row.province == province.id {
+                        occupants = Some(row);
+                        break;
+                    }
+                }
+                let occupants = occupants
                     .ok_or_else(|| format!("ProvinceUnitOrder lacks province {}", province.id))?;
                 Ok(occupants.mixed.len() == occupants.naval.len())
                 // Mixed unit counts include land, naval and railway units.
@@ -1695,12 +1697,17 @@ impl Renderer<'_, '_, '_> {
                         }
                     }
                 } else {
-                    let land = frame
-                        .divisions()
+                    let mut land = 0usize;
+                    for unit in frame
+                        .complete::<tables::Divisions>(LAND)
                         .map_err(|why| why.to_string())?
                         .iter()
-                        .filter(|unit| unit.province == province.id)
-                        .count() as i32;
+                    {
+                        if unit.map_err(|why| why.to_string())?.province == province.id {
+                            land += 1;
+                        }
+                    }
+                    let land = land as i32;
                     let base = province.victory_points.wrapping_add(land.wrapping_mul(-20)) as i64
                         * 100_000;
                     base + if controller == owner {

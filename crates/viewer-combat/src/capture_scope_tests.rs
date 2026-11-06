@@ -53,7 +53,6 @@ fn map_battle_windows_read_only_recorded_tables() {
         fog: Arc::new(Err("synthetic content has no fog layer".into())),
         vision_memo: Arc::new(Keyed::new(
             viewer_foundation::map::perspective::VISION_TABLES,
-            1,
         )),
         eta_cache: Default::default(),
         modifier_names: Arc::new(modifier_text::name_index_cache()),

@@ -195,17 +195,24 @@ struct Projection {
     countries: Vec<CasualtyBreakdownCountryRun>,
     series: Vec<Series>,
 }
-/// Projections kept for the most recently requested countries.
+/// The country, wars reply and casualties a projection was made from.
 #[cfg(any(test, feature = "test-support"))]
-const CACHED_PROJECTIONS: usize = 4;
-#[cfg(any(test, feature = "test-support"))]
-struct Cache {
-    branch: u64,
+struct ProjectionKey {
     tag: String,
     wars: Arc<WarsReply>,
     values: Arc<ScannedCasualties>,
-    projection: Arc<Projection>,
 }
+#[cfg(any(test, feature = "test-support"))]
+impl PartialEq for ProjectionKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.tag == other.tag
+            && Arc::ptr_eq(&self.wars, &other.wars)
+            && Arc::ptr_eq(&self.values, &other.values)
+    }
+}
+/// Each branch's latest projection; an earlier one lives only while a request holds it.
+#[cfg(any(test, feature = "test-support"))]
+type Cache = dashboard_base::latest::BranchLatest<ProjectionKey, Projection>;
 /// One holder continuity walk, shared with branch-wide prepared validation.
 fn country_runs(
     changes: BTreeMap<i64, Vec<(Identity, bool, i32)>>,
@@ -499,15 +506,15 @@ impl Product for CasualtyBreakdown {
         if p.window.is_some_and(|window| window >= windows.len()) {
             return Err(dashboard_core::invalid("Unknown casualty window"));
         }
-        let state = source.state::<Vec<Cache>>();
+        let key = ProjectionKey {
+            tag: p.tag.clone(),
+            wars: wars.clone(),
+            values: values.clone(),
+        };
+        let state = source.state::<Cache>();
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = match state.iter().position(|c| {
-            c.branch == branch
-                && c.tag == p.tag
-                && Arc::ptr_eq(&c.wars, &wars)
-                && Arc::ptr_eq(&c.values, &values)
-        }) {
-            Some(hit) => state.remove(hit),
+        let projection = match state.get(branch, &key) {
+            Some(projection) => projection,
             None => {
                 let projection = Arc::new(project(
                     values.pairs.runs(),
@@ -516,20 +523,10 @@ impl Product for CasualtyBreakdown {
                     cancelled,
                     None,
                 )?);
-                state.retain(|c| c.branch != branch || c.tag != p.tag);
-                Cache {
-                    branch,
-                    tag: p.tag.clone(),
-                    wars: wars.clone(),
-                    values: values.clone(),
-                    projection,
-                }
+                state.put(branch, key, &projection);
+                projection
             }
         };
-        // The most recently requested first.
-        state.insert(0, entry);
-        state.truncate(CACHED_PROJECTIONS);
-        let projection = state[0].projection.clone();
         drop(state);
         build_reply(
             p,
@@ -779,7 +776,7 @@ mod tests {
         assert_eq!(reply.series[0].head.country_identity, "1:10");
     }
     #[test]
-    fn obsolete_projection_versions_are_replaced_for_the_same_branch_and_tag() {
+    fn projections_keep_each_branch_s_latest() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
         use replay_data::{
             rows::CountryLinkRow, rows::CountryRow, rows::TableRows, rows::WarRelationRow,
@@ -840,34 +837,10 @@ mod tests {
         let context = LoadContext { content: None };
         let cancelled = AtomicBool::new(false);
         CasualtyBreakdown::load(&source, &params, &context, &cancelled).unwrap();
-        let state = source.state::<Vec<Cache>>();
-        let obsolete = {
-            let mut cache = state.lock().unwrap();
-            cache[0].wars = Arc::new((*cache[0].wars).clone());
-            Arc::downgrade(&cache[0].projection)
-        };
+        let state = source.state::<Cache>();
+        assert_eq!(state.lock().unwrap().held(), 1);
         CasualtyBreakdown::load(&source, &params, &context, &cancelled).unwrap();
-        assert_eq!(state.lock().unwrap().len(), 1);
-        assert!(obsolete.upgrade().is_none());
-        // A hit becomes the most recent; the least recently requested go.
-        {
-            let mut cache = state.lock().unwrap();
-            let others: Vec<_> = (0..CACHED_PROJECTIONS)
-                .map(|other| Cache {
-                    branch: 1,
-                    tag: format!("other {other}"),
-                    wars: cache[0].wars.clone(),
-                    values: cache[0].values.clone(),
-                    projection: cache[0].projection.clone(),
-                })
-                .collect();
-            cache.extend(others);
-            cache.rotate_left(1);
-        }
-        CasualtyBreakdown::load(&source, &params, &context, &cancelled).unwrap();
-        let cache = state.lock().unwrap();
-        assert_eq!(cache.len(), CACHED_PROJECTIONS);
-        assert_eq!(cache[0].tag, "selected");
+        assert_eq!(state.lock().unwrap().held(), 1);
     }
     #[test]
     fn a_first_relation_updates_breakdown_and_country_summary_at_the_same_hour() {

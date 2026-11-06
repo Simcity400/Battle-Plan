@@ -13,7 +13,9 @@ use dashboard_base::{
     products::LoadContext,
     products::MAX_PRODUCT_REPLY_BYTES,
     products::Product,
-    products::character_portraits::{RecordedPortrait, portrait_png, recorded_portrait},
+    products::character_portraits::{
+        RecordedPortrait, portrait_png, recorded_portrait, recorded_portrait_in,
+    },
     products::country_groups::HourSpan,
     products::country_history::{self, CountryIdentityRun},
     products::politics_content::{PoliticsContent, politics_content, recorded_politics_content},
@@ -22,7 +24,7 @@ use dashboard_base::{
 use dashboard_text::metadata::link_slot;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::tagged_country;
-use dashboard_text::identity::character_script_token;
+use dashboard_text::identity::{character_script_token, character_script_token_in};
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::{slot_read, tagged_countries, validate_campaign};
 use installed_content_core::special_projects::Catalog;
@@ -30,10 +32,8 @@ use installed_content_localisation::localisation::Argument;
 use replay_data::{
     rows::CountryLinkRow, rows::ProjectHistoryRow, rows::ProjectRow, rows::TableId, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
+use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, ViewIdentity};
 use serde::{Deserialize, Serialize};
-#[cfg(any(test, feature = "test-support"))]
-use std::collections::VecDeque;
 use std::{
     collections::BTreeMap,
     io,
@@ -564,7 +564,7 @@ pub fn present_reply(
 struct Content {
     catalogue: Arc<Catalogue>,
     politics: Arc<PoliticsContent>,
-    definitions: Catalog,
+    definitions: Arc<Catalog>,
     icons: BTreeMap<String, catalogue::Drawn<Result<String, String>>>,
     scoped: Vec<(u64, Arc<history::Names>)>,
     refusals: Mutex<catalogue::Refusals>,
@@ -575,7 +575,7 @@ impl Clone for Content {
         Self {
             catalogue: Arc::clone(&self.catalogue),
             politics: Arc::clone(&self.politics),
-            definitions: self.definitions.clone(),
+            definitions: Arc::clone(&self.definitions),
             icons: self.icons.clone(),
             scoped: self.scoped.clone(),
             refusals: Mutex::new(Default::default()),
@@ -587,7 +587,7 @@ impl Content {
     fn load(politics: Arc<PoliticsContent>) -> io::Result<Self> {
         Ok(Self {
             catalogue: Arc::clone(&politics.catalogue),
-            definitions: Catalog::read(&politics.catalogue.content.layers)?,
+            definitions: Arc::new(Catalog::read(&politics.catalogue.content.layers)?),
             politics,
             icons: BTreeMap::new(),
             scoped: Vec::new(),
@@ -624,15 +624,15 @@ impl Content {
     /// The scoped name of `tag`'s `definition` at `frame`'s hour, as the name scan read it.
     fn scoped_at(
         &self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         tag: &str,
         slot: u32,
         definition: u32,
     ) -> Option<String> {
         self.scoped
             .iter()
-            .find(|(branch, _)| *branch == frame.branch)
-            .and_then(|(_, names)| names.at(tag, slot, definition, frame.hour))
+            .find(|(branch, _)| *branch == frame.branch())
+            .and_then(|(_, names)| names.at(tag, slot, definition, frame.hour()))
     }
 
     fn name_for(&self, selected: &str, recorded: Option<(u32, &DecodedFrame)>) -> Option<String> {
@@ -714,7 +714,8 @@ pub fn check_content(
         ));
         return Ok(findings);
     }
-    for (token, definition) in content.definitions.projects.clone() {
+    let definitions = Arc::clone(&content.definitions);
+    for (token, definition) in &definitions.projects {
         let subject = format!("special project {token}");
         if let Some(reason) = definition.refusal.as_ref() {
             findings.push(Finding::new(Kind::Refused, subject, reason));
@@ -851,8 +852,31 @@ struct Look {
     #[serde(skip)]
     person_refusals: catalogue::Refusals,
 }
+/// The fields a look reads of each table it reads ([`resolve_person`], [`resolve_definition`]).
+pub(crate) fn look_fields(table: TableId) -> u64 {
+    let names: &[&str] = match table {
+        TableId::ProjectPrograms => &["scientist"],
+        TableId::Characters => &["name_token_id", "token"],
+        TableId::CharacterPortraits => &["portraits"],
+        TableId::LexicalTokens => &["literal"],
+        _ => return u64::MAX,
+    };
+    dashboard_base::prepared::frame_changes::field_mask(table, names)
+}
+
+/// The spelling the hour's complete LexicalTokens gives `token`.
+fn spelled(frame: HourFrame<'_>, token: u32) -> Option<&str> {
+    frame
+        .complete::<tables::LexicalTokens>(look_fields(TableId::LexicalTokens))
+        .ok()?
+        .text(u128::from(token), |row| row.literal.as_slice(), 0)
+        .ok()
+        .flatten()
+        .and_then(|literal| std::str::from_utf8(literal).ok())
+}
+
 fn resolve_person(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     project: &ProjectRow,
     content: Option<&Content>,
 ) -> ProjectPerson {
@@ -869,13 +893,13 @@ fn resolve_person(
             return Err("Project program reference has an unknown native type.".into());
         }
         let programs = frame
-            .complete::<tables::ProjectPrograms>()
+            .complete::<tables::ProjectPrograms>(look_fields(TableId::ProjectPrograms))
             .map_err(|_| "ProjectPrograms not recorded.".to_owned())?;
         let id = (project.program_reference >> 32) as u32;
         let program = programs
-            .binary_search_by_key(&id, |row| row.id)
+            .get(u128::from(id))
             .ok()
-            .map(|i| &programs[i])
+            .flatten()
             .ok_or_else(|| format!("Program {id} was not recorded."))?;
         if program.scientist == 0 {
             assigned = Some(false);
@@ -887,17 +911,17 @@ fn resolve_person(
         assigned = Some(true);
         let id = (program.scientist >> 32) as u32;
         let characters = frame
-            .complete::<tables::Characters>()
+            .complete::<tables::Characters>(look_fields(TableId::Characters))
             .map_err(|_| "Characters not recorded.".to_owned())?;
         let character = characters
-            .binary_search_by_key(&id, |row| row.id)
+            .get(u128::from(id))
             .ok()
-            .map(|i| &characters[i])
+            .flatten()
             .ok_or_else(|| format!("Character {id} was not recorded."))?;
         let lexical = frame
-            .complete::<tables::LexicalTokens>()
-            .unwrap_or_default();
-        let script = character_script_token(character, lexical);
+            .complete::<tables::LexicalTokens>(look_fields(TableId::LexicalTokens))
+            .unwrap_or(Rowset::Decoded(&[]));
+        let script = character_script_token_in(&character, lexical);
         let saved = String::from_utf8_lossy(&character.token);
         let name = content.and_then(|content| {
             content
@@ -906,8 +930,10 @@ fn resolve_person(
         });
         // Scientist portraits request role 4, size 1.
         // Use shared holder selection, including its fallback.
-        let portrait = recorded_portrait(
-            frame.complete::<tables::CharacterPortraits>().ok(),
+        let portrait = recorded_portrait_in(
+            frame
+                .complete::<tables::CharacterPortraits>(look_fields(TableId::CharacterPortraits))
+                .ok(),
             id,
             4,
             replay_data::rows::PORTRAIT_LARGE,
@@ -933,22 +959,14 @@ fn resolve_person(
 }
 
 fn resolve_definition(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     project: &ProjectRow,
     tag: &str,
     slot: u32,
     content: Option<&mut Content>,
 ) -> DefinitionLook {
     // Project construction copies the template token.
-    let token = frame
-        .complete::<tables::LexicalTokens>()
-        .ok()
-        .and_then(|rows| {
-            rows.binary_search_by_key(&project.definition_id, |row| row.token)
-                .ok()
-                .and_then(|i| std::str::from_utf8(&rows[i].literal).ok())
-        })
-        .map(str::to_owned);
+    let token = spelled(frame, project.definition_id).map(str::to_owned);
     let definition_id = project.definition_id;
     resolve_token(
         token,
@@ -991,16 +1009,16 @@ fn resolve_token(
         scientist_as_of,
     };
     if let Some(content) = content.as_mut() {
-        if let Some(reason) = content.definitions.unsettled.as_ref().or_else(|| {
-            content
-                .definitions
+        let definitions = Arc::clone(&content.definitions);
+        if let Some(reason) = definitions.unsettled.as_ref().or_else(|| {
+            definitions
                 .projects
                 .get(&token)
                 .and_then(|project| project.refusal.as_ref())
         }) {
             info.icon_missing = Some(reason.clone());
             warn(reason.clone());
-        } else if let Some(definition) = content.definitions.projects.get(&token).cloned() {
+        } else if let Some(definition) = definitions.projects.get(&token) {
             let key = country_key(
                 &content.catalogue,
                 tag,
@@ -1011,10 +1029,10 @@ fn resolve_token(
                     .unwrap_or(&token),
             );
             if needs_scope(&content.catalogue.localisation, &key) {
-                scoped = Some((definition.clone(), token.clone()));
+                scoped = Some(token.clone());
             }
             info.name = content
-                .name(&definition, &token, tag, scoped_name)
+                .name(definition, &token, tag, scoped_name)
                 .unwrap_or_else(|| {
                     warn(format!("Project name {token} could not be resolved"));
                     "Project name unavailable".into()
@@ -1043,7 +1061,7 @@ fn resolve_token(
             info.icon_missing = Some(format!("Definition {token} is absent from content."));
         }
     }
-    if let Some((_, token)) = &scoped {
+    if let Some(token) = &scoped {
         warnings.remove(&format!("Project name {token} could not be resolved"));
     }
     DefinitionLook {
@@ -1054,11 +1072,23 @@ fn resolve_token(
     }
 }
 
+/// The name of the definition `token` spells, which reads scope, for `tag`.
+fn scoped_name(
+    content: &Content,
+    token: &str,
+    tag: &str,
+    scoped: &dyn Fn(&Content) -> Option<String>,
+) -> Option<String> {
+    let authored = content.definitions.projects.get(token)?;
+    content.name(authored, token, tag, scoped)
+}
+
 struct DefinitionLook {
     info: Arc<ProjectPresentation>,
     warnings: BTreeMap<String, usize>,
     refusals: catalogue::Refusals,
-    scoped: Option<(installed_content_core::special_projects::Project, String)>,
+    /// The token of the definition whose name reads scope; the content holds the definition.
+    scoped: Option<String>,
 }
 #[derive(Default)]
 struct Naming {
@@ -1103,7 +1133,7 @@ impl Naming {
     }
     fn look(
         &mut self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         tag: &str,
         slot: u32,
         row: &ProjectRow,
@@ -1122,11 +1152,11 @@ impl Naming {
         }
         let definition = self.definitions.get_mut(&key).expect("resolved definition");
         let mut warnings = definition.warnings.clone();
-        if let Some((authored, token)) = &definition.scoped {
+        if let Some(token) = &definition.scoped {
             let scoped = |content: &Content| content.scoped_at(frame, tag, slot, row.definition_id);
             let name = content
                 .as_ref()
-                .and_then(|content| content.name(authored, token, tag, &scoped))
+                .and_then(|content| scoped_name(content, token, tag, &scoped))
                 .unwrap_or_else(|| {
                     *warnings
                         .entry(format!("Project name {token} could not be resolved"))
@@ -1181,10 +1211,10 @@ fn completion_look(
 ) -> (Arc<ProjectPresentation>, BTreeMap<String, usize>, catalogue::Refusals) {
     let mut definition = resolve_token(token, definition_id, tag, scoped, content.as_deref_mut());
     let mut warnings = definition.warnings.clone();
-    if let Some((authored, token)) = &definition.scoped {
+    if let Some(token) = &definition.scoped {
         let name = content
             .as_ref()
-            .and_then(|content| content.name(authored, token, tag, scoped))
+            .and_then(|content| scoped_name(content, token, tag, scoped))
             .unwrap_or_else(|| {
                 *warnings
                     .entry(format!("Project name {token} could not be resolved"))
@@ -1337,7 +1367,7 @@ impl Builder {
         let mut refusals = take_refusals(content.as_deref());
         let look = self
             .naming
-            .look(frame, tag, slot, project, None, content.as_deref_mut());
+            .look(frame.into(), tag, slot, project, None, content.as_deref_mut());
         let id = self.present_look(
             &look,
             project.definition_id,
@@ -1876,8 +1906,9 @@ fn append_identities(
     dashboard_base::products::check_reply_budget(reply)
 }
 
+/// A reply's country and the selection roots it was asked with.
 #[cfg(any(test, feature = "test-support"))]
-type ReplyKey = (u64, String, Vec<String>);
+type ReplyKey = (String, Vec<String>);
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
@@ -1885,8 +1916,10 @@ struct Cache {
     catalogue: Option<Arc<Catalogue>>,
     content: Option<Content>,
     #[cfg(any(test, feature = "test-support"))]
-    replies: VecDeque<(ReplyKey, SpecialProjectsReply)>,
-    completions: VecDeque<(u64, Arc<ProjectCompletions>)>,
+    /// Each branch's latest reply.
+    replies: BTreeMap<u64, (ReplyKey, SpecialProjectsReply)>,
+    /// Each branch's completions.
+    completions: BTreeMap<u64, Arc<ProjectCompletions>>,
     content_error: Option<String>,
 }
 
@@ -1978,10 +2011,14 @@ impl Product for SpecialProjects {
         let mut roots = params.selection_tags.clone();
         roots.sort();
         roots.dedup();
-        let key = (country.branch(), params.tag.clone(), roots.clone());
+        let key = (params.tag.clone(), roots.clone());
         // Kept replies hold their art as operands; each reply draws it as its request shows it.
         let art = ArtSource::new(source, context.content.as_ref());
-        if let Some((_, reply)) = cache.replies.iter().find(|(seen, _)| *seen == key) {
+        if let Some((_, reply)) = cache
+            .replies
+            .get(&country.branch())
+            .filter(|(seen, _)| *seen == key)
+        {
             let mut reply = reply.clone();
             drop(cache);
             present_reply(source, &art, &mut reply)?;
@@ -2022,9 +2059,6 @@ impl Product for SpecialProjects {
                 cancelled,
             )?;
             content.scoped.push((country.branch(), Arc::new(names)));
-            if content.scoped.len() > 4 {
-                content.scoped.remove(0);
-            }
             reply = project(&scan, &country, Some(&identities), Some(content), cancelled)?.0;
         }
         // Content only names and draws the recorded projects; the data stays available.
@@ -2043,11 +2077,7 @@ impl Product for SpecialProjects {
             );
         }
         append_identities(&mut reply, &identities)?;
-        cache.replies.push_back((key, reply.clone()));
-        // Response cache budget only, never a country/capture limit.
-        while cache.replies.len() > 16 {
-            cache.replies.pop_front();
-        }
+        cache.replies.insert(country.branch(), (key, reply.clone()));
         drop(cache);
         present_reply(source, &art, &mut reply)?;
         Ok(reply)
@@ -2812,7 +2842,7 @@ mod tests {
         let mut content = Content {
             catalogue: Arc::clone(&catalogue),
             politics: Arc::new(PoliticsContent::load(catalogue).unwrap()),
-            definitions: catalog,
+            definitions: Arc::new(catalog),
             icons: BTreeMap::new(),
             scoped: Vec::new(),
             refusals: Mutex::default(),

@@ -11,7 +11,7 @@ use dashboard_base::{
     prepared::prefix::Prefix,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Identity, Publication, Snapshot, Span, Writer,
+    Blob, Identity, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -19,11 +19,8 @@ use replay_frame::frame::DecodedFrame;
 use std::{
     cell::RefCell,
     io,
-    sync::{LazyLock, atomic::AtomicBool},
+    sync::atomic::AtomicBool,
 };
-
-static BUDGET: Budget = Budget::new(256 << 20);
-static CACHE: LazyLock<Cache<'static>> = LazyLock::new(|| Cache::new(&BUDGET));
 
 fn identity() -> Identity {
     Identity {
@@ -97,7 +94,7 @@ impl Walked {
 struct Held {
     pages: Memory,
     emit: Emit,
-    writer: Option<Writer<'static>>,
+    writer: Option<Writer>,
     root: Option<u64>,
     generation: u64,
     first: Option<i32>,
@@ -129,7 +126,7 @@ impl Fixture {
         let first = *held.first.get_or_insert(hours[0].hour);
         let writer = held
             .writer
-            .get_or_insert_with(|| Writer::new(&BUDGET, identity(), first).unwrap());
+            .get_or_insert_with(|| Writer::new(identity(), first).unwrap());
         for hour in hours {
             held.emit.hour(writer, hour).unwrap();
         }
@@ -143,7 +140,7 @@ impl Fixture {
             refusal: None,
         };
         held.root =
-            Some(publish(writer, &mut held.pages, &CACHE, publication, Blob::EMPTY).unwrap());
+            Some(publish(writer, &mut held.pages, publication, Blob::EMPTY).unwrap());
     }
 
     /// The emit and writer going on from what was last published, as a later preparation
@@ -155,8 +152,8 @@ impl Fixture {
         let mut saved = Vec::new();
         held.emit.save(&mut saved).unwrap();
         held.writer =
-            Some(Writer::resume(&mut held.pages, &CACHE, &BUDGET, root, identity()).unwrap());
-        let mut snapshot = Snapshot::open(held.pages.clone(), &CACHE, root, identity()).unwrap();
+            Some(Writer::resume(&mut held.pages, root, identity()).unwrap());
+        let mut snapshot = Snapshot::open(held.pages.clone(), root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         held.emit = Emit::load(&directory, &saved).unwrap();
     }
@@ -174,7 +171,7 @@ impl Fixture {
         let Some(root) = held.root else {
             return query::unpublished(source, context, params, prefix, cancelled);
         };
-        let mut snapshot = Snapshot::open(held.pages.clone(), &CACHE, root, identity())?;
+        let mut snapshot = Snapshot::open(held.pages.clone(), root, identity())?;
         let directory = Directory::read(&mut snapshot, SCHEMA)?;
         let mut snapshot = snapshot.with_cancellation(cancelled);
         query::reply(source, context, params, &mut snapshot, &directory, prefix, cancelled)
@@ -187,7 +184,7 @@ impl Fixture {
         let Some(root) = held.root else {
             return Vec::new();
         };
-        let mut snapshot = Snapshot::open(held.pages.clone(), &CACHE, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(held.pages.clone(), root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let accepted = snapshot.publication().accepted;
         let mut lanes = Vec::new();

@@ -1,5 +1,5 @@
 use super::*;
-use replay::columnar_frames::{Limits, Recording, Segment};
+use replay::columnar_frames::{Recording, Segment};
 use replay::native_frame::{OneThread, RowFrame};
 
 /// A row encoder's view of an hour that is no keyframe, lending no baselines.
@@ -124,7 +124,7 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     columnar.finish();
     assert_eq!(columnar.status().unwrap()["stopped"], Value::Null);
     assert!(!folder.0.join(PARTIAL).exists());
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), first as u64 + 3);
     let capture = recording.capture().unwrap().expect("a capture in the root");
@@ -168,7 +168,7 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     columnar.interrupt();
     write(&mut columnar, 1, 3..=3);
     columnar.finish();
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
     assert_eq!(recording.segments().len(), 2);
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
 
@@ -183,7 +183,7 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     write(&mut columnar, 1, 4..=4);
     columnar.finish();
     assert!(!failed.0.join(PARTIAL).exists());
-    let recording = Recording::open(fs::read(failed.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let recording = Recording::open(fs::read(failed.0.join(FINISHED)).unwrap()).unwrap();
     assert_eq!(recording.hours(), 3);
     assert_eq!(recording.run(1).unwrap().first_hour, 4);
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
@@ -229,7 +229,7 @@ fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
         columnar.complete(1, hour);
     }
     columnar.finish();
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
     assert_eq!(recording.hours(), 4);
     assert_eq!(recording.run(0).unwrap().ordinals, 2);
     assert_eq!(recording.run(1).unwrap().first_hour, 5);
@@ -270,7 +270,7 @@ fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
     }
     write(&mut columnar, 1, 1..=2);
     columnar.finish();
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
     let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
     assert_eq!(
         recording.capture().unwrap().unwrap().controls,
@@ -314,7 +314,7 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
     columnar.complete(1, 2);
     write(&mut columnar, 1, 3..=4);
     columnar.finish();
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
     let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
     assert_eq!(
         recording.capture().unwrap().unwrap().controls,
@@ -333,7 +333,7 @@ fn each_capture_takes_the_next_number_and_keeps_the_earlier_files() {
         columnar.finish();
     }
     for (name, hours) in [("columnar.0.h4col", 2), ("columnar.1.h4col", 3)] {
-        let recording = Recording::open(fs::read(folder.0.join(name)).unwrap(), Limits::default()).unwrap();
+        let recording = Recording::open(fs::read(folder.0.join(name)).unwrap()).unwrap();
         assert_eq!(recording.hours(), hours, "{name}");
     }
 }
@@ -371,7 +371,7 @@ fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     }
     columnar.finish();
     assert_eq!(columnar.status().unwrap()["stopped"], Value::Null);
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
     assert_eq!(recording.hours(), 4);
     let runs: Vec<(u64, u8, i32)> = (0..2)
         .map(|run| {

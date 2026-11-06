@@ -68,12 +68,10 @@ pub fn cached<R: Serialize + DeserializeOwned>(
         return compute();
     };
     let value = observations::scope(source, product, Some(&key))
-        .working_set(32)
         .get(
             block,
             &(hour, params, Presentation::current(source, context)),
             cancelled,
-            observations::json_bytes,
             || serde_json::to_value(compute()?).map_err(io::Error::other),
         )?;
     serde_json::from_value(value.as_ref().clone()).map_err(io::Error::other)

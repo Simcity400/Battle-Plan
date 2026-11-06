@@ -1,7 +1,7 @@
 //! Exact finalizer observations override the derived card of the same identity.
 use super::{reads::Finalizers, reads::Settled, *};
 use replay_data::rows::SettledPeaceAction;
-use replay_frame::frame::TableView;
+use replay_frame::frame::{OperandStatus, TableView};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -646,14 +646,18 @@ impl Observed {
 }
 /// Why an hour's finalizer table misses conferences, as that hour records
 /// it; None for a complete table.
-pub(super) fn missing_reason(view: &TableView) -> Option<String> {
-    match view {
-        TableView::Complete(_) => None,
-        TableView::Truncated { missing, .. } => Some(format!(
-            "Finalizer table truncated: at least {missing} lost conferences or unread operands."
-        )),
-        TableView::Unavailable { reason } => Some(format!("Finalizer table unavailable: {reason}")),
-        TableView::NotRecorded { mode } => Some(format!(
+pub(super) fn missing_reason(status: OperandStatus<'_>) -> Option<String> {
+    match status {
+        OperandStatus::Complete | OperandStatus::WrongLayout => None,
+        OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => {
+            Some(format!(
+                "Finalizer table truncated: at least {missing} lost conferences or unread operands."
+            ))
+        }
+        OperandStatus::Unavailable(reason) => {
+            Some(format!("Finalizer table unavailable: {reason}"))
+        }
+        OperandStatus::NotRecorded(mode) => Some(format!(
             "Finalizer table not recorded in a {mode} recording."
         )),
     }

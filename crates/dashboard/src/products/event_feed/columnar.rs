@@ -1,7 +1,7 @@
 //! The feed prepared on a columnar recording's segments ([`replay::segments`]). Each segment's
-//! worker reads the changed slots of the feed's tables, the rest from the walk's shared frame
+//! worker reads the changed slots of the feed's tables, the rest through the walk's views
 //! ([`dashboard_world`]), names occurrences at its own hours through an identity history of
-//! its own, presents their items in the hour's world and encodes their facts; the ordered emit
+//! its own, presents their items in the hour's views and encodes their facts; the ordered emit
 //! holds every state the feed carries, its saved continuation, and advances it once per hour.
 
 use super::{
@@ -36,7 +36,7 @@ use replay_data::{
     },
     scope::CaptureMode,
 };
-use replay_frame::frame::{DecodedFrame, Metrics, TableView};
+use replay_frame::frame::{DecodedFrame, HourFrame, Metrics, TableView};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -80,17 +80,6 @@ pub fn tables() -> &'static [TableId] {
     })
 }
 
-/// The tables the worker reads as rows from the walk's frame. Relations are read by their
-/// changed keys and read owners instead ([`Projector::guaranteed`]).
-const FRAME: [TableId; 6] = [
-    TableId::Campaign,
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::CountryCounterInputs,
-    TableId::CountryExperienceGains,
-    TableId::NuclearStrikes,
-];
-
 /// The fields of the identity tables the worker and its emit read, by table; every field of
 /// the others.
 fn read_fields() -> io::Result<[u64; TABLE_COUNT]> {
@@ -110,46 +99,18 @@ fn read_fields() -> io::Result<[u64; TABLE_COUNT]> {
     Ok(masks)
 }
 
-/// [`FRAME`] as a worker asks its walk's world for it, each table in the fields it reads.
-fn frame_holds() -> io::Result<Vec<(TableId, Hold)>> {
-    let masks = read_fields()?;
-    Ok(FRAME
-        .iter()
-        .map(|&table| {
-            let mask = masks[table.index()];
-            (
-                table,
-                if mask == u64::MAX {
-                    Hold::Whole
-                } else {
-                    Hold::Fields(mask)
-                },
-            )
-        })
-        .collect())
-}
-
-/// [`presentation`] as a worker asks for it, whole.
-fn presentation_holds() -> Vec<(TableId, Hold)> {
-    presentation()
-        .iter()
-        .map(|&table| (table, Hold::Whole))
-        .collect()
-}
-
-/// What a worker reads of its walk's world: [`FRAME`], each in the fields it reads, and the
-/// tables it presents occurrences in.
+/// What a worker reads of its walk's world: the views of the strikes, handed on whole, and of
+/// the tables it presents occurrences in, which scripted text reads whole. The identity tables
+/// it reads by their changed slots ([`Projector::read`]).
 pub fn needs() -> io::Result<Needs> {
-    Ok(Needs::union(&[
-        Needs {
-            frame: frame_holds()?,
-            ..Needs::default()
-        },
-        Needs {
-            frame: presentation_holds(),
-            ..Needs::default()
-        },
-    ]))
+    Ok(Needs {
+        frame: presentation()
+            .iter()
+            .chain(&[TableId::NuclearStrikes])
+            .map(|&table| (table, Hold::Whole))
+            .collect(),
+        ..Needs::default()
+    })
 }
 
 /// Both sides observe an hour whole; nothing cancels inside one.
@@ -214,10 +175,9 @@ pub struct Projector<'p> {
     bounds: BTreeMap<u64, (i32, i32)>,
     shapes: [Option<columns::Status>; TABLE_COUNT],
     masks: [u64; TABLE_COUNT],
-    /// [`FRAME`] as the worker asks the walk's frame for it.
-    holds: Vec<(TableId, Hold)>,
-    /// The tables occurrences are presented in, as the worker asks for them.
-    presenting: Vec<(TableId, Hold)>,
+    /// The identity tables in the fields read, kept from the walk's first hour by the changes
+    /// it hands the emit, as the emit keeps its own ([`apply_frame`]).
+    identity: Option<DecodedFrame>,
     /// The recorded content items are presented with; none without the game's content.
     catalogue: Option<Arc<Catalogue>>,
     /// The recording an occurrence named before the hour that read it seeks its world in.
@@ -262,8 +222,7 @@ impl<'p> Projector<'p> {
             bounds,
             shapes: [None; TABLE_COUNT],
             masks,
-            holds: frame_holds()?,
-            presenting: presentation_holds(),
+            identity: None,
             catalogue,
             source,
             packet: None,
@@ -639,7 +598,7 @@ fn draft(
 /// owners in owner order ([`Projector::relation_reads`]); of `guaranteed`, the keys of the
 /// relations of guarantee type ([`Projector::guaranteed`]).
 fn guarantees(
-    (frame, hour, format): (&DecodedFrame, &segments::Hour<'_, World>, FormatVersion),
+    (identity, hour, format): (&DecodedFrame, &segments::Hour<'_, World>, FormatVersion),
     reads: Option<&[SliceReadRow]>,
     guaranteed: Option<&BTreeSet<u128>>,
     tags: &mut LinkTags,
@@ -647,7 +606,7 @@ fn guarantees(
 ) -> io::Result<(bool, Vec<(u32, u32, i32)>)> {
     let mut relations = false;
     let mut seen = Vec::new();
-    if tags.update(frame).is_err() {
+    if tags.update(identity).is_err() {
         return Ok((relations, seen));
     }
     let (Some(guaranteed), Some(reads)) = (guaranteed, reads) else {
@@ -668,7 +627,7 @@ fn guarantees(
             }
             // A relation counts at its first read with its start reached; later reads see it held.
             let relation = (row.first_country, row.second_country, row.start_hour);
-            if row.start_hour <= frame.hour && sent.insert(relation) {
+            if row.start_hour <= hour.hour && sent.insert(relation) {
                 seen.push(relation);
             }
         }
@@ -678,7 +637,7 @@ fn guarantees(
 
 /// The hour's strikes as a worker names them from `first` on.
 fn strikes(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     identities: &HistoryScan,
     first: i32,
     (start, end): (i32, i32),
@@ -694,7 +653,7 @@ fn strikes(
         ));
     }
     let facts = strike_facts(
-        frame.hour,
+        frame.hour(),
         &strikes,
         |hour, country| identities.native_tag(hour, country),
         &mut builder,
@@ -725,6 +684,7 @@ impl Operator<World> for Projector<'_> {
         self.tags = LinkTags::default();
         self.sent.clear();
         self.guaranteed = None;
+        self.identity = None;
         Ok(())
     }
 
@@ -777,22 +737,26 @@ impl Operator<World> for Projector<'_> {
         }
         let opens = hour.opens || hour.starts;
         let measured = metrics(hour.manifest);
-        let frame = &hour.world.frame_held(hour.state, &self.holds)?;
-        let mut flags = [opens; TABLE_COUNT];
-        for (table, _) in &changes {
-            flags[table.index()] = true;
-        }
-        flags[TableId::NuclearStrikes.index()] |=
-            hour.world.touched(TableId::NuclearStrikes, u64::MAX);
-        let mut changed = FrameChanges::alone(frame, self.format);
-        changed.rows_changed = flags;
+        let changed = apply_frame(
+            &mut self.identity,
+            (hour.branch, hour.hour),
+            opens,
+            &measured,
+            &changes,
+            self.format,
+        )?;
+        let identity = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| crate::invalid("The worker holds no identity frame"))?;
+        let views = HourFrame::from(hour.world.columns(hour.state));
         drop(probe);
         let probe = replay_frame::cpu::scope("ef-w:identities", None);
         advance_identities(
             &mut self.identities,
             (hour.hour, opens),
             &changes,
-            frame,
+            identity,
             &changed,
         );
         drop(probe);
@@ -800,9 +764,9 @@ impl Operator<World> for Projector<'_> {
         let format = self.format;
         let native = match packet {
             Ok((row, packet)) => {
-                let read = || hour.world.frame_held(hour.state, &self.presenting);
                 let seek = seeking(self.source, hour.branch);
-                let texts = HourTexts::new(hour.hour, &read, seek.as_ref().map(|seek| seek as _));
+                let texts =
+                    HourTexts::new(hour.hour, Some(views), seek.as_ref().map(|seek| seek as _));
                 let catalogue = self.catalogue.as_deref();
                 let mut present = |row: &EventFeedRow,
                                    item: &mut EventFeedItem,
@@ -836,7 +800,7 @@ impl Operator<World> for Projector<'_> {
         drop(probe);
         let probe = replay_frame::cpu::scope("ef-w:guarantees", None);
         let (relations, guarantees) = guarantees(
-            (frame, hour, self.format),
+            (identity, hour, self.format),
             reads.as_deref(),
             self.guaranteed.as_ref(),
             &mut self.tags,
@@ -845,7 +809,7 @@ impl Operator<World> for Projector<'_> {
         drop(probe);
         let probe = replay_frame::cpu::scope("ef-w:strikes", None);
         let nuclear = strikes(
-            frame,
+            views,
             &self.identities,
             self.first,
             self.within,
@@ -1288,8 +1252,8 @@ fn natives(
             let mut tag_at = |hour, country| identities.native_tag(hour, country);
             native::Projection::occurrences(&mut feed.diagnostics, &row, &mut tag_at, &WHOLE_HOUR)?;
             // The worker presented those named at the read in its world; the rest are sought.
-            let unread = || -> io::Result<DecodedFrame> { Err(crate::invalid("The emit holds no world")) };
-            let texts = HourTexts::new(i32::MIN, &unread, seek.as_ref().map(|seek| seek as _));
+            // The emit holds no world of its own: every text is sought.
+            let texts = HourTexts::new(i32::MIN, None, seek.as_ref().map(|seek| seek as _));
             let mut present = |row: &EventFeedRow,
                                item: &mut EventFeedItem,
                                script: Option<&script_effects::Inputs>| {

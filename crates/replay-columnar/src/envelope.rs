@@ -1,4 +1,4 @@
-//! A columnar recording's saved-file envelope (`H4COLUMN` version 3).
+//! A columnar recording's saved-file envelope (`H4COLUMN` version 4).
 //!
 //! The file is append-only: zstd extents in any order, then a [`Root`] extent, then a
 //! fixed [`FOOTER_BYTES`] footer naming the root. A writer appends extents, syncs, appends
@@ -33,7 +33,8 @@ use std::io;
 mod tests;
 
 pub const MAGIC: &[u8; 8] = b"H4COLUMN";
-pub const VERSION: u32 = 3;
+/// 4: restarts hold their kept tables' last complete reads ([`crate::restart::Last`]).
+pub const VERSION: u32 = 4;
 pub const HEADER_BYTES: usize = 12;
 pub const FOOTER_MAGIC: &[u8; 8] = b"H4COLEND";
 /// Root offset, root stored length, root digest and the footer magic.
@@ -744,14 +745,14 @@ pub fn footer(root: u64, stored: u64, digest: &[u8; 16]) -> [u8; FOOTER_BYTES] {
     bytes
 }
 
-/// The last footer of a version 3 file whose root verifies: its root's envelope, and the
+/// The last footer of a version 4 file whose root verifies: its root's envelope, and the
 /// file's length through that footer. Anything after it is a torn tail.
 pub fn last_root(file: &[u8]) -> io::Result<(Extent, usize)> {
     if file.len() < HEADER_BYTES + FOOTER_BYTES
         || !file.starts_with(MAGIC)
         || file[8..12] != VERSION.to_le_bytes()
     {
-        return Err(invalid("Not a version 3 H4COLUMN recording"));
+        return Err(invalid("Not a version 4 H4COLUMN recording"));
     }
     // A root sits right before its footer. All candidates' roots together are hashed at
     // most twice the file's length: a tail of footer-shaped bytes cannot cost more.

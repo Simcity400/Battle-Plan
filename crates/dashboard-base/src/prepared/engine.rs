@@ -136,6 +136,34 @@ pub fn run_at<P: PageRead>(
     })
 }
 
+/// [`run_at`]'s value at `hour`, with the hours [`run_at`] reads the same there: those its run
+/// and evidence both hold within the accepted hours; `hour` alone where it holds no value.
+pub fn held_at<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    key: u64,
+    hour: i32,
+) -> io::Result<(Option<i128>, (i32, i32))> {
+    let accepted = snapshot.publication().accepted;
+    Ok(match run_at(snapshot, key, hour)? {
+        Some((run, evidence)) => (
+            Some(run.value),
+            (
+                run.span
+                    .first
+                    .max(evidence.span.first)
+                    .max(accepted.first)
+                    .min(hour),
+                run.span
+                    .last
+                    .min(evidence.span.last)
+                    .min(accepted.last)
+                    .max(hour),
+            ),
+        ),
+        None => (None, (hour, hour)),
+    })
+}
+
 /// `key`'s runs over `from..=to`, clipped to it.
 pub fn runs<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,

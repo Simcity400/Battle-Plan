@@ -36,7 +36,7 @@ use dashboard_base::{
 use dashboard_core::transport::json_len;
 use dashboard_text::{
     idea_names::{IdeaCountry, IdeaName},
-    identity::{Look, built_template, character_script_token},
+    identity::{Look, built_template_in, character_script_token_in},
     metadata::{mapped_slot, validate_campaign},
     scripted_text::ScriptedText,
 };
@@ -883,17 +883,20 @@ pub(super) fn recorded_character<'a>(
     let index = rows
         .binary_search_by_key(&line.identity_id, |row| row.id)
         .ok()?;
-    Some(recorded_character_row(&rows[index], lexical))
+    Some(recorded_character_row(
+        &rows[index],
+        lexical.map(replay_frame::frame::Rowset::Decoded),
+    ))
 }
 
 pub(super) fn recorded_character_row<'a>(
     row: &'a replay_data::rows::CharacterRow,
-    lexical: Option<&'a [replay_data::rows::LexicalTokenRow]>,
+    lexical: Option<replay_frame::frame::Rowset<'a, replay_data::rows::LexicalTokenRow>>,
 ) -> RecordedCharacter<'a> {
     RecordedCharacter {
-        script: lexical.and_then(|rows| character_script_token(row, rows)),
+        script: lexical.and_then(|rows| character_script_token_in(row, rows)),
         saved: std::str::from_utf8(&row.token).ok().unwrap_or_default(),
-        template: built_template(row, lexical),
+        template: built_template_in(row, lexical),
     }
 }
 

@@ -1,17 +1,17 @@
-mod budget;
 mod directory;
 mod index;
 mod pages;
 mod reader;
+mod resident;
 mod saved;
 #[cfg(test)]
 mod tests;
 
 use crate::invalid;
-pub use budget::{Credit, DecodeBudget, MemoryBudget, Resident};
 use directory::Root;
 pub use pages::ReadPages;
 pub use reader::{Cursor, FactRef, KeyCursor, KeyRef, ReadPhase, Reader};
+pub use resident::Resident;
 pub use saved::Checkpoint;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeMap, io};
@@ -37,30 +37,10 @@ impl<T: Resident> Resident for Status<T> {
             _ => 0,
         }
     }
-    fn decode_budget() -> DecodeBudget {
-        let value = T::decode_budget();
-        let reason = String::decode_budget();
-        DecodeBudget {
-            fixed_bytes: value
-                .fixed_bytes
-                .max(reason.fixed_bytes)
-                .saturating_add(size_of::<Self>()),
-            bytes_per_encoded_byte: value
-                .bytes_per_encoded_byte
-                .max(reason.bytes_per_encoded_byte),
-        }
-    }
 }
 impl<T: Resident> Resident for Interval<T> {
     fn heap_bytes(&self) -> usize {
         self.status.heap_bytes()
-    }
-    fn decode_budget() -> DecodeBudget {
-        let status = Status::<T>::decode_budget();
-        DecodeBudget {
-            fixed_bytes: status.fixed_bytes.saturating_add(size_of::<Self>()),
-            ..status
-        }
     }
 }
 
@@ -105,14 +85,13 @@ impl Namespace {
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub write_bytes: usize,
-    pub cache_bytes: usize,
     pub page_bytes: usize,
 }
 impl Limits {
     fn validate(self) -> io::Result<Self> {
         if self.write_bytes == 0 || self.page_bytes == 0 {
             return Err(invalid(
-                "Private fact write and page budgets must be positive",
+                "Private fact write and page sizes must be positive",
             ));
         }
         Ok(self)
@@ -120,7 +99,8 @@ impl Limits {
 }
 struct Held<T> {
     interval: Interval<T>,
-    credit: Credit,
+    /// What it holds until written, counted toward the write batch.
+    bytes: usize,
 }
 impl<T: Serialize> Serialize for Held<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -132,35 +112,24 @@ struct Column<T> {
     indexed: bool,
     pending: Vec<Held<T>>,
     open: Option<Held<T>>,
-    _credit: Credit,
 }
 
 pub struct Facts<K, V> {
     namespace: Namespace,
-    budget: MemoryBudget,
     limits: Limits,
     columns: BTreeMap<K, Column<V>>,
     keys: index::IndexRoot,
     pending_bytes: usize,
     poisoned: bool,
-    _credit: Credit,
 }
 impl<
     K: Ord + Clone + Serialize + DeserializeOwned + Resident + 'static,
     V: PartialEq + Serialize + DeserializeOwned + Resident + 'static,
 > Facts<K, V>
 {
-    pub fn new(namespace: Namespace, budget: MemoryBudget, limits: Limits) -> io::Result<Self> {
-        let credit = budget.admit(
-            size_of::<Self>()
-                .saturating_add(12 * (size_of::<K>() + size_of::<Column<V>>() + 128))
-                .saturating_add(namespace.family.capacity())
-                .saturating_add(namespace.column.capacity()),
-        )?;
+    pub fn new(namespace: Namespace, limits: Limits) -> io::Result<Self> {
         Ok(Self {
-            _credit: credit,
             namespace,
-            budget,
             limits: limits.validate()?,
             columns: BTreeMap::new(),
             keys: index::IndexRoot::default(),
@@ -177,6 +146,22 @@ impl<
     pub fn active_keys(&self) -> usize {
         self.columns.len()
     }
+    /// The bytes its keys' open and buffered values hold.
+    pub fn held_bytes(&self) -> usize {
+        self.columns
+            .iter()
+            .map(|(key, column)| {
+                size_of::<(K, Column<V>)>()
+                    + key.heap_bytes()
+                    + column
+                        .pending
+                        .iter()
+                        .chain(&column.open)
+                        .map(|held| held.bytes)
+                        .sum::<usize>()
+            })
+            .sum()
+    }
     fn healthy(&self) -> io::Result<()> {
         if self.poisoned {
             Err(invalid(
@@ -186,21 +171,11 @@ impl<
             Ok(())
         }
     }
-    fn held(&self, interval: Interval<V>) -> io::Result<Held<V>> {
-        let bytes = interval
-            .heap_bytes()
-            .checked_add(size_of::<Held<V>>().saturating_mul(4))
-            .ok_or_else(|| invalid("Fact allocation overflow"))?;
-        Ok(Held {
+    fn held(interval: Interval<V>) -> Held<V> {
+        Held {
+            bytes: interval.heap_bytes().saturating_add(size_of::<Held<V>>()),
             interval,
-            credit: self.budget.admit(bytes)?,
-        })
-    }
-    fn key_credit(&self, key: &K) -> io::Result<Credit> {
-        self.budget.admit(
-            key.heap_bytes()
-                .saturating_add((size_of::<K>() + size_of::<Column<V>>() + 128).saturating_mul(12)),
-        )
+        }
     }
     pub fn append(
         &mut self,
@@ -234,14 +209,13 @@ impl<
         if previous.is_some_and(|previous| first <= previous) {
             return Err(invalid("Private facts did not advance"));
         }
-        let held = self.held(Interval {
+        let held = Self::held(Interval {
             first,
             last,
             status,
-        })?;
+        });
         let vacant = if !self.columns.contains_key(&key) {
-            let credit = self.key_credit(&key)?;
-            let mut cache = pages::Cache::new(writer, self.budget.clone(), 0)?;
+            let mut cache = pages::Pages::new(writer);
             let root: Option<Root> = index::get(
                 &mut cache,
                 &format!("{}/keys", self.namespace.section()),
@@ -258,7 +232,6 @@ impl<
                 indexed,
                 pending: Vec::new(),
                 open: None,
-                _credit: credit,
             })
         } else {
             None
@@ -278,14 +251,11 @@ impl<
             .and_then(|hour| hour.checked_add(1))
             .filter(|start| *start < first)
         {
-            Some(Held {
-                interval: Interval {
-                    first: start,
-                    last: first - 1,
-                    status: Status::Gap,
-                },
-                credit: self.budget.admit(size_of::<Held<V>>().saturating_mul(4))?,
-            })
+            Some(Self::held(Interval {
+                first: start,
+                last: first - 1,
+                status: Status::Gap,
+            }))
         } else {
             None
         };
@@ -294,11 +264,11 @@ impl<
             std::collections::btree_map::Entry::Vacant(entry) => entry.insert(vacant.unwrap()),
         };
         if let Some(old) = column.open.take() {
-            self.pending_bytes += old.credit.bytes();
+            self.pending_bytes += old.bytes;
             column.pending.push(old);
         }
         if let Some(gap) = gap {
-            self.pending_bytes += gap.credit.bytes();
+            self.pending_bytes += gap.bytes;
             column.pending.push(gap);
         }
         column.open = Some(held);
@@ -327,21 +297,15 @@ impl<
                 let mut bytes = 0usize;
                 while end < column.pending.len() && (end == start || bytes < self.limits.page_bytes)
                 {
-                    bytes = bytes.saturating_add(column.pending[end].credit.bytes());
+                    bytes = bytes.saturating_add(column.pending[end].bytes);
                     end += 1;
                 }
                 let rows = &column.pending[start..end];
-                let encoded = pages::encode(&self.budget, rows)?;
-                let payload = pages::write(
-                    writer,
-                    &self.budget,
-                    &format!("{section}/values"),
-                    encoded.value.as_slice(),
-                )?;
+                let encoded = pages::encode(rows)?;
+                let payload = pages::write(writer, &format!("{section}/values"), encoded.as_slice())?;
                 drop(encoded);
                 directory::append(
                     writer,
-                    &self.budget,
                     &format!("{section}/directory"),
                     &mut column.root,
                     directory::Entry {
@@ -356,12 +320,11 @@ impl<
             self.pending_bytes -= column
                 .pending
                 .iter()
-                .map(|v| v.credit.bytes())
+                .map(|v| v.bytes)
                 .sum::<usize>();
             column.pending = Vec::new();
             self.keys = index::put(
                 writer,
-                &self.budget,
                 &format!("{section}/keys"),
                 self.keys,
                 key,
@@ -376,7 +339,7 @@ impl<
         self.healthy()?;
         if let Some(column) = self.columns.get_mut(key) {
             if let Some(open) = column.open.take() {
-                self.pending_bytes += open.credit.bytes();
+                self.pending_bytes += open.bytes;
                 column.pending.push(open);
             }
         } else {

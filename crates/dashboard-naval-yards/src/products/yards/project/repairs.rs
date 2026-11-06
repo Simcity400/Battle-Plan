@@ -49,34 +49,26 @@ pub(super) struct Repairs {
 }
 
 /// The port of `province` at the hour, `held` as last projected; none where it has none.
-fn project(cx: &mut Cx<'_, '_>, province: u32, held: Option<&Port>) -> Option<Port> {
+fn project<F: Tables + ?Sized>(
+    cx: &mut Cx<'_, '_, F>,
+    province: u32,
+    held: Option<&Port>,
+) -> Option<Port> {
     let frame = cx.frame;
-    let base = find(
-        frame.complete::<tables::NavalBases>().ok(),
-        province,
-        |row| row.province,
-    )?;
+    let base = frame.get::<tables::NavalBases>(province)?;
     let owner = cx.owner(base.country)?;
-    let repair = find(
-        frame.complete::<tables::NavalRepairBases>().ok(),
-        province,
-        |row| row.province,
-    );
-    let entries = frame.complete::<tables::NavalRepairQueue>().ok().map(|rows| {
-        let first = rows.partition_point(|row| row.province < province);
-        let count = rows[first..].partition_point(|row| row.province == province);
-        &rows[first..first + count]
+    let repair = frame.get::<tables::NavalRepairBases>(province);
+    let entries = frame.complete::<tables::NavalRepairQueue>().map(|rows| {
+        let first = u128::from(province) << 32;
+        frame.each(rows.range(first..=first | u128::from(u32::MAX)))
     });
-    if repair.is_none() && entries.is_none_or(<[_]>::is_empty) {
+    if repair.is_none() && entries.as_ref().is_none_or(Vec::is_empty) {
         return None;
     }
     let mut cells = vec![Spelled::Null; PORT];
-    let state = find(
-        frame.complete::<tables::Provinces>().ok(),
-        province,
-        |row| row.id,
-    )
-    .map(|row| row.state);
+    let state = frame
+        .get::<tables::Provinces>(province)
+        .map(|row| row.state);
     if let Some(state) = state {
         cells[at(port::STATE)] = Spelled::Integer(i128::from(state));
     }
@@ -118,15 +110,17 @@ fn project(cx: &mut Cx<'_, '_>, province: u32, held: Option<&Port>) -> Option<Po
 
 impl Repairs {
     /// Every port `frame` holds, into `projector`'s ships and rows.
-    pub(super) fn build(cx: &mut Cx<'_, '_>, ships: &mut Ships, dirty: &mut Dirty) -> Self {
+    pub(super) fn build<F: Tables + ?Sized>(
+        cx: &mut Cx<'_, '_, F>,
+        ships: &mut Ships,
+        dirty: &mut Dirty,
+    ) -> Self {
         let mut repairs = Self::default();
         let provinces: Vec<u32> = cx
             .frame
             .complete::<tables::NavalBases>()
-            .unwrap_or_default()
-            .iter()
-            .map(|base| base.province)
-            .collect();
+            .map(|bases| bases.keys().map(|province| province as u32).collect())
+            .unwrap_or_default();
         for province in provinces {
             repairs.port(cx, ships, dirty, province);
         }
@@ -134,13 +128,17 @@ impl Repairs {
     }
 
     /// The port of `province` projected again, and what that changes.
-    fn port(&mut self, cx: &mut Cx<'_, '_>, ships: &mut Ships, dirty: &mut Dirty, province: u32) {
-        let unowned = find(
-            cx.frame.complete::<tables::NavalBases>().ok(),
-            province,
-            |row| row.province,
-        )
-        .is_some_and(|base| cx.owner(base.country).is_none());
+    fn port<F: Tables + ?Sized>(
+        &mut self,
+        cx: &mut Cx<'_, '_, F>,
+        ships: &mut Ships,
+        dirty: &mut Dirty,
+        province: u32,
+    ) {
+        let unowned = cx
+            .frame
+            .get::<tables::NavalBases>(province)
+            .is_some_and(|base| cx.owner(base.country).is_none());
         if unowned != self.unowned.contains(&province) {
             if unowned {
                 self.unowned.insert(province);
@@ -195,9 +193,9 @@ impl Repairs {
     }
 
     /// The hour's changes to the ports, through `touched`.
-    pub(super) fn hour(
+    pub(super) fn hour<F: Tables + ?Sized>(
         &mut self,
-        cx: &mut Cx<'_, '_>,
+        cx: &mut Cx<'_, '_, F>,
         ships: &mut Ships,
         dirty: &mut Dirty,
         touched: &Touched,
@@ -238,9 +236,9 @@ impl Repairs {
     }
 
     /// `owner`'s totals row at the hour, and the refusals it counts there.
-    pub(super) fn totals(
+    pub(super) fn totals<F: Tables + ?Sized>(
         &mut self,
-        cx: &mut Cx<'_, '_>,
+        cx: &mut Cx<'_, '_, F>,
         dirty: &mut Dirty,
         owner: u32,
     ) -> Option<Box<[Spelled]>> {
@@ -248,12 +246,12 @@ impl Repairs {
         let mut cells = vec![Spelled::Null; TOTALS];
         let mut refused = Vec::new();
         // The last of an owner's rows holds each of its values.
-        if let Ok(rows) = frame.complete::<tables::NavalRepairCountries>()
+        if let Some(rows) = frame.complete::<tables::NavalRepairCountries>()
             && let Some(row) = cx
                 .raws(owner)
                 .iter()
                 .rev()
-                .find_map(|&raw| find(Some(rows), raw, |row| row.country))
+                .find_map(|&raw| frame.found(rows.get(u128::from(raw))))
         {
             cells[at(repair_totals::USED_DOCKYARDS)] =
                 Spelled::Integer(i128::from(row.num_used_dockyards));
@@ -262,23 +260,23 @@ impl Repairs {
             cells[at(repair_totals::BUILDING_REPAIR_LIMIT)] =
                 Spelled::Integer(i128::from(row.max_factories_for_repair));
         }
-        if let Ok(rows) = frame.complete::<tables::CountryFactories>()
+        if let Some(rows) = frame.complete::<tables::CountryFactories>()
             && let Some(row) = cx
                 .raws(owner)
                 .iter()
                 .rev()
-                .find_map(|&raw| find(Some(rows), raw, |row| row.country))
+                .find_map(|&raw| frame.found(rows.get(u128::from(raw))))
         {
             cells[at(repair_totals::DOCKYARDS_RAW)] =
                 Spelled::Integer(i128::from(row.naval_total_raw));
             cells[at(repair_totals::DOCKYARDS)] =
                 Spelled::Integer(i128::from(row.naval_total_raw / 100_000));
         }
-        if frame.complete::<tables::NavalBases>().is_err() {
+        if frame.complete::<tables::NavalBases>().is_none() {
             refused.push((cx.reasons.number("Repair port ownership not recorded"), 1));
         } else {
             let complete = self.unowned.is_empty()
-                && frame.complete::<tables::NavalRepairQueue>().is_ok();
+                && frame.complete::<tables::NavalRepairQueue>().is_some();
             cells[at(repair_totals::QUEUE_CENSUS_COMPLETE)] =
                 Spelled::Integer(i128::from(complete));
             if !complete {
@@ -295,12 +293,12 @@ impl Repairs {
                 cells[at(repair_totals::QUEUE_ENTRIES)] = Spelled::Integer(entries as i128);
                 cells[at(repair_totals::DISTINCT_QUEUED_REFERENCES)] =
                     Spelled::Integer(distinct as i128);
-                if let Ok(rows) = frame.complete::<tables::Ships>()
+                if let Some(rows) = frame.complete::<tables::Ships>()
                     && queued.is_none_or(|queued| {
                         queued
                             .ships
                             .keys()
-                            .all(|&ship| find(Some(rows), ship, |row| row.id).is_some())
+                            .all(|&ship| rows.contains(u128::from(ship)))
                     })
                 {
                     cells[at(repair_totals::DISTINCT_QUEUED_SHIPS)] =

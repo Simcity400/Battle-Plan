@@ -60,6 +60,25 @@ pub(crate) fn present(
     {
         return Err(invalid("scene presentation exceeds device texture extent"));
     }
+    let mut pixels = viewer_foundation::map::gpu_contract::scoped(
+        &state.device,
+        || "The graphics device could not read this map back".to_owned(),
+        || draw_and_read(state, ctx, texture, size, pixels_per_point),
+    )?;
+    if bgra {
+        swap_bgra(&mut pixels);
+    }
+    Ok(pixels)
+}
+
+/// The registered scene texture drawn as the window draws it into a texture of `size`, read back.
+fn draw_and_read(
+    state: &egui_wgpu::RenderState,
+    ctx: &egui::Context,
+    texture: egui::TextureId,
+    size: [u32; 2],
+    pixels_per_point: f32,
+) -> io::Result<Vec<u8>> {
     let target = state.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("scene image readback target"),
         size: wgpu::Extent3d {
@@ -119,16 +138,7 @@ pub(crate) fn present(
         .queue
         .submit(commands.into_iter().chain([encoder.finish()]));
     drop(renderer);
-    let mut pixels = viewer_foundation::map::gpu_contract::read_texture(
-        &state.device,
-        &state.queue,
-        &target,
-        4,
-    )?;
-    if bgra {
-        swap_bgra(&mut pixels);
-    }
-    Ok(pixels)
+    viewer_foundation::map::gpu_contract::read_texture(&state.device, &state.queue, &target, 4)
 }
 
 fn swap_bgra(pixels: &mut [u8]) {

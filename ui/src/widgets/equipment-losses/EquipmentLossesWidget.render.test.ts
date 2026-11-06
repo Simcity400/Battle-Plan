@@ -55,7 +55,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       }] }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = (data?: LossesReply) => {
       host.__lossReply = data && { ...data, preparedReads: [100, 109], preparedHeadHour: 109, preparedDetailHour: 109,
-        preparedFrom: 100, preparedTo: 109, preparedWidth: 1 } as LossesReply | undefined;
+        preparedFrom: 100, preparedTo: 109, preparedWidth: 1, restarts: [] } as LossesReply | undefined;
       return renderToStaticMarkup(createElement(Widget, props));
     };
     const pending = render();

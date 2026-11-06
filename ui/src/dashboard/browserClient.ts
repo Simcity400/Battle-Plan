@@ -3,10 +3,12 @@ import { validatePreparationReply, validatePreparationPreferences } from '../she
 import { preparedReplyData, validateProductReply } from './client.ts';
 import type { PreparationAction, PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import type { SourceReply } from '../generated/dashboard';
-import type { DashboardClient, DashboardSource, HistoryCacheReply, MapSettingsReply, PreparedQueryOptions, ProductReply, ProductRequest, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardSource, MapSettingsReply, PreparedQueryOptions, ProductReply, ProductRequest, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
+import { parseReplyBytes } from './replyParse.ts';
 import { contentRevision } from './contentRevision.ts';
 import { forgetReplySizes } from './replySizes.ts';
+import { forgetReplyGaps } from './replyGaps.ts';
 import { INTERACTIVE_PRODUCTS } from '../generated/dashboard.ts';
 import { BrowserRequestQueue } from './browserRequestQueue.ts';
 import type { BrowserRequestLane } from './browserRequestQueue';
@@ -50,11 +52,12 @@ async function request<T>(body: { type: string; request?: ProductRequest; source
     : body.type === 'preparedQuery' || body.type === 'preparation' || body.type === 'product' && interactiveProducts.has(body.request!.product) ? 'interactive' : 'history';
   return requests.run(lane, async active => {
     const response = await fetch('/api/recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: active });
-    const text = await response.text();
-    const data = JSON.parse(text);
-    if (!response.ok) throw queryFailure(data.error);
-    if (data && typeof data === 'object') replyLengths.set(data, text.length);
-    return data;
+    const bytes = await response.arrayBuffer();
+    const length = bytes.byteLength;
+    const data = await parseReplyBytes(bytes) as { error?: unknown } | null;
+    if (!response.ok) throw queryFailure(data?.error as Parameters<typeof queryFailure>[0]);
+    if (data && typeof data === 'object') replyLengths.set(data, length);
+    return data as T;
   }, { signal, sourceId: body.type === 'release' ? undefined : body.request?.sourceId ?? body.sourceId, refresh: body.refresh === true, onCancelledValue: releaseLate });
 }
 
@@ -77,7 +80,7 @@ export const browserDashboardClient: DashboardClient = {
   async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
     const query = { sourceId: source.id, revision: source.revision, product, params };
     const reply = await request<ProductReply<T>>({ type: 'preparedQuery', request: query, refresh: options.refresh ?? false }, options.signal);
-    return preparedReplyData(validateProductReply(reply, query), options);
+    return preparedReplyData(validateProductReply(reply, query), options, params);
   },
   prepareSource: (query, signal) => preparation('start', query, signal),
   cancelPreparation: (query, signal) => preparation('cancel', query, signal),
@@ -95,7 +98,6 @@ export const browserDashboardClient: DashboardClient = {
     return reply;
   },
 
-  historyCache: (clear, signal) => request<HistoryCacheReply>({ type: 'historyCache', clear }, signal),
 
   async openSource(path, signal): Promise<DashboardSource> {
     const releaseLate = async (late: SourceReply) => { await request({ type: 'release', sourceId: late.id }); };
@@ -114,6 +116,7 @@ export const browserDashboardClient: DashboardClient = {
 
   async releaseSource(sourceId) {
     forgetReplySizes(browserDashboardClient, sourceId);
+    forgetReplyGaps(sourceId);
     requests.cancelSource(sourceId);
     await request({ type: 'release', sourceId });
   },

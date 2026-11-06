@@ -893,8 +893,9 @@ pub fn scan(
     Ok(result)
 }
 
+/// Each branch's scan, with the catalogue and areas it read; another of either replaces it.
 #[cfg(any(test, feature = "test-support"))]
-pub type CachedScan = (u64, Arc<Catalogue>, bool, Arc<Scan>);
+type Scans = BTreeMap<u64, (Arc<Catalogue>, bool, Arc<Scan>)>;
 impl Product for TerritoryBreakdown {
     const KEY: &'static str = "territory-breakdown";
     const CONTENT_DEPENDENT: bool = true;
@@ -928,15 +929,13 @@ impl Product for TerritoryBreakdown {
         let regions = Regions::read(&cat)?;
         let areas = territory::area_data(source, context, cancelled)?.areas;
         let branch = params.branch_id.parse().expect("validated branch");
-        let state = source.state::<Vec<CachedScan>>();
+        let state = source.state::<Scans>();
         let cached = state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .iter()
-            .find(|(id, old, has_areas, _)| {
-                *id == branch && Arc::ptr_eq(old, &cat) && *has_areas == areas.is_some()
-            })
-            .map(|(_, _, _, scan)| Arc::clone(scan));
+            .get(&branch)
+            .filter(|(old, has_areas, _)| Arc::ptr_eq(old, &cat) && *has_areas == areas.is_some())
+            .map(|(_, _, scan)| Arc::clone(scan));
         let scanned = if let Some(cached) = cached {
             cached
         } else {
@@ -948,16 +947,10 @@ impl Product for TerritoryBreakdown {
                 context,
                 cancelled,
             )?);
-            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache.push((
-                branch,
-                Arc::clone(&cat),
-                areas.is_some(),
-                Arc::clone(&built),
-            ));
-            if cache.len() > 2 {
-                cache.remove(0);
-            }
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(branch, (Arc::clone(&cat), areas.is_some(), Arc::clone(&built)));
             built
         };
         let totals = Territory::load(

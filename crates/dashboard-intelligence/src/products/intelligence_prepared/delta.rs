@@ -1,66 +1,92 @@
-//! How a segment's operator hands on what changed of a read it holds whole: a list by the
-//! entries that differ where the list keeps its order of keys, or a map by the keys whose values
-//! changed or went.
+//! How a segment's operator hands on what changed of a read it holds whole: a list or map in
+//! ascending key order by the entries that changed or came and the keys gone, or a hash map by
+//! the keys whose values changed or went.
 
-use std::{collections::HashMap, hash::Hash, mem::size_of};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, HashMap},
+    hash::Hash,
+    mem::size_of,
+};
 
-/// A list as read again: whole, or the positions whose entries changed.
-#[derive(replay_spool::Spooled)]
-pub enum Listed<T> {
-    Whole(Vec<T>),
-    Patched(Vec<(u32, T)>),
-}
-
-impl<T: Clone + PartialEq> Listed<T> {
-    /// What `new` changed of `old`, entries keyed by `key`: none when equal.
-    pub fn of<K: PartialEq>(old: Option<&[T]>, new: &[T], key: impl Fn(&T) -> K) -> Option<Self> {
-        let Some(old) = old.filter(|old| {
-            old.len() == new.len() && old.iter().zip(new).all(|(old, new)| key(old) == key(new))
-        }) else {
-            return Some(Self::Whole(new.to_vec()));
-        };
-        let patched: Vec<(u32, T)> = (0_u32..)
-            .zip(old.iter().zip(new))
-            .filter(|(_, (old, new))| old != new)
-            .map(|(position, (_, new))| (position, new.clone()))
-            .collect();
-        (!patched.is_empty()).then_some(Self::Patched(patched))
-    }
-}
-
-impl<T> Listed<T> {
-    pub fn apply(self, to: &mut Vec<T>) {
-        match self {
-            Self::Whole(whole) => *to = whole,
-            Self::Patched(patched) => {
-                for (position, entry) in patched {
-                    to[position as usize] = entry;
+/// What `new` changed of `old`, both in ascending order of `key` with each key once, as tables
+/// hold their rows: the entries that changed or came, in order, and the keys of those gone, in
+/// order.
+pub fn sorted<T: Clone + PartialEq, K: Ord>(
+    old: &[T],
+    new: &[T],
+    key: impl Fn(&T) -> K,
+) -> (Vec<T>, Vec<K>) {
+    let (mut set, mut gone) = (Vec::new(), Vec::new());
+    let (mut old, mut new) = (old.iter().peekable(), new.iter().peekable());
+    loop {
+        match (old.peek(), new.peek()) {
+            (Some(before), Some(after)) => match key(before).cmp(&key(after)) {
+                Ordering::Less => {
+                    gone.push(key(before));
+                    old.next();
                 }
+                Ordering::Greater => {
+                    set.push((*after).clone());
+                    new.next();
+                }
+                Ordering::Equal => {
+                    if before != after {
+                        set.push((*after).clone());
+                    }
+                    old.next();
+                    new.next();
+                }
+            },
+            (Some(before), None) => {
+                gone.push(key(before));
+                old.next();
             }
+            (None, Some(after)) => {
+                set.push((*after).clone());
+                new.next();
+            }
+            (None, None) => return (set, gone),
         }
     }
+}
 
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Whole(whole) => whole.len(),
-            Self::Patched(patched) => patched.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// The bytes it holds, `heap` giving each entry's own.
-    pub fn bytes(&self, heap: impl Fn(&T) -> usize) -> usize {
-        match self {
-            Self::Whole(whole) => {
-                whole.capacity() * size_of::<T>() + whole.iter().map(&heap).sum::<usize>()
+/// What `new` changed of `old`: the entries that changed or came, in key order, and the keys of
+/// those gone.
+pub fn mapped<K: Ord + Clone, V: Clone + PartialEq>(
+    old: &BTreeMap<K, V>,
+    new: &BTreeMap<K, V>,
+) -> (Vec<(K, V)>, Vec<K>) {
+    let (mut set, mut gone) = (Vec::new(), Vec::new());
+    let (mut old, mut new) = (old.iter().peekable(), new.iter().peekable());
+    loop {
+        match (old.peek(), new.peek()) {
+            (Some((before, held)), Some((after, value))) => match before.cmp(after) {
+                Ordering::Less => {
+                    gone.push((*before).clone());
+                    old.next();
+                }
+                Ordering::Greater => {
+                    set.push(((*after).clone(), (*value).clone()));
+                    new.next();
+                }
+                Ordering::Equal => {
+                    if held != value {
+                        set.push(((*after).clone(), (*value).clone()));
+                    }
+                    old.next();
+                    new.next();
+                }
+            },
+            (Some((before, _)), None) => {
+                gone.push((*before).clone());
+                old.next();
             }
-            Self::Patched(patched) => {
-                patched.capacity() * size_of::<(u32, T)>()
-                    + patched.iter().map(|(_, entry)| heap(entry)).sum::<usize>()
+            (None, Some((after, value))) => {
+                set.push(((*after).clone(), (*value).clone()));
+                new.next();
             }
+            (None, None) => return (set, gone),
         }
     }
 }

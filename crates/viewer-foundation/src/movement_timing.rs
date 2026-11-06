@@ -14,10 +14,10 @@ use replay_derive::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     fmt::Write as _,
     io,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 mod worker;
@@ -26,19 +26,49 @@ pub use worker::WorkerEtas;
 /// The branch and recorded hour one cached derivation is for.
 pub type Key = (replay_data::BranchId, replay_data::Hour);
 
-/// How many hours the cache holds: the two host builds ahead, the
-/// parts that build in parallel, and slack.
-const CAPACITY: usize = 8;
-
-/// The last few hours' ETAs, so no hour is derived twice.
+/// The hours' ETAs, so no hour is derived twice: the latest derived or asked for, and every
+/// other while an hour in flight holds it.
 ///
 /// The window thread builds the counter layer for the playhead while workers
 /// build the close-zoom models for the hours ahead, so the hours in flight are
-/// not one but several and a single slot thrashes between them. Entries are
-/// evicted oldest-inserted first.
+/// not one but several and a single slot thrashes between them.
 #[derive(Default)]
 pub struct EtaCache {
-    entries: Mutex<VecDeque<(Key, Arc<Etas>)>>,
+    entries: Mutex<Held>,
+}
+
+#[derive(Default)]
+struct Held {
+    latest: Option<(Key, Arc<Etas>)>,
+    earlier: Vec<(Key, Weak<Etas>)>,
+}
+
+impl Held {
+    /// `key`'s ETAs, then the latest.
+    fn get(&mut self, key: Key) -> Option<Arc<Etas>> {
+        if let Some((at, etas)) = &self.latest
+            && *at == key
+        {
+            return Some(Arc::clone(etas));
+        }
+        let etas = self
+            .earlier
+            .iter()
+            .find(|(at, _)| *at == key)
+            .and_then(|(_, etas)| etas.upgrade())?;
+        self.put(key, &etas);
+        Some(etas)
+    }
+
+    fn put(&mut self, key: Key, etas: &Arc<Etas>) {
+        self.earlier
+            .retain(|(at, earlier)| *at != key && earlier.strong_count() > 0);
+        if let Some((at, earlier)) = self.latest.replace((key, Arc::clone(etas)))
+            && at != key
+        {
+            self.earlier.push((at, Arc::downgrade(&earlier)));
+        }
+    }
 }
 
 impl EtaCache {
@@ -57,13 +87,10 @@ impl EtaCache {
         }
         let etas = Arc::new(build()?);
         let mut entries = self.entries.lock().expect("ETA cache poisoned");
-        if let Some((_, existing)) = entries.iter().find(|(at, _)| *at == key) {
-            return Ok(Arc::clone(existing));
+        if let Some(existing) = entries.get(key) {
+            return Ok(existing);
         }
-        if entries.len() == CAPACITY {
-            entries.pop_front();
-        }
-        entries.push_back((key, Arc::clone(&etas)));
+        entries.put(key, &etas);
         Ok(etas)
     }
 
@@ -77,12 +104,7 @@ impl EtaCache {
     }
 
     fn get(&self, key: Key) -> Option<Arc<Etas>> {
-        self.entries
-            .lock()
-            .expect("ETA cache poisoned")
-            .iter()
-            .find(|(at, _)| *at == key)
-            .map(|(_, etas)| Arc::clone(etas))
+        self.entries.lock().expect("ETA cache poisoned").get(key)
     }
 }
 

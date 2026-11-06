@@ -825,8 +825,8 @@ impl ReductionSchedule {
     }
 }
 
-/// The bloom seed, the bloom blur target, the two fixed reduction targets and
-/// the two one-texel adaptation targets for one render size.
+/// The bloom seed, the bloom blur target and the two fixed reduction targets for one render
+/// size, and the scene copy's binding of the targets they were made for.
 struct Chain {
     size: [u32; 2],
     /// The native downsample target: bright-pass RGB and log-luminance alpha,
@@ -835,8 +835,18 @@ struct Chain {
     bloom_view: wgpu::TextureView,
     reductions: [wgpu::TextureView; 2],
     schedule: ReductionSchedule,
-    adapted: [wgpu::TextureView; 2],
     copy: wgpu::BindGroup,
+}
+
+/// The two one-texel adaptation targets: the exposure history of targets of one size and world
+/// size. Hiding the view keeps it, so a view shown again adapts on from where it was.
+struct History {
+    targets: [[u32; 2]; 2],
+    adapted: [wgpu::TextureView; 2],
+    /// The target the next gather reads.
+    parity: usize,
+    /// Made zeroed and not drawn since: the next grade takes the instantaneous value.
+    fresh: bool,
 }
 
 /// The pipelines of the post stage and the resources they bind.
@@ -851,10 +861,12 @@ pub struct PostPass {
     copy: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Keeps the device's copy program for the next view.
+    _copy: Arc<CopyProgram>,
     luts: luts::LutRenderer,
     volumes: Volumes,
     chain: Option<Chain>,
-    parity: usize,
+    history: Option<History>,
     last_grading: Option<Grading>,
 }
 
@@ -885,20 +897,15 @@ fn blur_weights(width: f32, scale: f32) -> (f32, [f32; 4], [f32; 4]) {
     (g[0], weights, offsets)
 }
 
-impl PostPass {
-    pub fn invalidate(&mut self) {
-        self.chain = None;
-        self.luts.invalidate();
-    }
+/// The post copy program, its layout and sampler: one per device, format and sample count.
+struct CopyProgram {
+    copy: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
 
-    pub fn new(
-        device: &wgpu::Device,
-        samples: u32,
-        queue: &wgpu::Queue,
-        assets: &PostAssets,
-        format: wgpu::TextureFormat,
-    ) -> io::Result<Self> {
-        let volumes = assets.volumes.clone();
+impl CopyProgram {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("viewer scene copy inputs"),
             entries: &[
@@ -952,6 +959,89 @@ impl PostPass {
                 cache: None,
             })
         };
+        Self {
+            copy: stage("post copy", "copy_main", format, samples),
+            layout,
+            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("post linear clamp"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            }),
+        }
+    }
+}
+
+impl PostPass {
+    pub fn invalidate(&mut self) {
+        self.chain = None;
+        self.history = None;
+        self.luts.invalidate();
+    }
+
+    /// Lets go of the chain sized to the targets; [`Self::prepare`] makes it again. The exposure
+    /// history stays unless it was never drawn, when it holds nothing a new one would not.
+    pub fn release_chain(&mut self) {
+        self.chain = None;
+        if self.history.as_ref().is_some_and(|history| history.fresh) {
+            self.history = None;
+        }
+    }
+
+    /// Whether [`Self::prepare`] has made everything targets of `size` and `world_size` need.
+    pub fn prepared(&self, size: [u32; 2], world_size: [u32; 2]) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.size == world_size)
+            && self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.targets == [size, world_size])
+    }
+
+    /// Makes what [`Self::draw`] and [`Self::copy_scene`] draw into for `targets`, which are new
+    /// when `rebuilt`. Targets of another size or world size start a zeroed exposure history,
+    /// as a resize does in the game; the same targets made again keep it.
+    pub fn prepare(&mut self, device: &wgpu::Device, targets: &Targets, rebuilt: bool) {
+        let size = targets.world_size();
+        if rebuilt || self.chain.as_ref().is_none_or(|chain| chain.size != size) {
+            self.chain = Some(self.make_chain(device, targets));
+        }
+        let key = [targets.size(), size];
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.targets != key)
+        {
+            self.history = Some(History {
+                targets: key,
+                adapted: [
+                    target(device, "post adapted 0", [1, 1], LUMINANCE_FORMAT),
+                    target(device, "post adapted 1", [1, 1], LUMINANCE_FORMAT),
+                ],
+                parity: 0,
+                fresh: true,
+            });
+        }
+    }
+
+    pub fn new(
+        device: &wgpu::Device,
+        samples: u32,
+        queue: &wgpu::Queue,
+        assets: &PostAssets,
+        format: wgpu::TextureFormat,
+    ) -> io::Result<Self> {
+        let volumes = assets.volumes.clone();
+        let program = viewer_foundation::map::device_shared::shared(
+            device,
+            ("post copy", format, samples),
+            || CopyProgram::new(device, format, samples),
+        );
         let luts = luts::LutRenderer::new(device, queue, assets)?;
 
         Ok(Self {
@@ -965,22 +1055,14 @@ impl PostPass {
                 format,
                 samples,
             )?,
-            copy: stage("post copy", "copy_main", format, samples),
-            layout,
-            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("post linear clamp"),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                ..Default::default()
-            }),
+            copy: program.copy.clone(),
+            layout: program.layout.clone(),
+            sampler: program.sampler.clone(),
+            _copy: program,
             luts,
             volumes,
             chain: None,
-            parity: 0,
+            history: None,
             last_grading: None,
         })
     }
@@ -1019,39 +1101,16 @@ impl PostPass {
         self.volumes.snow = factors.clone();
     }
 
-    /// Rebuilds the post targets and bind groups for a render size. New
-    /// targets are zeroed like the native allocation.
-    fn rebuild(&mut self, device: &wgpu::Device, targets: &Targets) {
+    /// The post targets and bind groups for a render size. New targets are zeroed like the
+    /// native allocation.
+    fn make_chain(&self, device: &wgpu::Device, targets: &Targets) -> Chain {
         let size = targets.world_size();
         let schedule = ReductionSchedule::new(size);
-        let texture = |label, size: [u32; 2], format| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width: size[0],
-                        height: size[1],
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                })
-                .create_view(&Default::default())
-        };
-        let seed_view = texture("post bright/log seed", schedule.seed, BLOOM_FORMAT);
-        let bloom_view = texture("post bloom blur", schedule.seed, BLOOM_FORMAT);
+        let seed_view = target(device, "post bright/log seed", schedule.seed, BLOOM_FORMAT);
+        let bloom_view = target(device, "post bloom blur", schedule.seed, BLOOM_FORMAT);
         let reductions = [
-            texture("post reduction 0", schedule.backing, LUMINANCE_FORMAT),
-            texture("post reduction 1", schedule.backing, LUMINANCE_FORMAT),
-        ];
-        let adapted = [
-            texture("post adapted 0", [1, 1], LUMINANCE_FORMAT),
-            texture("post adapted 1", [1, 1], LUMINANCE_FORMAT),
+            target(device, "post reduction 0", schedule.backing, LUMINANCE_FORMAT),
+            target(device, "post reduction 1", schedule.backing, LUMINANCE_FORMAT),
         ];
         let copy = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("viewer scene copy"),
@@ -1067,23 +1126,22 @@ impl PostPass {
                 },
             ],
         });
-        self.chain = Some(Chain {
+        Chain {
             size,
             seed_view,
             bloom_view,
             reductions,
             schedule,
-            adapted,
             copy,
-        });
+        }
     }
 
     /// Runs the whole stage in 's order: the LUT blends, the
     /// bright/log seed, the luminance chain, the bloom blur,
     /// then `RestoreBloom` into the output attachment.
     ///
-    /// `tau_delta` is raw `HDR_ADJUSTMENT_SPEED * dt`; reset uses native100.
-    #[allow(clippy::too_many_arguments)]
+    /// `tau_delta` is raw `HDR_ADJUSTMENT_SPEED * dt`; reset uses native100. It draws into
+    /// what [`Self::prepare`] made for `targets`.
     pub fn draw(
         &mut self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1091,26 +1149,18 @@ impl PostPass {
         targets: &Targets,
         grading: Grading,
         tau_delta: f32,
-        generation_changed: bool,
         mark: &mut impl FnMut(&mut wgpu::CommandEncoder, &'static str),
     ) -> io::Result<()> {
-        let device = arena.device();
-        let fresh = generation_changed
-            || self
-                .chain
-                .as_ref()
-                .is_none_or(|c| c.size != targets.world_size());
-        if fresh {
-            self.rebuild(device, targets);
-            // A fresh chain has no history, so the first frame takes the
-            // instantaneous value whatever the caller asked for.
-            self.parity = 0;
+        if !self.prepared(targets.size(), targets.world_size()) {
+            return Err(invalid(
+                "the post chain was not prepared for this map's targets",
+            ));
         }
         self.luts
             .draw(arena, encoder, grading.luts, grading.values.lut, mark)?;
         mark(encoder, "post LUT");
-        let Some(chain) = &self.chain else {
-            return Ok(());
+        let (Some(chain), Some(history)) = (&self.chain, &mut self.history) else {
+            unreachable!("prepared above");
         };
         let values = grading.values;
         let [width, scale, threshold] = values.bloom;
@@ -1179,7 +1229,7 @@ impl PostPass {
             )?;
         }
         mark(encoder, "post luminance reductions");
-        let next = 1 - self.parity;
+        let next = 1 - history.parity;
         let source = if chain.schedule.steps.is_empty() {
             &chain.seed_view
         } else {
@@ -1190,11 +1240,12 @@ impl PostPass {
             encoder,
             chain.schedule.gather,
             chain.schedule.backing,
-            if fresh { 100.0 } else { tau_delta },
+            // A fresh history takes the instantaneous value whatever the caller asked for.
+            if history.fresh { 100.0 } else { tau_delta },
             [values.hdr_min, values.hdr_max],
             source,
-            &chain.adapted[self.parity],
-            &chain.adapted[next],
+            &history.adapted[history.parity],
+            &history.adapted[next],
         )?;
         mark(encoder, "post luminance adaptation");
         self.compiled_bloom
@@ -1211,7 +1262,7 @@ impl PostPass {
                 targets.scene_view(),
                 &chain.seed_view,
                 self.luts.output(),
-                &chain.adapted[next],
+                &history.adapted[next],
             ],
         )?;
         // The grade writes every sample of the 8-bit output and resolves it; the
@@ -1228,7 +1279,8 @@ impl PostPass {
         });
         self.compiled_restore.draw(&mut render, &restore);
         drop(render);
-        self.parity = next;
+        history.parity = next;
+        history.fresh = false;
         Ok(())
     }
 
@@ -1239,23 +1291,22 @@ impl PostPass {
     /// The scene and the output are separate targets now that the scene is
     /// float, so skipping the grade would otherwise leave the output holding
     /// the previous frame. This separate viewer shader samples only the scene.
+    ///
+    /// A fresh exposure history stays zeroed, so a later grade adapts from zero.
     pub fn copy_scene(
         &mut self,
-        device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         targets: &Targets,
-        generation_changed: bool,
-    ) {
-        if generation_changed
-            || self
-                .chain
-                .as_ref()
-                .is_none_or(|c| c.size != targets.world_size())
-        {
-            self.rebuild(device, targets);
-            self.parity = 0;
+    ) -> io::Result<()> {
+        if !self.prepared(targets.size(), targets.world_size()) {
+            return Err(invalid(
+                "the post chain was not prepared for this map's targets",
+            ));
         }
-        let Some(chain) = &self.chain else { return };
+        let (Some(chain), Some(history)) = (&self.chain, &mut self.history) else {
+            unreachable!("prepared above");
+        };
+        history.fresh = false;
         let mut render = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("post copy"),
             color_attachments: &[Some(
@@ -1269,7 +1320,33 @@ impl PostPass {
         render.set_pipeline(&self.copy);
         render.set_bind_group(0, &chain.copy, &[]);
         render.draw(0..3, 0..1);
+        Ok(())
     }
+}
+
+/// A zeroed single-sample target the post stage draws into and samples.
+fn target(
+    device: &wgpu::Device,
+    label: &str,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {

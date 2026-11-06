@@ -2,10 +2,34 @@
 //! ([`Operands::chain`]), which preparation reads from the walk's flag inputs and the map's
 //! combat and raid tooltips from one decoded hour ([`choices`]).
 
-use crate::metadata::recorded_rows;
-use replay_data::rows::{Recorded, tables};
-use replay_frame::frame::DecodedSource;
-use std::{collections::BTreeMap, io};
+use crate::metadata::recorded_rows_in;
+use replay_data::rows::{
+    CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow, PoliticsRow, Recorded,
+    mask, tables,
+};
+use replay_frame::frame::{DecodedSource, HourFrame, Rowset};
+use std::{borrow::Cow, collections::BTreeMap, io};
+
+/// The fields of each table the flag chains read.
+const PARTY_TOKEN: u64 = mask::<PoliticalPartyRow>(&["token"]);
+const RULING: u64 = mask::<PoliticsRow>(&["ruling_party"]);
+const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const LOOK: u64 = mask::<CountryAppearanceRow>(&[
+    "cosmetic_tag",
+    "original_tag_reference",
+    "original_tag",
+]);
+
+/// Each row of `rows`, keyed by `key`.
+fn by<'a, R: replay_data::rows::RowCodec + Clone, K: Ord>(
+    rows: Rowset<'a, R>,
+    key: impl Fn(&R) -> K,
+) -> io::Result<BTreeMap<K, Cow<'a, R>>> {
+    rows.iter()
+        .map(|row| row.map(|row| (key(&row), row)))
+        .collect()
+}
 
 pub struct FlagChoice {
     pub raw: u32,
@@ -143,18 +167,22 @@ fn group(
         .map_err(|_| format!("country {owner} flag ruling group is not UTF-8"))
 }
 
-/// Each country's `Politics.ruling_party` and the party's token, by country object.
+/// Each country's `Politics.ruling_party` and the party, by country object.
+#[allow(clippy::type_complexity)]
 fn ruling_rows(
-    frame: &dyn DecodedSource,
-) -> io::Result<(BTreeMap<u32, Option<u32>>, BTreeMap<(u32, u32), &[u8]>)> {
-    let parties = recorded_rows::<tables::PoliticalParties>(frame)?
+    frame: HourFrame<'_>,
+) -> io::Result<(
+    BTreeMap<u32, Option<u32>>,
+    BTreeMap<(u32, u32), Cow<'_, PoliticalPartyRow>>,
+)> {
+    let parties = by(
+        recorded_rows_in::<tables::PoliticalParties>(frame, PARTY_TOKEN)?,
+        |row| (row.country, row.id),
+    )?;
+    let politics = recorded_rows_in::<tables::Politics>(frame, RULING)?
         .iter()
-        .map(|row| ((row.country, row.id), row.token.as_slice()))
-        .collect();
-    let politics = recorded_rows::<tables::Politics>(frame)?
-        .iter()
-        .map(|row| (row.country, row.ruling_party))
-        .collect();
+        .map(|row| row.map(|row| (row.country, row.ruling_party)))
+        .collect::<io::Result<_>>()?;
     Ok((politics, parties))
 }
 
@@ -163,35 +191,50 @@ fn ruling_rows(
 pub fn ruling_groups(
     frame: &dyn DecodedSource,
 ) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
+    ruling_groups_in(HourFrame::Decoded(frame))
+}
+
+/// [`ruling_groups`] of any frame's tables, a walk's views among them.
+pub fn ruling_groups_in(
+    frame: HourFrame<'_>,
+) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
     let (politics, parties) = ruling_rows(frame)?;
-    Ok(recorded_rows::<tables::Countries>(frame)?
-        .iter()
-        .map(|row| {
-            let ruling = politics.get(&row.id).copied();
+    // A country's object is its key.
+    Ok(recorded_rows_in::<tables::Countries>(frame, 0)?
+        .keys()
+        .map(|key| {
+            let id = key as u32;
+            let ruling = politics.get(&id).copied();
             let token = ruling
                 .flatten()
-                .and_then(|party| parties.get(&(row.id, party)).copied());
-            let group = group(row.id, ruling, token).map(|group| group.map(str::to_owned));
-            (row.id, group)
+                .and_then(|party| parties.get(&(id, party)))
+                .map(|party| party.token.as_slice());
+            let group = group(id, ruling, token).map(|group| group.map(str::to_owned));
+            (id, group)
         })
         .collect())
 }
 
 /// Flag asset candidates per country at one hour, shared with the combat UI.
 pub fn choices(frame: &dyn DecodedSource) -> io::Result<Vec<FlagChoice>> {
-    let links: BTreeMap<_, _> = recorded_rows::<tables::CountryLinks>(frame)?
+    choices_in(HourFrame::Decoded(frame))
+}
+
+/// [`choices`] of any frame's tables, a walk's views among them.
+pub fn choices_in(frame: HourFrame<'_>) -> io::Result<Vec<FlagChoice>> {
+    let links: BTreeMap<_, _> = recorded_rows_in::<tables::CountryLinks>(frame, LINK)?
         .iter()
-        .map(|r| (r.id, r.canonical_slot))
-        .collect();
-    let countries: BTreeMap<_, _> = recorded_rows::<tables::Countries>(frame)?
-        .iter()
-        .map(|r| (r.canonical_slot, r))
-        .collect();
+        .map(|r| r.map(|r| (r.id, r.canonical_slot)))
+        .collect::<io::Result<_>>()?;
+    let countries = by(
+        recorded_rows_in::<tables::Countries>(frame, COUNTRY)?,
+        |r| r.canonical_slot,
+    )?;
     let (politics, parties) = ruling_rows(frame)?;
-    let appearances: BTreeMap<_, _> = recorded_rows::<tables::CountryAppearance>(frame)?
-        .iter()
-        .map(|r| (r.country, r))
-        .collect();
+    let appearances = by(
+        recorded_rows_in::<tables::CountryAppearance>(frame, LOOK)?,
+        |r| r.country,
+    )?;
     Ok(links
         .into_iter()
         .filter_map(|(raw, slot)| {
@@ -220,7 +263,8 @@ pub fn choices(frame: &dyn DecodedSource) -> io::Result<Vec<FlagChoice>> {
             let ruling = politics.get(&owner).copied();
             let token = ruling
                 .flatten()
-                .and_then(|party| parties.get(&(owner, party)).copied());
+                .and_then(|party| parties.get(&(owner, party)))
+                .map(|party| party.token.as_slice());
             let Chain {
                 candidates,
                 refusal,

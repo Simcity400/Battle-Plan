@@ -11,10 +11,16 @@ use dashboard_base::prepared::prepass::HeldBytes;
 use dashboard_keyed::{Delta, Values, block::Operands, delta::Names, native, segment::Touched};
 use replay_data::{
     format::FormatVersion,
-    rows::{TableId, tables},
+    rows::{TableId, WeatherRegionRow},
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{ColumnFrame, Columns};
 use std::{collections::btree_map::Entry, io};
+
+/// The scalars of the region at `slot`, its row built of every field but none other.
+fn regional_at(rows: Columns<'_>, slot: u32) -> io::Result<(u32, Scalars)> {
+    let row: WeatherRegionRow = rows.row(slot, TableId::WeatherRegions.full_mask())?;
+    Ok((row.id, regional(&row)))
+}
 
 type Scalars = [Option<i128>; 14];
 
@@ -65,7 +71,7 @@ impl native::Keeper<Observer> for Keeper {
     fn keep(
         &mut self,
         _: FormatVersion,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         touched: &Touched,
     ) -> io::Result<(Box<dyn Operands<Observer>>, usize)> {
         let mut bytes = size_of::<Kept>();
@@ -74,7 +80,7 @@ impl native::Keeper<Observer> for Keeper {
             .derive(frame, touched.of(TableId::WeatherProvinces))?;
         bytes += temperature.as_ref().map_or(0, Derived::bytes);
         let touch = touched.of(TableId::WeatherRegions);
-        let regions = match frame.complete::<tables::WeatherRegions>() {
+        let regions = match frame.complete(TableId::WeatherRegions) {
             Ok(rows) if !touch.restated => {
                 let mut changed = reserved(
                     admission::add(touch.written.len(), touch.deleted.len())?,
@@ -82,8 +88,11 @@ impl native::Keeper<Observer> for Keeper {
                 )?;
                 for &(key, _) in &touch.written {
                     if let Ok(id) = u32::try_from(key) {
-                        let row = rows.binary_search_by_key(&id, |row| row.id).ok();
-                        changed.push((id, row.map(|at| regional(&rows[at]))));
+                        let scalars = match rows.find(key) {
+                            Some(slot) => Some(regional_at(rows, slot)?.1),
+                            None => None,
+                        };
+                        changed.push((id, scalars));
                     }
                 }
                 for &key in &touch.deleted {
@@ -97,7 +106,9 @@ impl native::Keeper<Observer> for Keeper {
             }
             Ok(rows) => {
                 let mut whole = reserved(rows.len(), "region scalars")?;
-                whole.extend(rows.iter().map(|row| (row.id, regional(row))));
+                for &slot in rows.slots() {
+                    whole.push(regional_at(rows, slot)?);
+                }
                 bytes += admission::bytes::<(u32, Scalars)>(whole.capacity())?;
                 Regions::Whole {
                     known: true,
@@ -201,8 +212,7 @@ impl Operands<Observer> for Kept {
                 .observe_kept_changes(self.temperature.as_ref(), names, delta)?;
         let known = match &self.regions {
             Regions::Whole { known, rows } => {
-                let (mut ended, _credit) =
-                    admission::vector(observer.regions.len(), "retired region keys")?;
+                let mut ended = admission::vector(observer.regions.len(), "retired region keys")?;
                 ended.extend(observer.regions.keys().copied().filter(|id| {
                     rows.binary_search_by_key(id, |&(held, _)| held).is_err()
                 }));

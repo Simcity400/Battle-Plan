@@ -14,8 +14,6 @@ mod forces_tests;
 mod kept_tests;
 #[cfg(test)]
 mod presentation_tests;
-#[cfg(test)]
-mod stored_tests;
 
 use crate::{
     Source,
@@ -126,84 +124,6 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     /// Every leader's careers this thread read rather than took from their slot ([`all_careers`]).
     pub(crate) static CAREERS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// What a complete answer kept on disk between sessions ([`stored_answer`]) keeps beside its
-/// text ([`served::Answer::keep`]).
-#[derive(Serialize, Deserialize)]
-struct StoredQuery {
-    fallbacks: std::collections::BTreeSet<String>,
-    diagnostics: installed_content_core::content::diagnostics::Diagnostics,
-}
-
-/// A digest of `key`, which kept answers are filed under. The key stamps every file of the
-/// content stack, tens of thousands, so it is serialized and hashed once per key, not per answer.
-fn key_digest(key: &store::SourceKey) -> io::Result<String> {
-    use sha2::Digest;
-    static DIGESTS: std::sync::Mutex<Vec<(store::SourceKey, String)>> =
-        std::sync::Mutex::new(Vec::new());
-    let mut digests = DIGESTS.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(at) = digests.iter().position(|(held, _)| held == key) {
-        let found = digests.remove(at);
-        let digest = found.1.clone();
-        digests.insert(0, found);
-        return Ok(digest);
-    }
-    let digest = sha2::Sha256::digest(serde_json::to_vec(key)?)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    digests.insert(0, (key.clone(), digest.clone()));
-    // The keys of the recordings open at once.
-    digests.truncate(8);
-    Ok(digest)
-}
-
-/// Where `request`'s answer at `publication` is kept on disk: under the store's key, every page
-/// published to any of the recording's branches and the executable the engine's tables were read
-/// from, so any later publication, Clear, content or game change misses it, whatever it reads.
-fn stored_answer(
-    source: &Source,
-    request: &ProductRequest,
-    content: Option<&ContentOptions>,
-    published: &gates::Published,
-    key: &store::SourceKey,
-    publication: &str,
-) -> io::Result<Option<crate::reply_cache::Entry>> {
-    let Some(content) = content else {
-        return Ok(None);
-    };
-    // Art drawn from a visual mod joins the files every reply names as shown from mods, which an
-    // answer served from disk would leave out: only the recording's own presentation keeps any.
-    if !dashboard_base::catalogue::reads_recorded(content) {
-        return Ok(None);
-    }
-    let branches = source.with_metadata(|metadata| {
-        metadata
-            .branches
-            .iter()
-            .filter_map(|branch| branch.id.parse::<u64>().ok())
-            .collect::<Vec<_>>()
-    });
-    let mut pages = Vec::new();
-    for branch in branches {
-        pages.extend(super::pipeline::published_pages(published, branch));
-    }
-    let executable = engine_executable::executable_tables::is_initialized().then(|| {
-        let identity = engine_executable::executable_tables::get().identity();
-        (identity.size, identity.sha256)
-    });
-    let identity = serde_json::to_string(&(publication, pages, key_digest(key)?, executable))?;
-    let dependent =
-        crate::products::find(&request.product).is_none_or(|product| product.content_dependent);
-    Ok(crate::reply_cache::Entry::prepared(
-        source,
-        &request.product,
-        dependent,
-        &request.params,
-        &identity,
-        content,
-    ))
 }
 
 /// Content files and the recorded mod stack are bound by the observation
@@ -2108,6 +2028,45 @@ impl Hours {
         }
     }
 
+    /// `params` asking none of the hours in `gaps`, lost runs its families go on past: an hour it
+    /// names in one is answered by nothing. Ranges and the branch go across them, each hour from
+    /// its own stretch. None when all it asks lies in them.
+    fn outside(self, params: &Value, gaps: &[super::coverage::Hole]) -> io::Result<Option<Value>> {
+        let lost = |hour: f64| {
+            gaps.iter()
+                .any(|gap| (f64::from(gap.first_hour)..=f64::from(gap.last_hour)).contains(&hour))
+        };
+        match self {
+            Self::Branch | Self::Block(_) | Self::Day(_) => Ok(Some(params.clone())),
+            Self::Range { before, to } => {
+                let hour = |field: &str| params.get(field).and_then(Value::as_f64);
+                let first = before.iter().filter_map(|&field| hour(field)).reduce(f64::min);
+                let within = match (first, hour(to)) {
+                    (Some(first), Some(last)) => gaps.iter().any(|gap| {
+                        f64::from(gap.first_hour) <= first && last <= f64::from(gap.last_hour)
+                    }),
+                    _ => false,
+                };
+                Ok((!within).then(|| params.clone()))
+            }
+            Self::At(hour) => Ok((!lost(f64::from(hour))).then(|| params.clone())),
+            Self::Reads => {
+                let mut params = params.clone();
+                let reads = params
+                    .get_mut("reads")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| crate::invalid("Invalid prepared query hours"))?;
+                reads.retain(|read| {
+                    !read
+                        .get("hour")
+                        .and_then(Value::as_f64)
+                        .is_some_and(|hour| lost(hour.ceil()))
+                });
+                Ok((!reads.is_empty()).then_some(params))
+            }
+        }
+    }
+
     /// `params` asking only the hours before `hole`, the first hole its gate leaves in them:
     /// nothing it asks from the hole on is answered, since those values need observations the
     /// hole lacks. Only fields the request names are rewritten: a range ends before the hole and
@@ -2167,8 +2126,9 @@ struct Admitted<'a> {
 
 /// The one way a query reaches its product's readers. The hours its request names ([`Hours`])
 /// answer with the refusal of a family it reads when they reach that refusal; else they are asked
-/// of its gate, cut before the gate's first hole there and declared, so that every reader answers
-/// for them alone ([`super::coverage::Entry::declare`]).
+/// of its gate, cut before the first hole there that its families do not go on past, rid of the
+/// hours in lost runs they went on past, and declared with those runs, so that every reader
+/// answers for them alone, each total within its stretch ([`super::coverage::Entry::declare`]).
 fn admit(
     source: &Source,
     request: &ProductRequest,
@@ -2190,7 +2150,7 @@ fn admit(
             through,
             before: None,
         };
-        return entry.declare(declared, || {
+        return entry.declare(declared, Vec::new(), || {
             query_data(source, &admitted, content, cancelled)
         });
     };
@@ -2212,9 +2172,16 @@ fn admit(
         }
         other => other?,
     };
-    let before = ranges.holes.first().map(|hole| hole.first_hour);
+    // Lost runs its families go on past answer nothing; each reader totals within a stretch.
+    let gaps: Vec<super::coverage::Hole> =
+        ranges.holes.iter().filter(|hole| hole.gap).cloned().collect();
+    let before = ranges
+        .holes
+        .iter()
+        .find(|hole| !hole.gap)
+        .map(|hole| hole.first_hour);
     let clipped;
-    let request = match before {
+    let mut request = match before {
         Some(hole) => match hours.before(&request.params, hole)? {
             Some(params) => {
                 clipped = ProductRequest {
@@ -2227,9 +2194,22 @@ fn admit(
         },
         None => request,
     };
+    let kept;
+    if !gaps.is_empty() {
+        match hours.outside(&request.params, &gaps)? {
+            Some(params) => {
+                kept = ProductRequest {
+                    params,
+                    ..request.clone()
+                };
+                request = &kept;
+            }
+            None => return Ok(Value::Null),
+        }
+    }
     let admitted = Admitted { request, ranges };
     let declared = super::coverage::Declared { through, before };
-    entry.declare(declared, || {
+    entry.declare(declared, gaps, || {
         query_data(source, &admitted, content, cancelled)
     })
 }
@@ -3739,8 +3719,44 @@ fn query_data(
                     _ => Err(crate::invalid("Invalid leader cursor")),
                 })
                 .transpose()?;
+            // Playback reads a leaderboard's rows at an hour, against the hour it holds.
+            let rows = selection
+                .as_object_mut()
+                .and_then(|params| params.remove("rows"))
+                .map(|rows| {
+                    rows.as_bool()
+                        .ok_or_else(|| crate::invalid("Invalid leader rows"))
+                })
+                .transpose()?
+                .unwrap_or(false);
+            let since = selection
+                .as_object_mut()
+                .and_then(|params| params.remove("since"))
+                .map(|since| {
+                    since
+                        .as_i64()
+                        .and_then(|since| i32::try_from(since).ok())
+                        .ok_or_else(|| crate::invalid("Invalid leader hour held"))
+                })
+                .transpose()?;
+            let held = selection
+                .as_object_mut()
+                .and_then(|params| params.remove("held"))
+                .map(|held| match held {
+                    Value::String(held) => Ok(held),
+                    _ => Err(crate::invalid("Invalid leader index held")),
+                })
+                .transpose()?;
             let params: UnitLeadersParams = serde_json::from_value(selection)?;
             UnitLeaders::validate(&params).map_err(crate::invalid)?;
+            if rows && (params.view != LeaderView::Leaderboard || hour.is_none()) {
+                return Err(crate::invalid("Leader rows are a leaderboard's at an hour"));
+            }
+            if !rows && (since.is_some() || held.is_some()) {
+                return Err(crate::invalid(
+                    "Only leaderboard rows are read against an earlier hour",
+                ));
+            }
             let choices = params.view == LeaderView::Choices;
             if choices && hour.is_some() {
                 return Err(crate::invalid("Leader choices take no hour"));
@@ -3787,16 +3803,31 @@ fn query_data(
                         .is_none_or(|prefix| hour > prefix.coverage.last_hour)
                 })
             {
-                let mut data = crate::products::unit_leaders::prepared::at_hour(
-                    source,
-                    &params,
-                    hour.unwrap(),
-                    &crate::products::LoadContext {
-                        content: content.cloned(),
-                    },
-                    history.as_deref(),
-                    cancelled,
-                )?;
+                let context = crate::products::LoadContext {
+                    content: content.cloned(),
+                };
+                let mut data = if rows {
+                    serde_json::to_value(crate::products::unit_leaders::UnitLeadersHourReply::alone(
+                        crate::products::unit_leaders::prepared::at_hour_reply(
+                            source,
+                            &params,
+                            hour.unwrap(),
+                            &context,
+                            history.as_deref(),
+                            cancelled,
+                        )?,
+                        hour.unwrap(),
+                    ))?
+                } else {
+                    crate::products::unit_leaders::prepared::at_hour(
+                        source,
+                        &params,
+                        hour.unwrap(),
+                        &context,
+                        history.as_deref(),
+                        cancelled,
+                    )?
+                };
                 match prefix {
                     Some(prefix) => prefix.mark(&mut data)?,
                     None => super::prefix::mark_unprepared(source, branch, hour, &mut data)?,
@@ -3817,6 +3848,35 @@ fn query_data(
                     &params.branch_id,
                     cancelled,
                 )?;
+                if rows {
+                    let mut reply = (*careers)
+                        .as_ref()
+                        .map(|careers| {
+                            careers.hour(
+                                &params,
+                                history.as_ref(),
+                                hour.expect("validated leader rows hour"),
+                                since,
+                                held.as_deref(),
+                            )
+                        })
+                        .transpose()?;
+                    if let Some(reply) = &mut reply {
+                        let mut traits: Vec<_> =
+                            reply.traits.iter().map(|(_, info)| info.clone()).collect();
+                        crate::products::unit_leaders::present_traits(
+                            source,
+                            content,
+                            &mut traits,
+                        )?;
+                        for ((_, info), shown) in reply.traits.iter_mut().zip(traits) {
+                            *info = shown;
+                        }
+                    }
+                    let mut data = serde_json::to_value(reply)?;
+                    prefix.mark(&mut data)?;
+                    return Ok(data);
+                }
                 let mut reply = (*careers)
                     .as_ref()
                     .map(|careers| careers.answer(&params, history.as_deref(), hour))
@@ -3855,9 +3915,6 @@ fn query_data(
                 &params,
                 &pages,
                 cancelled,
-                |listed: &Option<Vec<crate::products::unit_leaders::LeaderChoice>>| {
-                    dashboard_base::prepared::query::observations::serde_bytes(listed)
-                },
                 || {
                     crate::products::unit_leaders::prepared::choices(
                         &store,
@@ -4817,45 +4874,6 @@ fn answer(
             diagnostics: noted.diagnostics().clone(),
         })
     };
-    // A complete answer kept on disk between sessions, else computed and kept when it can be.
-    let answered = |previous: Option<std::sync::Arc<CachedQuery>>,
-                    publication: String|
-     -> io::Result<CachedQuery> {
-        let stored = stored_answer(source, request, content, &published, &key, &publication)?;
-        if let Some((kept, stored)) = stored
-            .as_ref()
-            .and_then(crate::reply_cache::Entry::get)
-            .and_then(served::Answer::kept::<StoredQuery>)
-        {
-            return Ok(CachedQuery {
-                data: kept,
-                // Only a complete answer is kept.
-                waits: false,
-                short: Default::default(),
-                holes: Vec::new(),
-                summaries: Default::default(),
-                fallbacks: stored.fallbacks,
-                diagnostics: stored.diagnostics,
-            });
-        }
-        let answer = read(previous)?;
-        if let Some(entry) = stored
-            && answer.short.is_empty()
-            && answer.holes.is_empty()
-            && !answer.waits
-            && answer.fallbacks.is_empty()
-            && !answer.diagnostics.has_uncovered()
-            && !answer.diagnostics.has_shader_warnings()
-            && content.is_none_or(|content| source.still_admitted(content))
-        {
-            let kept = StoredQuery {
-                fallbacks: answer.fallbacks.clone(),
-                diagnostics: answer.diagnostics.clone(),
-            };
-            entry.put_later(answer.data.bytes(), answer.data.keep(kept));
-        }
-        Ok(answer)
-    };
     dashboard_base::prepared::query::observations::bind(source, &key);
     let answer = if let (Some(product), Some(branch)) = (cache_product(&request.product), branch) {
         let supplier = if name == "faction-totals" {
@@ -4890,24 +4908,10 @@ fn answer(
                 &publication,
                 &name,
                 cancelled,
-                |reply: &CachedQuery| {
-                    let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();
-                    bytes.heap(&reply.short);
-                    bytes.heap(&reply.fallbacks);
-                    bytes.add(reply.diagnostics.heap_bytes());
-                    std::mem::size_of::<CachedQuery>()
-                        + reply.holes.capacity() * std::mem::size_of::<super::coverage::Hole>()
-                        + reply.data.bytes()
-                        + bytes.total() as usize
-                        + reply.summaries.bytes()
-                },
-                |previous| answered(previous, serde_json::to_string(&publication)?),
+                read,
             )?
     } else {
-        std::sync::Arc::new(answered(
-            None,
-            serde_json::to_string(&reply_presentation(content))?,
-        )?)
+        std::sync::Arc::new(read(None)?)
     };
     check_cancel(cancelled)?;
     // What a pending or partial reply waits for: the coverage it found short,

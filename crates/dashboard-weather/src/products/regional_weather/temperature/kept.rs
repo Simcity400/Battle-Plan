@@ -7,11 +7,49 @@
 
 use super::super::admission;
 use super::{Bound, Layout, Observation, Resolved};
-use dashboard_base::prepared::facts::Credit;
 use dashboard_keyed::{Delta, Values, delta::Names, segment::Touch};
-use replay_data::{rows::tables, temperature::Memo};
-use replay_frame::frame::DecodedFrame;
-use std::{io, sync::Arc};
+use replay_data::{
+    rows::{ProvinceTemperature, Recorded, TableId, TemperaturePass, WeatherProvinceRow, mask},
+    temperature::{Memo, ProvinceRows},
+};
+use replay_frame::frame::{ColumnFrame, Columns};
+use std::{borrow::Cow, io, sync::Arc};
+
+/// The WeatherProvinces of a walk's hour, read from its columns: only a row's temperature words,
+/// and the first row's pass.
+struct Walked<'a>(Columns<'a>);
+
+/// The fields that hold no temperature word: the display, the pass and the modifiers.
+const PAYLOADS: u64 =
+    mask::<WeatherProvinceRow>(&["display", "temperature_pass", "modifiers", "daylight"]);
+const PASS: u64 = mask::<WeatherProvinceRow>(&["temperature_pass"]);
+
+impl ProvinceRows for Walked<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn row(&self, at: usize) -> Result<Option<(u32, ProvinceTemperature)>, String> {
+        let Some(slot) = self.0.slot(at) else {
+            return Ok(None);
+        };
+        let words = TableId::WeatherProvinces.full_mask() & !PAYLOADS;
+        let row: WeatherProvinceRow = self.0.row(slot, words).map_err(|error| error.to_string())?;
+        Ok(Some((row.id, row.temperature)))
+    }
+
+    fn find(&self, id: u32) -> Option<usize> {
+        self.0.position(u128::from(id)).ok()
+    }
+
+    fn pass(&self) -> Result<Option<Cow<'_, Recorded<Option<TemperaturePass>>>>, String> {
+        let Some(slot) = self.0.slot(0) else {
+            return Ok(None);
+        };
+        let row: WeatherProvinceRow = self.0.row(slot, PASS).map_err(|error| error.to_string())?;
+        Ok(Some(Cow::Owned(row.temperature_pass)))
+    }
+}
 
 fn invalid(what: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
@@ -79,7 +117,6 @@ struct Held {
     list: Vec<u32>,
     changes: Vec<(u32, i64)>,
     keys: Vec<u128>,
-    _credit: Credit,
 }
 
 impl Deriving {
@@ -92,14 +129,6 @@ impl Deriving {
             return Ok(Self::default());
         };
         let count = content.layout().len();
-        let credit = admission::admit(
-            admission::add(
-                admission::bytes::<(i128, Option<i64>, bool, u32, (u32, i64))>(count)?,
-                // About one window of written slots.
-                admission::bytes::<u128>(1024)?,
-            )?,
-            "segment region aggregates",
-        )?;
         let mut held = Held {
             content,
             memo: Memo::default(),
@@ -112,7 +141,6 @@ impl Deriving {
             list: reserved(count, "segment region aggregates")?,
             changes: reserved(count, "segment region aggregates")?,
             keys: Vec::new(),
-            _credit: credit,
         };
         held.sums.resize(count, 0);
         held.means.resize(count, None);
@@ -120,17 +148,17 @@ impl Deriving {
         Ok(Self { held: Some(held) })
     }
 
-    /// The hour `frame` gives, `touch` what it changed of the province rows; None without
-    /// content.
+    /// The hour `frame` gives through the walk's views, `touch` what it changed of the
+    /// province rows; None without content.
     pub(in super::super) fn derive(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         touch: &Touch,
     ) -> io::Result<Option<Derived>> {
         let Some(held) = &mut self.held else {
             return Ok(None);
         };
-        held.memo.admit_changes(&held.content.pass)?;
+        held.memo.reserve_changes(&held.content.pass)?;
         let derived = held.derivation(frame, touch);
         held.derived = derived.is_ok();
         match derived {
@@ -138,10 +166,14 @@ impl Deriving {
                 held.summed = None;
                 held.means.fill(None);
                 held.fresh = true;
+                let unavailable = match frame.complete(TableId::WeatherProvinces) {
+                    Ok(rows) => held.content.unavailable_in(&Walked(rows)),
+                    Err(_) => Vec::new(),
+                };
                 Ok(Some(Derived::Refused {
                     reason,
                     hour: frame.hour,
-                    unavailable: held.content.unavailable(frame),
+                    unavailable,
                 }))
             }
             Ok(()) => held.aggregate(frame.hour).map(Some),
@@ -151,10 +183,12 @@ impl Deriving {
 
 impl Held {
     /// Derives the hour's temperatures, as the walk's observation does from its frame.
-    fn derivation(&mut self, frame: &DecodedFrame, touch: &Touch) -> Result<(), String> {
-        let rows = frame
-            .complete::<tables::WeatherProvinces>()
-            .map_err(|error| error.to_string())?;
+    fn derivation(&mut self, frame: &ColumnFrame<'_>, touch: &Touch) -> Result<(), String> {
+        let rows = Walked(
+            frame
+                .complete(TableId::WeatherProvinces)
+                .map_err(|error| error.to_string())?,
+        );
         self.keys.clear();
         self.keys.extend(touch.written.iter().map(|&(key, _)| key));
         let changed = (self.derived && !touch.restated && touch.deleted.is_empty())
@@ -163,7 +197,7 @@ impl Held {
         let states = self.memo.states_changed(
             frame.branch,
             frame.hour,
-            rows,
+            &rows,
             Ok(&content.planned()),
             changed,
         )?;
@@ -246,22 +280,11 @@ pub(super) struct Mirror {
     published: Vec<Option<i64>>,
     dirty: Vec<bool>,
     list: Vec<u32>,
-    _credit: Credit,
 }
 
 impl Mirror {
     fn new(layout: &Layout) -> io::Result<Self> {
         let count = layout.len();
-        let per_region = admission::add(
-            size_of::<(String, Option<u64>, Option<i64>, Option<i64>, bool, u32)>(),
-            15,
-        )?;
-        let credit = admission::admit(
-            count.checked_mul(per_region).ok_or_else(|| {
-                admission::pressure("mirror size", io::ErrorKind::OutOfMemory.into())
-            })?,
-            "region temperature mirror",
-        )?;
         let mut names = reserved(count, "region temperature mirror")?;
         for &id in &layout.ids {
             names.push(admission::name(id, "temp")?);
@@ -273,7 +296,6 @@ impl Mirror {
             published: reserved(count, "region temperature mirror")?,
             dirty: reserved(count, "region temperature mirror")?,
             list: reserved(count, "region temperature mirror")?,
-            _credit: credit,
         };
         mirror.keys.resize(count, None);
         mirror.kept.resize(count, None);

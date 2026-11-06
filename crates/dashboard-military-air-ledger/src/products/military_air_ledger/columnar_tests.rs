@@ -10,7 +10,7 @@ use super::{
 };
 use dashboard_core::test_fixtures::{CAMPAIGN, records, source};
 use dashboard_series::{
-    Blob, Budget, Cache, Knownness, Publication, Snapshot, Span, Writer,
+    Blob, Knownness, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -325,11 +325,10 @@ struct Built {
 
 /// A publication built from projected hours, cut after each of `cuts`' hours; when `resume`
 /// names one of them, the emit is saved there and goes on from the publication.
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -343,7 +342,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -357,8 +355,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -402,9 +400,7 @@ fn requests(middle: i32) -> Vec<serde_json::Value> {
 
 /// Holds the publication `built` to the row oracle's replies over `frames`.
 fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let source = replay_source(frames.to_vec());
     let context = LoadContext { content: None };
@@ -449,7 +445,6 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
 
 #[test]
 fn the_publication_answers_as_the_row_ledger_across_segments_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     let all: Vec<i32> = hours.iter().map(|tables| tables.hour).collect();
     for (starts, cuts, resume) in [
@@ -460,7 +455,7 @@ fn the_publication_answers_as_the_row_ledger_across_segments_cuts_and_a_resume()
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
         let (projected, frames) = projected(&hours, starts);
-        let built = build(projected, cuts, resume, &budget);
+        let built = build(projected, cuts, resume);
         check(&built, &frames, &label);
         known_only_where_recorded(&built, &all, &label);
     }
@@ -525,9 +520,7 @@ fn an_hour_without_events_hands_nothing_but_its_reads() {
 /// The publication's evidence of a family key is known exactly at the recorded `hours`, never
 /// across the hours between two of them.
 fn known_only_where_recorded(built: &Built, hours: &[i32], label: &str) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let key = directory.key(FAMILY, OBSERVED, None).unwrap();
     let span = Span::new(hours[0], *hours.last().unwrap()).unwrap();
@@ -583,8 +576,7 @@ fn events_recorded_again_after_an_unread_interval_refuse_as_the_row_ledger_does(
         expected,
         "air loss events restart their ordinals after the unread interval from hour 12 but are dated from hour 10, before it: earlier events recorded again, not new ones"
     );
-    let budget = Budget::new(64 << 20);
-    let mut writer = Writer::new(&budget, identity(), 10).unwrap();
+    let mut writer = Writer::new(identity(), 10).unwrap();
     let mut emit = Emit::new();
     let refused = projected
         .into_iter()
@@ -624,11 +616,9 @@ fn a_read_refused_after_a_gap_is_cut_through_the_hour_before() {
         tables(11, None, bombing(&[1], 11)),
         tables(13, air(&[2], 13), bombing(&[1], 13)),
     ];
-    let budget = Budget::new(64 << 20);
     let (projected, frames) = projected(&hours, &[]);
-    let clean = build(self::projected(&hours[..2], &[]).0, &[11], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut writer = Writer::new(&budget, identity(), 10).unwrap();
+    let clean = build(self::projected(&hours[..2], &[]).0, &[11], None);
+    let mut writer = Writer::new(identity(), 10).unwrap();
     let mut emit = Emit::new();
     let mut projected = projected.into_iter();
     for hour in projected.by_ref().take(2) {
@@ -645,7 +635,7 @@ fn a_read_refused_after_a_gap_is_cut_through_the_hour_before() {
         reached: 11,
         refusal: None,
     };
-    let root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+    let root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
     let refused = Built { pages, root };
     known_only_where_recorded(&refused, &[10, 11], "refused after a gap");
     let source = replay_source(frames[..2].to_vec());
@@ -653,7 +643,7 @@ fn a_read_refused_after_a_gap_is_cut_through_the_hour_before() {
     let cancelled = AtomicBool::new(false);
     let replies = |built: &Built| {
         let mut snapshot =
-            Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+            Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         requests(10)
             .into_iter()

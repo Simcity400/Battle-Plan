@@ -1,7 +1,8 @@
 //! The naval family projected from the rows a columnar walk changed, for the ordered scan.
-//! A walk starts only where the restart holds the sunk ships' last read, and carries it. The
-//! countries, and the tables a sunk ship's place name reads, are the walk's
-//! ([`dashboard_world`]): the naming tables are asked for from the first title on.
+//! A walk starts at a restart that holds its run's last sunk-ship read, from that read, and
+//! carries it into its branch's later runs; a restart whose run has not read them leaves the
+//! earlier run's read to the carry. The countries, and the tables a sunk ship's place name reads,
+//! are the walk's ([`dashboard_world`]): the naming tables are asked for from the first title on.
 
 pub(super) mod emit;
 
@@ -23,7 +24,7 @@ use dashboard_text::metadata::{LinkTags, slot_reads};
 use dashboard_world::{Needs, World};
 use replay::{
     columnar_frames::metrics,
-    columns::{self, Status},
+    columns::{self, Status, Table},
     segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{
@@ -35,7 +36,6 @@ use replay_data::{
     },
     scope::CaptureMode,
 };
-use replay_frame::frame::{ViewIdentity, view_reads};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
@@ -43,11 +43,15 @@ use std::{
     sync::{Arc, LazyLock, atomic::AtomicBool},
 };
 
-/// What a projection reads of its walk's world: the countries. Place names ask the frame for
-/// their tables when a sunk ship first needs a title.
+/// What a projection reads of its walk's world: the countries, and the views of the tables a
+/// sunk ship's place name reads, its scripted text's trigger kit among them.
 pub fn needs() -> Needs {
     Needs {
         countries: true,
+        frame: tables()
+            .iter()
+            .map(|&table| (table, dashboard_world::Hold::Whole))
+            .collect(),
         ..Needs::default()
     }
 }
@@ -64,17 +68,6 @@ pub fn tables() -> &'static [TableId] {
     &TABLES
 }
 
-/// The tables a sunk ship's place name reads unless its text evaluates the trigger kit.
-const NAMING: [TableId; 8] = [
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::LexicalTokens,
-    TableId::Provinces,
-    TableId::ProvinceNames,
-    TableId::States,
-    TableId::ReservedCountryNaming,
-    TableId::CountryAppearance,
-];
 
 /// The tables whose changes the projection follows.
 const FOLLOWED: [TableId; 15] = [
@@ -340,6 +333,18 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
+/// The sunk ships' last complete read in the restart's run, as the scan compares it: its rows,
+/// the slot of its one row and its hour. None when its run made none.
+fn last_ship_read(state: &State) -> io::Result<Option<(&Table, u32, i32)>> {
+    let Some((table, Some(read))) = columns::last_complete(state, TableId::SunkShips)? else {
+        return Ok(None);
+    };
+    if table.live().count() != 1 {
+        return Ok(None);
+    }
+    Ok(table.live().ones().next().map(|slot| (table, slot, read)))
+}
+
 fn names(mask: u64, fields: &[usize]) -> bool {
     fields
         .iter()
@@ -395,9 +400,7 @@ fn value<T: columns::Plain + Copy>(
     field: usize,
     slot: u32,
 ) -> io::Result<T> {
-    columns::plain::<T>(columns::table(state, table)?, field)?
-        .get(slot as usize)
-        .copied()
+    columns::value::<T>(columns::table(state, table)?, field, slot)?
         .ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no value")))
 }
 
@@ -1121,29 +1124,13 @@ impl Projector<'_> {
             _ => Ok(&lookup),
         };
         let flag = AtomicBool::new(false);
-        let at = (hour.branch, hour.hour);
-        let (sighted, read) = view_reads::record(|| {
-            battle_titles::sighting(
-                self.source,
-                self.context,
-                at,
-                &wanted,
-                points.clone(),
-                || hour.world.frame(state, &NAMING),
-                &flag,
-            )
-        });
-        if !read.iter().any(ViewIdentity::not_selected) {
-            return sighted;
-        }
-        // The names read a table the naming frame lacks: read them again with every table.
         battle_titles::sighting(
             self.source,
             self.context,
-            at,
+            (hour.branch, hour.hour),
             &wanted,
             points,
-            || hour.world.frame(state, tables()),
+            hour.world.columns(state).into(),
             &flag,
         )
     }
@@ -1231,34 +1218,27 @@ impl Operator<World> for Projector<'_> {
         match start {
             // A later run of the branch compares its sunk ships with the read before its gap.
             Start::Run { continues } => !continues,
-            Start::Restart(state) => match columns::status(state, TableId::SunkShips) {
-                Status::NotRecorded => true,
-                Status::Complete => {
-                    columns::table(state, TableId::SunkShips)
-                        .is_ok_and(|table| table.live().count() == 1)
-                        && state.sampled_at(TableId::SunkShips.index()).is_some()
-                }
-                _ => false,
-            },
+            // A restart its run has not read them by, a daily read's first included, leaves the
+            // earlier run's read to the carry.
+            Start::Restart(state) => matches!(last_ship_read(state), Ok(Some(_))),
         }
     }
 
     fn start(&mut self, start: Start<'_>, _: u64, _: i32) -> io::Result<()> {
         self.whole = true;
         self.seed = Some(None);
-        if let Start::Restart(state) = start
-            && columns::complete(state, TableId::SunkShips)
-        {
-            // The read the scan compared last: the restart's row, refused as at its read.
-            let read = state
-                .sampled_at(TableId::SunkShips.index())
-                .ok_or_else(|| invalid("A restart's sunk ships hold no read hour"))?;
-            let slot = columns::table(state, TableId::SunkShips)?
-                .live()
-                .ones()
-                .next()
-                .ok_or_else(|| invalid("A restart's sunk ships hold no row"))?;
-            let row: SunkShipsRow = self.row(state, TableId::SunkShips, slot)?;
+        if let Start::Restart(state) = start {
+            // The read the scan compared last: the restart's last read ([`Operator::starts_at`]),
+            // refused as at its read.
+            let (table, slot, read) = last_ship_read(state)?
+                .ok_or_else(|| invalid("A restart's run holds no sunk-ship read"))?;
+            let row: SunkShipsRow = columns::row_in(
+                state,
+                table,
+                TableId::SunkShips,
+                slot,
+                self.format.version(),
+            )?;
             self.base.compare(row.entries, read);
             self.seed = Some(Some(read));
         }

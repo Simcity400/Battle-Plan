@@ -1,6 +1,6 @@
 use super::*;
 use crate::columnar_frames::{
-    Limits, Reads,
+    Reads,
     fixtures::{churned, every, recording},
 };
 use replay_columnar::envelope::{Extent, FOOTER_BYTES, UNIT_ORDINALS};
@@ -447,7 +447,7 @@ fn opened(runs: &[(u64, i32, u32)]) -> Recording {
 }
 
 fn loaded(bytes: Vec<u8>) -> Recording {
-    Recording::open(bytes, Limits::default()).unwrap()
+    Recording::open(bytes).unwrap()
 }
 
 /// Runs of `branches` branches in turn, `rounds` times, each of two segments.
@@ -625,12 +625,14 @@ fn a_family_goes_on_from_its_carry_where_an_earlier_run_left_it() {
                 run: 0,
                 ordinal: 2 * units + 100,
                 carry: carried.then_some(&carries[0][..]),
+                lost: false,
             },
             Resume {
                 branch: 2,
                 run: 1,
                 ordinal: units,
                 carry: carried.then_some(&carries[1][..]),
+                lost: false,
             },
         ];
         for threads in [1, 4] {
@@ -674,6 +676,7 @@ fn a_family_goes_on_from_its_carry_where_an_earlier_run_left_it() {
         run: 1,
         ordinal: units,
         carry: None,
+        lost: false,
     }];
     let ran = run(
         &file,
@@ -685,6 +688,32 @@ fn a_family_goes_on_from_its_carry_where_an_earlier_run_left_it() {
     .unwrap();
     let failure = ran.outcomes[0].failure.as_ref().unwrap();
     assert_eq!(failure.operation, Operation::Decide);
+    // After hours an earlier run lost, it loses the hours it joins there instead, and fails
+    // nowhere.
+    let after_loss = [Resume {
+        lost: true,
+        ..resumes[0]
+    }];
+    let ran = run(
+        &file,
+        &settings(2),
+        &spool(),
+        &Cancellation::default(),
+        vec![
+            probing("going on", &probes, &mut Vec::new())
+                .resumes(&after_loss)
+                .recovers(Recovery::Resumes),
+        ],
+    )
+    .unwrap();
+    assert!(ran.outcomes[0].failure.is_none());
+    assert!(matches!(
+        ran.outcomes[0].ended.first(),
+        Some(Ended {
+            ending: Ending::Lost(Loss::Earlier),
+            ..
+        })
+    ));
     // Resumes out of order are refused before any walk.
     let backwards = [
         resumes[0],
@@ -770,7 +799,7 @@ fn walks_of_a_file_read_within_their_segment_s_share() {
     let path = std::env::temp_dir().join(format!("segments-shares-{}", std::process::id()));
     std::fs::write(&path, bytes).unwrap();
     for verify in [false, true] {
-        let mut file = Recording::open_path(&path, Limits::default()).unwrap();
+        let mut file = Recording::open_path(&path).unwrap();
         file.verify(verify);
         let saw = expected(&file, anywhere);
         for threads in [1, 3] {
@@ -1600,7 +1629,7 @@ fn a_failed_write_out_fails_its_family_before_its_segment_can_be_taken() {
         lanes: &lanes,
         worlds: &worldless,
         signal: &signal,
-        budget: Arc::new(Budget::new(usize::MAX)),
+        walkers: Arc::new(Tally::default()),
         folder: &folder,
         store: Store::new(),
         resumed: Mutex::new(Vec::new()),
@@ -2091,7 +2120,7 @@ fn a_walk_given_back_after_a_panic_holds_nothing_of_the_failed_family() {
     );
     // The walk of segment 1 went on from segment 0's, past its restart.
     assert!(ran.stats.chained >= 1 && ran.stats.derived >= 1);
-    assert!(ran.stats.spooled > 1_000_000);
+    assert!(ran.stats.spooled_raw > 1_000_000);
     assert_eq!((large.now(), small.now()), (0, 0));
     assert!(!folder.exists());
 }
@@ -2116,9 +2145,9 @@ fn restarts_damaged_one_after_another_are_measured_once_each() {
     );
     assert_eq!(seen, expected(&clean, anywhere));
     assert_eq!(stats.measured, segments);
-    assert_eq!(stats.chained, 0);
-    // Page 0's restart is intact: segments 2, 3 and 4 derive from segment 1.
-    assert_eq!(stats.derived, (1..segments - 1).sum::<usize>());
+    // One worker walks the run on from its start, its tables kept: no damaged restart is read.
+    assert_eq!(stats.chained, segments - 1);
+    assert_eq!(stats.derived, 0);
 }
 
 /// A family holding its branch's history (each hour counts the hours its operator saw since
@@ -2256,7 +2285,7 @@ fn damage_no_branch_places_never_reports_a_run_complete() {
     let (mut bytes, _) = recording(&runs, every(&runs), 1, |_| {});
     let root = bytes.len() - FOOTER_BYTES - 1;
     bytes[root] ^= 1;
-    match Recording::open(bytes, Limits::default()) {
+    match Recording::open(bytes) {
         Ok(_) => panic!("a recording whose root cannot be read opened"),
         Err(refused) => assert_eq!(Damage::of(&refused).unwrap().scope, DamageScope::Unlocated),
     }

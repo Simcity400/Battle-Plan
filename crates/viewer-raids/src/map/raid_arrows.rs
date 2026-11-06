@@ -254,9 +254,15 @@ fn build_into(
         // still frame; every drawn raid is before phase 5, so its update progress
         // does not affect this decision.
         if unit_shown(raid.phase, raid.outcome, 0.0) {
-            match place_unit(
-                inputs, defines, world, raid, kind, arrow_kind, target, &geometry,
-            ) {
+            let mut held = Vec::new();
+            let placed = place_unit(
+                inputs, defines, world, raid, kind, arrow_kind, target, &geometry, &mut held,
+            );
+            field.held.extend(
+                held.into_iter()
+                    .map(|held| held as std::sync::Arc<dyn std::any::Any + Send + Sync>),
+            );
+            match placed {
                 Ok(unit) if unit.entity.is_some() => field.raid_units.push(unit),
                 Ok(_) => {
                     report.units_missing += 1;
@@ -554,6 +560,7 @@ fn place_unit(
     arrow_kind: RaidArrowKind,
     target: &RaidTargetRow,
     geometry: &Geometry,
+    held: &mut Vec<crate::map::raids::paths::Held>,
 ) -> Result<UnitPlacement, String> {
     let frame = world.frame();
     let (travelled, speed_inputs) = plane_inputs(frame, raid)?;
@@ -566,7 +573,7 @@ fn place_unit(
         kind.speed_multiplier_raw,
         &speed_defines,
     );
-    let distance = target_distance(inputs.assets, frame, raid, target)?;
+    let distance = target_distance(inputs.assets, frame, raid, target, held)?;
     let track = UnitTrack::new(
         &geometry.controls,
         arrow_kind,

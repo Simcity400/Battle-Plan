@@ -10,7 +10,7 @@ use super::{
 use crate::products::test_support;
 use dashboard_base::prepared::frame_changes::FrameChangeTracker;
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -283,11 +283,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -301,7 +300,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -315,8 +313,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -380,9 +378,7 @@ fn row_replies(frames: &[DecodedFrame], through: i32) -> Vec<serde_json::Value> 
 
 /// The publication's replies to every selection through `through`.
 fn replies(built: &Built, through: i32) -> Vec<serde_json::Value> {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let flag = AtomicBool::new(false);
     SELECTIONS
@@ -407,7 +403,6 @@ fn replies(built: &Built, through: i32) -> Vec<serde_json::Value> {
 /// through the last hour and through one before it.
 #[test]
 fn the_publication_answers_what_the_row_census_answers_across_segments_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     for (starts, cuts, resume) in [
         (&[][..], &[175][..], None),
@@ -421,7 +416,7 @@ fn the_publication_answers_what_the_row_census_answers_across_segments_cuts_and_
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
         let (projected, frames) = projected(&hours, starts);
-        let built = build(projected, cuts, resume, &budget);
+        let built = build(projected, cuts, resume);
         for through in [175, 150] {
             let expected = row_replies(&frames, through);
             let published = replies(&built, through);

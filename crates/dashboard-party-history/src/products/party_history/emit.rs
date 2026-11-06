@@ -159,7 +159,7 @@ impl Emit {
 
     fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         place: Place,
         decimals: u8,
     ) -> io::Result<KeyHandle> {
@@ -170,7 +170,7 @@ impl Emit {
     /// `actor`'s key of `measure`.
     fn measure(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         measure: u64,
     ) -> io::Result<KeyHandle> {
@@ -188,7 +188,7 @@ impl Emit {
     }
 
     /// `actor`'s popularity key of string `id`.
-    fn popularity(&mut self, writer: &mut Writer<'_>, actor: u64, id: u32) -> io::Result<KeyHandle> {
+    fn popularity(&mut self, writer: &mut Writer, actor: u64, id: u32) -> io::Result<KeyHandle> {
         let tokens = &self.countries[actor as usize].tokens;
         let at = tokens.partition_point(|&(held, _)| held < id);
         if let Some(&(held, key)) = tokens.get(at)
@@ -220,7 +220,7 @@ impl Emit {
     }
 
     /// The tag actor named `tag`.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -233,7 +233,7 @@ impl Emit {
     }
 
     /// An event of `kind` on `key` at `at`.
-    fn event(writer: &mut Writer<'_>, key: KeyHandle, at: i32, kind: u64) -> io::Result<()> {
+    fn event(writer: &mut Writer, key: KeyHandle, at: i32, kind: u64) -> io::Result<()> {
         let sequence = writer.sequence()?;
         writer.event(Event {
             key,
@@ -246,7 +246,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("parties.emit", None);
         let at = hour.hour;
         match self.last {
@@ -311,7 +311,7 @@ impl Emit {
     /// `actor`'s observation from `at` on.
     fn observe(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         now: Arc<Observation>,
@@ -380,7 +380,7 @@ impl Emit {
     /// `continues`.
     fn parties(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         before: Option<&Parties>,
@@ -488,7 +488,7 @@ impl Emit {
     /// `actor`'s leader from `at` on, as [`Self::parties`] takes its parties.
     fn leader(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         before: Option<&Leader>,
@@ -554,7 +554,7 @@ impl Emit {
     }
 
     /// Ends what `actor`'s runs hold from `at` on: its tag is held no more.
-    fn end(&mut self, writer: &mut Writer<'_>, at: i32, actor: u64) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, at: i32, actor: u64) -> io::Result<()> {
         let index = actor as usize;
         let Some(held) = self.countries[index].held.take() else {
             return Ok(());
@@ -578,7 +578,7 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for country in &mut self.countries {
             country.held = None;
@@ -588,7 +588,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the catalogues that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

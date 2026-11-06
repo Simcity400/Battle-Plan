@@ -2,47 +2,75 @@
 //! tokens and templates of recorded characters, and the tag, look and civil-war
 //! state a country's ideas and advisors are named for.
 
-use std::collections::HashMap;
+use replay_data::rows::{
+    CharacterRow, CountryAppearanceRow, CountryCivilWarRow, CountryCounterInputRow,
+    CountryLinkRow, CountryRow, CountryWarRow, LexicalTokenRow, WarRelationRow, mask, tables,
+};
+use replay_frame::frame::{Rowset, Tables};
+use std::{borrow::Cow, collections::HashMap};
+
+/// A LexicalTokens row's spelling, borrowed where the frame holds it.
+fn spelling<'a>(lexical: &Rowset<'a, LexicalTokenRow>, token: u32) -> Option<&'a [u8]> {
+    lexical
+        .text(u128::from(token), |row| &row.literal, LITERAL)
+        .ok()
+        .flatten()
+}
+
+const LITERAL: usize = replay_data::rows::column::<LexicalTokenRow>("literal");
+
+/// The fields of a Characters row [`character_script_token_in`] and [`built_template_in`] read.
+pub const CHARACTER_IDENTITY: u64 = mask::<CharacterRow>(&[
+    "name_token_id",
+    "token",
+    "template_present",
+    "template_tag",
+    "template_file",
+    "template_line",
+    "template_generated",
+]);
 
 /// A recorded character's script token: its name_token_id resolved through
 /// LexicalTokens. The row's token field is the saved name, not the script
 /// token. None when the id is negative or not in the dictionary.
 pub fn character_script_token<'a>(
-    character: &replay_data::rows::CharacterRow,
-    lexical: impl Into<replay_frame::frame::Rows<'a, replay_data::rows::LexicalTokenRow>>,
+    character: &CharacterRow,
+    lexical: impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>,
 ) -> Option<&'a str> {
-    let lexical = lexical.into();
+    character_script_token_in(character, Rowset::Decoded(lexical.into().as_slice()))
+}
+
+/// [`character_script_token`] of any frame's LexicalTokens, a walk's views among them.
+pub fn character_script_token_in<'a>(
+    character: &CharacterRow,
+    lexical: Rowset<'a, LexicalTokenRow>,
+) -> Option<&'a str> {
     let token = u32::try_from(character.name_token_id).ok()?;
-    let index = crate::triggers::refusal::reference(
-        lexical.binary_search_by_key(&token, |row| row.token).ok(),
-        token != 0,
-        || {
-            crate::triggers::refusal::missing_reference(
-                replay_data::rows::TableId::LexicalTokens,
-                None,
-            )
-        },
-    )?;
-    crate::triggers::refusal::reference(
-        std::str::from_utf8(&lexical.get(index).unwrap().literal).ok(),
-        token != 0,
-        || {
-            crate::triggers::refusal::missing_reference(
-                replay_data::rows::TableId::LexicalTokens,
-                None,
-            )
-        },
-    )
+    let missing = || {
+        crate::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None)
+    };
+    let literal = crate::triggers::refusal::reference(spelling(&lexical, token), token != 0, missing)?;
+    crate::triggers::refusal::reference(std::str::from_utf8(literal).ok(), token != 0, missing)
 }
 
 /// The template a recorded character holds, from its Characters row's
 /// template columns. Its tag token is spelled by LexicalTokens;
 /// `Err` names what the hour does not hold.
 pub fn built_template<'a>(
-    character: &replay_data::rows::CharacterRow,
-    lexical: Option<impl Into<replay_frame::frame::Rows<'a, replay_data::rows::LexicalTokenRow>>>,
+    character: &CharacterRow,
+    lexical: Option<impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>>,
 ) -> Result<installed_content_core::characters::BuiltTemplate, String> {
-    let lexical = lexical.map(Into::into);
+    built_template_in(
+        character,
+        lexical.map(|lexical| Rowset::Decoded(lexical.into().as_slice())),
+    )
+}
+
+/// [`built_template`] of any frame's LexicalTokens, a walk's views among them.
+pub fn built_template_in(
+    character: &CharacterRow,
+    lexical: Option<Rowset<'_, LexicalTokenRow>>,
+) -> Result<installed_content_core::characters::BuiltTemplate, String> {
     let id = character.id;
     if character.template_present == 0 {
         return Err(format!(
@@ -53,8 +81,8 @@ pub fn built_template<'a>(
     let lexical = crate::triggers::refusal::reference(lexical, token != 0,
         || crate::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None))
         .ok_or_else(|| format!("character {id}'s template tag token {token} is not spelled: LexicalTokens is incomplete"))?;
-    let index = crate::triggers::refusal::reference(
-        lexical.binary_search_by_key(&token, |row| row.token).ok(),
+    let literal = crate::triggers::refusal::reference(
+        spelling(&lexical, token),
         token != 0,
         || {
             crate::triggers::refusal::missing_reference(
@@ -66,7 +94,7 @@ pub fn built_template<'a>(
     .ok_or_else(|| {
         format!("character {id}'s template tag token {token} has no LexicalTokens row")
     })?;
-    let tag = std::str::from_utf8(&lexical.get(index).unwrap().literal)
+    let tag = std::str::from_utf8(literal)
         .map_err(|_| format!("character {id}'s template tag token {token} is not UTF-8"))?;
     Ok(installed_content_core::characters::BuiltTemplate {
         tag: tag.to_owned(),
@@ -81,10 +109,7 @@ pub fn built_template<'a>(
 /// positive CountryCounterInputs.owned_state_count, or an existing enemy
 /// holds it in its own civil-war list ([`CivilWars::holds`]). `Err` names
 /// the input the hour lacks.
-pub fn civil_war(
-    frame: &dyn replay_frame::frame::DecodedSource,
-    slot: u32,
-) -> Result<bool, String> {
+pub fn civil_war<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<bool, String> {
     CivilWars::new(frame)?.holds(slot)
 }
 
@@ -103,6 +128,15 @@ pub fn civil_war_reads() -> Vec<crate::triggers::inputs::TableRead> {
     ]
 }
 
+/// The fields [`civil_war_reads`] names, by table.
+const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
+const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const TARGET: u64 = mask::<CountryCivilWarRow>(&["target"]);
+const OWNED: u64 = mask::<CountryCounterInputRow>(&["owned_state_count"]);
+const READ: u64 = mask::<CountryWarRow>(&["enemies_read"]);
+const ENEMIES: u64 = mask::<CountryWarRow>(&["enemies_read", "enemies"]);
+const SPAN: u64 = mask::<WarRelationRow>(&["start_hour", "end_hour"]);
+
 /// The civil-war predicate's inputs at one hour, indexed once, so asking it
 /// of every country costs each country only its own rows. Answers, and the
 /// reason an answer is refused, are those of scanning the tables in stored
@@ -110,7 +144,7 @@ pub fn civil_war_reads() -> Vec<crate::triggers::inputs::TableRead> {
 /// scan reaches it.
 pub struct CivilWars<'a> {
     hour: i32,
-    links: &'a [replay_data::rows::CountryLinkRow],
+    links: Rowset<'a, CountryLinkRow>,
     /// Each canonical slot's first Countries row id.
     raw: HashMap<u32, u32>,
     /// Each raw country's first owned state count.
@@ -122,10 +156,10 @@ pub struct CivilWars<'a> {
 }
 
 /// The CountryWars rows that read their enemy vector: each slot's first by
-/// stored position, and the first whose country does not resolve.
+/// stored position with its key, and the first whose country does not resolve.
 struct Enemies<'a> {
-    rows: &'a [replay_data::rows::CountryWarRow],
-    by_slot: HashMap<u32, usize>,
+    rows: Rowset<'a, CountryWarRow>,
+    by_slot: HashMap<u32, (usize, u128)>,
     unlinked: Option<(usize, u32)>,
 }
 
@@ -137,72 +171,76 @@ struct Relations {
 }
 
 impl<'a> CivilWars<'a> {
-    pub fn new(frame: &'a dyn replay_frame::frame::DecodedSource) -> Result<Self, String> {
-        use replay_data::rows::tables;
-        let hour = frame.hour();
+    pub fn new<F: Tables + ?Sized>(frame: &'a F) -> Result<Self, String> {
+        let hour = frame.at_hour();
         let text = |error: std::io::Error| error.to_string();
-        let countries = frame.complete::<tables::Countries>().map_err(text)?;
-        let links = frame.complete::<tables::CountryLinks>().map_err(text)?;
-        let lists = frame.complete::<tables::CountryCivilWars>().map_err(text)?;
+        let countries = frame.complete_rows::<tables::Countries>(SLOT).map_err(text)?;
+        let links = frame.complete_rows::<tables::CountryLinks>(LINK).map_err(text)?;
+        let lists = frame.complete_rows::<tables::CountryCivilWars>(TARGET).map_err(text)?;
         let counters = frame
-            .complete::<tables::CountryCounterInputs>()
+            .complete_rows::<tables::CountryCounterInputs>(OWNED)
             .map_err(text)?;
         // Resolved without refusing: a refusal is reported only where a scan reaches it.
-        let slot_of = |raw: u32| {
-            links
-                .binary_search_by_key(&raw, |link| link.id)
-                .ok()
-                .map(|index| links[index].canonical_slot)
+        let slot_of = |raw: u32| -> Result<Option<u32>, String> {
+            Ok(links
+                .get(u128::from(raw))
+                .map_err(text)?
+                .map(|link| link.canonical_slot))
         };
         let mut raw = HashMap::new();
-        for country in countries {
+        for country in countries.iter() {
+            let country = country.map_err(text)?;
             raw.entry(country.canonical_slot).or_insert(country.id);
         }
         let mut owned = HashMap::new();
-        for row in counters {
+        for row in counters.iter() {
+            let row = row.map_err(text)?;
             owned.entry(row.country).or_insert(row.owned_state_count);
         }
         let mut targets = HashMap::<u32, Vec<u32>>::new();
-        for row in lists {
+        for row in lists.iter() {
+            let row = row.map_err(text)?;
             targets.entry(row.country).or_default().push(row.target);
         }
         let wars = frame
-            .complete::<tables::CountryWars>()
+            .complete_rows::<tables::CountryWars>(ENEMIES)
             .map_err(text)
-            .map(|rows| {
+            .and_then(|rows| {
                 let mut wars = Enemies {
                     rows,
                     by_slot: HashMap::new(),
                     unlinked: None,
                 };
-                for (index, row) in rows.iter().enumerate() {
+                for (index, row) in rows.with_mask(READ).iter().enumerate() {
+                    let row = row.map_err(text)?;
                     if row.enemies_read == 0 {
                         continue;
                     }
-                    match slot_of(row.country) {
+                    match slot_of(row.country)? {
                         Some(slot) => {
-                            wars.by_slot.entry(slot).or_insert(index);
+                            wars.by_slot.entry(slot).or_insert((index, row.key()));
                         }
                         None => {
                             wars.unlinked.get_or_insert((index, row.country));
                         }
                     }
                 }
-                wars
+                Ok(wars)
             });
         let relations = frame
-            .complete::<tables::WarRelations>()
+            .complete_rows::<tables::WarRelations>(SPAN)
             .map_err(text)
-            .map(|rows| {
+            .and_then(|rows| {
                 let mut relations = Relations {
                     by_slot: HashMap::new(),
                     unlinked: None,
                 };
-                for row in rows
-                    .iter()
-                    .filter(|row| crate::triggers::ongoing(row.start_hour, row.end_hour, hour))
-                {
-                    match (slot_of(row.first_country), slot_of(row.second_country)) {
+                for row in rows.iter() {
+                    let row = row.map_err(text)?;
+                    if !crate::triggers::ongoing(row.start_hour, row.end_hour, hour) {
+                        continue;
+                    }
+                    match (slot_of(row.first_country)?, slot_of(row.second_country)?) {
                         (Some(first), Some(second)) => {
                             relations.by_slot.entry(first).or_default().push(second);
                             if second != first {
@@ -217,7 +255,7 @@ impl<'a> CivilWars<'a> {
                         }
                     }
                 }
-                relations
+                Ok(relations)
             });
         Ok(Self {
             hour,
@@ -274,7 +312,7 @@ impl<'a> CivilWars<'a> {
     }
 
     fn linked(&self, raw: u32, table: &str) -> Result<u32, String> {
-        linked(self.links, raw, table, self.hour)
+        linked(&self.links, raw, table, self.hour)
     }
 
     /// The country's enemy vector: its CountryWars row's where read, else the
@@ -286,12 +324,17 @@ impl<'a> CivilWars<'a> {
         // A row before it whose country does not resolve stops the scan there.
         if let Some((_, raw)) = wars
             .unlinked
-            .filter(|&(at, _)| found.is_none_or(|found| at < found))
+            .filter(|&(at, _)| found.is_none_or(|(found, _)| at < found))
         {
             self.linked(raw, "CountryWars")?;
         }
-        if let Some(index) = found {
-            return wars.rows[index]
+        if let Some((_, key)) = found {
+            let row = wars
+                .rows
+                .get(key)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("CountryWars row {key} is not held at hour {}", self.hour))?;
+            return row
                 .enemies
                 .iter()
                 .map(|&raw| self.linked(raw, "CountryWars"))
@@ -307,12 +350,12 @@ impl<'a> CivilWars<'a> {
 
 /// A raw country reference's canonical slot, or why the hour cannot say.
 fn linked(
-    links: &[replay_data::rows::CountryLinkRow],
+    links: &Rowset<'_, CountryLinkRow>,
     raw: u32,
     table: &str,
     hour: i32,
 ) -> Result<u32, String> {
-    crate::metadata::link_slot(links, raw).ok_or_else(|| {
+    crate::metadata::link_slot_in(links, raw).ok_or_else(|| {
         format!("{table} names country {raw}, which CountryLinks does not hold at hour {hour}")
     })
 }
@@ -340,21 +383,23 @@ pub struct Look {
     pub civil_war: Result<bool, String>,
 }
 
+/// The fields of a country's appearance its look reads ([`Look::read`]).
+pub const LOOK: u64 = mask::<CountryAppearanceRow>(&[
+    "name_tag",
+    "cosmetic_tag",
+    "original_tag",
+    "original_tag_reference",
+]);
+
 impl Look {
     /// The country's appearance at the frame's hour, `None` without its
     /// CountryAppearance row.
-    pub fn read(
-        frame: &dyn replay_frame::frame::DecodedSource,
-        row: &replay_data::rows::CountryRow,
-    ) -> Option<Self> {
-        let appearances = crate::triggers::refusal::FrameInputs::trigger_table::<
-            replay_data::rows::tables::CountryAppearance,
-        >(frame)
-        .ok()?;
+    pub fn read<F: Tables + ?Sized>(frame: &F, row: &CountryRow) -> Option<Self> {
+        let appearances =
+            crate::triggers::refusal::complete_table::<F, tables::CountryAppearance>(frame, LOOK)
+                .ok()?;
         let appearance = crate::triggers::refusal::reference(
-            appearances
-                .iter()
-                .find(|appearance| appearance.country == row.id),
+            appearances.get(u128::from(row.id)).ok().flatten(),
             row.id != 0,
             || {
                 crate::triggers::refusal::missing_reference(
@@ -363,22 +408,22 @@ impl Look {
                 )
             },
         )?;
-        Self::read_with_appearance(frame, row, appearance)
+        Self::read_with_appearance(frame, row, &appearance)
     }
 
-    fn read_with_appearance(
-        frame: &dyn replay_frame::frame::DecodedSource,
-        row: &replay_data::rows::CountryRow,
-        appearance: &replay_data::rows::CountryAppearanceRow,
+    fn read_with_appearance<F: Tables + ?Sized>(
+        frame: &F,
+        row: &CountryRow,
+        appearance: &CountryAppearanceRow,
     ) -> Option<Self> {
         Self::read_with(frame, row, appearance, &|slot| civil_war(frame, slot))
     }
 
     /// [`Self::read_with_appearance`], a dynamic country's civil war answered by `civil_war`.
-    fn read_with(
-        frame: &dyn replay_frame::frame::DecodedSource,
-        row: &replay_data::rows::CountryRow,
-        appearance: &replay_data::rows::CountryAppearanceRow,
+    fn read_with<F: Tables + ?Sized>(
+        frame: &F,
+        row: &CountryRow,
+        appearance: &CountryAppearanceRow,
         civil_war: &dyn Fn(u32) -> Result<bool, String>,
     ) -> Option<Self> {
         let name_tag = std::str::from_utf8(&appearance.name_tag).ok()?;
@@ -386,11 +431,12 @@ impl Look {
         Some(Self {
             name_tag: name_tag.to_owned(),
             original_or_own_tag: if row.canonical_slot == 0 {
-                installed_content_country_names::country_names::reserved_zero_original_tag(frame)
+                installed_content_country_names::country_names::reserved_zero_original_tag_in(frame)
+                    .map(Cow::into_owned)
             } else {
                 installed_content_country_names::country_names::original_tag(row, appearance)
-            }
-            .map(str::to_owned),
+                    .map(str::to_owned)
+            },
             cosmetic_tag: cosmetic_tag.to_owned(),
             civil_war: if name_tag.is_empty() {
                 Ok(false)
@@ -412,10 +458,7 @@ impl Look {
 
 impl NamingCountry {
     #[cfg(any(test, feature = "test-support"))]
-    pub fn read(
-        frame: &dyn replay_frame::frame::DecodedSource,
-        row: &replay_data::rows::CountryRow,
-    ) -> Self {
+    pub fn read<F: Tables + ?Sized>(frame: &F, row: &CountryRow) -> Self {
         Self {
             slot: row.canonical_slot,
             look: Look::read(frame, row),
@@ -423,10 +466,10 @@ impl NamingCountry {
     }
 
     /// The same naming getters with the caller's indexed appearance row.
-    pub fn read_with_appearance(
-        frame: &dyn replay_frame::frame::DecodedSource,
-        row: &replay_data::rows::CountryRow,
-        appearance: Option<&replay_data::rows::CountryAppearanceRow>,
+    pub fn read_with_appearance<F: Tables + ?Sized>(
+        frame: &F,
+        row: &CountryRow,
+        appearance: Option<&CountryAppearanceRow>,
     ) -> Self {
         Self {
             slot: row.canonical_slot,
@@ -438,10 +481,10 @@ impl NamingCountry {
 
     /// [`Self::read_with_appearance`], a dynamic country's civil war answered by `civil_war`:
     /// [`CivilWars::holds`] of the frame's hour, indexed once for every country asked.
-    pub fn read_with_civil_war(
-        frame: &dyn replay_frame::frame::DecodedSource,
-        row: &replay_data::rows::CountryRow,
-        appearance: Option<&replay_data::rows::CountryAppearanceRow>,
+    pub fn read_with_civil_war<F: Tables + ?Sized>(
+        frame: &F,
+        row: &CountryRow,
+        appearance: Option<&CountryAppearanceRow>,
         civil_war: &dyn Fn(u32) -> Result<bool, String>,
     ) -> Self {
         Self {

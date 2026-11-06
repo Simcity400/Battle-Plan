@@ -157,6 +157,10 @@ pub struct Scanned {
     pub last_hour: i32,
     pub first_ship_read: Option<i32>,
     pub first_convoy_read: Option<i32>,
+    /// The first reads of the stretch its tallies count: the branch's first, until hours the
+    /// recording lost begin another after them ([`ShipHistory::lost`]).
+    pub stretch_ship_read: Option<i32>,
+    pub stretch_convoy_read: Option<i32>,
     pub last_ship_read: Option<i32>,
     pub last_convoy_read: Option<i32>,
     pub ship_reads: Vec<i32>,
@@ -741,6 +745,8 @@ impl Scanned {
             last_hour: self.last_hour,
             first_ship_read: self.first_ship_read,
             first_convoy_read: self.first_convoy_read,
+            stretch_ship_read: self.stretch_ship_read,
+            stretch_convoy_read: self.stretch_convoy_read,
             last_ship_read: self.last_ship_read,
             last_convoy_read: self.last_convoy_read,
             ship_reads: Vec::new(),
@@ -833,6 +839,7 @@ impl Tracker {
         }
         self.ship_open = true;
         out.first_ship_read.get_or_insert(hour);
+        out.stretch_ship_read.get_or_insert(hour);
         out.last_ship_read = Some(hour);
         out.ship_reads.push(hour);
     }
@@ -844,7 +851,8 @@ impl Tracker {
         hour: i32,
         tags: &HashMap<u32, String>,
     ) {
-        let baseline = out.first_convoy_read.is_none();
+        // A stretch's first read, the branch's or one after lost hours, is its baseline.
+        let baseline = out.stretch_convoy_read.is_none();
         for row in rows {
             #[cfg(test)]
             work::WORK.with(|work| work.borrow_mut().convoys += 1);
@@ -876,6 +884,7 @@ impl Tracker {
         self.convoys_changed = false;
         self.convoy_open = true;
         out.first_convoy_read.get_or_insert(hour);
+        out.stretch_convoy_read.get_or_insert(hour);
         out.last_convoy_read = Some(hour);
         out.convoy_reads.push(hour);
     }

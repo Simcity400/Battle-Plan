@@ -118,7 +118,7 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, actor: u64, measure: u64) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, actor: u64, measure: u64) -> io::Result<KeyHandle> {
         self.actors.key(
             writer,
             Place {
@@ -131,7 +131,7 @@ impl Emit {
         )
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 2]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 2]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -144,7 +144,7 @@ impl Emit {
     }
 
     /// The tally and coverage keys of `tag`.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<[KeyHandle; 2]> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<[KeyHandle; 2]> {
         if let Some(&keys) = self.countries.get(tag) {
             return Ok(keys);
         }
@@ -161,7 +161,7 @@ impl Emit {
     /// its observation starts or the hour before held none.
     fn observe(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         value: Option<i128>,
@@ -173,7 +173,7 @@ impl Emit {
     }
 
     /// One hour, after the last one given.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: Hour<Segments>) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: Hour<Segments>) -> io::Result<()> {
         let at = hour.hour;
         let [episodes, reads] = self.family(writer)?;
         if let Some(last) = self.held.last
@@ -295,7 +295,7 @@ impl Emit {
     }
 
     /// Each episode's runs closed by the hour as a chunk, keeping only the open episodes' last.
-    fn chunks(&mut self, writer: &mut Writer<'_>, key: KeyHandle, at: i32) -> io::Result<()> {
+    fn chunks(&mut self, writer: &mut Writer, key: KeyHandle, at: i32) -> io::Result<()> {
         let held = &mut self.held;
         while held.ordinals.len() < self.scan.result.episodes.len() {
             held.ordinals.push(held.next_episode);
@@ -362,7 +362,7 @@ impl Emit {
     }
 
     /// The hours walked since the domain's last row, through `last`, as known.
-    fn known(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         // An hour that failed began none: the cut goes through the last that succeeded.
         if let Some(first) = self.first.take().filter(|&first| first <= last) {
             writer.domain(
@@ -381,7 +381,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the hours walked since the last cut as known, and
     /// what the scan holds now.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.known(writer, last)?;
         self.scan.seal_presence();

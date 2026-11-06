@@ -82,6 +82,17 @@ struct Candidate {
     last_read: Option<i32>,
 }
 
+/// What an hour's reads give the espionage log.
+pub(crate) struct Given<'a> {
+    /// The operations census as last read, and what the hour changed of it.
+    pub(crate) census: &'a CensusHeld,
+    pub(crate) touched: &'a CensusTouched,
+    /// The completions, each with its definition's name: none where incomplete.
+    pub(crate) completions: Option<&'a [Completion]>,
+    /// The completions as read the hour before, where known and complete.
+    pub(crate) before: Option<&'a [Completion]>,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
     builder: Builder,
@@ -95,8 +106,6 @@ pub struct Prepared {
     values: Accumulator,
     #[serde(skip)]
     replies: BTreeMap<u64, Vec<EspionageLogReply>>,
-    #[serde(skip)]
-    reply_bytes: usize,
     #[serde(skip)]
     repairs: Vec<(i32, EspionageOperation, bool)>,
     #[cfg(any(test, feature = "test-support"))]
@@ -213,7 +222,8 @@ impl Prepared {
         self.test_countries = countries;
         result
     }
-    /// Observes `frame` of the row path, reading what its hour needs of it.
+    /// Observes `frame` of the row path, reading what its hour needs of it: every operation is
+    /// observed at each census read.
     pub fn observe_changes(
         &mut self,
         source: &Source,
@@ -224,13 +234,22 @@ impl Prepared {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         let census = Census::of(frame);
-        let operations = (census.complete && census.read).then(|| census_read(frame, countries));
+        let mut held = CensusHeld::default();
+        let mut touched = CensusTouched::default();
+        if census.complete && census.read {
+            held.replace(census_read(frame, countries), &mut touched);
+        }
         let completions = completions(frame);
         self.observe_read(
             source,
             (frame.branch, frame.hour),
             census,
-            (operations.as_ref(), completions.as_deref()),
+            Given {
+                census: &held,
+                touched: &touched,
+                completions: completions.as_deref(),
+                before: None,
+            },
             changes,
             countries,
             reader,
@@ -238,15 +257,14 @@ impl Prepared {
         )
     }
 
-    /// Observes `hour` of `branch`, whose change facts are `changes`, from its operations
-    /// census read (at a read of a complete table) and its completions (none where incomplete).
+    /// Observes `hour` of `branch`, whose change facts are `changes`, from what its reads give.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe_read(
         &mut self,
         source: &Source,
         (branch, hour): (u64, i32),
         census: Census,
-        (operations, completions): (Option<&CensusRead>, Option<&[Completion]>),
+        given: Given<'_>,
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
         mut reader: Option<&mut Reader<'_>>,
@@ -254,6 +272,7 @@ impl Prepared {
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("intelligence:espionage");
         let replay = source.replay_ref();
+        let completions = given.completions;
         self.initialize(source, branch)?;
         self.advance(source, branch, i64::from(hour) - 1, cancelled)?;
         self.builder
@@ -261,14 +280,19 @@ impl Prepared {
             .get_or_insert_with(BTreeMap::new)
             .clear();
         self.builder.new_completions.clear();
+        // Open runs went on unchanged through the census's last available hour.
+        let through = self.builder.available.last().map(|span| span.last_hour);
         // The read is timed under Operations itself, its table complete or not.
         let read = census.read;
-        if read || changes.rows_changed[TableId::OperationCompletions.index()] {
-            self.materialize();
-        }
         if read || !census.complete {
-            self.builder
-                .observe_operations(hour, census, operations, countries)?;
+            self.builder.observe_census(
+                hour,
+                census,
+                given.census,
+                given.touched,
+                countries,
+                through,
+            )?;
         } else if self
             .builder
             .available
@@ -283,8 +307,14 @@ impl Prepared {
             {
                 self.restore_completions(hour, completions, reader, cancelled)?;
             }
-            self.builder
-                .observe_completions_read(hour, completions, replay, branch, countries)?;
+            self.builder.observe_completions_read(
+                hour,
+                (completions, given.before),
+                replay,
+                branch,
+                countries,
+                through,
+            )?;
         } else if TableId::OperationCompletions
             .last_change()
             .present(replay.format.version())
@@ -508,12 +538,20 @@ impl Prepared {
         Ok(())
     }
 
-    fn raw(&self, branch: u64, last: i32, format: u16) -> EspionageLogReply {
-        let mut raw = self.builder.reply(
+    /// The raw reply through `last` holding `operations`.
+    fn raw(
+        &self,
+        branch: u64,
+        last: i32,
+        format: u16,
+        operations: Vec<EspionageOperation>,
+    ) -> EspionageLogReply {
+        let mut raw = self.builder.reply_with(
             branch.to_string(),
             self.first.expect("espionage first hour"),
             last,
             format,
+            operations,
         );
         raw.unavailable = self.available.is_empty().then(|| {
             "Operations was unavailable, incomplete or never read in this recording.".into()
@@ -522,9 +560,32 @@ impl Prepared {
     }
     fn render(&mut self, source: &Source, branch: u64, last: i32) -> io::Result<()> {
         self.materialize();
-        let mut raw = self.raw(branch, last, source.replay_ref().format.version());
         let first =
             i64::from(self.first.expect("espionage first hour")) + self.next_window as i64 * 24;
+        // Only an operation open, ending or witnessed from the day's first hour can be in it.
+        let operations = self
+            .builder
+            .operations
+            .iter()
+            .filter(|operation| {
+                operation.first_read <= last
+                    && (operation
+                        .end
+                        .as_ref()
+                        .is_none_or(|end| i64::from(end.by_hour) >= first)
+                        || operation
+                            .runs
+                            .last()
+                            .is_some_and(|run| i64::from(run.last_hour) >= first))
+            })
+            .cloned()
+            .collect();
+        let mut raw = self.raw(
+            branch,
+            last,
+            source.replay_ref().format.version(),
+            operations,
+        );
         // Preserve actual terminal census runs in the stored day even while its
         // current ending excludes it. A later drain can move that ending date.
         let mut ended = BTreeMap::new();
@@ -547,17 +608,14 @@ impl Prepared {
                 operation.end = end;
             }
         }
-        reply
-            .operations
-            .sort_by_key(|operation| self.keys.get(&episode_key(&operation.id)).copied());
+        reply.operations.sort_by_cached_key(|operation| {
+            self.keys.get(&episode_key(&operation.id)).copied()
+        });
         check_reply_budget(&reply)?;
         let ordinal = source
             .block_windows(branch)
             .partition_point(|span| span.first_hour <= reply.first_hour)
             .saturating_sub(1) as u64;
-        self.reply_bytes = self
-            .reply_bytes
-            .saturating_add(serde_json::to_vec(&reply)?.len());
         self.replies.entry(ordinal).or_default().push(reply);
         Ok(())
     }
@@ -695,7 +753,6 @@ impl Prepared {
             }
             series::write_reply(writer, &section, ordinal, &saved)?;
         }
-        self.reply_bytes = 0;
         Ok(())
     }
     fn repair(
@@ -710,12 +767,12 @@ impl Prepared {
             let first = self.first.expect("espionage first hour");
             let start = usize::try_from((i64::from(old_end) - i64::from(first)) / 24)
                 .map_err(|_| dashboard_core::invalid("Invalid espionage repair date"))?;
-            let mut raw = self.raw(
+            let raw = self.raw(
                 branch,
                 self.last.expect("espionage repair end"),
                 source.replay_ref().format.version(),
+                vec![operation],
             );
-            raw.operations = vec![operation];
             for day in start..self.next_window {
                 check_cancel(cancelled)?;
                 let projected = metadata_window(&raw, Some(day))?;
@@ -772,15 +829,16 @@ impl Prepared {
                 coverage.available = clipped(&page.available, page.first_hour, page.last_hour);
                 coverage.operations = page.operations.clone();
                 page.available = metadata_window(&coverage, Some(day))?.available;
-                page.operations
-                    .sort_by_key(|operation| self.keys.get(&episode_key(&operation.id)).copied());
+                page.operations.sort_by_cached_key(|operation| {
+                    self.keys.get(&episode_key(&operation.id)).copied()
+                });
                 check_reply_budget(page)?;
             }
         }
         Ok(())
     }
     pub fn bytes(&self) -> usize {
-        self.reply_bytes + self.values.bytes()
+        self.values.bytes()
     }
     pub fn flush(
         &mut self,
@@ -797,10 +855,9 @@ impl Prepared {
         )?;
         if let Some(first) = self.first {
             let last = self.last.unwrap_or(first);
-            let mut manifest = self.raw(branch, last, replay_data::FORMAT_VERSION);
+            let mut manifest = self.raw(branch, last, replay_data::FORMAT_VERSION, Vec::new());
             manifest.available = self.available.clone();
             manifest.completions_available = self.completions.clone();
-            manifest.operations.clear();
             manifest.read_hours.clear();
             manifest.windows = metadata_windows(first, last);
             series::write_catalogue(writer, "espionage-log", branch, &self.keys, &(first, last))?;

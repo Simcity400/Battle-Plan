@@ -152,33 +152,6 @@ struct Branch {
     sums: Sums,
 }
 
-impl Branch {
-    fn bytes(&self) -> usize {
-        use std::mem::size_of;
-        let spans = |spans: &Vec<HourSpan>| spans.capacity() * size_of::<HourSpan>();
-        // A B-tree entry's share of sparse nodes, conservatively.
-        let entry = 2 * size_of::<(String, Vec<FactionTotalRun>)>() + 64;
-        size_of::<Self>()
-            + self.tracks.capacity() * size_of::<CountryTrack>()
-            + self
-                .tracks
-                .iter()
-                .map(|track| track.tag.capacity() + track.runs.capacity() * size_of::<MeasureRun>())
-                .sum::<usize>()
-            + self
-                .sums
-                .series
-                .iter()
-                .map(|(id, runs)| {
-                    entry + id.capacity() + runs.capacity() * size_of::<FactionTotalRun>()
-                })
-                .sum::<usize>()
-            + spans(&self.sums.recorded)
-            + spans(&self.sums.disjoint)
-            + spans(&self.sums.overflow)
-    }
-}
-
 /// The branch's exact sums under the request's measure and membership, built once per
 /// publication of everything they read: the groups, the identity histories, the measure's key
 /// catalogue and its values. Content binds the store key.
@@ -203,7 +176,6 @@ fn branch_sums(
             &(&params.source, params.membership),
             &publication,
             cancelled,
-            Branch::bytes,
             || {
                 let window = HourSpan {
                     first_hour: i32::MIN + 1,
@@ -816,24 +788,13 @@ pub fn query(
         return Ok(Value::Null);
     };
     // The history spans the branch, not the hours asked: it is kept while its
-    // groups page is unchanged, charged at least what its scan holds.
+    // groups page is unchanged.
     let page = file.id().cache_key();
     let history = Arc::clone(
-        &crate::prepared::query::observations::scope(source, "faction-totals:history", Some(&key))
-            .get_entry(
-                branch,
-                &(),
-                &page,
-                cancelled,
-                |(_, bytes): &(Arc<country_groups::FactionHistory>, usize)| *bytes,
-                || {
-                    let scan = country_groups::Scan::read(io::BufReader::new(file))?;
-                    let bytes = crate::prepared::query::observations::serde_bytes(&scan)
-                        + scan.dictionary_bytes();
-                    Ok((scan.faction_history(cancelled)?, bytes))
-                },
-            )?
-            .0,
+        &*crate::prepared::query::observations::scope(source, "faction-totals:history", Some(&key))
+            .get_entry(branch, &(), &page, cancelled, || {
+                country_groups::Scan::read(io::BufReader::new(file))?.faction_history(cancelled)
+            })?,
     );
     let Some(identities) = super::super::country_history::prepared_branch_histories(
         source,

@@ -3,13 +3,18 @@
 //! are native evaluated operands, never reconstructed content prices or balance falls.
 //!
 //! A segment operator reads each hour's changed native rows and, at an item's own hour, what
-//! only that hour's frame says of it ([`facts`]); the emit accounts them into the family's series
-//! publication, each row and item as replies show it, named with the recorded content ([`emit`],
+//! only that hour's frame says of it ([`facts`]), and folds every country's accounting of the
+//! segment on its worker ([`lens`]); the emit joins the branch's countries and accounts the rows
+//! of those the lens does not fold, replaying the rest, into the family's series publication,
+//! each row and item as replies show it, named with the recorded content ([`ledger`], [`emit`],
 //! [`present`], [`records`]); a reply reads them back ([`query`]).
 
 pub mod emit;
 pub mod facts;
 mod items;
+mod ledger;
+mod lens;
+mod packed;
 mod present;
 pub mod query;
 mod records;
@@ -268,6 +273,7 @@ pub struct LedgerSpendCategory {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerSpendCoverage {
     pub read_hour: i32,

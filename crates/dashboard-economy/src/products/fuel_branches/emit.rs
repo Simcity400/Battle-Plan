@@ -86,12 +86,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn known(&mut self, writer: &mut Writer<'_>) -> io::Result<KeyHandle> {
+    fn known(&mut self, writer: &mut Writer) -> io::Result<KeyHandle> {
         if let Some(key) = self.known {
             return Ok(key);
         }
@@ -107,7 +107,7 @@ impl Emit {
         Ok(key)
     }
 
-    fn holder(&mut self, writer: &mut Writer<'_>, slot: u32, hour: i32) -> io::Result<&mut Holder> {
+    fn holder(&mut self, writer: &mut Writer, slot: u32, hour: i32) -> io::Result<&mut Holder> {
         if !self.holders.contains_key(&slot) {
             let actor = self.actors.actor(writer, slot.to_string().as_bytes(), hour)?;
             let read_key = self.key(
@@ -130,7 +130,7 @@ impl Emit {
         Ok(self.holders.get_mut(&slot).expect("the holder just held"))
     }
 
-    fn cell_keys(&mut self, writer: &mut Writer<'_>, cell: Cell, hour: i32) -> io::Result<[KeyHandle; 3]> {
+    fn cell_keys(&mut self, writer: &mut Writer, cell: Cell, hour: i32) -> io::Result<[KeyHandle; 3]> {
         if let Some(&keys) = self.keys.get(&cell) {
             return Ok(keys);
         }
@@ -167,7 +167,7 @@ impl Emit {
         self.refused.insert(id);
     }
 
-    fn set(&mut self, writer: &mut Writer<'_>, at: i32, cell: Cell, values: Values) -> io::Result<()> {
+    fn set(&mut self, writer: &mut Writer, at: i32, cell: Cell, values: Values) -> io::Result<()> {
         let keys = self.cell_keys(writer, cell, at)?;
         let held = self.cells.insert(cell, values);
         if held.is_none() {
@@ -186,7 +186,7 @@ impl Emit {
         Ok(())
     }
 
-    fn end(&mut self, writer: &mut Writer<'_>, at: i32, cell: Cell) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, at: i32, cell: Cell) -> io::Result<()> {
         if self.cells.remove(&cell).is_none() {
             return Ok(());
         }
@@ -204,7 +204,7 @@ impl Emit {
         Ok(())
     }
 
-    fn settle(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn settle(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         for slot in std::mem::take(&mut self.emptied) {
             if let Some(holder) = self.holders.get_mut(&slot)
                 && holder.cells == 0
@@ -216,7 +216,7 @@ impl Emit {
         Ok(())
     }
 
-    fn apply(&mut self, writer: &mut Writer<'_>, at: i32, facts: facts::Facts) -> io::Result<()> {
+    fn apply(&mut self, writer: &mut Writer, at: i32, facts: facts::Facts) -> io::Result<()> {
         let facts::Facts {
             whole,
             cells,
@@ -258,7 +258,7 @@ impl Emit {
         self.settle(writer, at)
     }
 
-    fn clear(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn clear(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         let held: Vec<Cell> = self.cells.keys().copied().collect();
         for cell in held {
             self.end(writer, at, cell)?;
@@ -271,7 +271,7 @@ impl Emit {
         self.settle(writer, at)
     }
 
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("fuel_branches.emit", None);
         let at = hour.hour;
         let gap = match self.last {
@@ -342,7 +342,7 @@ impl Emit {
         Ok(())
     }
 
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

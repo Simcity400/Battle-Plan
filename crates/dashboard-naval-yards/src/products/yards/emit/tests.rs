@@ -13,7 +13,7 @@ use crate::{
 };
 use dashboard_keyed::segment as keyed;
 use dashboard_series::{
-    Budget, Cache, EventOrder, EventQuery, Identity, Publication, Selection, Snapshot,
+    EventOrder, EventQuery, Identity, Publication, Selection, Snapshot,
     codec::Binary,
     memory::{Memory, publish},
     query::EventView,
@@ -23,7 +23,7 @@ use replay::{
     segments::{self, Operator as _},
 };
 use replay_data::{rows::*, scope::CaptureMode};
-use replay_frame::frame::TableView;
+use replay_frame::frame::{DecodedFrame, TableView};
 use std::collections::BTreeSet;
 
 pub(crate) const SHIP: u64 = (9_u64 << 32) | 61;
@@ -499,11 +499,9 @@ pub(crate) fn identity() -> Identity {
 /// A publication of `hours`, cut after each of `cuts`' hours; at each of `resume`'s, the emit
 /// is saved and goes on from the publication, as a preparation of a grown recording does.
 pub(crate) fn build<V: View>(hours: Vec<Hour<V>>, cuts: &[i32], resume: &[i32]) -> (Memory, u64) {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::<V>::new(FormatVersion::CURRENT);
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -519,12 +517,12 @@ pub(crate) fn build<V: View>(hours: Vec<Hour<V>>, cuts: &[i32], resume: &[i32]) 
             reached: cut,
             refusal: None,
         };
-        root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+        root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
         if resume.contains(&cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(FormatVersion::CURRENT, &directory, &saved).unwrap();
         }
@@ -688,9 +686,7 @@ struct Published {
 
 /// What the publication at `root` holds of `V` at every one of `hours`.
 fn published<V: View>(pages: &Memory, root: u64, hours: &[i32]) -> Published {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let span = Span::new(hours[0], *hours.last().unwrap()).unwrap();
     let mut places = Vec::new();

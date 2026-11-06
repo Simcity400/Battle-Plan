@@ -1,7 +1,7 @@
 //! The original sinking attribution and numerical collection, published on the naval family's
 //! series ([`emit`]) and answered from it ([`lines`]).
 use super::*;
-use dashboard_base::prepared::series;
+use dashboard_base::prepared::{coverage, series};
 use dashboard_text::metadata::check_cancel;
 use serde_json::{Value, json};
 pub mod emit;
@@ -660,7 +660,7 @@ impl Prepared {
                     if params.period == NavalPeriod::Running {
                         first
                     } else {
-                        scan.first_ship_read
+                        scan.stretch_ship_read
                     },
                     &scan.ship_unread,
                     &retention.ship_loss,
@@ -672,7 +672,7 @@ impl Prepared {
                     if params.period == NavalPeriod::Running {
                         first
                     } else {
-                        scan.first_convoy_read
+                        scan.stretch_convoy_read
                     },
                     &scan.convoy_unread,
                     &retention.convoy_loss,
@@ -1266,7 +1266,8 @@ fn answer<P: PageRead>(
         } else {
             None
         };
-        let reply = window_reply(lines, actors, metadata, &histories, selection, range, flag)?;
+        let mut reply = window_reply(lines, actors, metadata, &histories, selection, range, flag)?;
+        reply.restarts = coverage::restarts(NAVAL, i32::MIN, i32::MAX);
         let mut reply = serde_json::to_value(reply)?;
         if range.is_none() {
             reply["windows"] = serde_json::to_value(
@@ -1311,6 +1312,7 @@ pub fn empty(source: &Source, params: &Value) -> io::Result<Value> {
         convoy_reads: vec![],
         series: vec![],
         warnings: vec![],
+        restarts: vec![],
     })?;
     if params.get("window").is_none_or(Value::is_null)
         && params.get("hour").is_none_or(Value::is_null)

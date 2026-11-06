@@ -9,7 +9,7 @@ use crate::{
     segment::{self, Segmented, needs},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Identity, Observation, PageRead, Publication, Snapshot, Span, Writer,
+    Blob, Identity, Observation, PageRead, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -23,8 +23,6 @@ use replay_frame::frame::{DecodedFrame, TableView};
 use std::sync::atomic::AtomicBool;
 
 const SECTION: &str = "native-keyed";
-
-static BUDGET: Budget = Budget::new(256 << 20);
 
 /// The recording and content a test binds its observers and keepers to, as the driver binds
 /// them.
@@ -241,10 +239,9 @@ pub fn publish_bound<O: Observer>(
             emit.bind(&binding.content).unwrap();
         }
     };
-    let cache = Cache::new(&BUDGET);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(&BUDGET, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::<O>::new(FormatVersion::CURRENT, branch).unwrap();
     bind(&mut emit);
     let mut published = Vec::with_capacity(cuts.len());
@@ -259,7 +256,6 @@ pub fn publish_bound<O: Observer>(
         let root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -277,8 +273,8 @@ pub fn publish_bound<O: Observer>(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &BUDGET, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(FormatVersion::CURRENT, branch, &directory, &saved).unwrap();
             bind(&mut emit);
@@ -312,9 +308,8 @@ impl Published {
         to: i32,
         through: Option<i32>,
     ) -> (Scan<O>, KeyedWindow) {
-        let cache = Cache::new(&BUDGET);
         let mut snapshot =
-            Snapshot::open(self.pages.clone(), &cache, self.root, identity()).unwrap();
+            Snapshot::open(self.pages.clone(), self.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let (scan, handles) = catalogued::<O>(&directory).unwrap();
         let keyed: Vec<(String, u64)> = scan
@@ -330,9 +325,8 @@ impl Published {
     /// Every scan key's changes over the ascending `hours` as the reader gives them, and as one
     /// lookup of each key at each hour gives them.
     pub fn changes<O: Observer>(&self, hours: &[i32]) -> [Vec<Vec<(usize, Option<i128>)>>; 2] {
-        let cache = Cache::new(&BUDGET);
         let mut snapshot =
-            Snapshot::open(self.pages.clone(), &cache, self.root, identity()).unwrap();
+            Snapshot::open(self.pages.clone(), self.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let (scan, handles) = catalogued::<O>(&directory).unwrap();
         let mut keys = vec![KNOWN, READ];

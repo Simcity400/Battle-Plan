@@ -136,7 +136,9 @@ export function coverageHours(reply: LossesReply, first: number, last: number): 
   return counts;
 }
 
-export interface LossWindow { first: number; hour: number; end: number; campaign: boolean; from?: number | null }
+export interface LossWindow { first: number; hour: number; end: number; campaign: boolean; from?: number | null;
+  /** The first hour its totals count from, after hours the recording lost; null when none came before. */
+  since?: number | null }
 
 /** Follow's trailing frame window is irrelevant to cumulative totals. Ranges are inclusive. */
 export function lossWindow(window: { firstHour: number; lastHour: number } | null,

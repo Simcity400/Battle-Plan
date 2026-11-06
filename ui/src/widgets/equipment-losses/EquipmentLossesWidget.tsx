@@ -36,7 +36,8 @@ import { resolveWindow } from '../../dashboard/model';
 import { NumericReply } from '../../dashboard/numericReply';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
-import { preparedLossHour, preparedLossWindow, usePreparedLosses } from './preparedLosses';
+import { preparedLossHour, preparedLossWindow, stretchWindow, usePreparedLosses } from './preparedLosses';
+import { sinceLabel } from '../../dashboard/stretch';
 import type { PreparedLosses } from './preparedLosses';
 import { entryAt } from '../../dashboard/reads';
 import type { LossesParams } from '../../generated/dashboard';
@@ -48,6 +49,7 @@ import type { LossRow } from './lossDrill';
 import { useParityRows } from '../../dashboard/parityRows';
 import { lossesParity } from './lossesParity';
 import './equipmentLosses.css';
+import { useReplyGaps } from '../../dashboard/replyGaps';
 
 const ROOT = { id: 'all', label: 'All losses' }, NO_WARNINGS: string[] = [];
 const rowKey = (row: LossRow) => row.id;
@@ -56,6 +58,8 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const [picked, setPicked] = useState<readonly string[] | null | undefined>(undefined);
   const anchor = useRef<HTMLDivElement>(null), menu = useContextMenu('Equipment loss actions');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  // Its charts draw equipment-losses replies: cut only where the families they read lost hours.
+  const gaps = useReplyGaps(track?.source.id, track?.branch.id, 'equipment-losses');
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
   const options = resolveOptions(OPTIONS, widget.options), settings = sunburstSettings(options);
   const hasSavedCountry = Object.hasOwn(widget.options ?? {}, 'lossCountry');
@@ -107,8 +111,10 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const hour = view?.hour ?? 0;
   const detailPickOwner = useMemo(() => ({ pickOwner, selected }), [pickOwner, selected]);
   const shownDetailHour = data && !preparedLossHour(data, detailHour) ? data.preparedDetailHour : detailHour;
-  const detailView = view && track && detailHour >= view.first && detailHour <= (requestedView?.end ?? view.end)
-    ? { ...view, hour: Math.min(shownDetailHour, view.end) } : null;
+  const detailWindow = view && track && detailHour >= view.first && detailHour <= (requestedView?.end ?? view.end)
+    ? { ...view, from: requestedView?.from, hour: Math.min(shownDetailHour, view.end) } : null;
+  // The detail's hour may lie in another stretch than the view's: it counts within its own.
+  const detailView = detailWindow && data ? stretchWindow(data, detailWindow) : detailWindow;
   const shownTag = actorSpans && detailView ? countryDrillTagAt(actorSpans, detailView.hour) : null;
   const countryLabels = useCountryLabelsAt(runtime.client, track, saved && savedCountry && shownTag && detailView ? [{ tag: shownTag, hour: detailView.hour }] : [], active);
   const actorReason = hasSavedCountry && !savedCountry ? 'Choose a country again.'
@@ -120,7 +126,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
     reason={hasSavedCountry ? actorReason : 'Choose a country again.'} />, countrySlot) : null;
   const items = useMemo(() => data && view ? lossItems(data, view) : [], [data, view?.first, view?.hour, view?.end, view?.from]);
   const total = useMemo(() => lossesTotal(items), [items]);
-  const rows = useMemo(() => data && detailView && shownTag ? lossRows(data, detailView, selected) : [], [data, detailView?.hour, view?.first, view?.end, view?.from, selected, shownTag]);
+  const rows = useMemo(() => data && detailView && shownTag ? lossRows(data, detailView, selected) : [], [data, detailView?.hour, detailView?.from, view?.first, view?.end, view?.from, selected, shownTag]);
   const coverageSpans = useMemo(() => actorSpans ? drillCountryCoverage(actorSpans) : [], [actorSpans]);
   const stack = useMemo(() => data && view ? lossHistory(data, view.first, view.end, view.from, selected, coverageSpans) : null,
     [data, view?.first, view?.end, view?.from, selected, coverageSpans]);
@@ -185,7 +191,8 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const coverageBody = limitations.length ? <details className="equipment-losses-completeness"><summary>{status}</summary>
     {limitations.map(item => <p key={item.id}>{item.label}</p>)}</details> : <span className="equipment-losses-completeness">{status}</span>;
   const main = <div className="equipment-losses-main">
-    <p className="chart-line-key">{total.incomplete ? 'Subtotal' : 'Losses'}: {total.exact === null ? 'Not known' : formatLosses(total.value ?? 0, total.exact, scale)}</p>
+    <p className="chart-line-key">{total.incomplete ? 'Subtotal' : 'Losses'}: {total.exact === null ? 'Not known' : formatLosses(total.value ?? 0, total.exact, scale)}
+      {view.since != null && <span className="equipment-losses-since"> ({sinceLabel(view.since)})</span>}</p>
     <Sunburst label="Equipment losses" items={items} root={ROOT} levels={levelsShown(options, LEVELS)} text={text} settings={settings}
       authoritativeTotal={total} pickOwner={pickOwner} hoursPerSecond={speed} active={active && (!open || options.drill === 'popout')}
       footnote={[lostThrough, lossesFootnote(data, view)].filter(Boolean).join(' ')} legendExtra={coverageBody}
@@ -198,6 +205,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   </div>;
   const detail = !detailView ? <WidgetState kind="unavailable" message="This time is outside the recording." /> : <>
     <PreparedKey approximate={data.prefix?.approximate} pending={data.prefix?.pending} />
+    {detailView.since != null && <p className="chart-line-key">Counted {sinceLabel(detailView.since)}, after hours the recording lost.</p>}
     {saved && <p className="chart-line-key">{formatDateTime(detailView.hour)} {!following && view.from == null && <button type="button" className="button small"
       onClick={() => setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: true, hour: null }))}>Follow playback</button>}</p>}
     {actorReason && <p className="drill-empty">{actorReason}</p>}
@@ -208,7 +216,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
       sort={{ column: 'amount', direction: 'descending' }} cellBars={false} rankMarkers={false} hoursPerSecond={speed} onRowClick={row => setPicked([row.id])}
       menu={row => row.readHour === null ? [] : [jumpItem(runtime, track.id, row.readHour)]}
       tooltip={row => fitTooltip([{ title: `${row.cause} / ${row.type} / ${row.design}`, rows: [{ label: 'Losses', value: rowText(row) }], note: row.note }], height)} /></div>
-    <div className="breakdown-chart"><TimeChart label="Equipment losses over time" extent={[view.first, Math.max(view.first + 1, view.end + 1)]}
+    <div className="breakdown-chart"><TimeChart gaps={gaps} label="Equipment losses over time" extent={[view.first, Math.max(view.first + 1, view.end + 1)]}
       branchStart={track.branch.firstHour} playhead={detailView.hour} playback="cursor" hoursPerSecond={speed} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}
       active={active && open} revision={stack} pickOwner={detailPickOwner}
       onSummaryView={product.onSummaryView} onHover={product.onHover}

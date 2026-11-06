@@ -363,6 +363,9 @@ pub(super) fn pending(ticket: u64) -> Pending {
         laps: Vec::new(),
         child_laps: Vec::new(),
         view: test_view(),
+        held: Vec::new(),
+        prefilled: 0,
+        awaited: 0,
     }
 }
 

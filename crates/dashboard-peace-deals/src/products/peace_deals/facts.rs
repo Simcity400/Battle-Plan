@@ -208,9 +208,8 @@ impl Operator<World> for Projector {
         let reads = if self.moved.is_empty() {
             None
         } else {
-            // The frame is dropped before the hour ends: the walk's views are not kept.
-            let frame = world.frame_held(hour.state, &self.moved)?;
-            let reads = self.reader.read(&frame, &changed);
+            let frame = world.columns(hour.state);
+            let reads = self.reader.read(&frame, &changed)?;
             (opens || !reads.is_empty()).then(|| Box::new(reads))
         };
         out.push(Hour {

@@ -440,20 +440,30 @@ fn full_inventory_fallback_dates_only_membership_changes() {
         .unwrap();
     let names = state.classifications.clone();
     state.variants.changed.clear();
-    let track = state.result.tags.values_mut().next().unwrap();
+    let tag = state
+        .holders
+        .iter()
+        .find(|(_, holder)| holder.tracks[0].is_some())
+        .map(|(tag, _)| tag.clone())
+        .unwrap();
+    let track = state.track(&tag, 0);
     for _ in 0..4097 {
         track.edits.note((1, Purpose::New));
     }
     track.taken.as_mut().unwrap().1 += 1;
-    state.present(frame.hour + 1, true, false, true);
+    state
+        .present(frame.hour + 1, (true, false), true, true, &flag)
+        .unwrap();
     assert_eq!(state.classifications, names);
     assert!(state.scratch.members.is_empty());
-    let track = state.result.tags.values_mut().next().unwrap();
+    let track = state.track(&tag, 0);
     let value = track.current.remove(&(1, Purpose::New)).unwrap();
     track.current.insert((1, Purpose::Unknown), value);
     track.taken.as_mut().unwrap().1 += 1;
     track.edits.replaced();
-    state.present(frame.hour + 2, true, false, true);
+    state
+        .present(frame.hour + 2, (true, false), true, true, &flag)
+        .unwrap();
     // The membership change reaches design 1 only, and its names keep the census's date.
     assert_ne!(state.classifications[&1].seen, names[&1].seen);
     assert_eq!(state.classifications[&1].names, names[&1].names);
@@ -772,12 +782,13 @@ fn production_spent_reopens_equal_amounts_after_an_unknown_interval() {
         (9, Some(ProductionSpendingUnknown::SpendingUnavailable)),
         (10, None),
     ] {
-        let track = state.result.tags.get_mut("mod country 1").unwrap();
-        track.last.as_mut().unwrap().1 = hour;
+        let track = state.track("mod country 1", 0);
         track.cost_current.get_mut(&(1, Purpose::New)).unwrap().reason = reason;
         // The production observer versions each change to the cost inventory.
         track.cost_taken.as_mut().unwrap().1 += 1;
-        state.observe_spent(hour, true).unwrap();
+        state
+            .observe_holders(hour, Samples::default(), true, true)
+            .unwrap();
     }
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
@@ -1198,9 +1209,7 @@ fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_ap
     open.classifications.retain(|variant, _| *variant == 1);
     let eq = open.countries[0].equipment.clone().unwrap();
     assert!(
-        state
-            .joins
-            .bind_rocket("A", &eq, open.countries[0].rocket.as_ref(), 8, None)
+        state.bind_rocket("A", &eq, open.countries[0].rocket.as_ref(), 8, None)
     );
     let mut writer = store.replace(key.clone()).unwrap();
     state.publish_page(early, None).unwrap();
@@ -1253,7 +1262,7 @@ fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_ap
         serde_json::json!([{"firstHour": 0, "lastHour": 8}])
     );
     // The Rocket read supplying the join ends: the join is withdrawn.
-    assert!(!state.joins.bind_rocket("A", &eq, None, 9, None));
+    assert!(!state.bind_rocket("A", &eq, None, 9, None));
     state.classifications.get_mut(&1).unwrap().token = "mod_reclassified".into();
     let mut writer = store.extend(&key).unwrap();
     state.flush(&mut writer, &flag).unwrap();
@@ -1765,8 +1774,7 @@ fn production_spending_projects_equal_inventories_once_and_rebuilds_after_restor
             // Rebuilding the runtime projection at every hour is the full
             // inventory reference, including every formerly active key.
             if index == 1 {
-                state.spent_holders = Default::default();
-                state.spent_holders_ready = false;
+                state.forget_projections();
             }
             let before = state.spent_visits;
             state.ingest(format, &frame, &flag).unwrap();
@@ -1897,8 +1905,7 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
             changes.slot_read[TableId::ProductionLineOutput.index()] = true;
             for (index, state) in states.iter_mut().enumerate() {
                 if index == 1 {
-                    state.spent_holders = Default::default();
-                    state.spent_holders_ready = false;
+                    state.forget_projections();
                 }
                 let before = state.spent_visits;
                 state

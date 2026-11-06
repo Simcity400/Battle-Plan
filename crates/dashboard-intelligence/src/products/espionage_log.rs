@@ -211,6 +211,10 @@ struct Builder {
     changed: Option<BTreeMap<usize, (u64, (u32, u32, u32))>>,
     #[serde(skip)]
     new_completions: Vec<(u32, u64)>,
+    /// The handles of open operations a completion changed since the last census read: that
+    /// read observes each again.
+    #[serde(skip)]
+    stale: BTreeSet<u64>,
 }
 
 fn budget_error() -> io::Error {
@@ -260,18 +264,40 @@ impl Builder {
         countries: &super::operative_rows::CountryInputs,
     ) -> io::Result<()> {
         let read = completions(frame);
-        self.observe_completions_read(frame.hour, read.as_deref(), replay, branch, countries)
+        self.observe_completions_read(
+            frame.hour,
+            (read.as_deref(), None),
+            replay,
+            branch,
+            countries,
+            None,
+        )
+    }
+
+    /// Carries open operation `index`'s run through `through`, the last hour the census was
+    /// available before: it went on unchanged since its last read.
+    fn carry(&mut self, index: usize, through: Option<i32>) {
+        if let Some(through) = through
+            && let Some(run) = self.operations[index].runs.last_mut()
+        {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.history_visits += 1);
+            run.last_hour = run.last_hour.max(through);
+        }
     }
 
     /// Observes the completions `rows` read at `hour`, each with its definition's name: none
-    /// where OperationCompletions is incomplete.
+    /// where OperationCompletions is incomplete. A completion read again is checked against
+    /// itself as read the hour before, where `before` holds it, else against its first read;
+    /// open runs go on through `through`.
     fn observe_completions_read(
         &mut self,
         hour: i32,
-        rows: Option<&[Completion]>,
+        (rows, before): (Option<&[Completion]>, Option<&[Completion]>),
         replay: &Replay,
         branch: u64,
         countries: &super::operative_rows::CountryInputs,
+        through: Option<i32>,
     ) -> io::Result<()> {
         if !TableId::OperationCompletions
             .last_change()
@@ -313,7 +339,19 @@ impl Builder {
                 sequence: Some(row.sequence.to_string()),
             };
             if let Some(previous) = self.seen_completions.get(&(row.owner, row.sequence)) {
-                repeated.entry(previous.hour).or_default().push(row);
+                match before.and_then(|before| {
+                    before
+                        .iter()
+                        .find(|(held, _)| (held.owner, held.sequence) == (row.owner, row.sequence))
+                }) {
+                    Some((held, _)) if held == row => {}
+                    Some(_) => {
+                        return Err(dashboard_core::invalid(
+                            "Operation completion immutable key changed",
+                        ));
+                    }
+                    None => repeated.entry(previous.hour).or_default().push(row),
+                }
                 continue;
             }
             if row.completion_hour > hour {
@@ -364,6 +402,14 @@ impl Builder {
                 Some(language),
                 &mut self.warnings,
             );
+            if self
+                .open
+                .get(&row.id)
+                .is_some_and(|&(open, _)| open == index)
+            {
+                self.carry(index, through);
+                self.stale.insert(row.id);
+            }
             let operation = &mut self.operations[index];
             let last_seen = operation
                 .runs
@@ -431,6 +477,7 @@ impl Builder {
 
     /// Observes `hour`'s operations from the census `read`, given at an operations read of
     /// a complete table.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_operations(
         &mut self,
         hour: i32,
@@ -465,29 +512,80 @@ impl Builder {
             return Ok(());
         }
         let read = read.ok_or_else(|| io::Error::other("The operations census was not read"))?;
+        let mut held = CensusHeld::default();
+        let mut touched = CensusTouched::default();
+        held.replace(read.clone(), &mut touched);
+        self.observe_census(hour, census, &held, &touched, countries, None)
+    }
+
+    /// Observes `hour`'s operations from the census `held`, at an operations read, of which
+    /// `touched` names what the hour changed: where the census goes on from the hour before,
+    /// only the operations that changed, went or a completion changed are observed again;
+    /// every other open operation goes on unchanged. Open runs went on through `through`, the
+    /// last hour the census was available before.
+    pub(crate) fn observe_census(
+        &mut self,
+        hour: i32,
+        census: Census,
+        held: &CensusHeld,
+        touched: &CensusTouched,
+        countries: &super::operative_rows::CountryInputs,
+        through: Option<i32>,
+    ) -> io::Result<()> {
+        if !census.complete {
+            self.warn("Operations unavailable or incomplete; values and endings unknown");
+            return Ok(());
+        }
+        if !held.taken {
+            return Err(io::Error::other("The operations census was not read"));
+        }
         // A malformed duplicate census is not evidence of absence or zero.
-        let Some(rows) = read.rows.as_ref() else {
+        let Some(rows) = held.rows.as_ref() else {
             self.warn("Duplicate operation handles refused");
             return Ok(());
         };
-        let ids: HashSet<u64> = rows.iter().map(|operation| operation.id).collect();
+        let goes_on = self
+            .available
+            .last()
+            .is_some_and(|span| span.last_hour.checked_add(1) == Some(hour));
         let labels = countries.complete().is_some();
         if !labels {
             self.warn("Country identities unavailable at operation read");
         }
         self.reads.push(hour);
         self.mark_available(hour);
-        if !read.lexical {
+        if !held.lexical {
             self.warn("LexicalTokens unavailable at operation read");
         }
-        let absent: Vec<_> = self
-            .open
-            .keys()
-            .filter(|id| !ids.contains(id))
-            .copied()
-            .collect();
+        for (warning, count) in &held.warnings {
+            *self.warnings.entry(warning.clone()).or_default() += count;
+        }
+        let stale = std::mem::take(&mut self.stale);
+        let (absent, observed): (Vec<u64>, Vec<u64>) = if touched.all || !goes_on {
+            (
+                self.open
+                    .keys()
+                    .filter(|id| !rows.contains_key(*id))
+                    .copied()
+                    .collect(),
+                rows.keys().copied().collect(),
+            )
+        } else {
+            let mut observed: BTreeSet<u64> = touched.set.iter().copied().collect();
+            observed.extend(stale.into_iter().filter(|id| rows.contains_key(id)));
+            (
+                touched
+                    .gone
+                    .iter()
+                    .copied()
+                    .filter(|id| self.open.contains_key(id))
+                    .collect(),
+                observed.into_iter().collect(),
+            )
+        };
         for id in absent {
             let (index, fingerprint) = self.open.remove(&id).expect("open handle");
+            self.carry(index, through);
             if let Some(changed) = &mut self.changed {
                 changed.insert(index, (id, fingerprint));
             }
@@ -517,150 +615,237 @@ impl Builder {
                 });
             }
         }
-        for row in rows {
-            #[cfg(test)]
-            super::intelligence_prepared::work(|work| work.row_visits += 1);
-            if let Some(warning) = &row.warning {
-                self.warn(warning.clone());
-            }
-            if let Some(key) = &row.run.type_key {
-                self.types.insert(key.clone());
-            }
-            let mut run = row.run.clone();
-            run.first_hour = hour;
-            run.last_hour = hour;
-            run.read_hour = hour;
-            let owner_tag = run.owner_tag.clone();
-            let target_tag = run.target_tag.clone();
-            let fingerprint = (row.owner, row.target, row.definition_token);
-            let continuing = self
-                .open
-                .get(&row.id)
-                .filter(|(index, old)| {
-                    if *old != fingerprint {
-                        return false;
-                    }
-                    let operation = &self.operations[*index];
-                    let previous = operation.runs.last().expect("open operation");
-                    // The raw identity survives launch, toggles and unread names.
-                    // Only a finished instance reopening creates another episode.
-                    run.terminal
-                        || !previous.terminal
-                            && operation
-                                .end
-                                .as_ref()
-                                .is_none_or(|end| end.completion_sequence.is_none())
-                })
-                .map(|(index, _)| *index);
-            let index = match continuing {
-                Some(index) => index,
-                None => {
-                    if let Some((old, previous_fingerprint)) = self.open.remove(&row.id) {
-                        if let Some(changed) = &mut self.changed {
-                            changed.insert(old, (row.id, previous_fingerprint));
-                        }
-                        let previous = &mut self.operations[old];
-                        if previous.end.is_none() {
-                            let (outcome, outcome_unrecorded) = outcome_at_end(
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                                &mut self.warnings,
-                            );
-                            previous.end = Some(EspionageOperationEnd {
-                                by_hour: hour,
-                                completion_hour: None,
-                                completion_sequence: None,
-                                type_key: previous.runs.last().and_then(|run| run.type_key.clone()),
-                                last_seen: supplying_read(
-                                    &self.reads,
-                                    previous.runs.last().expect("observed operation").last_hour,
-                                ),
-                                reason: EspionageEndReason::Disappeared,
-                                outcome,
-                                outcome_unrecorded,
-                                owner_tag: labels
-                                    .then(|| countries.labels.get(&previous_fingerprint.0).cloned())
-                                    .flatten(),
-                                target_tag: labels
-                                    .then(|| countries.labels.get(&previous_fingerprint.1).cloned())
-                                    .flatten(),
-                            });
-                        }
-                    }
-                    let index = self.operations.len();
-                    self.operations.push(EspionageOperation {
-                        id: format!("{}:{hour}", row.id),
-                        first_read: hour,
-                        start_hour: run.start_hour,
-                        start_known_at: run.start_hour.map(|_| hour),
-                        definition_token: row.definition_token,
-                        runs: Vec::new(),
-                        end: None,
-                    });
-                    self.instances
-                        .entry(row.id)
-                        .or_default()
-                        .push((index, fingerprint));
-                    self.open.insert(row.id, (index, fingerprint));
-                    index
-                }
-            };
-            if let Some(changed) = &mut self.changed {
-                changed.insert(index, (row.id, fingerprint));
-            }
-            let operation = &self.operations[index];
-            let same = operation.runs.last().is_some_and(|previous| {
-                previous.last_hour.checked_add(1) == Some(hour) && previous.same_values(&run)
-            });
-            let operation = &mut self.operations[index];
-            if operation.start_hour.is_none() && run.start_hour.is_some() {
-                operation.start_hour = run.start_hour;
-                operation.start_known_at = Some(hour);
-            }
-            if run.terminal && operation.end.is_none() {
-                let (bonus, detected, description) = row.outcome;
-                let (outcome, outcome_unrecorded) = outcome_at_end(
-                    bonus,
-                    detected,
-                    description.map(|_| super::operation_description::OperationDescriptionRef {
-                        hour,
-                        id: row.id.to_string(),
-                        owner: row.owner,
-                        sequence: None,
-                    }),
-                    None,
-                    description,
-                    Some(&self.language),
-                    &mut self.warnings,
-                );
-                operation.end = Some(EspionageOperationEnd {
-                    by_hour: hour,
-                    last_seen: hour,
-                    completion_hour: None,
-                    completion_sequence: None,
-                    type_key: run.type_key.clone(),
-                    reason: EspionageEndReason::Completed,
-                    outcome,
-                    outcome_unrecorded,
-                    owner_tag,
-                    target_tag,
-                });
-            }
-            if same {
-                operation
-                    .runs
-                    .last_mut()
-                    .expect("equal previous run")
-                    .last_hour = hour;
-            } else {
-                operation.runs.push(run);
-            }
+        for id in observed {
+            self.observe_row(hour, &rows[&id], labels, countries, through);
         }
         Ok(())
+    }
+
+    /// Observes operation `row` as read at `hour`.
+    fn observe_row(
+        &mut self,
+        hour: i32,
+        row: &OperationRead,
+        labels: bool,
+        countries: &super::operative_rows::CountryInputs,
+        through: Option<i32>,
+    ) {
+        #[cfg(test)]
+        super::intelligence_prepared::work(|work| work.row_visits += 1);
+        if let Some(key) = &row.run.type_key {
+            self.types.insert(key.clone());
+        }
+        if let Some(&(index, _)) = self.open.get(&row.id) {
+            self.carry(index, through);
+        }
+        let mut run = row.run.clone();
+        run.first_hour = hour;
+        run.last_hour = hour;
+        run.read_hour = hour;
+        let owner_tag = run.owner_tag.clone();
+        let target_tag = run.target_tag.clone();
+        let fingerprint = (row.owner, row.target, row.definition_token);
+        let continuing = self
+            .open
+            .get(&row.id)
+            .filter(|(index, old)| {
+                if *old != fingerprint {
+                    return false;
+                }
+                let operation = &self.operations[*index];
+                let previous = operation.runs.last().expect("open operation");
+                // The raw identity survives launch, toggles and unread names.
+                // Only a finished instance reopening creates another episode.
+                run.terminal
+                    || !previous.terminal
+                        && operation
+                            .end
+                            .as_ref()
+                            .is_none_or(|end| end.completion_sequence.is_none())
+            })
+            .map(|(index, _)| *index);
+        let index = match continuing {
+            Some(index) => index,
+            None => {
+                if let Some((old, previous_fingerprint)) = self.open.remove(&row.id) {
+                    if let Some(changed) = &mut self.changed {
+                        changed.insert(old, (row.id, previous_fingerprint));
+                    }
+                    let previous = &mut self.operations[old];
+                    if previous.end.is_none() {
+                        let (outcome, outcome_unrecorded) =
+                            outcome_at_end(None, None, None, None, None, None, &mut self.warnings);
+                        previous.end = Some(EspionageOperationEnd {
+                            by_hour: hour,
+                            completion_hour: None,
+                            completion_sequence: None,
+                            type_key: previous.runs.last().and_then(|run| run.type_key.clone()),
+                            last_seen: supplying_read(
+                                &self.reads,
+                                previous.runs.last().expect("observed operation").last_hour,
+                            ),
+                            reason: EspionageEndReason::Disappeared,
+                            outcome,
+                            outcome_unrecorded,
+                            owner_tag: labels
+                                .then(|| countries.labels.get(&previous_fingerprint.0).cloned())
+                                .flatten(),
+                            target_tag: labels
+                                .then(|| countries.labels.get(&previous_fingerprint.1).cloned())
+                                .flatten(),
+                        });
+                    }
+                }
+                let index = self.operations.len();
+                self.operations.push(EspionageOperation {
+                    id: format!("{}:{hour}", row.id),
+                    first_read: hour,
+                    start_hour: run.start_hour,
+                    start_known_at: run.start_hour.map(|_| hour),
+                    definition_token: row.definition_token,
+                    runs: Vec::new(),
+                    end: None,
+                });
+                self.instances
+                    .entry(row.id)
+                    .or_default()
+                    .push((index, fingerprint));
+                self.open.insert(row.id, (index, fingerprint));
+                index
+            }
+        };
+        if let Some(changed) = &mut self.changed {
+            changed.insert(index, (row.id, fingerprint));
+        }
+        let operation = &self.operations[index];
+        let same = operation.runs.last().is_some_and(|previous| {
+            previous.last_hour.checked_add(1) == Some(hour) && previous.same_values(&run)
+        });
+        let operation = &mut self.operations[index];
+        if operation.start_hour.is_none() && run.start_hour.is_some() {
+            operation.start_hour = run.start_hour;
+            operation.start_known_at = Some(hour);
+        }
+        if run.terminal && operation.end.is_none() {
+            let (bonus, detected, description) = row.outcome;
+            let (outcome, outcome_unrecorded) = outcome_at_end(
+                bonus,
+                detected,
+                description.map(|_| super::operation_description::OperationDescriptionRef {
+                    hour,
+                    id: row.id.to_string(),
+                    owner: row.owner,
+                    sequence: None,
+                }),
+                None,
+                description,
+                Some(&self.language),
+                &mut self.warnings,
+            );
+            operation.end = Some(EspionageOperationEnd {
+                by_hour: hour,
+                last_seen: hour,
+                completion_hour: None,
+                completion_sequence: None,
+                type_key: run.type_key.clone(),
+                reason: EspionageEndReason::Completed,
+                outcome,
+                outcome_unrecorded,
+                owner_tag,
+                target_tag,
+            });
+        }
+        if same {
+            operation
+                .runs
+                .last_mut()
+                .expect("equal previous run")
+                .last_hour = hour;
+        } else {
+            operation.runs.push(run);
+        }
+    }
+}
+
+/// The operations census as the ordered emit holds it: each operation by its handle, in row
+/// order, and how many of them refuse each definition's name.
+#[derive(Default)]
+pub(crate) struct CensusHeld {
+    /// A census has been taken.
+    taken: bool,
+    lexical: bool,
+    /// None where two rows hold one handle.
+    rows: Option<BTreeMap<u64, OperationRead>>,
+    warnings: BTreeMap<String, usize>,
+}
+
+/// What a census changed of the operations held.
+#[derive(Default)]
+pub(crate) struct CensusTouched {
+    /// The census was taken whole: every operation is observed.
+    pub(crate) all: bool,
+    set: Vec<u64>,
+    gone: Vec<u64>,
+}
+
+impl CensusHeld {
+    fn count(warnings: &mut BTreeMap<String, usize>, row: &OperationRead, by: isize) {
+        if let Some(warning) = &row.warning {
+            let count = warnings.entry(warning.clone()).or_default();
+            *count = count.saturating_add_signed(by);
+            if *count == 0 {
+                warnings.remove(warning);
+            }
+        }
+    }
+
+    /// Takes `read` whole.
+    pub(crate) fn replace(&mut self, read: CensusRead, touched: &mut CensusTouched) {
+        self.taken = true;
+        self.lexical = read.lexical;
+        self.warnings.clear();
+        self.rows = read.rows.map(|rows| {
+            rows.into_iter()
+                .map(|row| {
+                    Self::count(&mut self.warnings, &row, 1);
+                    (row.id, row)
+                })
+                .collect()
+        });
+        touched.all = true;
+    }
+
+    /// Takes the rows `set` in place of those of their handles, and drops the handles `gone`.
+    pub(crate) fn patch(
+        &mut self,
+        lexical: bool,
+        set: Vec<OperationRead>,
+        gone: Vec<u64>,
+        touched: &mut CensusTouched,
+    ) {
+        let Self {
+            lexical: held,
+            rows,
+            warnings,
+            ..
+        } = self;
+        *held = lexical;
+        let Some(rows) = rows else {
+            return;
+        };
+        for id in gone {
+            if let Some(old) = rows.remove(&id) {
+                Self::count(warnings, &old, -1);
+            }
+            touched.gone.push(id);
+        }
+        for row in set {
+            touched.set.push(row.id);
+            Self::count(warnings, &row, 1);
+            if let Some(old) = rows.insert(row.id, row) {
+                Self::count(warnings, &old, -1);
+            }
+        }
     }
 }
 
@@ -1059,6 +1244,24 @@ impl Builder {
         last_hour: i32,
         format: u16,
     ) -> EspionageLogReply {
+        self.reply_with(
+            branch_id,
+            first_hour,
+            last_hour,
+            format,
+            self.operations.clone(),
+        )
+    }
+
+    /// [`Self::reply`] holding `operations` in place of every operation held.
+    fn reply_with(
+        &self,
+        branch_id: String,
+        first_hour: i32,
+        last_hour: i32,
+        format: u16,
+        operations: Vec<EspionageOperation>,
+    ) -> EspionageLogReply {
         EspionageLogReply {
             branch_id,
             window: None,
@@ -1080,7 +1283,7 @@ impl Builder {
                     icon_missing: Some("Operation content unavailable".into()),
                 })
                 .collect(),
-            operations: self.operations.clone(),
+            operations,
             warnings: self
                 .warnings
                 .iter()

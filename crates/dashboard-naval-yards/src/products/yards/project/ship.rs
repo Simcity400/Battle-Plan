@@ -36,8 +36,8 @@ impl Ship {
     }
 
     /// Its hull from the ship's row the hour wrote only the strength of.
-    pub(super) fn strengthened(&mut self, frame: &DecodedFrame, id: u64) {
-        if let Some(row) = find(frame.complete::<tables::Ships>().ok(), id, |row| row.id) {
+    pub(super) fn strengthened<F: Tables + ?Sized>(&mut self, frame: &Frame<'_, F>, id: u64) {
+        if let Some(row) = frame.get::<tables::Ships>(id) {
             self.cells[at(ship::HULL)] = Spelled::Integer(i128::from(row.strength));
         }
     }
@@ -66,9 +66,9 @@ impl Out<'_> {
     }
 
     /// A design handle's cell, and its name's or why it has none.
-    fn design(
+    fn design<F: Tables + ?Sized>(
         &mut self,
-        cx: &mut Cx<'_, '_>,
+        cx: &mut Cx<'_, '_, F>,
         (cell, name): (usize, usize),
         handle: u64,
     ) {
@@ -85,7 +85,11 @@ impl Out<'_> {
 }
 
 /// The ship `id` at the hour, `held` its cells as last projected.
-pub(super) fn project(cx: &mut Cx<'_, '_>, id: u64, held: Option<&[Spelled]>) -> Ship {
+pub(super) fn project<F: Tables + ?Sized>(
+    cx: &mut Cx<'_, '_, F>,
+    id: u64,
+    held: Option<&[Spelled]>,
+) -> Ship {
     let frame = cx.frame;
     let mut out = Out {
         cells: vec![Spelled::Null; WIDTH],
@@ -94,8 +98,9 @@ pub(super) fn project(cx: &mut Cx<'_, '_>, id: u64, held: Option<&[Spelled]>) ->
         tasks: Vec::new(),
         variants: Vec::new(),
     };
-    let row = find(frame.complete::<tables::Ships>().ok(), id, |row| row.id);
-    let model = find(frame.complete::<tables::ShipModels>().ok(), id, |row| row.ship);
+    let row = frame.get::<tables::Ships>(id);
+    let model = frame.get::<tables::ShipModels>(id);
+    let (row, model) = (row.as_deref(), model.as_deref());
     let class = row.map(|row| row.class_id as u32);
     let hull = dashboard_forces::products::naval_management::projection::hull(row, model);
     match hull.current_raw {
@@ -118,13 +123,11 @@ pub(super) fn project(cx: &mut Cx<'_, '_>, id: u64, held: Option<&[Spelled]>) ->
         out.set(ship::CLASS, Spelled::Token(class));
         out.set(ship::TASK, Spelled::Integer(i128::from(row.task_force)));
         out.tasks.push(row.task_force);
-        match find(
-            frame.complete::<tables::TaskForceCounterInputs>().ok(),
-            row.task_force,
-            |row| row.task_force,
-        )
-        .and_then(|row| row.name.require("TaskForceCounterInputs.name").ok())
-        .and_then(|bytes| bytes.as_ref())
+        let counter = frame.get::<tables::TaskForceCounterInputs>(row.task_force);
+        match counter
+            .as_deref()
+            .and_then(|row| row.name.require("TaskForceCounterInputs.name").ok())
+            .and_then(|bytes| bytes.as_ref())
         {
             Some(name) => {
                 let operand = Operand::Task {
@@ -136,11 +139,7 @@ pub(super) fn project(cx: &mut Cx<'_, '_>, id: u64, held: Option<&[Spelled]>) ->
             }
             None => out.refuse(cx.reasons, "Task force name not recorded"),
         }
-        if let Some(order) = find(
-            frame.complete::<tables::NavalRepairTaskForces>().ok(),
-            row.task_force,
-            |row| row.task_force,
-        ) {
+        if let Some(order) = frame.get::<tables::NavalRepairTaskForces>(row.task_force) {
             out.set(ship::REPAIR_MODE, Spelled::Integer(i128::from(order.repair_mode)));
             let policy = cx.shared.policy(false, order.repair_mode);
             out.set(ship::POLICY, Spelled::Token(policy));
@@ -148,9 +147,9 @@ pub(super) fn project(cx: &mut Cx<'_, '_>, id: u64, held: Option<&[Spelled]>) ->
             out.set(ship::REPAIR_TARGET, Spelled::Integer(i128::from(order.repair_target)));
             out.set(ship::REJOIN, Spelled::Integer(i128::from(order.merge_after_repair)));
             out.tasks.push(order.merge_after_repair);
-            let tasks = frame.complete::<tables::TaskForces>().ok();
+            let tasks = frame.complete::<tables::TaskForces>();
             if let Some(tasks) = tasks {
-                let resolves = find(Some(tasks), order.merge_after_repair, |row| row.id).is_some();
+                let resolves = tasks.contains(u128::from(order.merge_after_repair));
                 out.set(ship::REJOIN_RESOLVES, Spelled::Integer(i128::from(resolves)));
             }
             out.design(cx, (ship::REFIT_INTENT, ship::REFIT_INTENT_NAME), order.refit_variant);
@@ -159,20 +158,18 @@ pub(super) fn project(cx: &mut Cx<'_, '_>, id: u64, held: Option<&[Spelled]>) ->
                 (ship::AFTER_REPAIR_INTENT, ship::AFTER_REPAIR_INTENT_NAME),
                 order.refit_after_repair,
             );
-            if let Ok(children) = frame.complete::<tables::NavalRepairChildren>() {
-                let first = children.partition_point(|child| child.task_force < row.task_force);
+            if let Some(children) = frame.complete::<tables::NavalRepairChildren>() {
+                let first = u128::from(row.task_force) << 32;
+                let children = frame.each(children.range(first..=first | u128::from(u32::MAX)));
                 let mut list = Vec::new();
-                for child in children[first..]
-                    .iter()
-                    .take_while(|child| child.task_force == row.task_force)
-                {
+                for child in &children {
                     out.tasks.push(child.child);
                     list.push(Spelled::Integer(i128::from(child.ordinal)));
                     list.push(Spelled::Integer(i128::from(child.child)));
                     list.push(match tasks {
-                        Some(tasks) => Spelled::Integer(i128::from(
-                            find(Some(tasks), child.child, |row| row.id).is_some(),
-                        )),
+                        Some(tasks) => {
+                            Spelled::Integer(i128::from(tasks.contains(u128::from(child.child))))
+                        }
                         None => Spelled::Null,
                     });
                 }
@@ -198,8 +195,8 @@ pub(super) fn project(cx: &mut Cx<'_, '_>, id: u64, held: Option<&[Spelled]>) ->
 }
 
 /// The name the game holds for the ship, else one rebuilt from its naming operands.
-fn name(
-    cx: &mut Cx<'_, '_>,
+fn name<F: Tables + ?Sized>(
+    cx: &mut Cx<'_, '_, F>,
     out: &mut Out<'_>,
     id: u64,
     row: Option<&rows::ShipRow>,

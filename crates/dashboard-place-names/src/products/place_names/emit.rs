@@ -84,7 +84,7 @@ impl Emit {
         Ok(emit)
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, measure: u64, id: Option<u32>) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, measure: u64, id: Option<u32>) -> io::Result<KeyHandle> {
         let place = Place {
             actor: FAMILY,
             measure,
@@ -98,7 +98,7 @@ impl Emit {
 
     fn event(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         (measure, id): (u64, Option<u32>),
         at: i32,
         kind: u64,
@@ -118,7 +118,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
@@ -176,7 +176,7 @@ impl Emit {
         Ok(())
     }
 
-    fn write_tables(&mut self, writer: &mut Writer<'_>, at: i32, tables: &Tables) -> io::Result<()> {
+    fn write_tables(&mut self, writer: &mut Writer, at: i32, tables: &Tables) -> io::Result<()> {
         let mode = match &tables.states_unrecorded {
             Some(mode) => Cell::Text(writer.text(mode)?),
             None => Cell::Null,
@@ -198,7 +198,7 @@ impl Emit {
 
     fn province(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         id: u32,
         now: Option<Province>,
@@ -222,7 +222,7 @@ impl Emit {
 
     fn state(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         id: u32,
         now: Option<StateInputs>,
@@ -254,7 +254,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)
     }
 

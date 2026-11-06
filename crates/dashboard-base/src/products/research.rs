@@ -60,17 +60,16 @@ use std::sync::atomic::Ordering;
 pub mod emit;
 pub mod facts;
 pub mod grants;
+mod lens;
 mod modifiers;
 pub mod query;
 pub mod served;
 
-const MAX_BYTES: usize = 32 * 1024 * 1024;
-
 #[cfg(test)]
 #[derive(Default)]
 pub struct ResearchCache {
-    /// Branch, tag, history, retained bytes and the slot reads not joined.
-    countries: VecDeque<(u64, String, ResearchHistory, usize, usize)>,
+    /// Each branch's latest country: its tag, history and the slot reads not joined.
+    countries: BTreeMap<u64, (String, ResearchHistory, usize)>,
 }
 
 #[cfg(test)]
@@ -83,38 +82,17 @@ impl ResearchCache {
         cancelled: &AtomicBool,
     ) -> io::Result<(ResearchHistory, usize)> {
         check_cancel(cancelled)?;
-        if let Some(i) = self
-            .countries
-            .iter()
-            .position(|(id, country, ..)| *id == branch && country == tag)
+        if let Some((held, history, unjoined)) = self.countries.get(&branch)
+            && held == tag
         {
-            let entry = self.countries.remove(i).unwrap();
-            self.countries.push_back(entry);
-        } else {
-            let (history, unjoined) =
-                research_branch_selected(replay, branch, Some(tag), cancelled)?
-                    .remove(tag)
-                    .ok_or_else(|| {
-                        io::Error::other("No recorded research history for this country")
-                    })?;
-            let bytes = history_bytes(&history);
-            while !self.countries.is_empty()
-                && (self.countries.len() >= 4
-                    || self
-                        .countries
-                        .iter()
-                        .map(|(_, _, _, b, _)| b)
-                        .sum::<usize>()
-                        + bytes
-                        > MAX_BYTES)
-            {
-                self.countries.pop_front();
-            }
-            self.countries
-                .push_back((branch, tag.to_owned(), history, bytes, unjoined));
+            return Ok((history.clone(), *unjoined));
         }
-        let (_, _, history, _, unjoined) = self.countries.back().unwrap();
-        Ok((history.clone(), *unjoined))
+        let (history, unjoined) = research_branch_selected(replay, branch, Some(tag), cancelled)?
+            .remove(tag)
+            .ok_or_else(|| io::Error::other("No recorded research history for this country"))?;
+        self.countries
+            .insert(branch, (tag.to_owned(), history.clone(), unjoined));
+        Ok((history, unjoined))
     }
 }
 
@@ -130,53 +108,9 @@ fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
     }
 }
 
-fn history_bytes(history: &ResearchHistory) -> usize {
-    128 + retained_history_bytes(history)
-}
-
-/// Heap allocations retained by the history, excluding its fixed header.
-fn retained_history_bytes(history: &ResearchHistory) -> usize {
-    history.coverage.capacity() * size_of::<ResearchCoverage>()
-        + history.slots.capacity() * size_of::<ResearchSlotHistory>()
-        + history
-            .slots
-            .iter()
-            .map(|s| {
-                s.availability.capacity() * size_of::<ResearchCoverage>()
-                    + s.progress.capacity() * size_of::<ResearchProgress>()
-                    + s.progress
-                        .iter()
-                        .map(|p| {
-                            p.progress_raw.capacity()
-                                + p.base_days_raw.as_ref().map_or(0, String::capacity)
-                        })
-                        .sum::<usize>()
-                    + s.entries.capacity() * size_of::<ResearchEntry>()
-                    + s.entries.iter().map(|e| e.token.capacity()).sum::<usize>()
-                    + s.states.capacity() * size_of::<ResearchSlotState>()
-                    + s.states
-                        .iter()
-                        .map(|state| {
-                            detail_bytes(state.details.as_ref())
-                                + state.token.as_ref().map_or(0, String::capacity)
-                                + state.speed_multiplier_raw.capacity()
-                                + state.banked_days_raw.capacity()
-                                + state.applied_days_raw.capacity()
-                                + state
-                                    .ahead_reduction_years_raw
-                                    .as_ref()
-                                    .map_or(0, String::capacity)
-                        })
-                        .sum::<usize>()
-            })
-            .sum::<usize>()
-}
-
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, replay_spool::Spooled)]
 struct Country {
     carry_until: Option<i32>,
-    #[serde(skip)]
-    budget_bytes: usize,
     identity: Option<(u32, u32)>,
     continuity_start_hour: i32,
     history: ResearchHistory,
@@ -186,9 +120,6 @@ struct Country {
     entry_occurrences: Vec<Option<u32>>,
     samples: BTreeMap<u32, VecDeque<(i32, ProgressSample)>>,
     pending: Vec<(u32, usize, u32, i32, i32)>,
-    /// Append-only retained allocations, excluding the fixed history header.
-    #[serde(skip)]
-    retained_bytes: usize,
     /// The sample hour of the last observed research read.
     last_read: Option<i32>,
     /// Set before each observation: the previous read's hour when every
@@ -203,6 +134,10 @@ struct Country {
     /// shown in the slot's state, never joined into an assignment.
     unjoined_reads: usize,
     unjoined_starts: BTreeMap<u32, i32>,
+    /// While a lens folds it, each slot read's step of the slot's state ([`lens::Chain`]).
+    #[serde(skip)]
+    #[spool(skip)]
+    chains: Option<Vec<lens::Chain>>,
 }
 
 /// A slot's technology read without its recorded occurrence: named, but
@@ -216,88 +151,6 @@ struct UnjoinedTechnology {
 /// Whether an observation at `hour` directly continues one at `last`.
 fn follows(read_after: Option<i32>, last: i32, hour: i32) -> bool {
     last.checked_add(1) == Some(hour) || read_after == Some(last)
-}
-
-#[derive(Clone, Copy, Default)]
-struct SlotMark {
-    entries: usize,
-    states: usize,
-    progress: usize,
-}
-struct HistoryMark {
-    structure: usize,
-    /// One mark per slot the history had; a slot added later counts from zero.
-    slots: Vec<SlotMark>,
-}
-
-fn structure_bytes(history: &ResearchHistory) -> usize {
-    history.coverage.capacity() * size_of::<ResearchCoverage>()
-        + history.slots.capacity() * size_of::<ResearchSlotHistory>()
-        + history
-            .slots
-            .iter()
-            .map(|slot| {
-                slot.availability.capacity() * size_of::<ResearchCoverage>()
-                    + slot.entries.capacity() * size_of::<ResearchEntry>()
-                    + slot.states.capacity() * size_of::<ResearchSlotState>()
-                    + slot.progress.capacity() * size_of::<ResearchProgress>()
-            })
-            .sum::<usize>()
-}
-
-fn history_mark(history: &ResearchHistory) -> HistoryMark {
-    let slots = history
-        .slots
-        .iter()
-        .map(|slot| SlotMark {
-            entries: slot.entries.len(),
-            states: slot.states.len(),
-            progress: slot.progress.len(),
-        })
-        .collect();
-    HistoryMark {
-        structure: structure_bytes(history),
-        slots,
-    }
-}
-
-fn state_payload_bytes(state: &ResearchSlotState) -> usize {
-    detail_bytes(state.details.as_ref())
-        + state.token.as_ref().map_or(0, String::capacity)
-        + state.speed_multiplier_raw.capacity()
-        + state.banked_days_raw.capacity()
-        + state.applied_days_raw.capacity()
-        + state
-            .ahead_reduction_years_raw
-            .as_ref()
-            .map_or(0, String::capacity)
-}
-
-fn history_growth(history: &ResearchHistory, before: &HistoryMark) -> usize {
-    structure_bytes(history) - before.structure
-        + history
-            .slots
-            .iter()
-            .enumerate()
-            .map(|(index, slot)| (slot, before.slots.get(index).copied().unwrap_or_default()))
-            .map(|(slot, mark)| {
-                slot.entries[mark.entries..]
-                    .iter()
-                    .map(|e| e.token.capacity())
-                    .sum::<usize>()
-                    + slot.states[mark.states..]
-                        .iter()
-                        .map(state_payload_bytes)
-                        .sum::<usize>()
-                    + slot.progress[mark.progress..]
-                        .iter()
-                        .map(|p| {
-                            p.progress_raw.capacity()
-                                + p.base_days_raw.as_ref().map_or(0, String::capacity)
-                        })
-                        .sum::<usize>()
-            })
-            .sum::<usize>()
 }
 
 fn cover(coverage: &mut Vec<ResearchCoverage>, hour: i32, read_after: Option<i32>) {
@@ -344,11 +197,6 @@ impl Country {
             }
         }
     }
-    fn charge(&mut self, total: &mut usize) {
-        let bytes = country_bytes(self);
-        *total = *total - self.budget_bytes + bytes;
-        self.budget_bytes = bytes;
-    }
     /// A read of `inputs` with the bonus and modifier rows read with them, where they were.
     fn observe_inputs(
         &mut self,
@@ -390,9 +238,7 @@ impl Country {
         inventory: Option<&Inventory<'_>>,
         attributions: &[Attribution<'_>],
     ) {
-        let before = history_mark(&self.history);
         self.observe_inputs_inner(identity, hour, inputs, inventory, attributions);
-        self.retained_bytes += history_growth(&self.history, &before);
     }
 
     /// Whether `hour` can carry the last read: the same identity, the hour
@@ -544,7 +390,11 @@ impl Country {
                 None
             };
             samples.push_back((hour, ProgressSample::from(input)));
-            while samples.len() > 24 {
+            // A later hour reads only the sample a day before it.
+            while samples
+                .front()
+                .is_some_and(|(at, _)| at.saturating_add(24) <= hour)
+            {
                 samples.pop_front();
             }
             if let Some(occurrence) = occurrence {
@@ -919,12 +769,23 @@ impl Country {
                 ahead_reduction_years_raw: ahead,
                 details: details.and_then(|d| d.get(&row.index)).copied(),
             };
-            if let Some(last) = slot
+            let last = slot
                 .states
-                .last_mut()
-                .filter(|last| continuous && follows(read_after, last.last_hour, hour))
-                && read.continues(last, hour)
-            {
+                .last()
+                .filter(|last| continuous && follows(read_after, last.last_hour, hour));
+            let gate = last.is_some_and(|last| read.others(last));
+            let kept = gate && last.is_some_and(|last| read.countdown(last, hour));
+            if let Some(chains) = &mut self.chains {
+                chains.push(lens::Chain {
+                    slot: row.index,
+                    gate,
+                    kept,
+                    remaining: read.details.and_then(|details| details.remaining_days),
+                    held: read.token.is_some(),
+                    entry: read.entry_first_observed_hour,
+                });
+            }
+            if kept && let Some(last) = slot.states.last_mut() {
                 last.last_hour = hour;
                 continue;
             }
@@ -945,18 +806,14 @@ struct StateRead<'a> {
 }
 
 impl StateRead<'_> {
-    /// Whether it equals `last`, the state before, read on at `hour`. A steady countdown needs
-    /// one segment, not one per day. A different rate, bonus, missing sample or assignment
-    /// breaks it.
-    fn continues(&self, last: &ResearchSlotState, hour: i32) -> bool {
+    /// Whether it equals `last`, the state before, in all but its countdown ([`Self::countdown`]):
+    /// both continue it, read on at an hour. A steady countdown needs one segment, not one per
+    /// day. A different rate, bonus, missing sample or assignment breaks it.
+    fn others(&self, last: &ResearchSlotState) -> bool {
         let details = match (&last.details, &self.details) {
             (None, None) => true,
             (Some(before), Some(now)) => {
-                let counted = before.remaining_days.map(|days| {
-                    days.saturating_sub(((i64::from(hour) - i64::from(last.first_hour)) / 24) as u32)
-                });
-                (counted == now.remaining_days || before.remaining_days == now.remaining_days)
-                    && before.bonuses.as_deref() == now.bonuses
+                before.bonuses.as_deref() == now.bonuses
                     && before.modifiers.as_ref() == now.modifiers
             }
             _ => false,
@@ -974,6 +831,19 @@ impl StateRead<'_> {
             }
     }
 
+    /// Whether its remaining days continue `last`'s, read on at `hour`.
+    fn countdown(&self, last: &ResearchSlotState, hour: i32) -> bool {
+        match (&last.details, &self.details) {
+            (Some(before), Some(now)) => counts_down(
+                before.remaining_days,
+                last.first_hour,
+                hour,
+                now.remaining_days,
+            ),
+            _ => true,
+        }
+    }
+
     fn state(&self, hour: i32) -> ResearchSlotState {
         ResearchSlotState {
             first_hour: hour,
@@ -987,6 +857,14 @@ impl StateRead<'_> {
             ahead_reduction_years_raw: self.ahead_reduction_years_raw.map(|raw| raw.to_string()),
         }
     }
+}
+
+/// Whether a state of `before` remaining days at `first` goes on at `hour` with `now`: its
+/// days counted down by the whole days since, or the same.
+fn counts_down(before: Option<u32>, first: i32, hour: i32, now: Option<u32>) -> bool {
+    let counted = before
+        .map(|days| days.saturating_sub(((i64::from(hour) - i64::from(first)) / 24) as u32));
+    counted == now || before == now
 }
 
 /// Whether `text` is `value` as `to_string` writes it.
@@ -1183,7 +1061,7 @@ pub(crate) fn shown_folders<'a>(
 }
 
 /// Only the assignment identity and past operands needed by the countdown.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, replay_spool::Spooled)]
 struct ProgressSample {
     owner: u32,
     present: u8,
@@ -1260,57 +1138,6 @@ fn unjoined_warning(reads: usize) -> String {
     )
 }
 
-fn detail_bytes(details: Option<&ResearchDetails>) -> usize {
-    details
-        .and_then(|d| d.modifiers.as_ref())
-        .map_or(0, modifiers::bytes)
-        + details
-            .and_then(|d| d.bonuses.as_ref())
-            .map_or(0, |bonuses| {
-                bonuses.capacity() * size_of::<ResearchBonus>()
-                    + bonuses
-                        .iter()
-                        .map(|b| {
-                            [
-                                &b.token,
-                                &b.name,
-                                &b.cost_reduction_raw,
-                                &b.speed_bonus_raw,
-                                &b.ahead_reduction_years_raw,
-                            ]
-                            .iter()
-                            .map(|s| s.as_ref().map_or(0, String::capacity))
-                            .sum::<usize>()
-                        })
-                        .sum::<usize>()
-            })
-}
-
-fn country_bytes(c: &Country) -> usize {
-    use std::mem::size_of;
-    128 + c.retained_bytes
-        + c.entry_occurrences.capacity() * size_of::<Option<u32>>()
-        + c.samples
-            .values()
-            .map(|s| {
-                s.capacity() * size_of::<(i32, ProgressSample)>()
-                    + s.iter().map(|(_, r)| r.token.capacity()).sum::<usize>()
-            })
-            .sum::<usize>()
-        + c.pending.capacity() * size_of::<(u32, usize, u32, i32, i32)>()
-}
-#[cfg(test)]
-fn check_budget(countries: &BTreeMap<String, Country>) -> io::Result<()> {
-    check_bytes(countries.values().map(country_bytes).sum())
-}
-fn check_bytes(bytes: usize) -> io::Result<()> {
-    if bytes > MAX_BYTES {
-        Err(io::Error::other("Research history exceeds memory budget"))
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 pub fn research_branch(
     replay: &Replay,
@@ -1372,6 +1199,21 @@ pub(crate) struct FreshRead<'a> {
     read: Option<i32>,
     joins: Joins<'a>,
     inventory: Option<Inventory<'a>>,
+}
+
+impl<'a> FreshRead<'a> {
+    /// The read a projection kept ([`facts::Fresh`]).
+    pub(crate) fn kept(kept: &'a facts::Fresh) -> Self {
+        Self {
+            inputs: kept.inputs.iter().collect(),
+            read: kept.read,
+            joins: Joins::Attributed(kept.derived.iter().map(facts::Derived::attribution).collect()),
+            inventory: kept
+                .inventory
+                .as_ref()
+                .map(|inventory| Inventory::Held(inventory.rows())),
+        }
+    }
 }
 
 /// What a fresh read's slots join beside their own rows.
@@ -1536,6 +1378,16 @@ pub(crate) struct IndexChanges {
 /// Each canonical slot's holders: their Countries row, id and tag.
 type CountryRows = BTreeMap<u32, Vec<(usize, u32, Vec<u8>)>>;
 
+/// The indexes the country step reads beside its scan, as an hour's index step leaves them:
+/// the holders' slots, each slot's holders, owners and owners' read hours.
+#[derive(Clone, Copy)]
+pub(crate) struct Indexes<'a> {
+    pub(crate) slots: Option<&'a HashMap<u32, u32>>,
+    pub(crate) rows: &'a CountryRows,
+    pub(crate) owners: &'a BTreeMap<u32, Vec<u32>>,
+    pub(crate) dates: &'a BTreeMap<u32, Vec<(u32, i32)>>,
+}
+
 /// The read hours of the slots whose hours changed, None for a slot with none.
 type SlotDates = Vec<(u32, Option<Vec<(u32, i32)>>)>;
 
@@ -1544,10 +1396,6 @@ pub(crate) struct Scan {
     countries: BTreeMap<String, Country>,
     last_bad: Option<i32>,
     last_frame: Option<i32>,
-    #[serde(skip)]
-    bytes: usize,
-    #[serde(skip)]
-    budget_ready: bool,
     #[cfg(test)]
     #[serde(skip)]
     country_reads: Option<super::territory::CountryReads>,
@@ -1555,14 +1403,17 @@ pub(crate) struct Scan {
     #[cfg(test)]
     #[serde(skip)]
     country_count: usize,
+    #[cfg(test)]
     #[serde(skip)]
     country_rows: BTreeMap<u32, Vec<(usize, u32, Vec<u8>)>>,
+    #[cfg(test)]
     #[serde(skip)]
     owners: BTreeMap<u32, Vec<u32>>,
     /// The canonical slots whose owners hold ResearchInputs rows.
     #[cfg(test)]
     #[serde(skip)]
     input_slots: BTreeSet<u32>,
+    #[cfg(test)]
     #[serde(skip)]
     input_dates: BTreeMap<u32, Vec<(u32, i32)>>,
     /// The latest ResearchInputs read hour seen later than the hour holding
@@ -1586,6 +1437,10 @@ pub(crate) struct Scan {
     ready: bool,
     #[serde(skip)]
     observed: BTreeSet<String>,
+    /// The countries a lens folds ([`lens`]): this scan steps them not, keeping each as the
+    /// lens took it, and their carries' deadlines are the lens's.
+    #[serde(skip)]
+    lensed: BTreeSet<String>,
 }
 impl Scan {
     #[cfg(test)]
@@ -1662,28 +1517,40 @@ impl Scan {
         let reads = FrameReads::of(frame)
             .ok_or_else(|| io::Error::other("Refreshed research tables are incomplete"))?;
         let slots = Arc::clone(self.country_reads.as_ref().unwrap().slots());
-        self.apply(
+        let rows = std::mem::take(&mut self.country_rows);
+        let owners = std::mem::take(&mut self.owners);
+        let dates = std::mem::take(&mut self.input_dates);
+        let indexes = Indexes {
+            slots: Some(&slots),
+            rows: &rows,
+            owners: &owners,
+            dates: &dates,
+        };
+        let applied = self.apply(
             frame.hour,
             previous,
             dirty,
             countries_changed,
-            &slots,
+            indexes,
             &reads,
             selected_tag,
             deferred,
-        )
+        );
+        self.country_rows = rows;
+        self.owners = owners;
+        self.input_dates = dates;
+        applied
     }
 
     /// Hour `hour` from what its [`Self::refresh`] found elsewhere
-    /// (`refreshed`, None for an incomplete hour) and the index values it
-    /// changed, already applied to this scan's indexes, with the holders'
-    /// slots `slots` and the hour's rows read through `reads`: as
+    /// (`refreshed`, None for an incomplete hour) and the indexes it left,
+    /// `indexes`, with the hour's rows read through `reads`: as
     /// [`Self::observe_selected_changed`] observes the hour.
     pub(crate) fn observe_refreshed(
         &mut self,
         hour: i32,
         refreshed: Option<(BTreeSet<u32>, bool)>,
-        slots: Option<&HashMap<u32, u32>>,
+        indexes: Indexes<'_>,
         reads: &dyn Reads,
     ) -> io::Result<()> {
         let previous = self.begin_hour(hour);
@@ -1698,63 +1565,85 @@ impl Scan {
         {
             self.indexed = Some(hour);
         }
-        let slots =
-            slots.ok_or_else(|| io::Error::other("Refreshed research holders are missing"))?;
+        if indexes.slots.is_none() {
+            return Err(io::Error::other("Refreshed research holders are missing"));
+        }
         self.apply(
             hour,
             previous,
             dirty,
             countries_changed,
-            slots,
+            indexes,
             reads,
             None,
             true,
         )
     }
 
-    /// Apply an hour's index changes to these indexes.
-    pub(crate) fn adopt(&mut self, changes: &IndexChanges) {
-        if let Some((_, rows)) = &changes.countries {
-            self.country_rows = rows.clone();
+    /// Begins `tag`, held by `identity`, from its read at `read`, the first it observes, as the
+    /// country step of that hour takes a fresh read ([`Self::apply`]).
+    fn begin(&mut self, tag: &str, identity: (u32, u32), read: i32, rows: &FreshRead<'_>) {
+        let state = self.countries.entry(tag.to_owned()).or_default();
+        if let Joins::Attributed(attributions) = &rows.joins
+            && valid_inputs(&rows.inputs)
+            && attributions.len() == rows.inputs.len()
+        {
+            state.observe_attributed(
+                identity,
+                read,
+                &rows.inputs,
+                rows.inventory.as_ref(),
+                attributions,
+            );
         }
-        if let Some(owners) = &changes.owners {
-            self.owners = owners.clone();
+        state.last_read = Some(read);
+        state.carry_until = state
+            .history
+            .coverage
+            .last()
+            .filter(|span| span.last_hour == read)
+            .and_then(|_| read.checked_add(replay_data::cadence::STAGGER_PERIOD - 1));
+    }
+
+    /// Hands `tag` to a lens: its state stays as it is now, the scan no longer steps it, and its
+    /// carry's deadline and `canonical`'s next observation are the lens's.
+    fn lens(&mut self, tag: &str, canonical: u32) {
+        if let Some(due) = self
+            .countries
+            .get(tag)
+            .and_then(|country| country.carry_until)
+            .and_then(|until| until.checked_add(1))
+        {
+            self.deadlines.remove(&(due, tag.to_owned()));
         }
-        if let Some(dates) = &changes.dates {
-            self.input_dates = dates.clone();
+        self.recheck.remove(&canonical);
+        self.lensed.insert(tag.to_owned());
+    }
+
+    /// Takes `tag` back from its lens as `country`, whose `canonical` slot is observed again at
+    /// the next hour where `recheck`.
+    fn unlens(&mut self, tag: &str, country: Country, canonical: u32, recheck: bool) {
+        self.lensed.remove(tag);
+        if let Some(due) = country.carry_until.and_then(|until| until.checked_add(1)) {
+            self.deadlines.insert((due, tag.to_owned()));
         }
-        for (slot, dates) in &changes.slot_dates {
-            match dates {
-                Some(dates) => {
-                    self.input_dates.insert(*slot, dates.clone());
-                }
-                None => {
-                    self.input_dates.remove(slot);
-                }
-            }
+        if recheck {
+            self.recheck.insert(canonical);
         }
+        self.countries.insert(tag.to_owned(), country);
     }
 
     /// An hour's first step, before its tables are read: carries end at the
     /// deadlines it reaches, a gap ends every carry, and the hour becomes the
     /// last observed. The hour before it observed, if any.
     fn begin_hour(&mut self, hour: i32) -> Option<i32> {
-        // Allocation capacities belong to this process. Restored vectors need
-        // their own memory charge, without persisting it in the continuation.
-        if !self.budget_ready {
-            self.bytes = 0;
-            for country in self.countries.values_mut() {
-                country.retained_bytes = history_bytes(&country.history) - 128;
-                country.budget_bytes = country_bytes(country);
-                self.bytes += country.budget_bytes;
-            }
-            self.budget_ready = true;
-        }
         self.observed.clear();
         if !self.ready {
+            let lensed = &self.lensed;
             self.deadlines = self
                 .countries
                 .iter()
+                .filter(|(tag, _)| !lensed.contains(*tag))
                 .filter_map(|(tag, country)| {
                     country
                         .carry_until
@@ -2003,7 +1892,7 @@ impl Scan {
     /// `dirty` slots and of the slots observed again from the hour before
     /// takes its read, carries the last one or ends its carry. It reads the
     /// hour's research rows and read hours through `reads` alone, and the
-    /// holders' slots through `slots`.
+    /// indexes through `indexes`, whose holders' slots it is given.
     #[allow(clippy::too_many_arguments)]
     fn apply(
         &mut self,
@@ -2011,27 +1900,33 @@ impl Scan {
         previous: Option<i32>,
         mut dirty: BTreeSet<u32>,
         countries_changed: bool,
-        slots: &HashMap<u32, u32>,
+        indexes: Indexes<'_>,
         reads: &dyn Reads,
         selected_tag: Option<&str>,
         deferred: bool,
     ) -> io::Result<()> {
-        if countries_changed {
+        let Indexes {
+            slots,
+            rows: country_rows,
+            owners,
+            dates: input_dates,
+        } = indexes;
+        let slots = slots.ok_or_else(|| io::Error::other("Research holders are missing"))?;
+        if countries_changed && !self.deadlines.is_empty() {
+            let holders: BTreeSet<(&[u8], u32)> = country_rows
+                .values()
+                .flatten()
+                .map(|(_, id, tag)| (tag.as_slice(), *id))
+                .collect();
             let held: Vec<_> = self
                 .deadlines
                 .iter()
                 .filter_map(|(_, tag)| {
                     let country = &self.countries[tag];
-                    let same = self
-                        .country_rows
-                        .values()
-                        .flatten()
-                        .any(|(_, id, current)| {
-                            current == tag.as_bytes()
-                                && country.identity.is_some_and(|(prior, slot)| {
-                                    prior == *id && slots.get(id) == Some(&slot)
-                                })
-                        });
+                    let same = country.identity.is_some_and(|(prior, slot)| {
+                        holders.contains(&(tag.as_bytes(), prior))
+                            && slots.get(&prior) == Some(&slot)
+                    });
                     (!same).then_some(tag.clone())
                 })
                 .collect();
@@ -2043,7 +1938,7 @@ impl Scan {
         let mut selected: Vec<_> = dirty
             .iter()
             .flat_map(|slot| {
-                self.country_rows
+                country_rows
                     .get(slot)
                     .into_iter()
                     .flatten()
@@ -2055,15 +1950,18 @@ impl Scan {
             if selected_tag.is_some_and(|selected| selected.as_bytes() != tag_bytes) {
                 continue;
             }
+            if !self.lensed.is_empty()
+                && std::str::from_utf8(tag_bytes).is_ok_and(|tag| self.lensed.contains(tag))
+            {
+                continue;
+            }
             // Ascending ids, as CountryLinks orders them: each table keyed
             // country first holds the slot's rows in this order.
-            let owners = self
-                .owners
+            let owners = owners
                 .get(&canonical)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            let fresh = self
-                .input_dates
+            let fresh = input_dates
                 .get(&canonical)
                 .is_some_and(|reads| reads.iter().any(|(_, read)| *read == hour));
             if !fresh {
@@ -2187,9 +2085,8 @@ impl Scan {
                 }
             }
             self.observed.insert(tag.to_owned());
-            state.charge(&mut self.bytes);
         }
-        check_bytes(self.bytes)
+        Ok(())
     }
 }
 

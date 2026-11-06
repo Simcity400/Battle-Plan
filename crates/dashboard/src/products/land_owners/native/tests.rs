@@ -31,7 +31,7 @@ fn frontier(complete: bool, last_hour: i32) -> Frontier {
         prepared: 1,
         proof: [0; 32],
         ledger_pages: 0,
-        first_hole: None,
+        holes: Vec::new(),
         state: None,
         carry: None,
         end: None,
@@ -55,12 +55,12 @@ fn readiness_tracks_completion_losses_and_refusals() {
         Readiness::Done { incomplete: false }
     ));
     let mut hole = frontier(true, 10);
-    hole.first_hole = Some(Interval {
+    hole.holes = vec![Interval {
         first_hour: 5,
         last_hour: 5,
         held: Held::Lost,
         reason: String::new(),
-    });
+    }];
     assert!(matches!(
         readiness(4, None, Some(&hole), 10),
         Readiness::Done { incomplete: true }

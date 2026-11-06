@@ -13,7 +13,7 @@ use dashboard_base::{
 use dashboard_keyed::query::KeyedWindow;
 use dashboard_text::template_facts::TemplateNaming;
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::HourFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -38,15 +38,6 @@ pub const QUERY: &str = "division-equipment-history";
 
 /// How long a supplying read carries: the reached product's look-back.
 const CADENCE: i32 = replay_data::cadence::STAGGER_PERIOD;
-
-/// The designs' tables a lookup reads ([`army_content::Designs`]).
-const DESIGNS: [TableId; 5] = [
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::CountryAppearance,
-    TableId::LexicalTokens,
-    TableId::VariantDefinitions,
-];
 
 pub struct DivisionEquipmentHistory;
 
@@ -93,12 +84,12 @@ impl KeptReason {
         }
     }
 
-    /// The refusal `before` and the failed read of `table` at the frame's hour give: the
-    /// read's own `hour H <Table>` start is kept as the table, the rest of its words as
-    /// written. Made where the read fails, never found again in other text.
-    fn unreadable(before: &str, frame: &DecodedFrame, table: TableId, error: &io::Error) -> Self {
+    /// The refusal `before` and the failed read of `table` at `hour` give: the read's own
+    /// `hour H <Table>` start is kept as the table, the rest of its words as written. Made
+    /// where the read fails, never found again in other text.
+    fn unreadable(before: &str, hour: i32, table: TableId, error: &io::Error) -> Self {
         let text = error.to_string();
-        match text.strip_prefix(&format!("hour {} {table:?}", frame.hour)) {
+        match text.strip_prefix(&format!("hour {hour} {table:?}")) {
             Some(rest) => Self {
                 text: vec![before.to_owned(), rest.to_owned()],
                 tables: vec![format!("{table:?}")],
@@ -123,48 +114,46 @@ impl KeptReason {
 }
 
 /// A template's naming operands, a failed read of its tables kept as that read's refusal.
-fn kept_naming(frame: &DecodedFrame, handle: u64) -> Result<TemplateNaming, KeptReason> {
+fn kept_naming(frame: HourFrame<'_>, handle: u64) -> Result<TemplateNaming, KeptReason> {
     // In the naming's order: its dictionaries, its dictionary row, then its icons. A missing
-    // row is refused before the icons are read, in the naming's own words.
-    let dictionaries = match frame.complete::<tables::DivisionTemplates>() {
+    // row is refused before the icons are read, in the naming's own words. A template's rows
+    // are keyed by its handle.
+    let dictionaries = match frame.complete::<tables::DivisionTemplates>(0) {
         Ok(rows) => rows,
         Err(error) => {
             return Err(KeptReason::unreadable(
                 "",
-                frame,
+                frame.hour(),
                 TableId::DivisionTemplates,
                 &error,
             ));
         }
     };
-    if dictionaries
-        .binary_search_by_key(&handle, |row| row.template)
-        .is_ok()
-        && let Err(error) = frame.complete::<tables::DivisionTemplateIcons>()
+    if dictionaries.contains(u128::from(handle))
+        && let Err(error) = frame.complete::<tables::DivisionTemplateIcons>(0)
     {
         return Err(KeptReason::unreadable(
             "",
-            frame,
+            frame.hour(),
             TableId::DivisionTemplateIcons,
             &error,
         ));
     }
-    army_content::template_naming(frame, handle).map_err(KeptReason::literal)
+    army_content::template_naming_in(frame, handle).map_err(KeptReason::literal)
 }
 
 /// A template's artwork operands, a failed read of its icons kept as that read's refusal.
-fn kept_artwork(frame: &DecodedFrame, handle: u64) -> Result<TemplateArtwork, KeptReason> {
-    if let Err(error) = frame.complete::<tables::DivisionTemplateIcons>() {
+fn kept_artwork(frame: HourFrame<'_>, handle: u64) -> Result<TemplateArtwork, KeptReason> {
+    if let Err(error) = frame.complete::<tables::DivisionTemplateIcons>(0) {
         return Err(KeptReason::unreadable(
             army_content::ARTWORK_UNAVAILABLE,
-            frame,
+            frame.hour(),
             TableId::DivisionTemplateIcons,
             &error,
         ));
     }
-    army_content::template_artwork(frame, handle).map_err(KeptReason::literal)
+    army_content::template_artwork_in(frame, handle).map_err(KeptReason::literal)
 }
-
 /// What `answer` gives for a kept operand: a kept refusal carried into its words.
 fn answered<T: Clone, U>(
     operand: &Result<T, KeptReason>,

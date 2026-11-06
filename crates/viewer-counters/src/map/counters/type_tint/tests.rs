@@ -61,7 +61,7 @@ fn foreign_division_icons_complete_war_census_survives_the_tint_memo_projection(
             row.directed_wars = Recorded::NotRecorded;
         }
     }
-    let memo = Memo::new(TABLES, 2);
+    let memo = Memo::new(TABLES);
     let index = Index::read(&memo, &frame, &links, 1);
     assert_eq!(index.of(101, 101), Some(Side::Friend));
     assert_eq!(index.of(102, 102), Some(Side::Friend));
@@ -353,7 +353,7 @@ fn missing_volunteer_inputs_keep_proven_friend_and_independent_port_enemy() {
         reason: "sent list capture failed".into(),
     }
     .into();
-    let index = Index::read(&Memo::new(TABLES, 2), &frame, &links, 1);
+    let index = Index::read(&Memo::new(TABLES), &frame, &links, 1);
     assert_eq!(index.of(501, 501), Some(Side::Friend));
     assert_eq!(index.of(104, 104), None);
     assert_eq!(index.mission_item(false, 104, 104), Some(Allegiance::Enemy));
@@ -363,7 +363,7 @@ fn missing_volunteer_inputs_keep_proven_friend_and_independent_port_enemy() {
 #[test]
 fn carried_directed_packets_do_not_survive_the_memo_hour_key() {
     let (links, _, frame) = world(&[(1, 4)], &[], &[]);
-    let memo = Memo::new(TABLES, 2);
+    let memo = Memo::new(TABLES);
     let first = Index::read(&memo, &frame, &links, 1);
     assert_eq!(first.of(104, 104), Some(Side::Enemy));
     let mut carried = frame.clone();
@@ -588,7 +588,7 @@ fn the_memo_reuses_an_index_until_its_tables_or_key_change() {
     frame.tables[TableId::Divisions.index()] = divisions(102);
     *frame.tables[TableId::SentVolunteers.index()] =
         TableView::Complete(TableRows::SentVolunteers(volunteers(&[10])));
-    let memo = Memo::new(TABLES, 4);
+    let memo = Memo::new(TABLES);
     let first = Index::read(&memo, &frame, &links, 1);
     assert_eq!(first.of(102, 102), Some(Side::Friend));
     // Divisions is a new allocation every hour; an equal host keeps the index.

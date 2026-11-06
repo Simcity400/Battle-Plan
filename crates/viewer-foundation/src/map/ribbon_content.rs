@@ -523,6 +523,8 @@ pub struct OrderField {
     /// The raid arrows' flying units ([`super::raid_arrows`]), which the
     /// unit model layer draws.
     pub raid_units: Vec<crate::map::unit_pose::UnitPlacement>,
+    /// What the raid units measured with, which the field keeps for the hours after it.
+    pub held: Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// What the hour held and what was drawn, for the report.
     pub report: OrderReport,
 }

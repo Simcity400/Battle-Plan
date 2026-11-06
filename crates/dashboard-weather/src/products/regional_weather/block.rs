@@ -2,7 +2,7 @@
 //! native weather updates. Province temperature failures never hide known flags.
 
 use super::admission;
-use dashboard_base::prepared::{facts::Credit, prepass::HeldBytes};
+use dashboard_base::prepared::prepass::HeldBytes;
 use dashboard_keyed::{Delta, Values, delta::Names};
 use replay::container::TableFields;
 use replay_data::{
@@ -84,18 +84,10 @@ struct Regional {
     /// The key the scan numbered each name with, once learnt.
     keys: [Option<u64>; 14],
     values: [Option<i128>; 14],
-    _credit: Credit,
 }
 
 impl Regional {
     fn new(id: u32, values: [Option<i128>; 14]) -> io::Result<Self> {
-        let names_bytes = MEASURES.iter().try_fold(0, |bytes, measure| {
-            admission::add(bytes, 11 + measure.len())
-        })?;
-        let credit = admission::admit(
-            admission::add(admission::tree_entry::<u32, Self>()?, names_bytes)?,
-            "region names and scalars",
-        )?;
         let mut names = std::array::from_fn(|_| String::new());
         for (name, measure) in names.iter_mut().zip(MEASURES) {
             *name = admission::name(id, measure)?;
@@ -104,7 +96,6 @@ impl Regional {
             names,
             keys: [None; 14],
             values,
-            _credit: credit,
         })
     }
 
@@ -379,7 +370,7 @@ impl dashboard_keyed::Observer for Observer {
         let rows = frame.complete::<tables::WeatherRegions>();
         let regional_known = rows.is_ok();
         let rows = rows.unwrap_or_default();
-        let (mut ended, _credit) = admission::vector(self.regions.len(), "retired region keys")?;
+        let mut ended = admission::vector(self.regions.len(), "retired region keys")?;
         ended.extend(
             self.regions
                 .keys()

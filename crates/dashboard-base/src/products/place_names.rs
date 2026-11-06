@@ -33,7 +33,7 @@ use crate::{
 use installed_content_country_names::country_names;
 use replay::container::Replay;
 use replay_data::rows::{StateRow, TableId, tables};
-use replay_frame::frame::{DecodedFrame, DecodedSource, FrameDecoder, TableView};
+use replay_frame::frame::{ColumnFrame, DecodedFrame, DecodedSource, FrameDecoder, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -372,6 +372,160 @@ impl Inputs for FrameInputs<'_> {
 
     fn states_gap(&self) -> &str {
         &self.states().1
+    }
+
+    fn reserved_tag(&self) -> Result<&str, &str> {
+        self.reserved
+            .get_or_init(|| self.tag(0))
+            .as_deref()
+            .map_err(String::as_str)
+    }
+}
+
+/// [`Inputs`] read from a columnar walk's views of the name tables, as [`FrameInputs`] reads
+/// a frame of them: each province and state read by key, only the fields names read, and each
+/// original-or-own tag from the views of its country tables.
+pub struct ColumnInputs<'w> {
+    frame: ColumnFrame<'w>,
+    tags: RefCell<HashMap<u32, Result<String, String>>>,
+    reserved: OnceCell<Result<String, String>>,
+    renames_gap: OnceCell<String>,
+    states_gap: OnceCell<String>,
+    /// The first row a read could not build; the hour refuses with it.
+    failed: RefCell<Option<io::Error>>,
+}
+
+const PROVINCE_STATE: usize = replay_data::rows::column::<replay_data::rows::ProvinceRow>("state");
+const RENAME: usize = replay_data::rows::column::<replay_data::rows::ProvinceNameRow>("name");
+const LINK_SLOT: usize =
+    replay_data::rows::column::<replay_data::rows::CountryLinkRow>("canonical_slot");
+const STATE_FIELDS: u64 =
+    replay_data::rows::mask::<StateRow>(&["owner", "custom_name", "owner_name"]);
+
+impl<'w> ColumnInputs<'w> {
+    /// The hour of a walk's views.
+    pub fn new(frame: ColumnFrame<'w>) -> Self {
+        Self {
+            frame,
+            tags: RefCell::new(HashMap::new()),
+            reserved: OnceCell::new(),
+            renames_gap: OnceCell::new(),
+            states_gap: OnceCell::new(),
+            failed: RefCell::new(None),
+        }
+    }
+
+    /// The error a read met, if any: the hour refuses with it.
+    pub fn failure(&self) -> Option<io::Error> {
+        self.failed.borrow_mut().take()
+    }
+
+    fn fail<T>(&self, result: io::Result<T>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.failed.borrow_mut().get_or_insert(error);
+                None
+            }
+        }
+    }
+
+    fn rows(&self, table: TableId) -> Option<replay_frame::frame::Columns<'w>> {
+        self.frame.view(table).rows()
+    }
+
+    fn tag(&self, slot: u32) -> Result<String, String> {
+        if let Some(tag) = self.tags.borrow().get(&slot) {
+            return tag.clone();
+        }
+        // Slot zero's tag reads its reserved row alone; any other its country's rows.
+        let tag = country_names::original_or_own_tag_in(&self.frame, slot).map(Cow::into_owned);
+        self.tags.borrow_mut().insert(slot, tag.clone());
+        tag
+    }
+
+    /// Every province's id, in key order.
+    pub fn province_ids(&self) -> Vec<u32> {
+        self.rows(TableId::Provinces)
+            .map(|rows| rows.slots().iter().map(|&slot| rows.key(slot) as u32).collect())
+            .unwrap_or_default()
+    }
+
+    /// Every state's id, in key order.
+    pub fn state_ids(&self) -> Vec<u32> {
+        self.rows(TableId::States)
+            .map(|rows| rows.slots().iter().map(|&slot| rows.key(slot) as u32).collect())
+            .unwrap_or_default()
+    }
+}
+
+impl Inputs for ColumnInputs<'_> {
+    fn hour(&self) -> i32 {
+        self.frame.hour
+    }
+
+    fn province(&self, id: u32) -> Option<u32> {
+        // As a frame reads it: no row while Provinces is not recorded.
+        let rows = self.rows(TableId::Provinces)?;
+        let slot = rows.find(u128::from(id))?;
+        self.fail(rows.value::<u32>(slot, PROVINCE_STATE))
+    }
+
+    fn rename(&self, id: u32) -> Option<&[u8]> {
+        let rows = self.rows(TableId::ProvinceNames)?;
+        let slot = rows.find(u128::from(id))?;
+        match self.fail(rows.bytes(slot, RENAME))? {
+            Some(name) => Some(name),
+            // An unrecorded name reads as the row decoder reads it.
+            None => {
+                self.fail(rows.value::<Vec<u8>>(slot, RENAME))?;
+                Some(&[])
+            }
+        }
+    }
+
+    fn renames_complete(&self) -> bool {
+        self.frame.view(TableId::ProvinceNames).is_complete()
+    }
+
+    fn renames_gap(&self) -> &str {
+        self.renames_gap
+            .get_or_init(|| self.frame.view(TableId::ProvinceNames).status().gap())
+    }
+
+    fn states_unrecorded(&self) -> Option<String> {
+        match self.frame.view(TableId::States) {
+            replay_frame::frame::ColumnView::NotRecorded { mode } => Some(mode.to_string()),
+            _ => None,
+        }
+    }
+
+    fn state(&self, id: u32) -> Option<Cow<'_, StateInputs>> {
+        let rows = self.rows(TableId::States)?;
+        let slot = rows.find(u128::from(id))?;
+        let row = self.fail(rows.row::<StateRow>(slot, STATE_FIELDS))?;
+        let owner = if row.owner == 0 {
+            Owner::Tag(self.tag(0))
+        } else {
+            let slot = self.rows(TableId::CountryLinks).and_then(|links| {
+                let at = links.find(u128::from(row.owner))?;
+                self.fail(links.value::<u32>(at, LINK_SLOT))
+            });
+            match slot {
+                Some(slot) => Owner::Tag(self.tag(slot)),
+                None => Owner::Unlinked(row.owner),
+            }
+        };
+        Some(Cow::Owned(StateInputs {
+            custom: row.custom_name,
+            owner_name: row.owner_name,
+            owner,
+        }))
+    }
+
+    fn states_gap(&self) -> &str {
+        self.states_gap
+            .get_or_init(|| self.frame.view(TableId::States).status().gap())
     }
 
     fn reserved_tag(&self) -> Result<&str, &str> {
@@ -825,45 +979,62 @@ pub fn at_frame(
     frame: &DecodedFrame,
     flag: &AtomicBool,
 ) -> io::Result<PlaceNamesReply> {
-    named_at_frame(source, params, context, frame, flag, true)
+    named_at_frame(source, params, context, &FrameInputs::new(frame), flag, true)
 }
 
-/// [`at_frame`] without the refusal lines, for a caller naming apart from its consumer scope.
+/// [`at_frame`] without the refusal lines, for a caller naming apart from its consumer scope:
+/// of any frame's tables, a walk's views among them.
 pub fn at_frame_unreported(
     source: &Source,
     params: &PlaceNamesParams,
     context: &LoadContext,
-    frame: &DecodedFrame,
+    frame: replay_frame::frame::HourFrame<'_>,
     flag: &AtomicBool,
 ) -> io::Result<PlaceNamesReply> {
-    named_at_frame(source, params, context, frame, flag, false)
+    match frame {
+        replay_frame::frame::HourFrame::Decoded(decoded) => named_at_frame(
+            source,
+            params,
+            context,
+            &FrameInputs::new(decoded.decoded_frame()),
+            flag,
+            false,
+        ),
+        replay_frame::frame::HourFrame::Walked(walked) => {
+            let inputs = ColumnInputs::new(walked);
+            let reply = named_at_frame(source, params, context, &inputs, flag, false)?;
+            match inputs.failure() {
+                Some(error) => Err(error),
+                None => Ok(reply),
+            }
+        }
+    }
 }
 
 fn named_at_frame(
     source: &Source,
     params: &PlaceNamesParams,
     context: &LoadContext,
-    frame: &DecodedFrame,
+    inputs: &impl Inputs,
     flag: &AtomicBool,
     reported: bool,
 ) -> io::Result<PlaceNamesReply> {
     check_cancel(flag)?;
     resolve(source, params, context, reported, |cat, names, regions| {
-        let inputs = FrameInputs::new(frame);
         let places = params
             .places
             .iter()
             .map(|request| {
                 named_place(
                     request,
-                    place_name(&inputs, request.province_id, cat, names, regions, params.land),
+                    place_name(inputs, request.province_id, cat, names, regions, params.land),
                 )
             })
             .collect();
         let states = params
             .states
             .iter()
-            .map(|request| named_state(request, state_name(&inputs, request.state_id, cat, names)))
+            .map(|request| named_state(request, state_name(inputs, request.state_id, cat, names)))
             .collect();
         Ok((places, states))
     })

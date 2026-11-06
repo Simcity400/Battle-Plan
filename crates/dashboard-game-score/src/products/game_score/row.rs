@@ -137,7 +137,12 @@ impl Prepared {
             self.metadata.initialized = true;
         }
         let (facts, change) =
-            observer.observe_changed(frame, format, &mut || content.multipliers.clone(), None)?;
+            observer.observe_changed(
+                super::ScoreHour::decoded(frame),
+                format,
+                &mut || content.multipliers.clone(),
+                None,
+            )?;
         self.count_warnings(facts, &change);
         let hour = frame.hour;
         let continuous = self

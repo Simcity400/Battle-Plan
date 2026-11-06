@@ -11,7 +11,6 @@
 //! writes it, green for ours and red for the enemy's.
 use job_priority::SpawnCarried as _;
 use super::{Arg, Context, line};
-use engine_allocation::credit::MemoryBudget;
 use replay::{
     columnar_runs::{IndexFile, Snapshots},
     container::Replay,
@@ -87,7 +86,7 @@ const SUPERSEDED: &str = "the air roster search was superseded";
 /// it.
 struct Samples {
     replay: Arc<Replay>,
-    columnar: Option<(Arc<IndexFile>, MemoryBudget)>,
+    columnar: Option<Arc<IndexFile>>,
     snapshots: OnceLock<Result<Mutex<Snapshots>, String>>,
     hours: Mutex<BTreeMap<(BranchId, Hour), Sample>>,
     distinct: Mutex<HashSet<Arc<Roster>>>,
@@ -122,7 +121,7 @@ impl Samples {
     }
 
     fn read_columnar(&self, branch: BranchId, hour: Hour) -> Sample {
-        let (file, memory) = self.columnar.as_ref().expect("columnar source");
+        let file = self.columnar.as_ref().expect("columnar source");
         let snapshots = self
             .snapshots
             .get_or_init(|| {
@@ -132,7 +131,6 @@ impl Samples {
                     self.replay.format,
                     self.replay.capture_mode,
                     1,
-                    memory.clone(),
                 )
                 .map(Mutex::new)
                 .map_err(|error| error.to_string())
@@ -142,8 +140,11 @@ impl Samples {
         let mut snapshots = snapshots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if (self.superseded)() {
+            return Err(SUPERSEDED.into());
+        }
         if !snapshots
-            .move_to(branch, hour, &|| {}, &|| (self.superseded)())
+            .move_to(branch, hour, &|| {})
             .map_err(|error| {
                 if (self.superseded)() {
                     SUPERSEDED.into()
@@ -264,7 +265,7 @@ impl RosterSamples for Samples {
 pub struct RosterHistory(Samples);
 
 impl RosterHistory {
-    pub fn new(replay: Arc<Replay>, columnar: Option<(Arc<IndexFile>, MemoryBudget)>) -> Self {
+    pub fn new(replay: Arc<Replay>, columnar: Option<Arc<IndexFile>>) -> Self {
         Self(Samples {
             replay,
             columnar,
@@ -281,7 +282,7 @@ impl RosterHistory {
     }
 
     pub fn columnar(&self) -> Option<&Arc<IndexFile>> {
-        self.0.columnar.as_ref().map(|(file, _)| file)
+        self.0.columnar.as_ref()
     }
 
     /// Whether the daily pass at `pass` visited the country in `slot`
@@ -460,10 +461,9 @@ impl PassRosters {
     pub fn from_columnar(
         replay: Arc<Replay>,
         file: Arc<IndexFile>,
-        memory: MemoryBudget,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        Self::with_source(replay, wake, true, Some((file, memory)))
+        Self::with_source(replay, wake, true, Some(file))
     }
 
     fn with_worker(
@@ -478,7 +478,7 @@ impl PassRosters {
         replay: Arc<Replay>,
         wake: impl Fn() + Send + Sync + 'static,
         spawn: bool,
-        columnar: Option<(Arc<IndexFile>, MemoryBudget)>,
+        columnar: Option<Arc<IndexFile>>,
     ) -> Self {
         let demand: Arc<(Mutex<Demand>, Condvar)> = Arc::default();
         let superseded = {
@@ -522,7 +522,7 @@ impl PassRosters {
     }
 
     pub fn columnar(&self) -> Option<&Arc<IndexFile>> {
-        self.shared.samples.columnar.as_ref().map(|(file, _)| file)
+        self.shared.samples.columnar.as_ref()
     }
 
     /// How many answers have completed.

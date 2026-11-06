@@ -91,66 +91,6 @@ impl Answer {
             },
         })
     }
-
-    /// The bytes it holds.
-    pub(super) fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.text.capacity()
-            + self.marks.lists.capacity() * std::mem::size_of::<(usize, usize)>()
-    }
-
-    /// What keeps it on disk with `rest`: its text, then a line of `rest` and its marks.
-    pub(super) fn keep<T: Serialize + Send + 'static>(
-        &self,
-        rest: T,
-    ) -> impl FnOnce() -> Option<String> + Send + 'static {
-        let text = Arc::clone(&self.text);
-        let marks = self.marks.clone();
-        move || {
-            let line = serde_json::to_string(&(rest, marks)).ok()?;
-            let mut json = String::with_capacity(text.len() + 1 + line.len());
-            json.push_str(&text);
-            json.push('\n');
-            json.push_str(&line);
-            Some(json)
-        }
-    }
-
-    /// An answer [`Self::keep`] kept, with what it kept beside it; none when the marks do not
-    /// fit the text.
-    pub(super) fn kept<T: serde::de::DeserializeOwned>(mut json: String) -> Option<(Self, T)> {
-        // JSON text holds no raw line break, so the last one ends the data.
-        let line = json.rfind('\n')?;
-        let (rest, marks): (T, Marks) = serde_json::from_str(&json[line + 1..]).ok()?;
-        json.truncate(line);
-        let fits = |start: usize, end: usize| {
-            start <= end
-                && end <= json.len()
-                && json.is_char_boundary(start)
-                && json.is_char_boundary(end)
-        };
-        let mut after = 0;
-        for &(start, end) in &marks.lists {
-            if start < after || start == end || !fits(start, end) {
-                return None;
-            }
-            after = end;
-        }
-        if marks.first.is_some_and(|first| first >= marks.lists.len())
-            || marks
-                .served
-                .is_some_and(|field| !fits(field.start, field.end))
-        {
-            return None;
-        }
-        Some((
-            Self {
-                text: Arc::new(json),
-                marks,
-            },
-            rest,
-        ))
-    }
 }
 
 /// Writes an answer's text within the reply budget, stopping once the request is cancelled, as

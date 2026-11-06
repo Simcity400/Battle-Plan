@@ -7,11 +7,12 @@ use installed_content_core::{
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     codec::{Decoder, invalid_static, put_fixed, put_varint},
+    rows::LexicalTokenRow,
     rows::TableRows,
     rows::TableSchema,
-    rows::tables,
+    rows::{column, mask, tables},
 };
-use replay_frame::{frame::SharedView, frame::TableView};
+use replay_frame::frame::{HourFrame, OperandStatus, Rowset, SharedView, TableView, Tables};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
@@ -36,6 +37,105 @@ pub fn template_spelling(
     String::from_utf8(lexical[index].literal.clone())
         .map(Some)
         .map_err(|_| format!("Faction template token {token} is not UTF-8"))
+}
+
+/// The LexicalTokens fields a name reads: each token's literal.
+const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
+const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
+
+/// [`template_spelling`] of any frame's tables, a walk's views among them: the literal read by
+/// its token, never a copy of the table.
+pub fn template_spelling_in<F: Tables + ?Sized>(
+    frame: &F,
+    token: Option<u32>,
+) -> Result<Option<String>, String> {
+    let Some(token) = token else {
+        return Ok(None);
+    };
+    let lexical = frame
+        .complete_rows::<tables::LexicalTokens>(LITERAL)
+        .map_err(|reason| format!("LexicalTokens is not recorded completely: {reason}"))?;
+    let literal = lexical
+        .text(u128::from(token), |row| &row.literal, LITERAL_COLUMN)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Faction template token {token} has no LexicalTokens spelling"))?;
+    String::from_utf8(literal.to_vec())
+        .map(Some)
+        .map_err(|_| format!("Faction template token {token} is not UTF-8"))
+}
+
+/// The reverse index of `rows`, each token by its literal in token order.
+fn reverse<'r>(
+    rows: impl IntoIterator<Item = io::Result<(u32, &'r [u8])>>,
+) -> Result<BTreeMap<Vec<u8>, Result<u32, String>>, String> {
+    let mut names = BTreeMap::new();
+    for row in rows {
+        let (token, literal) = row.map_err(|error| error.to_string())?;
+        match names.entry(literal.to_ascii_lowercase()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Ok(token));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                *entry.get_mut() = Err(format!(
+                    "{} names several lexer tokens",
+                    String::from_utf8_lossy(literal)
+                ));
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// Why a LexicalTokens of `status` holds no rows a name reads, as [`LexicalNames`] says it.
+fn unrecorded(status: OperandStatus<'_>) -> Option<String> {
+    match status {
+        OperandStatus::Complete => None,
+        OperandStatus::Unavailable(reason) => Some(format!(
+            "LexicalTokens is not recorded completely: {reason}"
+        )),
+        OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => Some(
+            format!("LexicalTokens is not recorded completely: {missing} rows missing"),
+        ),
+        _ => Some("LexicalTokens has the wrong table layout".into()),
+    }
+}
+
+/// [`LexicalNames`] of any frame's tables: its reverse index built from the hour's own
+/// LexicalTokens at the first bound token argument, never a copy of the table. Hold it only
+/// while the table is unchanged, and ask it of frames holding that table.
+#[derive(Debug, Default)]
+pub struct LexicalIndex {
+    names: OnceLock<ReverseIndex>,
+}
+
+impl LexicalIndex {
+    pub fn token_of<F: Tables + ?Sized>(
+        &self,
+        frame: &F,
+        name: &[u8],
+    ) -> Result<Option<u32>, String> {
+        let names = self
+            .names
+            .get_or_init(|| {
+                if let Some(reason) = unrecorded(frame.table_status(tables::LexicalTokens::ID)) {
+                    return Err(reason);
+                }
+                let rows = frame
+                    .complete_rows::<tables::LexicalTokens>(LITERAL)
+                    .map_err(|error| error.to_string())?;
+                reverse(
+                    rows.keys()
+                        .zip(rows.texts(|row| &row.literal, LITERAL_COLUMN))
+                        .map(|(key, literal)| literal.map(|literal| (key as u32, literal))),
+                )
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        names
+            .get(&name.to_ascii_lowercase())
+            .map(|value| value.clone().map(Some))
+            .unwrap_or(Ok(None))
+    }
 }
 
 /// A nonempty literal is copied unchanged; otherwise the template's
@@ -78,50 +178,77 @@ type ReverseIndex = Result<BTreeMap<Vec<u8>, Result<u32, String>>, String>;
 
 /// The lexical dictionary behind a name read. Its reverse index is built only
 /// for bound token arguments and shared by factions from the same table read.
-#[derive(Debug)]
-pub struct LexicalNames {
-    table: replay_frame::frame::SharedLexical,
+pub struct LexicalNames<'a> {
+    table: Lexicon<'a>,
     identity: Option<replay_frame::frame::ViewIdentity>,
     names: OnceLock<ReverseIndex>,
 }
 
-impl Default for LexicalNames {
+/// Where [`LexicalNames`] reads its spellings: a shared decoded view, or a walk's.
+enum Lexicon<'a> {
+    Shared(replay_frame::frame::SharedLexical),
+    Walked(OperandStatus<'a>, Rowset<'a, LexicalTokenRow>),
+}
+
+impl std::fmt::Debug for LexicalNames<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let table: &dyn std::fmt::Debug = match &self.table {
+            Lexicon::Shared(table) => table,
+            Lexicon::Walked(status, _) => status,
+        };
+        f.debug_struct("LexicalNames")
+            .field("table", table)
+            .field("identity", &self.identity)
+            .field("names", &self.names)
+            .finish()
+    }
+}
+
+impl Default for LexicalNames<'_> {
     fn default() -> Self {
         Self::new(TableView::Complete(TableRows::LexicalTokens(Vec::new())).into())
     }
 }
 
-impl LexicalNames {
+impl<'a> LexicalNames<'a> {
     pub fn new(table: SharedView) -> Self {
         Self {
             identity: Some(table.identity()),
-            table: table.into(),
+            table: Lexicon::Shared(table.into()),
             names: OnceLock::new(),
         }
     }
 
     pub fn from_source(frame: &dyn replay_frame::frame::RecordedSource) -> Self {
         Self {
-            table: frame.shared_lexical(),
+            table: Lexicon::Shared(frame.shared_lexical()),
             identity: frame.identity(tables::LexicalTokens::ID.index()),
             names: OnceLock::new(),
         }
     }
-    fn recorded(
-        &self,
-    ) -> Result<replay_frame::frame::Rows<'_, replay_data::rows::LexicalTokenRow>, String> {
-        use replay_frame::frame::OperandStatus;
-        match self.table.status() {
-            OperandStatus::Complete => Ok(self.table.rows()),
-            OperandStatus::Unavailable(reason) => Err(format!(
-                "LexicalTokens is not recorded completely: {reason}"
-            )),
-            OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => Err(format!(
-                "LexicalTokens is not recorded completely: {missing} rows missing"
-            )),
-            _ => Err("LexicalTokens has the wrong table layout".into()),
+
+    /// [`Self::from_source`] of any frame's tables: a walk's view is read in place.
+    pub fn from_tables(frame: HourFrame<'a>) -> Self {
+        match frame.decoded() {
+            Some(decoded) => Self::from_source(decoded),
+            None => Self {
+                table: Lexicon::Walked(
+                    frame.status(tables::LexicalTokens::ID),
+                    frame.held::<tables::LexicalTokens>(0),
+                ),
+                identity: None,
+                names: OnceLock::new(),
+            },
         }
     }
+
+    fn status(&self) -> OperandStatus<'_> {
+        match &self.table {
+            Lexicon::Shared(table) => table.status(),
+            Lexicon::Walked(status, _) => *status,
+        }
+    }
+
     pub fn matches(&self, table: &SharedView) -> bool {
         self.identity
             .as_ref()
@@ -132,23 +259,22 @@ impl LexicalNames {
         let names = self
             .names
             .get_or_init(|| {
-                let rows = self.recorded()?;
-                let mut names = BTreeMap::new();
-                for row in rows {
-                    let folded = row.literal.to_ascii_lowercase();
-                    match names.entry(folded) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert(Ok(row.token));
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut entry) => {
-                            *entry.get_mut() = Err(format!(
-                                "{} names several lexer tokens",
-                                String::from_utf8_lossy(&row.literal)
-                            ));
-                        }
-                    }
+                if let Some(reason) = unrecorded(self.status()) {
+                    return Err(reason);
                 }
-                Ok(names)
+                match &self.table {
+                    Lexicon::Shared(table) => reverse(
+                        table
+                            .rows()
+                            .into_iter()
+                            .map(|row| Ok((row.token, row.literal.as_slice()))),
+                    ),
+                    Lexicon::Walked(_, rows) => reverse(
+                        rows.keys()
+                            .zip(rows.texts(|row| &row.literal, LITERAL_COLUMN))
+                            .map(|(key, literal)| literal.map(|literal| (key as u32, literal))),
+                    ),
+                }
             })
             .as_ref()
             .map_err(Clone::clone)?;
@@ -343,10 +469,36 @@ impl DictionaryHistory {
         let TableView::Complete(TableRows::LexicalTokens(rows)) = &**table else {
             return Ok(None);
         };
-        let mut next: Vec<(u32, &[u8])> = rows
-            .iter()
-            .map(|row| (row.token, row.literal.as_slice()))
-            .collect();
+        self.add_spellings(
+            rows.iter()
+                .map(|row| (row.token, row.literal.as_slice()))
+                .collect(),
+        )
+    }
+
+    /// [`Self::add`] of any frame's LexicalTokens, a walk's views among them: each literal read
+    /// where the frame holds it.
+    pub fn add_in<F: Tables + ?Sized>(
+        &mut self,
+        frame: &F,
+    ) -> io::Result<Option<HistoricalDictionary>> {
+        let Ok(rows) = frame.complete_rows::<tables::LexicalTokens>(LITERAL) else {
+            return Ok(None);
+        };
+        let mut next = Vec::with_capacity(rows.len());
+        for (key, literal) in rows
+            .keys()
+            .zip(rows.texts(|row| &row.literal, LITERAL_COLUMN))
+        {
+            next.push((key as u32, literal?));
+        }
+        self.add_spellings(next)
+    }
+
+    fn add_spellings(
+        &mut self,
+        mut next: Vec<(u32, &[u8])>,
+    ) -> io::Result<Option<HistoricalDictionary>> {
         if !next.is_sorted_by(|left, right| left.0 < right.0) {
             next = next.into_iter().collect::<BTreeMap<_, _>>().into_iter().collect();
         }
@@ -587,17 +739,21 @@ impl HistoricalDictionary {
         self.version
     }
 
-    /// Whether `table` holds exactly this version's rows.
-    pub fn spells(&self, table: &SharedView) -> bool {
-        let TableView::Complete(TableRows::LexicalTokens(rows)) = &**table else {
+    /// Whether `frame`'s LexicalTokens, a walk's views among them, holds exactly this
+    /// version's rows.
+    pub fn spells_in<F: Tables + ?Sized>(&self, frame: &F) -> bool {
+        let Ok(rows) = frame.complete_rows::<tables::LexicalTokens>(LITERAL) else {
             return false;
         };
         let versions = lock(&self.shared);
-        let mut rows = rows.iter();
+        let mut rows = rows
+            .keys()
+            .zip(rows.texts(|row| &row.literal, LITERAL_COLUMN));
         versions.spellings.iter().all(|(token, spellings)| {
             spelling_at(spellings, self.version).is_none_or(|literal| {
-                rows.next()
-                    .is_some_and(|row| row.token == *token && row.literal == literal)
+                rows.next().is_some_and(|(key, text)| {
+                    key as u32 == *token && text.is_ok_and(|text| text == literal)
+                })
             })
         }) && rows.next().is_none()
     }
@@ -748,6 +904,18 @@ pub fn bound_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether `dictionary` spells `table`, read as a frame holding it.
+    fn spells(dictionary: &HistoricalDictionary, table: &SharedView) -> bool {
+        let mut frame = replay_frame::frame::DecodedFrame {
+            branch: 0,
+            hour: 0,
+            tables: std::array::from_fn(|_| replay_frame::frame::not_selected()),
+            metrics: Default::default(),
+        };
+        frame.tables[tables::LexicalTokens::ID.index()] = table.clone();
+        dictionary.spells_in(&frame)
+    }
     use crate::catalogue::tests::{loaded, loaded_templates};
 
     #[test]
@@ -981,12 +1149,12 @@ mod tests {
         }
         check(&read);
         for pair in read.windows(2) {
-            assert!(pair[0].1.spells(&pair[0].0));
-            assert_eq!(pair[0].1.spells(&pair[1].0), pair[0].0 == pair[1].0);
-            assert_eq!(pair[1].1.spells(&pair[0].0), pair[0].0 == pair[1].0);
+            assert!(spells(&pair[0].1, &pair[0].0));
+            assert_eq!(spells(&pair[0].1, &pair[1].0), pair[0].0 == pair[1].0);
+            assert_eq!(spells(&pair[1].1, &pair[0].0), pair[0].0 == pair[1].0);
         }
         assert!(
-            !read[0].1.spells(
+            !spells(&read[0].1,
                 &TableView::Unavailable {
                     reason: "gap".into()
                 }
@@ -1051,7 +1219,7 @@ mod tests {
             Err("X names several lexer tokens".into())
         );
         assert_eq!(kept[1].token_of(b"b"), Ok(Some(2)));
-        assert!(kept[1].spells(&base[1]) && from_first.spells(&left) && from_second.spells(&right));
+        assert!(spells(&kept[1], &base[1]) && spells(&from_first, &left) && spells(&from_second, &right));
         for (holder, last) in [
             (&untouched, None),
             (&first, Some(&left)),

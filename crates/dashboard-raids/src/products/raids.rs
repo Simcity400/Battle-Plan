@@ -33,7 +33,7 @@ use replay_frame::frame::DecodedFrame;
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
-use std::{collections::VecDeque, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -53,8 +53,6 @@ pub mod query;
 pub mod segment;
 mod served;
 
-#[cfg(any(test, feature = "test-support"))]
-const CACHED_BRANCHES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -1394,11 +1392,12 @@ struct ContentCache {
     catalogue: Option<Arc<Catalogue>>,
 }
 
-/// Scans the test-support load keeps, by branch and catalogue.
+/// Each branch's scan the test-support load keeps, with the catalogue it read; another
+/// catalogue replaces it.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Cache {
-    scans: VecDeque<(u64, Option<Arc<Catalogue>>, Arc<ScannedRaids>)>,
+    scans: BTreeMap<u64, (Option<Arc<Catalogue>>, Arc<ScannedRaids>)>,
 }
 
 /// Recorded feature evidence for the picker, stopping at the first positive
@@ -1866,10 +1865,10 @@ impl Product for Raids {
             };
             let scanned = match cache
                 .scans
-                .iter()
-                .find(|(id, cat, _)| *id == branch && same(cat, &catalogue))
+                .get(&branch)
+                .filter(|(cat, _)| same(cat, &catalogue))
             {
-                Some((_, _, scan)) => Arc::clone(scan),
+                Some((_, scan)) => Arc::clone(scan),
                 None => {
                     let scanned = Arc::new(scan(
                         &source.replay(),
@@ -1879,10 +1878,7 @@ impl Product for Raids {
                     )?);
                     cache
                         .scans
-                        .push_back((branch, catalogue, Arc::clone(&scanned)));
-                    while cache.scans.len() > CACHED_BRANCHES {
-                        cache.scans.pop_front();
-                    }
+                        .insert(branch, (catalogue, Arc::clone(&scanned)));
                     scanned
                 }
             };

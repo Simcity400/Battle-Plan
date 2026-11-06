@@ -18,6 +18,7 @@ use dashboard_special_projects::products::special_projects;
 use dashboard_text::{catalogue::Catalogue, metadata::Extents};
 use dashboard_unit_leaders::products::unit_leaders;
 use installed_content_core::content::diagnostics;
+use replay::columnar_frames::Recording;
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
@@ -60,6 +61,9 @@ pub(crate) struct Content<'s> {
     pub(crate) context: &'s LoadContext,
     /// Each branch's hours, as the native recording records them.
     pub(crate) extents: Extents,
+    /// The native recording, for walks of a few of its tables apart from the run's
+    /// ([`Recording::selecting`]).
+    pub(crate) recording: Recording,
     keyed: Mutex<HashMap<TypeId, Arc<Once<Arc<dyn Any + Send + Sync>>>>>,
     leaders: Once<Arc<unit_leaders::Binding>>,
     supply: Once<supply_health::Configured>,
@@ -91,11 +95,17 @@ pub(crate) type Names = Result<Arc<installed_content_localisation::localisation:
 pub(crate) type Land = (Option<Arc<Catalogue>>, Option<String>);
 
 impl<'s> Content<'s> {
-    pub(crate) fn new(source: &'s Source, context: &'s LoadContext, extents: Extents) -> Self {
+    pub(crate) fn new(
+        source: &'s Source,
+        context: &'s LoadContext,
+        extents: Extents,
+        recording: Recording,
+    ) -> Self {
         Self {
             source,
             context,
             extents,
+            recording,
             keyed: Mutex::new(HashMap::new()),
             leaders: Once::new(),
             supply: Once::new(),

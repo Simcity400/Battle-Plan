@@ -149,7 +149,7 @@ fn country_lookups_answer_as_whole_table_scans() {
                 &world.character_rows,
                 &world.idea_rows,
             ] {
-                assert!(matches!(rows.get(), Some(Some(_))));
+                assert!(matches!(rows.get().map(|rows| rows.value()), Some(Ok(Some(_)))));
             }
         });
     }
@@ -177,7 +177,10 @@ fn rows_out_of_country_order_are_scanned_whole() {
     with_world(&frame, |world| {
         assert_eq!(world.has_focus_unrecorded(1, b"a"), Ok(true));
         assert!(world.has_focus_unrecorded(1, b"b").is_err());
-        assert!(matches!(world.focus_rows.get(), Some(None)));
+        assert!(matches!(
+            world.focus_rows.get().map(|rows| rows.value()),
+            Some(Ok(None))
+        ));
     });
 }
 

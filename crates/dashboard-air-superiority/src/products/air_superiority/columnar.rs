@@ -16,17 +16,17 @@ use super::{
 };
 use dashboard_base::{prepared::frame_changes::FrameChanges, products::country_groups::Scan};
 use dashboard_core::invalid;
-use dashboard_text::metadata::{recorded_rows, slot_reads};
-use dashboard_world::{Hold, Needs, World};
+use dashboard_text::metadata::{not_recorded, slot_reads};
+use dashboard_world::{Epochs, Hold, Needs, Viewed, World};
 use replay::{
     columns,
     segments::{self, Operator, Sink},
 };
 use replay_data::{
     format::FormatVersion,
-    rows::{RaidAirScoreRow, TABLE_COUNT, TableId, tables},
+    rows::{CountryRow, RaidAirScoreRow, TABLE_COUNT, TableId, WarRelationRow, tables},
 };
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
+use replay_frame::frame::{HourFrame, OperandStatus, Rowset};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
@@ -62,8 +62,8 @@ const AUXILIARY: [TableId; 4] = [
 
 /// How the world holds each table read, by the fields read of it.
 struct Asks {
-    /// The groups' own, as their native read holds them but for capitulations, held by the two
-    /// fields the groups read of them; countries and links among them are the score identity's.
+    /// The groups' own, as their native read holds them; countries and links among them are the
+    /// score identity's.
     groups: [(TableId, Hold); 8],
     /// The scores by their two weights: country and region are the row's key.
     scores: (TableId, Hold),
@@ -90,18 +90,29 @@ fn fields(hold: Hold) -> u64 {
     }
 }
 
+const TAG_FIELDS: u64 = replay_data::rows::mask::<CountryRow>(&["tag"]);
+const WAR_DATES: u64 = replay_data::rows::mask::<WarRelationRow>(&["start_hour", "end_hour"]);
+
+/// The rows `T` holds this hour, complete or truncated, each holding the fields `fields`
+/// names; an unavailable table holds none, as the shared recorded-rows reader reads them.
+fn recorded<T: replay_data::rows::TableSchema>(
+    frame: HourFrame<'_>,
+    fields: u64,
+) -> io::Result<Rowset<'_, T::Row>> {
+    match frame.status(T::ID) {
+        OperandStatus::NotRecorded(mode) => Err(invalid(not_recorded(frame.hour(), T::ID, mode))),
+        OperandStatus::WrongLayout | OperandStatus::TruncatedWrongLayout(_) => Err(invalid(
+            format!("hour {} {:?} contains another table's rows", frame.hour(), T::ID),
+        )),
+        _ => Ok(frame.held::<T>(fields)),
+    }
+}
+
 impl Asks {
     fn new() -> io::Result<Self> {
         let weights = mask(TableId::RaidAirScores, &["friendly", "enemy"])?;
-        let mut groups = dashboard_base::products::country_groups::prepared::holds()?;
-        let capitulated = mask(TableId::Capitulation, &["capitulated", "capitulated_hour"])?;
-        for (table, hold) in &mut groups {
-            if *table == TableId::Capitulation {
-                *hold = Hold::Fields(capitulated);
-            }
-        }
         Ok(Self {
-            groups,
+            groups: dashboard_base::products::country_groups::prepared::holds()?,
             scores: (TableId::RaidAirScores, Hold::Fields(weights)),
             auxiliary: [
                 (
@@ -391,19 +402,22 @@ impl Projection {
     }
 
     /// Projects `rows` whole, following them row by row from now on when `complete`.
-    fn rebuild(&mut self, rows: &[RaidAirScoreRow], complete: bool) -> io::Result<Rebuilt> {
+    fn rebuild(
+        &mut self,
+        rows: Rowset<'_, RaidAirScoreRow>,
+        complete: bool,
+    ) -> io::Result<Rebuilt> {
         self.clear();
         self.noting = false;
-        for row in rows {
+        let mut held = complete.then(|| HashMap::with_capacity(rows.len()));
+        for row in rows.iter() {
+            let row = row?;
             self.apply(row.country, row.region, (row.friendly, row.enemy), true)?;
+            if let Some(held) = &mut held {
+                held.insert(key(&row), (row.friendly, row.enemy));
+            }
         }
-        if complete {
-            self.rows = Some(
-                rows.iter()
-                    .map(|row| (key(row), (row.friendly, row.enemy)))
-                    .collect(),
-            );
-        }
+        self.rows = held;
         let mut pairs: Vec<_> = self
             .pairs
             .keys()
@@ -422,11 +436,11 @@ impl Projection {
     }
 
     /// Follows the complete table's rows the hour changed (`state`'s changes, the weights by
-    /// `weights`), read from `rows`, the hour's rows in key order; the projection where it moved.
+    /// `weights`), read by key from `rows`, the hour's rows; the projection where it moved.
     fn follow(
         &mut self,
         state: &segments::State,
-        rows: &[RaidAirScoreRow],
+        rows: Rowset<'_, RaidAirScoreRow>,
         weights: u64,
     ) -> io::Result<Option<Followed>> {
         let changes = columns::changes(state, TableId::RaidAirScores)?;
@@ -459,9 +473,8 @@ impl Projection {
             for key in keys {
                 let (country, region) = ((key >> 32) as u32, key as u32);
                 let now = rows
-                    .binary_search_by_key(&(country, region), |row| (row.country, row.region))
-                    .ok()
-                    .map(|at| (rows[at].friendly, rows[at].enemy));
+                    .get(u128::from(key))?
+                    .map(|row| (row.friendly, row.enemy));
                 let before = held.get(&key).copied();
                 if before == now {
                     continue;
@@ -722,8 +735,9 @@ pub struct Project {
     asks: Asks,
     /// The hour's asks, kept from hour to hour.
     wanted: Vec<(TableId, Hold)>,
-    /// The frame the world's views are lent into, given back before its hour ends.
-    frame: DecodedFrame,
+    /// Each table asked's epoch, as [`Asks`] holds it: the groups tell a table unchanged by
+    /// it, reading the walk's views.
+    epochs: Epochs,
     last: Option<i32>,
     identity: Option<Identity>,
     projection: Projection,
@@ -755,16 +769,15 @@ fn set_bytes(set: &BTreeSet<String>) -> usize {
 
 impl Project {
     pub fn new(format: FormatVersion) -> io::Result<Self> {
+        let asks = Asks::new()?;
+        let mut cached = asks.groups.to_vec();
+        cached.push(asks.scores);
+        cached.extend(asks.auxiliary);
         Ok(Self {
             format,
-            asks: Asks::new()?,
+            asks,
             wanted: Vec::new(),
-            frame: DecodedFrame {
-                branch: 0,
-                hour: 0,
-                tables: std::array::from_fn(|_| not_selected()),
-                metrics: Metrics::default(),
-            },
+            epochs: Epochs::new(&cached)?,
             last: None,
             identity: None,
             projection: Projection::default(),
@@ -817,6 +830,7 @@ impl Operator<World> for Project {
     fn cross(&mut self, _: i32) -> io::Result<()> {
         // A later run applies to empty tables: its first hour reads every part whole.
         self.last = None;
+        self.epochs.restart();
         Ok(())
     }
 
@@ -827,6 +841,8 @@ impl Operator<World> for Project {
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("air_superiority.columnar", None);
         let (state, world, at) = (hour.state, hour.world, hour.hour);
+        // Every hour, so no epoch misses an hour that changed its table.
+        self.epochs.hour(world);
         // The hour held back ends its day where this one starts another: its roster is read
         // before this hour moves the groups.
         if let Some(mut held) = self.held.take() {
@@ -892,43 +908,31 @@ impl Operator<World> for Project {
                 want(&mut self.wanted, &self.asks, table);
             }
         }
-        self.frame.branch = hour.branch;
-        self.frame.hour = at;
         let mut countries = Vec::new();
         let mut scores = None;
         let mut moved_auxiliary = None;
+        let viewed = Viewed::walked(world, state, &self.epochs);
+        let frame = viewed.frame;
         // Where nothing the groups read moved, they pass over the hour without reading a table.
-        let unlent = || {
-            io::Error::other("Air superiority's groups changed at an hour their tables were not lent")
-        };
-        if self.wanted.is_empty() {
-            if self.groups.advance_changed(&self.frame, &changes)?.is_some() {
-                return Err(unlent());
+        if self.groups.advance_viewed(viewed, &changes)?.is_some() {
+            if !read_groups {
+                return Err(io::Error::other(
+                    "Air superiority's groups changed at an hour their tables were not lent",
+                ));
             }
-        } else {
-            // The views go back before the hour ends, however it ends.
-            let lent = Lent {
-                frame: &mut self.frame,
-                asks: self.wanted.as_slice(),
-            };
-            world.frame_held_into(state, lent.asks, lent.frame)?;
-            let frame: &DecodedFrame = &*lent.frame;
-            if self.groups.advance_changed(frame, &changes)?.is_some() {
-                if !read_groups {
-                    return Err(unlent());
-                }
-                self.roster_moved = true;
-            }
+            self.roster_moved = true;
+        }
+        if !self.wanted.is_empty() {
             if changes.rows_changed[TableId::WarRelations.index()] {
-                let mut ends: Vec<i32> = frame
-                    .complete::<tables::WarRelations>()
-                    .map(|rows| {
-                        rows.iter()
-                            .filter(|row| row.end_hour > row.start_hour && row.end_hour > at)
-                            .map(|row| row.end_hour)
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let mut ends: Vec<i32> = Vec::new();
+                if let Ok(rows) = frame.complete::<tables::WarRelations>(WAR_DATES) {
+                    for row in rows.iter() {
+                        let row = row?;
+                        if row.end_hour > row.start_hour && row.end_hour > at {
+                            ends.push(row.end_hour);
+                        }
+                    }
+                }
                 ends.sort_unstable_by(|left, right| right.cmp(left));
                 ends.dedup();
                 self.expiries = ends;
@@ -936,9 +940,12 @@ impl Operator<World> for Project {
             let mut identified = false;
             if identity {
                 let (operands, owners) = scan::score_countries(frame)?;
-                let rows = frame.complete::<tables::Countries>().unwrap_or(&[]);
+                let rows = frame
+                    .complete::<tables::Countries>(TAG_FIELDS)
+                    .unwrap_or(Rowset::Decoded(&[]));
                 let mut tags = Vec::with_capacity(rows.len());
-                for country in rows {
+                for country in rows.iter() {
+                    let country = country?;
                     let tag = std::str::from_utf8(&country.tag)
                         .map_err(|_| invalid("Air country tag is not UTF-8"))?;
                     dashboard_core::protocol::validate_tag(tag).map_err(invalid)?;
@@ -968,14 +975,15 @@ impl Operator<World> for Project {
                 }
             }
             if whole || identified || world.touched(TableId::RaidAirScores, self.asks.weights) {
-                let complete = frame.complete::<tables::RaidAirScores>().is_ok();
+                let weights = self.asks.weights;
+                let complete = frame.complete::<tables::RaidAirScores>(weights).is_ok();
                 if whole
                     || identified
                     || !complete
                     || self.projection.rows.is_none()
                     || world.restated(TableId::RaidAirScores)
                 {
-                    let rows = recorded_rows::<tables::RaidAirScores>(frame)?;
+                    let rows = recorded::<tables::RaidAirScores>(frame, weights)?;
                     let rebuilt = self.projection.rebuild(rows, complete)?;
                     scores = Some(Box::new(Scores {
                         operands: Some(rebuilt.operands),
@@ -983,8 +991,8 @@ impl Operator<World> for Project {
                         active: Some(rebuilt.active),
                     }));
                 } else {
-                    let rows = frame.complete::<tables::RaidAirScores>()?;
-                    let followed = self.projection.follow(state, rows, self.asks.weights)?;
+                    let rows = frame.complete::<tables::RaidAirScores>(weights)?;
+                    let followed = self.projection.follow(state, rows, weights)?;
                     if let Some(followed) = followed {
                         scores = Some(Box::new(Scores {
                             operands: Some(followed.operands),
@@ -996,7 +1004,7 @@ impl Operator<World> for Project {
             }
             if auxiliary {
                 moved_auxiliary =
-                    auxiliary_change(&mut self.auxiliary, scan::auxiliary(frame), whole);
+                    auxiliary_change(&mut self.auxiliary, scan::auxiliary(frame)?, whole);
             }
         }
         while self.expiries.last().is_some_and(|&end| end <= at) {
@@ -1034,6 +1042,7 @@ impl Operator<World> for Project {
     }
 
     fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        self.epochs.restart();
         // The segment's last hour may end its day: the segment after cannot read its roster.
         if let Some(mut held) = self.held.take() {
             self.close(&mut held);
@@ -1043,14 +1052,3 @@ impl Operator<World> for Project {
     }
 }
 
-/// The world's views lent into `frame` for `asks`, given back when dropped.
-struct Lent<'o> {
-    frame: &'o mut DecodedFrame,
-    asks: &'o [(TableId, Hold)],
-}
-
-impl Drop for Lent<'_> {
-    fn drop(&mut self) {
-        dashboard_world::release(self.frame, self.asks);
-    }
-}

@@ -1010,9 +1010,9 @@ impl Operator<World> for Projector {
         };
         if naming {
             let _cpu = replay_frame::cpu::scope("project", Some("diplomacy_state.identities"));
-            let frame = hour.world.identity(state)?;
+            let frame = hour.world.columns(state);
             let countries = hour.world.countries()?;
-            self.ids = Joins::read(&frame).map(|joins| {
+            self.ids = Joins::read(&frame)?.map(|joins| {
                 let canonical: Vec<u32> = if countries.countries_complete() {
                     countries.iter().map(|country| country.id).collect()
                 } else {

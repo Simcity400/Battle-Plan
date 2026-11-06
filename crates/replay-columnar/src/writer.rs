@@ -18,9 +18,9 @@ use crate::{
     invalid_static,
     leaf::varint_len,
     manifest::{self, Status},
-    restart::{self, Acquisition, Restored},
+    restart::{self, Acquisition, Last, Restored},
     section::{self, Changes, Op, PatchItems, Patches, Run, Scratch, TableHour},
-    state::{Bits, Cell, Column, Kind, Table, Values},
+    state::{Bits, Bools, Cell, Column, Kind, Lists, Paged, PagedBits, Table, Values},
 };
 use std::{
     cmp::Reverse,
@@ -635,7 +635,7 @@ impl Staged<'_> {
         Ok(())
     }
 
-    fn scalars<T: Word>(&mut self, held: &[T]) -> io::Result<()> {
+    fn scalars<T: Word>(&mut self, held: &Paged<T>) -> io::Result<()> {
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = *held
@@ -650,7 +650,22 @@ impl Staged<'_> {
         })
     }
 
-    fn optionals<T: Present>(&mut self, held: &[T], presence: &Bits) -> io::Result<()> {
+    fn bools(&mut self, held: &Bools) -> io::Result<()> {
+        let cells = self.cells;
+        self.each(|pending, row, slot, was| {
+            let value = *held
+                .get(slot as usize)
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+            let new = cells.words[row];
+            if was && value.word() == new {
+                return Ok(false);
+            }
+            let held = was.then(|| bool::plain(value.word()));
+            pending.change(slot, bool::plain(new), held).map(|()| true)
+        })
+    }
+
+    fn optionals<T: Present>(&mut self, held: &Paged<T>, presence: &PagedBits) -> io::Result<()> {
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = *held
@@ -666,14 +681,14 @@ impl Staged<'_> {
         })
     }
 
-    fn lists<T: Items>(&mut self, held: &[Box<[T]>], items: &[T]) -> io::Result<()> {
+    fn lists<T: Items>(&mut self, held: &Lists<T>, items: &[T]) -> io::Result<()> {
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = held
                 .get(slot as usize)
                 .ok_or_else(|| invalid_static("A held slot is past its column"))?;
             let new = &items[cells.span(row)];
-            if was && **value == *new {
+            if was && *value == *new {
                 return Ok(false);
             }
             let held = was.then(|| T::cell(value));
@@ -1415,6 +1430,10 @@ pub struct TableWriter {
     acquisition: Acquisition,
     /// A truncated table's view: its last hour's read and inserted slots, ascending.
     view: Vec<u32>,
+    /// Whether its restarts carry its last complete read ([`Self::keep_last`]).
+    keeps: bool,
+    /// Its last complete read, while it keeps one.
+    last: Option<Last>,
     /// Slots below the table's extent that hold no row, lowest first.
     free: BinaryHeap<Reverse<u32>>,
     /// This writer's name and the hours begun, so only its latest preparation commits.
@@ -1514,6 +1533,8 @@ impl TableWriter {
             status: Status::NotRecorded,
             acquisition: Acquisition::default(),
             view: Vec::new(),
+            keeps: false,
+            last: None,
             free: BinaryHeap::new(),
             identity: WRITERS.fetch_add(1, Ordering::Relaxed),
             generation: 0,
@@ -1567,14 +1588,32 @@ impl TableWriter {
         writer.status = restored.status;
         writer.acquisition = restored.acquisition;
         writer.view = restored.view;
+        writer.last = restored.last;
         writer.free = BinaryHeap::from(free);
         Ok(writer)
+    }
+
+    /// From now on its restarts carry its last complete read, so a walk starting at one knows
+    /// it while the view is not that read.
+    pub fn keep_last(&mut self) {
+        self.keeps = true;
+    }
+
+    /// Its last complete read, while it keeps one.
+    pub fn last(&self) -> Option<&Last> {
+        self.last.as_ref().filter(|_| self.keeps)
     }
 
     /// The restart a block beginning now carries.
     pub fn restart(&self) -> io::Result<Vec<u8>> {
         self.usable()?;
-        restart::write(&self.table, self.status, &self.acquisition, &self.view)
+        restart::write_with(
+            &self.table,
+            self.status,
+            &self.acquisition,
+            &self.view,
+            self.last(),
+        )
     }
 
     pub fn table(&self) -> &Table {
@@ -1817,6 +1856,11 @@ impl TableWriter {
         if truncated && written.is_none() {
             return Err(invalid_static("A partly read table names no rows it read"));
         }
+        let sectioned = written.is_some();
+        if self.keeps {
+            // Nothing held has changed yet: a failure here leaves the writer usable.
+            Last::before(&mut self.last, &self.table, evidence.status)?;
+        }
         if let Some(bytes) = &written
             && let Err(error) = self.apply(bytes, truncated)
         {
@@ -1841,6 +1885,14 @@ impl TableWriter {
             Sample::FromReadBit => {}
             Sample::Reset => self.acquisition.last_read = None,
             Sample::Carried(carried) => self.acquisition.last_read = Some(carried),
+        }
+        if self.keeps {
+            Last::after(
+                &mut self.last,
+                evidence.status,
+                sectioned,
+                self.acquisition.last_read,
+            );
         }
         self.status = evidence.status;
         self.view.clear();
@@ -2129,7 +2181,7 @@ impl Hour<'_> {
                 Column::I32(values) => staged.scalars(values),
                 Column::U64(values) => staged.scalars(values),
                 Column::I64(values) => staged.scalars(values),
-                Column::Bool(values) => staged.scalars(values),
+                Column::Bool(values) => staged.bools(values),
                 Column::OptionalI32(values, presence) => staged.optionals(values, presence),
                 Column::OptionalU32(values, presence) => staged.optionals(values, presence),
                 Column::OptionalI64(values, presence) => staged.optionals(values, presence),

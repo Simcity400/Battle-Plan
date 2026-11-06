@@ -30,7 +30,7 @@ impl Recording {
         let mut magic = [0; 8];
         std::fs::File::open(path)?.read_exact(&mut magic)?;
         if &magic == b"H4COLUMN" {
-            let recording = crate::columnar_frames::Recording::open_path(path, Default::default())?;
+            let recording = crate::columnar_frames::Recording::open_path(path)?;
             let capture = recording
                 .capture()?
                 .ok_or_else(|| invalid("columnar command metadata is absent"))?;

@@ -1,10 +1,11 @@
 use super::*;
-use crate::products::occupation_trend::{
-    OccupationCollaboration, OccupationCollaborationActor, OccupationTrendRun,
-};
+use crate::products::occupation_trend::{OccupationCollaboration, OccupationCollaborationActor};
+use dashboard_base::prepared::frame_changes::field_mask;
 use dashboard_base::products::country_history::Identity;
+use dashboard_text::metadata::recorded_rows_in;
 use dashboard_text::triggers::inputs::{TableChange, TableChanges};
 use dashboard_world::{Hold, Needs, Roster, World};
+use replay_frame::frame::HourFrame;
 use replay::{
     columnar_frames::metrics,
     columns,
@@ -17,7 +18,7 @@ use replay_data::{
     scope::CaptureMode,
 };
 use std::{
-    cell::{Cell, OnceCell},
+    cell::OnceCell,
     collections::BTreeMap,
     mem::size_of,
     sync::{Mutex, PoisonError},
@@ -28,15 +29,35 @@ mod joins;
 
 pub use emit::Emit;
 
-/// What a projection reads of its walk's world: the countries, and its own tables whole. The
-/// trigger tables a law reads are asked for at the hours it reads them.
-pub fn needs() -> Needs {
+/// What a projection reads of its walk's world: the countries, the views of its own tables in
+/// the fields it reads of them, and, when a law's eligibility reads the trigger world
+/// (`world`), every trigger table whole.
+pub fn needs(world: bool) -> Needs {
+    let fields = |table: TableId, names: &[&str]| (table, Hold::Fields(field_mask(table, names)));
+    let mut frame = vec![
+        // A read's own tables: their statuses alone.
+        fields(TableId::StateResistance, &[]),
+        fields(TableId::StateGarrisons, &[]),
+        fields(TableId::StateOccupationLaws, &[]),
+        fields(TableId::OccupationSettings, &[]),
+        fields(TableId::StateAssignedManpower, &[]),
+        fields(TableId::CountryCollaboration, &["progress"]),
+        fields(TableId::LexicalTokens, &["literal"]),
+        // What maps a law's changed rows to their countries.
+        fields(TableId::Countries, &["canonical_slot"]),
+        fields(TableId::CountryLinks, &["canonical_slot"]),
+    ];
+    if world {
+        frame.extend(
+            dashboard_text::triggers::RECORDED_TABLES
+                .iter()
+                .map(|&table| (table, Hold::Whole)),
+        );
+    }
     Needs {
         countries: true,
-        frame: super::super::prepared::observed_tables(false)
-            .into_iter()
-            .map(|table| (table, Hold::Whole))
-            .collect(),
+        frame,
+        lexicon: world,
         ..Needs::default()
     }
 }
@@ -50,6 +71,8 @@ pub(in crate::products::occupied_states) struct Texts(Mutex<TextTable>);
 struct TextTable {
     ids: HashMap<Arc<str>, u32>,
     texts: Arc<Vec<Arc<str>>>,
+    /// Each state name's inputs, its custom name's length, it and its owner's name, by id.
+    names: HashMap<Box<[u8]>, u32>,
 }
 
 impl Texts {
@@ -63,6 +86,17 @@ impl Texts {
         Arc::make_mut(&mut table.texts).push(Arc::clone(&text));
         table.ids.insert(text, id);
         id
+    }
+
+    /// The id of what a state's name is read from: equal ids, equal inputs.
+    fn name_key(&self, custom: &[u8], owner: &[u8]) -> u32 {
+        let mut key = Vec::with_capacity(size_of::<u64>() + custom.len() + owner.len());
+        key.extend_from_slice(&(custom.len() as u64).to_le_bytes());
+        key.extend_from_slice(custom);
+        key.extend_from_slice(owner);
+        let mut table = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = u32::try_from(table.names.len()).expect("occupation name keys fit 32 bits");
+        *table.names.entry(key.into_boxed_slice()).or_insert(next)
     }
 
     /// Every text named so far, by id.
@@ -91,7 +125,6 @@ impl Named {
 /// A state's values at a read, as [`OccupiedValues`] holds them, each text
 /// by its id.
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
 struct StateValue {
     name: Option<u32>,
     name_missing: Option<u32>,
@@ -113,7 +146,203 @@ struct StateValue {
     law_missing: Option<u32>,
 }
 
+/// Calls `$then` with a state's numbers and then its other values, each a bit of a
+/// [`Change`]'s mask in this order.
+macro_rules! state_fields {
+    ($then:ident) => {
+        $then!(
+            [
+                resistance_raw,
+                compliance_raw,
+                resistance_speed_raw,
+                compliance_speed_raw
+            ],
+            [
+                garrison_strength_raw,
+                assigned_manpower,
+                required_manpower,
+                garrison_required_raw,
+                garrison_alert,
+                garrison_red,
+                garrison_missing,
+                owner,
+                occupier,
+                occupied,
+                name,
+                name_missing,
+                law,
+                law_missing
+            ]
+        )
+    };
+}
+
+/// The bits of a [`Change`]'s mask.
+const STATE_FIELDS: u32 = 18;
+
+/// A state's values as its emit goes on from those it last had of it in the projection.
+enum Change {
+    /// It is not occupied.
+    Gone,
+    /// The fields that moved from the values held (none when not `held`:
+    /// [`StateValue::NONE`]), by bit, in values whose numbers are their changes.
+    Moved {
+        held: bool,
+        mask: u32,
+        by: StateValue,
+    },
+}
+
+impl Change {
+    fn of(held: Option<&StateValue>, now: &StateValue) -> Self {
+        let base = held.copied().unwrap_or(StateValue::NONE);
+        let mut mask = 0_u32;
+        let mut by = *now;
+        macro_rules! of {
+            ([$($number:ident),*], [$($value:ident),*]) => {{
+                let mut bit = 0_u32;
+                $(
+                    if now.$number != base.$number {
+                        mask |= 1 << bit;
+                    }
+                    by.$number = now.$number.wrapping_sub(base.$number);
+                    bit += 1;
+                )*
+                $(
+                    if now.$value != base.$value {
+                        mask |= 1 << bit;
+                    }
+                    bit += 1;
+                )*
+                let _ = bit;
+            }};
+        }
+        state_fields!(of);
+        Self::Moved {
+            held: held.is_some(),
+            mask,
+            by,
+        }
+    }
+
+    /// The values `base` moved to by `mask` and `by`.
+    fn applied(base: &StateValue, mask: u32, by: &StateValue) -> StateValue {
+        let mut value = *base;
+        macro_rules! applied {
+            ([$($number:ident),*], [$($value:ident),*]) => {{
+                let mut bit = 0_u32;
+                $(
+                    if (mask >> bit) & 1 != 0 {
+                        value.$number = base.$number.wrapping_add(by.$number);
+                    }
+                    bit += 1;
+                )*
+                $(
+                    if (mask >> bit) & 1 != 0 {
+                        value.$value = by.$value;
+                    }
+                    bit += 1;
+                )*
+                let _ = bit;
+            }};
+        }
+        state_fields!(applied);
+        value
+    }
+}
+
+// A head of its mask, whether held and whether occupied, then only the fields that moved.
+impl replay_spool::Spooled for Change {
+    fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        let Self::Moved { held, mask, by } = self else {
+            return out.varint64(0);
+        };
+        out.varint64((u64::from(*mask) << 2) | (u64::from(*held) << 1) | 1)?;
+        macro_rules! spool {
+            ([$($number:ident),*], [$($value:ident),*]) => {{
+                let mut bit = 0_u32;
+                $(
+                    if (mask >> bit) & 1 != 0 {
+                        replay_spool::Spooled::spool(&by.$number, out)?;
+                    }
+                    bit += 1;
+                )*
+                $(
+                    if (mask >> bit) & 1 != 0 {
+                        replay_spool::Spooled::spool(&by.$value, out)?;
+                    }
+                    bit += 1;
+                )*
+                let _ = bit;
+            }};
+        }
+        state_fields!(spool);
+        Ok(())
+    }
+
+    fn unspool(input: &mut replay_spool::Reader<'_>) -> io::Result<Self> {
+        let head = input.varint64()?;
+        if head & 1 == 0 {
+            return match head {
+                0 => Ok(Self::Gone),
+                _ => Err(replay_spool::invalid("An occupation change has a bad head")),
+            };
+        }
+        let mask = u32::try_from(head >> 2)
+            .ok()
+            .filter(|mask| mask >> STATE_FIELDS == 0)
+            .ok_or_else(|| replay_spool::invalid("An occupation change names no field"))?;
+        let mut by = StateValue::NONE;
+        macro_rules! unspool {
+            ([$($number:ident),*], [$($value:ident),*]) => {{
+                let mut bit = 0_u32;
+                $(
+                    if (mask >> bit) & 1 != 0 {
+                        by.$number = replay_spool::Spooled::unspool(input)?;
+                    }
+                    bit += 1;
+                )*
+                $(
+                    if (mask >> bit) & 1 != 0 {
+                        by.$value = replay_spool::Spooled::unspool(input)?;
+                    }
+                    bit += 1;
+                )*
+                let _ = bit;
+            }};
+        }
+        state_fields!(unspool);
+        Ok(Self::Moved {
+            held: head & 2 != 0,
+            mask,
+            by,
+        })
+    }
+}
+
 impl StateValue {
+    /// What a [`Change`] of a state its emit holds no values of moves from.
+    const NONE: Self = Self {
+        name: None,
+        name_missing: None,
+        owner: None,
+        occupier: None,
+        occupied: None,
+        resistance_raw: 0,
+        compliance_raw: 0,
+        resistance_speed_raw: 0,
+        compliance_speed_raw: 0,
+        garrison_strength_raw: None,
+        required_manpower: None,
+        garrison_required_raw: None,
+        garrison_alert: false,
+        garrison_red: None,
+        assigned_manpower: None,
+        garrison_missing: None,
+        law: None,
+        law_missing: None,
+    };
+
     fn of(value: &OccupiedValues, named: &mut Named) -> Self {
         let mut id = |text: &Option<String>| text.as_deref().map(|text| named.id(text));
         Self {
@@ -163,6 +392,112 @@ impl StateValue {
     }
 }
 
+/// A state's group law as [`Texted`] keeps what its law was resolved from.
+#[derive(PartialEq)]
+enum GroupKey {
+    Missing,
+    Law(Option<Vec<u8>>),
+    Unknown(String),
+}
+
+/// What a state's law was resolved from ([`LawInputs`]), and the raw occupied country its group
+/// scopes the law's eligibility to.
+struct LawKey {
+    state: Option<Vec<u8>>,
+    key_resolved: bool,
+    overrides_complete: bool,
+    group: GroupKey,
+    default: Option<(bool, Vec<u8>)>,
+    fallback: Result<Vec<u8>, String>,
+    scope: Option<u32>,
+}
+
+impl LawKey {
+    fn of(inputs: &LawInputs<'_>, scope: Option<u32>) -> Self {
+        Self {
+            state: inputs.state.map(<[u8]>::to_vec),
+            key_resolved: inputs.key_resolved,
+            overrides_complete: inputs.overrides_complete,
+            group: match &inputs.group {
+                GroupLaw::Missing => GroupKey::Missing,
+                GroupLaw::Law(law) => GroupKey::Law(law.map(<[u8]>::to_vec)),
+                GroupLaw::Unknown(reason) => GroupKey::Unknown(reason.clone()),
+            },
+            default: inputs.default.map(|(present, law)| (present, law.to_vec())),
+            fallback: inputs.fallback.clone().map(<[u8]>::to_vec),
+            scope,
+        }
+    }
+
+    fn matches(&self, inputs: &LawInputs<'_>, scope: Option<u32>) -> bool {
+        self.state.as_deref() == inputs.state
+            && self.key_resolved == inputs.key_resolved
+            && self.overrides_complete == inputs.overrides_complete
+            && match (&self.group, &inputs.group) {
+                (GroupKey::Missing, GroupLaw::Missing) => true,
+                (GroupKey::Law(held), GroupLaw::Law(law)) => held.as_deref() == *law,
+                (GroupKey::Unknown(held), GroupLaw::Unknown(reason)) => held == reason,
+                _ => false,
+            }
+            && self
+                .default
+                .as_ref()
+                .map(|(present, law)| (*present, law.as_slice()))
+                == inputs.default
+            && match (&self.fallback, &inputs.fallback) {
+                (Ok(held), Ok(law)) => held.as_slice() == *law,
+                (Err(held), Err(reason)) => held == reason,
+                _ => false,
+            }
+            && self.scope == scope
+    }
+}
+
+/// An occupied state's texts at its last read, by id, and what they were read from: its row's
+/// owner, controller and names, its occupied country, its law's inputs and the eligibility its
+/// law read, at that evaluation. Its countries are named through [`Projector::texts_named`].
+struct Texted {
+    owner: u32,
+    controller: u32,
+    country: u32,
+    custom_name: Vec<u8>,
+    owner_name: Vec<u8>,
+    law: LawKey,
+    eligibility: Option<(eligibility::Key, u64)>,
+    /// The texts; its numbers are those of that read.
+    value: StateValue,
+    /// Why the name and the law are missing, as noted.
+    name_missing: Option<String>,
+    law_missing: Option<String>,
+}
+
+impl Texted {
+    /// Whether `state`, occupied as `row` says, reads these texts again.
+    fn reads(
+        &self,
+        state: &StateRow,
+        row: &StateResistanceRow,
+        law: &LawInputs<'_>,
+        scope: Option<u32>,
+        runtime: &eligibility::Runtime,
+    ) -> bool {
+        self.owner == state.owner
+            && self.controller == state.controller
+            && self.country == row.country
+            && self.custom_name == state.custom_name
+            && self.owner_name == state.owner_name
+            && self.law.matches(law, scope)
+            && self
+                .eligibility
+                .as_ref()
+                .is_none_or(|(key, generation)| runtime.current(key, *generation))
+    }
+}
+
+fn state_key(links: &[CountryLinkRow], controller: u32, occupied: u32, state: u32) -> Option<StateKey> {
+    Some((link_slot(links, controller)?, link_slot(links, occupied)?, state))
+}
+
 /// A States row as the emit projects an occupied state's owner and name
 /// from it.
 #[derive(replay_spool::Spooled)]
@@ -170,8 +505,8 @@ struct Shipped {
     owner: Option<u32>,
     /// Why the owner has no tag, when it has none.
     owner_refused: Option<Box<(String, String)>>,
-    /// A digest of what the name is read from: the custom and owner names.
-    name_key: [u8; 32],
+    /// What the name is read from, the custom and owner names, by [`Texts::name_key`].
+    name_key: u32,
     /// The name, or why it is missing, and what reading it noted.
     name: (Option<u32>, Option<u32>),
     named: catalogue::OwnRefusals,
@@ -222,11 +557,19 @@ type Progress = HashMap<(Identity, Identity), (i64, i32)>;
 enum Collaboration {
     /// The table is unavailable: no progress is known.
     Unavailable,
-    /// A read's progress, and the rows whose countries do not resolve.
-    Read(Arc<Progress>, Refusals),
+    /// A read at the hour: each pair's progress that moved since the read before or is new,
+    /// the pairs no longer read, how many pairs it read, and the rows whose countries do not
+    /// resolve that the projection had not handed on before.
+    Read {
+        set: Vec<(Pair, i64)>,
+        gone: Vec<Pair>,
+        pairs: u32,
+        refused: Refusals,
+    },
 }
 
 /// An occupier's means at a read, as [`OccupationTrendRun`] holds them.
+#[derive(Clone, PartialEq)]
 #[derive(replay_spool::Spooled)]
 struct Sample {
     identity: Identity,
@@ -239,47 +582,36 @@ struct Sample {
     occupied: Arc<[Identity]>,
     /// Its collaboration at the read, once the projection read the progress.
     collaboration: Option<Arc<[Collab]>>,
-    /// Its run's fact at the read, for a run its read starts.
-    fact: Option<Fact>,
 }
 
-/// An occupier's run as its fact is published, encoded before its segment
-/// start is known.
+/// An occupier's means as its emit goes on from those it last had in the projection.
 #[derive(replay_spool::Spooled)]
-struct Fact {
-    bytes: Vec<u8>,
-    starts: usize,
+enum Occupier {
+    Gone(Identity),
+    Set(Sample),
 }
 
-/// The field of a run's fact that says whether it starts a segment.
-const STARTS_SEGMENT: &[u8] = b"\"startsSegment\":";
+/// An (occupied, occupier) pair.
+type Pair = (Identity, Identity);
 
-impl Fact {
-    fn new(bytes: Vec<u8>) -> io::Result<Self> {
-        let starts = bytes
-            .windows(STARTS_SEGMENT.len())
-            .position(|field| field == STARTS_SEGMENT)
-            .map(|at| at + STARTS_SEGMENT.len())
-            .filter(|&at| bytes[at..].starts_with(b"false"))
-            .ok_or_else(|| dashboard_core::invalid("An occupation fact lacks its segment start"))?;
-        Ok(Self { bytes, starts })
-    }
-
-    fn finish(mut self, starts_segment: bool) -> Vec<u8> {
-        if starts_segment {
-            self.bytes
-                .splice(self.starts..self.starts + "false".len(), *b"true");
-        }
-        self.bytes
-    }
+/// The refusals a projection handed on: its reads' own, the trend's and the collaboration's.
+#[derive(Default)]
+struct Sent {
+    refused: Refusals,
+    trend: Refusals,
+    collaboration: Refusals,
 }
 
 #[derive(replay_spool::Spooled)]
 struct Read {
     reset: bool,
-    values: Vec<(u32, Option<StateValue>)>,
+    /// Every state read, ascending, each as its id's step from the one before.
+    values: Vec<(u32, Change)>,
     complete: bool,
-    samples: Vec<Sample>,
+    /// The occupiers whose means moved since the read before, and how many it holds.
+    samples: Vec<Occupier>,
+    occupiers: u32,
+    /// Each refusal the projection had not handed on before.
     refused: Refusals,
     trend_refused: Refusals,
     collaboration_refused: Refusals,
@@ -290,6 +622,8 @@ struct Read {
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
+    /// Its projection's first hour: the emit forgets what it had of the projection before.
+    first: bool,
     valid: bool,
     naming: Arc<Naming>,
     /// Whether `states` lists every States row, not only those the hour
@@ -571,12 +905,10 @@ pub struct Projector {
     states: Rows<StateRow>,
     resistance: Rows<StateResistanceRow>,
     pending: BTreeSet<u128>,
-    /// Every table it reads; the hour's frame holds its own, and the trigger tables a law
-    /// of this walk read. The others are asked for at an hour a law reads them.
+    /// Every table it reads, whose changes a law's eligibility follows.
     observed: Vec<TableId>,
-    tables: Vec<TableId>,
-    /// The hour's frame, dropped as the hour ends.
-    frame: Option<DecodedFrame>,
+    /// The CountryCollaboration fields a read reads.
+    collaboration_mask: u64,
     joins: joins::Joins,
     inventory_dirty: BTreeSet<u32>,
     inventory_all: bool,
@@ -603,6 +935,18 @@ pub struct Projector {
     progress: Option<Arc<Progress>>,
     /// The bytes of the naming made since an hour last carried it.
     charged: usize,
+    /// Each occupied state's texts at its last read, while its countries are named through
+    /// `texts_named`.
+    texts: HashMap<u32, Texted>,
+    texts_named: Option<Arc<Countries>>,
+    /// No hour pushed yet.
+    first: bool,
+    /// What it handed on last of each state's values, occupier's means and pair's progress,
+    /// and the refusals it handed on.
+    sent_values: HashMap<u32, StateValue>,
+    sent_samples: BTreeMap<Identity, Sample>,
+    sent_progress: HashMap<Pair, i64>,
+    sent: Sent,
 }
 
 fn mask(table: TableId, names: &[&str]) -> io::Result<u64> {
@@ -628,9 +972,9 @@ fn cell<T: columns::Plain + Copy>(
 ) -> io::Result<T> {
     let held = columns::table(state, table)?;
     if held.recorded(field, slot)
-        && let Some(value) = columns::plain::<T>(held, field)?.get(slot as usize)
+        && let Some(value) = columns::value::<T>(held, field, slot)?
     {
-        return Ok(*value);
+        return Ok(value);
     }
     Err(dashboard_core::refused(format!(
         "Occupation {table:?} field {field} is not recorded at slot {slot}"
@@ -703,15 +1047,12 @@ fn shipped(
             &countries.links,
         ))
     });
-    let mut key = blake3::Hasher::new();
-    key.update(&(row.custom_name.len() as u64).to_le_bytes());
-    key.update(&row.custom_name);
-    key.update(&row.owner_name);
+    let name_key = named.shared.name_key(&row.custom_name, &row.owner_name);
     let (name, own) = catalogue::capture_isolated(|| name_of(row, cat, names));
     Shipped {
         owner,
         owner_refused,
-        name_key: *key.finalize().as_bytes(),
+        name_key,
         name: match name {
             Ok(name) => (Some(named.id(&name)), None),
             Err(reason) => (None, Some(named.id(&reason))),
@@ -728,7 +1069,6 @@ impl Projector {
         scan: Scan<'static>,
         texts: Arc<Texts>,
     ) -> io::Result<Self> {
-        let tables = super::super::prepared::observed_tables(false);
         let observed = super::super::prepared::observed_tables(scan.reads_trigger_world());
         Ok(Self {
             format,
@@ -739,8 +1079,7 @@ impl Projector {
                 ids: HashMap::new(),
             },
             observed,
-            tables,
-            frame: None,
+            collaboration_mask: mask(TableId::CountryCollaboration, &["progress"])?,
             joins: joins::Joins::default(),
             inventory_dirty: BTreeSet::new(),
             inventory_all: true,
@@ -798,19 +1137,14 @@ impl Projector {
             garrisons_read: None,
             progress: None,
             charged: 0,
+            texts: HashMap::new(),
+            texts_named: None,
+            first: true,
+            sent_values: HashMap::new(),
+            sent_samples: BTreeMap::new(),
+            sent_progress: HashMap::new(),
+            sent: Sent::default(),
         })
-    }
-
-    /// Moves the trigger tables a law read since into the frame every hour holds.
-    fn grow(&mut self) {
-        let observed = &self.observed;
-        let tables = &mut self.tables;
-        for table in self.scan.eligibility.watched() {
-            if observed.binary_search(&table).is_ok() && !tables.contains(&table) {
-                tables.push(table);
-            }
-        }
-        tables.sort_unstable();
     }
 
     /// The countries as the walk's roster holds them: their index, links and naming.
@@ -1011,15 +1345,15 @@ impl Projector {
         );
     }
 
-    /// Every occupier's means at the read at `at`, each with its
-    /// collaboration and its run's fact once the progress is known.
+    /// Every occupier's means at the read at `at`, each with its collaboration once the
+    /// progress is known.
     fn samples(
         &self,
         at: i32,
         names: &Countries,
         inventory_complete: bool,
         refused: &mut Refusals,
-    ) -> io::Result<Vec<Sample>> {
+    ) -> Vec<Sample> {
         let mut samples = Vec::with_capacity(self.totals.len());
         for (&identity, total) in &self.totals {
             if total.states == 0 {
@@ -1043,7 +1377,6 @@ impl Projector {
                 held_complete: inventory_complete && total.held_complete,
                 occupied: Arc::clone(&total.occupied),
                 collaboration: None,
-                fact: None,
             };
             if let Some(progress) = &self.progress {
                 let mut entries: Vec<_> = total
@@ -1066,34 +1399,17 @@ impl Projector {
                     })
                     .collect();
                 entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                if names.index.names.contains_key(&identity) {
-                    sample.fact = Some(Fact::new(serde_json::to_vec(&OccupationTrendRun {
-                        first_hour: at,
-                        last_hour: at,
-                        read_hour: at,
-                        starts_segment: false,
-                        resistance_raw: resistance.to_string(),
-                        compliance_raw: compliance.to_string(),
-                        states: sample.states,
-                        held_states: sample.held_states,
-                        held_complete: sample.held_complete,
-                        collaboration: entries
-                            .iter()
-                            .map(|(tag, entry)| entry.shown(tag.cloned()))
-                            .collect(),
-                    })?)?);
-                }
                 sample.collaboration = Some(entries.into_iter().map(|(_, entry)| entry).collect());
             }
             samples.push(sample);
         }
-        Ok(samples)
+        samples
     }
 
     fn read(
         &mut self,
         hour: &segments::Hour<'_, World>,
-        countries: &Countries,
+        countries: &Arc<Countries>,
     ) -> io::Result<Read> {
         let _cpu = ::replay_frame::cpu::scope("occupation projection read", None);
         let reset = !self.evaluated;
@@ -1147,17 +1463,12 @@ impl Projector {
         for &key in &dirty {
             self.remove(key as u32, &mut reached);
         }
+        // Read in place: no state's row is copied to add its contribution.
+        let rows = std::mem::take(&mut self.states.rows);
         for row in &resistance {
-            self.add(
-                row,
-                self.states
-                    .rows
-                    .get(&u128::from(row.state))
-                    .cloned()
-                    .as_ref(),
-                &mut reached,
-            );
+            self.add(row, rows.get(&u128::from(row.state)), &mut reached);
         }
+        self.states.rows = rows;
         for (id, before) in before {
             let after = self
                 .contributions
@@ -1168,58 +1479,156 @@ impl Projector {
                 self.membership_dirty.extend(after.map(|row| row.0));
             }
         }
-        let own = self.frame.as_ref().expect("occupation inputs");
+        // The walk's views of every table a read and its laws read.
+        let own = HourFrame::from(hour.world.columns(hour.state));
         self.joins.refuse(own, &mut self.scan.refused)?;
-        recorded_rows::<tables::StateResistance>(own)?;
+        recorded_rows_in::<tables::StateResistance>(own, 0)?;
         let mut scan = std::mem::take(&mut self.scan).bind(self.catalogue.as_deref());
         scan.countries = Arc::clone(&countries.index);
         scan.result.states.clear();
         scan.positions.clear();
-        // A law reading a table the hour's frame lacks reads every trigger table, asked once.
-        let (tables, observed) = (&self.tables, &self.observed);
-        let holds = |table: TableId| {
-            tables.binary_search(&table).is_ok() || observed.binary_search(&table).is_err()
-        };
-        let failed = Cell::new(None);
-        let whole = OnceCell::new();
-        let every = || {
-            whole
-                .get_or_init(|| {
-                    let _cpu = ::replay_frame::cpu::scope("occupation world frame", None);
-                    hour.world.frame(hour.state, observed).map_err(|error| {
-                        let reason = error.to_string();
-                        failed.set(Some(error));
-                        reason
-                    })
-                })
+        // A state whose texts are read from what they were read from before keeps them: only
+        // its numbers are read again.
+        if reset
+            || self
+                .texts_named
                 .as_ref()
-                .map_err(Clone::clone)
-        };
-        let built = || whole.get().is_some();
+                .is_none_or(|named| !Arc::ptr_eq(named, countries))
+        {
+            self.texts.clear();
+            self.texts_named = Some(Arc::clone(countries));
+        }
+        let links = countries.links.as_slice();
+        let rows: HashMap<u32, &StateRow> = states.iter().map(|state| (state.id, state)).collect();
+        let mut kept = Vec::new();
+        let mut evaluated = Vec::new();
+        for row in resistance {
+            if !occupied(&row) {
+                continue;
+            }
+            let reads = rows.get(&row.state).is_some_and(|state| {
+                self.texts.get(&row.state).is_some_and(|texted| {
+                    let key = state_key(links, state.controller, row.country, state.id);
+                    let (law, scope) = law_inputs(&self.joins, own, links, state.controller, key);
+                    texted.reads(state, &row, &law, scope, &scan.eligibility)
+                })
+            });
+            if reads {
+                kept.push(row);
+            } else {
+                evaluated.push(row);
+            }
+        }
         scan.read_values(
-            eligibility::Frames {
-                hour: own,
-                holds: &holds,
-                every: &every,
-                built: &built,
-            },
+            own,
+            hour.world.lexicon(),
             hour.hour,
             &states,
-            &countries.links,
-            &resistance,
+            links,
+            &evaluated,
             &self.joins,
             false,
         )?;
-        if let Some(error) = failed.take() {
-            return Err(error);
+        let mut by_state: HashMap<u32, &_> = HashMap::with_capacity(evaluated.len());
+        for row in &evaluated {
+            by_state.entry(row.state).or_insert(row);
         }
-        let mut values: BTreeMap<_, _> = dirty.into_iter().map(|key| (key as u32, None)).collect();
+        let mut values: BTreeMap<_, _> = dirty.iter().map(|&key| (key as u32, None)).collect();
         for state in std::mem::take(&mut scan.result.states) {
             let value = &state.runs.last().expect("evaluated state").value;
             if value.occupier.is_none() || value.occupied.is_none() {
                 self.incomplete.insert(state.state);
             }
-            values.insert(state.state, Some(StateValue::of(value, &mut self.named)));
+            let shown = StateValue::of(value, &mut self.named);
+            let id = state.state;
+            if let (Some(row), Some(read)) = (by_state.get(&id), rows.get(&id)) {
+                let key = state_key(links, read.controller, row.country, id);
+                let (law, scope) = law_inputs(&self.joins, own, links, read.controller, key);
+                self.texts.insert(
+                    id,
+                    Texted {
+                        owner: read.owner,
+                        controller: read.controller,
+                        country: row.country,
+                        custom_name: read.custom_name.clone(),
+                        owner_name: read.owner_name.clone(),
+                        law: LawKey::of(&law, scope),
+                        eligibility: scan.eligibility.read_by(id),
+                        value: shown,
+                        name_missing: value.name_missing.clone(),
+                        law_missing: value.law_missing.clone(),
+                    },
+                );
+            }
+            values.insert(id, Some(shown));
+        }
+        for row in &kept {
+            let state = rows[&row.state];
+            let texted = &self.texts[&row.state];
+            // What reading the texts noted, noted again.
+            if let Some(reason) = &texted.law_missing {
+                scan.refused.note(
+                    reason,
+                    format!(
+                        "state {}, controller {}, occupied {}",
+                        state.id, state.controller, row.country
+                    ),
+                );
+            }
+            if let Some(reason) = &texted.name_missing {
+                scan.refused.note(reason, format!("state {}", state.id));
+            }
+            match &texted.eligibility {
+                Some((key, _)) => scan.eligibility.remember(state.id, key),
+                None => scan.eligibility.forget_state(state.id),
+            }
+            let texts = texted.value;
+            for (field, raw, missing) in [
+                ("owner", state.owner, texts.owner.is_none()),
+                (
+                    "occupier at the read",
+                    state.controller,
+                    texts.occupier.is_none(),
+                ),
+                (
+                    "occupied country at the read",
+                    row.country,
+                    texts.occupied.is_none(),
+                ),
+            ] {
+                if missing {
+                    scan.note_link(field, raw, state.id, links);
+                }
+            }
+            if texts.occupier.is_none() || texts.occupied.is_none() {
+                self.incomplete.insert(state.id);
+            }
+            let key = state_key(links, state.controller, row.country, state.id);
+            let garrisoned = scan.garrisoned(own, &self.joins, state.id, key);
+            values.insert(
+                state.id,
+                Some(StateValue {
+                    resistance_raw: row.level,
+                    compliance_raw: row.compliance,
+                    resistance_speed_raw: row.speed,
+                    compliance_speed_raw: row.compliance_speed,
+                    garrison_strength_raw: garrisoned.strength,
+                    required_manpower: garrisoned.required_manpower,
+                    garrison_required_raw: garrisoned.garrison_required_raw,
+                    garrison_alert: garrisoned.alert,
+                    garrison_red: garrisoned.red,
+                    assigned_manpower: garrisoned.assigned_manpower,
+                    garrison_missing: garrisoned.missing.as_deref().map(|text| self.named.id(text)),
+                    ..texts
+                }),
+            );
+        }
+        // A state read no more lets its texts go.
+        for key in dirty {
+            let id = key as u32;
+            if !values.get(&id).is_some_and(Option::is_some) {
+                self.texts.remove(&id);
+            }
         }
         self.scan = scan.bind(None);
         if self.garrisons_read != Some(garrisons) || reset {
@@ -1244,19 +1653,73 @@ impl Projector {
             countries,
             garrisons && self.inventory_complete && self.bad_controllers.is_empty(),
             &mut trend_refused,
-        )?;
+        );
+        let mut last = 0;
+        let mut changes = Vec::with_capacity(values.len());
+        for (id, value) in values {
+            let change = match value {
+                Some(value) => {
+                    let change = Change::of(self.sent_values.get(&id), &value);
+                    self.sent_values.insert(id, value);
+                    change
+                }
+                None => {
+                    self.sent_values.remove(&id);
+                    Change::Gone
+                }
+            };
+            changes.push((id - last, change));
+            last = id;
+        }
+        let (samples, occupiers) = self.moved_samples(samples);
+        let refused = std::mem::take(&mut self.scan.refused);
         Ok(Read {
             reset,
-            values: values.into_iter().collect(),
+            values: changes,
             complete: columns::complete(hour.state, TableId::StateResistance)
                 && self.missing_states.is_empty()
                 && self.incomplete.is_empty(),
             samples,
-            refused: std::mem::take(&mut self.scan.refused),
-            trend_refused,
-            collaboration_refused,
+            occupiers,
+            refused: self.sent.refused.merge_new(&refused),
+            trend_refused: self.sent.trend.merge_new(&trend_refused),
+            collaboration_refused: self.sent.collaboration.merge_new(&collaboration_refused),
             own: catalogue::OwnRefusals::default(),
         })
+    }
+
+    /// The occupiers whose means moved from those handed on before, which `samples` become,
+    /// and how many they are.
+    fn moved_samples(&mut self, samples: Vec<Sample>) -> (Vec<Occupier>, u32) {
+        let now: BTreeMap<Identity, Sample> = samples
+            .into_iter()
+            .map(|sample| (sample.identity, sample))
+            .collect();
+        let mut moved: Vec<Occupier> = self
+            .sent_samples
+            .keys()
+            .filter(|identity| !now.contains_key(*identity))
+            .map(|&identity| Occupier::Gone(identity))
+            .collect();
+        let mut sent = BTreeMap::new();
+        for (identity, mut sample) in now {
+            match self.sent_samples.get(&identity) {
+                Some(held) if *held == sample => sample = held.clone(),
+                held => {
+                    // An unchanged collaboration goes on as the allocation handed on before.
+                    if let Some(entries) = held.and_then(|held| held.collaboration.as_ref())
+                        && sample.collaboration.as_deref() == Some(&**entries)
+                    {
+                        sample.collaboration = Some(Arc::clone(entries));
+                    }
+                    moved.push(Occupier::Set(sample.clone()));
+                }
+            }
+            sent.insert(identity, sample);
+        }
+        let count = u32::try_from(sent.len()).expect("occupiers fit 32 bits");
+        self.sent_samples = sent;
+        (moved, count)
     }
 
     /// The hour's collaboration read, if it reads it or finds it unavailable.
@@ -1268,6 +1731,7 @@ impl Projector {
     ) -> io::Result<Option<Collaboration>> {
         if columns::unavailable(hour.state, TableId::CountryCollaboration) {
             self.progress = Some(Arc::default());
+            self.sent_progress.clear();
             return Ok(Some(Collaboration::Unavailable));
         }
         if !slot_read(
@@ -1284,9 +1748,11 @@ impl Projector {
         };
         let mut progress = Progress::new();
         let mut refused = Refusals::default();
-        for row in recorded_rows::<tables::CountryCollaboration>(
-            self.frame.as_ref().expect("occupation inputs"),
-        )? {
+        let frame = HourFrame::from(hour.world.columns(hour.state));
+        for row in
+            recorded_rows_in::<tables::CountryCollaboration>(frame, self.collaboration_mask)?.iter()
+        {
+            let row = row?;
             if let Some(key) = identity(row.source).zip(identity(row.target)) {
                 progress.insert(key, (row.progress, hour.hour));
             } else {
@@ -1296,9 +1762,31 @@ impl Projector {
                 );
             }
         }
-        let progress = Arc::new(progress);
-        self.progress = Some(Arc::clone(&progress));
-        Ok(Some(Collaboration::Read(progress, refused)))
+        let mut set: Vec<(Pair, i64)> = progress
+            .iter()
+            .filter(|(pair, (read, _))| self.sent_progress.get(*pair) != Some(read))
+            .map(|(&pair, &(read, _))| (pair, read))
+            .collect();
+        set.sort_unstable();
+        let mut gone: Vec<Pair> = self
+            .sent_progress
+            .keys()
+            .filter(|pair| !progress.contains_key(*pair))
+            .copied()
+            .collect();
+        gone.sort_unstable();
+        self.sent_progress = progress
+            .iter()
+            .map(|(&pair, &(read, _))| (pair, read))
+            .collect();
+        let pairs = u32::try_from(progress.len()).expect("collaboration pairs fit 32 bits");
+        self.progress = Some(Arc::new(progress));
+        Ok(Some(Collaboration::Read {
+            set,
+            gone,
+            pairs,
+            refused: self.sent.collaboration.merge_new(&refused),
+        }))
     }
 }
 
@@ -1313,7 +1801,6 @@ impl Operator<World> for Projector {
         let _cpu = ::replay_frame::cpu::scope("occupation projection", None);
         let version = self.format.version();
         let whole = hour.starts || hour.opens;
-        self.grow();
         let roster = hour.world.countries()?;
         let naming_changed = self.naming.is_none() || whole || roster.changed();
         if naming_changed {
@@ -1358,7 +1845,6 @@ impl Operator<World> for Projector {
         }
         self.last = Some((hour.branch, hour.hour, valid));
         let edits = Changes::new(hour, self.format, &self.observed, &mut self.shapes);
-        self.frame = Some(hour.world.frame(hour.state, &self.tables)?);
         let changed = self.joins.update(hour, version, &names, naming_changed)?;
         self.pending.extend(changed.states);
         if changed.all || naming_changed || interrupted {
@@ -1384,7 +1870,7 @@ impl Operator<World> for Projector {
             self.pending.extend(
                 self.scan
                     .eligibility
-                    .step(self.frame.as_ref().expect("occupation inputs"), &edits),
+                    .step(hour.world.columns(hour.state).into(), &edits),
             );
         }
         drop(edits);
@@ -1425,11 +1911,10 @@ impl Operator<World> for Projector {
                     (key as u32, row)
                 })
                 .collect();
-        // A frame held into the next hour would have its views copied.
-        self.frame = None;
         out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
+            first: std::mem::replace(&mut self.first, false),
             valid,
             naming: Arc::clone(&names.naming),
             whole: all,

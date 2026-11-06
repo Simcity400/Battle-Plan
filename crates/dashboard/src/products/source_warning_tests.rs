@@ -37,7 +37,6 @@ struct DiagnosticProduct<const INDEX: usize>;
 impl<const INDEX: usize> super::Product for DiagnosticProduct<INDEX> {
     const KEY: &'static str = DIAGNOSTIC_PRODUCTS[INDEX];
     const CONTENT_DEPENDENT: bool = true;
-    const MACHINE_DEPENDENT: bool = true;
     type Params = DiagnosticParams;
     type Reply = DiagnosticReply;
 

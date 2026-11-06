@@ -3,7 +3,8 @@
 //! hours lie in, found by bisection over the chunk table, with where what it holds ends
 //! and the versions it overlays found by bisection or by where its chunks say they lie;
 //! one line's modifier reads from the chunks that hold them. None assembles a whole branch
-//! scan, and none walks the publications before the one it reads.
+//! scan, and none walks the publications before the one it reads. Where a history reads a lens
+//! in a chunk, its parts there are the lens's, read through the history's binding ([`Lens`]).
 
 use super::index::{self, Opened, Part};
 use super::prepared::{Alias, Commit, Directory, HistoryView, Identity, NativeCountry};
@@ -11,7 +12,7 @@ use super::*;
 use crate::prepared::pages::Pages;
 use crate::products::country_groups::HourSpan;
 use replay_data::rows::CountryProductionModifiersRow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The latest commit: its range and record.
 pub(super) fn commit(
@@ -73,25 +74,6 @@ impl Published {
             histories,
         })
     }
-
-    /// Its buffers at capacity and what their elements own.
-    pub fn bytes(&self) -> usize {
-        use std::mem::size_of;
-        size_of::<Self>()
-            + self.commit.tail.capacity() * size_of::<(u64, i32, i32)>()
-            + self.commit.span_tail.capacity() * size_of::<HourSpan>()
-            + self.commit.ledger.capacity() * size_of::<u64>()
-            + self.identity.histories.capacity() * size_of::<HistoryView>()
-            + self.histories.len() * 3 * size_of::<(u64, HistoryView)>()
-            + self.identity.natives.capacity() * size_of::<(NativeCountry, u64)>()
-            + self.identity.tags.capacity() * size_of::<(String, u64)>()
-            + self
-                .identity
-                .tags
-                .iter()
-                .map(|(tag, _)| tag.capacity())
-                .sum::<usize>()
-    }
 }
 
 /// The chunks a view reads, `(owner, from, until)` in order, each from its owner's parts.
@@ -113,37 +95,255 @@ fn walk(segments: &Segments) -> impl Iterator<Item = (u64, u64)> + '_ {
         .flat_map(|&(owner, from, until)| (from..until).map(move |chunk| (chunk, owner)))
 }
 
+/// A lens a history reads in a chunk, with how its parts read as the history's own: its ids,
+/// appearances, counts, conditional versions and anchors.
+pub(super) struct Lens {
+    id: u64,
+    base: u64,
+    lifetimes: HashMap<u64, (u64, u32)>,
+    inverse: HashMap<u64, u64>,
+    runs: HashMap<u64, (u64, i32, bool)>,
+    steps: HashMap<u64, u64>,
+    outputs: HashMap<u64, u64>,
+    appearances: HashMap<u64, i64>,
+    counters: index::Counters,
+    included: HashSet<u32>,
+    named: HashSet<u32>,
+    design_anchors: BTreeMap<u64, Option<u64>>,
+    organisation_anchors: BTreeMap<u64, Option<u64>>,
+}
+
+/// The icons the census inputs held over a branch: each variant's from an hour on, and the
+/// hours an input began anew holding none.
+#[derive(Default)]
+struct Icons {
+    changes: HashMap<u64, Vec<(i32, IconChoice)>>,
+    resets: Vec<i32>,
+}
+
+impl Icons {
+    /// `held`'s icon at `hour`: the last chosen by then, unless an input began anew after it.
+    fn at<'a>(&self, held: &'a [(i32, IconChoice)], hour: i32) -> Option<&'a IconChoice> {
+        let at = held.partition_point(|(changed, _)| *changed <= hour);
+        let (changed, icon) = held.get(at.checked_sub(1)?)?;
+        let reset = self.resets.partition_point(|reset| *reset <= hour);
+        let cleared = reset
+            .checked_sub(1)
+            .is_some_and(|reset| self.resets[reset] > *changed);
+        (!cleared).then_some(icon)
+    }
+}
+
+/// Where a history's parts lie in a chunk: under its own id, or a lens's.
+#[derive(Clone)]
+enum Source {
+    Own(u64),
+    Lens(Arc<Lens>),
+}
+
+/// The counts `base` holds and `more` adds.
+fn added(base: &index::Counters, more: index::Counters) -> index::Counters {
+    let mut refusals = base.refusals.clone();
+    for (reason, count) in more.refusals {
+        *refusals.entry(reason).or_default() += count;
+    }
+    index::Counters {
+        unknown_kinds: base.unknown_kinds + more.unknown_kinds,
+        unlisted_output: base.unlisted_output + more.unlisted_output,
+        unread_output_reads: base.unread_output_reads + more.unread_output_reads,
+        unreadable_stretches: base.unreadable_stretches + more.unreadable_stretches,
+        unlinked_rows: base.unlinked_rows + more.unlinked_rows,
+        refusals,
+        modified: base.modified || more.modified,
+    }
+}
+
+impl Lens {
+    fn new(binding: index::Binding, start: &index::Start) -> Self {
+        let lifetimes: HashMap<u64, (u64, u32)> = start
+            .lifetimes
+            .iter()
+            .map(|&(lens, held, appearance)| (lens, (held, appearance)))
+            .collect();
+        Self {
+            id: binding.lens,
+            base: binding.map,
+            inverse: lifetimes
+                .iter()
+                .map(|(&lens, &(held, _))| (held, lens))
+                .collect(),
+            lifetimes,
+            runs: start
+                .runs
+                .iter()
+                .map(|&(lens, held, first, starts)| (lens, (held, first, starts)))
+                .collect(),
+            steps: start.steps.iter().copied().collect(),
+            outputs: start.outputs.iter().copied().collect(),
+            appearances: start
+                .appearances
+                .iter()
+                .chain(&binding.appearances)
+                .copied()
+                .collect(),
+            counters: start.counters.clone(),
+            included: binding.included.iter().copied().collect(),
+            named: binding.named.iter().copied().collect(),
+            design_anchors: binding.design_anchors,
+            organisation_anchors: binding.organisation_anchors,
+        }
+    }
+
+    fn own(&self, id: u64) -> u64 {
+        index::id_floor(self.base) | id
+    }
+
+    fn lifetime(&self, id: u64) -> u64 {
+        self.lifetimes
+            .get(&id)
+            .map_or_else(|| self.own(id), |held| held.0)
+    }
+
+    /// The lens's lifetime the history names `id`, if it names one.
+    fn lens_lifetime(&self, id: u64) -> Option<u64> {
+        self.inverse
+            .get(&id)
+            .copied()
+            .or_else(|| (id >> index::ID_BITS == self.base).then_some(id & 0xffff_ffff))
+    }
+
+    fn appearance(&self, lifetime: u64, handle: u64, appearance: u32) -> io::Result<u32> {
+        match self.lifetimes.get(&lifetime) {
+            Some(&(_, held)) => Ok(held),
+            None => u32::try_from(
+                i64::from(appearance) + self.appearances.get(&handle).copied().unwrap_or(0),
+            )
+            .map_err(|_| crate::invalid("A production lens appearance reads past its history's")),
+        }
+    }
+
+    fn mapped(map: &HashMap<u64, u64>, base: u64, id: u64) -> u64 {
+        map.get(&id)
+            .copied()
+            .unwrap_or_else(|| index::id_floor(base) | id)
+    }
+
+    fn overview(
+        &self,
+        mut part: index::Overview,
+        marks: &index::Marks,
+    ) -> io::Result<index::Overview> {
+        for life in &mut part.lives {
+            life.appearance = self.appearance(life.id, life.handle, life.appearance)?;
+            life.id = self.lifetime(life.id);
+        }
+        for (lifetime, _) in &mut part.ends {
+            *lifetime = self.lifetime(*lifetime);
+        }
+        for (lifetime, _) in &mut part.finals {
+            *lifetime = self.lifetime(*lifetime);
+        }
+        for step in &mut part.steps {
+            step.id = Self::mapped(&self.steps, self.base, step.id);
+            step.lifetime = self.lifetime(step.lifetime);
+        }
+        for (id, _) in &mut part.step_closes {
+            *id = Self::mapped(&self.steps, self.base, *id);
+        }
+        let conditional: HashMap<u32, u32> = marks.names.iter().copied().collect();
+        part.names = std::mem::take(&mut part.names)
+            .into_iter()
+            .enumerate()
+            .filter(|(at, _)| {
+                conditional
+                    .get(&(*at as u32))
+                    .is_none_or(|cond| self.named.contains(cond))
+            })
+            .map(|(_, name)| name)
+            .collect();
+        part.counters = added(&self.counters, part.counters);
+        Ok(part)
+    }
+
+    fn runs(&self, runs: &mut index::Runs) {
+        for at in 0..runs.len() {
+            let id = runs.id[at];
+            match self.runs.get(&id) {
+                Some(&(held, first, starts)) => {
+                    runs.id[at] = held;
+                    runs.first[at] = first;
+                    runs.values.starts_segment[at] = starts;
+                }
+                None => runs.id[at] = self.own(id),
+            }
+            runs.lifetime[at] = self.lifetime(runs.lifetime[at]);
+        }
+    }
+
+    fn detail(&self, mut detail: index::Detail) -> io::Result<index::Detail> {
+        let mut lives = BTreeMap::new();
+        for (lifetime, (handle, appearance)) in std::mem::take(&mut detail.lives) {
+            lives.insert(
+                self.lifetime(lifetime),
+                (handle, self.appearance(lifetime, handle, appearance)?),
+            );
+        }
+        detail.lives = lives;
+        detail.carried_runs.checked()?;
+        detail.runs.checked()?;
+        self.runs(&mut detail.carried_runs);
+        self.runs(&mut detail.runs);
+        for record in detail
+            .carried_outputs
+            .iter_mut()
+            .chain(detail.outputs.iter_mut())
+        {
+            record.id = Self::mapped(&self.outputs, self.base, record.id);
+            record.lifetime = self.lifetime(record.lifetime);
+        }
+        Ok(detail)
+    }
+
+    fn closes(&self, mut closes: index::Closes) -> index::Closes {
+        for (id, _, _) in &mut closes.runs {
+            *id = self.runs.get(id).map_or_else(|| self.own(*id), |held| held.0);
+        }
+        for (id, _, _) in &mut closes.outputs {
+            *id = Self::mapped(&self.outputs, self.base, *id);
+        }
+        closes
+    }
+
+    fn versions(&self, mut versions: index::Versions, marks: &index::Marks) -> index::Versions {
+        let keep = |conditional: &[(u32, u32)], at: usize| {
+            conditional
+                .iter()
+                .find(|(index, _)| *index as usize == at)
+                .is_none_or(|(_, cond)| self.included.contains(cond))
+        };
+        versions.designs = std::mem::take(&mut versions.designs)
+            .into_iter()
+            .enumerate()
+            .filter(|(at, _)| keep(&marks.designs, *at))
+            .map(|(_, read)| read)
+            .collect();
+        versions.organisations = std::mem::take(&mut versions.organisations)
+            .into_iter()
+            .enumerate()
+            .filter(|(at, _)| keep(&marks.organisations, *at))
+            .map(|(_, raw)| raw)
+            .collect();
+        versions.design_anchors = self.design_anchors.clone();
+        versions.organisation_anchors = self.organisation_anchors.clone();
+        versions
+    }
+}
+
 /// The variant versions and icon events every chunk holds, folded in order. It holds no
 /// country's lines, so a query keeps it per chunk identity.
 pub(super) struct VariantFold {
     pub catalogue: VariantCatalogue,
     pub icons: Vec<(u64, i32, IconChoice, bool)>,
-}
-
-impl VariantFold {
-    /// Every buffer at capacity with its inline elements, the tree's nodes, and what elements own.
-    pub fn bytes(&self) -> usize {
-        use crate::prepared::query::observations::serde_bytes;
-        use std::mem::size_of;
-        let entry = size_of::<(u64, Vec<equipment::VariantVersion>)>();
-        let versions = self
-            .catalogue
-            .versions
-            .values()
-            .map(|list| {
-                3 * entry
-                    + list.capacity() * size_of::<equipment::VariantVersion>()
-                    + list.iter().map(serde_bytes).sum::<usize>()
-            })
-            .sum::<usize>();
-        let icons = self.icons.capacity() * size_of::<(u64, i32, IconChoice, bool)>()
-            + self
-                .icons
-                .iter()
-                .map(|(_, _, icon, _)| serde_bytes(icon))
-                .sum::<usize>();
-        size_of::<Self>() + 12 * entry + versions + icons + size_of::<VariantCatalogue>()
-    }
 }
 
 /// A line of `production-lines`: its life and steps, without its reads.
@@ -288,6 +488,9 @@ pub(super) struct Index<'a> {
     section: String,
     /// Parts decoded since it opened.
     pub decoded: usize,
+    /// Where each history's parts lie in each chunk it read, and the lens starts it read.
+    sources: HashMap<(u64, u64), Source>,
+    starts: HashMap<(u64, u64), Arc<index::Start>>,
 }
 
 impl<'a> Index<'a> {
@@ -314,6 +517,8 @@ impl<'a> Index<'a> {
             table: HashMap::new(),
             opened: HashMap::new(),
             decoded: 0,
+            sources: HashMap::new(),
+            starts: HashMap::new(),
         }
     }
 
@@ -477,6 +682,110 @@ impl<'a> Index<'a> {
         index::read(self.pages.as_mut(), &self.section, opened, slice)
     }
 
+    /// Where `owner`'s parts lie in `chunk`.
+    fn source(&mut self, chunk: u64, owner: u64) -> io::Result<Source> {
+        if let Some(source) = self.sources.get(&(chunk, owner)) {
+            return Ok(source.clone());
+        }
+        let source = match self.part::<index::Binding>(chunk, owner, Part::Binding, 0)? {
+            None => Source::Own(owner),
+            Some(mut binding) => {
+                let key = (binding.map, owner);
+                let start = match binding.start.take() {
+                    Some(start) => Arc::new(start),
+                    None => match self.starts.get(&key) {
+                        Some(start) => Arc::clone(start),
+                        None => {
+                            let first = self
+                                .part::<index::Binding>(binding.map, owner, Part::Binding, 0)?
+                                .and_then(|first| first.start)
+                                .ok_or_else(|| {
+                                    crate::invalid("A production binding names no lens start")
+                                })?;
+                            Arc::new(first)
+                        }
+                    },
+                };
+                self.starts.insert(key, Arc::clone(&start));
+                Source::Lens(Arc::new(Lens::new(binding, &start)))
+            }
+        };
+        self.sources.insert((chunk, owner), source.clone());
+        Ok(source)
+    }
+
+    fn marks(&mut self, chunk: u64, lens: &Lens) -> io::Result<index::Marks> {
+        Ok(self
+            .part::<index::Marks>(chunk, lens.id, Part::Marks, 0)?
+            .unwrap_or_default())
+    }
+
+    /// `owner`'s overview in `chunk`, if it holds one.
+    fn overview_at(&mut self, chunk: u64, owner: u64) -> io::Result<Option<index::Overview>> {
+        match self.source(chunk, owner)? {
+            Source::Own(id) => self.part(chunk, id, Part::Overview, 0),
+            Source::Lens(lens) => {
+                let Some(part) = self.part::<index::Overview>(chunk, lens.id, Part::Overview, 0)?
+                else {
+                    return Ok(None);
+                };
+                let marks = self.marks(chunk, &lens)?;
+                lens.overview(part, &marks).map(Some)
+            }
+        }
+    }
+
+    fn detail_at(&mut self, chunk: u64, owner: u64) -> io::Result<Option<index::Detail>> {
+        match self.source(chunk, owner)? {
+            Source::Own(id) => self.part(chunk, id, Part::Detail, 0),
+            Source::Lens(lens) => self
+                .part::<index::Detail>(chunk, lens.id, Part::Detail, 0)?
+                .map(|detail| lens.detail(detail))
+                .transpose(),
+        }
+    }
+
+    fn closes_at(&mut self, chunk: u64, owner: u64) -> io::Result<Option<index::Closes>> {
+        match self.source(chunk, owner)? {
+            Source::Own(id) => self.part(chunk, id, Part::Closes, 0),
+            Source::Lens(lens) => Ok(self
+                .part::<index::Closes>(chunk, lens.id, Part::Closes, 0)?
+                .map(|closes| lens.closes(closes))),
+        }
+    }
+
+    fn versions_part(&mut self, chunk: u64, owner: u64) -> io::Result<Option<index::Versions>> {
+        match self.source(chunk, owner)? {
+            Source::Own(id) => self.part(chunk, id, Part::Versions, 0),
+            Source::Lens(lens) => {
+                let Some(versions) =
+                    self.part::<index::Versions>(chunk, lens.id, Part::Versions, 0)?
+                else {
+                    return Ok(None);
+                };
+                let marks = self.marks(chunk, &lens)?;
+                Ok(Some(lens.versions(versions, &marks)))
+            }
+        }
+    }
+
+    /// The icons the census inputs held, from every chunk, in hour order.
+    fn timeline(&mut self, cancelled: &AtomicBool) -> io::Result<Icons> {
+        let mut icons = Icons::default();
+        for chunk in 0..self.len() {
+            crate::metadata::check_cancel(cancelled)?;
+            if let Some(part) =
+                self.part::<index::Timeline>(chunk, index::GLOBAL, Part::Timeline, 0)?
+            {
+                for (hour, variant, icon) in part.changes {
+                    icons.changes.entry(variant).or_default().push((hour, icon));
+                }
+                icons.resets.extend(part.resets);
+            }
+        }
+        Ok(icons)
+    }
+
     /// The variants' versions and icon events of every chunk, folded in order.
     pub fn variants(&mut self, cancelled: &AtomicBool) -> io::Result<VariantFold> {
         let _naming = replay_frame::cpu::scope("production naming", Some("production-lines"));
@@ -542,7 +851,7 @@ impl<'a> Index<'a> {
         let owner = owner(&self.segments(history)?, chunk)
             .map_err(|_| crate::invalid("Missing production overview"))?;
         Ok(self
-            .part::<index::Overview>(chunk, owner, Part::Overview, 0)?
+            .overview_at(chunk, owner)?
             .ok_or_else(|| crate::invalid("Missing production overview"))?
             .counters)
     }
@@ -553,11 +862,50 @@ impl<'a> Index<'a> {
         let mut overview = Overview::default();
         let mut lines: HashMap<u64, usize> = HashMap::new();
         let mut open: HashMap<u64, (usize, usize)> = HashMap::new();
+        let timeline = self.timeline(cancelled)?;
+        let mut icons: HashMap<u64, IconChoice> = HashMap::new();
         for (chunk, owner) in walk(&segments) {
             crate::metadata::check_cancel(cancelled)?;
-            let Some(part) = self.part::<index::Overview>(chunk, owner, Part::Overview, 0)? else {
+            let Some(part) = self.overview_at(chunk, owner)? else {
                 continue;
             };
+            // Each census's icon of a variant it produced, where it differs from the last.
+            let mut produced = part.produced.clone();
+            produced.sort_unstable();
+            for (variant, first, last) in produced {
+                let Some(held) = timeline.changes.get(&variant) else {
+                    continue;
+                };
+                // The run's first census, then the first after each choice made within it.
+                let mut hours = vec![first];
+                let within = held.partition_point(|(changed, _)| *changed <= first);
+                for &(changed, _) in held[within..]
+                    .iter()
+                    .take_while(|(changed, _)| *changed <= last)
+                {
+                    if let Some(&read) = part
+                        .reads
+                        .get(part.reads.partition_point(|read| *read < changed))
+                        && read <= last
+                    {
+                        hours.push(read);
+                    }
+                }
+                hours.dedup();
+                for hour in hours {
+                    let Some(icon) = timeline.at(held, hour) else {
+                        continue;
+                    };
+                    if icons.get(&variant) != Some(icon) {
+                        icons.insert(variant, icon.clone());
+                        overview
+                            .icons
+                            .entry(variant)
+                            .or_default()
+                            .push((hour, icon.clone()));
+                    }
+                }
+            }
             for life in part.lives {
                 lines.insert(life.id, overview.lines.len());
                 overview.lines.push(OverviewLine {
@@ -630,9 +978,6 @@ impl<'a> Index<'a> {
             overview.used.extend(part.output_variants);
             for (id, raw) in part.names {
                 overview.organisations.entry(id).or_default().push(raw);
-            }
-            for (id, hour, icon) in part.icons {
-                overview.icons.entry(id).or_default().push((hour, icon));
             }
             overview.counters = part.counters;
         }
@@ -738,7 +1083,7 @@ impl<'a> Index<'a> {
     /// The Versions part a view reads at `chunk`, which must hold one.
     fn versions_at(&mut self, segments: &Segments, chunk: u64) -> io::Result<index::Versions> {
         let owner = owner(segments, chunk)?;
-        self.part::<index::Versions>(chunk, owner, Part::Versions, 0)?
+        self.versions_part(chunk, owner)?
             .ok_or_else(|| {
                 crate::invalid("A production version anchor names a chunk without versions")
             })
@@ -758,9 +1103,7 @@ impl<'a> Index<'a> {
             Some(part) => part.clone(),
             None => {
                 let owner = owner(segments, chunk)?;
-                let part = self
-                    .part::<index::Closes>(chunk, owner, Part::Closes, 0)?
-                    .map(Arc::new);
+                let part = self.closes_at(chunk, owner)?.map(Arc::new);
                 closes.insert(chunk, part.clone());
                 part
             }
@@ -849,7 +1192,7 @@ impl<'a> Index<'a> {
         }
         let at = low - 1;
         Ok(self
-            .part::<index::Versions>(at, owner(segments, at)?, Part::Versions, 0)?
+            .versions_part(at, owner(segments, at)?)?
             .and_then(|part| {
                 part.designs
                     .iter()
@@ -883,7 +1226,7 @@ impl<'a> Index<'a> {
         for chunk in low..=high {
             crate::metadata::check_cancel(cancelled)?;
             let owner = owner(&segments, chunk)?;
-            if let Some(detail) = self.part::<index::Detail>(chunk, owner, Part::Detail, 0)? {
+            if let Some(detail) = self.detail_at(chunk, owner)? {
                 detail.carried_runs.checked()?;
                 detail.runs.checked()?;
                 lives.extend(detail.lives);
@@ -908,7 +1251,7 @@ impl<'a> Index<'a> {
                     }
                 }
             }
-            if let Some(part) = self.part::<index::Versions>(chunk, owner, Part::Versions, 0)? {
+            if let Some(part) = self.versions_part(chunk, owner)? {
                 versions.push(part);
             }
         }
@@ -1060,29 +1403,51 @@ impl<'a> Index<'a> {
         let mut last_country: Option<Arc<CountryProductionModifiersRow>> = None;
         for (chunk, owner) in walk(&segments) {
             crate::metadata::check_cancel(cancelled)?;
-            let parts = match lifetimes {
+            let lens = match self.source(chunk, owner)? {
+                Source::Own(_) => None,
+                Source::Lens(lens) => Some(lens),
+            };
+            let holder = lens.as_ref().map_or(owner, |lens| lens.id);
+            // Each part with the lifetime the history names it by.
+            let parts: Vec<(u64, index::Slice)> = match lifetimes {
                 Some(lifetimes) => {
                     let mut found = Vec::new();
                     for &lifetime in lifetimes {
+                        let key = match &lens {
+                            None => Some(lifetime),
+                            Some(lens) => lens.lens_lifetime(lifetime),
+                        };
+                        let Some(key) = key else {
+                            continue;
+                        };
                         let opened = self.opened(chunk)?;
                         if let Some(slice) = index::find(
                             self.pages.as_mut(),
                             &self.section,
                             opened,
-                            owner,
+                            holder,
                             Part::Modifiers,
-                            lifetime,
+                            key,
                         )? {
-                            found.push(slice);
+                            found.push((lifetime, slice));
                         }
                     }
                     found
                 }
-                None => self.parts(chunk, owner, Part::Modifiers)?,
+                None => self
+                    .parts(chunk, holder, Part::Modifiers)?
+                    .into_iter()
+                    .map(|slice| {
+                        let lifetime = lens
+                            .as_ref()
+                            .map_or(slice.key, |lens| lens.lifetime(slice.key));
+                        (lifetime, slice)
+                    })
+                    .collect(),
             };
             let rows = match (lifetimes, parts.is_empty()) {
                 (Some(_), true) => continue,
-                _ => self.part::<Vec<Vec<u8>>>(chunk, owner, Part::Countries, 0)?,
+                _ => self.part::<Vec<Vec<u8>>>(chunk, holder, Part::Countries, 0)?,
             };
             let mut countries = Vec::new();
             for bytes in rows.unwrap_or_default() {
@@ -1094,8 +1459,7 @@ impl<'a> Index<'a> {
                 last_country = Some(Arc::clone(&shared));
                 countries.push(shared);
             }
-            for slice in parts {
-                let lifetime = slice.key;
+            for (lifetime, slice) in parts {
                 let stored: index::StoredModifiers = self.slice(chunk, slice)?;
                 let modifiers = stored.records()?;
                 let reads = runs.entry(lifetime).or_default();

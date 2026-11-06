@@ -2,11 +2,9 @@
 use super::*;
 use replay_data::rows::TableId;
 
-fn recorded<T: TableSchema>(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<&[T::Row], String> {
+fn recorded<T: TableSchema>(frame: HourFrame<'_>, mask: u64) -> Result<Rowset<'_, T::Row>, String> {
     crate::triggers::inputs::table(frame, T::ID);
-    frame.complete::<T>().map_err(|why| why.to_string())
+    frame.complete::<T>(mask).map_err(|why| why.to_string())
 }
 
 impl ScriptedText<'_> {
@@ -14,10 +12,11 @@ impl ScriptedText<'_> {
         self.world()?
             .table_fresh(tables::StateResistance::ID)
             .map_err(|why| why.to_string())?;
-        let row = recorded::<tables::StateResistance>(self.frame)?
-            .iter()
-            .find(|row| row.state == id)
-            .ok_or_else(|| format!("Occupied: StateResistance lacks state {id}"))?;
+        let row = keyed(
+            &recorded::<tables::StateResistance>(self.frame, RESISTANCE)?,
+            u128::from(id),
+        )?
+        .ok_or_else(|| format!("Occupied: StateResistance lacks state {id}"))?;
         let country = if row.country == 0 {
             0
         } else {
@@ -29,9 +28,7 @@ impl ScriptedText<'_> {
     }
 
     pub(super) fn state_continent(&self, id: u32) -> Result<String, String> {
-        let row = recorded::<tables::States>(self.frame)?
-            .iter()
-            .find(|row| row.id == id)
+        let row = keyed(&recorded::<tables::States>(self.frame, STATE)?, u128::from(id))?
             .ok_or_else(|| format!("GetContinent: States lacks state {id}"))?;
         let token = row
             .continent
@@ -40,12 +37,10 @@ impl ScriptedText<'_> {
         if token == 0 {
             return Ok(String::new());
         }
-        let literal = recorded::<tables::LexicalTokens>(self.frame)?
-            .iter()
-            .find(|row| row.token == token)
+        let literal = spelled(&recorded::<tables::LexicalTokens>(self.frame, 0)?, token)?
             .ok_or("GetContinent: continent token has no recorded spelling")?;
-        let key = std::str::from_utf8(&literal.literal)
-            .map_err(|_| "GetContinent: continent name is not UTF-8")?;
+        let key =
+            std::str::from_utf8(literal).map_err(|_| "GetContinent: continent name is not UTF-8")?;
         let controller = if row.controller == 0 {
             0
         } else {
@@ -56,8 +51,10 @@ impl ScriptedText<'_> {
         // Country localisation prefers the controller's original tag, then the generic key.
         crate::triggers::inputs::table(self.frame, TableId::CountryAppearance);
         crate::triggers::inputs::table(self.frame, TableId::ReservedCountryNaming);
-        let tag =
-            installed_content_country_names::country_names::original_or_own_tag(self.frame, controller)?;
+        let tag = installed_content_country_names::country_names::original_or_own_tag_in(
+            &self.frame,
+            controller,
+        )?;
         let prefixed = format!("{tag}_{key}");
         self.localise(if self.localisation.get(&prefixed).is_some() {
             &prefixed
@@ -69,9 +66,7 @@ impl ScriptedText<'_> {
     pub(super) fn state_capital_victory_point_name(&self, id: u32) -> Result<String, String> {
         // The country's capital province uses this same cached state choice. The native first
         // attempt therefore selects the same province; an empty result repeats it, then the name.
-        let row = recorded::<tables::States>(self.frame)?
-            .iter()
-            .find(|row| row.id == id)
+        let row = keyed(&recorded::<tables::States>(self.frame, STATE)?, u128::from(id))?
             .ok_or_else(|| format!("GetCapitalVictoryPointName: States lacks state {id}"))?;
         let index = row
             .best_vp_index

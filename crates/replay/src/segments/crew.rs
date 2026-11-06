@@ -1,4 +1,5 @@
-//! Workers helping a walk run its families' hours, the walk's worker among them.
+//! Workers helping a walk run its families' hours, the walk's worker among them, and helping
+//! an emit run the parts of its work it shares ([`super::share`]).
 
 use std::{
     io,
@@ -13,7 +14,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The walks under way, for workers to help.
+/// The walks under way, and the emits sharing work, for workers to help.
 #[derive(Default)]
 pub(super) struct Board {
     crews: Mutex<Vec<Arc<Crew>>>,
@@ -47,12 +48,29 @@ impl Board {
         let crews = lock(&self.crews);
         crews
             .iter()
+            .filter(|crew| !crew.emit)
             .min_by_key(|crew| crew.at)
             .filter(|crew| crew.wanting())
             .map(Arc::clone)
     }
 
-    /// Waits for the earliest walk with room; None once the schedule changed past `seen`.
+    /// The earliest emit whose shared work has room for another worker.
+    pub(super) fn shared(&self) -> Option<Arc<Crew>> {
+        let crews = lock(&self.crews);
+        crews
+            .iter()
+            .filter(|crew| crew.emit && crew.wanting())
+            .min_by_key(|crew| crew.at)
+            .map(Arc::clone)
+    }
+
+    /// The workers waiting on the board for any work to help.
+    pub(super) fn idle(&self) -> usize {
+        self.idle.load(Ordering::SeqCst)
+    }
+
+    /// Waits for an emit's shared work with room, else the earliest walk with room; None once
+    /// the schedule changed past `seen`.
     pub(super) fn next(&self, seen: u64) -> Option<Arc<Crew>> {
         let mut crews = lock(&self.crews);
         loop {
@@ -64,7 +82,7 @@ impl Board {
             let wanting = crews
                 .iter()
                 .filter(|crew| crew.wanting())
-                .min_by_key(|crew| crew.at)
+                .min_by_key(|crew| (!crew.emit, crew.at))
                 .map(Arc::clone);
             if wanting.is_some() {
                 self.idle.fetch_sub(1, Ordering::SeqCst);
@@ -78,10 +96,12 @@ impl Board {
         }
     }
 
-    /// The crew of a walk of segment `at`, its hours open to helpers until dropped.
-    pub(super) fn join(&self, at: usize) -> io::Result<Joined<'_>> {
+    /// The crew of a walk of segment `at`, or of its emit where `emit`, its hours open to
+    /// helpers until dropped.
+    pub(super) fn join(&self, at: usize, emit: bool) -> io::Result<Joined<'_>> {
         let crew = Arc::new(Crew {
             at,
+            emit,
             hour: Mutex::new(Open::default()),
             left: Condvar::new(),
             posted: Condvar::new(),
@@ -125,9 +145,11 @@ struct Open {
     closed: bool,
 }
 
-/// A walk's hours as helpers take them.
+/// A walk's hours, or an emit's shared work, as helpers take them.
 pub(super) struct Crew {
     at: usize,
+    /// An emit's: each helper takes what it finds of one share and goes back to the board.
+    emit: bool,
     hour: Mutex<Open>,
     /// Every helper left the hour.
     left: Condvar,
@@ -160,12 +182,16 @@ impl Crew {
             open.active += 1;
             self.room.fetch_sub(1, Ordering::SeqCst);
             drop(open);
+            // Each helper of an emit wakes the next, so the emit itself wakes only one.
+            if self.emit && self.wanting() {
+                board.posted(1);
+            }
             let took = {
                 let _leaving = Leaving(self);
                 self.take(job)
             };
             open = lock(&self.hour);
-            if took == 0 {
+            if took == 0 || self.emit {
                 return;
             }
             while open.hours == hour && !open.closed && board.changes() == seen {
@@ -233,9 +259,13 @@ impl Joined<'_> {
             open.hours += 1;
         }
         let _posted = Posted(crew);
-        // Its helpers wait for the next hour whatever its room: one finding none leaves.
-        crew.posted.notify_all();
-        self.board.posted(room);
+        if crew.emit {
+            self.board.posted(room.min(1));
+        } else {
+            // Its helpers wait for the next hour whatever its room: one finding none leaves.
+            crew.posted.notify_all();
+            self.board.posted(room);
+        }
         crew.take(erased);
     }
 }

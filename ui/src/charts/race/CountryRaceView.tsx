@@ -21,6 +21,7 @@ import type { ChartSummary } from '../chartSummary';
 import { extentOfAll, lineLabelHours } from '../series';
 import type { Run } from '../series';
 import TimeChart from '../TimeChart';
+import type { LostSpan } from '../gaps';
 import { pendingLayer } from '../prepared';
 import type { Span } from '../prepared';
 import { PreparedKey } from '../PreparedKey';
@@ -55,6 +56,8 @@ export interface CountryRaceViewProps {
   raceLegendParts?: readonly CountryRacePart[]; partsLabel?: string;
   mix?: { tag: string; tagAt?: (hour: number) => string | null; bands?: readonly (readonly Run[])[]; compactStack?: boolean; lines?: readonly CountryRaceLine[]; parts?: readonly CountryRacePart[]; approximate?: ChartSummary['approximate'] } | null;
   countryTags?: readonly string[];
+  /** The lost spans of the reply its lines and mix draw: nothing is drawn across them. */
+  gaps?: readonly LostSpan[];
   entityLooks?: CountryRaceLooks;
   lineLegendLabel?: string;
   /** Exact per-country reads for a sampled race's names, flags and Jump to. */
@@ -116,7 +119,7 @@ type RawPickOwner = { scope: string; client: WidgetRuntime['client'];
 export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, lines, remoteRows,
   parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, countryLookHour, entityLooks, lineLegendLabel = 'Countries', segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
   keyHours: suppliedHours, strip, beforeChart, pending, badges, onViewChange: reportViewport, lineSummaries, onSummaryView, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, mixEmpty, resetKey,
-  presentation = {}, label, empty, formatValue }: CountryRaceViewProps) {
+  presentation = {}, label, empty, formatValue, gaps }: CountryRaceViewProps) {
   // Callers build the extent each render; its hours, not the array, keep the chart's layers.
   const [extentFirst, extentLast] = shownExtent;
   const extent = useMemo<[number, number]>(() => [extentFirst, extentLast], [extentFirst, extentLast]);
@@ -323,7 +326,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
         onContextMenu={(key, x, y, item) => jump(raceHour(item), x, y, raceTag(key, item))} dateOverlay={options.dateOverlay === true ? dayLabel(moment) : null}
         empty={empty} hoursPerSecond={common.hoursPerSecond} active={active} resetKey={resetKey ?? `${track.source.id}:${track.branch.id}`} />
         : <TimeChart key={presentation.resetTimeView ? view : undefined} {...common} label={view === 'mix' && mix ? chartLabels?.mix?.(mixName) ?? `${label} over time`
-          : chartLabels?.lines ?? `${label} over time`} layers={timeLayers} strip={strip} formatValue={formatAxis ?? formatTick}
+          : chartLabels?.lines ?? `${label} over time`} layers={timeLayers} gaps={gaps} strip={strip} formatValue={formatAxis ?? formatTick}
           keyHours={timeHours} badges={badges?.length ? badges : undefined}
           onHover={hour => { if (hour === null) showTip(null); }}
           onViewChange={observeView}

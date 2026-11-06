@@ -398,9 +398,19 @@ impl ShadowPass {
         })
     }
 
+    /// Lets go of the screen-sized targets; the next [`Self::resize`] makes them again.
+    pub fn release(&mut self) {
+        self.buffers = None;
+    }
+
+    /// Whether the screen-sized targets are made for `size`.
+    pub fn sized(&self, size: [u32; 2]) -> bool {
+        self.buffers.as_ref().is_some_and(|b| b.size == size)
+    }
+
     /// Rebuilds the screen-sized targets.
     pub fn resize(&mut self, device: &wgpu::Device, size: [u32; 2]) {
-        if self.buffers.as_ref().is_some_and(|b| b.size == size) {
+        if self.sized(size) {
             return;
         }
         let target = |label, format, extent, usage| {

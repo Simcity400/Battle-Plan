@@ -34,6 +34,7 @@ import { OPTIONS } from './definition';
 import { navalPinOrigin } from './navalPinOrigin';
 import { NAVAL_PARTS, navalChoiceReads, navalDrillActors, navalHolderBands, formatNavalCount, navalKindLabel, navalLines, navalLineTooltip, navalLookHour, navalModel, navalNumbers, navalPeriodLabel, navalReadHour, navalRequest, navalSegmentAt,
   navalAllZero, navalTooltip, rankNaval } from './navalLossesData.ts';
+import { useReplyGaps } from '../../dashboard/replyGaps';
 
 const NO_WARNINGS: string[] = [];
 
@@ -48,6 +49,8 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const attribution = options.attribution === 'sunkBy' ? 'sunkBy' : 'lost';
   const period = options.period === 'month' ? 'month' : 'running';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  // Its charts draw naval-losses replies: cut only where the families they read lost hours.
+  const gaps = useReplyGaps(track?.source.id, track?.branch.id, 'naval-losses');
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
   const fallback = defaultCountryTag(track);
@@ -225,7 +228,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     if (!mounted.current || !active || !drillOpen || !drillTag || !detailAvailable || pickRef.current.detail !== detailOwner || liveHour === null) return;
     setDrillOwner(scope); dispatch({ type: 'follow' });
   };
-  const main = <CountryRaceView runtime={runtime} track={track} state={state} active={active && !(drillOpen && options.drill !== 'popout')} options={options} view={view}
+  const main = <CountryRaceView gaps={gaps} runtime={runtime} track={track} state={state} active={active && !(drillOpen && options.drill !== 'popout')} options={options} view={view}
     extent={extent} playhead={playhead} moment={moment}
     lineSummaries={prepared.dense ? prepared.summaries : undefined} onSummaryView={next=>prepared.onSummaryView(next,(prepared.manifest?.series??[]).flatMap(series=>{
       const membership=counted.membership?.get(series.tag);
@@ -243,7 +246,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     label={label} empty={noLosses ? period === 'month' ? 'No known naval losses this month.' : 'No known naval losses yet.'
       : counted.known(moment) ? 'Naval losses unknown at this time.' : MEMBERSHIP_PREPARING} formatValue={formatNavalCount}
     countryTags={view === 'race' ? ranked.map(entry => entry.tag) : lineTags} countryLookHour={countryLookHour}
-    beforeChart={data && <p className="chart-line-key">{navalPeriodLabel(data, period)}</p>}
+    beforeChart={data && <p className="chart-line-key">{navalPeriodLabel(data, period, kind, moment)}</p>}
     presentation={{ exact: false, held: false, lineColourHours: 'labels', linePadding: CHART_LAYOUT.countryEndLabels, raceEmptyState: false, resetTimeView: true }}
     lineEmpty={{ icon: 'shield', message: counted.known(extent[0], extent[1]) ? 'No known naval counts for these countries in this time range.' : MEMBERSHIP_PREPARING }}
     tooltip={(tag, hour, name) => model ? [navalTooltip(model, tag, hour, name, kind, attribution)] : null}
@@ -304,7 +307,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
         dispatch({ type: 'choose', key: scopeKey, tag, hour: selectedHour });
       }} />
   </div> : null;
-  const breakdown = <CountryRaceView runtime={runtime} track={track} active={active && drillOpen} options={options} view="mix" state={drillState}
+  const breakdown = <CountryRaceView gaps={gaps} runtime={runtime} track={track} active={active && drillOpen} options={options} view="mix" state={drillState}
     extent={detailExtent} onSummaryView={next=>drillReply.onSummaryView(next,(drillReply.manifest?.series??[]).map(series=>({id:series.tag,
       spans:(holderSpans.get(series.tag)??[]).map(span=>({tag:series.tag,firstHour:span.firstHour,lastHour:span.lastHour,startsSegment:true}))})))} onReachHour={drillReply.onReachHour}
     navigation={{onNavigateHour:drillReply.onNavigateHour,keyboardHour:drillReply.keyboardHour,keyboardRevision:drillReply.keyboardRevision}}

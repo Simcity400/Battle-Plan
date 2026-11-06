@@ -1,11 +1,11 @@
 //! Collection representative selection uses the shared evaluator.
 use super::{Evaluator, Scope, Scopes};
-use crate::triggers::{Failure, refusal::FrameInputs};
+use crate::triggers::Failure;
 use installed_content_core::{
     collections::{Collection, Input, Operator},
     script_constants::CollectionConstant,
 };
-use replay_data::rows::tables;
+use replay_data::rows::{TableSchema, tables};
 
 impl Evaluator<'_, '_> {
     /// A collection effect's representative is the first terminal
@@ -142,22 +142,34 @@ impl Evaluator<'_, '_> {
                 let Some(faction) = world.faction(country)? else {
                     return Ok(None);
                 };
-                let mut rows = world
-                    .frame()
-                    .trigger_table::<tables::FactionMembers>()?
+                const MEMBER: u64 =
+                    replay_data::rows::mask::<replay_data::rows::FactionMemberRow>(&[
+                        "faction", "ordinal",
+                    ]);
+                let mut rows = Vec::new();
+                for row in super::world::table::<tables::FactionMembers>(world.tables(), MEMBER)?
                     .iter()
-                    .filter(|row| row.faction == faction)
-                    .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.ordinal); // Stored faction-member order.
-                for row in rows {
-                    targets.push(Scope::Country(slot(row.country)?));
+                {
+                    let row = row.map_err(|why| {
+                        super::refusal::input_error(tables::FactionMembers::ID, why)
+                    })?;
+                    if row.faction == faction {
+                        rows.push((row.ordinal, row.country));
+                    }
+                }
+                rows.sort_by_key(|row| row.0); // Stored faction-member order.
+                for (_, country) in rows {
+                    targets.push(Scope::Country(slot(country)?));
                 }
             }
             Operator::OwnedStates | Operator::ControlledStates => {
-                for &state in world.ordered_country_states(
-                    country,
-                    matches!(operator, Operator::ControlledStates),
-                )? {
+                for &state in world
+                    .ordered_country_states(
+                        country,
+                        matches!(operator, Operator::ControlledStates),
+                    )?
+                    .iter()
+                {
                     targets.push(Scope::State(state));
                 }
             }

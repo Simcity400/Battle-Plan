@@ -283,7 +283,7 @@ fn written(state: &State, table: TableId, mask: u64) -> io::Result<Vec<u32>> {
     Ok(slots)
 }
 
-fn cell<T: Copy>(values: &[T], slot: u32) -> io::Result<T> {
+fn cell<T: Copy>(values: &replay::columns::Paged<T>, slot: u32) -> io::Result<T> {
     values
         .get(slot as usize)
         .copied()

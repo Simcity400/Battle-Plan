@@ -2458,7 +2458,7 @@ fn repair_marker(catalogue: &Catalogue) -> Result<String, String> {
 
 #[derive(Default)]
 struct Cache {
-    /// Names for the catalogue they were read from, per branch.
+    /// Each branch's names, all read from one catalogue: another catalogue replaces them.
     named: Vec<(u64, Arc<Catalogue>, catalogue::Drawn<Arc<Named>>)>,
     /// What naming read of a catalogue; out while a request names with it.
     naming: Option<(Arc<Catalogue>, Naming)>,
@@ -2485,9 +2485,6 @@ pub(crate) fn scans_run(source: &Source) -> usize {
         .run
 }
 
-/// Branches whose scans stay cached.
-const CACHED_BRANCHES: usize = 4;
-
 /// A branch's scan, cached per source and shared by every construction product,
 /// so the log and the spending read the queue once.
 #[cfg(test)]
@@ -2504,9 +2501,6 @@ pub(crate) fn scanned(
     scans.run += 1;
     let log = Arc::new(row::scan(&source.replay(), branch, cancelled)?);
     scans.branches.push((branch, Arc::clone(&log)));
-    if scans.branches.len() > CACHED_BRANCHES {
-        scans.branches.remove(0);
-    }
     Ok(log)
 }
 
@@ -2671,11 +2665,10 @@ impl NameSource {
                         cache.naming = Some((Arc::clone(catalogue), naming));
                         let drawn = drawn?;
                         let named = Arc::clone(drawn.get());
-                        cache.named.retain(|(cached, _, _)| *cached != branch);
+                        cache.named.retain(|(cached, from, _)| {
+                            *cached != branch && Arc::ptr_eq(from, catalogue)
+                        });
                         cache.named.push((branch, Arc::clone(catalogue), drawn));
-                        if cache.named.len() > CACHED_BRANCHES {
-                            cache.named.remove(0);
-                        }
                         named
                     }
                 };
@@ -2990,9 +2983,6 @@ fn cut(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<C
         windows(source.replay_ref(), branch),
     ));
     cuts.branches.push((branch, Arc::clone(&cut)));
-    if cuts.branches.len() > CACHED_BRANCHES {
-        cuts.branches.remove(0);
-    }
     Ok(cut)
 }
 

@@ -262,38 +262,29 @@ fn a_batch_goes_on_from_the_batch_queued_before_it() {
 }
 
 #[test]
-fn a_series_history_stops_before_its_supplier_s_first_hole() {
+fn a_series_history_goes_on_past_a_lost_run_and_answers_nothing_within_it() {
     let (_fixture, source) = published("hole", &[Made::Prepared, lost(), Made::Prepared]);
     let across = reply(&source, "series-summary", summary(0, 29)).unwrap();
     assert_eq!(
         across["holes"],
         json!([{"firstHour":10,"lastHour":19,"family":"stability","unavailable":"lost",
-            "reason":"A damaged unit"}])
+            "reason":"A damaged unit","gap":true}])
     );
-    let coverage = &across["data"]["coverage"];
-    assert_eq!(
-        (&coverage["lastHour"], &coverage["complete"]),
-        (&json!(9), &json!(false))
-    );
-    let drawn = runs(&across);
-    assert_eq!(drawn.last().map(|run| run.1), Some(9));
-    assert!(
-        drawn.iter().all(|&(_, last)| last < 10),
-        "nothing drawn from the hole on: {drawn:?}"
-    );
-    // Hours before the hole answer whole; a state across it reads only its hours before it.
+    // Hours before the run answer whole.
     let before = reply(&source, "series-summary", summary(0, 9)).unwrap();
     assert!(before.get("holes").is_none(), "{before}");
-    assert_eq!(runs(&before), drawn);
-    let read = reply(&source, "series-state", states(&[5, 25])).unwrap();
+    // A state reads each hour from its own stretch, and none within the run.
+    let read = reply(&source, "series-state", states(&[5, 15, 25])).unwrap();
     let hours: Vec<_> = read["data"]["states"]
         .as_array()
         .unwrap()
         .iter()
         .map(|state| state["hour"].clone())
         .collect();
-    assert_eq!(hours, [json!(5)]);
+    assert_eq!(hours, [json!(5), json!(25)]);
     assert_eq!(read["holes"][0]["firstHour"], 10);
+    let within = reply(&source, "series-state", states(&[12, 15])).unwrap();
+    assert!(within["data"].is_null(), "{within}");
 }
 
 #[test]
@@ -824,10 +815,10 @@ fn intelligence_hole(name: &str) -> (Fixture, Arc<Source>) {
 #[test]
 fn espionage_requests_keep_only_the_fields_their_type_has() {
     let (_fixture, source) = intelligence_hole("espionage-hole");
-    // Its first day, 0 to 23, reaches the hole: it answers nothing, before any reader runs.
+    // Its first day, 0 to 23, goes across the lost run its family went on past, and names it.
     let day = reply(&source, "espionage-log", json!({"branchId":"1","window":0})).unwrap();
-    assert!(day["data"].is_null(), "{day}");
     assert_eq!(day["holes"][0]["firstHour"], 10, "{day}");
+    assert_eq!(day["holes"][0]["gap"], true, "{day}");
     // The manifest goes to its reader as its type names it, with no field added.
     if let Err(error) = reply(&source, "espionage-log", json!({"branchId":"1"})) {
         assert!(!error.to_string().contains("unknown field"), "{error}");
@@ -835,10 +826,10 @@ fn espionage_requests_keep_only_the_fields_their_type_has() {
 }
 
 #[test]
-fn an_intelligence_range_from_its_first_hole_on_answers_nothing_before_dispatch() {
+fn an_intelligence_range_within_a_lost_run_answers_nothing_before_dispatch() {
     let (_fixture, source) = intelligence_hole("intelligence-hole");
     for product in ["decryption", "operative-placements", "operatives-roster"] {
-        let mut params = json!({"branchId":"1","firstHour":25,"lastHour":29});
+        let mut params = json!({"branchId":"1","firstHour":12,"lastHour":18});
         if product == "operatives-roster" {
             params["tags"] = json!([]);
         }

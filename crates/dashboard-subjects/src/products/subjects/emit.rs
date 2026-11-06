@@ -164,12 +164,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 2]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 2]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -191,7 +191,7 @@ impl Emit {
     /// The key of the relation of `overlord` over `subject` begun at `start_hour`.
     fn relation(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         relation: (String, String, i32),
         hour: i32,
     ) -> io::Result<KeyHandle> {
@@ -231,7 +231,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("subjects.emit", None);
         let at = hour.hour;
         if self.last.is_some_and(|last| at <= last) {
@@ -279,7 +279,7 @@ impl Emit {
     }
 
     /// The relations going on from `at`, each at its level, and those that ended before it.
-    fn relate(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn relate(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         let continuing: Vec<_> = self
             .scan
             .continuing()
@@ -309,7 +309,7 @@ impl Emit {
     /// The start's event.
     fn start(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         start: SubjectStart,
     ) -> io::Result<()> {
@@ -337,7 +337,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

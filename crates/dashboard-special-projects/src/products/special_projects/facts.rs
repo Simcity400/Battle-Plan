@@ -2,7 +2,7 @@
 //! the observation of each country whose projects, project history or what names them changed,
 //! every country's at a segment's first hour and where the countries or Projects' completeness
 //! changed. An observation holds each project's facts with its presentation and person
-//! ([`Look`]), its progress apart. Its owners' rows are read from the walk's shared frame
+//! ([`Look`]), its progress apart. Its owners' rows are read through the walk's views
 //! ([`dashboard_world`]) only at the hours they changed; presentations and people are resolved
 //! again only when a field they read changed. A country whose rows changed in nothing its
 //! observation reads but its progress sends that progress alone ([`Seen::Progress`]), and none
@@ -24,7 +24,7 @@ use dashboard_text::{
     metadata::slot_read,
     triggers::inputs::{TableChange, TableChanges},
 };
-use dashboard_world::{Hold, Needs, Roster, World};
+use dashboard_world::{Epochs, Hold, Needs, Roster, Viewed, World};
 use replay::{
     columnar_frames::metrics,
     columns,
@@ -34,7 +34,7 @@ use replay_data::{
     format::FormatVersion,
     rows::{LexicalTokenRow, ProjectHistoryRow, ProjectRow, TableId, tables},
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{HourFrame, Tables};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -46,15 +46,6 @@ use std::{
 const OWN: [TableId; 6] = [
     TableId::Projects,
     TableId::ProjectHistory,
-    TableId::ProjectPrograms,
-    TableId::Characters,
-    TableId::CharacterPortraits,
-    TableId::LexicalTokens,
-];
-
-/// What a presentation or person is resolved from ([`super::resolve_definition`],
-/// [`super::resolve_person`]).
-const LOOKS: [TableId; 4] = [
     TableId::ProjectPrograms,
     TableId::Characters,
     TableId::CharacterPortraits,
@@ -104,18 +95,38 @@ pub fn tables(scoped: bool) -> &'static [TableId] {
     }
 }
 
-/// What a projection reads of its walk's world: the countries, and the frame of its own tables
-/// (and of the trigger kit where a project name reads scoped text).
+/// What a projection reads of its walk's world: the countries, and the views of its own tables
+/// in the fields it reads (and of the trigger kit, whole, where a project name reads scoped
+/// text).
 pub fn needs(scoped: bool) -> Needs {
-    let mut frame: Vec<(TableId, Hold)> = OWN.iter().map(|&table| (table, Hold::Whole)).collect();
+    let mut frame: Vec<(TableId, Hold)> = OWN
+        .iter()
+        .map(|&table| {
+            let hold = match table {
+                TableId::Projects => Hold::Whole,
+                TableId::ProjectHistory => Hold::Fields(history_fields()),
+                table => Hold::Fields(super::look_fields(table)),
+            };
+            (table, hold)
+        })
+        .collect();
     if scoped {
         frame.extend(scoped_tables().iter().map(|&table| (table, Hold::Whole)));
     }
     Needs {
         countries: true,
         frame,
+        lexicon: scoped,
         ..Needs::default()
     }
+}
+
+/// The ProjectHistory fields a history operand reads ([`history_operand`]).
+fn history_fields() -> u64 {
+    dashboard_base::prepared::frame_changes::field_mask(
+        TableId::ProjectHistory,
+        &["prototype_reward_handle", "option_handle", "date"],
+    )
 }
 
 /// The recorded content projects are named and drawn with, loaded once for a preparation; none,
@@ -396,6 +407,15 @@ enum Again {
 /// The digest of a dictionary that is not complete.
 const INCOMPLETE: u128 = u128::MAX;
 
+/// A dictionary row's hash as kept: two halves pack tighter than one u128.
+fn halves(hash: u128) -> [u64; 2] {
+    [hash as u64, (hash >> 64) as u64]
+}
+
+fn whole([low, high]: [u64; 2]) -> u128 {
+    u128::from(low) | (u128::from(high) << 64)
+}
+
 /// Nothing cancels a projection's scoped names: the walk stops between hours.
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -453,36 +473,6 @@ impl TableChanges for Touched<'_> {
     }
 }
 
-/// The hour's frames, each asked of the walk's world at its first need: the tables looks are
-/// resolved from, or else one of the hour alone.
-struct Frames<'h> {
-    world: &'h World,
-    state: &'h State,
-    looks: Option<DecodedFrame>,
-    hour: Option<DecodedFrame>,
-}
-
-impl Frames<'_> {
-    fn looks(&mut self) -> io::Result<&DecodedFrame> {
-        if self.looks.is_none() {
-            self.looks = Some(self.world.frame(self.state, &LOOKS)?);
-        }
-        Ok(self.looks.as_ref().expect("the looks' frame"))
-    }
-
-    /// A frame dated the hour: what scoped names are found by.
-    fn hour(&mut self) -> io::Result<&DecodedFrame> {
-        if self.looks.is_none() && self.hour.is_none() {
-            self.hour = Some(self.world.frame(self.state, &[])?);
-        }
-        Ok(self
-            .looks
-            .as_ref()
-            .or(self.hour.as_ref())
-            .expect("a frame of the hour"))
-    }
-}
-
 /// The actors the complete countries and links resolve, as the row observer binds them
 /// ([`history::Actors::bind`]); none while either is not complete.
 fn actors(roster: &Roster) -> io::Result<history::Actors> {
@@ -536,11 +526,13 @@ pub struct Projector {
     /// The countries whose last observation holds a project.
     holders: BTreeSet<Arc<str>>,
     names: history::NameScan,
+    /// The epoch of the LexicalTokens the scoped names' keys were spelled from.
+    epochs: Epochs,
     /// The scoped names last sent.
     sent_names: HashMap<NameKey, Name>,
-    /// Each dictionary row's hash by key, and their sum: a digest equal rows give whatever
-    /// their order.
-    spelled: HashMap<u128, u128>,
+    /// Each dictionary row's hash by token, in halves ([`halves`]), and their sum: a digest
+    /// equal rows give whatever their order.
+    spelled: HashMap<u32, [u64; 2]>,
     digest: u128,
     own: catalogue::OwnRefusals,
     /// What `own` held when an hour last carried it.
@@ -592,6 +584,10 @@ impl Projector {
             tokens: HashMap::new(),
             holders: BTreeSet::new(),
             names: history::NameScan::default(),
+            epochs: Epochs::new(&[(
+                TableId::LexicalTokens,
+                Hold::Fields(super::look_fields(TableId::LexicalTokens)),
+            )])?,
             sent_names: HashMap::new(),
             spelled: HashMap::new(),
             digest: INCOMPLETE,
@@ -615,6 +611,7 @@ impl Projector {
         self.tokens.clear();
         self.holders.clear();
         self.names = history::NameScan::default();
+        self.epochs.restart();
         self.sent_names.clear();
         self.spelled.clear();
         self.digest = INCOMPLETE;
@@ -683,7 +680,7 @@ impl Projector {
             tokens.reserve(live.len());
             for slot in live {
                 let (key, hash, spelling) = self.token(state, slot)?;
-                self.spelled.insert(key, hash);
+                self.spelled.insert(key as u32, halves(hash));
                 self.digest = self.digest.wrapping_add(hash);
                 tokens.push((key as u32, spelling));
             }
@@ -694,8 +691,8 @@ impl Projector {
             })));
         }
         for &key in &edits.deleted_keys {
-            if let Some(hash) = self.spelled.remove(&key) {
-                self.digest = self.digest.wrapping_sub(hash);
+            if let Some(hash) = self.spelled.remove(&(key as u32)) {
+                self.digest = self.digest.wrapping_sub(whole(hash));
                 tokens.push((key as u32, None));
             }
         }
@@ -706,8 +703,8 @@ impl Projector {
             .chain(&edits.fill_slots)
         {
             let (key, hash, spelling) = self.token(state, slot)?;
-            if let Some(old) = self.spelled.insert(key, hash) {
-                self.digest = self.digest.wrapping_sub(old);
+            if let Some(old) = self.spelled.insert(key as u32, halves(hash)) {
+                self.digest = self.digest.wrapping_sub(whole(old));
             }
             self.digest = self.digest.wrapping_add(hash);
             tokens.retain(|&(held, _)| held != key as u32);
@@ -743,16 +740,17 @@ impl Projector {
 
     /// Every owner's projects, read whole.
     fn read_projects(&mut self, world: &World, state: &State, hour: i32) -> io::Result<()> {
-        let frame = world.frame(state, &[TableId::Projects])?;
+        let frame = world.columns(state);
         let rows = frame
-            .complete::<tables::Projects>()
+            .complete_rows::<tables::Projects>(TableId::Projects.full_mask())
             .map_err(|_| io::Error::other("A complete Projects table has no rows"))?;
         let mut inputs = BTreeMap::<u32, Vec<Input>>::new();
-        for row in rows {
+        for row in rows.iter() {
+            let row = row?;
             inputs
                 .entry(row.owner)
                 .or_default()
-                .push(Input::of(row, hour, self.start));
+                .push(Input::of(&row, hour, self.start));
         }
         self.projects = Some(inputs);
         Ok(())
@@ -769,9 +767,9 @@ impl Projector {
         owners: &[u32],
         reshaped: &mut BTreeSet<u32>,
     ) -> io::Result<()> {
-        let frame = world.frame(state, &[TableId::Projects])?;
+        let frame = world.columns(state);
         let rows = frame
-            .complete::<tables::Projects>()
+            .complete_rows::<tables::Projects>(TableId::Projects.full_mask())
             .map_err(|_| io::Error::other("A complete Projects table has no rows"))?;
         let start = self.start;
         let inputs = self
@@ -780,15 +778,14 @@ impl Projector {
             .ok_or_else(|| io::Error::other("Projects read again before it was read"))?;
         // Projects rows are keyed by owner, then project.
         for &owner in owners {
-            let first = rows.partition_point(|row| row.owner < owner);
-            let count = rows[first..].partition_point(|row| row.owner == owner);
-            let rows = &rows[first..first + count];
+            let first = u128::from(owner) << 32;
+            let rows = rows.span(first, first | u128::from(u32::MAX));
             match inputs.get_mut(&owner) {
                 None if rows.is_empty() => {}
                 Some(held) if held.len() == rows.len() => {
                     let mut same = true;
-                    for (held, row) in held.iter_mut().zip(rows) {
-                        let input = Input::of(row, hour, start);
+                    for (held, row) in held.iter_mut().zip(rows.iter()) {
+                        let input = Input::of(&*row?, hour, start);
                         same &= held.same_but_progress(&input);
                         *held = input;
                     }
@@ -801,10 +798,11 @@ impl Projector {
                     reshaped.insert(owner);
                 }
                 _ => {
-                    inputs.insert(
-                        owner,
-                        rows.iter().map(|row| Input::of(row, hour, start)).collect(),
-                    );
+                    let mut read = Vec::with_capacity(rows.len());
+                    for row in rows.iter() {
+                        read.push(Input::of(&*row?, hour, start));
+                    }
+                    inputs.insert(owner, read);
                     reshaped.insert(owner);
                 }
             }
@@ -814,14 +812,15 @@ impl Projector {
 
     /// Every project's history operands, read whole, and their completions.
     fn read_history(&mut self, world: &World, state: &State) -> io::Result<()> {
-        let frame = world.frame(state, &[TableId::ProjectHistory])?;
+        let frame = world.columns(state);
         let rows = frame
-            .complete::<tables::ProjectHistory>()
+            .complete_rows::<tables::ProjectHistory>(self.fields.history)
             .map_err(|_| io::Error::other("A complete ProjectHistory table has no rows"))?;
         let mut inputs = BTreeMap::<(u32, u32), Vec<(u32, bool, i32)>>::new();
         self.completions.clear();
-        for row in rows {
-            let operand = history_operand(row);
+        for row in rows.iter() {
+            let row = row?;
+            let operand = history_operand(&row);
             if operand.1 {
                 self.completions
                     .insert((operand.2, row.owner, row.project, row.ordinal));
@@ -1107,7 +1106,7 @@ impl Projector {
     /// where `renamed`.
     fn observe(
         &mut self,
-        frames: &mut Frames<'_>,
+        (frame, state): (HourFrame<'_>, &State),
         tag: &Arc<str>,
         (hour, read): (i32, bool),
         renamed: bool,
@@ -1157,16 +1156,6 @@ impl Projector {
                             self.start,
                         );
                         let progress = std::mem::take(&mut facts.progress);
-                        let cached = self.naming.people.contains_key(&row.program_reference)
-                            && self
-                                .naming
-                                .definitions
-                                .contains_key(&(tag.to_string(), row.definition_id));
-                        let frame = if cached {
-                            frames.hour()?
-                        } else {
-                            frames.looks()?
-                        };
                         let look = self.naming.look(
                             frame,
                             tag,
@@ -1185,7 +1174,7 @@ impl Projector {
                 Some(observed)
             }
         };
-        let mut held = self.held(frames.state, projects.as_deref().unwrap_or_default())?;
+        let mut held = self.held(state, projects.as_deref().unwrap_or_default())?;
         held.fed = read;
         self.index(tag, held);
         if projects.as_ref().is_some_and(|projects| !projects.is_empty()) {
@@ -1264,6 +1253,9 @@ impl Projector {
             // Before the branch's first hour nothing was open that the scan did not see.
             self.names.uncertain = at != self.start;
         }
+        // Every hour, so an epoch misses none.
+        self.epochs.hour(world);
+        let views = HourFrame::from(world.columns(state));
         let complete = columns::complete(state, TableId::Projects);
         let read = complete
             && slot_read(
@@ -1358,16 +1350,20 @@ impl Projector {
         if self.scoped
             && let (Some(content), Some(actors)) = (self.content.as_mut(), self.actors.as_ref())
         {
-            let frame = world.frame(state, scoped_tables())?;
             let changes = Touched {
                 state,
                 world,
                 opens,
             };
             let reuse = history::Reuse::Confirm(&changes);
+            let viewed = Viewed {
+                frame: views,
+                epochs: Some(&self.epochs),
+                lexicon: world.lexicon(),
+            };
             scoped_countries = self
                 .names
-                .observe(&frame, actors, read, content, reuse, &RUNNING)?
+                .observe(viewed, actors, read, content, reuse, &RUNNING)?
                 .into_iter()
                 .map(Arc::from)
                 .collect();
@@ -1465,12 +1461,6 @@ impl Projector {
         {
             return Ok((read, dictionary, None));
         }
-        let mut frames = Frames {
-            world,
-            state,
-            looks: None,
-            hour: None,
-        };
         let mut countries = Vec::with_capacity(affected.len() + progressed.len());
         let mut progressed = progressed.into_iter().peekable();
         for tag in &affected {
@@ -1478,7 +1468,7 @@ impl Projector {
                 countries.push(observed);
             }
             let renamed = renamed.contains(tag);
-            countries.extend(self.observe(&mut frames, tag, (at, read), renamed)?);
+            countries.extend(self.observe((views, state), tag, (at, read), renamed)?);
         }
         countries.extend(progressed);
         Ok((
@@ -1527,7 +1517,7 @@ impl Projector {
             + dependents(&self.people)
             + dependents(&self.tokens)
             + self.sent_names.len() * 128
-            + self.spelled.capacity() * 32
+            + self.spelled.capacity() * size_of::<(u32, [u64; 2])>()
     }
 }
 

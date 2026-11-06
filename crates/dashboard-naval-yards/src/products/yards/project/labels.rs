@@ -87,21 +87,18 @@ impl Shared {
             .clone()
     }
 
-    pub(super) fn class(
+    pub(super) fn class<F: Tables + ?Sized>(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &Frame<'_, F>,
         token: u32,
         index: Option<i32>,
     ) -> Arc<Label> {
         self.classes
             .entry((token, index))
             .or_insert_with(|| {
-                let spelling = find(
-                    frame.complete::<tables::LexicalTokens>().ok(),
-                    token,
-                    |row| row.token,
-                )
-                .ok_or_else(|| {
+                let spelling = frame
+                    .get::<tables::LexicalTokens>(token)
+                    .ok_or_else(|| {
                     format!("Ship class token {token}: LexicalTokens does not supply its spelling")
                 })
                 .and_then(|row| {
@@ -119,21 +116,28 @@ impl Shared {
     }
 
     /// The name of the design `handle`, or why there is none.
-    pub(super) fn design(
+    pub(super) fn design<F: Tables + ?Sized>(
         &mut self,
-        naming: &mut Naming<'_>,
+        naming: &mut Naming<'_, F>,
         handle: u64,
     ) -> Result<Arc<Label>, String> {
         if let Some((_, held)) = self.designs.get(&handle) {
             return held.clone();
         }
+        let frame = naming.frame;
         let (token, named) = match naming.get() {
             Err(why) => (None, Err(why.clone())),
-            Ok((variants, tags, lexical)) => match find(Some(*variants), handle, |row| row.id) {
-                Some(definition) => (
-                    Some(definition.equipment_token),
-                    Ok(Arc::new(Label::new(design_operand(definition, tags, lexical)))),
-                ),
+            Ok((variants, tags, lexical)) => match frame.found(variants.get(u128::from(handle))) {
+                Some(definition) => {
+                    let token = definition.equipment_token;
+                    let literal = (*lexical)
+                        .and_then(|rows| frame.found(rows.get(u128::from(token))));
+                    let literal = literal.as_ref().map(|row| row.literal.as_slice());
+                    (
+                        Some(token),
+                        Ok(Arc::new(Label::new(design_operand(&definition, tags, literal)))),
+                    )
+                }
                 None => (
                     None,
                     Err(format!("Design {handle}: VariantDefinitions has no matching design")),
@@ -168,22 +172,71 @@ impl Shared {
     }
 }
 
-/// The design names' tables: definitions, country tags and lexical tokens.
-type Designs<'f> = (&'f [rows::VariantDefinitionRow], Tags<'f>, &'f [rows::LexicalTokenRow]);
+/// The design names' tables: definitions, country tags and lexical tokens, these only when
+/// complete.
+type Designs<'f> = (
+    Rowset<'f, rows::VariantDefinitionRow>,
+    Tags<'f>,
+    Option<Rowset<'f, rows::LexicalTokenRow>>,
+);
+
+/// The rows country tags are read from, where an hour's tables are a walk's views: built at
+/// the first design an hour names.
+#[derive(Default)]
+pub(super) struct Store {
+    countries: std::cell::OnceCell<Vec<rows::CountryRow>>,
+    links: std::cell::OnceCell<Vec<rows::CountryLinkRow>>,
+    appearance: std::cell::OnceCell<Vec<rows::CountryAppearanceRow>>,
+}
+
+/// `rows` as one slice: a decoded frame's own, else built once into `held`.
+fn slice<'s, F: Tables + ?Sized, R: rows::RowCodec>(
+    frame: &Frame<'s, F>,
+    rows: Rowset<'s, R>,
+    held: &'s std::cell::OnceCell<Vec<R>>,
+) -> &'s [R] {
+    match rows {
+        Rowset::Decoded(rows) => rows,
+        walked => held.get_or_init(|| {
+            frame
+                .each(walked.iter())
+                .into_iter()
+                .map(Cow::into_owned)
+                .collect()
+        }),
+    }
+}
 
 /// An hour's design naming tables, read at the first design it names.
-pub(super) struct Naming<'f> {
-    frame: &'f DecodedFrame,
+pub(super) struct Naming<'f, F: ?Sized> {
+    frame: &'f Frame<'f, F>,
+    store: &'f Store,
     read: Option<Result<Designs<'f>, String>>,
 }
 
-impl<'f> Naming<'f> {
-    pub(super) fn new(frame: &'f DecodedFrame) -> Self {
-        Self { frame, read: None }
+impl<'f, F: Tables + ?Sized> Naming<'f, F> {
+    pub(super) fn new(frame: &'f Frame<'f, F>, store: &'f Store) -> Self {
+        Self {
+            frame,
+            store,
+            read: None,
+        }
     }
 
     fn get(&mut self) -> &Result<Designs<'f>, String> {
-        let frame = self.frame;
-        self.read.get_or_insert_with(|| design_naming(frame))
+        let (frame, store) = (self.frame, self.store);
+        self.read.get_or_insert_with(|| {
+            let variants = frame.complete_or::<tables::VariantDefinitions>()?;
+            let countries = frame.complete_or::<tables::Countries>()?;
+            let links = frame.complete_or::<tables::CountryLinks>()?;
+            let lexical = frame.complete::<tables::LexicalTokens>();
+            let appearance = frame.complete::<tables::CountryAppearance>();
+            let tags = Tags::new(
+                slice(frame, countries, &store.countries),
+                slice(frame, links, &store.links),
+                appearance.map(|rows| slice(frame, rows, &store.appearance)),
+            );
+            Ok((variants, tags, lexical))
+        })
     }
 }

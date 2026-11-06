@@ -225,7 +225,7 @@ impl Emit {
         Ok(emit)
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, actor: u64, (measure, dimension): Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, actor: u64, (measure, dimension): Place) -> io::Result<KeyHandle> {
         let place = Key {
             actor,
             measure,
@@ -240,7 +240,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
@@ -296,7 +296,7 @@ impl Emit {
 
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         adjacent: bool,
         tag: &str,
@@ -369,7 +369,7 @@ impl Emit {
     /// The country's controlled states from `hour`; none where unknown.
     fn roster(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         hour: i32,
         roster: Option<&[u32]>,
@@ -396,7 +396,7 @@ impl Emit {
     /// `place` holds no value from `hour`.
     fn end(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         state: &mut Actor,
         place: Place,
@@ -416,7 +416,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn set(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         state: &mut Actor,
         (slot, id): (u32, u32),
@@ -459,7 +459,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)
     }
 

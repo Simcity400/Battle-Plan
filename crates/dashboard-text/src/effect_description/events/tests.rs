@@ -1446,26 +1446,26 @@ fn removal_finder_preserves_container_target_alias_and_first_ordinal() {
         _ => None,
     };
     assert_eq!(
-        matching(&rows, b"sample_decision", 1, false, Some(2), 7, slot)
+        matching(replay_frame::frame::Rowset::Decoded(&rows), b"sample_decision", 1, false, Some(2), 7, slot)
             .unwrap()
             .unwrap()
             .ordinal,
         3
     );
     assert_eq!(
-        matching(&rows, b"sample_decision", 1, true, Some(2), 7, slot)
+        matching(replay_frame::frame::Rowset::Decoded(&rows), b"sample_decision", 1, true, Some(2), 7, slot)
             .unwrap()
             .unwrap()
             .ordinal,
         1
     );
     assert!(
-        matching(&rows, b"sample_decision", 1, false, None, 7, slot)
+        matching(replay_frame::frame::Rowset::Decoded(&rows), b"sample_decision", 1, false, None, 7, slot)
             .unwrap()
             .is_none()
     );
     assert!(
-        matching(&rows, b"different", 1, false, Some(2), 7, slot)
+        matching(replay_frame::frame::Rowset::Decoded(&rows), b"different", 1, false, Some(2), 7, slot)
             .unwrap()
             .is_none()
     );
@@ -1480,7 +1480,7 @@ fn unknown_target_link_is_not_an_absent_decision() {
         country_target: 202,
         ..Default::default()
     };
-    let error = matching(&[row], b"sample_decision", 1, false, Some(2), 0, |raw| {
+    let error = matching(replay_frame::frame::Rowset::Decoded(&[row]), b"sample_decision", 1, false, Some(2), 0, |raw| {
         (raw == 100).then_some(1)
     })
     .unwrap_err();

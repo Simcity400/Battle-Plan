@@ -356,10 +356,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           if (input.type === 'mapSettings') {
             await requireBridge('crates/dashboard-core/src/map_settings.rs', 'Map settings are unavailable in this server version. The local data bridge needs updating.');
             command = mapSettingsCommand(input);
-          } else if (input.type === 'historyCache') {
-            if (typeof input.clear !== 'boolean') throw new Error('Invalid history cache request');
-            await requireBridge('crates/dashboard/src/reply_cache.rs', 'Widget history is unavailable in this server version. The local data bridge needs updating.');
-            command = { type: 'historyCache', clear: input.clear };
           } else if (input.type === 'preparationPreferences') {
             if (typeof input.id !== 'string' || !(input.enabled == null || typeof input.enabled === 'boolean')) throw new Error('Invalid preparation preference request');
             command = { type: 'preparationPreferences', id: input.id, enabled: input.enabled ?? null };

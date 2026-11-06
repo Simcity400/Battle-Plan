@@ -32,7 +32,7 @@ pub(super) fn check(
     let segments = recording.segments();
     let mut views = Views::new(&[], replay.format, replay.capture_mode)?;
     let mut state = State::new(schema()?)?;
-    let mut walker = Walker::new(recording, cancelled)?;
+    let mut walker = Walker::new(recording)?;
     let mut lost = false;
     'segments: for (at, segment) in segments.iter().enumerate() {
         check_cancel(cancelled)?;

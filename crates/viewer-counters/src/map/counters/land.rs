@@ -1266,7 +1266,6 @@ impl Default for TemplateIconMemo {
     fn default() -> Self {
         Self(Arc::new(viewer_foundation::map::memo::Keyed::new(
             TEMPLATE_ICON_TABLES,
-            4,
         )))
     }
 }

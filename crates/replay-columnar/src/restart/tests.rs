@@ -124,3 +124,55 @@ fn damaged_restarts_are_refused() {
         "a schema with a column fewer"
     );
 }
+
+/// A restart keeps a table's last complete read: its view sampled at the read, its rows at an
+/// earlier read's hour, or the read apart from rows a partial read changed since.
+#[test]
+fn a_restart_keeps_the_last_complete_read() {
+    let held = table();
+    let mut scratch = Scratch::default();
+    let sampled = Acquisition {
+        last_read: Some(40),
+        ..Acquisition::default()
+    };
+    let bytes = write_with(&held, Status::Complete, &sampled, &[], Some(&Last::Held(Some(40))))
+        .unwrap();
+    assert_eq!(bytes, write(&held, Status::Complete, &sampled, &[]).unwrap());
+    let restored = read(&bytes, &KINDS, &mut scratch).unwrap();
+    assert_eq!(restored.last, Some(Last::Held(Some(40))));
+
+    let unsampled = Acquisition::default();
+    let bytes =
+        write_with(&held, Status::Complete, &unsampled, &[], Some(&Last::Held(Some(39)))).unwrap();
+    let restored = read(&bytes, &KINDS, &mut scratch).unwrap();
+    assert_eq!(restored.last, Some(Last::Held(Some(39))));
+
+    let mut last = Some(Last::Held(Some(38)));
+    Last::before(&mut last, &held, Status::Truncated { missing: 1 }).unwrap();
+    let Some(Last::Apart(apart, hour)) = &last else {
+        panic!("a partial read keeps the complete one apart");
+    };
+    assert_eq!((&**apart, *hour), (&held, Some(38)));
+    let mut changed = table();
+    changed.delete(&[0]).unwrap();
+    let status = Status::Truncated { missing: 1 };
+    let bytes = write_with(&changed, status, &unsampled, &[2], last.as_ref()).unwrap();
+    let restored = read(&bytes, &KINDS, &mut scratch).unwrap();
+    assert_eq!(restored.table, changed);
+    assert_eq!(restored.last, last);
+
+    assert!(
+        write_with(&held, Status::Complete, &unsampled, &[], last.as_ref()).is_err(),
+        "a complete view is its own last complete read"
+    );
+    let bytes = write_with(&held, Status::Unavailable { reason: 0 }, &unsampled, &[], None)
+        .unwrap();
+    assert_eq!(read(&bytes, &KINDS, &mut scratch).unwrap().last, None);
+
+    Last::after(&mut last, Status::Complete, false, None);
+    assert_eq!(last, Some(Last::Held(None)), "rows a partial read changed are no read");
+    Last::after(&mut last, Status::Complete, false, Some(41));
+    assert_eq!(last, Some(Last::Held(Some(41))));
+    Last::after(&mut last, Status::Complete, false, None);
+    assert_eq!(last, Some(Last::Held(Some(41))), "an unchanged view keeps its read");
+}

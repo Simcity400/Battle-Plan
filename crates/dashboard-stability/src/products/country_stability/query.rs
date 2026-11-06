@@ -116,18 +116,30 @@ pub fn cells<P: PageRead>(
     measure_name: &str,
     hour: i32,
 ) -> io::Result<Vec<(Option<i128>, Option<i128>)>> {
+    cells_by(directory, tags, measure_name, &mut |key| {
+        value_at(snapshot, key, hour)
+    })
+}
+
+/// [`cells`], each key's value at the hour given by `read`.
+pub fn cells_by(
+    directory: &Directory,
+    tags: &[&str],
+    measure_name: &str,
+    read: &mut dyn FnMut(u64) -> io::Result<Option<i128>>,
+) -> io::Result<Vec<(Option<i128>, Option<i128>)>> {
     let measure = measure(measure_name).ok_or_else(|| invalid("Unknown stability measure"))?;
     tags.iter()
         .map(|tag| {
             let amount = match key(directory, tag, measure) {
-                Some((key, _)) => value_at(snapshot, key, hour)?,
+                Some((key, _)) => read(key)?,
                 None => None,
             };
-            let read = match key(directory, tag, READ_HOUR) {
-                Some((key, _)) => value_at(snapshot, key, hour)?,
+            let supplied = match key(directory, tag, READ_HOUR) {
+                Some((key, _)) => read(key)?,
                 None => None,
             };
-            Ok((amount, read))
+            Ok((amount, supplied))
         })
         .collect()
 }

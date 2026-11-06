@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    columnar_frames::{Limits, Recording, Segment, Views, Walker, schema},
+    columnar_frames::{Recording, Segment, Views, Walker, schema},
     format::FormatVersion,
     frame::{DecodedFrame, FrameInput, Metrics, TableInput, TableView},
     native_frame::{FrameHour, FrameWriter},
@@ -8,7 +8,7 @@ use crate::{
     scope::{self, CaptureMode},
 };
 use replay_columnar::{manifest::Manifest, walk::State};
-use std::{io::Cursor, sync::atomic::AtomicBool};
+use std::io::Cursor;
 
 const TABLES: [TableId; 1] = [TableId::Countries];
 
@@ -147,7 +147,7 @@ fn written_with(
 fn a_run_reads_back_from_its_start_and_from_every_restart() {
     let hours = 2 * envelope::UNIT_ORDINALS as i32 + 5;
     let (bytes, frames) = written(hours, EVERY_UNIT);
-    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let recording = Recording::open(bytes).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), hours as u64);
     let segments = recording.segments();
@@ -174,7 +174,7 @@ fn a_run_reads_back_from_its_start_and_from_every_restart() {
         let mut state = State::new(schema().unwrap()).unwrap();
         let mut views = Views::new(&TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
         let before = &frames[segment.first as usize - 1];
-        Walker::new(&recording, &AtomicBool::new(false))
+        Walker::new(&recording)
             .unwrap()
             .begin(segment, &mut state)
             .unwrap();
@@ -195,7 +195,7 @@ fn a_run_reads_back_from_its_start_and_from_every_restart() {
 #[test]
 fn a_full_position_closes_before_the_next_hour_and_restarts_only_when_due() {
     let (bytes, _) = written(envelope::UNIT_ORDINALS as i32 + 1, Settings::RECORDING);
-    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let recording = Recording::open(bytes).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(
         recording.segments(),
@@ -289,7 +289,7 @@ fn refused_hours_leave_the_file_whole_and_restarts_wait_for_the_commit() {
         writer.commit(prepared).unwrap();
         writer.restart().unwrap();
     }
-    let recording = Recording::open(file.finish(|_| Ok(())).unwrap().file.into_inner(), Limits::default()).unwrap();
+    let recording = Recording::open(file.finish(|_| Ok(())).unwrap().file.into_inner()).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), 3);
 }
@@ -337,7 +337,7 @@ fn runs_keep_their_start_reasons_and_the_root_names_their_sessions() {
         controls: vec![b"a branch start".to_vec(), Vec::new(), b"a detach".to_vec()],
     };
     let bytes = file.finish_with_capture(&capture, |_| Ok(())).unwrap().file.into_inner();
-    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let recording = Recording::open(bytes).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     let read: Vec<u8> = (0..epochs.len() as u32)
         .map(|run| recording.run(run).unwrap().epoch)
@@ -460,13 +460,13 @@ fn revisions_publish_every_hour_so_far_and_the_finished_file_reads_whole() {
     let (file, _, frames, published) = revised(hours, 100, EVERY_UNIT, None);
     assert_eq!(published.len(), 14);
     for (hour, bytes) in published {
-        let recording = Recording::open(bytes, Limits::default()).unwrap();
+        let recording = Recording::open(bytes).unwrap();
         assert!(recording.damage().is_empty(), "hour {hour}: {:?}", recording.damage());
         assert_eq!(recording.hours(), hour as u64);
         walks(&recording, &frames[..hour as usize]);
     }
     let bytes = file.finish(|_| Ok(())).unwrap().file.into_inner();
-    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let recording = Recording::open(bytes).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), hours as u64);
     walks(&recording, &frames);
@@ -516,7 +516,7 @@ fn an_unfinished_file_finishes_from_its_last_revision() {
             Settings::RECORDING,
         )
         .unwrap();
-    let recording = Recording::open(cursor.into_inner(), Limits::default()).unwrap();
+    let recording = Recording::open(cursor.into_inner()).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), hour as u64);
     assert_eq!(recording.capture().unwrap(), Some(stopped));
@@ -584,7 +584,7 @@ fn the_chain_through_an_hour_covers_every_hour_of_its_run_to_it() {
     let unit = envelope::UNIT_ORDINALS;
     let hours = unit as i32 + 10;
     let (bytes, _) = written(hours, EVERY_UNIT);
-    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let recording = Recording::open(bytes).unwrap();
     let mut chain = envelope::chain_start(&identity().chain_bytes().unwrap(), 0);
     let mut through = Vec::new();
     for at in 0..2 {
@@ -618,7 +618,7 @@ fn the_chain_through_an_hour_covers_every_hour_of_its_run_to_it() {
         input
     };
     let (other, _) = written_with(hours, EVERY_UNIT, changed);
-    let other = Recording::open(other, Limits::default()).unwrap();
+    let other = Recording::open(other).unwrap();
     for (ordinal, same) in [
         (unit - 1, true),
         (unit + 1, true),
@@ -730,14 +730,14 @@ fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions()
         format: FormatVersion::CURRENT.version(),
         controls: vec![start(1), start(2), gap.clone(), start(3), detach.clone()],
     };
-    let original = Recording::open(written_runs(&runs, &capture), Limits::default()).unwrap();
+    let original = Recording::open(written_runs(&runs, &capture)).unwrap();
     assert!(original.damage().is_empty(), "{:?}", original.damage());
     let kept = keep_branches(&original, |branch| branch != 2, Cursor::new(Vec::new()), EVERY_UNIT, |_| Ok(()))
         .unwrap()
         .unwrap()
         .file
         .into_inner();
-    let mut rewritten = Recording::open(kept, Limits::default()).unwrap();
+    let mut rewritten = Recording::open(kept).unwrap();
     assert!(rewritten.damage().is_empty(), "{:?}", rewritten.damage());
     assert_eq!(rewritten.run_count(), 2);
     assert_eq!(
@@ -768,10 +768,9 @@ fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions()
     assert_ne!(rewritten.run(1).unwrap().chain, original.run(2).unwrap().chain);
     // Every walk, from each run's start and from every restart, checks every hour's chain.
     rewritten.verify(true);
-    let stop = AtomicBool::new(false);
     for segment in rewritten.segments().to_vec() {
         let mut state = State::new(schema().unwrap()).unwrap();
-        let mut walker = Walker::new(&rewritten, &stop).unwrap();
+        let mut walker = Walker::new(&rewritten).unwrap();
         walker.begin(&segment, &mut state).unwrap();
         assert!(walker.walk(&segment, &mut state, |_, _, _| Ok(true)).unwrap());
     }
@@ -782,7 +781,7 @@ fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions()
         .file
         .into_inner();
     assert_eq!(
-        Recording::open(second, Limits::default()).unwrap().capture().unwrap(),
+        Recording::open(second).unwrap().capture().unwrap(),
         Some(Capture {
             sessions: vec![s2, s1],
             run_sessions: vec![0],
@@ -840,6 +839,6 @@ fn revisions_append_only_new_control_records() {
         .unwrap()
         .file
         .into_inner();
-    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let recording = Recording::open(bytes).unwrap();
     assert_eq!(recording.capture().unwrap(), Some(capture));
 }

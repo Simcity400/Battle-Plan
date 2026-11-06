@@ -15,7 +15,7 @@ use dashboard_base::{
     test_fixtures::{CAMPAIGN, continuation_records, file_source, records, source},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -278,11 +278,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(FormatVersion::CURRENT);
     let mut root = 0;
     let mut generation = 0;
@@ -296,7 +295,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -310,8 +308,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(FormatVersion::CURRENT, &directory, &saved).unwrap();
         }
@@ -398,9 +396,7 @@ fn published_runs<P: dashboard_series::PageRead>(
 
 /// Holds the publication `built` to the row census of `frames`.
 fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let mut census = row::Census::default();
     for frame in frames {
@@ -508,7 +504,6 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
 /// and the same publication whatever the placement.
 #[test]
 fn the_publication_holds_what_the_row_census_reads_across_segments_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     for (starts, cuts, resume) in [
         (&[][..], &[160][..], None),
@@ -522,7 +517,7 @@ fn the_publication_holds_what_the_row_census_reads_across_segments_cuts_and_a_re
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
         let (projected, frames) = projected(&hours, starts);
-        let built = build(projected, cuts, resume, &budget);
+        let built = build(projected, cuts, resume);
         check(&built, &frames, &label);
     }
 }
@@ -580,10 +575,9 @@ fn the_scenario_reads_as_the_top_bar_shows_it() {
 /// origin hour, and the states at hours.
 #[test]
 fn replies_from_the_publication_are_the_row_replies() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     let (projected, frames) = projected(&hours, &[110, 140]);
-    let built = build(projected, &[129, 160], Some(129), &budget);
+    let built = build(projected, &[129, 160], Some(129));
     let early: Vec<_> = frames.iter().filter(|frame| frame.hour <= 120).cloned().collect();
     let (first, second): (Vec<_>, Vec<_>) = frames.into_iter().partition(|frame| frame.hour < 130);
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, first)]).unwrap();
@@ -594,8 +588,7 @@ fn replies_from_the_publication_are_the_row_replies() {
     let history = scan_histories(&replay, 1, false, &[], &cancelled).unwrap();
     let (source, root) = file_source(replay);
     let context = LoadContext { content: None };
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let accepted = Coverage {
         schema: dashboard_base::prepared::coverage::SCHEMA,
@@ -819,8 +812,8 @@ fn replies_from_the_publication_are_the_row_replies() {
     // The publication pinned through the coverage, as the query pins it: its engine reads
     // nothing past 120, and a step forward from past the coverage lands on its last hour.
     let (cut, _) = self::projected(&hours, &[110, 140]);
-    let cut = build(cut, &[120, 160], None, &budget);
-    let mut pinned = Snapshot::open(cut.pages.clone(), &cache, cut.root, identity())
+    let cut = build(cut, &[120, 160], None);
+    let mut pinned = Snapshot::open(cut.pages.clone(), cut.root, identity())
         .unwrap()
         .through(120)
         .unwrap()
@@ -853,10 +846,9 @@ fn replies_from_the_publication_are_the_row_replies() {
 /// gave away were read on never reach its reply, so it is not refused for them.
 #[test]
 fn a_halved_page_keeps_no_reads_of_the_countries_it_gives_away() {
-    let budget = Budget::new(256 << 20);
     let hours = scenario();
     let (projected, frames) = projected(&hours, &[110, 140]);
-    let built = build(projected, &[129, 160], Some(129), &budget);
+    let built = build(projected, &[129, 160], Some(129));
     let (first, second): (Vec<_>, Vec<_>) = frames.into_iter().partition(|frame| frame.hour < 130);
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, first)]).unwrap();
     let replay = replay
@@ -866,8 +858,7 @@ fn a_halved_page_keeps_no_reads_of_the_countries_it_gives_away() {
     let history = scan_histories(&replay, 1, false, &[], &cancelled).unwrap();
     let (source, root) = file_source(replay);
     let context = LoadContext { content: None };
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let accepted = Coverage {
         schema: dashboard_base::prepared::coverage::SCHEMA,
@@ -1008,8 +999,7 @@ fn a_crowded_ranking_moves_as_the_row_ranking_does() {
             tokens: true,
         })
         .collect();
-    let budget = Budget::new(256 << 20);
     let (projected, frames) = projected(&hours, &[5]);
-    let built = build(projected, &[3, 7], Some(3), &budget);
+    let built = build(projected, &[3, 7], Some(3));
     check(&built, &frames, "a crowded ranking");
 }

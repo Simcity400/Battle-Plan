@@ -60,6 +60,7 @@ pub fn needs(art: bool) -> Needs {
     Needs {
         countries: true,
         frame: if art { art_holds() } else { Vec::new() },
+        lexicon: art,
         ..Needs::default()
     }
 }
@@ -137,7 +138,6 @@ struct Grown {
 struct Art {
     catalogue: Arc<Catalogue>,
     presenter: Presenter,
-    holds: Vec<(TableId, Hold)>,
 }
 
 impl Art {
@@ -170,12 +170,12 @@ impl Art {
             .iter()
             .map(|(tag, _, token)| (token.as_str(), &**tag))
             .collect();
-        let holds = &self.holds;
         let shown = self.presenter.present(
             &self.catalogue,
             (hour.branch, hour.hour),
             &asked,
-            || Ok(Ok(hour.world.frame_held(hour.state, holds)?)),
+            hour.world.lexicon(),
+            || Ok(Ok(hour.world.columns(hour.state).into())),
         )?;
         Ok(completed
             .into_iter()
@@ -381,7 +381,6 @@ impl Projector {
         self.art = catalogue.map(|catalogue| Art {
             catalogue,
             presenter: Presenter::default(),
-            holds: art_holds(),
         });
         self
     }

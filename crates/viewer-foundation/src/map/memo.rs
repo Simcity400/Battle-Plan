@@ -21,19 +21,22 @@
 //! every hour that left the value alone.
 
 use std::sync::MutexGuard;
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Condvar, Mutex},
-};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::SharedView, frame::TableView};
 
-/// The recent values of one layer, keyed by what they were built from.
+/// The values of one layer, keyed by what they were built from: the latest built or asked for,
+/// and every other one while something holds it.
 pub struct Recent<K, V> {
-    entries: Mutex<VecDeque<(K, Arc<Cell<V>>)>>,
-    capacity: usize,
+    entries: Mutex<Entries<K, V>>,
+}
+
+struct Entries<K, V> {
+    /// Oldest first.
+    held: Vec<(K, Arc<Cell<V>>)>,
+    latest: Option<Arc<V>>,
 }
 
 /// One key's value: being built, built, or failed.
@@ -44,19 +47,35 @@ struct Cell<V> {
 
 enum CellState<V> {
     Building,
-    Built(Arc<V>),
+    Built(Weak<V>),
     Failed,
 }
 
-impl<K: PartialEq, V> Recent<K, V> {
-    pub fn new(capacity: usize) -> Self {
+impl<V> Cell<V> {
+    fn lock(&self) -> MutexGuard<'_, CellState<V>> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl<K, V> Default for Recent<K, V> {
+    fn default() -> Self {
         Self {
-            entries: Mutex::new(VecDeque::new()),
-            capacity: capacity.max(1),
+            entries: Mutex::new(Entries {
+                held: Vec::new(),
+                latest: None,
+            }),
         }
     }
+}
 
-    /// The value built for `key`, building it when no recent entry has it.
+impl<K: PartialEq, V> Recent<K, V> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The value built for `key`, building it when no live entry has it.
     ///
     /// The first caller of a key builds it with no lock held; a caller that
     /// asks for the same key meanwhile waits for that build instead of doing
@@ -67,91 +86,102 @@ impl<K: PartialEq, V> Recent<K, V> {
         key: K,
         build: impl FnOnce() -> Result<Arc<V>, E>,
     ) -> Result<Arc<V>, E> {
-        let (cell, builder) = {
+        let cell = {
             let mut entries = self.lock();
-            match entries.iter().position(|(held, _)| *held == key) {
+            // An entry whose value nothing holds goes, with the tables its key holds.
+            entries.held.retain(|(_, cell)| match &*cell.lock() {
+                CellState::Building => true,
+                CellState::Built(value) => value.strong_count() > 0,
+                CellState::Failed => false,
+            });
+            match entries.held.iter().position(|(held, _)| *held == key) {
                 Some(at) => {
-                    // A hit is the most recently used entry.
-                    let entry = entries.remove(at).expect("found above");
-                    let cell = Arc::clone(&entry.1);
-                    entries.push_back(entry);
-                    (cell, false)
+                    let cell = Arc::clone(&entries.held[at].1);
+                    let built = match &*cell.lock() {
+                        CellState::Built(value) => value.upgrade(),
+                        _ => None,
+                    };
+                    if let Some(value) = built {
+                        entries.latest = Some(Arc::clone(&value));
+                        return Ok(value);
+                    }
+                    cell
                 }
                 None => {
                     let cell = Arc::new(Cell {
                         state: Mutex::new(CellState::Building),
                         done: Condvar::new(),
                     });
-                    if entries.len() == self.capacity {
-                        entries.pop_front();
-                    }
-                    entries.push_back((key, Arc::clone(&cell)));
-                    (cell, true)
+                    entries.held.push((key, Arc::clone(&cell)));
+                    drop(entries);
+                    return self.build(&cell, build);
                 }
             }
         };
-        if !builder {
-            let mut state = cell
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            loop {
-                match &*state {
-                    CellState::Built(value) => return Ok(Arc::clone(value)),
-                    CellState::Failed => break,
-                    CellState::Building => {
-                        state = cell
-                            .done
-                            .wait(state)
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    }
+        let mut state = cell.lock();
+        loop {
+            match &*state {
+                CellState::Built(value) => match value.upgrade() {
+                    Some(value) => return Ok(value),
+                    None => break,
+                },
+                CellState::Failed => break,
+                CellState::Building => {
+                    state = cell
+                        .done
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                 }
             }
-            drop(state);
-            return build();
         }
+        drop(state);
+        build()
+    }
+
+    /// Builds `cell`'s value, the latest once built.
+    fn build<E>(
+        &self,
+        cell: &Arc<Cell<V>>,
+        build: impl FnOnce() -> Result<Arc<V>, E>,
+    ) -> Result<Arc<V>, E> {
         // A panic while building leaves the cell failed rather than waited on.
-        let mut guard = FailOnDrop(Some(&cell));
+        let mut guard = FailOnDrop(Some(cell));
         let built = build();
         guard.0 = None;
-        let mut state = cell
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *state = match &built {
-            Ok(value) => CellState::Built(Arc::clone(value)),
-            Err(_) => CellState::Failed,
-        };
-        drop(state);
+        match &built {
+            Ok(value) => {
+                self.lock().latest = Some(Arc::clone(value));
+                *cell.lock() = CellState::Built(Arc::downgrade(value));
+            }
+            Err(_) => *cell.lock() = CellState::Failed,
+        }
         cell.done.notify_all();
         if built.is_err() {
-            self.lock().retain(|(_, held)| !Arc::ptr_eq(held, &cell));
+            self.lock().held.retain(|(_, held)| !Arc::ptr_eq(held, cell));
         }
         built
     }
 
-    /// Every built value, most recently used first, each allocation once.
+    /// Every live value, the latest first and then the most recently built, each allocation
+    /// once.
     ///
     /// Taken under the entries' lock, then each cell's (the order every other
     /// path takes them in); a value still building is left out.
     fn distinct_values(&self) -> Vec<Arc<V>> {
         let entries = self.lock();
-        let mut values: Vec<Arc<V>> = Vec::with_capacity(entries.len());
-        for (_, cell) in entries.iter().rev() {
-            let state = cell
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let CellState::Built(value) = &*state
-                && !values.iter().any(|held| Arc::ptr_eq(held, value))
+        let mut values: Vec<Arc<V>> = entries.latest.iter().cloned().collect();
+        for (_, cell) in entries.held.iter().rev() {
+            if let CellState::Built(value) = &*cell.lock()
+                && let Some(value) = value.upgrade()
+                && !values.iter().any(|held| Arc::ptr_eq(held, &value))
             {
-                values.push(Arc::clone(value));
+                values.push(value);
             }
         }
         values
     }
 
-    fn lock(&self) -> MutexGuard<'_, VecDeque<(K, Arc<Cell<V>>)>> {
+    fn lock(&self) -> MutexGuard<'_, Entries<K, V>> {
         self.entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -164,10 +194,7 @@ struct FailOnDrop<'a, V>(Option<&'a Arc<Cell<V>>>);
 impl<V> Drop for FailOnDrop<'_, V> {
     fn drop(&mut self) {
         if let Some(cell) = self.0.take() {
-            *cell
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = CellState::Failed;
+            *cell.lock() = CellState::Failed;
             cell.done.notify_all();
         }
     }
@@ -245,10 +272,10 @@ pub struct Keyed<V, E = ()> {
 }
 
 impl<V, E: PartialEq> Keyed<V, E> {
-    pub fn new(tables: &'static [TableId], capacity: usize) -> Self {
+    pub fn new(tables: &'static [TableId]) -> Self {
         Self {
             tables,
-            recent: Recent::new(capacity),
+            recent: Recent::new(),
         }
     }
 
@@ -283,10 +310,10 @@ pub struct Settled<V> {
 }
 
 impl<V: PartialEq> Settled<V> {
-    pub fn new(tables: &'static [TableId], capacity: usize) -> Self {
+    pub fn new(tables: &'static [TableId]) -> Self {
         Self {
             tables,
-            recent: Recent::new(capacity),
+            recent: Recent::new(),
         }
     }
 

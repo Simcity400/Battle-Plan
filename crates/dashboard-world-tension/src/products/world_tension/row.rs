@@ -9,16 +9,13 @@ use replay::container::Replay;
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, FrameDecoder, TableView};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     io,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
-
-/// Branches kept per source.
-pub const CACHED_BRANCHES: usize = 4;
 
 /// An event's identity: its recorded country and second country references, date, reason, and
 /// its place among sources equal in all four within a read.
@@ -385,8 +382,8 @@ impl Scan {
     }
 }
 
-/// Each branch's scan, kept per source.
+/// Each branch's scan, kept for this source revision.
 #[derive(Default)]
 pub(super) struct Cache {
-    pub(super) entries: VecDeque<(u64, Arc<ScannedTension>)>,
+    pub(super) entries: BTreeMap<u64, Arc<ScannedTension>>,
 }

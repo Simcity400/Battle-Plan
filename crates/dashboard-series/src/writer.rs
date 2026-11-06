@@ -1,11 +1,10 @@
 use crate::{
     add,
-    budget::Budget,
-    cache::Cache,
     chunked::Chunked,
     codec::Binary,
-    format::{Definition, Meta, NodeRef, Root, State},
-    hierarchy, invalid,
+    format::{Definition, Held, Meta, NodeRef, Root, State},
+    hierarchy::{self, Built, Replaced},
+    invalid,
     pages::{PageRead, PageWrite},
     query::EventView,
     read::Reader,
@@ -39,6 +38,8 @@ pub(crate) struct Edge {
     pub known: Option<i32>,
     row: u32,
     touched: bool,
+    /// What the next cut continues unchanged: 1 its run, 2 its evidence.
+    hold: u8,
 }
 impl Edge {
     fn new(mode: RunMode, decimals: u8, domain: u64, defined: u64) -> Self {
@@ -54,6 +55,7 @@ impl Edge {
             known: None,
             row: NO_ROW,
             touched: false,
+            hold: 0,
         }
     }
 }
@@ -91,6 +93,18 @@ pub(crate) struct RunRow {
     pub supplying_boundary: bool,
     pub continues: bool,
 }
+/// A key the segment holds nothing of but what it continues unchanged.
+#[derive(Clone, Copy)]
+pub(crate) struct HeldRow {
+    pub key: u64,
+    pub held: Held,
+    pub row_start: u64,
+    pub canonicals: u64,
+    pub domain: u64,
+    /// The held run's value and the key's scale, which merging the segment reads.
+    pub value: i128,
+    pub decimals: u8,
+}
 #[derive(Clone, Copy)]
 pub(crate) struct EvidenceRow {
     pub subject: u64,
@@ -98,32 +112,30 @@ pub(crate) struct EvidenceRow {
 }
 
 /// The rows one segment appended, in append order.
-pub(crate) struct Columns<'a> {
-    pub runs: Chunked<'a, RunRow>,
-    pub evidence: Chunked<'a, EvidenceRow>,
-    pub domain_rows: Chunked<'a, EvidenceRow>,
-    pub events: Chunked<'a, EventView>,
-    pub keys: Chunked<'a, Touch<Edge>>,
-    pub domains: Chunked<'a, Touch<DomainEdge>>,
-    pub definitions: Chunked<'a, Definition>,
-    pub metadata: Chunked<'a, Meta>,
-    pub heap: Chunked<'a, u8>,
+#[derive(Default)]
+pub(crate) struct Columns {
+    pub runs: Chunked<RunRow>,
+    pub evidence: Chunked<EvidenceRow>,
+    pub domain_rows: Chunked<EvidenceRow>,
+    pub events: Chunked<EventView>,
+    pub keys: Chunked<Touch<Edge>>,
+    /// Keys whose run or evidence the cut continues, in the order asked.
+    pub holds: Chunked<u64>,
+    /// The last hour every hold goes on through: the last its family's cut covers.
+    pub held_through: Option<i32>,
+    pub held: Chunked<HeldRow>,
+    pub domains: Chunked<Touch<DomainEdge>>,
+    pub definitions: Chunked<Definition>,
+    pub metadata: Chunked<Meta>,
+    pub heap: Chunked<u8>,
     pub last: i32,
 }
-impl<'a> Columns<'a> {
-    fn new(budget: &'a Budget) -> io::Result<Self> {
-        Ok(Self {
-            runs: Chunked::new(budget)?,
-            evidence: Chunked::new(budget)?,
-            domain_rows: Chunked::new(budget)?,
-            events: Chunked::new(budget)?,
-            keys: Chunked::new(budget)?,
-            domains: Chunked::new(budget)?,
-            definitions: Chunked::new(budget)?,
-            metadata: Chunked::new(budget)?,
-            heap: Chunked::new(budget)?,
+impl Columns {
+    fn new() -> Self {
+        Self {
             last: i32::MIN,
-        })
+            ..Self::default()
+        }
     }
 }
 
@@ -133,61 +145,96 @@ impl<'a> Columns<'a> {
 pub struct Tree {
     identity: Identity,
     nodes: Vec<NodeRef>,
+    /// What merging each of `nodes` reads, kept from when it was written until it is merged;
+    /// None for a node of a resumed hierarchy, read back when it merges.
+    built: Vec<Option<Built>>,
     sealed: u64,
 }
 
 impl Tree {
-    /// The hierarchy with `node` added, any 16 complete siblings merged.
-    fn settled(
-        &self,
-        io: &mut impl PageWrite,
-        cache: &Cache<'_>,
-        node: NodeRef,
-    ) -> io::Result<Vec<NodeRef>> {
-        if node.first != self.sealed {
+    fn new(identity: Identity, nodes: Vec<NodeRef>, sealed: u64) -> io::Result<Self> {
+        let mut built = engine_allocation::vec(nodes.len())?;
+        built.resize_with(nodes.len(), || None);
+        Ok(Self {
+            identity,
+            nodes,
+            built,
+            sealed,
+        })
+    }
+
+    /// Adds `sealed` to the hierarchy, any 16 complete siblings merged: what it merged, to undo.
+    fn add(&mut self, io: &mut impl PageWrite, sealed: Sealed) -> io::Result<Vec<Replaced>> {
+        if sealed.node.first != self.sealed {
             return Err(invalid("series segments must be published in order"));
         }
-        let mut nodes = self.nodes.clone();
-        nodes.push(node);
-        hierarchy::settle(io, cache, &mut nodes)?;
-        Ok(nodes)
+        engine_allocation::reserve(&mut self.nodes, 1)?;
+        engine_allocation::reserve(&mut self.built, 1)?;
+        self.nodes.push(sealed.node);
+        self.built.push(Some(sealed.built));
+        let mut undo = Vec::new();
+        match hierarchy::settle(io, &mut self.nodes, &mut self.built, &mut undo) {
+            Ok(()) => Ok(undo),
+            Err(error) => {
+                self.undo(undo);
+                Err(error)
+            }
+        }
+    }
+
+    /// Takes back the segment [`Self::add`] added and what it merged.
+    fn undo(&mut self, undo: Vec<Replaced>) {
+        for (nodes, built) in undo.into_iter().rev() {
+            self.nodes.pop();
+            self.built.pop();
+            self.nodes.extend(nodes);
+            self.built.extend(built);
+        }
+        self.nodes.pop();
+        self.built.pop();
+    }
+
+    /// Lets go of what merging its committed nodes reads: each is read back when it merges, as
+    /// a resumed hierarchy's is.
+    pub fn release_built(&mut self) {
+        self.built.fill_with(|| None);
     }
 
     /// Adds the next sealed segment to the hierarchy without a root of its own: the root of a
     /// later segment names it ([`Self::publish`]).
-    pub fn append(
-        &mut self,
-        io: &mut impl PageWrite,
-        cache: &Cache<'_>,
-        sealed: Sealed,
-    ) -> io::Result<()> {
+    pub fn append(&mut self, io: &mut impl PageWrite, sealed: Sealed) -> io::Result<()> {
         let next = add(self.sealed, 1)?;
-        self.nodes = self.settled(io, cache, sealed.node)?;
+        self.add(io, sealed)?;
         self.sealed = next;
         Ok(())
     }
 
     /// Adds the next sealed segment to the hierarchy, merging any 16 complete
     /// siblings, and writes the publication's root.
-    pub fn publish(
-        &mut self,
-        io: &mut impl PageWrite,
-        cache: &Cache<'_>,
-        sealed: Sealed,
-    ) -> io::Result<PageId> {
+    pub fn publish(&mut self, io: &mut impl PageWrite, sealed: Sealed) -> io::Result<PageId> {
         let next = add(self.sealed, 1)?;
-        let nodes = self.settled(io, cache, sealed.node)?;
-        let root = hierarchy::write_root(
-            io,
-            &Root {
-                identity: self.identity,
-                state: sealed.state,
-                nodes: nodes.clone(),
-            },
-        )?;
-        self.nodes = nodes;
-        self.sealed = next;
-        Ok(root)
+        let state = sealed.state;
+        let undo = self.add(io, sealed)?;
+        let root = engine_allocation::copy_vec(&self.nodes).and_then(|nodes| {
+            hierarchy::write_root(
+                io,
+                &Root {
+                    identity: self.identity,
+                    state,
+                    nodes,
+                },
+            )
+        });
+        match root {
+            Ok(root) => {
+                self.sealed = next;
+                Ok(root)
+            }
+            Err(error) => {
+                self.undo(undo);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -195,8 +242,7 @@ impl Tree {
 /// hashing. [`Writer::cut`] hands the finished segment to a sealing job that can
 /// run on any thread; [`Writer::publish`] adds sealed segments, in order, to the
 /// published hierarchy.
-pub struct Writer<'a> {
-    budget: &'a Budget,
+pub struct Writer {
     identity: Identity,
     first: i32,
     state: State,
@@ -209,7 +255,7 @@ pub struct Writer<'a> {
     specs: HashMap<SpecKey, u64>,
     domain_ids: HashMap<u64, u32>,
     domains: Vec<DomainEdge>,
-    columns: Columns<'a>,
+    columns: Columns,
     /// None while lent out.
     tree: Option<Tree>,
     /// The cells [`Self::cells`] encodes before it appends them at once.
@@ -228,7 +274,7 @@ fn keying() -> engine_allocation::labels::Scope {
     engine_allocation::labels::kind(engine_allocation::labels::Kind::Keys)
 }
 
-impl<'a> Writer<'a> {
+impl Writer {
     /// Whether its open segment holds anything appended since it was last cut.
     pub fn holds(&self) -> bool {
         let c = &self.columns;
@@ -238,6 +284,7 @@ impl<'a> Writer<'a> {
             c.domain_rows.len(),
             c.events.len(),
             c.keys.len(),
+            c.holds.len(),
             c.domains.len(),
             c.definitions.len(),
             c.metadata.len(),
@@ -252,7 +299,7 @@ impl<'a> Writer<'a> {
         self.published
     }
 
-    /// The bytes its appended rows hold of its budget until it is cut.
+    /// The bytes its appended rows hold until it is cut.
     pub fn held_bytes(&self) -> usize {
         let columns = &self.columns;
         [
@@ -261,6 +308,8 @@ impl<'a> Writer<'a> {
             columns.domain_rows.held(),
             columns.events.held(),
             columns.keys.held(),
+            columns.holds.held(),
+            columns.held.held(),
             columns.domains.held(),
             columns.definitions.held(),
             columns.metadata.held(),
@@ -270,10 +319,9 @@ impl<'a> Writer<'a> {
         .fold(0, usize::saturating_add)
     }
 
-    pub fn new(budget: &'a Budget, identity: Identity, first: i32) -> io::Result<Self> {
+    pub fn new(identity: Identity, first: i32) -> io::Result<Self> {
         let _memory = publishing();
         Ok(Self {
-            budget,
             identity,
             first,
             state: State {
@@ -298,36 +346,22 @@ impl<'a> Writer<'a> {
             specs: HashMap::new(),
             domain_ids: HashMap::new(),
             domains: Vec::new(),
-            columns: Columns::new(budget)?,
-            tree: Some(Tree {
-                identity,
-                nodes: Vec::new(),
-                sealed: 0,
-            }),
+            columns: Columns::new(),
+            tree: Some(Tree::new(identity, Vec::new(), 0)?),
             encoded: Vec::new(),
         })
     }
 
-    /// Continues the publication rooted at `root`, read through `cache`: keys, counters and edges
-    /// come from its hierarchy, and its rows draw on `budget`.
-    pub fn resume(
-        io: &mut impl PageRead,
-        cache: &Cache<'_>,
-        budget: &'a Budget,
-        root: PageId,
-        identity: Identity,
-    ) -> io::Result<Self> {
+    /// Continues the publication rooted at `root`: keys, counters and edges come from its
+    /// hierarchy.
+    pub fn resume(io: &mut impl PageRead, root: PageId, identity: Identity) -> io::Result<Self> {
         let _memory = publishing();
-        let mut reader = Reader::open(io, cache, root)?;
+        let mut reader = Reader::open(io, root)?;
         if reader.root().identity != identity {
             return Err(invalid("series source/content/branch/schema changed"));
         }
         let root: Root = reader.root().clone();
-        let mut writer = Self::new(
-            budget,
-            identity,
-            root.state.publication.accepted.first,
-        )?;
+        let mut writer = Self::new(identity, root.state.publication.accepted.first)?;
         writer.state = root.state;
         writer.published = Some(root.state.publication);
         writer.start = root.state.publication.accepted.last.checked_add(1);
@@ -337,11 +371,7 @@ impl<'a> Writer<'a> {
             .nodes
             .iter()
             .try_fold(0, |n, node| add(n, node.segments))?;
-        writer.tree = Some(Tree {
-            identity,
-            nodes: root.nodes,
-            sealed: writer.segment,
-        });
+        writer.tree = Some(Tree::new(identity, root.nodes, writer.segment)?);
         reader.definitions(io, &mut |definition| writer.restore(definition))?;
         if writer.keys.len() as u64 != root.state.next_key {
             return Err(invalid("series key count"));
@@ -607,6 +637,11 @@ impl<'a> Writer<'a> {
         let _memory = publishing();
         let index = self.key(key)?;
         let edge = self.keys[index];
+        if edge.hold & 1 != 0 {
+            return Err(invalid(
+                "a held run takes no rows in the segment holding it",
+            ));
+        }
         if edge.mode == RunMode::Exact && edge.last.is_some_and(|p| p.span.last >= span.first) {
             return Err(invalid("ordinary exact runs must be ordered and disjoint"));
         }
@@ -667,6 +702,146 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
+    /// Continues `key`'s run, carried out of the segment before, unchanged through `through`,
+    /// the last hour its family's cut covers. A segment holding nothing else of the key, and
+    /// held through its last hour, refers to the run where it began instead of holding a piece.
+    pub fn hold(&mut self, key: KeyHandle, through: i32) -> io::Result<()> {
+        let index = self.key(key)?;
+        let start = self.start()?;
+        if !self.keys[index]
+            .last
+            .is_some_and(|run| i64::from(run.span.last) + 1 == i64::from(start))
+        {
+            return Err(invalid(
+                "a held run must be carried out of the segment before",
+            ));
+        }
+        self.mark_held(index, 1, start, through)
+    }
+
+    /// Continues `key`'s evidence, carried out of the segment before, unchanged through
+    /// `through`, as [`Self::hold`] does its run.
+    pub fn hold_evidence(&mut self, key: KeyHandle, through: i32) -> io::Result<()> {
+        let index = self.key(key)?;
+        let start = self.start()?;
+        let edge = self.keys[index];
+        if edge.domain != NONE
+            || !edge
+                .evidence
+                .is_some_and(|evidence| i64::from(evidence.span.last) + 1 == i64::from(start))
+        {
+            return Err(invalid(
+                "held evidence must be the key's own, carried out of the segment before",
+            ));
+        }
+        self.mark_held(index, 2, start, through)
+    }
+
+    /// Appends `value`, the piece of `key`'s open evidence through the last hour its family's
+    /// cut covers: a piece only continuing the evidence carried out of the segment before, from
+    /// its first hour, is held ([`Self::hold_evidence`]).
+    pub fn continue_evidence(&mut self, key: KeyHandle, value: Evidence) -> io::Result<()> {
+        let index = self.key(key)?;
+        let edge = self.keys[index];
+        if edge.domain == NONE
+            && edge.hold & 2 == 0
+            && value.span.first == self.start()?
+            && edge.evidence.is_some_and(|carried| {
+                same_evidence(carried, value)
+                    && i64::from(carried.span.last) + 1 == i64::from(value.span.first)
+            })
+        {
+            return self.hold_evidence(key, value.span.last);
+        }
+        self.evidence(key, value, None)
+    }
+
+    fn mark_held(&mut self, index: usize, part: u8, start: i32, through: i32) -> io::Result<()> {
+        let _memory = publishing();
+        Span::new(start, through)?;
+        if self.columns.held_through.is_some_and(|held| held != through) {
+            return Err(invalid("a segment's holds end at different hours"));
+        }
+        if self.keys[index].hold == 0 {
+            self.columns.holds.push(index as u64)?;
+        }
+        self.columns.held_through = Some(through);
+        self.keys[index].hold |= part;
+        Ok(())
+    }
+
+    /// Continues every held run and evidence through the hour they are held through: by
+    /// reference where that is `last`, the segment's, and the segment holds nothing else of
+    /// its key, else as the piece the segment holds.
+    fn continue_holds(&mut self, start: i32, last: i32) -> io::Result<()> {
+        let Some(through) = self.columns.held_through else {
+            return Ok(());
+        };
+        if through > last {
+            return Err(invalid("series rows outside their published segment"));
+        }
+        let span = Span::new(start, through)?;
+        self.columns.held.reserve(self.columns.holds.len())?;
+        for at in 0..self.columns.holds.len() {
+            let index = self.columns.holds[at] as usize;
+            let key = index as u64;
+            let hold = std::mem::take(&mut self.keys[index].hold);
+            let edge = self.keys[index];
+            let run = edge.last.filter(|_| hold & 1 != 0);
+            let evidence = edge.evidence.filter(|_| hold & 2 != 0);
+            // A family whose walk ended short of the segment's last hour holds nothing past it.
+            if edge.touched || through < last {
+                if let Some(run) = run {
+                    self.run(key, span, run.value, false, false)?;
+                }
+                if let Some(evidence) = evidence {
+                    self.evidence(key, Evidence { span, ..evidence }, None)?;
+                }
+                continue;
+            }
+            let coverage = evidence.is_some_and(|e| e.known == Knownness::Known)
+                && edge
+                    .known
+                    .is_some_and(|known| i64::from(known) + 1 == i64::from(start));
+            if run.is_some() && edge.domain == NONE && !coverage {
+                return Err(invalid("series run outside known coverage"));
+            }
+            let rows = if run.is_some() {
+                add(edge.rows, 1)?
+            } else {
+                edge.rows
+            };
+            self.columns.held.put(HeldRow {
+                key,
+                held: Held {
+                    runs: run.is_some(),
+                    evidence: evidence.is_some(),
+                    coverage,
+                    origin: run.map_or(0, |run| run.span.first),
+                    evidence_origin: evidence.map_or(0, |evidence| evidence.span.first),
+                },
+                row_start: edge.rows,
+                canonicals: edge.canonicals,
+                domain: edge.domain,
+                value: run.map_or(0, |run| run.value),
+                decimals: edge.decimals,
+            });
+            self.columns.last = self.columns.last.max(last);
+            let edge = &mut self.keys[index];
+            edge.rows = rows;
+            if let Some(run) = edge.last.as_mut().filter(|_| hold & 1 != 0) {
+                run.span.last = last;
+            }
+            if let Some(held) = edge.evidence.as_mut().filter(|_| hold & 2 != 0) {
+                held.span.last = last;
+                if held.known == Knownness::Known {
+                    edge.known = Some(last);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn evidence(
         &mut self,
         key: KeyHandle,
@@ -678,6 +853,11 @@ impl<'a> Writer<'a> {
         let edge = self.keys[index];
         if edge.domain != NONE {
             return Err(invalid("domain-bound key has independent evidence"));
+        }
+        if edge.hold & 2 != 0 {
+            return Err(invalid(
+                "held evidence takes no rows in the segment holding it",
+            ));
         }
         if edge
             .evidence
@@ -901,7 +1081,7 @@ impl<'a> Writer<'a> {
 
     /// Closes the segment: its rows must lie within the publication's accepted hours.
     /// The returned job seals pages on any thread; the emit continues at once.
-    pub fn cut(&mut self, publication: Publication, checkpoint: Blob) -> io::Result<Pending<'a>> {
+    pub fn cut(&mut self, publication: Publication, checkpoint: Blob) -> io::Result<Pending> {
         let _memory = publishing();
         let start = self.start()?;
         Span::new(publication.accepted.first, publication.accepted.last)?;
@@ -914,6 +1094,7 @@ impl<'a> Writer<'a> {
         {
             return Err(invalid("invalid series publication successor"));
         }
+        self.continue_holds(start, publication.accepted.last)?;
         let natives = self.columns.events.iter().map(|e| e.native_hour()).max();
         if self.columns.last > publication.accepted.last
             || natives.is_some_and(|hour| hour > publication.accepted.last)
@@ -930,7 +1111,7 @@ impl<'a> Writer<'a> {
             return Err(invalid("series checkpoint outside the heap"));
         }
         let segment = add(self.segment, 1)?;
-        let fresh = Columns::new(self.budget)?;
+        let fresh = Columns::new();
         for touch in self.columns.keys.iter_mut() {
             let edge = &mut self.keys[touch.id as usize];
             edge.row = NO_ROW;
@@ -949,7 +1130,6 @@ impl<'a> Writer<'a> {
             ..self.state
         };
         let pending = Pending {
-            budget: self.budget,
             index: self.segment,
             hours: Span {
                 first: start,
@@ -976,7 +1156,7 @@ impl<'a> Writer<'a> {
 
     /// Closes the segment at hour `last` as the next publication, with no checkpoint: no root
     /// names it until a later segment's does, and a reader pins it only as a prefix of that.
-    pub fn cut_through(&mut self, last: i32) -> io::Result<Pending<'a>> {
+    pub fn cut_through(&mut self, last: i32) -> io::Result<Pending> {
         let (generation, segment) = match self.published {
             Some(previous) => (add(previous.generation, 1)?, add(previous.segment, 1)?),
             None => (1, 1),
@@ -993,17 +1173,12 @@ impl<'a> Writer<'a> {
 
     /// Adds the next sealed segment to the hierarchy, merging any 16 complete siblings, and
     /// writes the publication's root.
-    pub fn publish(
-        &mut self,
-        io: &mut impl PageWrite,
-        cache: &Cache<'_>,
-        sealed: Sealed,
-    ) -> io::Result<PageId> {
+    pub fn publish(&mut self, io: &mut impl PageWrite, sealed: Sealed) -> io::Result<PageId> {
         let _memory = publishing();
         self.tree
             .as_mut()
             .ok_or_else(|| invalid("series hierarchy lent out"))?
-            .publish(io, cache, sealed)
+            .publish(io, sealed)
     }
 
     /// Lends out its hierarchy: the segments it cuts publish into it elsewhere, in order, until

@@ -2,9 +2,8 @@
 //! built at any hour.
 
 use crate::playback::Current;
-use engine_allocation::credit::MemoryBudget;
 use replay::{
-    columnar_runs::{IndexFile, Snapshots, beyond_memory},
+    columnar_runs::{IndexFile, Snapshots},
     container::{Parallel, Replay},
 };
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
@@ -36,7 +35,6 @@ impl Columnar {
             replay.format,
             replay.capture_mode,
             workers,
-            tables_memory().clone(),
         )?
         .with_change_facts();
         Ok(MapSource {
@@ -46,12 +44,6 @@ impl Columnar {
             workers: workers.max(1),
         })
     }
-}
-
-/// What every map source's tables may hold at once: half the viewer's 4 GB working set.
-fn tables_memory() -> &'static MemoryBudget {
-    static MEMORY: std::sync::OnceLock<MemoryBudget> = std::sync::OnceLock::new();
-    MEMORY.get_or_init(|| MemoryBudget::new(2 << 30))
 }
 
 /// One playback's map hours from a [`Columnar`] index.
@@ -64,8 +56,8 @@ pub struct MapSource {
 }
 
 impl MapSource {
-    pub fn roster_source(&self) -> (Arc<IndexFile>, MemoryBudget) {
-        (Arc::clone(self.snapshots.file()), tables_memory().clone())
+    pub fn roster_source(&self) -> Arc<IndexFile> {
+        Arc::clone(self.snapshots.file())
     }
 
     pub fn set_workers(&mut self, workers: usize) {
@@ -86,10 +78,8 @@ impl MapSource {
     /// `hour` of `branch`: with `materialize`, its frame; without, the move taken there and no
     /// frame built. It builds no other hour: the hours before it that a window lacks are read
     /// as hours of their own, after it, and the cursor moves on from whichever it read last.
-    /// An hour no run holds is the replay's gap there. A move short of the memory the map's
-    /// tables share waits for it until `cancelled`; one needing more than they may ever hold is
-    /// refused, never a gap. Cancellation leaves the source to be asked again; damage is the
-    /// hour's gap.
+    /// An hour no run holds is the replay's gap there. Cancellation leaves the source to be
+    /// asked again; damage is the hour's gap.
     pub fn read(
         &mut self,
         branch: BranchId,
@@ -138,8 +128,7 @@ impl MapSource {
             if cancelled() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
-            self.snapshots
-                .move_to(branch, hour, &on_worker, cancelled)?;
+            self.snapshots.move_to(branch, hour, &on_worker)?;
             materialize
                 .then(|| self.snapshots.build(Some(&parallel)))
                 .transpose()
@@ -152,11 +141,6 @@ impl MapSource {
                 "frame campaign identity differs from replay header".into()
             )),
             Ok(None) => Ok(gap("hour has not been decoded".into())),
-            Err(error) if beyond_memory(&error) => Ok(Current::Refused {
-                branch,
-                hour,
-                reason: error.to_string(),
-            }),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
             Err(error) => Ok(gap(format!("unreadable change-run hour: {error}"))),
         }

@@ -90,7 +90,7 @@ impl Emit {
         }
     }
 
-    fn begin(&mut self, writer: &mut Writer<'_>) -> io::Result<()> {
+    fn begin(&mut self, writer: &mut Writer) -> io::Result<()> {
         let failure = match &self.configured.defines {
             Ok(_) => Scalar::Null,
             Err(failure) => Scalar::Text(failure.as_bytes().into()),
@@ -114,7 +114,7 @@ impl Emit {
         Ok(())
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, actor: u64, measure: u64) -> io::Result<u64> {
+    fn key(&mut self, writer: &mut Writer, actor: u64, measure: u64) -> io::Result<u64> {
         let decimals = if measure == COUNTS { 0 } else { SHARE_DECIMALS };
         let key = self.actors.key(
             writer,
@@ -130,7 +130,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
@@ -189,7 +189,7 @@ impl Emit {
 
     fn apply(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         adjacent: bool,
         actor: u64,
@@ -234,7 +234,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, and the hours since the last cut as known.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

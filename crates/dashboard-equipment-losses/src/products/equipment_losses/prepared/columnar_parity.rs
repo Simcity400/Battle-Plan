@@ -378,12 +378,19 @@ fn published(
         &flag,
     )
     .unwrap();
-    let points: Vec<LossPoint> = reader
+    let hours: Vec<i32> = reader
         .events(&[actor], i32::MIN, i32::MAX, 0, 1024)
         .unwrap()
         .rows
         .into_iter()
-        .map(|row| serde_json::from_slice(&row.row).unwrap())
+        .map(|row| row.hour)
+        .collect();
+    let points: Vec<LossPoint> = hours
+        .into_iter()
+        .map(|hour| LossPoint {
+            hour,
+            total_raw: total_at(&mut reader, actor, hour).unwrap().to_string(),
+        })
         .collect();
     let state = country.values.state(local).unwrap();
     (points, state.runs, state.events)

@@ -183,8 +183,7 @@ fn air_superiority_source_open_inherits_only_a_verified_same_path_append() {
     let inherited = next.state::<country_groups::GroupCache>();
     assert!(Arc::ptr_eq(
         &cached,
-        inherited.lock().unwrap().entries[0]
-            .1
+        inherited.lock().unwrap().entries[&1]
             .scan
             .lock()
             .unwrap()

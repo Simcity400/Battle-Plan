@@ -79,6 +79,11 @@ pub trait RaidPaths {
     fn hour(&self) -> Option<&super::paths::HourPaths<'_>> {
         None
     }
+    /// The content searches the distances asked since the last take read, for the
+    /// evaluation that asked them to keep.
+    fn take_held(&self) -> Box<[super::paths::Held]> {
+        Box::default()
+    }
 }
 
 /// Answers no path search, for tests of the other gates.
@@ -258,6 +263,11 @@ impl<'l, 'a> Local<'l, 'a> {
         }
     }
 
+    /// [`RaidPaths::take_held`] of the part's view of the hour's path searches.
+    pub fn take_held(&self) -> Box<[super::paths::Held]> {
+        self.paths.take_held()
+    }
+
     fn memo<R>(&self, shared: &Shared, read: impl FnOnce(&mut Memo) -> R) -> R {
         let mut memos = self.memos.borrow_mut();
         if memos.len() <= shared.id {
@@ -328,8 +338,7 @@ pub(crate) struct SourceDistanceSets {
 impl Default for SourceDistanceSets {
     fn default() -> Self {
         Self {
-            // Air bases change seldom; carrier provinces every hour.
-            recent: Recent::new(4),
+            recent: Recent::new(),
         }
     }
 }
@@ -462,9 +471,7 @@ pub(crate) struct RecordedIndexes {
 impl Default for RecordedIndexes {
     fn default() -> Self {
         Self {
-            // The distinct path source lists of a catalogue's types, and a
-            // memo change's worth more.
-            recent: Recent::new(16),
+            recent: Recent::new(),
         }
     }
 }
@@ -534,11 +541,10 @@ pub(crate) struct TableIndexes {
 
 impl Default for TableIndexes {
     fn default() -> Self {
-        // A few hours in flight and a step back.
         Self {
-            naval_bases: Recent::new(4),
-            owned_states: Recent::new(4),
-            province_buildings: Recent::new(4),
+            naval_bases: Recent::new(),
+            owned_states: Recent::new(),
+            province_buildings: Recent::new(),
         }
     }
 }

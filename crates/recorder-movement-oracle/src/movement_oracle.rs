@@ -30,9 +30,6 @@ use crate::windows::{self, Process, ProcessMemory};
 pub const USAGE: &str =
     "recorder movement-oracle [--user-dir <directory>] [--report <file.json>] [--show <n>]";
 
-/// Differences kept in the JSON report; the counts always cover all of them.
-const REPORT_LIMIT: usize = 10_000;
-
 pub fn command(args: Vec<OsString>) -> Result<(), String> {
     let started = Instant::now();
     let mut user = None;
@@ -213,15 +210,13 @@ impl Report {
         content: impl ToString,
     ) {
         *self.counts.entry(field).or_default() += 1;
-        if self.differences.len() < REPORT_LIMIT {
-            self.differences.push(Difference {
-                province,
-                entry,
-                field,
-                game: game.to_string(),
-                content: content.to_string(),
-            });
-        }
+        self.differences.push(Difference {
+            province,
+            entry,
+            field,
+            game: game.to_string(),
+            content: content.to_string(),
+        });
     }
 
     fn total(&self) -> usize {

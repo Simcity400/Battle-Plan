@@ -2,7 +2,6 @@
 //! build one.
 
 use crate::{
-    cache::Cache,
     invalid,
     pages::{PageRead, PageWrite},
     types::{Blob, PageId, Publication},
@@ -61,13 +60,12 @@ impl Memory {
 
 /// Cuts `writer`'s segment as `publication`, seals it and publishes it into `io`: the root.
 pub fn publish(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     io: &mut impl PageWrite,
-    cache: &Cache<'_>,
     publication: Publication,
     checkpoint: Blob,
 ) -> io::Result<PageId> {
     let pending = writer.cut(publication, checkpoint)?;
     let sealed = pending.seal(io)?;
-    writer.publish(io, cache, sealed)
+    writer.publish(io, sealed)
 }

@@ -21,7 +21,7 @@ const FILL_MINIMUM: usize = 16;
 /// Strings a dictionary chunk holds at most.
 const CHUNK_STRINGS: usize = 4096;
 /// The streams a walk's open pages' bytes go to disk in, its strips dealt among them in turn,
-/// and the bytes a stream gathers before they go.
+/// and the bytes a stream gathers before they go: all it holds, but for a larger record.
 const STREAMS: usize = 256;
 const STREAM_BYTES: usize = 32 << 10;
 
@@ -123,6 +123,35 @@ struct Stream {
     gathered: Vec<u8>,
     kept: Vec<(u64, u32)>,
     bytes: usize,
+}
+
+impl Stream {
+    /// Sends what it gathered to `disk`, keeping no more room than it gathers.
+    fn spill(&mut self, disk: &mut dyn Disk) -> io::Result<()> {
+        if self.gathered.is_empty() {
+            return Ok(());
+        }
+        let length = u32::try_from(self.gathered.len())
+            .map_err(|_| invalid("A stream's record passes 4 GiB"))?;
+        let at = disk.keep(&self.gathered)?;
+        // Bytes that follow its last on disk are read back with them, in one read.
+        let joined = self
+            .kept
+            .last_mut()
+            .filter(|(start, held)| *start + u64::from(*held) == at)
+            .and_then(|(_, held)| Some((held.checked_add(length)?, held)));
+        if let Some((joined, held)) = joined {
+            *held = joined;
+        } else {
+            engine_allocation::reserve(&mut self.kept, 1)?;
+            self.kept.push((at, length));
+        }
+        self.gathered.clear();
+        if self.gathered.capacity() > STREAM_BYTES {
+            self.gathered = Vec::new();
+        }
+        Ok(())
+    }
 }
 
 /// Buffers an hour's strips are written with.
@@ -625,28 +654,28 @@ impl Pages<'_> {
     /// `parts`, each its length first but for the last of a base.
     fn keep(&mut self, id: u32, base: bool, parts: &[&[u8]]) -> io::Result<()> {
         let _memory = labels::kind(Label::IndexSpill);
+        let tag = u64::from(id) << 1 | u64::from(base);
+        let length = parts.iter().fold(varint_len(tag), |length, part| {
+            length + varint_len(part.len() as u64) + part.len()
+        });
         let stream = &mut self.streams[id as usize % STREAMS];
-        let start = stream.gathered.len();
-        put_varint(&mut stream.gathered, u64::from(id) << 1 | u64::from(base))?;
+        if stream.gathered.len() + length > STREAM_BYTES {
+            stream.spill(&mut *self.disk)?;
+        }
+        if stream.gathered.capacity() - stream.gathered.len() < length {
+            let room = length.max(STREAM_BYTES) - stream.gathered.len();
+            engine_allocation::reserve_exact(&mut stream.gathered, room)?;
+        }
+        put_varint(&mut stream.gathered, tag)?;
         for part in parts {
             put_varint(&mut stream.gathered, part.len() as u64)?;
         }
         for part in parts {
-            engine_allocation::reserve(&mut stream.gathered, part.len())?;
             stream.gathered.extend_from_slice(part);
         }
-        stream.bytes += stream.gathered.len() - start;
+        stream.bytes += length;
         if stream.gathered.len() >= STREAM_BYTES {
-            let length = u32::try_from(stream.gathered.len())
-                .map_err(|_| invalid("A stream's record passes 4 GiB"))?;
-            let at = self.disk.keep(&stream.gathered)?;
-            engine_allocation::reserve(&mut stream.kept, 1)?;
-            stream.kept.push((at, length));
-            stream.gathered.clear();
-            // A record far past the gathering size leaves no room held for the next.
-            if stream.gathered.capacity() > 2 * STREAM_BYTES {
-                stream.gathered = Vec::new();
-            }
+            stream.spill(&mut *self.disk)?;
         }
         Ok(())
     }
@@ -711,6 +740,11 @@ impl Pages<'_> {
             starts
         };
         let _memory = labels::kind(Label::IndexSpill);
+        // Every stream's gathered bytes go first: what is read back is one stream's at a time.
+        for stream in self.streams.iter_mut() {
+            stream.spill(&mut *self.disk)?;
+            stream.gathered = Vec::new();
+        }
         let (mut bytes, mut records) = (Vec::new(), Vec::new());
         let mut landed = 0;
         for index in 0..self.streams.len() {

@@ -70,12 +70,84 @@ pub(crate) struct RocketProduced {
     rows: HashMap<(u32, u64), Row>,
     owner_unknown: bool,
     delivery_owner_unknown: bool,
-    /// The last version a track's inventories took, where preparation versions them.
-    #[serde(default)]
-    version: u64,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub work: crate::prepared::observer_tests::Work,
+}
+
+/// What a read of the Rocket output gives each holder.
+#[derive(Default)]
+pub(crate) struct RocketTotals {
+    units: HashMap<Identity, BTreeMap<Entry, Total>>,
+    costs: HashMap<Identity, BTreeMap<Entry, CostTotal>>,
+    /// The producers with a tick or a delivery.
+    present: BTreeSet<Identity>,
+    /// Some delivery's owner could not be told: every holder's units are inexact.
+    delivery_owner_unknown: bool,
+    /// Why every holder's spending is unknown, where some tick's owner could not be told.
+    owner_reason: Option<ProductionSpendingUnknown>,
+    /// The read began another observation: no holder's read goes on into it.
+    pub restarted: bool,
+}
+
+impl RocketTotals {
+    /// Units and spending as a holder takes them.
+    fn held(
+        &self,
+        units: Option<&BTreeMap<Entry, Total>>,
+        costs: Option<&BTreeMap<Entry, CostTotal>>,
+    ) -> (BTreeMap<Entry, Total>, BTreeMap<Entry, CostTotal>) {
+        let mut units = units.cloned().unwrap_or_default();
+        let mut costs = costs.cloned().unwrap_or_default();
+        if self.delivery_owner_unknown {
+            units.entry((0, Purpose::New)).or_default().inexact = 1;
+        }
+        if let Some(reason) = self.owner_reason {
+            costs.entry((0, Purpose::New)).or_default().reason = Some(reason);
+        }
+        (units, costs)
+    }
+
+    /// `identity`'s units and spending for the holder that takes them first, which leaves none
+    /// for a later holder of it.
+    fn take(&mut self, identity: Identity) -> (BTreeMap<Entry, Total>, BTreeMap<Entry, CostTotal>) {
+        let units = self.units.remove(&identity);
+        let costs = self.costs.remove(&identity);
+        self.held(units.as_ref(), costs.as_ref())
+    }
+
+    /// `identity`'s units and spending for its first holder, and none for a later one.
+    pub(crate) fn of(
+        &self,
+        identity: Identity,
+        first: bool,
+    ) -> (BTreeMap<Entry, Total>, BTreeMap<Entry, CostTotal>) {
+        if first {
+            self.held(self.units.get(&identity), self.costs.get(&identity))
+        } else {
+            self.held(None, None)
+        }
+    }
+
+    /// Whether `identity` produced, as the read tells it.
+    pub(crate) fn presence(&self, identity: Identity) -> Option<bool> {
+        if self.present.contains(&identity) {
+            Some(true)
+        } else if self.owner_reason.is_some() || self.delivery_owner_unknown {
+            None
+        } else {
+            Some(false)
+        }
+    }
+}
+
+/// What one hour of the Rocket output's rows gives the holders.
+pub(crate) enum RocketFold {
+    /// No read can be taken: every holder's read ends.
+    Ended,
+    /// Not a read: each holder's read goes on while its identity holds.
+    Carried,
+    Read(RocketTotals),
 }
 
 impl RocketProduced {
@@ -86,19 +158,9 @@ impl RocketProduced {
         self.active.clear();
     }
 
-    pub(crate) fn advance(&mut self, hour: i32) {
-        super::each_track(
-            &mut self.tags,
-            self.active.iter().map(String::as_str),
-            |track| {
-                if let Some((_, at)) = &mut track.last {
-                    *at = hour;
-                }
-                if let Some(at) = track.last_hours.last_mut() {
-                    *at = hour;
-                }
-            },
-        );
+    /// The observation reads are counted in.
+    pub(crate) fn observation(&self) -> u32 {
+        self.observation
     }
 
     pub fn observe(
@@ -127,18 +189,120 @@ impl RocketProduced {
                 && output.is_ok(),
             rows: Rows::Slice(output.unwrap_or(&[])),
         };
-        self.observe_resolved(&read, reads.as_ref(), false)
+        self.observe_resolved(&read, reads.as_ref())
     }
 
     /// One hour's read of the output, its countries resolved as `reads`, present while
-    /// Countries is complete. `versioned`: each track's inventories take a new version, and
-    /// log their changed entries, wherever they change.
+    /// Countries is complete.
     pub(crate) fn observe_resolved(
         &mut self,
         input: &RocketRead<'_>,
         reads: Option<&CountryHolders>,
-        versioned: bool,
     ) -> io::Result<()> {
+        let hour = input.hour;
+        let mut totals = match self.fold(input, reads)? {
+            RocketFold::Ended => {
+                self.end_reads();
+                return Ok(());
+            }
+            RocketFold::Carried => {
+                let reads = reads.expect("resolved Rocket countries");
+                let observation = self.observation;
+                let present: HashMap<&str, Identity> = reads
+                    .holders
+                    .iter()
+                    .filter_map(|(tag, holder)| {
+                        holder.map(|(slot, id)| (tag.as_str(), (slot, id, observation)))
+                    })
+                    .collect();
+                self.active.retain(|tag| {
+                    let track = self.tags.get_mut(tag).expect("active Rocket holder");
+                    let identity = present.get(tag.as_str()).copied().filter(|identity| {
+                        track.last.is_some_and(|(previous, at)| {
+                            previous == *identity && at.checked_add(1) == Some(hour)
+                        })
+                    });
+                    track.last = identity.map(|identity| (identity, hour));
+                    if identity.is_some()
+                        && let Some(last) = track.last_hours.last_mut()
+                    {
+                        *last = hour;
+                    }
+                    identity.is_some()
+                });
+                return Ok(());
+            }
+            RocketFold::Read(totals) => totals,
+        };
+        if totals.restarted {
+            self.end_reads();
+        }
+        let reads = reads.expect("resolved Rocket countries");
+        let observation = self.observation;
+        let observed: Vec<(String, Identity)> = reads
+            .holders
+            .iter()
+            .filter_map(|(tag, holder)| {
+                holder.map(|(slot, id)| (tag.clone(), (slot, id, observation)))
+            })
+            .collect();
+        let present: BTreeSet<&str> = observed.iter().map(|(tag, _)| tag.as_str()).collect();
+        for tag in &self.active {
+            if !present.contains(tag.as_str()) {
+                self.tags.get_mut(tag).expect("active Rocket holder").last = None;
+            }
+        }
+        self.active = observed.iter().map(|(tag, _)| tag.clone()).collect();
+        for (tag, identity) in observed {
+            let track = self.tags.entry(tag).or_default();
+            let starts = !track
+                .last
+                .is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
+            let sample = u32::try_from(track.hours.len())
+                .map_err(|_| io::Error::other("Rocket sample index exceeds its integer range"))?;
+            let (units, costs) = totals.take(identity);
+            track.hours.push(hour);
+            track.last_hours.push(hour);
+            track.starts.push(starts);
+            track.identities.push(identity);
+            track.presence.push(totals.presence(identity));
+            track.last = Some((identity, hour));
+            let keys: BTreeSet<_> = track.current.keys().chain(units.keys()).copied().collect();
+            for key in keys {
+                let value = units.get(&key).copied().unwrap_or_default();
+                if track.current.get(&key).copied().unwrap_or_default() != value {
+                    track.changes.entry(key).or_default().push((sample, value));
+                }
+            }
+            let keys: BTreeSet<_> = track
+                .cost_current
+                .keys()
+                .chain(costs.keys())
+                .copied()
+                .collect();
+            for key in keys {
+                let value = costs.get(&key).copied().unwrap_or_default();
+                if track.cost_current.get(&key).copied().unwrap_or_default() != value {
+                    track
+                        .cost_changes
+                        .entry(key)
+                        .or_default()
+                        .push((sample, value));
+                }
+            }
+            track.current = units;
+            track.cost_current = costs;
+        }
+        Ok(())
+    }
+
+    /// One hour of the output's rows, its countries resolved as `reads`: what each holder's
+    /// read takes of it, the holders' own tracks left to the caller.
+    pub(crate) fn fold(
+        &mut self,
+        input: &RocketRead<'_>,
+        reads: Option<&CountryHolders>,
+    ) -> io::Result<RocketFold> {
         let hour = input.hour;
         let read = input.read;
         let output = input.rows;
@@ -149,38 +313,11 @@ impl RocketProduced {
             self.unread_reason.get_or_insert_with(|| {
                 "RocketProductionOutput or its country identities are unavailable".into()
             });
-            self.end_reads();
-            return Ok(());
+            return Ok(RocketFold::Ended);
         }
         let reads = reads.expect("resolved Rocket countries");
-        let tagged: Vec<(String, Identity)> = reads
-            .holders
-            .iter()
-            .filter_map(|(tag, holder)| {
-                holder.map(|(slot, id)| (tag.clone(), (slot, id, self.observation)))
-            })
-            .collect();
         if !read {
-            let present: HashMap<&str, Identity> = tagged
-                .iter()
-                .map(|(tag, identity)| (tag.as_str(), *identity))
-                .collect();
-            self.active.retain(|tag| {
-                let track = self.tags.get_mut(tag).expect("active Rocket holder");
-                let identity = present.get(tag.as_str()).copied().filter(|identity| {
-                    track.last.is_some_and(|(previous, at)| {
-                        previous == *identity && at.checked_add(1) == Some(hour)
-                    })
-                });
-                track.last = identity.map(|identity| (identity, hour));
-                if identity.is_some()
-                    && let Some(last) = track.last_hours.last_mut()
-                {
-                    *last = hour;
-                }
-                identity.is_some()
-            });
-            return Ok(());
+            return Ok(RocketFold::Carried);
         }
         // A complete empty array cannot authenticate old/unrecorded coverage.
         let Some(world) = output
@@ -190,8 +327,7 @@ impl RocketProduced {
             self.unread += 1;
             self.unread_reason
                 .get_or_insert_with(|| "Rocket coverage singleton is absent".into());
-            self.end_reads();
-            return Ok(());
+            return Ok(RocketFold::Ended);
         };
         if output
             .iter()
@@ -211,6 +347,7 @@ impl RocketProduced {
                 "Rocket publication contains different observations",
             ));
         }
+        let mut restarted = false;
         match self.observations.last() {
             None => self.observations.push(world.since_hour),
             Some(since) if *since != world.since_hour => {
@@ -222,20 +359,19 @@ impl RocketProduced {
                 self.rows.clear();
                 self.owner_unknown = false;
                 self.delivery_owner_unknown = false;
-                self.end_reads();
+                restarted = true;
             }
             Some(_) => {}
         }
         self.reads.push(hour);
         self.owner_unknown |= !world.exact;
         self.delivery_owner_unknown |= !world.units_exact;
-        let observed: Vec<_> = tagged
-            .into_iter()
-            .map(|(tag, (slot, id, _))| (tag, (slot, id, self.observation)))
-            .collect();
-        let by_slot: HashMap<u32, Identity> = observed
-            .iter()
-            .map(|(_, identity)| (identity.0, *identity))
+        // A slot two tags name is the later tag's, as the tags are met in order.
+        let observation = self.observation;
+        let by_slot: HashMap<u32, Identity> = reads
+            .holders
+            .values()
+            .filter_map(|holder| holder.map(|(slot, id)| (slot, (slot, id, observation))))
             .collect();
         let mut seen = BTreeSet::new();
         for row in output.iter() {
@@ -319,9 +455,10 @@ impl RocketProduced {
                 unproven_raw: 0,
             };
         }
-        let mut unit_totals: HashMap<Identity, BTreeMap<Entry, Total>> = HashMap::new();
-        let mut cost_totals: HashMap<Identity, BTreeMap<Entry, CostTotal>> = HashMap::new();
-        let mut present_production = BTreeSet::new();
+        let mut totals = RocketTotals {
+            restarted,
+            ..RocketTotals::default()
+        };
         for (&key, state) in &mut self.rows {
             #[cfg(any(test, feature = "test-support"))]
             {
@@ -335,10 +472,11 @@ impl RocketProduced {
                 continue;
             };
             if state.present {
-                present_production.insert(identity);
+                totals.present.insert(identity);
             }
             let entry = (key.1, Purpose::New);
-            let units = unit_totals
+            let units = totals
+                .units
                 .entry(identity)
                 .or_default()
                 .entry(entry)
@@ -351,7 +489,8 @@ impl RocketProduced {
                 .inexact
                 .checked_add(state.units.inexact)
                 .ok_or_else(|| io::Error::other("Rocket inexact row count overflows"))?;
-            let cost = cost_totals
+            let cost = totals
+                .costs
                 .entry(identity)
                 .or_default()
                 .entry(entry)
@@ -362,107 +501,16 @@ impl RocketProduced {
                 .ok_or_else(|| io::Error::other("Rocket IC exceeds its exact integer range"))?;
             cost.reason = cost.reason.or(state.cost.reason);
         }
-        let present: BTreeSet<&str> = observed.iter().map(|(tag, _)| tag.as_str()).collect();
-        for tag in &self.active {
-            if !present.contains(tag.as_str()) {
-                self.tags.get_mut(tag).expect("active Rocket holder").last = None;
-            }
+        totals.delivery_owner_unknown = self.delivery_owner_unknown;
+        if self.owner_unknown {
+            totals.owner_reason = Some(
+                self.rows[&(0, 0)]
+                    .cost
+                    .reason
+                    .unwrap_or(ProductionSpendingUnknown::RocketOwnerUnreadable),
+            );
         }
-        self.active = observed.iter().map(|(tag, _)| tag.clone()).collect();
-        for (tag, identity) in observed {
-            let track = self.tags.entry(tag).or_default();
-            let starts = !track
-                .last
-                .is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
-            let sample = u32::try_from(track.hours.len())
-                .map_err(|_| io::Error::other("Rocket sample index exceeds its integer range"))?;
-            let mut units = unit_totals.remove(&identity).unwrap_or_default();
-            let mut costs = cost_totals.remove(&identity).unwrap_or_default();
-            if self.delivery_owner_unknown {
-                units.entry((0, Purpose::New)).or_default().inexact = 1;
-            }
-            if self.owner_unknown {
-                costs.entry((0, Purpose::New)).or_default().reason = Some(
-                    self.rows[&(0, 0)]
-                        .cost
-                        .reason
-                        .unwrap_or(ProductionSpendingUnknown::RocketOwnerUnreadable),
-                );
-            }
-            track.hours.push(hour);
-            track.last_hours.push(hour);
-            track.starts.push(starts);
-            track.identities.push(identity);
-            track
-                .presence
-                .push(if present_production.contains(&identity) {
-                    Some(true)
-                } else if self.owner_unknown || self.delivery_owner_unknown {
-                    None
-                } else {
-                    Some(false)
-                });
-            track.last = Some((identity, hour));
-            let mut units_changed = track.taken.is_none_or(|(taken, _)| taken != identity);
-            let mut costs_changed = track
-                .cost_taken
-                .is_none_or(|(taken, _)| taken != identity);
-            if versioned && (units_changed || costs_changed) {
-                track.edits.replaced();
-            }
-            let keys: std::collections::BTreeSet<_> =
-                track.current.keys().chain(units.keys()).copied().collect();
-            for key in keys {
-                let (before, now) = (track.current.get(&key), units.get(&key));
-                let value = now.copied().unwrap_or_default();
-                if before.copied().unwrap_or_default() != value {
-                    track.changes.entry(key).or_default().push((sample, value));
-                }
-                if before != now {
-                    units_changed = true;
-                    if versioned {
-                        track.edits.note(key);
-                    }
-                }
-            }
-            let keys: std::collections::BTreeSet<_> = track
-                .cost_current
-                .keys()
-                .chain(costs.keys())
-                .copied()
-                .collect();
-            for key in keys {
-                let (before, now) = (track.cost_current.get(&key), costs.get(&key));
-                let value = now.copied().unwrap_or_default();
-                if before.copied().unwrap_or_default() != value {
-                    track
-                        .cost_changes
-                        .entry(key)
-                        .or_default()
-                        .push((sample, value));
-                }
-                if before != now {
-                    costs_changed = true;
-                    if versioned {
-                        track.edits.note(key);
-                    }
-                }
-            }
-            track.current = units;
-            track.cost_current = costs;
-            if versioned {
-                for (changed, taken) in [
-                    (units_changed, &mut track.taken),
-                    (costs_changed, &mut track.cost_taken),
-                ] {
-                    if changed {
-                        self.version += 1;
-                        *taken = Some((identity, self.version));
-                    }
-                }
-            }
-        }
-        Ok(())
+        Ok(RocketFold::Read(totals))
     }
 }
 

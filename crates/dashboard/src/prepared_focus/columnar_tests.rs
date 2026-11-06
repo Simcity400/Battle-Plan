@@ -10,7 +10,7 @@ use super::{
 };
 use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame, scale_tag};
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -329,11 +329,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -347,7 +346,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -361,8 +359,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -373,9 +371,7 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
 
 /// Holds the publication `built` to the row preparation `prepared` of `frames`.
 fn check(built: &Built, prepared: &Prepared, frames: &[DecodedFrame], label: &str) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let cancelled = AtomicBool::new(false);
     let tags: BTreeSet<String> = frames
@@ -478,7 +474,6 @@ fn check(built: &Built, prepared: &Prepared, frames: &[DecodedFrame], label: &st
 #[test]
 fn the_publication_answers_what_the_row_preparation_answers_across_segments_cuts_and_a_resume()
 {
-    let budget = Budget::new(256 << 20);
     let frames: Vec<DecodedFrame> = hours().into_iter().map(|hour| focus_frame(1, hour)).collect();
     let prepared = prepared(recording(&frames));
     let every: Vec<i32> = hours();
@@ -493,7 +488,7 @@ fn the_publication_answers_what_the_row_preparation_answers_across_segments_cuts
         (&every[1..], &every[..], Some(160)),
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
-        let built = build(projected(&frames, starts), cuts, resume, &budget);
+        let built = build(projected(&frames, starts), cuts, resume);
         check(&built, &prepared, &frames, &label);
     }
     // The fixture reaches every case it names.

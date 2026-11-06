@@ -728,7 +728,7 @@ impl Observer {
         };
         self.diplomacy.observe(frame, replay.format, &mut changes)?;
         self.publish_diplomacy(changes)?;
-        let strikes = nuclear::read(frame, &mut self.diagnostics, cancelled)?;
+        let strikes = nuclear::read(frame.into(), &mut self.diagnostics, cancelled)?;
         let types = strike_types();
         for strike in strike_facts(frame.hour, &strikes, tag_at, &mut self.diagnostics, &types) {
             self.publish_one(Draft::new(strike)?)?;

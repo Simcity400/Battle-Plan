@@ -601,7 +601,6 @@ pub(crate) fn read_pages(
             &(&input.tag, purposes == Purposes::Split, purposes == Purposes::Combined, window),
             &index.publication(),
             cancel,
-            crate::prepared::query::observations::serde_bytes,
             || peaks_of(store, key, index.branch, &selected, window, cancel),
         )?
         .as_ref()

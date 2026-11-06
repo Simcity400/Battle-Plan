@@ -563,7 +563,6 @@ pub struct CountryFuelAwards;
 impl Product for CountryFuelAwards {
     const KEY: &'static str = "country-fuel-awards";
     const CONTENT_DEPENDENT: bool = true;
-    const PUBLISHED: bool = true;
     type Params = FuelAwardsParams;
     type Reply = FuelAwardsReply;
     fn types() -> Vec<String> {

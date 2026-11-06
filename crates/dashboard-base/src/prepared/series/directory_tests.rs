@@ -147,7 +147,7 @@ fn query_directories_reuse_page_identities_and_drop_unused_or_replaced_pages() {
         "unchanged directories were searched or read again"
     );
     let held = scope.finish();
-    assert!(held.bytes() > KEYS as usize * DIRECTORY as usize);
+    assert!(held.held() > 0);
 
     // The same ordinal now has different bytes and fewer keys. Neither its
     // old directory nor its decoded events may survive the replacement.
@@ -183,11 +183,7 @@ fn query_directories_reuse_page_identities_and_drop_unused_or_replaced_pages() {
     let scope = cache_scope(Some(&held));
     assert_eq!(read(), uncached);
     let current = scope.finish();
-    assert!(current.bytes() > 0);
+    assert!(current.held() > 0);
     let scope = cache_scope(Some(&current));
-    assert_eq!(
-        scope.finish().bytes(),
-        query::SummaryCache::default().bytes(),
-        "unused directories survived"
-    );
+    assert_eq!(scope.finish().held(), 0, "unused directories survived");
 }

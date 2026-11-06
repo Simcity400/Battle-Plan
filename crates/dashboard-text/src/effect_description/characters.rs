@@ -2,7 +2,15 @@
 
 use super::*;
 use crate::character_scope::{Tables, UnitLeader};
-use replay_data::{rows::CharacterRow, rows::TableSchema, rows::tables};
+use replay_data::rows::{
+    CharacterRow, CountryCharacterRow, LexicalTokenRow, UnitLeaderRow, tables,
+};
+
+/// Characters rows lent to the descriptions hold every field.
+const CHARACTER: u64 = tables::Characters::ID.full_mask();
+const LEADER_LINK: u64 = mask::<UnitLeaderRow>(&["character_id"]);
+const LEADER_NAME: u64 = mask::<UnitLeaderRow>(&["inherited_text_b"]);
+pub(super) const ROSTER: u64 = mask::<CountryCharacterRow>(&["character"]);
 
 mod content;
 mod military;
@@ -49,38 +57,26 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    fn character_lexical(
-        &self,
-    ) -> Result<replay_frame::frame::Rows<'f, replay_data::rows::LexicalTokenRow>, String> {
-        self.context
-            .text
-            .frame()
-            .lexical()
-            .map_err(|why| why.to_string())
+    fn character_lexical(&self) -> Result<Rowset<'f, LexicalTokenRow>, String> {
+        self.complete::<tables::LexicalTokens>(0)
     }
 
-    fn character_table<T: TableSchema>(&self) -> Result<&'f [T::Row], String> {
-        self.context
-            .text
-            .frame()
-            .complete::<T>()
-            .map_err(|why| why.to_string())
+    fn character_table<T: TableSchema>(&self, mask: u64) -> Result<Rowset<'f, T::Row>, String> {
+        self.complete::<T>(mask)
     }
 
-    fn character_rows(&self) -> Result<replay_frame::frame::Rows<'f, CharacterRow>, String> {
-        self.context
-            .text
-            .frame()
-            .characters()
-            .map_err(|why| why.to_string())
+    /// Characters, each row holding every field.
+    fn character_rows(&self) -> Result<Rowset<'f, CharacterRow>, String> {
+        self.complete::<tables::Characters>(CHARACTER)
     }
 
-    fn character_leaders(&self) -> Result<replay_frame::frame::Leaders<'f>, String> {
-        self.context
-            .text
-            .frame()
-            .leaders()
-            .map_err(|why| why.to_string())
+    /// The Characters row of `id`, holding every field.
+    fn character_row(&self, id: u32) -> Result<Option<Cow<'f, CharacterRow>>, String> {
+        keyed(&self.character_rows()?, u128::from(id))
+    }
+
+    fn character_leaders(&self, mask: u64) -> Result<Rowset<'f, UnitLeaderRow>, String> {
+        self.complete::<tables::UnitLeaders>(mask)
     }
 
     // A unit-leader scope carries the leader's character reference,
@@ -88,23 +84,22 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     pub(super) fn effect_character(
         &self,
         scope: Scope,
-    ) -> Result<Option<&'f CharacterRow>, String> {
+    ) -> Result<Option<Cow<'f, CharacterRow>>, String> {
         let id = match scope {
             Scope::Character(id) => id,
             Scope::Leader(reference)
             | Scope::CountryLeader {
                 leader: reference, ..
             } => {
-                let Some(row) = self.character_leaders()?.iter().find(|row| {
-                    (u64::from(row.id) << 32) | u64::from(row.reference_type) == reference
-                }) else {
+                let leaders = self.character_leaders(LEADER_LINK)?;
+                let Some(row) = keyed(&leaders, u128::from(reference))? else {
                     return Ok(None);
                 };
                 row.character_id
             }
             _ => return Ok(None),
         };
-        Ok(self.character_rows()?.iter().find(|row| row.id == id))
+        self.character_row(id)
     }
 
     // Try the evaluated scope, named lookup, then the current character.
@@ -114,7 +109,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         &self,
         operand: Option<&[u8]>,
         scopes: Scopes,
-    ) -> Result<Option<&'f CharacterRow>, String> {
+    ) -> Result<Option<Cow<'f, CharacterRow>>, String> {
         if let Some(operand) = operand {
             if let Some(selected) = self
                 .evaluator()?
@@ -156,14 +151,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 let world = self.context.world()?;
                 if let Some(token) = world.token_of(operand).map_err(|why| why.to_string())? {
                     let characters = self.character_rows()?;
-                    let active = self.character_table::<tables::CountryCharacters>()?;
+                    let active = self.character_table::<tables::CountryCharacters>(ROSTER)?;
                     for roster in [Some(active), None] {
                         let roster = match roster {
                             Some(rows) => rows,
-                            None => self.character_table::<tables::CountryRetiredCharacters>()?,
+                            None => self
+                                .character_table::<tables::CountryRetiredCharacters>(ROSTER)?,
                         };
-                        let mut selected: Option<(u32, &CharacterRow)> = None;
-                        for row in roster {
+                        let mut selected: Option<(u32, Cow<'f, CharacterRow>)> = None;
+                        for row in each(roster) {
+                            let row = row?;
                             let owner = world.slot(row.country).ok_or_else(|| {
                                 format!(
                                     "CountryLinks lacks character roster country {}",
@@ -176,12 +173,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                             let Some(id) = row.character else {
                                 continue;
                             };
-                            let character =
-                                characters.iter().find(|row| row.id == id).ok_or_else(|| {
-                                    format!("CountryCharacters references missing character {id}")
-                                })?;
+                            let character = keyed(&characters, u128::from(id))?.ok_or_else(|| {
+                                format!("CountryCharacters references missing character {id}")
+                            })?;
                             if character.name_token_id as u32 == token
-                                && selected.is_none_or(|(ordinal, _)| row.ordinal < ordinal)
+                                && selected
+                                    .as_ref()
+                                    .is_none_or(|(ordinal, _)| row.ordinal < *ordinal)
                             {
                                 selected = Some((row.ordinal, character));
                             }
@@ -216,7 +214,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character(scopes.this)? else {
             return Ok(None);
         };
-        Tables::read(self.context.text.frame())
+        Tables::read_in(self.tables())
             .unit_leader(character.id)
             .map_err(|why| why.to_string())
     }
@@ -240,7 +238,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         leader: UnitLeader<'f>,
     ) -> Result<String, String> {
         match leader {
-            UnitLeader::Direct(row) => self.effect_leader_name(row),
+            UnitLeader::Direct(row) => self.effect_leader_name((&*row).into()),
             UnitLeader::Referenced(row) => {
                 // Format 98 retains the referenced role's own name bytes;
                 // older recordings may join an exact direct handle.
@@ -252,13 +250,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         &format!("character {} referenced unit leader name", row.character),
                     );
                 }
-                let named = self
-                    .character_leaders()?
-                    .iter()
-                    .find(|leader| {
-                        (u64::from(leader.id) << 32) | u64::from(leader.reference_type)
-                            == row.reference
-                    })
+                let leaders = self.character_leaders(LEADER_NAME)?;
+                let named = keyed(&leaders, u128::from(row.reference))?
                     .ok_or_else(|| {
                         format!(
                             "character {} referenced unit leader name {}",
@@ -270,7 +263,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                             }
                         )
                     })?;
-                self.effect_leader_name(named)
+                self.effect_leader_name((&*named).into())
             }
         }
     }
@@ -297,7 +290,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         else {
             return Ok(String::new());
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         let country = self.country_name(country, true)?;
         self.line(
             b"EFFECT_SET_LEADER_NATIONALITY",
@@ -319,7 +312,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character(scopes.this)? else {
             return Ok(String::new());
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         let country = if character.country as i32 <= 0 {
             String::new()
         } else {
@@ -399,7 +392,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         };
         let nationality = self.context.text.country_adjective(country)?;
-        let codename = self.effect_operative_codename(leader)?;
+        let codename = self.effect_operative_codename(&leader)?;
         let name = self.effect_resolved_leader_name(leader)?;
         self.char_native_text(
             b"EFFECT_ADD_NATIONALITY_TO_OPERATIVE",
@@ -417,11 +410,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // catalogue formats them without selecting or reserving another name.
     pub(super) fn effect_operative_codename(
         &self,
-        leader: UnitLeader<'f>,
+        leader: &UnitLeader<'f>,
     ) -> Result<String, String> {
         let field = "operative codename";
         let recorded = match leader {
-            UnitLeader::Direct(row) => row.codename,
+            UnitLeader::Direct(row) => &row.codename,
             UnitLeader::Referenced(row) => &row.codename,
         };
         let name = recorded

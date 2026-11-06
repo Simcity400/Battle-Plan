@@ -98,7 +98,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
@@ -158,7 +158,7 @@ impl Emit {
 
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         adjacent: bool,
         tag: &str,
@@ -235,7 +235,7 @@ impl Emit {
     /// any other starts one, with a break.
     fn record(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         (actor, at): (u64, usize),
         hour: i32,
         value: Option<i64>,
@@ -282,7 +282,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)
     }
 

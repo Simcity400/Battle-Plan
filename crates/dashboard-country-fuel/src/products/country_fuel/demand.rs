@@ -513,7 +513,6 @@ pub struct CountryFuelDemand;
 impl Product for CountryFuelDemand {
     const KEY: &'static str = "country-fuel-demand";
     const CONTENT_DEPENDENT: bool = true;
-    const PUBLISHED: bool = true;
     type Params = FuelAwardsParams;
     type Reply = FuelDemandReply;
     fn types() -> Vec<String> {
@@ -889,7 +888,6 @@ pub struct CountryFuelDemandStack;
 impl Product for CountryFuelDemandStack {
     const KEY: &'static str = "country-fuel-demand-stack";
     const CONTENT_DEPENDENT: bool = true;
-    const PUBLISHED: bool = true;
     type Params = FuelDemandStackParams;
     type Reply = FuelDemandStackReply;
     fn types() -> Vec<String> {
@@ -949,7 +947,6 @@ pub struct CountryFuelDemandHistory;
 impl Product for CountryFuelDemandHistory {
     const KEY: &'static str = "country-fuel-demand-history";
     const CONTENT_DEPENDENT: bool = true;
-    const PUBLISHED: bool = true;
     type Params = FuelDemandHistoryParams;
     type Reply = FuelDemandHistoryReply;
     fn types() -> Vec<String> {

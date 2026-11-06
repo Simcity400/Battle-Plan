@@ -1,4 +1,4 @@
-use dashboard_base::prepared::facts::{Facts, Limits, MemoryBudget, Namespace, Status};
+use dashboard_base::prepared::facts::{Facts, Limits, Namespace, Status};
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::Cell,
@@ -88,7 +88,6 @@ fn real_allocations_and_checkpoint_lengths_stay_flat_while_history_grows() {
     let key = store::SourceKey::capture(&recording, &[]).unwrap();
     let limits = Limits {
         write_bytes: 8192,
-        cache_bytes: 64 << 10,
         page_bytes: 4096,
     };
     let mut resident = Vec::new();
@@ -96,10 +95,8 @@ fn real_allocations_and_checkpoint_lengths_stay_flat_while_history_grows() {
     let mut checkpoint_payloads = Vec::new();
     {
         let _tracking = Tracking::new();
-        let budget = MemoryBudget::new(16 << 20);
         let mut facts = Facts::<u32, String>::new(
             Namespace::new("allocations", 1, "values").unwrap(),
-            budget.clone(),
             limits,
         )
         .unwrap();
@@ -158,7 +155,6 @@ fn real_allocations_and_checkpoint_lengths_stay_flat_while_history_grows() {
             if [0, 7, 31, 95].contains(&batch) {
                 resident.push(LIVE.load(Ordering::Relaxed));
             }
-            assert!(budget.used() <= budget.limit());
         }
     }
     assert!(
@@ -176,7 +172,7 @@ fn real_allocations_and_checkpoint_lengths_stay_flat_while_history_grows() {
     );
     assert!(
         PEAK.load(Ordering::Relaxed) - allocation_baseline < 16 << 20,
-        "actual allocation peak exceeded the fact budget"
+        "actual allocation peak grew past 16 MiB"
     );
     store.clear().unwrap();
     fs::remove_dir_all(root).unwrap();
@@ -194,15 +190,12 @@ fn retired_key_churn_does_not_create_resident_historical_sections_after_reopen()
     let key = store::SourceKey::capture(&recording, &[]).unwrap();
     let limits = Limits {
         write_bytes: 4096,
-        cache_bytes: 4096,
         page_bytes: 2048,
     };
     {
         let _tracking = Tracking::new();
-        let budget = MemoryBudget::new(32 << 20);
         let mut facts = Facts::<u32, u64>::new(
             Namespace::new("churn", 1, "careers").unwrap(),
-            budget.clone(),
             limits,
         )
         .unwrap();
@@ -215,7 +208,6 @@ fn retired_key_churn_does_not_create_resident_historical_sections_after_reopen()
         facts.checkpoint(&mut writer, 0).unwrap();
         writer = writer.commit_continue().unwrap();
         let resident = LIVE.load(Ordering::Relaxed);
-        let baseline = budget.used();
         let mut current: Vec<u32> = (0..1500).collect();
         for batch in 1..=96_u32 {
             for offset in 0..16 {
@@ -239,10 +231,9 @@ fn retired_key_churn_does_not_create_resident_historical_sections_after_reopen()
             writer = writer.commit_continue().unwrap();
             if batch % 8 == 0 {
                 drop(facts);
-                facts = Facts::restore(&mut writer, &checkpoint, budget.clone(), limits).unwrap();
+                facts = Facts::restore(&mut writer, &checkpoint, limits).unwrap();
             }
             assert_eq!(facts.active_keys(), 1500);
-            assert_eq!(budget.used(), baseline);
             let (sections, runs, files, buffer) = writer.resident_metadata();
             assert_eq!(sections, 4);
             assert!(runs <= 4 * 32);
@@ -261,7 +252,7 @@ fn retired_key_churn_does_not_create_resident_historical_sections_after_reopen()
 }
 
 #[test]
-fn large_indivisible_spill_has_no_uncharged_pack_buffer() {
+fn large_indivisible_spill_has_no_extra_pack_buffer() {
     let _serial = MEASUREMENTS.lock().unwrap_or_else(|e| e.into_inner());
     let id = uuid::Uuid::new_v4();
     let root = std::env::temp_dir().join(format!("private-fact-spill-{id}"));
@@ -275,15 +266,12 @@ fn large_indivisible_spill_has_no_uncharged_pack_buffer() {
         let baseline = LIVE.load(Ordering::Relaxed);
         PEAK.store(baseline, Ordering::Relaxed);
         let limit = (16 << 20) + (64 << 10);
-        let budget = MemoryBudget::new(limit);
         let limits = Limits {
             write_bytes: 128,
-            cache_bytes: 0,
             page_bytes: 128,
         };
         let mut facts = Facts::<u32, String>::new(
             Namespace::new("tight", 1, "names").unwrap(),
-            budget.clone(),
             limits,
         )
         .unwrap();
@@ -294,10 +282,9 @@ fn large_indivisible_spill_has_no_uncharged_pack_buffer() {
         facts.retire(&mut writer, &1).unwrap();
         assert_eq!(facts.active_keys(), 0);
         assert_eq!(writer.resident_metadata().3, 0);
-        assert!(budget.peak() <= limit);
         assert!(
             PEAK.load(Ordering::Relaxed) - baseline <= limit,
-            "actual spill allocation exceeded supplied budget"
+            "actual spill allocation held more than the value spilled"
         );
         writer.commit().unwrap();
     }
@@ -317,15 +304,12 @@ fn commit_peak_stays_bounded_while_a_fact_history_grows() {
     let key = store::SourceKey::capture(&recording, &[]).unwrap();
     {
         let _tracking = Tracking::new();
-        let budget = MemoryBudget::new(1 << 20);
         let limits = Limits {
             write_bytes: 4096,
-            cache_bytes: 4096,
             page_bytes: 2048,
         };
         let mut facts = Facts::<u32, u64>::new(
             Namespace::new("compaction", 1, "latest").unwrap(),
-            budget.clone(),
             limits,
         )
         .unwrap();
@@ -339,19 +323,16 @@ fn commit_peak_stays_bounded_while_a_fact_history_grows() {
                     .unwrap();
             }
             facts.checkpoint(&mut writer, batch as u64).unwrap();
-            let credit = budget.admit(scratch.len()).unwrap();
             let baseline = LIVE.load(Ordering::Relaxed);
             PEAK.store(baseline, Ordering::Relaxed);
             writer = writer.commit_continue_with_scratch(&mut scratch).unwrap();
             let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
-            drop(credit);
             let (_, _, files, buffer) = writer.resident_metadata();
             assert_eq!(buffer, 0);
             assert!(
                 peak <= (128 << 10) + files * 4096,
                 "commit peak follows historical ranges: batch={batch}, peak={peak}, files={files}"
             );
-            assert!(budget.peak() <= budget.limit());
         }
         let mut reader = facts.reader(&mut writer).unwrap();
         assert!(reader.at(&1, 0).unwrap().is_some());
@@ -374,7 +355,6 @@ fn pack_relocation_and_scattered_rewrites_do_not_materialize_historical_entries(
     {
         use std::io::Read;
         let _tracking = Tracking::new();
-        let budget = MemoryBudget::new(64 << 10);
         let mut scratch = [0; 8192];
         let mut writer = store.replace(key.clone()).unwrap();
         writer
@@ -394,12 +374,10 @@ fn pack_relocation_and_scattered_rewrites_do_not_materialize_historical_entries(
                     writer.write_at("pages", range, &b"changed"[..]).unwrap();
                 }
             }
-            let credit = budget.admit(scratch.len()).unwrap();
             let baseline = LIVE.load(Ordering::Relaxed);
             PEAK.store(baseline, Ordering::Relaxed);
             writer = writer.commit_continue_with_scratch(&mut scratch).unwrap();
             let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
-            drop(credit);
             let (_, _, files, buffer) = writer.resident_metadata();
             assert_eq!(buffer, 0);
             assert!(

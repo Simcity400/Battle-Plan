@@ -21,19 +21,16 @@ pub(super) fn variant(
         .filter(|handle| *handle != 0)
 }
 
-pub(super) fn group(
-    frame: &DecodedFrame,
+pub(super) fn group<F: Tables + ?Sized>(
+    frame: &Frame<'_, F>,
     naming: &rows::ShipNamingOperands,
     model: Option<&rows::ShipModelRow>,
 ) -> Result<Option<Vec<u8>>, String> {
     let variant = variant(naming, model)
         .ok_or("Ship naming group unavailable: no recorded naming or selected pool variant")?;
-    let definition = find(
-        frame.complete::<tables::VariantDefinitions>().ok(),
-        variant,
-        |row| row.id,
-    )
-    .ok_or_else(|| format!("Ship naming variant {variant}: definition not recorded"))?;
+    let definition = frame
+        .get::<tables::VariantDefinitions>(variant)
+        .ok_or_else(|| format!("Ship naming variant {variant}: definition not recorded"))?;
     let design = definition.design.require("VariantDefinitions.design")?;
     Ok(design.division_names_group.clone())
 }

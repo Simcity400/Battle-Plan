@@ -30,8 +30,8 @@ fn synthetic_hour(inputs: &CounterInputs<'_>, frame: &DecodedFrame) -> HourTable
         None,
         None,
         None,
-        &type_tint::Memo::new(type_tint::TABLES, 1),
-        &MissionMemo::new(1),
+        &type_tint::Memo::new(type_tint::TABLES),
+        &MissionMemo::new(),
         moves.movement_reads(),
         Err("unreached synthetic naval topology".into()),
     )

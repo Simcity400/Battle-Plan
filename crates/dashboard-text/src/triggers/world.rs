@@ -5,6 +5,7 @@ use crate::triggers::Failure;
 use crate::triggers::refusal::refused;
 
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, OnceLock},
@@ -15,12 +16,13 @@ use installed_content_core::{
     tag_aliases::TagAliases, trigger_keys::TriggerNames, unit_leader::Traits,
 };
 use replay_data::{
-    Hour, rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::CharacterRow,
-    rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
-    rows::CountryRow, rows::InvasionPreparationRow, rows::Recorded, rows::ScriptVariablesRow,
-    rows::StateRow, rows::TableSchema, rows::tables,
+    Hour, rows::CharacterRow, rows::CountryAppearanceRow, rows::CountryCounterInputRow,
+    rows::CountryLinkRow, rows::CountryRow, rows::InvasionPreparationRow, rows::LexicalTokenRow,
+    rows::ProvinceRow, rows::Recorded, rows::RowCodec, rows::ScriptVariablesRow, rows::StateRow,
+    rows::TableSchema, rows::column, rows::mask, rows::tables,
 };
-use replay_frame::frame::{Leader, OperandStatus, Province, Provinces};
+use dashboard_world::{Found, Lexicon};
+use replay_frame::frame::{Columns, HourFrame, Leader, OperandStatus, Province, Rowset};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 
 use super::{Eval, Scope, ongoing, variables::Store};
@@ -37,8 +39,8 @@ type Index<T> = OnceLock<super::refusal::Resolved<Result<T, Failure>>>;
 
 type OperandLoader<'a, T> = (
     &'a dyn PreparedContent,
-    &'a dyn replay_frame::frame::DecodedSource,
-    fn(&'a dyn PreparedContent, &'a dyn replay_frame::frame::DecodedSource) -> T,
+    HourFrame<'a>,
+    fn(&'a dyn PreparedContent, HourFrame<'a>) -> T,
 );
 
 /// An operand retains its authored result and runs its reader only on first use.
@@ -46,11 +48,12 @@ pub struct PreparedOperand<'a, T> {
     value: OnceLock<T>,
     load: Option<OperandLoader<'a, T>>,
 }
+
 impl<'a, T> PreparedOperand<'a, T> {
     fn lazy(
         content: &'a dyn PreparedContent,
-        frame: &'a dyn replay_frame::frame::DecodedSource,
-        load: fn(&'a dyn PreparedContent, &'a dyn replay_frame::frame::DecodedSource) -> T,
+        frame: HourFrame<'a>,
+        load: fn(&'a dyn PreparedContent, HourFrame<'a>) -> T,
     ) -> Self {
         Self {
             value: OnceLock::new(),
@@ -58,6 +61,7 @@ impl<'a, T> PreparedOperand<'a, T> {
         }
     }
 }
+
 impl<T> From<T> for PreparedOperand<'_, T> {
     fn from(value: T) -> Self {
         Self {
@@ -66,6 +70,7 @@ impl<T> From<T> for PreparedOperand<'_, T> {
         }
     }
 }
+
 impl<T> std::ops::Deref for PreparedOperand<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
@@ -96,15 +101,21 @@ pub(crate) trait PreparedContent: Send + Sync {
     fn invasion_days(&self) -> Result<i32, &str>;
     fn geography(&self) -> GeographyInputs<'_>;
 }
+
 #[path = "world/folds.rs"]
 mod folds;
 use folds::Folds;
 thread_local! {
-    /// This thread's latest folds by the LexicalTokens allocation they were read from. The
-    /// table is static, so every hour's World of a walk shares one until it is read again;
-    /// an identity matches no other allocation. Each thread keeps its own, so concurrent
-    /// walks never push out each other's.
+    /// This thread's latest folds by the decoded LexicalTokens view they were read from: the
+    /// view, and the one read before.
     static FOLDS: RefCell<Vec<(ViewIdentity, Arc<Folds>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The lexer folds a World finds tokens by: read from its frame, or the walk's own
+/// ([`World::with_lexicon`]) over the rows its frame reads.
+pub(in crate::triggers) enum Names<'a> {
+    Own(Arc<Folds>),
+    Shared(&'a Lexicon, Columns<'a>),
 }
 /// An index of rows joined through `CountryLinks`, and why some row's link
 /// did not resolve: an answer the index does not hold is then unknown, since
@@ -144,32 +155,39 @@ pub struct ReferencedRows<T> {
     table: replay_data::rows::TableId,
     unavailable: Option<Failure>,
 }
+
 impl<T> ReferencedRows<T> {
     fn enumerate(&self) {
         if let Some(failure) = &self.unavailable {
             failure.resolution_failed();
         }
     }
+
     pub fn iter(&self) -> std::collections::btree_map::Iter<'_, u32, T> {
         self.enumerate();
         self.rows.iter()
     }
+
     pub fn values(&self) -> std::collections::btree_map::Values<'_, u32, T> {
         self.enumerate();
         self.rows.values()
     }
+
     pub fn keys(&self) -> std::collections::btree_map::Keys<'_, u32, T> {
         self.enumerate();
         self.rows.keys()
     }
+
     pub fn len(&self) -> usize {
         self.enumerate();
         self.rows.len()
     }
+
     pub fn is_empty(&self) -> bool {
         self.enumerate();
         self.rows.is_empty()
     }
+
     pub fn get(&self, id: &u32) -> Option<&T> {
         super::refusal::reference(self.rows.get(id), *id != 0, || {
             self.unavailable.clone().unwrap_or_else(|| {
@@ -180,16 +198,19 @@ impl<T> ReferencedRows<T> {
             })
         })
     }
+
     pub fn contains_key(&self, id: &u32) -> bool {
         self.get(id).is_some()
     }
 }
+
 impl<T> std::ops::Deref for ReferencedRows<T> {
     type Target = BTreeMap<u32, T>;
     fn deref(&self) -> &Self::Target {
         &self.rows
     }
 }
+
 impl<'m, T> IntoIterator for &'m ReferencedRows<T> {
     type Item = (&'m u32, &'m T);
     type IntoIter = std::collections::btree_map::Iter<'m, u32, T>;
@@ -243,18 +264,17 @@ struct CountryRows {
 }
 
 impl CountryRows {
-    /// `rows` by `country`; None when the countries do not ascend.
-    fn new<R>(
-        rows: &[R],
-        country: impl Fn(&R) -> u32,
+    /// Rows by their `countries` in table order; None when the countries do not ascend.
+    fn new(
+        countries: impl Iterator<Item = Result<u32, Failure>>,
         linked: impl Fn(u32) -> bool,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>, Failure> {
         let mut runs: Vec<(u32, usize, usize)> = Vec::new();
-        for (at, row) in rows.iter().enumerate() {
-            let country = country(row);
+        for (at, country) in countries.enumerate() {
+            let country = country?;
             match runs.last_mut() {
                 Some(run) if run.0 == country => run.2 = at + 1,
-                Some(run) if run.0 > country => return None,
+                Some(run) if run.0 > country => return Ok(None),
                 _ => runs.push((country, at, at + 1)),
             }
         }
@@ -264,7 +284,7 @@ impl CountryRows {
             .filter(|&country| !linked(country));
         let first = unlinked.next();
         let unlinked = first.map(|first| (first, unlinked.last().unwrap_or(first)));
-        Some(Self { runs, unlinked })
+        Ok(Some(Self { runs, unlinked }))
     }
 
     /// The rows of `country`.
@@ -285,6 +305,96 @@ impl CountryRows {
 /// their raw scope-country references and state IDs.
 type Modifiers<'a> = BTreeMap<(u32, &'a [u8]), Vec<(u32, i32)>>;
 
+/// A recorded state's fields the hour's triggers read by its id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct State {
+    pub id: u32,
+    pub owner: u32,
+    pub controller: u32,
+    pub continent: Recorded<Option<u32>>,
+}
+
+/// The fields of the core tables' rows [`World`] reads, by table.
+const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot"]);
+const TAG: usize = column::<CountryRow>("tag");
+const PROVINCE: u64 = mask::<ProvinceRow>(&[
+    "state",
+    "owner",
+    "controller",
+    "victory_points",
+    "controller_area",
+]);
+const STATE: u64 = mask::<StateRow>(&["owner", "controller", "continent"]);
+const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
+const SPAN: u64 = mask::<replay_data::rows::WarRelationRow>(&["start_hour", "end_hour"]);
+const FOCUS_TOKEN: usize = column::<replay_data::rows::CompletedFocusRow>("token");
+const RULING: u64 = mask::<replay_data::rows::PoliticalPartyRow>(&["is_ruling"]);
+const PARTY_TOKEN: usize = column::<replay_data::rows::PoliticalPartyRow>("token");
+const PARTY_LEADER: u64 =
+    mask::<replay_data::rows::PartyLeaderRow>(&["character", "leader_id", "role"]);
+const COUNTRY_CHARACTER: u64 = mask::<replay_data::rows::CountryCharacterRow>(&["character"]);
+const IDEA_TOKEN: usize = column::<replay_data::rows::ActiveIdeaRow>("token");
+const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
+
+/// `rows`' failure to build a row of `T`, refused where it is reached.
+fn walked<T: TableSchema>(why: std::io::Error) -> Failure {
+    super::refusal::input_error(T::ID, why)
+}
+
+/// Each row of `rows`, a walked row's failure to build refused.
+fn each<'a, T: TableSchema>(
+    rows: Rowset<'a, T::Row>,
+) -> impl DoubleEndedIterator<Item = Result<Cow<'a, T::Row>, Failure>> + 'a {
+    rows.iter().map(|row| row.map_err(walked::<T>))
+}
+
+/// A country's controlled or owned states as CountryCounterInputs records them.
+fn states_of(inputs: &CountryCounterInputRow, controlled: bool) -> &Recorded<Option<Vec<u32>>> {
+    if controlled {
+        &inputs.controlled_states
+    } else {
+        &inputs.owned_states
+    }
+}
+
+/// [`states_of`]'s recorded list; empty where it holds none.
+fn state_list(inputs: &CountryCounterInputRow, controlled: bool) -> &[u32] {
+    match states_of(inputs, controlled) {
+        Recorded::Value(Some(states)) => states.as_slice(),
+        _ => &[],
+    }
+}
+
+/// `row`'s part `field`, borrowed where the row is.
+fn part<'a, R: Clone, T: ToOwned + ?Sized>(
+    row: Cow<'a, R>,
+    field: impl for<'r> Fn(&'r R) -> &'r T,
+) -> Cow<'a, T> {
+    match row {
+        Cow::Borrowed(row) => Cow::Borrowed(field(row)),
+        Cow::Owned(row) => Cow::Owned(field(&row).to_owned()),
+    }
+}
+
+/// The one row of `rows`; None where it holds another count.
+fn only<'a, T: TableSchema>(
+    rows: Rowset<'a, T::Row>,
+) -> Result<Option<Cow<'a, T::Row>>, Failure> {
+    if rows.len() != 1 {
+        return Ok(None);
+    }
+    each::<T>(rows).next().transpose()
+}
+
+/// The row of `rows` keyed `key`, a walked row's failure to build refused.
+fn keyed<'a, T: TableSchema>(
+    rows: &Rowset<'a, T::Row>,
+    key: u128,
+) -> Result<Option<Cow<'a, T::Row>>, Failure> {
+    rows.get(key).map_err(walked::<T>)
+}
+
 /// Native ideology IDs/tokens and each country's party membership.
 struct PoliticalParties<'a> {
     ruling: BTreeMap<u32, u32>,
@@ -296,92 +406,64 @@ struct PoliticalParties<'a> {
 
 /// The core tables' rows: CountryLinks, Countries, Provinces and States.
 type CoreRows<'f> = (
-    &'f [CountryLinkRow],
-    &'f [CountryRow],
-    Provinces<'f>,
-    &'f [StateRow],
+    Rowset<'f, CountryLinkRow>,
+    Rowset<'f, CountryRow>,
+    Rowset<'f, ProvinceRow>,
+    Rowset<'f, StateRow>,
 );
+
+/// Why `table` (`name`) is not complete at `status`, if it is not; a table of another layout's
+/// rows holds none, without a gap.
+fn core_reason(status: OperandStatus<'_>, name: &str) -> Option<String> {
+    match status {
+        OperandStatus::Complete | OperandStatus::WrongLayout => None,
+        OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => {
+            Some(format!("{name} is truncated ({missing} rows missing)"))
+        }
+        OperandStatus::Unavailable(reason) => Some(format!("{name} is unavailable: {reason}")),
+        OperandStatus::NotRecorded(mode) => {
+            Some(format!("{name} is not recorded in a {mode} recording"))
+        }
+    }
+}
 
 /// The core tables' rows and why each, in their order, is not complete this
 /// hour: a truncated table's rows are exact; a row it lacks is unknown.
-fn core_tables(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> (CoreRows<'_>, Vec<(&'static str, Failure)>) {
+fn core_tables(frame: HourFrame<'_>) -> (CoreRows<'_>, Vec<(&'static str, Failure)>) {
     fn rows<'f, T: TableSchema>(
-        frame: &'f dyn replay_frame::frame::DecodedSource,
+        frame: HourFrame<'f>,
+        mask: u64,
         name: &'static str,
         gaps: &mut Vec<(&'static str, Failure)>,
-    ) -> &'f [T::Row] {
-        match frame.view(T::ID.index()) {
-            TableView::Complete(rows) => rows.rows::<T>().unwrap_or_default(),
-            TableView::Truncated { rows, missing } => {
-                gaps.push((
-                    name,
-                    Failure::input(
-                        T::ID,
-                        "",
-                        None,
-                        format!("{name} is truncated ({missing} rows missing)"),
-                    ),
-                ));
-                rows.rows::<T>().unwrap_or_default()
-            }
-            TableView::Unavailable { reason } => {
-                gaps.push((
-                    name,
-                    Failure::input(T::ID, "", None, format!("{name} is unavailable: {reason}")),
-                ));
-                &[]
-            }
-            TableView::NotRecorded { mode } => {
-                gaps.push((
-                    name,
-                    Failure::input(
-                        T::ID,
-                        "",
-                        None,
-                        format!("{name} is not recorded in a {mode} recording"),
-                    ),
-                ));
-                &[]
-            }
+    ) -> Rowset<'f, T::Row> {
+        if let Some(reason) = core_reason(frame.status(T::ID), name) {
+            gaps.push((name, Failure::input(T::ID, "", None, reason)));
         }
+        frame.held::<T>(mask)
     }
     let mut gaps = Vec::new();
     let core = (
-        rows::<tables::CountryLinks>(frame, "CountryLinks", &mut gaps),
-        rows::<tables::Countries>(frame, "Countries", &mut gaps),
-        province_core(frame, &mut gaps),
-        rows::<tables::States>(frame, "States", &mut gaps),
+        rows::<tables::CountryLinks>(frame, LINK, "CountryLinks", &mut gaps),
+        rows::<tables::Countries>(frame, COUNTRY, "Countries", &mut gaps),
+        rows::<tables::Provinces>(frame, PROVINCE, "Provinces", &mut gaps),
+        rows::<tables::States>(frame, STATE, "States", &mut gaps),
     );
     (core, gaps)
 }
 
-fn province_core<'a>(
-    frame: &'a dyn replay_frame::frame::DecodedSource,
-    gaps: &mut Vec<(&'static str, Failure)>,
-) -> Provinces<'a> {
-    let reason = match frame.province_status() {
-        OperandStatus::Complete | OperandStatus::WrongLayout => None,
-        OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => {
-            Some(format!("Provinces is truncated ({missing} rows missing)"))
-        }
-        OperandStatus::Unavailable(reason) => Some(format!("Provinces is unavailable: {reason}")),
-        OperandStatus::NotRecorded(mode) => {
-            Some(format!("Provinces is not recorded in a {mode} recording"))
-        }
-    };
-    if let Some(reason) = reason {
-        gaps.push((
-            "Provinces",
-            Failure::input(tables::Provinces::ID, "", None, reason),
-        ));
-    }
-    frame.province_rows()
-}
-
 /// [`World::core_gap`] of the hour, without building its indexes.
 pub fn core_gap(frame: &dyn replay_frame::frame::RecordedSource) -> Option<String> {
+    core_gap_of(|table| frame.status(table))
+}
+
+/// [`core_gap`] of any frame's tables, a walk's views among them.
+pub fn core_gap_in(frame: HourFrame<'_>) -> Option<String> {
+    core_gap_of(|table| frame.status(table))
+}
+
+fn core_gap_of<'f>(
+    status: impl Fn(replay_data::rows::TableId) -> OperandStatus<'f>,
+) -> Option<String> {
     use replay_data::rows::TableId;
     let gaps = super::refusal::deferred(|| {
         [
@@ -392,18 +474,7 @@ pub fn core_gap(frame: &dyn replay_frame::frame::RecordedSource) -> Option<Strin
         ]
         .into_iter()
         .filter_map(|(table, name)| {
-            let reason = match frame.status(table) {
-                OperandStatus::Complete | OperandStatus::WrongLayout => return None,
-                OperandStatus::Truncated(missing)
-                | OperandStatus::TruncatedWrongLayout(missing) => {
-                    format!("{name} is truncated ({missing} rows missing)")
-                }
-                OperandStatus::Unavailable(reason) => format!("{name} is unavailable: {reason}"),
-                OperandStatus::NotRecorded(mode) => {
-                    format!("{name} is not recorded in a {mode} recording")
-                }
-            };
-            Some(Failure::input(table, "", None, reason))
+            core_reason(status(table), name).map(|reason| Failure::input(table, "", None, reason))
         })
         .collect::<Vec<_>>()
     });
@@ -468,7 +539,7 @@ impl<'a> GeographyInputs<'a> {
 
 /// One hour's trigger inputs, each built on first use.
 pub struct World<'a> {
-    frame: &'a dyn replay_frame::frame::DecodedSource,
+    frame: HourFrame<'a>,
     prepared_content: Option<&'a dyn PreparedContent>,
     hour: Hour,
     /// Which of the tables the indexes below are built from is not complete
@@ -477,19 +548,19 @@ pub struct World<'a> {
     core_gaps: Vec<(&'static str, Failure)>,
     /// The hour's CountryLinks rows, ascending by raw country reference,
     /// and each reference's canonical slot, built when first read whole.
-    link_rows: &'a [CountryLinkRow],
+    link_rows: Rowset<'a, CountryLinkRow>,
     links: OnceLock<BTreeMap<u32, u32>>,
     /// The hour's Countries rows, and each canonical slot's country (the
     /// last row of the slot): its own raw id, as script flags key it, and
     /// its tag, built when first read.
-    country_rows: &'a [CountryRow],
-    countries: OnceLock<BTreeMap<u32, (u32, &'a [u8])>>,
+    country_rows: Rowset<'a, CountryRow>,
+    countries: Index<BTreeMap<u32, (u32, &'a [u8])>>,
     /// The hour's Provinces and States rows, and each by id, built when
     /// first read.
-    province_rows: Provinces<'a>,
-    state_rows: &'a [StateRow],
+    province_rows: Rowset<'a, ProvinceRow>,
+    state_rows: Rowset<'a, StateRow>,
     provinces: OnceLock<ReferencedRows<Province>>,
-    states: OnceLock<ReferencedRows<&'a StateRow>>,
+    states: OnceLock<ReferencedRows<State>>,
     /// Content: every state's provinces in its own order, and impassability.
     state_provinces: PreparedOperand<'a, &'a BTreeMap<u32, Vec<u32>>>,
     /// Why authored state templates are unread, if they are.
@@ -526,9 +597,11 @@ pub struct World<'a> {
     /// Content: the tag alias database, which the hour's scopes consult.
     aliases: &'a Arc<TagAliases>,
     /// The hour's scope facts ([`RecordedScopes`]).
-    recorded: OnceLock<RecordedScopes>,
-    /// The lexer folds ([`FOLDS`]).
-    names: Index<Arc<Folds>>,
+    recorded: OnceLock<RecordedScopes<'a>>,
+    /// The lexer folds ([`Names`]).
+    names: Index<Names<'a>>,
+    /// The walk's lexer folds, for a walked frame.
+    lexicon: Option<&'a Lexicon>,
     literals: Index<literals::Lookup<'a>>,
     factions: Index<Linked<BTreeMap<u32, u64>>>,
     wars: Index<Linked<BTreeSet<(u32, u32)>>>,
@@ -537,11 +610,11 @@ pub struct World<'a> {
     /// Each canonical slot's raw country references, ascending.
     slot_links: OnceLock<BTreeMap<u32, Vec<u32>>>,
     /// The country-keyed tables' rows by country, where they ascend.
-    focus_rows: OnceLock<Option<CountryRows>>,
-    party_rows: OnceLock<Option<CountryRows>>,
-    party_leader_rows: OnceLock<Option<CountryRows>>,
-    character_rows: OnceLock<Option<CountryRows>>,
-    idea_rows: OnceLock<Option<CountryRows>>,
+    focus_rows: Index<Option<CountryRows>>,
+    party_rows: Index<Option<CountryRows>>,
+    party_leader_rows: Index<Option<CountryRows>>,
+    character_rows: Index<Option<CountryRows>>,
+    idea_rows: Index<Option<CountryRows>>,
     techs: Index<Techs>,
     projects: Index<Linked<BTreeSet<(u32, u32)>>>,
     political_parties: Index<PoliticalParties<'a>>,
@@ -555,14 +628,10 @@ pub struct World<'a> {
     state_members: Index<BTreeMap<u32, Vec<u32>>>,
     /// Controller-area membership totals, built once for the recorded hour.
     controller_area_sizes: Index<BTreeMap<u32, i32>>,
-    /// Each raw country's stored counts and native ordered rosters.
-    counter_inputs: Index<BTreeMap<u32, &'a CountryCounterInputRow>>,
     /// Nonempty owned states whose controller is their owner, by canonical slot.
     owned_controlled_states: Index<BTreeMap<u32, i32>>,
     /// Nonzero cached opinions by directed canonical country pair.
     opinions: Index<Linked<BTreeMap<(u32, u32), i32>>>,
-    /// Province and state building levels by (location, type).
-    building_levels: [Index<BTreeMap<(u32, u32), i16>>; 2],
     /// The state resource operands (`crate::state_resources`), shared with
     /// the tactic triggers.
     resource_amounts: PreparedOperand<'a, Result<StateResources<'a>, &'a str>>,
@@ -570,32 +639,15 @@ pub struct World<'a> {
     /// its theatres' regular groups: the order's active byte
     /// and path.
     invasions: Index<Linked<Invasions<'a>>>,
-    /// Order payloads and primary roots, indexed only when a country's
-    /// native traversal reaches them. Their refusals stay with that country.
-    army_orders: Index<BTreeMap<(u64, u32), &'a ArmyOrderRow>>,
-    army_order_plans: Index<BTreeMap<(u64, u32), &'a ArmyOrderPlanRow>>,
-    group_order_roots: Index<BTreeMap<u64, &'a [u32]>>,
     /// Content: the script constants a `constant:` operand reads, or why
     /// they are unread.
     script_constants: PreparedOperand<'a, Result<&'a Constants, &'a str>>,
-    /// Naval invasion orders' preparation operands by `(owner group, instance)`.
-    invasion_preparations: Index<BTreeMap<(u64, u32), &'a InvasionPreparationRow>>,
     /// Content: `NNavy.NAVAL_INVASION_PREPARE_DAYS` as the game reads it.
     invasion_prepare_days: PreparedOperand<'a, Result<i32, &'a str>>,
-    /// Unit leaders by their reference (`id << 32 | reference type`, the
-    /// raid target's handle).
-    leaders: Index<BTreeMap<u64, Leader<'a>>>,
-    /// Characters by their id.
-    characters: Index<BTreeMap<u32, &'a CharacterRow>>,
     /// Content: the character templates, or why unread.
     leader_roles: PreparedOperand<'a, Result<&'a LeaderRoles, &'a str>>,
-    /// Each canonical country's appearance row (`CountryAppearance`).
-    appearance: Index<Linked<BTreeMap<u32, &'a CountryAppearanceRow>>>,
-    /// Each state's cores, raw country references.
-    cores: Index<BTreeMap<u32, &'a [u32]>>,
-    /// Each state's claims, raw country references; `None` when the
-    /// recording holds no claims.
-    claims: Index<BTreeMap<u32, Option<&'a [u32]>>>,
+    /// Each canonical country's appearance row's key (`CountryAppearance`).
+    appearance: Index<Linked<BTreeMap<u32, u128>>>,
     template_names: Option<TemplateNames<'a>>,
 }
 
@@ -785,70 +837,87 @@ pub struct PartyLeader {
     pub id: i32,
 }
 
-pub(super) fn lexical(
-    frame: &dyn replay_frame::frame::RecordedSource,
-) -> Result<replay_frame::frame::Rows<'_, replay_data::rows::LexicalTokenRow>, Failure> {
-    frame.lexical().map_err(|error| {
-        let failure = Failure::input(tables::LexicalTokens::ID, "", None, error.to_string());
-        failure.resolution_failed();
-        failure
-    })
+/// The fields of a UnitLeaders row a [`Leader`] holds.
+pub(super) const LEADER: u64 = mask::<replay_data::rows::UnitLeaderRow>(Leader::FIELDS);
+
+/// The complete LexicalTokens, each row holding its literal.
+pub(super) fn lexical(frame: HourFrame<'_>) -> Result<Rowset<'_, LexicalTokenRow>, Failure> {
+    table::<tables::LexicalTokens>(frame, LITERAL)
 }
 
+/// The literal of lexer token `token`, borrowed where the frame holds it.
+pub(super) fn literal<'a>(
+    lexical: &Rowset<'a, LexicalTokenRow>,
+    token: u32,
+) -> Result<Option<&'a [u8]>, Failure> {
+    lexical
+        .text(u128::from(token), |row| &row.literal, LITERAL_COLUMN)
+        .map_err(walked::<tables::LexicalTokens>)
+}
+
+/// `T` when complete, each row holding at least the fields `mask` names.
 pub(super) fn table<T: TableSchema>(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<&[T::Row], Failure> {
-    frame.complete::<T>().map_err(|error| {
+    frame: HourFrame<'_>,
+    mask: u64,
+) -> Result<Rowset<'_, T::Row>, Failure> {
+    frame.complete::<T>(mask).map_err(|error| {
         let failure = Failure::input(T::ID, "", None, error.to_string());
         failure.resolution_failed();
         failure
     })
 }
 
+/// The complete Characters, each row holding at least the fields `mask` names.
 pub(super) fn characters(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<replay_frame::frame::Rows<'_, CharacterRow>, Failure> {
+    frame: HourFrame<'_>,
+    mask: u64,
+) -> Result<Rowset<'_, CharacterRow>, Failure> {
     frame
-        .characters()
+        .complete::<tables::Characters>(mask)
         .map_err(|error| super::refusal::input_error(tables::Characters::ID, error))
 }
 
-pub(super) fn provinces(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<Provinces<'_>, Failure> {
+/// The complete Provinces, each row holding the fields a [`Province`] holds.
+pub(super) fn provinces(frame: HourFrame<'_>) -> Result<Rowset<'_, ProvinceRow>, Failure> {
     frame
-        .provinces()
+        .complete::<tables::Provinces>(PROVINCE)
         .map_err(|error| super::refusal::input_error(tables::Provinces::ID, error))
 }
 
+/// Each province of the complete Provinces, in id order.
+pub(super) fn province_values(
+    frame: HourFrame<'_>,
+) -> Result<impl Iterator<Item = Result<Province, Failure>> + '_, Failure> {
+    Ok(each::<tables::Provinces>(provinces(frame)?).map(|row| row.map(|row| Province::from(&*row))))
+}
+
+/// The complete UnitLeaders, each row holding the fields a [`Leader`] holds.
 pub(super) fn leaders(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<replay_frame::frame::Leaders<'_>, Failure> {
-    frame.leaders().map_err(|error| {
-        let failure = Failure::input(tables::UnitLeaders::ID, "", None, error.to_string());
-        failure.resolution_failed();
-        failure
-    })
+    frame: HourFrame<'_>,
+) -> Result<Rowset<'_, replay_data::rows::UnitLeaderRow>, Failure> {
+    table::<tables::UnitLeaders>(frame, LEADER)
 }
 
 /// A present row in a truncated view remains exact. Only the lookup that
 /// cannot find its required row creates a refusal, retaining native last-row order.
-fn required_row<T: TableSchema>(
-    frame: &dyn replay_frame::frame::DecodedSource,
+fn required_row<'a, T: TableSchema>(
+    frame: HourFrame<'a>,
+    mask: u64,
     scope: Option<Store>,
     matches: impl Fn(&T::Row) -> bool,
     message: String,
-) -> Result<&T::Row, Failure> {
-    let view = frame.view(T::ID.index());
-    let (rows, complete) = match view {
-        TableView::Complete(rows) => (rows.rows::<T>().unwrap_or_default(), true),
-        TableView::Truncated { rows, .. } => (rows.rows::<T>().unwrap_or_default(), false),
-        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => (&[][..], false),
-    };
-    rows.iter()
-        .rev()
-        .find(|row| matches(row))
-        .ok_or_else(|| Failure::input(T::ID, "", if complete { scope } else { None }, message))
+) -> Result<Cow<'a, T::Row>, Failure> {
+    let complete = matches!(
+        frame.status(T::ID),
+        OperandStatus::Complete | OperandStatus::WrongLayout
+    );
+    for row in each::<T>(frame.held::<T>(mask)).rev() {
+        let row = row?;
+        if matches(&row) {
+            return Ok(row);
+        }
+    }
+    Err(Failure::input(T::ID, "", if complete { scope } else { None }, message))
 }
 
 /// A recorded query of the hour's world ([`super::inputs`]): its method and arguments.
@@ -971,16 +1040,17 @@ impl World<'_> {
             Query::IndustrialOrganisationUnlocked(reference) => super::inputs::digest_debug(
                 &self
                     .organisation_details(*reference)
+                    .as_ref()
                     .map(|row| &row.unlocked),
             ),
             Query::IndustrialOrganisationPolicies(reference) => {
                 super::inputs::digest_debug(&self.organisation_policies_unrecorded(*reference))
             }
             Query::IndustrialOrganisationFlags(reference) => super::inputs::digest_debug(
-                &self.organisation_details(*reference).map(|row| &row.flags),
+                &self.organisation_details(*reference).as_ref().map(|row| &row.flags),
             ),
             Query::IndustrialOrganisationTasks(reference) => super::inputs::digest_debug(
-                &self.organisation_details(*reference).map(|row| &row.tasks),
+                &self.organisation_details(*reference).as_ref().map(|row| &row.tasks),
             ),
             Query::Clock => super::inputs::digest(&self.hour),
             Query::Slot(raw) => super::inputs::digest(&self.slot_unrecorded(*raw)),
@@ -1144,7 +1214,7 @@ impl<'a> World<'a> {
     }
 
     fn table_fresh_unrecorded(&self, table: replay_data::rows::TableId) -> Result<(), Failure> {
-        if self.frame.sampled_at(table.index()) == Some(self.frame.hour()) {
+        if self.frame.sampled_at(table) == Some(self.frame.hour()) {
             Ok(())
         } else {
             Err(Failure::input(
@@ -1169,9 +1239,9 @@ impl<'a> World<'a> {
     fn table_status_unrecorded(&self, id: replay_data::rows::TableId) -> Result<(), Failure> {
         use replay_data::rows::TableId;
         match id {
-            TableId::Countries => table::<tables::Countries>(self.frame).map(drop),
-            TableId::CountryLinks => table::<tables::CountryLinks>(self.frame).map(drop),
-            TableId::States => table::<tables::States>(self.frame).map(drop),
+            TableId::Countries => table::<tables::Countries>(self.frame, 0).map(drop),
+            TableId::CountryLinks => table::<tables::CountryLinks>(self.frame, 0).map(drop),
+            TableId::States => table::<tables::States>(self.frame, 0).map(drop),
             _ => unreachable!("only the core tables' completeness is queried"),
         }
     }
@@ -1186,10 +1256,9 @@ impl<'a> World<'a> {
     }
 
     fn country_slots_unrecorded(&self) -> Result<Vec<u32>, Failure> {
-        let mut slots: Vec<u32> = table::<tables::Countries>(self.frame)?
-            .iter()
-            .map(|row| row.canonical_slot)
-            .collect();
+        let mut slots = each::<tables::Countries>(table::<tables::Countries>(self.frame, COUNTRY)?)
+            .map(|row| row.map(|row| row.canonical_slot))
+            .collect::<Result<Vec<u32>, Failure>>()?;
         slots.sort_unstable();
         Ok(slots)
     }
@@ -1203,12 +1272,11 @@ impl<'a> World<'a> {
     }
 
     fn state_ids_unrecorded(&self) -> Result<Vec<u32>, Failure> {
-        let mut ids: Vec<u32> = table::<tables::States>(self.frame)?
-            .iter()
-            .map(|row| row.id)
-            .collect();
-        ids.sort_unstable();
-        Ok(ids)
+        // States are keyed by id: its keys are its ids, ascending.
+        Ok(table::<tables::States>(self.frame, 0)?
+            .keys()
+            .map(|key| key as u32)
+            .collect())
     }
 
     /// A recorded state's native continent token.
@@ -1220,7 +1288,7 @@ impl<'a> World<'a> {
     }
 
     fn state_continent_token_unrecorded(&self, state: u32) -> Result<u32, Failure> {
-        table::<tables::States>(self.frame)?;
+        table::<tables::States>(self.frame, 0)?;
         let row = self
             .state_map()
             .get(&state)
@@ -1254,7 +1322,7 @@ impl<'a> World<'a> {
     }
 
     fn state_exists_unrecorded(&self, id: u32) -> Result<bool, Failure> {
-        table::<tables::States>(self.frame)?;
+        table::<tables::States>(self.frame, 0)?;
         Ok(self.state_map().contains_key(&id))
     }
 
@@ -1267,41 +1335,77 @@ impl<'a> World<'a> {
     }
 
     fn focus_tree_unrecorded(&self, raw: u32) -> Result<Option<Vec<u8>>, Failure> {
-        let row = table::<tables::Focus>(self.frame)?
-            .iter()
-            .find(|row| row.country == raw)
+        const TREE: u64 = mask::<replay_data::rows::FocusRow>(&["tree"]);
+        // Focus is keyed by its country.
+        let rows = table::<tables::Focus>(self.frame, TREE)?;
+        let row = keyed::<tables::Focus>(&rows, u128::from(raw))?
             .ok_or_else(|| -> Failure { format!("country {raw} has no Focus row").into() })?;
-        Ok(row.tree.clone())
+        Ok(row.into_owned().tree)
     }
 
     /// Every recorded state by id, read whole: an evaluation depends on the
     /// whole States table ([`super::inputs::table`]).
-    pub fn states(&self) -> &ReferencedRows<&'a StateRow> {
+    pub fn states(&self) -> &ReferencedRows<State> {
         super::inputs::table(self.frame, replay_data::rows::TableId::States);
         self.state_map()
     }
 
-    fn state_map(&self) -> &ReferencedRows<&'a StateRow> {
-        self.states.get_or_init(|| ReferencedRows {
-            rows: self.state_rows.iter().map(|row| (row.id, row)).collect(),
-            table: tables::States::ID,
-            unavailable: self
-                .core_gaps
-                .iter()
-                .find(|(name, _)| *name == "States")
-                .map(|(_, why)| why.clone()),
+    /// Why the core table `name` is not complete this hour, if it is not.
+    fn core_unavailable(&self, name: &str) -> Option<Failure> {
+        self.core_gaps
+            .iter()
+            .find(|(gap, _)| *gap == name)
+            .map(|(_, why)| why.clone())
+    }
+
+    fn state_map(&self) -> &ReferencedRows<State> {
+        self.states.get_or_init(|| {
+            let rows = super::refusal::deferred(|| {
+                each::<tables::States>(self.state_rows)
+                    .map(|row| {
+                        row.map(|row| {
+                            (
+                                row.id,
+                                State {
+                                    id: row.id,
+                                    owner: row.owner,
+                                    controller: row.controller,
+                                    continent: row.continent,
+                                },
+                            )
+                        })
+                    })
+                    .collect::<Result<BTreeMap<_, _>, Failure>>()
+            });
+            // A walked row that does not build leaves every state unknown.
+            let (rows, failed) = match rows {
+                Ok(rows) => (rows, None),
+                Err(why) => (BTreeMap::new(), Some(why)),
+            };
+            ReferencedRows {
+                rows,
+                table: tables::States::ID,
+                unavailable: self.core_unavailable("States").or(failed),
+            }
         })
     }
 
     fn province_map(&self) -> &ReferencedRows<Province> {
-        self.provinces.get_or_init(|| ReferencedRows {
-            rows: self.province_rows.iter().map(|row| (row.id, row)).collect(),
-            table: tables::Provinces::ID,
-            unavailable: self
-                .core_gaps
-                .iter()
-                .find(|(name, _)| *name == "Provinces")
-                .map(|(_, why)| why.clone()),
+        self.provinces.get_or_init(|| {
+            let rows = super::refusal::deferred(|| {
+                each::<tables::Provinces>(self.province_rows)
+                    .map(|row| row.map(|row| (row.id, Province::from(&*row))))
+                    .collect::<Result<BTreeMap<_, _>, Failure>>()
+            });
+            let (rows, failed) = match rows {
+                Ok(rows) => (rows, None),
+                Err(why) => (BTreeMap::new(), Some(why)),
+            };
+            ReferencedRows {
+                rows,
+                table: tables::Provinces::ID,
+                unavailable: self.core_unavailable("Provinces").or(failed),
+            }
         })
     }
 
@@ -1320,32 +1424,45 @@ impl<'a> World<'a> {
     pub fn links(&self) -> &BTreeMap<u32, u32> {
         super::inputs::table(self.frame, replay_data::rows::TableId::CountryLinks);
         self.links.get_or_init(|| {
-            self.link_rows
-                .iter()
-                .map(|row| (row.id, row.canonical_slot))
-                .collect()
+            let mut links = BTreeMap::new();
+            for row in self.link_rows.iter() {
+                // A walked link that does not build resolves no reference.
+                match row {
+                    Ok(row) => {
+                        links.insert(row.id, row.canonical_slot);
+                    }
+                    Err(why) => walked::<tables::CountryLinks>(why).reached(),
+                }
+            }
+            links
         })
     }
 
     /// `raw`'s canonical slot by the hour's links.
     fn linked(&self, raw: u32) -> Option<u32> {
-        self.link_rows
-            .binary_search_by_key(&raw, |row| row.id)
-            .ok()
-            .map(|at| self.link_rows[at].canonical_slot)
+        match self.link_rows.get(u128::from(raw)) {
+            Ok(row) => row.map(|row| row.canonical_slot),
+            Err(why) => {
+                walked::<tables::CountryLinks>(why).reached();
+                None
+            }
+        }
     }
 
     /// `slot`'s country: its own raw id and its tag.
     fn country(&self, slot: u32) -> Option<(u32, &'a [u8])> {
-        let rows: &'a [CountryRow] = self.country_rows;
-        self.countries
-            .get_or_init(|| {
-                rows.iter()
-                    .map(|row| (row.canonical_slot, (row.id, row.tag.as_slice())))
-                    .collect()
-            })
-            .get(&slot)
-            .copied()
+        let rows = self.country_rows;
+        get(&self.countries, || {
+            let mut countries = BTreeMap::new();
+            for row in rows.with_text(|row| &row.tag, TAG) {
+                let (row, tag) = row.map_err(walked::<tables::Countries>)?;
+                countries.insert(row.canonical_slot, (row.id, tag));
+            }
+            Ok(countries)
+        })
+        .ok()?
+        .get(&slot)
+        .copied()
     }
 
     /// Every recorded province by id, read whole ([`Self::states`]).
@@ -1358,8 +1475,8 @@ impl<'a> World<'a> {
         super::inputs::table(self.frame, tables::Provinces::ID);
         get(&self.controller_area_sizes, || {
             let mut counts = BTreeMap::<u32, i32>::new();
-            for province in provinces(self.frame)? {
-                let area = province
+            for province in province_values(self.frame)? {
+                let area = province?
                     .controller_area
                     .require("Provinces.controller_area")
                     .map_err(|why| {
@@ -1400,7 +1517,7 @@ impl<'a> World<'a> {
         }
         self.character_tables.get_or_init(|| {
             super::inputs::unrecorded(|| {
-                super::refusal::deferred(|| character_scope::Tables::read(self.frame))
+                super::refusal::deferred(|| character_scope::Tables::read_in(self.frame))
             })
         })
     }
@@ -1432,7 +1549,7 @@ impl<'a> World<'a> {
             }),
             metrics: Default::default(),
         });
-        Self::read(frame, ContentFacts::content_only(dlcs, triggers, aliases))
+        Self::read(frame as &dyn replay_frame::frame::DecodedSource, ContentFacts::content_only(dlcs, triggers, aliases))
     }
 
     /// Whether `province`'s definition has the coastal bit (8),
@@ -1478,7 +1595,12 @@ impl<'a> World<'a> {
         frame: &'a dyn replay_frame::frame::DecodedSource,
         content: ContentFacts<'a>,
     ) -> Result<Self, Failure> {
-        let world = Self::read(frame, content);
+        Self::new_in(HourFrame::Decoded(frame), content)
+    }
+
+    /// [`Self::new`] of any frame's tables, a walk's views among them.
+    pub fn new_in(frame: HourFrame<'a>, content: ContentFacts<'a>) -> Result<Self, Failure> {
+        let world = Self::read_in(frame, content);
         match world.core_gap() {
             Some(gap) => Err(gap),
             None => Ok(world),
@@ -1488,10 +1610,12 @@ impl<'a> World<'a> {
     /// The hour's inputs, a table that is not complete noted: the triggers
     /// that read the country links, countries, provinces or states are then
     /// unknown, the others still decided.
-    pub fn read(
-        frame: &'a dyn replay_frame::frame::DecodedSource,
-        content: ContentFacts<'a>,
-    ) -> Self {
+    pub fn read(frame: &'a dyn replay_frame::frame::DecodedSource, content: ContentFacts<'a>) -> Self {
+        Self::read_in(HourFrame::Decoded(frame), content)
+    }
+
+    /// [`Self::read`] of any frame's tables, a walk's views among them.
+    pub fn read_in(frame: HourFrame<'a>, content: ContentFacts<'a>) -> Self {
         let ((links, countries, provinces, states), core_gaps) =
             super::refusal::deferred(|| core_tables(frame));
         Self {
@@ -1525,6 +1649,7 @@ impl<'a> World<'a> {
             aliases: content.tag_aliases,
             recorded: OnceLock::new(),
             names: OnceLock::new(),
+            lexicon: None,
             literals: OnceLock::new(),
             factions: OnceLock::new(),
             wars: OnceLock::new(),
@@ -1545,10 +1670,8 @@ impl<'a> World<'a> {
             state_modifiers: OnceLock::new(),
             state_members: OnceLock::new(),
             controller_area_sizes: OnceLock::new(),
-            counter_inputs: OnceLock::new(),
             owned_controlled_states: OnceLock::new(),
             opinions: OnceLock::new(),
-            building_levels: [OnceLock::new(), OnceLock::new()],
             resource_amounts: content
                 .buildings
                 .and_then(|buildings| {
@@ -1558,18 +1681,10 @@ impl<'a> World<'a> {
                 })
                 .into(),
             invasions: OnceLock::new(),
-            army_orders: OnceLock::new(),
-            army_order_plans: OnceLock::new(),
-            group_order_roots: OnceLock::new(),
             script_constants: content.script_constants.into(),
-            invasion_preparations: OnceLock::new(),
             invasion_prepare_days: content.invasion_prepare_days.into(),
-            leaders: OnceLock::new(),
-            characters: OnceLock::new(),
             leader_roles: content.leader_roles.into(),
             appearance: OnceLock::new(),
-            cores: OnceLock::new(),
-            claims: OnceLock::new(),
             template_names: None,
         }
     }
@@ -1663,14 +1778,33 @@ impl<'a> World<'a> {
     }
 
     /// The hour's scope facts ([`RecordedScopes`]), read on first use.
-    pub fn recorded(&self) -> &RecordedScopes {
+    pub fn recorded(&self) -> &RecordedScopes<'a> {
         self.recorded.get_or_init(|| {
-            super::inputs::unrecorded(|| RecordedScopes::read(self.frame, Arc::clone(self.aliases)))
+            super::inputs::unrecorded(|| {
+                RecordedScopes::read_in(self.frame, Arc::clone(self.aliases))
+            })
         })
     }
 
-    pub fn frame(&self) -> &'a dyn replay_frame::frame::DecodedSource {
+    /// The hour's tables, a decoded frame's or a walk's views.
+    pub fn tables(&self) -> HourFrame<'a> {
         self.frame
+    }
+
+    /// The decoded frame it reads, for readers not yet reading [`Self::tables`]. A walk's world
+    /// lends a frame whose every table is not selected: such a reader refuses, as it would a
+    /// table its lane did not ask for.
+    pub fn frame(&self) -> &'a dyn replay_frame::frame::DecodedSource {
+        static UNSELECTED: OnceLock<DecodedFrame> = OnceLock::new();
+        match self.frame {
+            HourFrame::Decoded(frame) => frame,
+            HourFrame::Walked(_) => UNSELECTED.get_or_init(|| DecodedFrame {
+                branch: 0,
+                hour: 0,
+                tables: std::array::from_fn(|_| replay_frame::frame::not_selected()),
+                metrics: Default::default(),
+            }),
+        }
     }
 
     /// Retained army name and historical generator operands, captured
@@ -1678,7 +1812,7 @@ impl<'a> World<'a> {
     pub(crate) fn unit_status(
         &self,
         reference: u64,
-    ) -> Result<replay_frame::frame::DivisionName<'a>, Failure> {
+    ) -> Result<Cow<'a, replay_data::rows::DivisionStatusRow>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::UnitStatus(reference)),
             || self.unit_status_unrecorded(reference),
@@ -1688,15 +1822,21 @@ impl<'a> World<'a> {
     fn unit_status_unrecorded(
         &self,
         reference: u64,
-    ) -> Result<replay_frame::frame::DivisionName<'a>, Failure> {
+    ) -> Result<Cow<'a, replay_data::rows::DivisionStatusRow>, Failure> {
+        const NAME: u64 = mask::<replay_data::rows::DivisionStatusRow>(&[
+            "name",
+            "naming",
+            "country_ordinal",
+        ]);
         self.unit(reference)?;
-        self.frame
-            .division_names()
+        // DivisionStatus is keyed by its division.
+        let rows = self
+            .frame
+            .complete::<tables::DivisionStatus>(NAME)
             .map_err(|why| {
                 super::refusal::input_error(replay_data::rows::TableId::DivisionStatus, why)
-            })?
-            .iter()
-            .find(|row| row.division == reference)
+            })?;
+        keyed::<tables::DivisionStatus>(&rows, u128::from(reference))?
             // Retain the existing carrier diagnostic when no status row was captured.
             .ok_or_else(|| -> Failure {
                 format!("UNIT {reference:#x} name: cached army name is not recorded").into()
@@ -1714,13 +1854,13 @@ impl<'a> World<'a> {
     }
 
     fn raid_wing_name_unrecorded(&self, reference: u64) -> Result<Vec<u8>, Failure> {
-        crate::air_wing_names::raid_name(self.frame, reference).map_err(Into::into)
+        crate::air_wing_names::raid_name(&self.frame, reference).map_err(Into::into)
     }
 
     pub(crate) fn industrial_organisation(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::IndustrialOrganisationRow, Failure> {
+    ) -> Result<Cow<'a, replay_data::rows::IndustrialOrganisationRow>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisation(reference)),
             || self.industrial_organisation_unrecorded(reference),
@@ -1730,13 +1870,17 @@ impl<'a> World<'a> {
     fn industrial_organisation_unrecorded(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::IndustrialOrganisationRow, Failure> {
-        table::<tables::IndustrialOrganisations>(self.frame)?
-            .iter()
-            .find(|row| row.organisation == reference)
-            .ok_or_else(|| -> Failure {
+    ) -> Result<Cow<'a, replay_data::rows::IndustrialOrganisationRow>, Failure> {
+        // Keyed by the organisation; its readers read any of its fields.
+        let rows = table::<tables::IndustrialOrganisations>(
+            self.frame,
+            tables::IndustrialOrganisations::ID.full_mask(),
+        )?;
+        keyed::<tables::IndustrialOrganisations>(&rows, u128::from(reference))?.ok_or_else(
+            || -> Failure {
                 super::refusal::missing_reference(tables::IndustrialOrganisations::ID, None)
-            })
+            },
+        )
     }
 
     /// An organisation's size as its details record it, by its full reference.
@@ -1752,10 +1896,10 @@ impl<'a> World<'a> {
     }
 
     /// An organisation's completed traits, by lexer token, in stored order.
-    pub(crate) fn organisation_unlocked(&self, reference: u64) -> Result<&'a [u32], Failure> {
+    pub(crate) fn organisation_unlocked(&self, reference: u64) -> Result<Cow<'a, [u32]>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationUnlocked(reference)),
-            || Ok(self.organisation_details(reference)?.unlocked.as_slice()),
+            || Ok(part(self.organisation_details(reference)?, |row| row.unlocked.as_slice())),
         )
     }
 
@@ -1764,7 +1908,7 @@ impl<'a> World<'a> {
     pub(crate) fn organisation_policies(
         &self,
         reference: u64,
-    ) -> Result<(&'a [u32], u32), Failure> {
+    ) -> Result<(Cow<'a, [u32]>, u32), Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationPolicies(reference)),
             || self.organisation_policies_unrecorded(reference),
@@ -1774,19 +1918,20 @@ impl<'a> World<'a> {
     fn organisation_policies_unrecorded(
         &self,
         reference: u64,
-    ) -> Result<(&'a [u32], u32), Failure> {
+    ) -> Result<(Cow<'a, [u32]>, u32), Failure> {
         let row = self.organisation_details(reference)?;
-        Ok((&row.allowed_policies, row.state.policy))
+        let policy = row.state.policy;
+        Ok((part(row, |row| row.allowed_policies.as_slice()), policy))
     }
 
     /// An organisation's own flags, as stored.
     pub(crate) fn organisation_flags(
         &self,
         reference: u64,
-    ) -> Result<&'a [replay_data::rows::IndustrialOrganisationFlag], Failure> {
+    ) -> Result<Cow<'a, [replay_data::rows::IndustrialOrganisationFlag]>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationFlags(reference)),
-            || Ok(self.organisation_details(reference)?.flags.as_slice()),
+            || Ok(part(self.organisation_details(reference)?, |row| row.flags.as_slice())),
         )
     }
 
@@ -1794,10 +1939,10 @@ impl<'a> World<'a> {
     pub(crate) fn organisation_tasks(
         &self,
         reference: u64,
-    ) -> Result<&'a [replay_data::rows::IndustrialOrganisationTask], Failure> {
+    ) -> Result<Cow<'a, [replay_data::rows::IndustrialOrganisationTask]>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationTasks(reference)),
-            || Ok(self.organisation_details(reference)?.tasks.as_slice()),
+            || Ok(part(self.organisation_details(reference)?, |row| row.tasks.as_slice())),
         )
     }
 
@@ -1806,12 +1951,14 @@ impl<'a> World<'a> {
     fn organisation_details(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::IndustrialOrganisationDetailsRow, Failure> {
-        let details = table::<tables::IndustrialOrganisationDetails>(self.frame)?;
-        details
-            .binary_search_by_key(&reference, |row| row.organisation)
-            .map(|index| &details[index])
-            .map_err(|_| -> Failure {
+    ) -> Result<Cow<'a, replay_data::rows::IndustrialOrganisationDetailsRow>, Failure> {
+        // Keyed by the organisation; its queries read any of its fields.
+        let details = table::<tables::IndustrialOrganisationDetails>(
+            self.frame,
+            tables::IndustrialOrganisationDetails::ID.full_mask(),
+        )?;
+        keyed::<tables::IndustrialOrganisationDetails>(&details, u128::from(reference))?
+            .ok_or_else(|| -> Failure {
                 super::refusal::missing_reference(tables::IndustrialOrganisationDetails::ID, None)
             })
     }
@@ -1916,7 +2063,7 @@ impl<'a> World<'a> {
             Ok(literals::Lookup::new(lexical(self.frame)?))
         })?;
         Ok(super::refusal::reference(
-            literals.get(token),
+            literals.get(token)?,
             token != 0,
             || super::refusal::missing_reference(tables::LexicalTokens::ID, None),
         ))
@@ -1933,42 +2080,73 @@ impl<'a> World<'a> {
     }
 
     fn token_of_unrecorded(&self, name: &[u8]) -> Result<Option<u32>, Failure> {
-        match self.names()?.get(name) {
-            None => Ok(None),
-            Some(Ok(token)) => Ok(Some(token)),
-            Some(Err(reason)) => {
-                reason.reached();
-                Err(reason.clone())
+        match self.names()? {
+            Names::Own(folds) => match folds.get(name) {
+                None => Ok(None),
+                Some(Ok(token)) => Ok(Some(token)),
+                Some(Err(reason)) => {
+                    reason.reached();
+                    Err(reason.clone())
+                }
+            },
+            Names::Shared(lexicon, rows) => {
+                match lexicon
+                    .find(*rows, name)
+                    .map_err(walked::<tables::LexicalTokens>)?
+                {
+                    Found::None => Ok(None),
+                    Found::One(token) => Ok(Some(token)),
+                    Found::Several(literal) => {
+                        // Read folds build it deferred, and record it once it is reached.
+                        let reason = super::refusal::deferred(|| folds::several(literal));
+                        reason.reached();
+                        Err(reason)
+                    }
+                }
             }
         }
     }
 
-    pub(super) fn names(&self) -> Result<&Folds, Failure> {
+    pub(super) fn names(&self) -> Result<&Names<'a>, Failure> {
         super::inputs::table(self.frame, replay_data::rows::TableId::LexicalTokens);
         get(&self.names, || {
-            let view = self
-                .frame
-                .identity(replay_data::rows::TableId::LexicalTokens.index());
+            let view = self.frame.identity(replay_data::rows::TableId::LexicalTokens);
             let cached = FOLDS.with_borrow(|cache| {
                 cache
                     .iter()
-                    .find(|(identity, _)| view.as_ref().is_some_and(|view| identity.same(view)))
+                    .find(|(source, _)| view.as_ref().is_some_and(|view| source.same(view)))
                     .map(|(_, folds)| Arc::clone(folds))
             });
             if let Some(folds) = cached {
-                return Ok(folds);
+                return Ok(Names::Own(folds));
             }
-            let out = Arc::new(Folds::read(lexical(self.frame)?.iter()));
+            let rows = lexical(self.frame)?;
+            if view.is_none()
+                && let (Some(lexicon), Rowset::Walked(columns, _)) = (self.lexicon, rows)
+                && lexicon.indexes((self.frame.branch(), self.frame.hour()), columns)
+            {
+                if let Some(why) = lexicon.fault(columns) {
+                    return Err(walked::<tables::LexicalTokens>(why));
+                }
+                return Ok(Names::Shared(lexicon, columns));
+            }
+            let out = Arc::new(Folds::read(
+                rows.len(),
+                // LexicalTokens is keyed by its token.
+                rows.keys()
+                    .zip(rows.texts(|row| &row.literal, LITERAL_COLUMN))
+                    .map(|(key, literal)| {
+                        Ok((key as u32, literal.map_err(walked::<tables::LexicalTokens>)?))
+                    }),
+            )?);
             if let Some(view) = view {
                 FOLDS.with_borrow_mut(|cache| {
                     cache.insert(0, (view, Arc::clone(&out)));
-                    // A walk's table, and the one it read before.
                     cache.truncate(2);
                 });
             }
-            Ok(out)
+            Ok(Names::Own(out))
         })
-        .map(|folds| &**folds)
     }
 
     /// Why a raw country reference of `table` does not resolve.
@@ -1997,8 +2175,12 @@ impl<'a> World<'a> {
     }
 
     fn faction_unrecorded(&self, slot: u32) -> Result<Option<u64>, Failure> {
+        const RESERVED: u64 = mask::<replay_data::rows::ReservedCountryNamingRow>(&["faction"]);
+        const MEMBER: u64 = mask::<replay_data::rows::FactionMemberRow>(&["faction"]);
         if slot == 0 {
-            let [reserved] = table::<tables::ReservedCountryNaming>(self.frame)? else {
+            let Some(reserved) =
+                only::<tables::ReservedCountryNaming>(table::<tables::ReservedCountryNaming>(self.frame, RESERVED)?)?
+            else {
                 return Err("ReservedCountryNaming does not hold one reserved country".into());
             };
             // The positive membership census does not reverse-certify Country0
@@ -2027,7 +2209,8 @@ impl<'a> World<'a> {
         let (factions, unresolved) = get(&self.factions, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
-            for row in table::<tables::FactionMembers>(self.frame)? {
+            for row in each::<tables::FactionMembers>(table::<tables::FactionMembers>(self.frame, MEMBER)?) {
+                let row = row?;
                 // A faction's member roster can contain genuine Country0. That
                 // literal member cannot be an unresolved positive country.
                 if row.country == 0 {
@@ -2067,10 +2250,11 @@ impl<'a> World<'a> {
         let (wars, unresolved) = get(&self.wars, || {
             let mut out = BTreeSet::new();
             let mut unresolved = None;
-            for row in table::<tables::WarRelations>(self.frame)?
-                .iter()
-                .filter(|row| ongoing(row.start_hour, row.end_hour, self.hour))
-            {
+            for row in each::<tables::WarRelations>(table::<tables::WarRelations>(self.frame, SPAN)?) {
+                let row = row?;
+                if !ongoing(row.start_hour, row.end_hour, self.hour) {
+                    continue;
+                }
                 match (self.slot(row.first_country), self.slot(row.second_country)) {
                     (Some(x), Some(y)) => {
                         out.insert((x.min(y), x.max(y)));
@@ -2100,13 +2284,16 @@ impl<'a> World<'a> {
     }
 
     fn overlord_unrecorded(&self, subject: u32) -> Result<Option<u32>, Failure> {
+        const SUBJECT: u64 =
+            mask::<replay_data::rows::SubjectRow>(&["start_hour", "end_hour"]);
         let (overlords, unresolved) = get(&self.overlords, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
-            for row in table::<tables::Subjects>(self.frame)?
-                .iter()
-                .filter(|row| ongoing(row.start_hour, row.end_hour, self.hour))
-            {
+            for row in each::<tables::Subjects>(table::<tables::Subjects>(self.frame, SUBJECT)?) {
+                let row = row?;
+                if !ongoing(row.start_hour, row.end_hour, self.hour) {
+                    continue;
+                }
                 match (self.slot(row.subject), self.slot(row.overlord)) {
                     (Some(subject), Some(overlord)) => {
                         out.insert(subject, overlord);
@@ -2129,17 +2316,20 @@ impl<'a> World<'a> {
     }
 
     fn original_reference_unrecorded(&self, slot: u32) -> Result<i32, Failure> {
+        const ORIGINAL: u64 = mask::<CountryAppearanceRow>(&["original_tag_reference"]);
         if slot == 0 {
             return self.recorded().original_tags().original_reference();
         }
         let country = required_row::<tables::Countries>(
             self.frame,
+            COUNTRY,
             Some(Store::Country(slot)),
             |row| row.canonical_slot == slot,
             format!("country slot {slot} has no Countries row"),
         )?;
         let row = required_row::<tables::CountryAppearance>(
             self.frame,
+            ORIGINAL,
             Some(Store::Country(slot)),
             |row| row.country == country.id,
             format!("country slot {slot} has no CountryAppearance row"),
@@ -2193,14 +2383,23 @@ impl<'a> World<'a> {
     }
 
     fn has_focus_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
-        let rows = table::<tables::CompletedFocuses>(self.frame)?;
-        let Some(countries) = self.country_rows(&self.focus_rows, rows, |row| row.country) else {
+        // CompletedFocuses is keyed by country then ordinal; its token is read in place.
+        let rows = table::<tables::CompletedFocuses>(self.frame, 0)?;
+        let Some(countries) = self.country_rows(&self.focus_rows, &rows, 32)? else {
             return self.has_focus_indexed(slot, name);
         };
-        let found = self
-            .slot_links(slot)
-            .iter()
-            .any(|&raw| rows[countries.of(raw)].iter().any(|row| row.token == name));
+        let mut found = false;
+        for &raw in self.slot_links(slot) {
+            for token in rows.within(countries.of(raw)).texts(|row| &row.token, FOCUS_TOKEN) {
+                if token.map_err(walked::<tables::CompletedFocuses>)? == name {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                break;
+            }
+        }
         let unresolved = countries
             .unlinked
             .map(|(_, last)| self.unlinked("CompletedFocuses", last));
@@ -2213,10 +2412,12 @@ impl<'a> World<'a> {
         let (focuses, unresolved) = get(&self.focuses, || {
             let mut out = BTreeSet::new();
             let mut unresolved = None;
-            for row in table::<tables::CompletedFocuses>(self.frame)? {
+            let rows = table::<tables::CompletedFocuses>(self.frame, 0)?;
+            for row in rows.with_text(|row| &row.token, FOCUS_TOKEN) {
+                let (row, token) = row.map_err(walked::<tables::CompletedFocuses>)?;
                 match self.slot(row.country) {
                     Some(slot) => {
-                        out.insert((slot, row.token.as_slice()));
+                        out.insert((slot, token));
                     }
                     None => unresolved = Some(self.unlinked("CompletedFocuses", row.country)),
                 }
@@ -2234,27 +2435,24 @@ impl<'a> World<'a> {
     }
 
     fn has_tech_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
+        const ID: usize = column::<replay_data::rows::TechnologyDefinitionRow>("id");
+        const CLASSIFIER: u64 =
+            mask::<replay_data::rows::ResearchTechnologyRow>(&["classifier"]);
         let techs = get(&self.techs, || {
-            let definitions = table::<tables::TechnologyDefinitions>(self.frame)?;
-            let names: BTreeMap<i32, Vec<u8>> = definitions
-                .iter()
-                .map(|row| {
-                    (
-                        row.database_index,
-                        installed_content_core::parser::c_string(&row.id).to_ascii_lowercase(),
-                    )
-                })
-                .collect();
+            let definitions = table::<tables::TechnologyDefinitions>(self.frame, 0)?;
+            let mut names: BTreeMap<i32, Vec<u8>> = BTreeMap::new();
             let mut first = BTreeMap::new();
-            // Pick the first name; completion tests only
-            // that indexed instance's completed classifier, not researched membership.
-            for row in definitions {
-                first
-                    .entry(installed_content_core::parser::c_string(&row.id).to_ascii_lowercase())
-                    .or_insert(row.database_index);
+            for row in definitions.with_text(|row| &row.id, ID) {
+                let (row, id) = row.map_err(walked::<tables::TechnologyDefinitions>)?;
+                let name = installed_content_core::parser::c_string(id).to_ascii_lowercase();
+                // Pick the first name; completion tests only
+                // that indexed instance's completed classifier, not researched membership.
+                first.entry(name.clone()).or_insert(row.database_index);
+                names.insert(row.database_index, name);
             }
             let mut techs = Techs::default();
-            for row in table::<tables::ResearchTechnologies>(self.frame)? {
+            for row in each::<tables::ResearchTechnologies>(table::<tables::ResearchTechnologies>(self.frame, CLASSIFIER)?) {
+                let row = row?;
                 if row.classifier != engine_research::ctechnology::CLASSIFIER_COMPLETED {
                     continue;
                 }
@@ -2310,16 +2508,19 @@ impl<'a> World<'a> {
     }
 
     fn completed_project_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
+        const COMPLETED: u64 =
+            mask::<replay_data::rows::ProjectRow>(&["completed", "definition_id"]);
         let Some(token) = self.token_of(name)? else {
             return Ok(false);
         };
         let (projects, unresolved) = get(&self.projects, || {
             let mut out = BTreeSet::new();
             let mut unresolved = None;
-            for row in table::<tables::Projects>(self.frame)?
-                .iter()
-                .filter(|row| row.completed != 0)
-            {
+            for row in each::<tables::Projects>(table::<tables::Projects>(self.frame, COMPLETED)?) {
+                let row = row?;
+                if row.completed == 0 {
+                    continue;
+                }
                 match self.slot(row.owner) {
                     Some(slot) => {
                         out.insert((slot, row.definition_id));
@@ -2338,8 +2539,11 @@ impl<'a> World<'a> {
         self.slot_links
             .get_or_init(|| {
                 let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-                for row in self.link_rows {
-                    out.entry(row.canonical_slot).or_default().push(row.id);
+                for row in self.link_rows.iter() {
+                    match row {
+                        Ok(row) => out.entry(row.canonical_slot).or_default().push(row.id),
+                        Err(why) => walked::<tables::CountryLinks>(why).reached(),
+                    }
                 }
                 out
             })
@@ -2347,21 +2551,24 @@ impl<'a> World<'a> {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// `rows` by their raw `country`, built on first use; None when they
-    /// do not ascend by country.
-    fn country_rows<'s, R>(
+    /// `rows` by their raw country, the bits of each key above `shift`, built on first use;
+    /// None when they do not ascend by country.
+    fn country_rows<'s, R: RowCodec>(
         &'s self,
-        cell: &'s OnceLock<Option<CountryRows>>,
-        rows: &[R],
-        country: impl Fn(&R) -> u32,
-    ) -> Option<&'s CountryRows> {
-        let found = cell
-            .get_or_init(|| CountryRows::new(rows, country, |raw| self.linked(raw).is_some()))
-            .as_ref();
+        cell: &'s Index<Option<CountryRows>>,
+        rows: &Rowset<'_, R>,
+        shift: u32,
+    ) -> Result<Option<&'s CountryRows>, Failure> {
+        let found = get(cell, || {
+            CountryRows::new(rows.keys().map(|key| Ok((key >> shift) as u32)), |raw| {
+                self.linked(raw).is_some()
+            })
+        })?
+        .as_ref();
         if let Some((_, raw)) = found.and_then(CountryRows::first_unlinked) {
             self.slot(raw);
         }
-        found
+        Ok(found)
     }
 
     fn political_parties(&self) -> Result<&PoliticalParties<'a>, Failure> {
@@ -2373,9 +2580,11 @@ impl<'a> World<'a> {
                 tokens: BTreeMap::new(),
                 members: BTreeSet::new(),
             };
-            for row in table::<tables::PoliticalParties>(self.frame)? {
-                if let Some(previous) = out.ids.insert(row.id, &row.token)
-                    && !previous.eq_ignore_ascii_case(&row.token)
+            let rows = table::<tables::PoliticalParties>(self.frame, RULING)?;
+            for row in rows.with_text(|row| &row.token, PARTY_TOKEN) {
+                let (row, token) = row.map_err(walked::<tables::PoliticalParties>)?;
+                if let Some(previous) = out.ids.insert(row.id, token)
+                    && !previous.eq_ignore_ascii_case(token)
                 {
                     return Err(format!(
                         "PoliticalParties ideology ID {} has conflicting tokens",
@@ -2383,12 +2592,12 @@ impl<'a> World<'a> {
                     )
                     .into());
                 }
-                if let Some(previous) = out.tokens.insert(row.token.to_ascii_lowercase(), row.id)
+                if let Some(previous) = out.tokens.insert(token.to_ascii_lowercase(), row.id)
                     && previous != row.id
                 {
                     return Err(format!(
                         "PoliticalParties ideology {} has conflicting native IDs",
-                        String::from_utf8_lossy(&row.token)
+                        String::from_utf8_lossy(token)
                     )
                     .into());
                 }
@@ -2464,10 +2673,12 @@ impl<'a> World<'a> {
     }
 
     fn raw_ruling_party(&self, slot: u32) -> Result<Option<Option<u32>>, Failure> {
+        const RULING_PARTY: u64 = mask::<replay_data::rows::PoliticsRow>(&["ruling_party"]);
         let (ruling, unresolved) = get(&self.politics_ruling, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
-            for row in table::<tables::Politics>(self.frame)? {
+            for row in each::<tables::Politics>(table::<tables::Politics>(self.frame, RULING_PARTY)?) {
+                let row = row?;
                 match self.slot(row.country) {
                     Some(slot) => {
                         out.insert(slot, row.ruling_party);
@@ -2524,10 +2735,12 @@ impl<'a> World<'a> {
     }
 
     fn has_elections_unrecorded(&self, slot: u32) -> Result<bool, Failure> {
+        const ELECTIONS: u64 = mask::<replay_data::rows::PoliticsRow>(&["has_elections"]);
         let (elections, unresolved) = get(&self.politics_elections, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
-            for row in table::<tables::Politics>(self.frame)? {
+            for row in each::<tables::Politics>(table::<tables::Politics>(self.frame, ELECTIONS)?) {
+                let row = row?;
                 match self.slot(row.country) {
                     Some(slot) => {
                         out.insert(slot, row.has_elections);
@@ -2571,17 +2784,14 @@ impl<'a> World<'a> {
         id: u32,
         name: &[u8],
     ) -> Result<Option<(i16, i32)>, Failure> {
+        const VALUE: u64 = mask::<replay_data::rows::ScriptFlagRow>(&["value", "set_hour"]);
         let Some(token) = self.token_of(name)? else {
             return Ok(None);
         };
         // Rows hold unique keys ascending by (scope kind, scope id, token).
-        let flags = table::<tables::ScriptFlags>(self.frame)?;
-        Ok(flags
-            .binary_search_by_key(&(kind, id, token), |row| {
-                (row.scope_kind, row.scope_id, row.token)
-            })
-            .ok()
-            .map(|at| (flags[at].value, flags[at].set_hour)))
+        let flags = table::<tables::ScriptFlags>(self.frame, VALUE)?;
+        let key = (u128::from(kind) << 64) | (u128::from(id) << 32) | u128::from(token);
+        Ok(keyed::<tables::ScriptFlags>(&flags, key)?.map(|row| (row.value, row.set_hour)))
     }
 
     /// Select the country's dynamic-modifier container.
@@ -2604,23 +2814,25 @@ impl<'a> World<'a> {
         name: &[u8],
         target: Option<Scope>,
     ) -> Result<bool, Failure> {
+        const TARGET: u64 =
+            mask::<replay_data::rows::DynamicModifierRow>(&["scope_country", "scope_state"]);
+        const TOKEN: usize = column::<replay_data::rows::DynamicModifierRow>("token");
         let (modifiers, unlinked) = get(&self.country_modifiers, || {
             let mut modifiers: Modifiers<'a> = BTreeMap::new();
             let mut unlinked = BTreeMap::new();
-            let mut rows: Vec<_> = table::<tables::DynamicModifiers>(self.frame)?
-                .iter()
-                .collect();
-            rows.sort_by_key(|row| (row.country, row.ordinal));
-            for row in rows {
+            // Keyed by (country, ordinal): the rows are in that order.
+            let rows = table::<tables::DynamicModifiers>(self.frame, TARGET)?;
+            for row in rows.with_text(|row| &row.token, TOKEN) {
+                let (row, token) = row.map_err(walked::<tables::DynamicModifiers>)?;
                 match self.slot(row.country) {
                     Some(slot) => {
                         modifiers
-                            .entry((slot, row.token.as_slice()))
+                            .entry((slot, token))
                             .or_default()
                             .push((row.scope_country, row.scope_state));
                     }
                     None => {
-                        unlinked.insert(row.token.as_slice(), row.country);
+                        unlinked.insert(token, row.country);
                     }
                 }
             }
@@ -2660,15 +2872,17 @@ impl<'a> World<'a> {
         name: &[u8],
         target: Option<Scope>,
     ) -> Result<bool, Failure> {
+        const TARGET: u64 =
+            mask::<replay_data::rows::StateDynamicModifierRow>(&["scope_country", "scope_state"]);
+        const TOKEN: usize = column::<replay_data::rows::StateDynamicModifierRow>("token");
         let modifiers = get(&self.state_modifiers, || {
             let mut modifiers: Modifiers<'a> = BTreeMap::new();
-            let mut rows: Vec<_> = table::<tables::StateDynamicModifiers>(self.frame)?
-                .iter()
-                .collect();
-            rows.sort_by_key(|row| (row.state, row.ordinal));
-            for row in rows {
+            // Keyed by (state, ordinal): the rows are in that order.
+            let rows = table::<tables::StateDynamicModifiers>(self.frame, TARGET)?;
+            for row in rows.with_text(|row| &row.token, TOKEN) {
+                let (row, token) = row.map_err(walked::<tables::StateDynamicModifiers>)?;
                 modifiers
-                    .entry((row.state, row.token.as_slice()))
+                    .entry((row.state, token))
                     .or_default()
                     .push((row.scope_country, row.scope_state));
             }
@@ -2797,21 +3011,16 @@ impl<'a> World<'a> {
         location: u32,
         building_type: u32,
     ) -> Result<Option<i16>, Failure> {
-        let levels = get(&self.building_levels[usize::from(province)], || {
-            let rows = if province {
-                table::<tables::ProvinceBuildings>(self.frame)?
-            } else {
-                table::<tables::StateBuildings>(self.frame)?
-            };
-            let mut out = BTreeMap::new();
-            for row in rows {
-                // The first row of a key answers, as a scan would.
-                out.entry((row.location, row.building_type))
-                    .or_insert(row.level);
-            }
-            Ok(out)
-        })?;
-        Ok(levels.get(&(location, building_type)).copied())
+        const LEVEL: u64 = mask::<replay_data::rows::BuildingRow>(&["level"]);
+        // Both tables are keyed by (location, type): a key holds one row.
+        let key = (u128::from(location) << 32) | u128::from(building_type);
+        Ok(if province {
+            let rows = table::<tables::ProvinceBuildings>(self.frame, LEVEL)?;
+            keyed::<tables::ProvinceBuildings>(&rows, key)?.map(|row| row.level)
+        } else {
+            let rows = table::<tables::StateBuildings>(self.frame, LEVEL)?;
+            keyed::<tables::StateBuildings>(&rows, key)?.map(|row| row.level)
+        })
     }
 
     /// Each state's recorded provinces, ascending: the runtime membership
@@ -2895,7 +3104,7 @@ impl<'a> World<'a> {
     pub(crate) fn country_counter_inputs(
         &self,
         slot: u32,
-    ) -> Result<&'a CountryCounterInputRow, Failure> {
+    ) -> Result<Cow<'a, CountryCounterInputRow>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::CountryCounterInputs(slot)),
             || self.country_counter_inputs_unrecorded(slot),
@@ -2905,17 +3114,16 @@ impl<'a> World<'a> {
     fn country_counter_inputs_unrecorded(
         &self,
         slot: u32,
-    ) -> Result<&'a CountryCounterInputRow, Failure> {
-        let rows = get(&self.counter_inputs, || {
-            Ok(table::<tables::CountryCounterInputs>(self.frame)?
-                .iter()
-                .map(|row| (row.country, row))
-                .collect())
-        })?;
+    ) -> Result<Cow<'a, CountryCounterInputRow>, Failure> {
+        // Keyed by the raw country; its readers read any of its fields.
+        let rows = table::<tables::CountryCounterInputs>(
+            self.frame,
+            tables::CountryCounterInputs::ID.full_mask(),
+        )?;
         let raw = self.raw_country(slot).ok_or_else(|| -> Failure {
             format!("country slot {slot} has no Countries row").into()
         })?;
-        rows.get(&raw).copied().ok_or_else(|| {
+        keyed::<tables::CountryCounterInputs>(&rows, u128::from(raw))?.ok_or_else(|| {
             Failure::input(
                 replay_data::rows::TableId::CountryCounterInputs,
                 "",
@@ -2932,14 +3140,14 @@ impl<'a> World<'a> {
         &self,
         slot: u32,
         controlled: bool,
-    ) -> Result<&'a [u32], Failure> {
+    ) -> Result<Cow<'a, [u32]>, Failure> {
         let inputs = self.country_counter_inputs(slot)?;
-        let (value, field) = if controlled {
-            (&inputs.controlled_states, "controlled_states")
+        let field = if controlled {
+            "controlled_states"
         } else {
-            (&inputs.owned_states, "owned_states")
+            "owned_states"
         };
-        value
+        states_of(&inputs, controlled)
             .require(&format!("CountryCounterInputs.{field}"))
             .map_err(|why| {
                 Failure::input(
@@ -2957,7 +3165,8 @@ impl<'a> World<'a> {
                     Some(Store::Country(slot)),
                     format!("CountryCounterInputs.{field} capture unavailable"),
                 )
-            })
+            })?;
+        Ok(part(inputs, |inputs| state_list(inputs, controlled)))
     }
 
     /// Stored country state-vector order.
@@ -2966,7 +3175,7 @@ impl<'a> World<'a> {
         &self,
         slot: u32,
         controlled: bool,
-    ) -> Result<Option<&'a [u32]>, Failure> {
+    ) -> Result<Option<Cow<'a, [u32]>>, Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CountryStateRoster(slot, controlled)),
             || self.country_state_roster_unrecorded(slot, controlled),
@@ -2977,20 +3186,19 @@ impl<'a> World<'a> {
         &self,
         slot: u32,
         controlled: bool,
-    ) -> Result<Option<&'a [u32]>, Failure> {
+    ) -> Result<Option<Cow<'a, [u32]>>, Failure> {
         let inputs = self.country_counter_inputs(slot)?;
-        let (recorded, name) = if controlled {
-            (
-                &inputs.controlled_states,
-                "CountryCounterInputs.controlled_states",
-            )
+        let name = if controlled {
+            "CountryCounterInputs.controlled_states"
         } else {
-            (&inputs.owned_states, "CountryCounterInputs.owned_states")
+            "CountryCounterInputs.owned_states"
         };
-        match recorded {
-            replay_data::rows::Recorded::NotRecorded => Ok(None),
-            replay_data::rows::Recorded::Value(Some(states)) => Ok(Some(states.as_slice())),
-            replay_data::rows::Recorded::Value(None) => Err(Failure::input(
+        match states_of(&inputs, controlled) {
+            Recorded::NotRecorded => Ok(None),
+            Recorded::Value(Some(_)) => {
+                Ok(Some(part(inputs, |inputs| state_list(inputs, controlled))))
+            }
+            Recorded::Value(None) => Err(Failure::input(
                 replay_data::rows::TableId::CountryCounterInputs,
                 if controlled {
                     "controlled_states"
@@ -3024,8 +3232,22 @@ impl<'a> World<'a> {
         &self,
         slot: u32,
     ) -> Result<PartialCollection<'_, Invasion<'a>>, Failure> {
+        const COUNT: u64 =
+            mask::<replay_data::rows::ReservedCountryNamingRow>(&["land_theatre_count"]);
+        const THEATRE: u64 = mask::<replay_data::rows::LandTheatreRow>(&["owner", "ordinal"]);
+        const GROUP: u64 = mask::<replay_data::rows::OrdersGroupRow>(&[
+            "is_army_group",
+            "theatre",
+            "theatre_ordinal",
+        ]);
+        const ROOTS: usize = column::<replay_data::rows::OrdersGroupPlanRow>("primary_orders");
+        const ORDER: u64 = mask::<replay_data::rows::ArmyOrderRow>(&["order_type", "active"]);
+        const PATH: usize = column::<replay_data::rows::ArmyOrderRow>("path");
+        const SUCCESSORS: u64 = mask::<replay_data::rows::ArmyOrderPlanRow>(&["successors"]);
         if slot == 0 {
-            let [reserved] = table::<tables::ReservedCountryNaming>(self.frame)? else {
+            let Some(reserved) =
+                only::<tables::ReservedCountryNaming>(table::<tables::ReservedCountryNaming>(self.frame, COUNT)?)?
+            else {
                 return Err("ReservedCountryNaming does not hold one reserved country".into());
             };
             let count = reserved
@@ -3050,10 +3272,14 @@ impl<'a> World<'a> {
             if count == 0 {
                 // The fresh reserved root certifies an empty native vector.
                 // Unrelated positive theatre/OOB refusals cannot change it.
-                if let Ok(rows) = self.frame.complete::<tables::LandTheatres>()
-                    && rows.iter().any(|row| row.owner == 0)
-                {
-                    return Err("reserved-country LandTheatres contradict their certificate".into());
+                if let Ok(rows) = self.frame.complete::<tables::LandTheatres>(THEATRE) {
+                    for row in each::<tables::LandTheatres>(rows) {
+                        if row?.owner == 0 {
+                            return Err(
+                                "reserved-country LandTheatres contradict their certificate".into()
+                            );
+                        }
+                    }
                 }
                 return Ok(PartialCollection {
                     known: &[],
@@ -3062,10 +3288,11 @@ impl<'a> World<'a> {
             }
             let mut ids = BTreeSet::new();
             let mut ordinals = BTreeSet::new();
-            for row in table::<tables::LandTheatres>(self.frame)?
-                .iter()
-                .filter(|row| row.owner == 0)
-            {
+            for row in each::<tables::LandTheatres>(table::<tables::LandTheatres>(self.frame, THEATRE)?) {
+                let row = row?;
+                if row.owner != 0 {
+                    continue;
+                }
                 if row.ordinal >= count || !ids.insert(row.id) || !ordinals.insert(row.ordinal) {
                     return Err("reserved-country LandTheatres contradict their certificate".into());
                 }
@@ -3079,7 +3306,8 @@ impl<'a> World<'a> {
         let (countries, unresolved) = get(&self.invasions, || {
             let mut unresolved = None;
             let mut theatres = BTreeMap::new();
-            for row in table::<tables::LandTheatres>(self.frame)? {
+            for row in each::<tables::LandTheatres>(table::<tables::LandTheatres>(self.frame, THEATRE)?) {
+                let row = row?;
                 // The optional Country0 suffix is separate from the positive
                 // country census. Its literal owner is not a failed link.
                 if row.owner == 0 {
@@ -3094,7 +3322,8 @@ impl<'a> World<'a> {
                 }
             }
             let mut out: Invasions<'a> = BTreeMap::new();
-            for group in table::<tables::OrdersGroups>(self.frame)? {
+            for group in each::<tables::OrdersGroups>(table::<tables::OrdersGroups>(self.frame, GROUP)?) {
+                let group = group?;
                 // `theatre_ordinal` is the group's place in the roster
                 // `is_army_group` selects; absent means on neither roster.
                 if group.is_army_group != 0 || group.theatre_ordinal.is_none() {
@@ -3113,15 +3342,15 @@ impl<'a> World<'a> {
                 // Evaluate only this owner's regular groups. An authenticated
                 // empty roster never reaches OrdersGroupPlans.
                 for &handle in &country.groups {
-                    let roots = get(&self.group_order_roots, || {
-                        Ok(table::<tables::OrdersGroupPlans>(self.frame)?
-                            .iter()
-                            .map(|row| (row.group, row.primary_orders.as_slice()))
-                            .collect())
-                    })?;
-                    let first = roots.get(&handle).ok_or_else(|| -> Failure {
-                        format!("orders group {handle:#x} has no OrdersGroupPlans row").into()
-                    })?;
+                    // Each table is keyed by what reads it: a group, and an order's
+                    // (owner group, instance).
+                    let roots = table::<tables::OrdersGroupPlans>(self.frame, 0)?;
+                    let first = roots
+                        .u32s(u128::from(handle), |row| &row.primary_orders, ROOTS)
+                        .map_err(walked::<tables::OrdersGroupPlans>)?
+                        .ok_or_else(|| -> Failure {
+                            format!("orders group {handle:#x} has no OrdersGroupPlans row").into()
+                        })?;
                     let mut pending: Vec<u32> = first.iter().rev().copied().collect();
                     let mut seen = BTreeSet::new();
                     while let Some(instance) = pending.pop() {
@@ -3130,36 +3359,39 @@ impl<'a> World<'a> {
                         }
                         // Order collection reads no order payload
                         // when the group's primary-root count is zero.
-                        let instances = get(&self.army_orders, || {
-                            Ok(table::<tables::ArmyOrders>(self.frame)?
-                                .iter()
-                                .map(|row| ((row.owner_group, row.instance), row))
-                                .collect())
-                        })?;
+                        let instances = table::<tables::ArmyOrders>(self.frame, ORDER)?;
                         let key = (handle, instance);
-                        let order = instances.get(&key).ok_or_else(|| -> Failure {
-                            format!("order {instance} of group {handle:#x} has no ArmyOrders row")
+                        let at = (u128::from(handle) << 32) | u128::from(instance);
+                        let order = keyed::<tables::ArmyOrders>(&instances, at)?.ok_or_else(
+                            || -> Failure {
+                                format!(
+                                    "order {instance} of group {handle:#x} has no ArmyOrders row"
+                                )
                                 .into()
-                        })?;
+                            },
+                        )?;
                         if order.order_type == 3 {
                             collected.push(Invasion {
                                 key,
                                 active: order.active,
-                                path: order.path.as_slice(),
+                                path: instances
+                                    .u32s(at, |row| &row.path, PATH)
+                                    .map_err(walked::<tables::ArmyOrders>)?
+                                    .ok_or_else(|| -> Failure {
+                                        format!("order {instance} of group {handle:#x} has no path")
+                                            .into()
+                                    })?,
                             });
                         }
-                        let plans = get(&self.army_order_plans, || {
-                            Ok(table::<tables::ArmyOrderPlans>(self.frame)?
-                                .iter()
-                                .map(|row| ((row.owner_group, row.instance), row))
-                                .collect())
-                        })?;
-                        let plan = plans.get(&key).ok_or_else(|| -> Failure {
-                            format!(
-                                "order {instance} of group {handle:#x} has no ArmyOrderPlans row"
-                            )
-                            .into()
-                        })?;
+                        let plans = table::<tables::ArmyOrderPlans>(self.frame, SUCCESSORS)?;
+                        let plan = keyed::<tables::ArmyOrderPlans>(&plans, at)?.ok_or_else(
+                            || -> Failure {
+                                format!(
+                                    "order {instance} of group {handle:#x} has no ArmyOrderPlans row"
+                                )
+                                .into()
+                            },
+                        )?;
                         pending.extend(plan.successors.iter().rev());
                     }
                 }
@@ -3194,15 +3426,23 @@ impl<'a> World<'a> {
     /// the required hours ([`required_invasion_hours`]) times 1e5; zero when
     /// the required hours are.
     pub(super) fn invasion_preparation(&self, key: (u64, u32)) -> Result<i64, Failure> {
-        // The index below is built once per world; every evaluation reads the table.
+        const PREPARATION: u64 = mask::<InvasionPreparationRow>(&[
+            "progress",
+            "country_term",
+            "relation_term",
+            "relation_bonus",
+            "leader_term",
+            "leader_applies",
+            "days_term",
+        ]);
+        // Every evaluation reads the table; it is keyed by (owner group, instance).
         super::inputs::table(self.frame, replay_data::rows::TableId::InvasionPreparations);
-        let rows = get(&self.invasion_preparations, || {
-            Ok(table::<tables::InvasionPreparations>(self.frame)?
-                .iter()
-                .map(|row| ((row.owner_group, row.instance), row))
-                .collect())
-        })?;
-        let row = rows.get(&key).ok_or_else(|| -> Failure {
+        let rows = table::<tables::InvasionPreparations>(self.frame, PREPARATION)?;
+        let row = keyed::<tables::InvasionPreparations>(
+            &rows,
+            (u128::from(key.0) << 32) | u128::from(key.1),
+        )?
+        .ok_or_else(|| -> Failure {
             format!(
                 "invasion order {} of group {:#x} has no InvasionPreparations row",
                 key.1, key.0
@@ -3210,7 +3450,7 @@ impl<'a> World<'a> {
             .into()
         })?;
         let days = self.invasion_prepare_days.map_err(Failure::from)?;
-        let scale = i64::from(required_invasion_hours(row, days)).wrapping_mul(ONE);
+        let scale = i64::from(required_invasion_hours(&row, days)).wrapping_mul(ONE);
         let whole = i64::from((row.progress / ONE) as i32);
         Ok(if scale == 0 {
             0
@@ -3266,8 +3506,8 @@ impl<'a> World<'a> {
         // them by name without keeping the order of equal names, so a key
         // recorded twice has no value the recording can name.
         if let Store::IndustrialOrganisation(reference) = store {
-            let mut found = self
-                .organisation_details(reference)?
+            let details = self.organisation_details(reference)?;
+            let mut found = details
                 .variables
                 .entries
                 .iter()
@@ -3282,10 +3522,8 @@ impl<'a> World<'a> {
             return Ok(value);
         }
         if let Store::Project { owner, id } = store {
-            let runtime = self
-                .project(owner, id)?
-                .runtime
-                .require("Projects.runtime")?;
+            let project = self.project(owner, id)?;
+            let runtime = project.runtime.require("Projects.runtime")?;
             let variables = runtime.variables.as_ref().ok_or_else(|| {
                 format!("project {owner}:{id} variable store capture unavailable")
             })?;
@@ -3297,8 +3535,8 @@ impl<'a> World<'a> {
                 .map(|entry| entry.value_raw));
         }
         // A name stored twice reads its last value.
-        Ok(self
-            .variable_store(store)?
+        let variables = self.variable_store(store)?;
+        Ok(variables
             .entries
             .iter()
             .rev()
@@ -3316,18 +3554,15 @@ impl<'a> World<'a> {
 
     fn variable_seed_unrecorded(&self, store: Store) -> Result<u32, Failure> {
         if let Store::Project { owner, id } = store {
-            let runtime = self
-                .project(owner, id)?
-                .runtime
-                .require("Projects.runtime")
-                .map_err(|why| {
-                    Failure::input(
-                        replay_data::rows::TableId::Projects,
-                        "runtime",
-                        Some(store),
-                        why,
-                    )
-                })?;
+            let project = self.project(owner, id)?;
+            let runtime = project.runtime.require("Projects.runtime").map_err(|why| {
+                Failure::input(
+                    replay_data::rows::TableId::Projects,
+                    "runtime",
+                    Some(store),
+                    why,
+                )
+            })?;
             return runtime
                 .variables
                 .as_ref()
@@ -3341,7 +3576,8 @@ impl<'a> World<'a> {
                     )
                 });
         }
-        self.variable_store(store)?
+        let variables = self.variable_store(store)?;
+        variables
             .seed
             .require("ScriptVariables.seed")
             .map_err(|why| {
@@ -3363,8 +3599,9 @@ impl<'a> World<'a> {
     }
 
     /// The store's row: rows are in key order, scope kind then id.
-    fn variable_store(&self, store: Store) -> Result<&'a ScriptVariablesRow, Failure> {
-        let rows = table::<tables::ScriptVariables>(self.frame)?;
+    fn variable_store(&self, store: Store) -> Result<Cow<'a, ScriptVariablesRow>, Failure> {
+        const STORE: u64 = mask::<ScriptVariablesRow>(&["entries", "seed"]);
+        let rows = table::<tables::ScriptVariables>(self.frame, STORE)?;
         // The scope kinds `collector::extended::intel` records.
         let (kind, id) = match store {
             Store::Global => (0, 0),
@@ -3382,9 +3619,8 @@ impl<'a> World<'a> {
                 unreachable!("organisation stores are carried by IndustrialOrganisationDetails")
             }
         };
-        rows.binary_search_by_key(&(kind, id), |row| (row.scope_kind, row.scope_id))
-            .map(|at| &rows[at])
-            .map_err(|_| {
+        keyed::<tables::ScriptVariables>(&rows, (u128::from(kind as u8) << 32) | u128::from(id))?
+            .ok_or_else(|| {
                 Failure::input(
                     replay_data::rows::TableId::ScriptVariables,
                     "",
@@ -3450,28 +3686,26 @@ impl<'a> World<'a> {
         }
     }
 
-    /// A recorded unit leader by its reference handle.
-    pub(crate) fn unit_leader(&self, reference: u64) -> Result<Option<Leader<'a>>, Failure> {
+    /// A recorded unit leader by its reference handle: its row, holding the fields a
+    /// [`Leader`] holds.
+    pub(crate) fn unit_leader(
+        &self,
+        reference: u64,
+    ) -> Result<Option<Cow<'a, replay_data::rows::UnitLeaderRow>>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::UnitLeader(reference)),
             || self.unit_leader_unrecorded(reference),
         )
     }
 
-    fn unit_leader_unrecorded(&self, reference: u64) -> Result<Option<Leader<'a>>, Failure> {
-        let leaders = get(&self.leaders, || {
-            Ok(leaders(self.frame)?
-                .iter()
-                .map(|row| {
-                    (
-                        (u64::from(row.id) << 32) | u64::from(row.reference_type),
-                        row,
-                    )
-                })
-                .collect())
-        })?;
+    fn unit_leader_unrecorded(
+        &self,
+        reference: u64,
+    ) -> Result<Option<Cow<'a, replay_data::rows::UnitLeaderRow>>, Failure> {
+        // UnitLeaders is keyed by `id << 32 | reference type`, the raid target's handle.
+        let rows = leaders(self.frame)?;
         Ok(super::refusal::reference(
-            leaders.get(&reference).copied(),
+            keyed::<tables::UnitLeaders>(&rows, u128::from(reference))?,
             reference != 0,
             || super::refusal::missing_reference(tables::UnitLeaders::ID, None),
         ))
@@ -3485,18 +3719,16 @@ impl<'a> World<'a> {
     }
 
     /// [`Self::leader_visibility`] with the hour's Characters and LexicalTokens
-    /// rows binary searched instead of indexed: the decoder validates a
-    /// table's keys unique and ascending, so both find the same row.
+    /// rows read by key instead of through the recorded queries: the decoder
+    /// validates a table's keys unique and ascending, so both find the same row.
     pub fn decoded_leader_visibility<'r>(&self, row: impl Into<Leader<'r>>) -> LeaderVisibility {
         let row = row.into();
         self.leader_visibility_from(
             row,
             |id| {
-                let rows = characters(self.frame)?;
+                let rows = characters(self.frame, crate::identity::CHARACTER_IDENTITY)?;
                 Ok(super::refusal::reference(
-                    rows.binary_search_by_key(&id, |row| row.id)
-                        .ok()
-                        .and_then(|at| rows.get(at)),
+                    keyed::<tables::Characters>(&rows, u128::from(id))?,
                     id != 0,
                     || {
                         super::refusal::missing_reference(
@@ -3509,9 +3741,7 @@ impl<'a> World<'a> {
             |token| {
                 let rows = lexical(self.frame)?;
                 Ok(super::refusal::reference(
-                    rows.binary_search_by_key(&token, |row| row.token)
-                        .ok()
-                        .map(|at| rows.get(at).unwrap().literal.as_slice()),
+                    literal(&rows, token)?,
                     token != 0,
                     || super::refusal::missing_reference(tables::LexicalTokens::ID, None),
                 ))
@@ -3524,14 +3754,14 @@ impl<'a> World<'a> {
     fn leader_visibility_from(
         &self,
         row: Leader<'_>,
-        character: impl FnOnce(u32) -> Result<Option<&'a CharacterRow>, Failure>,
+        character: impl FnOnce(u32) -> Result<Option<Cow<'a, CharacterRow>>, Failure>,
         literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
     ) -> LeaderVisibility {
         if row.visibility_choice == 0 && row.template_visibility == 0 {
             return LeaderVisibility::Decided(Eval::True);
         }
         let template = character(row.character_id).and_then(|character| match character {
-            Some(character) => Ok(recorded_template(character)),
+            Some(character) => Ok(recorded_template(&character)),
             None => Err(format!(
                 "unit leader {}'s character {} is not recorded",
                 row.id, row.character_id
@@ -3647,9 +3877,9 @@ impl<'a> World<'a> {
     }
 
     fn party_leaders_unrecorded(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {
-        let party_rows = table::<tables::PoliticalParties>(self.frame)?;
-        let Some(by_party) = self.country_rows(&self.party_rows, party_rows, |row| row.country)
-        else {
+        // PoliticalParties is keyed by (country, id), PartyLeaders by (country, party, ordinal).
+        let party_rows = table::<tables::PoliticalParties>(self.frame, RULING)?;
+        let Some(by_party) = self.country_rows(&self.party_rows, &party_rows, 32)? else {
             return self.party_leaders_scanned(slot);
         };
         if let Some((_, raw)) = by_party.first_unlinked() {
@@ -3658,7 +3888,8 @@ impl<'a> World<'a> {
         let raws = self.slot_links(slot);
         let mut parties = BTreeMap::new();
         for &raw in raws {
-            for row in &party_rows[by_party.of(raw)] {
+            for row in each::<tables::PoliticalParties>(party_rows.within(by_party.of(raw))) {
+                let row = row?;
                 parties.insert(
                     row.id,
                     PartyLeaders {
@@ -3668,22 +3899,22 @@ impl<'a> World<'a> {
                 );
             }
         }
-        let leader_rows = table::<tables::PartyLeaders>(self.frame)?;
-        let Some(by_leader) =
-            self.country_rows(&self.party_leader_rows, leader_rows, |row| row.country)
-        else {
+        let leader_rows = table::<tables::PartyLeaders>(self.frame, PARTY_LEADER)?;
+        let Some(by_leader) = self.country_rows(&self.party_leader_rows, &leader_rows, 64)? else {
             return self.party_leaders_scanned(slot);
         };
         // The first row in table order that fails decides, as a scan finds it.
         let unlinked = by_leader.first_unlinked();
         for &raw in raws {
             let range = by_leader.of(raw);
-            for (at, row) in range.clone().zip(&leader_rows[range]) {
+            let rows = each::<tables::PartyLeaders>(leader_rows.within(range.clone()));
+            for (at, row) in range.zip(rows) {
                 if let Some((first, raw)) = unlinked
                     && first < at
                 {
                     return Err(self.unlinked("PartyLeaders", raw));
                 }
+                let row = row?;
                 parties
                     .get_mut(&row.party)
                     .ok_or_else(|| -> Failure {
@@ -3712,7 +3943,8 @@ impl<'a> World<'a> {
     /// do not ascend by country.
     fn party_leaders_scanned(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {
         let mut parties = BTreeMap::new();
-        for row in table::<tables::PoliticalParties>(self.frame)? {
+        for row in each::<tables::PoliticalParties>(table::<tables::PoliticalParties>(self.frame, RULING)?) {
+            let row = row?;
             match self.slot(row.country) {
                 Some(country) if country == slot => {
                     parties.insert(
@@ -3727,7 +3959,8 @@ impl<'a> World<'a> {
                 None => return Err(self.unlinked("PoliticalParties", row.country)),
             }
         }
-        for row in table::<tables::PartyLeaders>(self.frame)? {
+        for row in each::<tables::PartyLeaders>(table::<tables::PartyLeaders>(self.frame, PARTY_LEADER)?) {
+            let row = row?;
             match self.slot(row.country) {
                 Some(country) if country == slot => parties
                     .get_mut(&row.party)
@@ -3764,26 +3997,29 @@ impl<'a> World<'a> {
     }
 
     fn country_characters_unrecorded(&self, slot: u32) -> Result<Vec<Option<u32>>, Failure> {
-        let rows = table::<tables::CountryCharacters>(self.frame)?;
-        let Some(countries) = self.country_rows(&self.character_rows, rows, |row| row.country)
-        else {
+        // Keyed by (country, ordinal).
+        let rows = table::<tables::CountryCharacters>(self.frame, COUNTRY_CHARACTER)?;
+        let Some(countries) = self.country_rows(&self.character_rows, &rows, 32)? else {
             return self.country_characters_scanned(slot);
         };
         if let Some((_, raw)) = countries.first_unlinked() {
             return Err(self.unlinked("CountryCharacters", raw));
         }
-        Ok(self
-            .slot_links(slot)
-            .iter()
-            .flat_map(|&raw| rows[countries.of(raw)].iter().map(|row| row.character))
-            .collect())
+        let mut out = Vec::new();
+        for &raw in self.slot_links(slot) {
+            for row in each::<tables::CountryCharacters>(rows.within(countries.of(raw))) {
+                out.push(row?.character);
+            }
+        }
+        Ok(out)
     }
 
     /// [`Self::country_characters_unrecorded`] scanning every row, for rows
     /// that do not ascend by country.
     fn country_characters_scanned(&self, slot: u32) -> Result<Vec<Option<u32>>, Failure> {
         let mut out = Vec::new();
-        for row in table::<tables::CountryCharacters>(self.frame)? {
+        for row in each::<tables::CountryCharacters>(table::<tables::CountryCharacters>(self.frame, COUNTRY_CHARACTER)?) {
+            let row = row?;
             match self.slot(row.country) {
                 Some(country) if country == slot => out.push(row.character),
                 Some(_) => {}
@@ -3835,23 +4071,25 @@ impl<'a> World<'a> {
             );
         };
         // Empty arrays have no CharacterRoleTraits row; the complete role census
-        // distinguishes that from a missing leader role.
-        if !table::<tables::CountryLeaderRoles>(self.frame)?
-            .iter()
-            .any(|row| row.character == character && row.ideology == role)
+        // distinguishes that from a missing leader role. Both are keyed by the role.
+        if !table::<tables::CountryLeaderRoles>(self.frame, 0)?
+            .contains((u128::from(character) << 32) | u128::from(role as u32))
         {
             return Err(
                 format!("party leader {character}/{role} has no CountryLeaderRoles row").into(),
             );
         }
+        const HELD: u64 =
+            mask::<replay_data::rows::CharacterRoleTraitRow>(&["tokens", "definitions"]);
+        let held = table::<tables::CharacterRoleTraits>(self.frame, HELD)?;
+        let held = keyed::<tables::CharacterRoleTraits>(
+            &held,
+            (u128::from(character) << 40)
+                | (u128::from(replay_data::rows::CharacterRoleTraitRow::COUNTRY_LEADER) << 32)
+                | u128::from(role as u32),
+        )?;
         character_scope::holds_country_leader_trait(
-            table::<tables::CharacterRoleTraits>(self.frame)?
-                .iter()
-                .filter(|row| {
-                    row.character == character
-                        && row.kind == replay_data::rows::CharacterRoleTraitRow::COUNTRY_LEADER
-                        && row.role == role as u32
-                }),
+            held.as_deref().into_iter(),
             traits,
             name,
             ordinal,
@@ -3869,11 +4107,13 @@ impl<'a> World<'a> {
     }
 
     fn civil_war_countries_unrecorded(&self, raw: u32) -> Result<Vec<u32>, Failure> {
-        Ok(table::<tables::CountryCivilWars>(self.frame)?
-            .iter()
-            .filter(|row| row.country == raw)
-            .map(|row| row.target)
-            .collect())
+        const TARGET: u64 = mask::<replay_data::rows::CountryCivilWarRow>(&["target"]);
+        // Keyed by (country, ordinal): a country's rows are one key range.
+        let low = u128::from(raw) << 32;
+        table::<tables::CountryCivilWars>(self.frame, TARGET)?
+            .range(low..=low | 0xffff_ffff)
+            .map(|row| row.map(|row| row.target).map_err(walked::<tables::CountryCivilWars>))
+            .collect()
     }
 
     /// Whether an idea token is a registered advisor token
@@ -3886,9 +4126,13 @@ impl<'a> World<'a> {
     }
 
     fn advisor_token_unrecorded(&self, name: &[u8]) -> Result<bool, Failure> {
-        Ok(table::<tables::AdvisorTokens>(self.frame)?
-            .iter()
-            .any(|row| row.token == name))
+        const TOKEN: usize = column::<replay_data::rows::AdvisorTokenRow>("token");
+        for token in table::<tables::AdvisorTokens>(self.frame, 0)?.texts(|row| &row.token, TOKEN) {
+            if token.map_err(walked::<tables::AdvisorTokens>)? == name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The idea tokens of a faction's advisors (FactionAdvisors, keyed
@@ -3901,11 +4145,18 @@ impl<'a> World<'a> {
     }
 
     fn faction_advisors_unrecorded(&self, faction: u64) -> Result<Vec<Vec<u8>>, Failure> {
-        Ok(table::<tables::FactionAdvisors>(self.frame)?
-            .iter()
-            .filter(|row| row.faction == faction)
-            .map(|row| row.token.clone())
-            .collect())
+        const TOKEN: usize = column::<replay_data::rows::FactionAdvisorRow>("token");
+        // Keyed by (faction, ordinal): a faction's rows are one key range.
+        let low = u128::from(faction) << 32;
+        table::<tables::FactionAdvisors>(self.frame, 0)?
+            .span(low, low | 0xffff_ffff)
+            .texts(|row| &row.token, TOKEN)
+            .map(|token| {
+                token
+                    .map(<[u8]>::to_vec)
+                    .map_err(walked::<tables::FactionAdvisors>)
+            })
+            .collect()
     }
 
     /// A country of its own civil-war list exists, or an
@@ -3956,8 +4207,17 @@ impl<'a> World<'a> {
     }
 
     fn enemies_unrecorded(&self, slot: u32) -> Result<Vec<u32>, Failure> {
-        for row in table::<tables::CountryWars>(self.frame)? {
-            if self.slot(row.country) == Some(slot) && row.enemies_read != 0 {
+        const ENEMIES: u64 =
+            mask::<replay_data::rows::CountryWarRow>(&["enemies_read", "enemies"]);
+        // Keyed by the country: only a row of this country is built.
+        let wars = table::<tables::CountryWars>(self.frame, ENEMIES)?;
+        for key in wars.keys() {
+            if self.slot(key as u32) != Some(slot) {
+                continue;
+            }
+            let row = keyed::<tables::CountryWars>(&wars, key)?
+                .ok_or_else(|| walked::<tables::CountryWars>(std::io::Error::other("a listed key holds no row")))?;
+            if row.enemies_read != 0 {
                 return row
                     .enemies
                     .iter()
@@ -3969,10 +4229,11 @@ impl<'a> World<'a> {
             }
         }
         let mut out = Vec::new();
-        for row in table::<tables::WarRelations>(self.frame)?
-            .iter()
-            .filter(|row| ongoing(row.start_hour, row.end_hour, self.hour))
-        {
+        for row in each::<tables::WarRelations>(table::<tables::WarRelations>(self.frame, SPAN)?) {
+            let row = row?;
+            if !ongoing(row.start_hour, row.end_hour, self.hour) {
+                continue;
+            }
             let (first, second) = (self.slot(row.first_country), self.slot(row.second_country));
             match (first, second) {
                 (Some(a), Some(b)) if a == slot => out.push(b),
@@ -3996,10 +4257,15 @@ impl<'a> World<'a> {
     }
 
     fn has_idea_unrecorded(&self, slot: u32, name: &str) -> Result<bool, Failure> {
+        const IDEA: usize = column::<replay_data::rows::HiredAdvisorRow>("idea");
         let name = name.as_bytes();
         if self.advisor_token(name)? {
-            for row in table::<tables::HiredAdvisors>(self.frame)? {
-                if self.slot(row.country) == Some(slot) && row.idea == name {
+            // Keyed by (country, ordinal): the country is the key's high half.
+            let hired = table::<tables::HiredAdvisors>(self.frame, 0)?;
+            for (key, idea) in hired.keys().zip(hired.texts(|row| &row.idea, IDEA)) {
+                if self.slot((key >> 32) as u32) == Some(slot)
+                    && idea.map_err(walked::<tables::HiredAdvisors>)? == name
+                {
                     return Ok(true);
                 }
             }
@@ -4018,22 +4284,22 @@ impl<'a> World<'a> {
     /// matching rows and the rows whose country does not resolve, in table
     /// order, decides.
     fn active_idea(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
-        let rows = table::<tables::ActiveIdeas>(self.frame)?;
-        let Some(countries) = self.country_rows(&self.idea_rows, rows, |row| row.country) else {
+        // Keyed by (country, ordinal).
+        let rows = table::<tables::ActiveIdeas>(self.frame, 0)?;
+        let Some(countries) = self.country_rows(&self.idea_rows, &rows, 32)? else {
             return self.active_idea_scanned(slot, name);
         };
-        let found = self
-            .slot_links(slot)
-            .iter()
-            .filter_map(|&raw| {
-                let range = countries.of(raw);
-                let start = range.start;
-                rows[range]
-                    .iter()
-                    .position(|row| row.token == name)
-                    .map(|at| start + at)
-            })
-            .min();
+        let mut found = None;
+        for &raw in self.slot_links(slot) {
+            let range = countries.of(raw);
+            let start = range.start;
+            for (at, token) in rows.within(range).texts(|row| &row.token, IDEA_TOKEN).enumerate() {
+                if token.map_err(walked::<tables::ActiveIdeas>)? == name {
+                    found = Some(found.map_or(start + at, |found: usize| found.min(start + at)));
+                    break;
+                }
+            }
+        }
         match (found, countries.first_unlinked()) {
             (Some(at), Some((first, raw))) if first < at => Err(self.unlinked("ActiveIdeas", raw)),
             (Some(_), _) => Ok(true),
@@ -4045,9 +4311,11 @@ impl<'a> World<'a> {
     /// [`Self::active_idea`] scanning every row, for rows that do not
     /// ascend by country.
     fn active_idea_scanned(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
-        for row in table::<tables::ActiveIdeas>(self.frame)? {
+        let rows = table::<tables::ActiveIdeas>(self.frame, 0)?;
+        for row in rows.with_text(|row| &row.token, IDEA_TOKEN) {
+            let (row, token) = row.map_err(walked::<tables::ActiveIdeas>)?;
             match self.slot(row.country) {
-                Some(country) if country == slot && row.token == name => return Ok(true),
+                Some(country) if country == slot && token == name => return Ok(true),
                 Some(_) => {}
                 None => return Err(self.unlinked("ActiveIdeas", row.country)),
             }
@@ -4065,12 +4333,13 @@ impl<'a> World<'a> {
     }
 
     fn controlled_state_count_unrecorded(&self, slot: u32) -> Result<i64, Failure> {
+        const CONTROLLED: u64 = mask::<CountryCounterInputRow>(&["controlled_state_count"]);
         let raw = self.raw_country(slot).ok_or_else(|| -> Failure {
             format!("country slot {slot} has no Countries row").into()
         })?;
-        table::<tables::CountryCounterInputs>(self.frame)?
-            .iter()
-            .find(|row| row.country == raw)
+        // Keyed by the raw country.
+        let rows = table::<tables::CountryCounterInputs>(self.frame, CONTROLLED)?;
+        keyed::<tables::CountryCounterInputs>(&rows, u128::from(raw))?
             .map(|row| i64::from(row.controlled_state_count))
             .ok_or_else(|| -> Failure {
                 format!("country {raw} has no CountryCounterInputs row").into()
@@ -4096,11 +4365,13 @@ impl<'a> World<'a> {
                 format!("country slot {slot} has no Countries row").into()
             })?;
         }
+        const OPINION: u64 = mask::<replay_data::rows::RelationOpinionRow>(&["opinion"]);
         let (opinions, unresolved) = get(&self.opinions, || {
-            table::<tables::CountryLinks>(self.frame)?;
+            table::<tables::CountryLinks>(self.frame, 0)?;
             let mut out = BTreeMap::new();
             let mut unresolved = None;
-            for row in table::<tables::RelationOpinions>(self.frame)? {
+            for row in each::<tables::RelationOpinions>(table::<tables::RelationOpinions>(self.frame, OPINION)?) {
+                let row = row?;
                 match (self.slot(row.owner_country), self.slot(row.target_country)) {
                     (Some(owner), Some(target)) => {
                         out.insert((owner, target), row.opinion);
@@ -4130,11 +4401,12 @@ impl<'a> World<'a> {
             format!("country slot {slot} has no Countries row").into()
         })?;
         let counts = get(&self.owned_controlled_states, || {
-            table::<tables::CountryLinks>(self.frame)?;
+            table::<tables::CountryLinks>(self.frame, 0)?;
             provinces(self.frame)?;
             let members = self.state_members()?;
             let mut out: BTreeMap<u32, i32> = BTreeMap::new();
-            for row in table::<tables::States>(self.frame)? {
+            for row in each::<tables::States>(table::<tables::States>(self.frame, STATE)?) {
+                let row = row?;
                 if row.owner == 0 || !members.contains_key(&row.id) {
                     continue;
                 }
@@ -4185,9 +4457,14 @@ impl<'a> World<'a> {
                 let raw = self.raw_country(slot).ok_or_else(|| -> Failure {
                     format!("country slot {slot} has no Countries row").into()
                 })?;
-                let row = table::<tables::CountryFactories>(self.frame)?
-                    .iter()
-                    .find(|row| row.country == raw)
+                const LEVELS: u64 = mask::<replay_data::rows::CountryFactoriesRow>(&[
+                    "civilian_levels",
+                    "naval_levels",
+                    "military_levels",
+                ]);
+                // Keyed by the raw country.
+                let rows = table::<tables::CountryFactories>(self.frame, LEVELS)?;
+                let row = keyed::<tables::CountryFactories>(&rows, u128::from(raw))?
                     .ok_or_else(|| -> Failure {
                         format!(
                             "num_of_controlled_factories: country {raw} has no CountryFactories row"
@@ -4204,6 +4481,13 @@ impl<'a> World<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// This World on a walk's frame, finding tokens by the walk's lexer folds
+    /// ([`dashboard_world::World::lexicon`]) in place of folds read from the frame.
+    pub fn with_lexicon(mut self, lexicon: Option<&'a Lexicon>) -> Self {
+        self.lexicon = lexicon;
+        self
     }
 
     pub(crate) fn with_template_names(
@@ -4228,9 +4512,13 @@ impl<'a> World<'a> {
     }
 
     fn has_template_unrecorded(&self, slot: u32, wanted: &[u8]) -> Result<bool, Failure> {
-        let rows = table::<tables::DivisionTemplates>(self.frame)?;
+        const TEMPLATE: u64 =
+            mask::<replay_data::rows::DivisionTemplateRow>(&["owner", "name", "name_key"]);
+        const ICON: u64 = mask::<replay_data::rows::DivisionTemplateIconRow>(&["country"]);
+        let rows = table::<tables::DivisionTemplates>(self.frame, TEMPLATE)?;
         let mut unknown = None;
-        for row in rows {
+        for row in each::<tables::DivisionTemplates>(rows) {
+            let row = row?;
             let Some(owner) = self.slot(row.owner) else {
                 unknown = Some(self.unlinked("DivisionTemplates", row.owner));
                 continue;
@@ -4269,10 +4557,9 @@ impl<'a> World<'a> {
                     })
                     .as_ref()
                     .map_err(Clone::clone)?;
-                let icons = table::<tables::DivisionTemplateIcons>(self.frame)?;
-                let icon = icons
-                    .iter()
-                    .find(|icon| icon.template == row.template)
+                // Keyed by the template.
+                let icons = table::<tables::DivisionTemplateIcons>(self.frame, ICON)?;
+                let icon = keyed::<tables::DivisionTemplateIcons>(&icons, u128::from(row.template))?
                     .ok_or_else(|| -> Failure {
                         format!(
                             "template {} has no DivisionTemplateIcons country",
@@ -4310,22 +4597,18 @@ impl<'a> World<'a> {
     }
 
     /// A recorded character by its id.
-    pub(crate) fn character(&self, id: u32) -> Result<Option<&'a CharacterRow>, Failure> {
+    pub(crate) fn character(&self, id: u32) -> Result<Option<Cow<'a, CharacterRow>>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::Character(id)),
             || self.character_unrecorded(id),
         )
     }
 
-    fn character_unrecorded(&self, id: u32) -> Result<Option<&'a CharacterRow>, Failure> {
-        let characters = get(&self.characters, || {
-            Ok(characters(self.frame)?
-                .iter()
-                .map(|character| (character.id, character))
-                .collect())
-        })?;
+    fn character_unrecorded(&self, id: u32) -> Result<Option<Cow<'a, CharacterRow>>, Failure> {
+        // Keyed by the character's id; its readers read any of its fields.
+        let rows = characters(self.frame, tables::Characters::ID.full_mask())?;
         Ok(super::refusal::reference(
-            characters.get(&id).copied(),
+            keyed::<tables::Characters>(&rows, u128::from(id))?,
             id != 0,
             || {
                 super::refusal::missing_reference(
@@ -4337,28 +4620,37 @@ impl<'a> World<'a> {
     }
 
     /// A canonical country's `CountryAppearance` row.
-    pub(crate) fn appearance(&self, slot: u32) -> Result<&'a CountryAppearanceRow, Failure> {
+    pub(crate) fn appearance(&self, slot: u32) -> Result<Cow<'a, CountryAppearanceRow>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::Appearance(slot)),
             || self.appearance_unrecorded(slot),
         )
     }
 
-    fn appearance_unrecorded(&self, slot: u32) -> Result<&'a CountryAppearanceRow, Failure> {
+    fn appearance_unrecorded(&self, slot: u32) -> Result<Cow<'a, CountryAppearanceRow>, Failure> {
+        // Keyed by the raw country; its readers read any of its fields.
+        let table = table::<tables::CountryAppearance>(
+            self.frame,
+            tables::CountryAppearance::ID.full_mask(),
+        )?;
         let (rows, unresolved) = get(&self.appearance, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
-            for row in table::<tables::CountryAppearance>(self.frame)? {
-                match self.slot(row.country) {
+            for key in table.keys() {
+                let country = key as u32;
+                match self.slot(country) {
                     Some(slot) => {
-                        out.insert(slot, row);
+                        out.insert(slot, key);
                     }
-                    None => unresolved = Some(self.unlinked("CountryAppearance", row.country)),
+                    None => unresolved = Some(self.unlinked("CountryAppearance", country)),
                 }
             }
             Ok((out, unresolved))
         })?;
-        linked(rows.get(&slot).copied(), unresolved)?.ok_or_else(|| -> Failure {
+        let key = linked(rows.get(&slot).copied(), unresolved)?.ok_or_else(|| -> Failure {
+            format!("country slot {slot} has no CountryAppearance row").into()
+        })?;
+        keyed::<tables::CountryAppearance>(&table, key)?.ok_or_else(|| -> Failure {
             format!("country slot {slot} has no CountryAppearance row").into()
         })
     }
@@ -4374,14 +4666,11 @@ impl<'a> World<'a> {
     }
 
     fn is_core_of_unrecorded(&self, state: u32, country: Option<u32>) -> Result<Eval, Failure> {
-        let cores = get(&self.cores, || {
-            Ok(table::<tables::StateCores>(self.frame)?
-                .iter()
-                .map(|row| (row.state, row.cores.as_slice()))
-                .collect())
-        })?;
-        let cores = cores
-            .get(&state)
+        const CORES: usize = column::<replay_data::rows::StateCoreRow>("cores");
+        // Keyed by the state.
+        let cores = table::<tables::StateCores>(self.frame, 0)?
+            .u32s(u128::from(state), |row| &row.cores, CORES)
+            .map_err(walked::<tables::StateCores>)?
             .ok_or_else(|| -> Failure { format!("state {state} has no StateCores row").into() })?;
         Ok(self.lists(cores, country, "StateCores"))
     }
@@ -4397,19 +4686,12 @@ impl<'a> World<'a> {
     }
 
     fn is_claimed_by_unrecorded(&self, state: u32, country: Option<u32>) -> Result<Eval, Failure> {
-        let claims = get(&self.claims, || {
-            Ok(table::<tables::StateCores>(self.frame)?
-                .iter()
-                .map(|row| match &row.claims {
-                    Recorded::Value(claims) => (row.state, Some(claims.as_slice())),
-                    Recorded::NotRecorded => (row.state, None),
-                })
-                .collect())
-        })?;
-        let claims = claims
-            .get(&state)
+        const CLAIMS: u64 = mask::<replay_data::rows::StateCoreRow>(&["claims"]);
+        // Keyed by the state.
+        let rows = table::<tables::StateCores>(self.frame, CLAIMS)?;
+        let row = keyed::<tables::StateCores>(&rows, u128::from(state))?
             .ok_or_else(|| -> Failure { format!("state {state} has no StateCores row").into() })?;
-        let Some(claims) = claims else {
+        let Recorded::Value(claims) = &row.claims else {
             return Ok(Eval::unknown(
                 "StateCores.claims is not recorded".to_owned(),
             ));
@@ -4457,10 +4739,14 @@ impl<'a> World<'a> {
     }
 
     fn nukes_unrecorded(&self, slot: u32) -> Result<i64, Failure> {
-        // Every country has one row per nuke type.
-        let row = table::<tables::Nukes>(self.frame)?
-            .iter()
-            .find(|row| row.nuke_type == 0 && self.slot(row.country) == Some(slot))
+        const AMOUNT: u64 = mask::<replay_data::rows::NukeRow>(&["amount_raw"]);
+        // Every country has one row per nuke type, keyed by (country, type).
+        let nukes = table::<tables::Nukes>(self.frame, AMOUNT)?;
+        let key = nukes
+            .keys()
+            .find(|&key| key as u32 == 0 && self.slot((key >> 32) as u32) == Some(slot))
+            .ok_or_else(|| -> Failure { format!("country slot {slot} has no Nukes row").into() })?;
+        let row = keyed::<tables::Nukes>(&nukes, key)?
             .ok_or_else(|| -> Failure { format!("country slot {slot} has no Nukes row").into() })?;
         let raw = row.amount_raw;
         Ok(
@@ -4524,6 +4810,7 @@ impl Links for World<'_> {
     fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
         World::token_of(self, name).map_err(|why| why.to_string())
     }
+
     fn token_input(&self, name: &[u8]) -> Result<Option<u32>, Failure> {
         World::token_of(self, name)
     }

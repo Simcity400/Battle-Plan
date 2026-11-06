@@ -9,7 +9,7 @@ use super::{
 };
 use dashboard_base::prepared::prepass::{Held, HeldBytes};
 use dashboard_keyed::segment::{Touch, Touched};
-use labels::{Naming, Reasons, Shared, label};
+use labels::{Naming, Reasons, Shared, Store, label};
 use std::collections::HashSet;
 pub(crate) use labels::Label;
 use refits::Refits;
@@ -208,23 +208,26 @@ struct Identity {
 
 impl Identity {
     /// None where the hour's countries or their links are not complete.
-    fn read(frame: &DecodedFrame, owners: &mut Owners) -> Option<Self> {
-        let countries = Countries::read(frame)?;
+    fn read<F: Tables + ?Sized>(frame: &Frame<'_, F>, owners: &mut Owners) -> Option<Self> {
+        const SLOT: u64 = rows::mask::<rows::CountryRow>(&["canonical_slot"]);
+        let countries = frame.found(Countries::read_tables(frame.tables()))?;
         let mut current: Vec<u32> = super::owners(frame, &countries)
             .into_iter()
             .map(|name| owners.number(name))
             .collect();
         current.sort_unstable();
         let mut slots = HashMap::new();
-        for row in frame.complete::<tables::Countries>().ok()? {
+        let rows = frame.complete::<tables::Countries>()?;
+        for row in frame.each(rows.with_mask(SLOT).iter()) {
             if let Some(name) = countries.slotted(row.canonical_slot) {
                 slots.insert(row.canonical_slot, owners.number(name));
             }
         }
         let mut raws: HashMap<u32, Vec<u32>> = HashMap::new();
-        for link in frame.complete::<tables::CountryLinks>().ok()? {
-            if let Some(owner) = countries.slot(link.id).and_then(|slot| slots.get(&slot)) {
-                raws.entry(*owner).or_default().push(link.id);
+        for link in frame.complete::<tables::CountryLinks>()?.keys() {
+            let link = link as u32;
+            if let Some(owner) = countries.slot(link).and_then(|slot| slots.get(&slot)) {
+                raws.entry(*owner).or_default().push(link);
             }
         }
         for held in raws.values_mut() {
@@ -241,19 +244,19 @@ impl Identity {
 }
 
 /// What a projection reads at an hour.
-struct Cx<'f, 's> {
-    frame: &'f DecodedFrame,
+struct Cx<'f, 's, F: ?Sized> {
+    frame: &'f Frame<'f, F>,
     countries: &'s Countries,
     identity: &'s Identity,
     shared: &'s mut Shared,
-    naming: Naming<'f>,
+    naming: Naming<'f, F>,
     reasons: &'s mut Reasons,
     refusals: &'s mut Refusals,
     /// The Ships field strength is.
     strength: u64,
 }
 
-impl Cx<'_, '_> {
+impl<F: Tables + ?Sized> Cx<'_, '_, F> {
     /// The owner a raw country reference resolves to.
     fn owner(&self, raw: u32) -> Option<u32> {
         let slot = self.countries.slot(raw)?;
@@ -301,9 +304,9 @@ impl Ships {
     }
 
     /// What `holder` held, `before`, and holds, `after`: an owner and its ships, ascending.
-    fn rehold(
+    fn rehold<F: Tables + ?Sized>(
         &mut self,
-        cx: &mut Cx<'_, '_>,
+        cx: &mut Cx<'_, '_, F>,
         dirty: &mut Dirty,
         holder: u64,
         before: Option<(u32, Vec<u64>)>,
@@ -351,7 +354,7 @@ impl Ships {
     }
 
     /// The ship `id` projected again where a port or line holds it.
-    fn project(&mut self, cx: &mut Cx<'_, '_>, dirty: &mut Dirty, id: u64) {
+    fn project<F: Tables + ?Sized>(&mut self, cx: &mut Cx<'_, '_, F>, dirty: &mut Dirty, id: u64) {
         let Some(old) = self.ships.remove(&id) else {
             return;
         };
@@ -367,7 +370,7 @@ impl Ships {
     }
 
     /// The ship `id`'s hull, where a port or line holds it and the hour wrote only its strength.
-    fn strengthen(&mut self, frame: &DecodedFrame, dirty: &mut Dirty, id: u64) {
+    fn strengthen<F: Tables + ?Sized>(&mut self, frame: &Frame<'_, F>, dirty: &mut Dirty, id: u64) {
         if let Some(held) = self.ships.get_mut(&id) {
             held.strengthened(frame, id);
             for &(owner, _) in &held.holders {
@@ -443,6 +446,8 @@ fn reads(table: TableId, refits: bool) -> bool {
 pub(crate) struct Projector {
     refits: bool,
     strength: u64,
+    /// The fields the views read of each table.
+    masks: Box<Masks>,
     owners: Owners,
     reasons: Reasons,
     state: State,
@@ -452,17 +457,24 @@ pub(crate) struct Projector {
 
 impl Projector {
     /// The view of `frame` whole, its rows; none where its countries are not complete.
-    pub(crate) fn build(frame: &DecodedFrame, refits: bool) -> io::Result<Option<(Box<Self>, Rows)>> {
+    pub(crate) fn build<F: Tables + ?Sized>(
+        frame: &F,
+        refits: bool,
+    ) -> io::Result<Option<(Box<Self>, Rows)>> {
         let mut owners = Owners::default();
         let mut reasons = Reasons::default();
         let strength = 1 << replay::columns::field(TableId::Ships, "strength")?;
-        let Some((state, dirty)) = State::build(frame, refits, strength, &mut owners, &mut reasons)
-        else {
+        let masks = super::masks()?;
+        let read = Frame::new(frame, &masks);
+        let built = State::build(&read, refits, strength, &mut owners, &mut reasons);
+        read.failed()?;
+        let Some((state, dirty)) = built else {
             return Ok(None);
         };
         let mut projector = Box::new(Self {
             refits,
             strength,
+            masks,
             owners,
             reasons,
             state,
@@ -474,27 +486,37 @@ impl Projector {
 
     /// The rows the hour of `frame` changed, `touched` what it changed of each table; none
     /// where its countries are not complete.
-    pub(crate) fn hour(&mut self, frame: &DecodedFrame, touched: &Touched) -> Option<Rows> {
+    pub(crate) fn hour<F: Tables + ?Sized>(
+        &mut self,
+        frame: &F,
+        touched: &Touched,
+    ) -> io::Result<Option<Rows>> {
         let whole = management::TABLES.iter().any(|&table| {
             reads(table, self.refits)
                 && (touched.of(table).restated || (NAMING.contains(&table) && touched.of(table).any()))
         });
+        let read = Frame::new(frame, &self.masks);
         if whole {
-            let (state, mut dirty) = State::build(
-                frame,
+            let built = State::build(
+                &read,
                 self.refits,
                 self.strength,
                 &mut self.owners,
                 &mut self.reasons,
-            )?;
+            );
+            read.failed()?;
+            let Some((state, mut dirty)) = built else {
+                return Ok(None);
+            };
             self.state = state;
             dirty.places.extend(self.published.keys().copied());
-            return Some(self.rows(dirty, false));
+            return Ok(Some(self.rows(dirty, false)));
         }
         let mut dirty = Dirty::default();
         self.state
-            .hour(frame, touched, self.strength, &mut self.reasons, &mut dirty);
-        Some(self.rows(dirty, false))
+            .hour(&read, touched, self.strength, &mut self.reasons, &mut dirty);
+        read.failed()?;
+        Ok(Some(self.rows(dirty, false)))
     }
 
     /// The owners the rows name, and whether this is the first hour to carry them.
@@ -547,8 +569,8 @@ impl Projector {
 
 impl State {
     /// The view of `frame` whole, and every place it holds a row at.
-    fn build(
-        frame: &DecodedFrame,
+    fn build<F: Tables + ?Sized>(
+        frame: &Frame<'_, F>,
         refits: bool,
         strength: u64,
         owners: &mut Owners,
@@ -560,12 +582,13 @@ impl State {
         let mut refusals = Refusals::default();
         let mut ships = Ships::default();
         let mut dirty = Dirty::default();
+        let store = Store::default();
         let mut cx = Cx {
             frame,
             countries: &identity.countries,
             identity: &identity,
             shared: &mut shared,
-            naming: Naming::new(frame),
+            naming: Naming::new(frame, &store),
             reasons: &mut *reasons,
             refusals: &mut refusals,
             strength,
@@ -590,9 +613,9 @@ impl State {
     }
 
     /// The hour's changes, `touched`, into the places they reach.
-    fn hour(
+    fn hour<F: Tables + ?Sized>(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &Frame<'_, F>,
         touched: &Touched,
         strength: u64,
         reasons: &mut Reasons,
@@ -606,12 +629,13 @@ impl State {
             view,
             ..
         } = self;
+        let store = Store::default();
         let mut cx = Cx {
             frame,
             countries: &identity.countries,
             identity: &*identity,
             shared,
-            naming: Naming::new(frame),
+            naming: Naming::new(frame, &store),
             reasons: &mut *reasons,
             refusals,
             strength,
@@ -669,7 +693,13 @@ impl State {
     }
 
     /// The totals of the owners `dirty` names, every current owner's where it names all.
-    fn totals(&mut self, frame: &DecodedFrame, strength: u64, reasons: &mut Reasons, dirty: &mut Dirty) {
+    fn totals<F: Tables + ?Sized>(
+        &mut self,
+        frame: &Frame<'_, F>,
+        strength: u64,
+        reasons: &mut Reasons,
+        dirty: &mut Dirty,
+    ) {
         let mut owners: BTreeSet<u32> = std::mem::take(&mut dirty.totals).into_iter().collect();
         if dirty.totals_all {
             owners.extend(self.identity.current.iter().copied());
@@ -683,12 +713,13 @@ impl State {
             totals,
             ..
         } = self;
+        let store = Store::default();
         let mut cx = Cx {
             frame,
             countries: &identity.countries,
             identity: &*identity,
             shared,
-            naming: Naming::new(frame),
+            naming: Naming::new(frame, &store),
             reasons: &mut *reasons,
             refusals,
             strength,

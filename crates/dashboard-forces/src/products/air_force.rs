@@ -40,8 +40,6 @@ pub struct AirForceSize;
 pub use dashboard_base::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 const MAX_EXACT: i64 = (1 << 53) - 1;
 const UNIDENTIFIED: &str = ":not-identified";
-#[cfg(any(test, feature = "test-support"))]
-const CACHED_BRANCHES: usize = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -225,10 +223,11 @@ impl ScannedAir {
     }
 }
 
+/// One scan per branch of the source revision.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Scans {
-    entries: std::collections::VecDeque<(u64, Arc<ScannedAir>)>,
+    entries: std::collections::BTreeMap<u64, Arc<ScannedAir>>,
     runs: usize,
 }
 
@@ -241,15 +240,12 @@ fn scanned_branch(
     let state = source.state::<Scans>();
     let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
     reply::cancel(cancelled)?;
-    if let Some((_, scanned)) = scans.entries.iter().find(|(cached, _)| *cached == branch) {
+    if let Some(scanned) = scans.entries.get(&branch) {
         return Ok(Arc::clone(scanned));
     }
     let scanned = Arc::new(scan::scan(source.replay_ref(), branch, cancelled)?);
     scans.runs += 1;
-    scans.entries.push_back((branch, Arc::clone(&scanned)));
-    while scans.entries.len() > CACHED_BRANCHES {
-        scans.entries.pop_front();
-    }
+    scans.entries.insert(branch, Arc::clone(&scanned));
     Ok(scanned)
 }
 

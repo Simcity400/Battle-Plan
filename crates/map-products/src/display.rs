@@ -3,7 +3,6 @@ use map_display_data as data;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{
-    collections::VecDeque,
     io,
     sync::{Arc, Mutex},
 };
@@ -138,20 +137,20 @@ impl FogProduct {
             ),
             music: fog.music.map(Arc::new),
             battles: fog.battles.map(Arc::new),
+            music_inputs: None,
         })
     }
 }
 
+/// Equal snow grids as one allocation, for every grid some holder still keeps: a view that
+/// uploaded one uploads nothing for an equal grid. A grid nobody holds is forgotten.
+#[derive(Default)]
 pub struct SnowMemo {
-    values: Mutex<VecDeque<Arc<map_snow::SnowMud>>>,
-    capacity: usize,
+    values: Mutex<Vec<std::sync::Weak<map_snow::SnowMud>>>,
 }
 impl SnowMemo {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            values: Mutex::new(VecDeque::new()),
-            capacity,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
     fn intern(&self, snow: map_snow::SnowMud) -> Arc<map_snow::SnowMud> {
         self.intern_shared(Arc::new(snow))
@@ -161,19 +160,16 @@ impl SnowMemo {
             .values
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        values.retain(|value| value.strong_count() != 0);
         if let Some(value) = values
             .iter()
             .rev()
-            .find(|v| Arc::ptr_eq(v, &snow) || ***v == *snow)
+            .filter_map(std::sync::Weak::upgrade)
+            .find(|value| Arc::ptr_eq(value, &snow) || **value == *snow)
         {
-            return Arc::clone(value);
+            return value;
         }
-        if self.capacity != 0 {
-            values.push_back(Arc::clone(&snow));
-        }
-        while values.len() > self.capacity {
-            values.pop_front();
-        }
+        values.push(Arc::downgrade(&snow));
         snow
     }
 }

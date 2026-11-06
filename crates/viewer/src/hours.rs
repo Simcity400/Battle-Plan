@@ -46,6 +46,12 @@ mod dispatch_plan;
 mod flow;
 mod memory_pressure;
 mod shared_decoder;
+mod shared_hours;
+pub(crate) use shared_hours::Held;
+use shared_hours::{
+    Adopt, BuildingField, Cells, Deliver, Delivery, Found, HourStore, Territory, TerritoryKey,
+    Width, deliver_when, near_values, take_shared,
+};
 mod source_mailbox;
 pub use shared_decoder::SharedDecoder;
 mod trace;
@@ -459,6 +465,28 @@ pub struct Borders {
 }
 
 impl Borders {
+    /// `shared`'s buckets over this view's own `political` fill, which holds the same regions:
+    /// a neighbour's when it has them, else `shared`'s plans under this view's ids.
+    fn adopt(political: u64, shared: &Self, near: &[Arc<Self>]) -> Arc<Self> {
+        if let Some(same) = near
+            .iter()
+            .find(|near| near.political == political && near.zone == shared.zone)
+        {
+            return Arc::clone(same);
+        }
+        let mut classes = shared.classes.clone();
+        for near in near {
+            classes.share(&near.classes);
+        }
+        Arc::new(Self {
+            id: next_id(),
+            political,
+            zone: shared.zone.clone(),
+            classes,
+            highlighted: shared.highlighted.clone(),
+        })
+    }
+
     fn reuse_or_build(
         political: u64,
         zone: map_display_data::retained::Retained<Zone>,
@@ -529,6 +557,8 @@ pub struct Layers {
     /// The camera-independent tables `overlay` was laid out from, raid icons
     /// included, so the window lays out other cameras without rebuilding them.
     pub overlay_tables: OverlayTables,
+    /// The shared products this hour was built from, which other views of it take while held.
+    pub(crate) held: Vec<Held>,
 }
 
 /// Elapsed time of one part, with its own thread's CPU time when profiled.
@@ -696,7 +726,7 @@ pub struct Built {
     pub(crate) trace: trace::TargetTrace,
 }
 
-type PartWork = Box<dyn FnMut(&HourView<'_>, &mut BuilderSpans) -> Part + Send>;
+type PartWork = Box<dyn FnMut(&HourView<'_>, &mut BuilderSpans) -> Delivery + Send>;
 
 enum Part {
     Political(io::Result<(Arc<Political>, Arc<Borders>)>),
@@ -865,15 +895,11 @@ struct Memos {
     fog: map_products::FogMemos,
 }
 
-/// How many recent values each memo keeps: the pool builds several hours at
-/// once, and a step back or a perspective switch returns to a recent one.
-const MEMO_ENTRIES: usize = 8;
-
 impl Memos {
     fn new() -> Self {
         Self {
-            snow_shared: map_products::display::SnowMemo::new(MEMO_ENTRIES),
-            fog: map_products::FogMemos::new(MEMO_ENTRIES),
+            snow_shared: map_products::display::SnowMemo::new(),
+            fog: map_products::FogMemos::new(),
         }
     }
 }
@@ -902,6 +928,8 @@ enum Event {
         timing: PartTiming,
         children: Vec<BuilderSpan>,
         part: Box<Part>,
+        /// The shared product the part was made from, kept with the hour.
+        held: Option<Held>,
     },
 }
 
@@ -911,6 +939,10 @@ pub struct Resources {
     pool: Arc<Pool>,
     frame_workers: Workers,
     decoders: Mutex<BTreeMap<usize, Weak<SharedDecoder>>>,
+    /// Each source's shared hour products, while a view builds from them.
+    stores: Mutex<Vec<Weak<HourStore>>>,
+    /// The in-flight width the views on this pool share.
+    width: Arc<Width>,
     pub dropper: Arc<Dropper>,
 }
 
@@ -918,12 +950,31 @@ impl Resources {
     pub fn new() -> io::Result<Arc<Self>> {
         let pool = Arc::new(Pool::new(builder_count())?);
         let frame_workers = viewer_foundation::frame_assist::workers(pool.clone());
+        let width = Width::new(viewer_foundation::parallel::Spawn::threads(&*pool));
         Ok(Arc::new(Self {
             pool,
             frame_workers,
             decoders: Mutex::new(BTreeMap::new()),
+            stores: Mutex::new(Vec::new()),
+            width,
             dropper: Arc::new(Dropper::new()?),
         }))
+    }
+
+    /// The hour products every view of `content` and `replay` shares.
+    fn store(&self, content: &Arc<Content>, replay: &Arc<Replay>) -> io::Result<Arc<HourStore>> {
+        let mut stores = self.stores.lock().map_err(|_| stopped())?;
+        stores.retain(|store| store.strong_count() != 0);
+        if let Some(store) = stores
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|store| store.serves(content, replay))
+        {
+            return Ok(store);
+        }
+        let store = HourStore::shared(content, replay);
+        stores.push(Arc::downgrade(&store));
+        Ok(store)
     }
 
     /// A bounded nonblocking admission path for scene creation. The caller can
@@ -982,6 +1033,12 @@ struct Pending {
     laps: Vec<(&'static str, PartTiming)>,
     child_laps: Vec<(&'static str, Vec<BuilderSpan>)>,
     view: View,
+    /// The shared products the parts were made from.
+    held: Vec<Held>,
+    /// Parts in hand when the target was decoded, by [`part_rank`] bit.
+    prefilled: u8,
+    /// Parts another view's builder delivers, with no job of this target's own.
+    awaited: u8,
 }
 
 /// Fixed part order, shared by error priority and lap reporting, so
@@ -1105,6 +1162,48 @@ impl Pending {
         }))
     }
 
+    /// Takes a part in hand at decode: reused, or shared and already built.
+    fn prefill(&mut self, name: &'static str, part: Part, held: Option<Held>, state: &'static str) {
+        self.trace.finish(name, state);
+        self.prefilled |= 1 << part_rank(&part);
+        self.held.extend(held);
+        self.take(
+            self.ticket,
+            name,
+            PartTiming {
+                ms: 0.0,
+                cpu_ms: Some(0.0),
+            },
+            Vec::new(),
+            part,
+        );
+    }
+
+    /// Takes the product another view holds or builds for the part `deliver` names; false when
+    /// this target builds or claims it with a job of its own.
+    fn share<K: PartialEq, V: Send + Sync + 'static>(
+        &mut self,
+        cells: &Cells<K, V>,
+        key: &K,
+        at: (BranchId, Hour),
+        adopt: &Adopt<V>,
+        deliver: Deliver,
+    ) -> bool {
+        match cells.peek(key, at) {
+            None => false,
+            Some(Found::Built(value)) => {
+                let held = Arc::clone(&value) as Held;
+                self.prefill(deliver.name, adopt(Ok(value), false), Some(held), "shared");
+                true
+            }
+            Some(Found::Building(cell)) => {
+                self.awaited |= 1 << (lap_rank(deliver.name) - 1);
+                deliver_when(&cell, deliver, Arc::clone(adopt));
+                true
+            }
+        }
+    }
+
     fn reuse(&mut self, parts: &Reusable) {
         for (name, part) in [
             ("rails", Part::Rails(Ok(Arc::clone(&parts.rails)))),
@@ -1113,17 +1212,7 @@ impl Pending {
             ("fog", Part::Fog(Ok(Arc::clone(&parts.fog)))),
             ("snow", Part::Snow(Ok(Arc::clone(&parts.snow)))),
         ] {
-            self.trace.finish(name, "reused");
-            self.take(
-                self.ticket,
-                name,
-                PartTiming {
-                    ms: 0.0,
-                    cpu_ms: Some(0.0),
-                },
-                Vec::new(),
-                part,
-            );
+            self.prefill(name, part, None, "reused");
         }
     }
 
@@ -1141,6 +1230,7 @@ impl Pending {
             map_text,
             music,
             battles,
+            ..
         } = (*self.fog.ok_or_else(missing)?).clone();
         let (overlay, overlay_tables) = self.overlay.ok_or_else(missing)?;
         let (buildings, building_warnings) = self.buildings.ok_or_else(missing)?;
@@ -1166,6 +1256,7 @@ impl Pending {
             names: self.names.ok_or_else(missing)?,
             overlay,
             overlay_tables,
+            held: self.held,
         })
     }
 }
@@ -1802,10 +1893,13 @@ struct CoordinatorState {
     /// The shared parts of the hours last dispatched, which the neighbouring
     /// hours' parts compare with.
     slots: BTreeMap<(BranchId, Hour), Slots>,
-    memos: Arc<Memos>,
+    /// The hour products this view shares with the other views of its source.
+    store: Arc<HourStore>,
     reusable: BTreeMap<(BranchId, Hour), Arc<Reusable>>,
     pool: Arc<Pool>,
     parallel: usize,
+    /// The in-flight width this view shares with the other views on its pool.
+    width: Arc<Width>,
     events: Sender<Event>,
     outbox: mpsc::SyncSender<Built>,
     result_space: Arc<AtomicBool>,
@@ -2066,6 +2160,9 @@ impl coordinator::BuildTarget for Coordinator {
             laps: vec![("decode", decode_ms.into())],
             child_laps: Vec::new(),
             view: want.view,
+            held: Vec::new(),
+            prefilled: 0,
+            awaited: 0,
         };
         if let Some(timing) = history_timing {
             pending.laps.push(("political_history", timing));
@@ -2081,8 +2178,20 @@ impl coordinator::BuildTarget for Coordinator {
         // A part waits only for the neighbours' slots present now. Each of
         // those belongs to an hour dispatched before this one, whose jobs the
         // pool therefore took first; a cancelled or panicked part still fills
-        // its slots, so no wait is for ever.
+        // its slots, so no wait is for ever. A slot another view's builder
+        // fills is filled by running work, whose build waits on nothing.
         self.slots.insert((branch, hour), slots.clone());
+        let store = Arc::clone(&self.store);
+        let at = (branch, hour);
+        let deliver = |name: &'static str| Deliver {
+            events: self.events.clone(),
+            ticket,
+            epoch,
+            branch,
+            hour,
+            name,
+            trace: trace.clone(),
+        };
         // Only overlay and movers share these immutable inputs within this ticket.
         let worker_etas = Arc::new(viewer_foundation::movement_timing::WorkerEtas::default());
         let air_rosters = self.playback.air_rosters();
@@ -2117,73 +2226,156 @@ impl coordinator::BuildTarget for Coordinator {
             let fill = Fill(Arc::clone(&slots.political));
             let fill_borders = Fill(Arc::clone(&slots.borders));
             let near_regions = slots_of(&neighbours, |slots| &slots.political);
+            let near_borders = slots_of(&neighbours, |slots| &slots.borders);
             let political_perspective = want.perspective.clone();
             let map_mode = want.map_mode.clone();
             let selected = want.diplomatic_selected;
-            let near_borders = slots_of(&neighbours, |slots| &slots.borders);
+            let ours = vision.ours();
+            // The diplomacy mode colours relations from the selected country, the others from ours.
+            let relations = if matches!(
+                map_mode,
+                viewer_world::map::map_mode::MapMode::Stock(
+                    viewer_world::map::map_mode::Stock::Diplomacy
+                )
+            ) {
+                selected.unwrap_or(ours)
+            } else {
+                ours
+            };
             // Carry from the preceding built hour, including the mode-only
             // refreshes of skipped recorded hours. With no predecessor the
             // first shown hour starts cold, as a seek does.
             let previous = previous
                 .as_ref()
                 .map(|(_, slots)| Arc::clone(&slots.political));
+            // This view's neighbours keep their ids for an equal fill, so its uploads are skipped.
+            let adopt: Adopt<Territory> =
+                Arc::new(move |value: io::Result<Arc<Territory>>, wait: bool| {
+                    Part::Political(value.map(|territory| {
+                        let political = near_values(&near_regions, wait)
+                            .into_iter()
+                            .find(|near| {
+                                Arc::ptr_eq(near, &territory.political)
+                                    || (near.layers.regions == territory.political.layers.regions
+                                        && near.colour == territory.political.colour)
+                            })
+                            .unwrap_or_else(|| Arc::clone(&territory.political));
+                        fill.set(Some(Arc::clone(&political)));
+                        let borders = if Arc::ptr_eq(&political, &territory.political) {
+                            Arc::clone(&territory.borders)
+                        } else {
+                            Borders::adopt(
+                                political.id,
+                                &territory.borders,
+                                &near_values(&near_borders, wait),
+                            )
+                        };
+                        fill_borders.set(Some(Arc::clone(&borders)));
+                        (political, borders)
+                    }))
+                });
+            let store = Arc::clone(&store);
+            let deliver = deliver("political");
             submit(
                 "political",
                 Box::new(move |view, _spans| {
-                    Part::Political((|| {
-                        let colour = match &colour {
-                            Some(colour) => colour
-                                .as_ref()
-                                .cloned()
-                                .map_err(|error| io::Error::new(error.kind(), error.to_string()))?,
-                            None => previous
-                                .as_ref()
-                                .and_then(|slot| slot.wait())
-                                .and_then(|political| political.colour.clone()),
-                        };
-                        let product = view.political_product(
-                            &map_mode,
-                            &political_perspective,
-                            selected,
-                            colour.as_deref(),
-                        )?;
-                        let near = wait_all(near_regions.clone());
-                        let political = match near.iter().find(|near| {
-                            near.layers.regions == product.layers.regions
-                                && near.colour == product.colour
-                        }) {
-                            Some(same) => Arc::clone(same),
-                            None => Arc::new(Political {
-                                id: next_id(),
-                                layers: product.layers,
-                                colour: product.colour,
-                                _projection: product.projection,
-                            }),
-                        };
-                        fill.set(Some(Arc::clone(&political)));
-                        let zone = product.zone;
-                        let near = wait_all(near_borders.clone());
-                        let borders = Borders::reuse_or_build(political.id, zone, &near, |zone| {
-                            (
-                                ClassPlan::new(
-                                    &view.border_meshes,
-                                    &political.layers.regions,
-                                    zone,
-                                ),
-                                ZonePlan::new(&view.border_meshes, &political.layers.regions, zone),
-                            )
-                        });
-                        fill_borders.set(Some(Arc::clone(&borders)));
-                        Ok((political, borders))
-                    })())
+                    let colour = match &colour {
+                        Some(colour) => match colour.as_ref().cloned() {
+                            Ok(colour) => colour,
+                            Err(error) => {
+                                return Part::Political(Err(io::Error::new(
+                                    error.kind(),
+                                    error.to_string(),
+                                )))
+                                .into();
+                            }
+                        },
+                        None => previous
+                            .as_ref()
+                            .and_then(|slot| slot.wait())
+                            .and_then(|political| political.colour.clone()),
+                    };
+                    let key = TerritoryKey {
+                        mode: map_mode.clone(),
+                        ours,
+                        selected: relations,
+                        colour: colour.clone().map(shared_hours::Same),
+                    };
+                    take_shared(
+                        &store.territory,
+                        key.clone(),
+                        at,
+                        deliver.clone(),
+                        Arc::clone(&adopt),
+                        || {
+                            let product = view.political_product(
+                                &map_mode,
+                                &political_perspective,
+                                selected,
+                                colour.as_deref(),
+                            )?;
+                            let near = store.territory.settled(&key, at);
+                            let political = match near.iter().find(|near| {
+                                near.political.layers.regions == product.layers.regions
+                                    && near.political.colour == product.colour
+                            }) {
+                                Some(same) => Arc::clone(&same.political),
+                                None => Arc::new(Political {
+                                    id: next_id(),
+                                    layers: product.layers,
+                                    colour: product.colour,
+                                    _projection: product.projection,
+                                }),
+                            };
+                            let near_borders: Vec<_> =
+                                near.iter().map(|near| Arc::clone(&near.borders)).collect();
+                            let borders = Borders::reuse_or_build(
+                                political.id,
+                                product.zone,
+                                &near_borders,
+                                |zone| {
+                                    (
+                                        ClassPlan::new(
+                                            &view.border_meshes,
+                                            &political.layers.regions,
+                                            zone,
+                                        ),
+                                        ZonePlan::new(
+                                            &view.border_meshes,
+                                            &political.layers.regions,
+                                            zone,
+                                        ),
+                                    )
+                                },
+                            );
+                            Ok(Arc::new(Territory { political, borders }))
+                        },
+                    )
                 }),
             );
         }
-        let names_mode = want.map_mode.clone();
-        submit(
-            "names",
-            Box::new(move |view, _spans| Part::Names(view.shared_names(&names_mode))),
-        );
+        {
+            let mode = want.map_mode.clone();
+            let adopt: Adopt<Placements> =
+                Arc::new(|value: io::Result<Arc<Placements>>, _: bool| Part::Names(value));
+            if !pending.share(&store.names, &mode, at, &adopt, deliver("names")) {
+                let store = Arc::clone(&store);
+                let deliver = deliver("names");
+                submit(
+                    "names",
+                    Box::new(move |view, _spans| {
+                        take_shared(
+                            &store.names,
+                            mode.clone(),
+                            at,
+                            deliver.clone(),
+                            Arc::clone(&adopt),
+                            || view.shared_names(&mode),
+                        )
+                    }),
+                );
+            }
+        }
         let (camera, viewport, ui_scale) =
             (want.view.camera, want.view.viewport, want.view.ui_scale);
         let overlay_perspective = want.perspective.clone();
@@ -2232,6 +2424,7 @@ impl coordinator::BuildTarget for Coordinator {
                     })?;
                     Ok(Box::new((overlay, tables)))
                 })())
+                .into()
             }),
         );
         if reusable.is_some() {
@@ -2240,39 +2433,94 @@ impl coordinator::BuildTarget for Coordinator {
         {
             let fill = Fill(Arc::clone(&slots.rails));
             let near = slots_of(&neighbours, |slots| &slots.rails);
-            let device = Arc::clone(&self.device);
-            submit(
-                "rails",
-                Box::new(move |view, _spans| {
-                    Part::Rails((|| {
-                        let rails = Rails::share(
-                            wait_all(near.clone()),
-                            view.rail_product()?,
-                            device.get(),
-                        )?;
-                        fill.set(Some(Arc::clone(&rails)));
-                        Ok(rails)
-                    })())
-                }),
-            );
+            let adopt: Adopt<Rails> = Arc::new(move |value: io::Result<Arc<Rails>>, wait: bool| {
+                Part::Rails(value.map(|rails| {
+                    let rails = near_values(&near, wait)
+                        .into_iter()
+                        .find(|near| Arc::ptr_eq(near, &rails) || near.value == rails.value)
+                        .unwrap_or(rails);
+                    fill.set(Some(Arc::clone(&rails)));
+                    rails
+                }))
+            });
+            let device = self.device.get().cloned();
+            if !pending.share(&store.rails, &device, at, &adopt, deliver("rails")) {
+                let store = Arc::clone(&store);
+                let deliver = deliver("rails");
+                submit(
+                    "rails",
+                    Box::new(move |view, _spans| {
+                        take_shared(
+                            &store.rails,
+                            device.clone(),
+                            at,
+                            deliver.clone(),
+                            Arc::clone(&adopt),
+                            || {
+                                Rails::share(
+                                    store.rails.settled(&device, at),
+                                    view.rail_product()?,
+                                    device.as_ref(),
+                                )
+                            },
+                        )
+                    }),
+                );
+            }
         }
         {
             let fill = Fill(Arc::clone(&slots.buildings));
             let near = slots_of(&neighbours, |slots| &slots.buildings);
-            let building_perspective = want.perspective.clone();
-            submit(
-                "buildings",
-                Box::new(move |view, spans| {
-                    Part::Buildings(
-                        view.map_building_field_profiled(&building_perspective, spans)
-                            .map(|(field, summary)| {
-                                let buildings = Shared::share(wait_all(near.clone()), field);
-                                fill.set(Some(Arc::clone(&buildings)));
-                                (buildings, summary.warnings())
-                            }),
-                    )
-                }),
-            );
+            let adopt: Adopt<BuildingField> =
+                Arc::new(move |value: io::Result<Arc<BuildingField>>, wait: bool| {
+                    Part::Buildings(value.map(|built| {
+                        let field = near_values(&near, wait)
+                            .into_iter()
+                            .find(|near| {
+                                Arc::ptr_eq(near, &built.field) || near.value == built.field.value
+                            })
+                            .unwrap_or_else(|| Arc::clone(&built.field));
+                        fill.set(Some(Arc::clone(&field)));
+                        (field, built.warnings.clone())
+                    }))
+                });
+            let perspective = want.perspective.clone();
+            if !pending.share(
+                &store.buildings,
+                &perspective,
+                at,
+                &adopt,
+                deliver("buildings"),
+            ) {
+                let store = Arc::clone(&store);
+                let deliver = deliver("buildings");
+                submit(
+                    "buildings",
+                    Box::new(move |view, spans| {
+                        take_shared(
+                            &store.buildings,
+                            perspective.clone(),
+                            at,
+                            deliver.clone(),
+                            Arc::clone(&adopt),
+                            || {
+                                let (field, summary) =
+                                    view.map_building_field_profiled(&perspective, spans)?;
+                                let near = store
+                                    .buildings
+                                    .settled(&perspective, at)
+                                    .iter()
+                                    .map(|near| Arc::clone(&near.field))
+                                    .collect();
+                                Ok(Arc::new(BuildingField {
+                                    field: Shared::share(near, field),
+                                    warnings: summary.warnings(),
+                                }))
+                            },
+                        )
+                    }),
+                );
+            }
         }
         let movers_perspective = want.perspective.clone();
         let show_allied_plans = want.show_allied_plans;
@@ -2322,24 +2570,55 @@ impl coordinator::BuildTarget for Coordinator {
                         impacts,
                     }))
                 })())
+                .into()
             }),
         );
-        let fog_perspective = want.perspective.clone();
-        let memos = Arc::clone(&self.memos);
-        submit(
-            "fog",
-            Box::new(move |view, spans| {
-                Part::Fog(view.fog_products(&fog_perspective, &memos.fog, spans))
-            }),
-        );
-        let memos = Arc::clone(&self.memos);
-        submit(
-            "snow",
-            Box::new(move |view, _spans| {
-                let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
-                Part::Snow(view.snow_product(&memos.snow_shared))
-            }),
-        );
+        {
+            let perspective = want.perspective.clone();
+            let adopt: Adopt<FogPart> =
+                Arc::new(|value: io::Result<Arc<FogPart>>, _: bool| Part::Fog(value));
+            if !pending.share(&store.fog, &perspective, at, &adopt, deliver("fog")) {
+                let store = Arc::clone(&store);
+                let deliver = deliver("fog");
+                submit(
+                    "fog",
+                    Box::new(move |view, spans| {
+                        take_shared(
+                            &store.fog,
+                            perspective.clone(),
+                            at,
+                            deliver.clone(),
+                            Arc::clone(&adopt),
+                            || view.fog_products(&perspective, &store.memos.fog, spans),
+                        )
+                    }),
+                );
+            }
+        }
+        {
+            let adopt: Adopt<SnowMud> =
+                Arc::new(|value: io::Result<Arc<SnowMud>>, _: bool| Part::Snow(value));
+            if !pending.share(&store.snow, &(), at, &adopt, deliver("snow")) {
+                let store = Arc::clone(&store);
+                let deliver = deliver("snow");
+                submit(
+                    "snow",
+                    Box::new(move |view, _spans| {
+                        take_shared(
+                            &store.snow,
+                            (),
+                            at,
+                            deliver.clone(),
+                            Arc::clone(&adopt),
+                            || {
+                                let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
+                                view.snow_product(&store.memos.snow_shared)
+                            },
+                        )
+                    }),
+                );
+            }
+        }
         PreparedTarget::Parts(Box::new(pending), jobs)
     }
 }
@@ -2411,8 +2690,14 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
                     (job.work)(&view, &mut children)
                 })) {
                     Ok(part) => part,
-                    Err(_) => Part::failed(name),
+                    Err(_) => Part::failed(name).into(),
                 }
+            };
+            // Another view's builder delivers the part once its shared product is built.
+            let Delivery::Now(part, held) = part else {
+                job.trace.finish(name, "joined");
+                drop(job.work);
+                return;
             };
             let cpu_ms = cpu_started.and_then(|start| {
                 viewer_foundation::profiling::current_thread_cpu_time()?
@@ -2432,6 +2717,7 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
                 },
                 children: children.into_records(),
                 part: Box::new(part),
+                held,
             });
             drop(job.work);
         }),
@@ -2498,6 +2784,8 @@ impl Pipeline {
             pool,
             frame_workers,
             None,
+            HourStore::private(),
+            Width::new(parallel),
             parallel,
             binding,
         )
@@ -2518,6 +2806,8 @@ impl Pipeline {
             Arc::clone(&resources.pool),
             resources.frame_workers.clone(),
             None,
+            HourStore::private(),
+            Width::new(parallel),
             parallel,
             binding,
         )
@@ -2529,7 +2819,8 @@ impl Pipeline {
         resources: &Resources,
     ) -> io::Result<Self> {
         let decoder = resources.decoder(Arc::clone(&replay))?;
-        // Each map keeps as many hours in flight as the shared pool builds at once.
+        let store = resources.store(&content, &replay)?;
+        // The maps on the pool share one pool's worth of hours in flight between them.
         let parallel = viewer_foundation::parallel::Spawn::threads(&*resources.pool);
         Self::start(
             content,
@@ -2537,6 +2828,8 @@ impl Pipeline {
             Arc::clone(&resources.pool),
             resources.frame_workers.clone(),
             Some(decoder),
+            store,
+            Arc::clone(&resources.width),
             parallel,
             None,
         )
@@ -2544,12 +2837,15 @@ impl Pipeline {
 
     /// Every thread it starts and every job it hands the pool reads the recording's own
     /// executable tables.
+    #[allow(clippy::too_many_arguments)]
     fn start(
         content: Arc<Content>,
         replay: Arc<Replay>,
         pool: Arc<Pool>,
         frame_workers: Workers,
         shared_decoder: Option<Arc<SharedDecoder>>,
+        store: Arc<HourStore>,
+        width: Arc<Width>,
         parallel: usize,
         binding: Option<Arc<crate::map_binding::MapBinding>>,
     ) -> io::Result<Self> {
@@ -2561,18 +2857,23 @@ impl Pipeline {
                 pool,
                 frame_workers,
                 shared_decoder,
+                store,
+                width,
                 parallel,
                 binding,
             )
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_scoped(
         content: Arc<Content>,
         replay: Arc<Replay>,
         pool: Arc<Pool>,
         frame_workers: Workers,
         shared_decoder: Option<Arc<SharedDecoder>>,
+        store: Arc<HourStore>,
+        width: Arc<Width>,
         parallel: usize,
         binding: Option<Arc<crate::map_binding::MapBinding>>,
     ) -> io::Result<Self> {
@@ -2617,10 +2918,11 @@ impl Pipeline {
                 usable_sent: BTreeSet::new(),
                 anchor: None,
                 slots: BTreeMap::new(),
-                memos: Arc::new(Memos::new()),
+                store,
                 reusable: BTreeMap::new(),
                 pool: Arc::clone(&pool),
                 parallel,
+                width,
                 events: events.clone(),
                 outbox,
                 result_space: result_space.clone(),
@@ -3011,6 +3313,9 @@ mod mode_tests {
             laps: Vec::new(),
             child_laps: Vec::new(),
             view: want().view,
+            held: Vec::new(),
+            prefilled: 0,
+            awaited: 0,
         };
         let rails = Arc::new(Rails {
             id: next_id(),

@@ -76,7 +76,6 @@ pub(crate) fn publication<P: PageRead>(snapshot: &Snapshot<'_, P>) -> Published 
 
 impl Reading<'_> {
     /// `build`'s answer, kept per publication where the reading keeps what it builds.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn keep<T: Send + Sync + 'static>(
         &self,
         what: &'static str,
@@ -84,7 +83,6 @@ impl Reading<'_> {
         params: &impl Serialize,
         publication: &Published,
         cancelled: &AtomicBool,
-        bytes: impl FnOnce(&T) -> usize,
         build: impl FnOnce() -> io::Result<T>,
     ) -> io::Result<Arc<T>> {
         match self.kept {
@@ -93,18 +91,10 @@ impl Reading<'_> {
                 what,
                 Some(key),
             )
-            .get_entry(branch, params, publication, cancelled, bytes, build),
+            .get_entry(branch, params, publication, cancelled, build),
             None => build().map(Arc::new),
         }
     }
-}
-
-/// Owned strings' heap bytes, with their own size, for a cache's charge.
-pub(crate) fn text_bytes<'s>(texts: impl IntoIterator<Item = &'s String>) -> usize {
-    texts
-        .into_iter()
-        .map(|text| std::mem::size_of::<String>() + text.capacity())
-        .sum()
 }
 
 /// The recorded content stack's catalogue and equipment types; none without the game folders,

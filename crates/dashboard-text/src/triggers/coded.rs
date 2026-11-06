@@ -5,7 +5,7 @@ use crate::triggers::Failure;
 use std::collections::BTreeSet;
 
 use installed_content_core::{parser::Item, parser::Operator};
-use replay_data::rows::tables;
+use replay_data::rows::{TableSchema, tables};
 use replay_frame::frame::Leader;
 
 use super::{
@@ -165,7 +165,8 @@ impl Evaluator<'_, '_> {
                         )))
                     };
                     declared(wanted)?;
-                    let actual = &world.appearance(slot)?.leader_ideology;
+                    let appearance = world.appearance(slot)?;
+                    let actual = &appearance.leader_ideology;
                     if !actual.is_empty() {
                         declared(actual)?;
                     }
@@ -332,7 +333,7 @@ impl Evaluator<'_, '_> {
                     None => Eval::False,
                     Some(Scope::Leader(leader)) => match world.unit_leader(leader)? {
                         None => Eval::False,
-                        Some(row) => self.leader_visible(row),
+                        Some(row) => self.leader_visible(&*row),
                     },
                     Some(other) => {
                         return Err(format!(
@@ -805,13 +806,25 @@ impl Evaluator<'_, '_> {
             let mut undecided = 0_i64;
             let mut reasons = BTreeSet::new();
             let derived;
-            let states = if let Some(recorded) = recorded {
-                recorded
+            let states: &[u32] = if let Some(recorded) = &recorded {
+                &**recorded
             } else {
-                let provinces = super::world::provinces(self.world().frame())?;
-                let nonempty: BTreeSet<_> =
-                    provinces.iter().map(|province| province.state).collect();
-                derived = table::<tables::States>(self.world().frame())?
+                let nonempty = super::world::province_values(self.world().tables())?
+                    .map(|province| province.map(|province| province.state))
+                    .collect::<Result<BTreeSet<_>, Failure>>()?;
+                let rows = table::<tables::States>(
+                    self.world().tables(),
+                    replay_data::rows::mask::<replay_data::rows::StateRow>(&[
+                        "owner",
+                        "controller",
+                    ]),
+                )?
+                .iter()
+                .map(|row| {
+                    row.map_err(|why| super::refusal::input_error(tables::States::ID, why))
+                })
+                .collect::<Result<Vec<_>, Failure>>()?;
+                derived = rows
                     .iter()
                     .filter_map(|state| {
                         let raw = if controlled {
@@ -1260,7 +1273,9 @@ impl Evaluator<'_, '_> {
     fn any_captured_general(&self, slot: u32) -> Result<Eval, Failure> {
         let world = self.world();
         let mut result = Eval::False;
-        for row in super::world::leaders(world.frame())?.iter() {
+        for row in super::world::leaders(world.tables())?.iter() {
+            let row = row.map_err(|why| super::refusal::input_error(tables::UnitLeaders::ID, why))?;
+            let row = &*row;
             if row.captured == 0 {
                 continue;
             }

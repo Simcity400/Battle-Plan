@@ -4,7 +4,7 @@ use crate::{
 };
 use replay::{
     columnar_file::{FileWriter, Hour, Settings},
-    columnar_frames::{self, Limits, Recording},
+    columnar_frames::{self, Recording},
 };
 use replay_columnar::{
     envelope,
@@ -208,7 +208,7 @@ fn two_hand_built_hours_walk_without_inventing_missing_rows() {
             .unwrap();
     }
     let bytes = writer.finish(|_| Ok(())).unwrap().file.into_inner();
-    let mut recording = Recording::open(bytes, Limits::default()).unwrap();
+    let mut recording = Recording::open(bytes).unwrap();
     recording.select(&[TableId::Countries]);
     let mut census = Census::new(Layout::new(&[TableId::Countries], 0), &schema);
     let selection = Selection {

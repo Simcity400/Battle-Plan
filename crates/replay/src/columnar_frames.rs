@@ -22,7 +22,7 @@ use crate::{
         DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, RowChange, SharedView, Stamp,
         TableUpdate, TableView, not_selected,
     },
-    rows::{DeltaRow, Field, List, Opaque, RowChanges, TABLE_COUNT, TableId, TableRows, full_mask},
+    rows::{DeltaRow, RowChanges, TABLE_COUNT, TableId, TableRows, full_mask},
     scope::CaptureMode,
 };
 #[cfg(any(test, feature = "test-support"))]
@@ -33,7 +33,7 @@ use replay_columnar::{
 use replay_columnar::{
     manifest::{Manifest, Status},
     section::Changes,
-    state::{Cell, Kind as Column, Table},
+    state::{Kind as Column, Table},
     walk::{Dictionary, State},
 };
 use std::{
@@ -48,9 +48,8 @@ use std::{
 
 mod input;
 mod reader;
-pub use input::{Budget, Limits};
 pub(crate) use reader::Reads;
-pub use reader::{Damage, DamageScope, Recording, Run, Timings, Walker};
+pub use reader::{Damage, DamageScope, Recording, Run, Tally, Timings, Walker};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
@@ -63,6 +62,23 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
+/// The tables whose last complete read every restart holds, its read hour with it, so a walk
+/// starting at a restart knows them without the hours before.
+pub const LAST_COMPLETE: [TableId; 3] = [
+    TableId::Divisions,
+    TableId::DivisionEquipmentDeletions,
+    TableId::SunkShips,
+];
+
+/// [`LAST_COMPLETE`] by table index.
+pub fn keeps_last() -> [bool; TABLE_COUNT] {
+    let mut keeps = [false; TABLE_COUNT];
+    for table in LAST_COMPLETE {
+        keeps[table.index()] = true;
+    }
+    keeps
+}
+
 /// Every schema table's column kinds, in the recording's table order.
 pub fn schema() -> io::Result<Vec<Vec<Column>>> {
     let mut schema = engine_allocation::vec(TableId::ALL.len())?;
@@ -71,6 +87,8 @@ pub fn schema() -> io::Result<Vec<Vec<Column>>> {
     }
     Ok(schema)
 }
+
+pub(crate) use crate::frame::wire;
 
 /// Each schema table's columns a recording of row format `format` holds: the fields that
 /// format wrote, schema fields being columns one for one, a table whose layout changed since
@@ -99,47 +117,6 @@ pub fn withheld_at(format: u16) -> io::Result<Vec<(usize, String)>> {
         }
     }
     Ok(withheld)
-}
-
-/// `slot`'s cell in `column` in the wire form a row's field codec reads: a text cell's
-/// dictionary bytes, an opaque cell as its payload encoded at `format`.
-pub(crate) fn wire<'a>(
-    table: &'a Table,
-    dictionary: &'a Dictionary,
-    slot: u32,
-    column: usize,
-    format: u16,
-) -> io::Result<Field<'a>> {
-    if !table.recorded(column, slot) {
-        return Ok(Field::NotRecorded);
-    }
-    let cell = table
-        .column(column)
-        .and_then(|values| values.cell(slot))
-        .ok_or_else(|| invalid("A live slot holds no cell"))?;
-    Ok(match cell {
-        Cell::U8(value) => Field::U8(value),
-        Cell::I8(value) => Field::I8(value),
-        Cell::U16(value) => Field::U16(value),
-        Cell::I16(value) => Field::I16(value),
-        Cell::U32(value) => Field::U32(value),
-        Cell::I32(value) => Field::I32(value),
-        Cell::U64(value) => Field::U64(value),
-        Cell::I64(value) => Field::I64(value),
-        Cell::Bool(value) => Field::Bool(value),
-        Cell::OptionalI32(value) => Field::OptionalI32(value),
-        Cell::OptionalU32(value) => Field::OptionalU32(value),
-        Cell::OptionalI64(value) => Field::OptionalI64(value),
-        Cell::OptionalU64(value) => Field::OptionalU64(value),
-        Cell::Bytes(id) => Field::Bytes(
-            dictionary
-                .get(id)
-                .ok_or_else(|| invalid("A text cell names a missing dictionary entry"))?,
-        ),
-        Cell::U32List(items) => Field::U32List(List::Native(items)),
-        Cell::U64List(items) => Field::U64List(List::Native(items)),
-        Cell::Opaque(bytes) => Field::Opaque(Opaque::Encoded(bytes, format)),
-    })
 }
 
 /// `table`'s rows at `slots`, sorted by key, built from their columns.
@@ -571,7 +548,7 @@ pub struct Views {
     pending: Vec<Pending>,
     /// The hour the views were built for last.
     built: Option<i32>,
-    /// The owner the views' change facts and field stamps are charged to, when they carry them.
+    /// Whether complete views carry change facts and field stamps.
     changes: bool,
     /// The last build's times, when builds are timed.
     timed: bool,

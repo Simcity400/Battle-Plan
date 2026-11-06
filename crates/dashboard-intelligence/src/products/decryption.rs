@@ -13,7 +13,10 @@ use dashboard_text::{
 use replay_data::{rows::CountryRow, rows::CryptologyRow, rows::TableId, rows::tables};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    io,
+};
 use ts_rs::TS;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -103,8 +106,9 @@ impl DecryptionRun {
     /// The daily update adds the fixed daily share (power/count, signed division),
     /// or decrements the active bonus countdown. Rates are learned from reads,
     /// never assumed: every hourly value must match. A run starts at its
-    /// observed update phase; floor days retain plateaus.
-    fn extend(&mut self, next: &Self) -> bool {
+    /// observed update phase; floor days retain plateaus. Whether `next` extends it, and
+    /// then whether that changed its steps.
+    fn extend(&mut self, next: &Self) -> Option<bool> {
         let hour = next.first_hour;
         if self.last_hour.checked_add(1) != Some(hour)
             || self.state_flags != next.state_flags
@@ -114,42 +118,37 @@ impl DecryptionRun {
             || self.started != next.started
             || self.work_at(self.last_hour) != next.work_at(hour)
         {
-            return false;
+            return None;
         }
-        let Some(start) = self.amount_at(self.first_hour) else {
-            return false;
-        };
-        let Some(amount) = next.amount_at(hour) else {
-            return false;
-        };
+        let start = self.amount_at(self.first_hour)?;
+        let amount = next.amount_at(hour)?;
         let days = (i64::from(hour) - i64::from(self.first_hour)) / 24;
-        let mut step = self
+        let held = self
             .step_raw_per_day
             .parse::<i64>()
             .expect("stored raw step");
+        let mut step = held;
         let mut bonus_step = self.bonus_days_step_per_day;
         // The first complete daily plateau can establish a step. A first read
         // partway through a day stays a separate prefix, aligning the new run.
         if i64::from(hour) - i64::from(self.first_hour) == 24 && step == 0 && bonus_step == 0 {
-            let Some(delta) = amount.checked_sub(start) else {
-                return false;
-            };
-            let Some(delta_days) = next.bonus_days.checked_sub(self.bonus_days) else {
-                return false;
-            };
-            step = delta;
-            bonus_step = delta_days;
+            step = amount.checked_sub(start)?;
+            bonus_step = next.bonus_days.checked_sub(self.bonus_days)?;
         }
         if i128::from(start) + i128::from(step) * i128::from(days) != i128::from(amount)
             || i64::from(self.bonus_days) + i64::from(bonus_step) * days
                 != i64::from(next.bonus_days_at(hour).expect("observed countdown"))
         {
-            return false;
+            return None;
         }
-        self.step_raw_per_day = step.to_string();
+        // The stored step is its value as written: only another value is written again.
+        let changed = step != held || bonus_step != self.bonus_days_step_per_day;
+        if step != held {
+            self.step_raw_per_day = step.to_string();
+        }
         self.bonus_days_step_per_day = bonus_step;
         self.last_hour = hour;
-        true
+        Some(changed)
     }
 }
 
@@ -359,6 +358,11 @@ impl PairRead {
         (self.row.owner_country, self.row.target_country)
     }
 
+    /// The canonical slots it joins, where joined.
+    fn slots(&self) -> Option<(u32, u32)> {
+        self.joined.as_ref().map(|joined| joined.key)
+    }
+
     pub(crate) fn heap(&self) -> usize {
         self.joined.as_ref().map_or(0, |joined| {
             [&joined.owner_tag, &joined.target_tag]
@@ -392,6 +396,135 @@ pub(crate) enum CipherRead {
 impl Default for CipherRead {
     fn default() -> Self {
         Self::Unread
+    }
+}
+
+/// Why the coverage of an hour holding an unjoined cipher entry is incomplete.
+const UNJOINED: &str = "Cryptology country link or country is not recorded";
+
+/// The cipher scan's read as the ordered emit holds it: each pair by its raw countries, and
+/// each joined pair also by its canonical slots.
+#[derive(Default)]
+pub(crate) struct CipherHeld {
+    /// The read; a read of rows keeps its pairs in `pairs` instead.
+    pub(crate) read: CipherRead,
+    pairs: BTreeMap<(u32, u32), PairRead>,
+    slots: HashMap<(u32, u32), BTreeSet<(u32, u32)>>,
+    /// The slots more than one pair joins.
+    crowded: BTreeSet<(u32, u32)>,
+    unjoined: usize,
+}
+
+/// What a read changed of the pairs held.
+#[derive(Default)]
+pub(crate) struct CipherTouched {
+    /// The read is another kind, or was taken whole: every pair is gone through.
+    pub(crate) all: bool,
+    /// The raw keys of the pairs that changed or came.
+    rows: Vec<(u32, u32)>,
+    /// The slots a changed or gone pair joined before.
+    slots: Vec<(u32, u32)>,
+}
+
+impl CipherHeld {
+    /// Takes `read` in place of the read held, telling `touched` what it changed.
+    pub(crate) fn replace(&mut self, read: CipherRead, touched: &mut CipherTouched) {
+        match read {
+            CipherRead::Rows { incomplete, pairs }
+                if matches!(self.read, CipherRead::Rows { .. }) =>
+            {
+                let mut gone: BTreeSet<(u32, u32)> = self.pairs.keys().copied().collect();
+                for pair in pairs {
+                    gone.remove(&pair.key());
+                    if self.pairs.get(&pair.key()) != Some(&pair) {
+                        self.set(pair, touched);
+                    }
+                }
+                for key in gone {
+                    self.remove(key, touched);
+                }
+                self.read = CipherRead::Rows {
+                    incomplete,
+                    pairs: Vec::new(),
+                };
+            }
+            CipherRead::Rows { incomplete, pairs } => {
+                self.clear();
+                for pair in pairs {
+                    self.set(pair, touched);
+                }
+                touched.all = true;
+                self.read = CipherRead::Rows {
+                    incomplete,
+                    pairs: Vec::new(),
+                };
+            }
+            read => {
+                self.clear();
+                touched.all = true;
+                self.read = read;
+            }
+        }
+    }
+
+    /// Why the held rows' table is incomplete, where the read is of rows.
+    pub(crate) fn set_incomplete(&mut self, reason: Option<String>) {
+        if let CipherRead::Rows { incomplete, .. } = &mut self.read {
+            *incomplete = reason;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.pairs.clear();
+        self.slots.clear();
+        self.crowded.clear();
+        self.unjoined = 0;
+    }
+
+    /// Holds `pair` in place of the pair of its raw countries.
+    pub(crate) fn set(&mut self, pair: PairRead, touched: &mut CipherTouched) {
+        let key = pair.key();
+        let slots = pair.slots();
+        if slots.is_none() {
+            self.unjoined += 1;
+        }
+        if let Some(old) = self.pairs.insert(key, pair) {
+            self.unlink(key, &old, touched);
+        }
+        if let Some(slot) = slots {
+            let keys = self.slots.entry(slot).or_default();
+            keys.insert(key);
+            if keys.len() > 1 {
+                self.crowded.insert(slot);
+            }
+        }
+        touched.rows.push(key);
+    }
+
+    pub(crate) fn remove(&mut self, key: (u32, u32), touched: &mut CipherTouched) {
+        if let Some(old) = self.pairs.remove(&key) {
+            self.unlink(key, &old, touched);
+        }
+    }
+
+    fn unlink(&mut self, key: (u32, u32), old: &PairRead, touched: &mut CipherTouched) {
+        let Some(slot) = old.slots() else {
+            self.unjoined -= 1;
+            return;
+        };
+        touched.slots.push(slot);
+        if let Some(keys) = self.slots.get_mut(&slot) {
+            keys.remove(&key);
+            match keys.len() {
+                0 => {
+                    self.slots.remove(&slot);
+                }
+                1 => {
+                    self.crowded.remove(&slot);
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -540,7 +673,9 @@ impl Scan {
         self.previous_complete = complete.then_some(hour);
     }
 
-    /// Observes the scan's `read` of `hour`, `defines` naming why thresholds are unknown.
+    /// Observes the scan's `read` of `hour`, every pair of it, `defines` naming why thresholds
+    /// are unknown.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_read(
         &mut self,
         hour: i32,
@@ -563,63 +698,76 @@ impl Scan {
         };
         let mut incomplete = incomplete.clone();
         let mut observed = Vec::with_capacity(pairs.len());
-        for PairRead { row, joined } in pairs {
-            let Some(joined) = joined else {
-                let reason = "Cryptology country link or country is not recorded";
-                self.refusals.note(
-                    reason,
-                    format!("{} → {}", row.owner_country, row.target_country),
-                );
-                incomplete = Some(reason.into());
-                continue;
-            };
-            let key = joined.key;
-            let mut tag = |tag: &Result<String, Vec<u8>>, slot: u32| match tag {
-                Ok(tag) => Some(tag.clone()),
-                Err(bytes) => {
-                    self.refusals.note(
-                            "country tag cannot be represented as a nonempty non-NUL JSON string; cipher data retained with country ID",
-                            format!("country {slot}, tag bytes {bytes:?}"),
-                        );
-                    None
-                }
-            };
-            let owner_tag = tag(&joined.owner_tag, key.0);
-            let target_tag = tag(&joined.target_tag, key.1);
-            let threshold = joined.threshold.result(defines);
-            if let Err(reason) = threshold {
-                self.refusals.note(
-                    format!("progress unknown: {reason}"),
-                    format!("country {}", key.1),
-                );
+        for pair in pairs {
+            match self.observe_row(hour, pair, defines, previous_complete) {
+                Some(pair) => observed.push(pair),
+                None => incomplete = Some(UNJOINED.into()),
             }
-            let run = run(hour, row, threshold);
-            if joined.overflow {
-                self.refusals.note(
-                    "progress unknown: native signed division overflow",
-                    format!("country {} → country {}", key.0, key.1),
-                );
-            }
-            let (starts, changed) = Self::observe(
-                &mut self.pairs,
-                key,
-                run,
-                DecryptionTagRun {
-                    first_hour: hour,
-                    last_hour: hour,
-                    owner_tag,
-                    target_tag,
-                },
-                previous_complete,
-            );
-            observed.push(ObservedPair {
-                key,
-                starts,
-                changed,
-            });
         }
         self.cover(hour, incomplete);
         Ok(observed)
+    }
+
+    /// Observes `pair` as read at `hour`, noting what it refuses: none where its countries are
+    /// not joined.
+    fn observe_row(
+        &mut self,
+        hour: i32,
+        PairRead { row, joined }: &PairRead,
+        defines: Result<cryptology::Defines, &str>,
+        previous_complete: bool,
+    ) -> Option<ObservedPair> {
+        let Some(joined) = joined else {
+            self.refusals.note(
+                UNJOINED,
+                format!("{} → {}", row.owner_country, row.target_country),
+            );
+            return None;
+        };
+        let key = joined.key;
+        let mut tag = |tag: &Result<String, Vec<u8>>, slot: u32| match tag {
+            Ok(tag) => Some(tag.clone()),
+            Err(bytes) => {
+                self.refusals.note(
+                        "country tag cannot be represented as a nonempty non-NUL JSON string; cipher data retained with country ID",
+                        format!("country {slot}, tag bytes {bytes:?}"),
+                    );
+                None
+            }
+        };
+        let owner_tag = tag(&joined.owner_tag, key.0);
+        let target_tag = tag(&joined.target_tag, key.1);
+        let threshold = joined.threshold.result(defines);
+        if let Err(reason) = threshold {
+            self.refusals.note(
+                format!("progress unknown: {reason}"),
+                format!("country {}", key.1),
+            );
+        }
+        let run = run(hour, row, threshold);
+        if joined.overflow {
+            self.refusals.note(
+                "progress unknown: native signed division overflow",
+                format!("country {} → country {}", key.0, key.1),
+            );
+        }
+        let (starts, changed) = Self::observe(
+            &mut self.pairs,
+            key,
+            run,
+            DecryptionTagRun {
+                first_hour: hour,
+                last_hour: hour,
+                owner_tag,
+                target_tag,
+            },
+            previous_complete,
+        );
+        Some(ObservedPair {
+            key,
+            starts,
+            changed,
+        })
     }
 
     fn observe(
@@ -670,17 +818,10 @@ impl Scan {
             pair.tag_runs.push(tags);
             true
         };
-        if let Some(last) = pair.runs.last_mut() {
-            let previous_steps = (last.step_raw_per_day.clone(), last.bonus_days_step_per_day);
-            if last.extend(&run) {
-                return (
-                    false,
-                    tags_changed
-                        || break_changed
-                        || previous_steps
-                            != (last.step_raw_per_day.clone(), last.bonus_days_step_per_day),
-                );
-            }
+        if let Some(last) = pair.runs.last_mut()
+            && let Some(steps_changed) = last.extend(&run)
+        {
+            return (false, tags_changed || break_changed || steps_changed);
         }
         pair.runs.push(run);
         (true, true)

@@ -11,7 +11,10 @@ use super::{
     *,
 };
 use dashboard_base::products::country_groups::Scan;
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::{
+    AirTheatreGroupRow, AirTheatreRow, AirWingRow, CountryLinkRow, CountryRow, mask,
+};
+use replay_frame::frame::{DecodedFrame, HourFrame, Rowset};
 #[cfg(test)]
 use replay_frame::frame::TableUpdate;
 #[cfg(any(test, feature = "test-support"))]
@@ -216,6 +219,29 @@ fn reason(reason: &str) -> AirCell {
     AirCell(Some(AirValue::Reason(reason.into())))
 }
 
+/// The fields of each identity and auxiliary table the reads take; a key's come with every row.
+const COUNTRY_FIELDS: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+const LINK_FIELDS: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const WING_FIELDS: u64 = mask::<AirWingRow>(&["mission_region"]);
+const THEATRE_FIELDS: u64 = mask::<AirTheatreRow>(&["name"]);
+const GROUP_FIELDS: u64 = mask::<AirTheatreGroupRow>(&["theatre"]);
+
+/// `rows` as one slice in key order: a decoded frame's borrowed, a walk's built in the fields
+/// its mask names.
+fn slice<R: replay_data::rows::RowCodec + Clone>(
+    rows: Rowset<'_, R>,
+) -> io::Result<std::borrow::Cow<'_, [R]>> {
+    use std::borrow::Cow;
+    match rows {
+        Rowset::Decoded(rows) => Ok(Cow::Borrowed(rows)),
+        walked => walked
+            .iter()
+            .map(|row| row.map(Cow::into_owned))
+            .collect::<io::Result<Vec<R>>>()
+            .map(Cow::Owned),
+    }
+}
+
 fn check_country_tags(countries: &[replay_data::rows::CountryRow]) -> io::Result<()> {
     let unsupported = countries
         .iter()
@@ -273,7 +299,7 @@ pub(super) fn snapshot_kind(
         anchors,
         keep_keys,
     )?;
-    apply_auxiliary(&mut sample, &auxiliary(frame));
+    apply_auxiliary(&mut sample, &auxiliary(HourFrame::from(frame))?);
     Ok(sample)
 }
 
@@ -403,20 +429,21 @@ pub(super) struct CountryScores {
     pub active: BTreeSet<u32>,
 }
 pub(super) fn score_countries(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
 ) -> io::Result<(ScoreOperands, HashMap<u32, String>)> {
     let mut operands = ScoreOperands::default();
     let (Ok(countries), Ok(links)) = (
-        frame.complete::<tables::Countries>(),
-        frame.complete::<tables::CountryLinks>(),
+        frame.complete::<tables::Countries>(COUNTRY_FIELDS),
+        frame.complete::<tables::CountryLinks>(LINK_FIELDS),
     ) else {
         return Ok((operands, HashMap::new()));
     };
+    let countries = slice(countries)?;
     let mut slots = HashMap::new();
     let present = Arc::make_mut(&mut operands.present);
-    check_country_tags(countries)?;
-    let links = link_slots(links);
-    for (tag, country) in tagged_countries_indexed(countries, &links) {
+    check_country_tags(&countries)?;
+    let links = dashboard_text::metadata::link_slots_in(links)?;
+    for (tag, country) in tagged_countries_indexed(&countries, &links) {
         let Some((_, slot)) = country.found() else {
             return Ok((operands, HashMap::new()));
         };
@@ -439,7 +466,7 @@ pub(super) fn country_scores(
     frame: &DecodedFrame,
     scores: ScoreView<'_>,
 ) -> io::Result<CountryScores> {
-    let (operands, owners) = score_countries(frame)?;
+    let (operands, owners) = score_countries(HourFrame::from(frame))?;
     Ok(score_values(scores, operands, &owners))
 }
 
@@ -888,42 +915,49 @@ pub(super) fn day_decoder(tables: &[TableId]) -> FrameDecoder {
     FrameDecoder::for_tables(&tables)
 }
 
-pub(super) fn auxiliary(frame: &DecodedFrame) -> Auxiliary {
+pub(super) fn auxiliary(frame: HourFrame<'_>) -> io::Result<Auxiliary> {
     let mut result = Auxiliary::default();
-    let Ok(wings) = frame.complete::<tables::AirWings>() else {
-        return result;
+    let Ok(wings) = frame.complete::<tables::AirWings>(WING_FIELDS) else {
+        return Ok(result);
     };
     result.wings_known = true;
-    for wing in wings {
+    let theatres = (
+        frame.complete::<tables::AirTheatres>(THEATRE_FIELDS),
+        frame.complete::<tables::AirTheatreGroups>(GROUP_FIELDS),
+        frame.complete::<tables::AirTheatreMembers>(0),
+    );
+    let joined = matches!(theatres, (Ok(_), Ok(_), Ok(_)));
+    let mut wing_regions = HashMap::new();
+    for wing in wings.iter() {
+        let wing = wing?;
         if let Some(region) = wing.mission_region {
             *result.wings.entry(region).or_default() += 1;
+            if joined {
+                wing_regions.insert(wing.id, region);
+            }
         }
     }
-    if let (Ok(theatres), Ok(groups), Ok(members)) = (
-        frame.complete::<tables::AirTheatres>(),
-        frame.complete::<tables::AirTheatreGroups>(),
-        frame.complete::<tables::AirTheatreMembers>(),
-    ) {
-        let wing_regions: HashMap<_, _> = wings
-            .iter()
-            .filter_map(|wing| Some((wing.id, wing.mission_region?)))
-            .collect();
-        let group_theatres: HashMap<_, _> = groups
-            .iter()
-            .map(|group| (group.id, group.theatre))
-            .collect();
-        for theatre in theatres {
+    if let (Ok(theatres), Ok(groups), Ok(members)) = theatres {
+        let mut group_theatres = HashMap::with_capacity(groups.len());
+        for group in groups.iter() {
+            let group = group?;
+            group_theatres.insert(group.id, group.theatre);
+        }
+        for theatre in theatres.iter() {
+            let theatre = theatre?.into_owned();
             let id = theatre.id.to_string();
             Arc::make_mut(&mut result.theatres)
                 .entry(id.clone())
                 .or_default();
-            Arc::make_mut(&mut result.theatre_names).insert(id, theatre.name.clone());
+            Arc::make_mut(&mut result.theatre_names).insert(id, theatre.name);
         }
         result.theatres_known = true;
-        for member in members {
-            if let Some(region) = wing_regions.get(&member.wing) {
+        // A member's key is its group and wing.
+        for key in members.keys() {
+            let (group, wing) = ((key >> 64) as u64, key as u64);
+            if let Some(region) = wing_regions.get(&wing) {
                 if let Some(theatre) = group_theatres
-                    .get(&member.group)
+                    .get(&group)
                     .and_then(|id| Arc::make_mut(&mut result.theatres).get_mut(&id.to_string()))
                 {
                     theatre.insert(*region);
@@ -933,7 +967,7 @@ pub(super) fn auxiliary(frame: &DecodedFrame) -> Auxiliary {
             }
         }
     }
-    result
+    Ok(result)
 }
 
 pub(super) fn apply_auxiliary(sample: &mut Snapshot, aux: &Auxiliary) {
@@ -958,7 +992,7 @@ fn date_theatres(read: bool, hour: i32, known: bool, last_read: &mut Option<i32>
 
 #[cfg(test)]
 fn dated_auxiliary(frame: &DecodedFrame, last_read: &mut Option<i32>) -> Auxiliary {
-    let mut result = auxiliary(frame);
+    let mut result = auxiliary(HourFrame::from(frame)).expect("a decoded frame's rows");
     date_theatres(
         dashboard_text::metadata::slot_read(
             replay_data::format::FormatVersion::CURRENT,
@@ -1002,7 +1036,7 @@ impl AuxiliaryRead {
                 .zip(tables)
                 .any(|(old, table)| !old.is(&frame.tables[table.index()]))
         {
-            self.hold(auxiliary(frame));
+            self.hold(auxiliary(HourFrame::from(frame)).expect("a decoded frame's rows"));
             // Weak identities do not keep decoder baselines alive or force COW.
             self.views = tables
                 .iter()

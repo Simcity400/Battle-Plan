@@ -6,7 +6,23 @@ use crate::{
     triggers::{NULL_STATE, Scope},
 };
 use installed_content_core::decisions::Decision;
-use replay_data::{rows::DecisionRow, rows::tables};
+use replay_data::rows::{
+    ClockRow, CountryAppearanceRow, DecisionRandomItemRow, DecisionRow, PoliticalPartyRow,
+    PoliticsRow, tables,
+};
+
+/// The fields of each table the decision descriptions read.
+const DECISION: u64 = mask::<DecisionRow>(&[
+    "token",
+    "country_target",
+    "numeric_target",
+    "description_seed",
+]);
+const RANDOM_ITEM: u64 = mask::<DecisionRandomItemRow>(&["token", "target", "count"]);
+const SEED: u64 = mask::<ClockRow>(&["seed"]);
+const COSMETIC: u64 = mask::<CountryAppearanceRow>(&["cosmetic_tag"]);
+const RULING: u64 = mask::<PoliticsRow>(&["ruling_party"]);
+const PARTY_TOKEN: u64 = mask::<PoliticalPartyRow>(&["token"]);
 
 const DECISION_RANDOM_COUNT_GAP: &str =
     "DecisionRandomItems is not complete for this decision-description seed";
@@ -17,21 +33,23 @@ mod tests;
 
 /// compares both native target slots and ignores lifecycle/ignore.
 fn matching<'a>(
-    rows: &'a [DecisionRow],
+    rows: Rowset<'a, DecisionRow>,
     definition: &[u8],
     owner: u32,
     mission: bool,
     target_country: Option<u32>,
     target_state: u32,
     slot: impl Fn(u32) -> Option<u32>,
-) -> Result<Option<&'a DecisionRow>, String> {
-    let mut candidates = rows
-        .iter()
-        .filter(|row| {
-            row.container == if mission { 4 } else { 3 }
-                && row.token.eq_ignore_ascii_case(definition)
-        })
-        .collect::<Vec<_>>();
+) -> Result<Option<Cow<'a, DecisionRow>>, String> {
+    // The container is the key's bits 32 to 40.
+    let container: u8 = if mission { 4 } else { 3 };
+    let mut candidates = Vec::new();
+    for row in rows.keyed(|key| (key >> 32) as u8 == container) {
+        let row = row.map_err(built)?;
+        if row.token.eq_ignore_ascii_case(definition) {
+            candidates.push(row);
+        }
+    }
     candidates.sort_by_key(|row| row.ordinal);
     for row in candidates {
         let row_owner = slot(row.country)
@@ -102,34 +120,42 @@ fn name_key(
 }
 
 /// A decision's title key for `country` at `frame`'s hour, by cosmetic tag, tag and ruling ideology.
-pub fn decision_name_key_at(
-    frame: &dyn replay_frame::frame::DecodedSource,
-    recorded: &crate::scope::RecordedScopes,
+pub fn decision_name_key_at<'f>(
+    frame: impl Into<HourFrame<'f>>,
+    recorded: &crate::scope::RecordedScopes<'_>,
     localisation: &Localisation,
     definition: &Decision,
     country: u32,
     tag: &str,
 ) -> Result<String, String> {
+    let frame = frame.into();
+    let ours = |key: u128| recorded.slot(key as u32) == Some(country);
     let appearance = frame
-        .complete::<tables::CountryAppearance>()
+        .complete::<tables::CountryAppearance>(COSMETIC)
         .map_err(|why| why.to_string())?
-        .iter()
-        .find(|row| recorded.slot(row.country) == Some(country))
+        .keyed(ours)
+        .next()
+        .transpose()
+        .map_err(built)?
         .ok_or("CountryAppearance lacks decision-name cosmetic tag")?;
     let politics = frame
-        .complete::<tables::Politics>()
+        .complete::<tables::Politics>(RULING)
         .map_err(|why| why.to_string())?
-        .iter()
-        .find(|row| recorded.slot(row.country) == Some(country))
+        .keyed(ours)
+        .next()
+        .transpose()
+        .map_err(built)?
         .ok_or("Politics lacks decision-name ruling party")?;
     let ruling = politics
         .ruling_party
         .ok_or("decision-name ruling party is absent")?;
     let party = frame
-        .complete::<tables::PoliticalParties>()
+        .complete::<tables::PoliticalParties>(PARTY_TOKEN)
         .map_err(|why| why.to_string())?
-        .iter()
-        .find(|row| recorded.slot(row.country) == Some(country) && row.id == ruling)
+        .keyed(|key| recorded.slot((key >> 32) as u32) == Some(country) && key as u32 == ruling)
+        .next()
+        .transpose()
+        .map_err(built)?
         .ok_or("PoliticalParties lacks decision-name ruling ideology")?;
     let utf8 = |bytes: &[u8]| {
         std::str::from_utf8(installed_content_core::parser::c_string(bytes))
@@ -296,8 +322,8 @@ impl Renderer<'_, '_, '_> {
         }
         let world = self.context.world()?;
         let rows = world
-            .frame()
-            .complete::<tables::Decisions>()
+            .tables()
+            .complete::<tables::Decisions>(DECISION)
             .map_err(|why| why.to_string())?;
         let Some(row) = matching(
             rows,
@@ -314,7 +340,7 @@ impl Renderer<'_, '_, '_> {
         if let Some(why) = &definition.refused {
             return Err(why.clone());
         }
-        let title_scope = self.decision_title_scope(definition, row, owner)?;
+        let title_scope = self.decision_title_scope(definition, &row, owner)?;
         let name = self.decision_title(definition, title_scope)?;
         let mut text = self.localised(
             b"EFFECT_REMOVE_TARGETED_DECISION",
@@ -384,7 +410,7 @@ impl Renderer<'_, '_, '_> {
     fn decision_name_key(&self, definition: &Decision, country: u32) -> Result<String, String> {
         let world = self.context.world()?;
         decision_name_key_at(
-            world.frame(),
+            world.tables(),
             world.recorded(),
             self.context.localisation,
             definition,
@@ -451,9 +477,14 @@ impl Renderer<'_, '_, '_> {
             .context
             .world()
             .map_err(|_| "Clock decision-description seed is unavailable")?
-            .frame()
-            .clock_seed()
+            .tables()
+            .complete::<tables::Clock>(SEED)
             .map_err(|_| "Clock decision-description seed is unavailable")?
+            .iter()
+            .next()
+            .transpose()
+            .map_err(|_| "Clock decision-description seed is unavailable")?
+            .map(|row| row.seed)
             .ok_or("Clock lacks decision-description seed")?;
         let additive = if definition.fixed_random_seed {
             None
@@ -467,21 +498,22 @@ impl Renderer<'_, '_, '_> {
                 .world()
                 .map_err(|_| DECISION_RANDOM_COUNT_GAP)?;
             let rows = world
-                .frame()
-                .complete::<tables::DecisionRandomItems>()
+                .tables()
+                .complete::<tables::DecisionRandomItems>(RANDOM_ITEM)
                 .map_err(|_| DECISION_RANDOM_COUNT_GAP)?;
             // returns the first matching definition/target; a
             // complete roster without a match contributes stored zero.
-            Some(
-                rows.iter()
-                    .filter(|row| {
-                        world.slot(row.country) == Some(owner)
-                            && row.token.eq_ignore_ascii_case(&definition.id)
-                            && row.target == target as u32
-                    })
-                    .min_by_key(|row| row.ordinal)
-                    .map(|row| row.count),
-            )
+            let mut first: Option<Cow<'_, DecisionRandomItemRow>> = None;
+            for row in rows.keyed(|key| world.slot((key >> 32) as u32) == Some(owner)) {
+                let row = row.map_err(|_| DECISION_RANDOM_COUNT_GAP)?;
+                if row.token.eq_ignore_ascii_case(&definition.id)
+                    && row.target == target as u32
+                    && first.as_ref().is_none_or(|first| row.ordinal < first.ordinal)
+                {
+                    first = Some(row);
+                }
+            }
+            Some(first.map(|row| row.count))
         };
         decision_seed(game_seed, definition, additive, target)
             .map_err(|_| "Decisions description_seed is unread")
@@ -565,8 +597,8 @@ impl Renderer<'_, '_, '_> {
         let evaluator = self.evaluator()?;
         self.context
             .world()?
-            .frame()
-            .complete::<tables::States>()
+            .tables()
+            .complete::<tables::States>(0)
             .map_err(|why| why.to_string())?;
         let owner = match scopes.this {
             Scope::Country(owner) | Scope::CountryLeader { country: owner, .. } => owner,

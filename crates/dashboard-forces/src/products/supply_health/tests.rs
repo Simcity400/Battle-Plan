@@ -3,7 +3,7 @@ use dashboard_base::products::country_history::{
     CountryIdentityRun, RecordedCountry, RecordedHistories,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -53,12 +53,10 @@ fn build(
     hours: Vec<Hour>,
     cuts: &[i32],
     resume: Option<i32>,
-    budget: &Budget,
 ) -> Built {
-    let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = configured.emit();
     let mut root = 0;
     let mut generation = 0;
@@ -72,7 +70,6 @@ fn build(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -86,8 +83,8 @@ fn build(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
             emit = emit::Emit::load(configured, &directory, &saved).unwrap();
         }
@@ -206,10 +203,8 @@ fn replies_follow_holders_counts_cuts_and_gaps() {
         ),
         hour(111, false, &[], &[]),
     ];
-    let budget = Budget::new(64 << 20);
-    let built = build(&configured, hours, &[105, 111], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(&configured, hours, &[105, 111], None);
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     let history = history(&[
         ("GER", &[(100, 102, 1, 10), (103, 111, 1, 11)]),
@@ -302,10 +297,8 @@ fn shares_restart_after_zero_divisions_through_cuts_and_a_resume() {
             ),
             hour(104, false, &[], &[country(0, holder, Some([1, 1, 2]))]),
         ];
-        let budget = Budget::new(32 << 20);
-        let built = build(&configured, hours, cuts, resume, &budget);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+        let built = build(&configured, hours, cuts, resume);
+        let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
         let actor = directory.actor(b"GER").unwrap();
         for (channel, measure) in emit::SHARES.into_iter().enumerate() {
@@ -357,8 +350,6 @@ fn shares_restart_after_zero_divisions_through_cuts_and_a_resume() {
 /// content is the reply's refusal once inputs exist.
 #[test]
 fn unavailable_and_refused_content_reply_as_before() {
-    let budget = Budget::new(16 << 20);
-    let cache = Cache::new(&budget);
     let history = history(&[("GER", &[(0, 3, 1, 10)])]);
     let cancelled = AtomicBool::new(false);
     let params = json!({ "branchId": "1", "tags": ["GER", "GER"], "from": 0, "to": 3 });
@@ -369,8 +360,8 @@ fn unavailable_and_refused_content_reply_as_before() {
     for hour in &mut hours {
         hour.land_present = false;
     }
-    let built = build(&configured, hours, &[3], None, &budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(&configured, hours, &[3], None);
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     let reply = query::reply_to(&mut snapshot, &directory, &params, &history, &cancelled).unwrap();
     assert!(!reply.available);
@@ -381,8 +372,8 @@ fn unavailable_and_refused_content_reply_as_before() {
 
     let refused = Configured::with(Err("Supply health refused 1 define(s): x".into()), vec![]);
     let hours = (0..4).map(|at| hour(at, at == 0, &[], &[])).collect();
-    let built = build(&refused, hours, &[1, 3], None, &budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(&refused, hours, &[1, 3], None);
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     let error =
         query::reply_to(&mut snapshot, &directory, &params, &history, &cancelled).unwrap_err();
@@ -453,10 +444,8 @@ fn fifteen_hundred_countries_keep_their_runs_through_cuts() {
         }
     }
     let cuts: Vec<i32> = (23..200).step_by(24).chain([199]).collect();
-    let budget = Budget::new(512 << 20);
-    let built = build(&configured, hours, &cuts, None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(&configured, hours, &cuts, None);
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     assert_eq!(directory.actors.len(), count as usize);
     let tags: Vec<String> = (0..count)

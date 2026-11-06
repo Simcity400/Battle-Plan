@@ -4,16 +4,25 @@
 //! joins its lexical token's literal (ModifierDefinitions, LexicalTokens); the
 //! eligibility callback's flags are the hour's `SimulationFeatures.dlc_mask`.
 
-use crate::rows::{LexicalTokenRow, ModifierDefinitionRow, tables};
-use std::collections::BTreeMap;
+use crate::rows::{LexicalTokenRow, ModifierDefinitionRow, column, mask, tables};
+use replay_frame::frame::{Rowset, Tables};
+use std::{borrow::Cow, collections::BTreeMap};
 
 /// `engine_native::modifier_definition::CLAMP_MAXIMUM`: the getter clamps an eligible value to
 /// [0, 100000].
 pub const CLAMP_MAXIMUM: u32 = engine_native::modifier_definition::CLAMP_MAXIMUM;
 
+/// The fields of a definition the registry itself reads.
+pub const DEFINITION: u64 =
+    mask::<ModifierDefinitionRow>(&["token", "flags", "feature_selector", "eligibility"]);
+const LITERAL: usize = column::<LexicalTokenRow>("literal");
+const DLC_MASK: u64 = mask::<crate::rows::SimulationFeatureRow>(&["dlc_mask"]);
+
 pub struct Registry<'a> {
-    by_name: BTreeMap<Vec<u8>, &'a ModifierDefinitionRow>,
-    by_index: BTreeMap<u32, &'a ModifierDefinitionRow>,
+    /// Each definition, in index order.
+    definitions: Vec<Cow<'a, ModifierDefinitionRow>>,
+    /// Each named definition's folded literal, to its place in `definitions`.
+    by_name: BTreeMap<Vec<u8>, usize>,
     /// `SimulationFeatures.dlc_mask`: flags returned by the authenticated eligibility
     /// callback; `None` when the hour did not record it.
     dlc_mask: Option<u32>,
@@ -32,24 +41,42 @@ impl<'a> Registry<'a> {
             .iter()
             .map(|row| (row.token, row.literal.as_slice()))
             .collect();
-        let mut by_name = BTreeMap::new();
-        let mut by_index = BTreeMap::new();
-        for definition in definitions {
-            by_index.insert(definition.index, definition);
-            if definition.token == 0 {
-                continue;
+        Self::joined(
+            definitions.iter().map(|row| Ok(Cow::Borrowed(row))),
+            |token| Ok(literals.get(&token).copied()),
+            dlc_mask,
+        )
+    }
+
+    fn joined<'t>(
+        rows: impl Iterator<Item = Result<Cow<'a, ModifierDefinitionRow>, String>>,
+        literal: impl Fn(u32) -> Result<Option<&'t [u8]>, String>,
+        dlc_mask: Option<u32>,
+    ) -> Result<Self, String> {
+        let mut entries: BTreeMap<u32, Cow<'a, ModifierDefinitionRow>> = BTreeMap::new();
+        let mut names = Vec::new();
+        for definition in rows {
+            let definition = definition?;
+            if definition.token != 0 {
+                let literal = literal(definition.token)?.ok_or_else(|| {
+                    format!(
+                        "modifier definition {} has no lexical token {}",
+                        definition.index, definition.token
+                    )
+                })?;
+                names.push((literal.to_ascii_lowercase(), definition.index));
             }
-            let literal = literals.get(&definition.token).ok_or_else(|| {
-                format!(
-                    "modifier definition {} has no lexical token {}",
-                    definition.index, definition.token
-                )
-            })?;
-            by_name.insert(literal.to_ascii_lowercase(), definition);
+            entries.insert(definition.index, definition);
         }
+        let places: BTreeMap<u32, usize> =
+            entries.keys().enumerate().map(|(at, &index)| (index, at)).collect();
+        let by_name = names
+            .into_iter()
+            .map(|(name, index)| (name, places[&index]))
+            .collect();
         Ok(Self {
+            definitions: entries.into_values().collect(),
             by_name,
-            by_index,
             dlc_mask,
         })
     }
@@ -69,20 +96,47 @@ impl<'a> Registry<'a> {
         Self::new(definitions, tokens, dlc_mask)
     }
 
+    /// [`Self::from_frame`] of any frame's tables, each definition holding the fields `fields`
+    /// names beside the registry's own ([`DEFINITION`]); a spelling is read only for a
+    /// definition's token.
+    pub fn from_tables<F: Tables + ?Sized>(frame: &'a F, fields: u64) -> Result<Self, String> {
+        let definitions = frame
+            .complete_rows::<tables::ModifierDefinitions>(fields | DEFINITION)
+            .map_err(|e| e.to_string())?;
+        let tokens: Rowset<'a, LexicalTokenRow> = frame
+            .complete_rows::<tables::LexicalTokens>(0)
+            .map_err(|e| e.to_string())?;
+        let dlc_mask = frame
+            .complete_rows::<tables::SimulationFeatures>(DLC_MASK)
+            .ok()
+            .and_then(|rows| rows.iter().next())
+            .and_then(Result::ok)
+            .map(|row| row.dlc_mask);
+        Self::joined(
+            definitions.iter().map(|row| row.map_err(|e| e.to_string())),
+            |token| {
+                tokens
+                    .text(u128::from(token), |row| &row.literal, LITERAL)
+                    .map_err(|e| e.to_string())
+            },
+            dlc_mask,
+        )
+    }
+
     /// The definition a content-stored entry names (its script name, which
     /// the lexer folds).
-    pub fn named(&self, name: &str) -> Result<&'a ModifierDefinitionRow, String> {
+    pub fn named(&self, name: &str) -> Result<&ModifierDefinitionRow, String> {
         self.by_name
             .get(name.as_bytes().to_ascii_lowercase().as_slice())
-            .copied()
+            .map(|&at| &*self.definitions[at])
             .ok_or_else(|| format!("modifier {name} has no recorded definition"))
     }
 
-    pub fn indexed(&self, index: u32) -> Result<&'a ModifierDefinitionRow, String> {
-        self.by_index
-            .get(&index)
-            .copied()
-            .ok_or_else(|| format!("modifier definition {index} is missing"))
+    pub fn indexed(&self, index: u32) -> Result<&ModifierDefinitionRow, String> {
+        self.definitions
+            .binary_search_by_key(&index, |row| row.index)
+            .map(|at| &*self.definitions[at])
+            .map_err(|_| format!("modifier definition {index} is missing"))
     }
 
     /// Eligibility used by the emptiness test and effective-value getter: a zero feature selector, or a

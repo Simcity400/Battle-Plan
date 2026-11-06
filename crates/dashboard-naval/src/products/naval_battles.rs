@@ -29,10 +29,7 @@ use std::{
 };
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
-use {
-    dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder,
-    std::collections::VecDeque,
-};
+use {dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder};
 
 pub mod columnar;
 mod details;
@@ -402,6 +399,9 @@ pub struct Scan {
     dirty: BTreeSet<usize>,
     /// What the scan keeps of the hours it is given projected ([`columnar::Hour`]).
     projected: columnar::Carried,
+    /// Hours were lost before the next it is given: the sunk ships its next walk seeds from,
+    /// its restart's last read, are those it compares from.
+    reseed: bool,
 }
 
 fn span(spans: &mut Vec<HourSpan>, hour: i32) {
@@ -1628,26 +1628,19 @@ fn windows(replay: &Replay, branch: u64) -> Vec<BattleWindow> {
         })
         .collect()
 }
+/// One scan per branch of the source revision.
 #[derive(Default)]
 #[cfg(any(test, feature = "test-support"))]
 struct Cache {
-    branches: VecDeque<(u64, Arc<Scan>)>,
+    branches: BTreeMap<u64, Arc<Scan>>,
 }
 #[cfg(any(test, feature = "test-support"))]
 impl Cache {
-    fn get(&mut self, branch: u64) -> Option<Arc<Scan>> {
-        let at = self.branches.iter().position(|(id, _)| *id == branch)?;
-        let entry = self.branches.remove(at).expect("cached branch");
-        let scan = Arc::clone(&entry.1);
-        self.branches.push_back(entry);
-        Some(scan)
+    fn get(&self, branch: u64) -> Option<Arc<Scan>> {
+        self.branches.get(&branch).map(Arc::clone)
     }
     fn insert(&mut self, branch: u64, scan: Arc<Scan>) {
-        self.branches.retain(|(id, _)| *id != branch);
-        self.branches.push_back((branch, scan));
-        while self.branches.len() > 2 {
-            self.branches.pop_front();
-        }
+        self.branches.insert(branch, scan);
     }
 }
 #[cfg(any(test, feature = "test-support"))]

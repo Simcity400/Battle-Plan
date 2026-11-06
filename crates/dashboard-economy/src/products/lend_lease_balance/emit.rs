@@ -103,13 +103,13 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
     /// `slot`'s holder, catalogued at `hour` when it is new.
-    fn holder(&mut self, writer: &mut Writer<'_>, slot: u32, hour: i32) -> io::Result<&mut Holder> {
+    fn holder(&mut self, writer: &mut Writer, slot: u32, hour: i32) -> io::Result<&mut Holder> {
         if !self.holders.contains_key(&slot) {
             let actor = self.actors.actor(writer, slot.to_string().as_bytes(), hour)?;
             self.holders.insert(
@@ -126,7 +126,7 @@ impl Emit {
     /// `slot`'s values of `measure` from `at` on: `values` by measure, none to end them.
     fn values(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         (actor, measure, dimension): (u64, u64, impl Fn(usize) -> u64),
         values: Option<Sums>,
@@ -146,7 +146,7 @@ impl Emit {
         Ok(())
     }
 
-    fn totals(&mut self, writer: &mut Writer<'_>, at: i32, owner: u32, totals: Option<Sums>) -> io::Result<()> {
+    fn totals(&mut self, writer: &mut Writer, at: i32, owner: u32, totals: Option<Sums>) -> io::Result<()> {
         if totals.is_none() && !self.holders.contains_key(&owner) {
             return Ok(());
         }
@@ -163,7 +163,7 @@ impl Emit {
     /// none to end it.
     fn record(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         (owner, partner): (u32, u32),
         held: Option<(Values, bool)>,
@@ -185,7 +185,7 @@ impl Emit {
     }
 
     /// A record no row lists any more: zero while its owner's dropped records are, else ended.
-    fn dropped(&mut self, writer: &mut Writer<'_>, at: i32, pair: (u32, u32)) -> io::Result<()> {
+    fn dropped(&mut self, writer: &mut Writer, at: i32, pair: (u32, u32)) -> io::Result<()> {
         let held = self
             .zeroable
             .contains(&pair.0)
@@ -207,7 +207,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("lend_lease.emit", None);
         let at = hour.hour;
         match self.last {
@@ -236,7 +236,7 @@ impl Emit {
     }
 
     /// A read at `at`: what changed since the read before, if anything did.
-    fn read(&mut self, writer: &mut Writer<'_>, at: i32, read: Option<Read>) -> io::Result<()> {
+    fn read(&mut self, writer: &mut Writer, at: i32, read: Option<Read>) -> io::Result<()> {
         if !self.holding && read.as_ref().is_none_or(|read| !read.whole) {
             return Err(invalid("A lend-lease read goes on from none"));
         }
@@ -265,7 +265,7 @@ impl Emit {
         Ok(())
     }
 
-    fn apply(&mut self, writer: &mut Writer<'_>, at: i32, read: Read) -> io::Result<()> {
+    fn apply(&mut self, writer: &mut Writer, at: i32, read: Read) -> io::Result<()> {
         let Read {
             whole,
             zeroable,
@@ -364,7 +364,7 @@ impl Emit {
     }
 
     /// Ends every value after `last`: the hour after it holds no read.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for holder in self.holders.values_mut() {
             holder.totals = None;
@@ -377,7 +377,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

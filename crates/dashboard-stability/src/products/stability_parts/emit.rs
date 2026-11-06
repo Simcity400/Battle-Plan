@@ -12,7 +12,7 @@
 //! whose lines were not recorded with it, ends its runs; so does an unread hour.
 
 use super::{
-    Character, NAMED_HOURS, Part, assemble,
+    Character, Part, assemble,
     facts::{self, PartNames},
 };
 use crate::products::country_stability::BreakdownLine;
@@ -348,8 +348,8 @@ pub struct Emit {
     recorded: Recorded,
     /// Recorded as last saved, while it did not change.
     recorded_saved: Option<Vec<u8>>,
-    /// The last hours read, ascending: a read is named only while its hour is among them, as
-    /// the walk names it from the frames it keeps.
+    /// The hours read, ascending, from the earliest read still dated: a read is named only while
+    /// its hour is among them, as the walk names it from the frames it keeps.
     observed: VecDeque<i32>,
     /// Every country's inputs read hour, by id, as of the last hour whose inputs were read
     /// whole, and how many countries each hour dates: no later hour dates a read before the
@@ -368,7 +368,7 @@ pub struct Emit {
 /// any other starts one, with a break.
 fn record(
     carry: &mut Carry,
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     (handle, holder): (u64, &mut Option<Holder>),
     hour: i32,
     value: i128,
@@ -407,7 +407,7 @@ fn record(
 /// The key of `tag`'s part in `slot` of measure `index`, interned at `hour` when new.
 fn key(
     actors: &mut Actors,
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     slot: &mut Slot,
     (tag, index): (&str, usize),
     hour: i32,
@@ -434,7 +434,7 @@ fn key(
 fn close(
     actors: &Actors,
     carry: &mut Carry,
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     slot: &mut Slot,
     (tag, index): (&str, usize),
     hour: i32,
@@ -469,7 +469,7 @@ fn close(
 fn close_all(
     actors: &Actors,
     carry: &mut Carry,
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     country: &mut Country,
     hour: i32,
 ) -> io::Result<()> {
@@ -518,7 +518,7 @@ fn same_naming(held: Option<&Arc<NamingCountry>>, naming: &Arc<NamingCountry>) -
 fn project(
     actors: &mut Actors,
     carry: &mut Carry,
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     country: &mut Country,
     hour: i32,
     (identity, read): ((u32, u32), i32),
@@ -707,7 +707,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("parts.emit", None);
         let at = hour.hour;
         let previous = self.last;
@@ -725,9 +725,6 @@ impl Emit {
         }
         self.last = Some(at);
         self.observed.push_back(at);
-        while self.observed.len() > NAMED_HOURS {
-            self.observed.pop_front();
-        }
         for (index, tag) in hour.named {
             let index = index as usize;
             if index >= self.names.len() {
@@ -788,7 +785,7 @@ impl Emit {
     /// One offered country at `hour`; `previous` the hour before it, where it was read.
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         previous: Option<i32>,
         index: u32,
@@ -951,12 +948,17 @@ impl Emit {
     /// Retires each tag's read hours below the earliest read the last hour whose inputs were
     /// read whole dated, keeping how many recorded no lines: a complete read's hour only moves
     /// on, and a truncated read's is its own hour, so no later hour reads one again; and the
-    /// characters' namings before every hour still kept.
+    /// hours read before it, and the characters' namings before every hour still kept.
     fn retire(&mut self) {
+        let floor = self.admitted.first_key_value().map(|(&floor, _)| floor);
+        if let Some(floor) = floor {
+            let before = self.observed.partition_point(|&at| at < floor);
+            self.observed.drain(..before);
+        }
         if let Some(&oldest) = self.observed.front() {
             self.recorded.retire(oldest);
         }
-        let Some((&floor, _)) = self.admitted.first_key_value() else {
+        let Some(floor) = floor else {
             return;
         };
         for country in &mut self.countries {
@@ -971,7 +973,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, and each country's names that changed since the last cut.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("parts.emit.cut", None);
         self.retire();
         let Self {
@@ -1155,7 +1157,7 @@ fn number_of(ids: &mut HashMap<Arc<str>, u32>, id_text: &mut Vec<Arc<str>>, id: 
 }
 
 /// Writes one event of `kind` on `key`, of `json`, at the cut ending at `last`.
-fn event(writer: &mut Writer<'_>, key: u64, last: i32, kind: u64, json: &[u8]) -> io::Result<()> {
+fn event(writer: &mut Writer, key: u64, last: i32, kind: u64, json: &[u8]) -> io::Result<()> {
     let text = writer.blob(&mut &json[..], json.len() as u64)?;
     let fields = writer.cells([Cell::Text(text)])?;
     let sequence = writer.sequence()?;
@@ -1180,7 +1182,7 @@ struct SummaryOf<'a> {
 /// each part's names, where they differ from what it published last.
 fn publish(
     actors: &mut Actors,
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     country: &mut Country,
     last: i32,
     blank: &NamingCountry,

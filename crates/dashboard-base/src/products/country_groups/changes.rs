@@ -75,6 +75,10 @@ pub struct Prepared {
     pub refusals: Vec<Refusal>,
     pub warnings: BTreeSet<String>,
     name_refusals: BTreeMap<String, BTreeSet<u64>>,
+    /// The tables `observed` names, so an hour names a table it already holds without
+    /// spelling it; empty again after a resume, which spells each once more.
+    #[serde(skip)]
+    spelled: BTreeSet<TableId>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -208,8 +212,11 @@ impl Prepared {
                 .retain(|_, index| groups.wars[*index].last_hour == hour);
         }
         self.events.through(hour);
-        self.observed
-            .extend(changes.observed.iter().map(|table| format!("{table:?}")));
+        for &table in &changes.observed {
+            if self.spelled.insert(table) {
+                self.observed.insert(format!("{table:?}"));
+            }
+        }
         for refusal in changes.unavailable {
             if let Some(old) = self
                 .refusals

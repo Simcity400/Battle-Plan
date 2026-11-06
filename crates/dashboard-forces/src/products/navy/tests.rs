@@ -900,7 +900,7 @@ fn navy_unsupported_country_tags_are_named_and_counted() {
 }
 
 #[test]
-fn navy_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
+fn navy_cache_keeps_one_scan_per_branch() {
     let branches: Vec<_> = (1..=3)
         .map(|branch| {
             let mut frame = fleet_frame(0);
@@ -941,10 +941,10 @@ fn navy_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
             .lock()
             .unwrap()
             .entries
-            .iter()
-            .map(|(branch, _)| *branch)
+            .keys()
+            .copied()
             .collect::<Vec<_>>(),
-        [2, 3]
+        [1, 2, 3]
     );
     visit_ship_runs(
         &source,
@@ -954,7 +954,7 @@ fn navy_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
         |_, _, _, _, _| Ok(()),
     )
     .unwrap();
-    assert_eq!(state.lock().unwrap().runs, 4);
+    assert_eq!(state.lock().unwrap().runs, 3);
 }
 
 #[test]

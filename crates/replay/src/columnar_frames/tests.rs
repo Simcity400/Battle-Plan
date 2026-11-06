@@ -3,14 +3,11 @@ use super::*;
 use crate::native_columns::{RowCells, TableInput, table_hour};
 use replay_columnar::{
     manifest::{self, Section},
+    state::Cell,
     writer::{Dictionary as Strings, Sample, TableWriter},
 };
 use replay_data::rows::{CountryRow, DivisionRow, RowCodec, WorldTensionRow};
-use std::sync::{
-    Condvar, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc,
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const READ: Sample = Sample::FromReadBit;
 const TABLES: [TableId; 3] = [
@@ -594,11 +591,8 @@ fn changes_name_each_changed_rows_columns_and_each_deleted_key() {
 }
 
 fn opened(bytes: Vec<u8>) -> Recording {
-    Recording::open(bytes, Limits::default()).unwrap()
+    Recording::open(bytes).unwrap()
 }
-
-/// A walk nobody stops.
-static GOING: AtomicBool = AtomicBool::new(false);
 
 fn walk_alone(file: &Recording, segment: &Segment) -> io::Result<Vec<(u64, i32)>> {
     let mut hours = Vec::new();
@@ -761,7 +755,7 @@ fn a_run_start_walks_from_empty_tables() {
 }
 
 fn begin(file: &Recording, segment: &Segment, state: &mut State) -> io::Result<()> {
-    Walker::new(file, &GOING)?.begin(segment, state)
+    Walker::new(file)?.begin(segment, state)
 }
 
 /// A walk restores only the tables its recording selects: a damaged restart table it does
@@ -840,8 +834,8 @@ impl Saved {
         Self(path)
     }
 
-    fn open(&self, limits: Limits) -> Recording {
-        Recording::open_path(&self.0, limits).unwrap()
+    fn open(&self) -> Recording {
+        Recording::open_path(&self.0).unwrap()
     }
 
     fn append(&self, bytes: &[u8]) {
@@ -882,7 +876,7 @@ fn torn_tails_choose_the_last_committed_root_for_both_inputs() {
     append_revision(&mut bytes, 3);
     bytes.truncate(bytes.len() - 13);
     let disk = Saved::new(&bytes);
-    for reader in [opened(bytes.clone()), disk.open(Limits::default())] {
+    for reader in [opened(bytes.clone()), disk.open()] {
         assert_eq!(reader.len(), committed as u64);
         assert_eq!(reader.hours(), 10);
     }
@@ -898,7 +892,7 @@ fn an_open_recording_keeps_its_revision_while_its_file_grows() {
     let runs = [(1, 0, 10)];
     let (mut bytes, _) = recording(&runs, every(&runs), 1, |_| {});
     let disk = Saved::new(&bytes);
-    let pinned = disk.open(Limits::default());
+    let pinned = disk.open();
     let before = bytes.len();
     append_revision(&mut bytes, 2);
     disk.append(&bytes[before..]);
@@ -907,7 +901,7 @@ fn an_open_recording_keeps_its_revision_while_its_file_grows() {
         walk_alone(&pinned, &pinned.segments()[0]).unwrap().len(),
         10
     );
-    assert_eq!(disk.open(Limits::default()).len(), bytes.len() as u64);
+    assert_eq!(disk.open().len(), bytes.len() as u64);
 }
 
 /// A unit a walk reads is always checked against its digest and the recording's extents;
@@ -958,7 +952,7 @@ fn declared_raw_lengths_are_checked_against_their_frames_before_buffers_are_size
                 .raw = raw;
         });
         let disk = Saved::new(&bytes);
-        for file in [opened(bytes.clone()), disk.open(Limits::default())] {
+        for file in [opened(bytes.clone()), disk.open()] {
             let mut state = State::new(schema().unwrap()).unwrap();
             let refused = file.walk(&mut state, |_, _, _| Ok(true)).unwrap_err();
             assert!(
@@ -1077,14 +1071,10 @@ fn late_restarts_hold_only_the_chunks_their_tables_declare() {
     assert_eq!(state.dictionary().get(id), None);
 }
 
-/// The most a walk of `units` units with a one-byte dictionary budget holds, and the bytes
-/// of the strings it appended.
+/// The most a walk of `units` units holds of its dictionary, and the bytes of the strings it
+/// appended.
 fn held_walking(units: u32) -> (usize, usize) {
-    let limits = Limits {
-        dictionary_bytes: 1,
-        ..Limits::default()
-    };
-    let file = Recording::open(fixtures::native_recording(units, |_| {}), limits).unwrap();
+    let file = Recording::open(fixtures::native_recording(units, |_| {})).unwrap();
     let mut state = State::new(schema().unwrap()).unwrap();
     let (mut held, mut strings) = (0, 0);
     file.walk(&mut state, |state, manifest, _| {
@@ -1117,15 +1107,11 @@ fn a_walk_s_dictionary_does_not_grow_with_its_run() {
 }
 
 /// A run without restarts has no chunk to read a string back from: its walk keeps every
-/// string it appended, whatever its budget.
+/// string it appended.
 #[test]
 fn a_run_without_restarts_keeps_every_string_it_appends() {
-    let limits = Limits {
-        dictionary_bytes: 1,
-        ..Limits::default()
-    };
     let bytes = fixtures::native_recording(3, |page| page.restart = None);
-    let file = Recording::open(bytes, limits).unwrap();
+    let file = Recording::open(bytes).unwrap();
     let mut state = State::new(schema().unwrap()).unwrap();
     let mut first = None;
     file.walk(&mut state, |state, _, _| {
@@ -1180,20 +1166,15 @@ fn seen(
 }
 
 /// Every walk sees the frames and sample hours the writer saw, from a file and from memory,
-/// with a dictionary budget that holds everything and with one that holds nothing past a
-/// page: of every run from its start, and of each segment from its restart.
+/// of every run from its start, and of each segment from its restart.
 #[test]
 fn walks_see_the_writer_s_frames_over_many_runs_and_segments() {
     let (bytes, expected) = fixtures::churned(&CHURNED, 1);
     let disk = Saved::new(&bytes);
-    for dictionary_bytes in [Limits::default().dictionary_bytes, 1] {
-        let limits = || Limits {
-            dictionary_bytes,
-            ..Limits::default()
-        };
+    {
         for file in [
-            Recording::open(bytes.clone(), limits()).unwrap(),
-            disk.open(limits()),
+            Recording::open(bytes.clone()).unwrap(),
+            disk.open(),
         ] {
             assert!(file.run_count() > 4 && file.segments().len() > 16);
             assert_eq!(file.hours(), expected.len() as u64);
@@ -1239,16 +1220,12 @@ fn same_strings(left: &Dictionary, right: &Dictionary) -> io::Result<bool> {
 }
 
 /// Each segment walked from its own start ends in the state of the restart after it, every
-/// table and every string, however little its dictionary holds.
+/// table and every string, whatever its dictionary dropped.
 #[test]
 fn every_segment_ends_in_its_next_restart_s_state_string_for_string() {
     let (bytes, _) = fixtures::churned(&CHURNED, 1);
-    for dictionary_bytes in [Limits::default().dictionary_bytes, 1] {
-        let limits = Limits {
-            dictionary_bytes,
-            ..Limits::default()
-        };
-        let file = Recording::open(bytes.clone(), limits).unwrap();
+    {
+        let file = Recording::open(bytes.clone()).unwrap();
         for segment in file.segments() {
             let mut state = State::new(schema().unwrap()).unwrap();
             file.walk_segment(segment, &mut state, |_, _, _| Ok(true))
@@ -1269,16 +1246,12 @@ fn every_segment_ends_in_its_next_restart_s_state_string_for_string() {
     }
 }
 
-/// A walk past its dictionary budget drops the strings of the pages before, and reads those
-/// that come back, as cells or as reasons, from their chunks.
+/// A walk whose dictionary doubled drops the strings of the pages before, and reads those that
+/// come back, as cells or as reasons, from their chunks.
 #[test]
-fn a_walk_past_its_dictionary_budget_reads_returning_strings_back() {
+fn a_walk_s_trimmed_dictionary_reads_returning_strings_back() {
     let (bytes, expected) = fixtures::churned(&[(1, 0, 6)], 1);
-    let limits = Limits {
-        dictionary_bytes: 1,
-        ..Limits::default()
-    };
-    let file = Recording::open(bytes, limits).unwrap();
+    let file = Recording::open(bytes).unwrap();
     let mut state = State::new(schema().unwrap()).unwrap();
     let mut views = watched();
     let (mut walked, mut first, mut dropped) = (Vec::new(), None, false);
@@ -1342,194 +1315,6 @@ fn a_walk_past_its_dictionary_budget_reads_returning_strings_back() {
     );
 }
 
-/// Opens a gate walkers wait at.
-struct Gate(Mutex<bool>, Condvar);
-
-impl Gate {
-    fn new() -> Self {
-        Self(Mutex::new(false), Condvar::new())
-    }
-
-    fn wait(&self) {
-        let mut open = self.0.lock().unwrap();
-        while !*open {
-            open = self.1.wait(open).unwrap();
-        }
-    }
-
-    fn open(&self) {
-        *self.0.lock().unwrap() = true;
-        self.1.notify_all();
-    }
-}
-
-/// Walkers whose buffers the budget cannot hold at once wait, in turn, for those walking to
-/// give theirs back: four walk, four wait, and every walk ends.
-#[test]
-fn walkers_past_the_budget_wait_for_those_walking() {
-    let (bytes, _) = fixtures::churned(&[(1, 0, 8)], 1);
-    // A walker's share is mostly its dictionary's budget: four fit, a fifth does not.
-    let dictionary_bytes = 64 << 20;
-    let budget = Arc::new(Budget::new(4 * dictionary_bytes + (4 << 20)));
-    let limits = Limits {
-        budget: budget.clone(),
-        dictionary_bytes,
-        ..Limits::default()
-    };
-    let file = Recording::open(bytes, limits).unwrap();
-    assert_eq!(file.segments().len(), 8);
-    let (gate, (entered, walking)) = (Gate::new(), mpsc::channel());
-    std::thread::scope(|scope| {
-        let walkers: Vec<_> = file
-            .segments()
-            .iter()
-            .map(|segment| {
-                let (gate, entered) = (&gate, entered.clone());
-                let file = &file;
-                scope.spawn(move || {
-                    let mut walker = Walker::new(file, &GOING).unwrap();
-                    let mut state = State::new(schema().unwrap()).unwrap();
-                    walker.begin(segment, &mut state).unwrap();
-                    let mut hours = 0;
-                    walker
-                        .walk(segment, &mut state, |_, _, _| {
-                            if hours == 0 {
-                                let _ = entered.send(());
-                                gate.wait();
-                            }
-                            hours += 1;
-                            Ok(true)
-                        })
-                        .unwrap();
-                    hours
-                })
-            })
-            .collect();
-        for _ in 0..4 {
-            walking.recv().unwrap();
-        }
-        budget.wait_for_waiters(4);
-        assert_eq!(budget.walkers(), 4);
-        gate.open();
-        for walker in walkers {
-            assert_eq!(walker.join().unwrap(), envelope::UNIT_ORDINALS);
-        }
-    });
-    assert_eq!(budget.walkers(), 0);
-}
-
-/// Walkers waiting for the budget leave once their walk is stopped, the walker holding it
-/// undisturbed.
-#[test]
-fn a_stopped_walk_leaves_the_budget_s_queue() {
-    let (bytes, _) = fixtures::churned(&[(1, 0, 3)], 1);
-    let budget = Arc::new(Budget::new(1));
-    let limits = Limits {
-        budget: budget.clone(),
-        ..Limits::default()
-    };
-    let file = Recording::open(bytes, limits).unwrap();
-    let (gate, (entered, walking)) = (Gate::new(), mpsc::channel());
-    let stopped = AtomicBool::new(false);
-    let segments = file.segments();
-    std::thread::scope(|scope| {
-        let (file, gate, stopped) = (&file, &gate, &stopped);
-        let holder = scope.spawn(move || {
-            let mut state = State::new(schema().unwrap()).unwrap();
-            let mut first = true;
-            file.walk_segment(&segments[0], &mut state, |_, _, _| {
-                if std::mem::take(&mut first) {
-                    entered.send(()).unwrap();
-                    gate.wait();
-                }
-                Ok(true)
-            })
-        });
-        walking.recv().unwrap();
-        let waiters: Vec<_> = segments[1..]
-            .iter()
-            .map(|segment| {
-                scope.spawn(move || {
-                    let mut walker = Walker::new(file, stopped)?;
-                    let mut state = State::new(schema()?)?;
-                    walker.begin(segment, &mut state)?;
-                    walker.walk(segment, &mut state, |_, _, _| Ok(true))
-                })
-            })
-            .collect();
-        budget.wait_for_waiters(2);
-        stopped.store(true, Ordering::Relaxed);
-        file.wake();
-        for waiter in waiters {
-            assert_eq!(
-                waiter.join().unwrap().unwrap_err().kind(),
-                io::ErrorKind::Interrupted
-            );
-        }
-        gate.open();
-        holder.join().unwrap().unwrap();
-    });
-    assert_eq!(budget.walkers(), 0);
-}
-
-/// A walker needing a larger share for a later page gives back the one it holds before it
-/// waits: two walkers the budget admits one at a time, each growing past its first page while
-/// the other waits, both end.
-#[test]
-fn a_walker_growing_its_share_gives_back_the_one_it_holds_first() {
-    let runs = [
-        (1, 0, 2 * envelope::UNIT_ORDINALS),
-        (2, 0, 2 * envelope::UNIT_ORDINALS),
-    ];
-    let (bytes, _) = recording(&runs, every(&runs), 2, |_| {});
-    let budget = Arc::new(Budget::new(1));
-    let limits = Limits {
-        budget: budget.clone(),
-        ..Limits::default()
-    };
-    let file = Recording::open(bytes, limits).unwrap();
-    let segments = file.segments();
-    assert_eq!(segments.len(), 2);
-    // Longer ordinals in its strings: each run's second page holds more than its first.
-    for run in 0..2 {
-        assert!(file.page(run, 1).unwrap().units[0].raw > file.page(run, 0).unwrap().units[0].raw);
-    }
-    let (gate, (entered, walking)) = (Gate::new(), mpsc::channel());
-    std::thread::scope(|scope| {
-        let walkers: Vec<_> = segments
-            .iter()
-            .map(|segment| {
-                let (file, gate, entered) = (&file, &gate, entered.clone());
-                scope.spawn(move || {
-                    let mut walker = Walker::new(file, &GOING).unwrap();
-                    let mut state = State::new(schema().unwrap()).unwrap();
-                    walker.begin(segment, &mut state).unwrap();
-                    let mut hours = 0;
-                    walker
-                        .walk(segment, &mut state, |_, _, _| {
-                            if hours == 0 {
-                                let _ = entered.send(());
-                                gate.wait();
-                            }
-                            hours += 1;
-                            Ok(true)
-                        })
-                        .unwrap();
-                    hours
-                })
-            })
-            .collect();
-        // One walks its first page; the other waits ahead of its next share.
-        walking.recv().unwrap();
-        budget.wait_for_waiters(1);
-        assert_eq!(budget.walkers(), 1);
-        gate.open();
-        for walker in walkers {
-            assert_eq!(walker.join().unwrap(), 2 * envelope::UNIT_ORDINALS);
-        }
-    });
-    assert_eq!(budget.walkers(), 0);
-}
 
 /// A format-136 recording held every column format 137 did not append: its schema is this
 /// build's but for those, and nothing since changed what its columns mean.

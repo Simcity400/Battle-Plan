@@ -14,7 +14,7 @@ use dashboard_base::{
     test_fixtures::{CAMPAIGN, continuation_records, file_source, records, source},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -410,12 +410,10 @@ fn build(
     binding: &Binding,
     hours: Vec<facts::Hour>,
     (cuts, resume, gaps): (&[i32], Option<i32>, Vec<(i32, i32)>),
-    budget: &Budget,
 ) -> Built {
-    let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(binding.emitted(), first, gaps.clone());
     let mut root = 0;
     let mut generation = 0;
@@ -429,7 +427,6 @@ fn build(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -443,8 +440,8 @@ fn build(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit =
                 Emit::load(binding.emitted(), first, gaps.clone(), &directory, &saved).unwrap();
@@ -487,11 +484,9 @@ fn native_feed(
     gaps: &[(i32, i32)],
     (starts, cuts, resume): (&[i32], &[i32], Option<i32>),
 ) -> query::Feed {
-    let budget = Budget::new(256 << 20);
     let hours = projected(binding, frames, starts);
-    let built = build(binding, hours, (cuts, resume, gaps.to_vec()), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(binding, hours, (cuts, resume, gaps.to_vec()));
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     query::feed(&mut snapshot, &directory, &AtomicBool::new(false)).unwrap()
 }
@@ -501,7 +496,6 @@ fn native_feed(
 /// row read lists.
 #[test]
 fn the_publication_answers_what_the_row_recording_answers_across_segments_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let cancelled = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let frames: Vec<_> = hours().into_iter().map(|hour| frame(&tables(hour))).collect();
@@ -533,10 +527,9 @@ fn the_publication_answers_what_the_row_recording_answers_across_segments_cuts_a
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
         let projected = projected(&binding, &frames, starts);
-        let built = build(&binding, projected, (cuts, resume, gaps.clone()), &budget);
-        let cache = Cache::new(&budget);
+        let built = build(&binding, projected, (cuts, resume, gaps.clone()));
         let mut snapshot =
-            Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+            Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let feed = query::feed(&mut snapshot, &directory, &cancelled).unwrap();
         assert_eq!(feed.changes, row_feed.changes, "{label}: the completions");
@@ -1078,15 +1071,13 @@ fn scoped_parity(
     assert!(binding.scoped(), "the content names its projects by scoped text");
     let oracle = completion_events(&source, 1, &context, &cancelled).unwrap();
     let row = row::feed(&source, 1, &context, &cancelled).unwrap();
-    let budget = Budget::new(256 << 20);
     let last = frames.last().unwrap().hour;
     for &(starts, cuts, resume) in placements {
         let label = format!("starts {starts:?}");
         let hours = projected(&binding, frames, starts);
-        let built = build(&binding, hours, (cuts, resume, Vec::new()), &budget);
-        let cache = Cache::new(&budget);
+        let built = build(&binding, hours, (cuts, resume, Vec::new()));
         let mut snapshot =
-            Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+            Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let feed = query::feed(&mut snapshot, &directory, &cancelled).unwrap();
         assert_eq!(feed.changes, row.changes, "{label}: the completions");

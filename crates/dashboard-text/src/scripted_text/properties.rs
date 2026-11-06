@@ -36,7 +36,14 @@ pub(super) enum Party<'a> {
     Named(&'a str),
 }
 
-impl ScriptedText<'_> {
+const POPULARITY: u64 = replay_data::rows::mask::<PoliticalPartyRow>(&["popularity"]);
+
+/// The PartyLeaders key of `party`'s first leader: country, party and ordinal zero.
+fn first_leader(party: &PoliticalPartyRow) -> u128 {
+    u128::from(party.country) << 64 | u128::from(party.id) << 32
+}
+
+impl<'a> ScriptedText<'a> {
     /// Normalizes the ruling group's stored popularity by the sum of every
     /// party before trimmed fixed5 formatting, without a `%`.
     pub(super) fn party_support(&self, slot: u32) -> Result<String, String> {
@@ -52,10 +59,11 @@ impl ScriptedText<'_> {
             .ok_or("GetPartySupport: ruling-party pointer is absent")?;
         let parties = self
             .frame
-            .complete::<tables::PoliticalParties>()
+            .complete::<tables::PoliticalParties>(POPULARITY)
             .map_err(|e| e.to_string())?;
         let mut total = 0_i64;
-        for party in parties {
+        for party in each(parties) {
+            let party = party?;
             let owner = self.scopes.slot(party.country).ok_or_else(|| {
                 format!(
                     "GetPartySupport: country link {} is unresolved",
@@ -95,23 +103,31 @@ impl ScriptedText<'_> {
     }
 
     pub(crate) fn manpower_unrecorded(&self, slot: u32) -> Result<i32, String> {
-        let (countries, gap) = rows::<tables::Countries>(self.frame);
-        let country = countries
-            .iter()
-            .find(|row| row.canonical_slot == slot)
-            .ok_or_else(|| format!("GetManpower: Countries {gap}"))?;
+        let (countries, gap) = rows::<tables::Countries>(self.frame, COUNTRY);
+        let mut country = None;
+        for row in each(countries) {
+            let row = row?;
+            if row.canonical_slot == slot {
+                country = Some(row);
+                break;
+            }
+        }
+        let country = country.ok_or_else(|| format!("GetManpower: Countries {gap}"))?;
         let states = self
             .frame
-            .complete::<tables::States>()
+            .complete::<tables::States>(STATE)
             .map_err(|e| format!("GetManpower: {e}"))?;
         let provinces = self
             .frame
-            .provinces()
+            .complete::<tables::Provinces>(PROVINCE)
             .map_err(|e| format!("GetManpower: {e}"))?;
-        let populated: std::collections::BTreeSet<u32> =
-            provinces.iter().map(|province| province.state).collect();
+        let mut populated = std::collections::BTreeSet::new();
+        for province in each(provinces) {
+            populated.insert(province?.state);
+        }
         let mut total = country.manpower_residual;
-        for state in states {
+        for state in each(states) {
+            let state = state?;
             if state.controller == 0 {
                 continue;
             }
@@ -146,7 +162,7 @@ impl ScriptedText<'_> {
 
     pub(crate) fn agency_unrecorded(&self, slot: u32) -> Result<String, String> {
         let agency = self
-            .country_row::<tables::IntelligenceAgencies>(slot, |row| row.country)
+            .country_row::<tables::IntelligenceAgencies>(slot, AGENCY)
             .map_err(|reason| format!("GetAgency: {reason}"))?
             .ok_or_else(|| {
                 format!("GetAgency: country slot {slot} has no IntelligenceAgencies row")
@@ -181,7 +197,7 @@ impl ScriptedText<'_> {
         suffix: &str,
     ) -> Result<String, String> {
         let row = self
-            .country_row::<tables::CountryAppearance>(slot, |row| row.country)
+            .country_row::<tables::CountryAppearance>(slot, APPEARANCE)
             .map_err(|reason| format!("{entry}: {reason}"))?
             .ok_or_else(|| format!("{entry}: country slot {slot} has no CountryAppearance row"))?;
         let (old, what) = match suffix {
@@ -206,13 +222,8 @@ impl ScriptedText<'_> {
     }
 
     pub(crate) fn character_gender_unrecorded(&self, id: u32) -> Result<u32, String> {
-        let (characters, gap) = (
-            self.frame.character_rows(),
-            self.frame.row_gap(tables::Characters::ID),
-        );
-        characters
-            .iter()
-            .find(|row| row.id == id)
+        let (characters, gap) = rows::<tables::Characters>(self.frame, CHARACTER);
+        keyed(&characters, u128::from(id))?
             .map(|row| row.gender)
             .ok_or_else(|| format!("character {id}'s gender: Characters {gap}"))
     }
@@ -232,10 +243,8 @@ impl ScriptedText<'_> {
     ) -> Result<String, String> {
         let mut female = false;
         if let Some(party) = self.party(slot, Party::Ruling)? {
-            let (leaders, gap) = rows::<tables::PartyLeaders>(self.frame);
-            match leaders.iter().find(|row| {
-                row.country == party.country && row.party == party.id && row.ordinal == 0
-            }) {
+            let (leaders, gap) = rows::<tables::PartyLeaders>(self.frame, PARTY_LEADER);
+            match keyed(&leaders, first_leader(&party))? {
                 Some(row) => {
                     if let Some(id) = row.character {
                         female = self.character_gender(id)? == 2;
@@ -280,12 +289,10 @@ impl ScriptedText<'_> {
         &self,
         slot: u32,
         which: Party<'_>,
-    ) -> Result<Option<&PoliticalPartyRow>, String> {
+    ) -> Result<Option<Cow<'a, PoliticalPartyRow>>, String> {
         let ruling = if matches!(which, Party::Ruling) {
-            let (politics, gap) = rows::<tables::Politics>(self.frame);
-            let row = politics
-                .iter()
-                .find(|row| self.scopes.slot(row.country) == Some(slot))
+            let (politics, gap) = rows::<tables::Politics>(self.frame, POLITICS);
+            let row = first(&politics, |key| self.scopes.slot(key as u32) == Some(slot))?
                 .ok_or_else(|| format!("party of country {slot}: Politics {gap}"))?;
             let Some(id) = row.ruling_party else {
                 return Ok(None);
@@ -294,15 +301,20 @@ impl ScriptedText<'_> {
         } else {
             None
         };
-        let (parties, gap) = rows::<tables::PoliticalParties>(self.frame);
-        let party = parties.iter().find(|row| {
-            self.scopes.slot(row.country) == Some(slot)
-                && match which {
-                    Party::Ruling => Some(row.id) == ruling,
-                    Party::Token(group) => row.token.eq_ignore_ascii_case(group.as_bytes()),
-                    Party::Named(group) => row.token == group.as_bytes(),
-                }
-        });
+        let (parties, gap) = rows::<tables::PoliticalParties>(self.frame, PARTY);
+        // The country is the key's high word, the party id its low word.
+        let mut party = None;
+        for row in parties.keyed(|key| self.scopes.slot((key >> 32) as u32) == Some(slot)) {
+            let row = row.map_err(built)?;
+            if match which {
+                Party::Ruling => Some(row.id) == ruling,
+                Party::Token(group) => row.token.eq_ignore_ascii_case(group.as_bytes()),
+                Party::Named(group) => row.token == group.as_bytes(),
+            } {
+                party = Some(row);
+                break;
+            }
+        }
         if party.is_none() && ruling.is_some() {
             return Err(format!(
                 "party of country {slot}: ruling party has no PoliticalParties row: {gap}"
@@ -312,8 +324,8 @@ impl ScriptedText<'_> {
             || (complete::<tables::PoliticalParties>(self.frame)
                 && (complete::<tables::CountryLinks>(self.frame)
                     || parties
-                        .iter()
-                        .all(|p| self.scopes.slot(p.country).is_some())))
+                        .keys()
+                        .all(|key| self.scopes.slot((key >> 32) as u32).is_some())))
         {
             Ok(party)
         } else {
@@ -370,7 +382,7 @@ impl ScriptedText<'_> {
         tag: &str,
     ) -> Result<String, String> {
         match self.party(slot, Party::Named(group))? {
-            Some(party) => self.party_name(party, tag, true),
+            Some(party) => self.party_name(&party, tag, true),
             None => Ok(String::new()),
         }
     }
@@ -384,10 +396,8 @@ impl ScriptedText<'_> {
     }
 
     pub(crate) fn last_election_unrecorded(&self, slot: u32) -> Result<String, String> {
-        let (politics, gap) = rows::<tables::Politics>(self.frame);
-        let row = politics
-            .iter()
-            .find(|row| self.scopes.slot(row.country) == Some(slot))
+        let (politics, gap) = rows::<tables::Politics>(self.frame, POLITICS);
+        let row = first(&politics, |key| self.scopes.slot(key as u32) == Some(slot))?
             .ok_or_else(|| format!("GetLastElection: Politics {gap}"))?;
         self.date_text(row.last_election)
     }
@@ -398,11 +408,8 @@ impl ScriptedText<'_> {
         let Some(party) = self.party(slot, which)? else {
             return Ok(String::new());
         };
-        let (leaders, gap) = rows::<tables::PartyLeaders>(self.frame);
-        match leaders
-            .iter()
-            .find(|row| row.country == party.country && row.party == party.id && row.ordinal == 0)
-        {
+        let (leaders, gap) = rows::<tables::PartyLeaders>(self.frame, PARTY_LEADER);
+        match keyed(&leaders, first_leader(&party))? {
             Some(row) => row
                 .character
                 .map_or_else(|| Ok(String::new()), |id| self.character_name(id)),

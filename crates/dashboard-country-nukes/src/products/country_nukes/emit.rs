@@ -144,7 +144,7 @@ pub struct Emit {
 }
 
 /// A stockpile's composition as event fields.
-fn mix_cells(writer: &mut Writer<'_>, stock: &Stock) -> io::Result<Blob> {
+fn mix_cells(writer: &mut Writer, stock: &Stock) -> io::Result<Blob> {
     let mut cells = Vec::with_capacity(stock.counts.len() + 1);
     for count in &stock.counts {
         let pair = writer.cells([
@@ -198,12 +198,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 3]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 3]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -223,7 +223,7 @@ impl Emit {
     }
 
     /// The tag actor named `tag`, with its keys.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -250,7 +250,7 @@ impl Emit {
     }
 
     /// `actor`'s PARTS key of `ordinal`.
-    fn part(&mut self, writer: &mut Writer<'_>, actor: u64, ordinal: u32) -> io::Result<KeyHandle> {
+    fn part(&mut self, writer: &mut Writer, actor: u64, ordinal: u32) -> io::Result<KeyHandle> {
         let parts = &self.countries[actor as usize].parts;
         let at = parts.partition_point(|&(held, _)| held < ordinal);
         if let Some(&(held, key)) = parts.get(at)
@@ -271,7 +271,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("nukes.emit", None);
         let at = hour.hour;
         let adjacent = match self.last {
@@ -375,7 +375,7 @@ impl Emit {
     /// their runs.
     fn identify(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         countries: Option<&Countries>,
         touched: &mut Vec<u64>,
@@ -434,7 +434,7 @@ impl Emit {
     }
 
     /// Ends what `actor`'s runs hold.
-    fn end(&mut self, writer: &mut Writer<'_>, at: i32, actor: u64) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, at: i32, actor: u64) -> io::Result<()> {
         let country = &mut self.countries[actor as usize];
         let Some(stock) = country.stock.take() else {
             return Ok(());
@@ -456,7 +456,7 @@ impl Emit {
     /// hour before, and an increase where its total grows within one.
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         adjacent: bool,
         (actor, holder, stock): (u64, (u32, u32), Option<Arc<Stock>>),
@@ -553,7 +553,7 @@ impl Emit {
     /// The increase's event.
     fn increase(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         (actor, (slot, id), amount): Increase,
     ) -> io::Result<()> {
@@ -585,7 +585,7 @@ impl Emit {
 
     /// Moves the `touched` tags in the ranking to their totals' places; the positions that
     /// changed go on from `hour`.
-    fn rank(&mut self, writer: &mut Writer<'_>, hour: i32, touched: &[u64]) -> io::Result<()> {
+    fn rank(&mut self, writer: &mut Writer, hour: i32, touched: &[u64]) -> io::Result<()> {
         let (mut leaving, mut entering) = (Vec::new(), Vec::new());
         for &actor in touched {
             let amount = ranked(self.countries[actor as usize].stock.as_deref());
@@ -698,7 +698,7 @@ impl Emit {
     /// read due and missed ends it.
     fn schedule(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         read: bool,
@@ -718,7 +718,7 @@ impl Emit {
 
     /// A read of a table not complete (`refused`) under its reason; an hour refusing nothing
     /// ends the one before's.
-    fn refuse(&mut self, writer: &mut Writer<'_>, at: i32, refused: bool) -> io::Result<()> {
+    fn refuse(&mut self, writer: &mut Writer, at: i32, refused: bool) -> io::Result<()> {
         let key = match self.reason.as_ref().filter(|_| refused) {
             Some(reason) => Some(match self.reasons.get(reason) {
                 Some(&(_, key)) => key,
@@ -754,7 +754,7 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for country in &mut self.countries {
             country.stock = None;
@@ -769,7 +769,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

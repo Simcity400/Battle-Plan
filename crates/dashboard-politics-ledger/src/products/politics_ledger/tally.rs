@@ -40,6 +40,7 @@ pub struct Contribution {
 
 /// One recurring item's native day: its payments merged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Day {
     pub day: i32,
     pub first: (i32, u64),
@@ -54,6 +55,8 @@ pub struct Day {
     pub covered: bool,
     pub realized: (i128, i128),
     pub realized_unknown: bool,
+    /// Its payments are upkeep: its days count one entry.
+    pub upkeep: bool,
 }
 
 fn overflow() -> io::Error {
@@ -83,7 +86,30 @@ impl Day {
                 .realized
                 .map_or((0, 0), |value| (value.max(0), value.min(0))),
             realized_unknown: contribution.realized.is_none(),
+            upkeep: contribution.upkeep,
         }
+    }
+
+    /// The rest of the same item's day, as adding its payments one by one would leave it.
+    pub fn merge(&mut self, other: &Self) -> io::Result<()> {
+        if other.first < self.first {
+            self.first = other.first;
+            self.sequence = other.sequence;
+            self.ordinal = other.ordinal;
+        }
+        self.hour = self.hour.min(other.hour);
+        self.lag = self.lag.max(other.lag);
+        self.occurrences += other.occurrences;
+        if !self.upkeep {
+            self.entries += other.entries;
+        }
+        self.charge = add(self.charge, other.charge)?;
+        self.known += other.known;
+        self.covered &= other.covered;
+        self.realized.0 = add(self.realized.0, other.realized.0)?;
+        self.realized.1 = add(self.realized.1, other.realized.1)?;
+        self.realized_unknown |= other.realized_unknown;
+        Ok(())
     }
 
     /// Another payment of the same item and day.
@@ -115,6 +141,7 @@ impl Day {
 
 /// An item's one-off payments.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct OneOff {
     pub known: i128,
     pub occurrences: u64,
@@ -160,6 +187,7 @@ impl OneOff {
 
 /// An item's settled days.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Recurring {
     pub days: u64,
     pub occurrences: u64,
@@ -211,6 +239,7 @@ impl Recurring {
 /// One item's totals over some hours, with its rows that are no payment: balance lines and
 /// negative cost credits, which replies count among their warnings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Entry {
     pub one_off: Option<OneOff>,
     pub recurring: Option<Recurring>,
@@ -255,6 +284,7 @@ pub type GainDay = (Option<i128>, u128, bool);
 
 /// A currency's daily gains over some days.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Gain {
     pub gained: i128,
     pub lost: u128,
@@ -285,6 +315,7 @@ impl Gain {
 /// Every item's totals over one period, its daily gains by currency, and the latest read they
 /// count.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Totals {
     pub entries: FastMap<Field, Entry>,
     pub gains: [Gain; 2],
@@ -455,6 +486,7 @@ pub fn read(cells: &[Cell]) -> io::Result<Totals> {
                     covered: true,
                     realized: (0, 0),
                     realized_unknown: false,
+                    upkeep: false,
                 },
             });
         }
@@ -465,7 +497,8 @@ pub fn read(cells: &[Cell]) -> io::Result<Totals> {
 
 /// One branch's rollups in the making: each recurring item's open days, and each level's open
 /// periods' totals.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Rollups {
     pub days: FastMap<(i32, Field), Day>,
     /// Each open day's latest daily gains, by day and capture identity.
@@ -582,6 +615,127 @@ impl Rollups {
     }
 }
 
+impl Rollups {
+    pub fn is_empty(&self) -> bool {
+        self.days.is_empty() && self.daily.is_empty() && self.open.iter().all(|open| open.is_empty())
+    }
+
+    /// The least settled frontier at which [`Self::settle`] would change anything.
+    pub fn due(&self) -> Option<i32> {
+        let days = self.days.keys().map(|&(at, _)| at.saturating_add(1));
+        let daily = self.daily.keys().map(|&(at, _, _)| at.saturating_add(1));
+        let periods = self.open.iter().enumerate().filter_map(|(level, open)| {
+            let (&index, _) = open.first_key_value()?;
+            (index + 1)
+                .checked_mul(PERIOD_DAYS[level])
+                .and_then(|day| day.checked_mul(24))
+        });
+        days.chain(daily).chain(periods).min()
+    }
+
+    /// Takes out the days and daily gains through day hour `split` that settle before
+    /// `settled`: what another part of the same days may hold too.
+    pub fn split_off(&mut self, settled: i32, split: i32) -> Split {
+        let mut taken = Split::default();
+        let held = |at: i32| at < settled && at <= split;
+        self.days.retain(|&key, day| {
+            if held(key.0) {
+                taken.days.push((key, *day));
+                return false;
+            }
+            true
+        });
+        self.daily.retain(|&key, gains| {
+            if held(key.0) {
+                taken.daily.push((key, *gains));
+                return false;
+            }
+            true
+        });
+        taken.days.sort_unstable_by_key(|(key, _)| *key);
+        taken.daily.sort_unstable_by_key(|(key, _)| *key);
+        taken
+    }
+
+    /// Takes in what [`Self::split_off`] took out of another part of the same days: a daily
+    /// row's later revision replaces the earlier.
+    pub fn join(&mut self, split: Split) -> io::Result<()> {
+        for (key, day) in split.days {
+            match self.days.entry(key) {
+                std::collections::hash_map::Entry::Occupied(held) => held.into_mut().merge(&day)?,
+                std::collections::hash_map::Entry::Vacant(held) => {
+                    held.insert(day);
+                }
+            }
+        }
+        for (key, gains) in split.daily {
+            self.daily.insert(key, gains);
+        }
+        Ok(())
+    }
+
+    /// Takes in `later`, the rollups of every payment recorded after these.
+    pub fn merge(&mut self, later: Self) -> io::Result<()> {
+        let Self { days, daily, open } = later;
+        self.join(Split {
+            days: days.into_iter().collect(),
+            daily: daily.into_iter().collect(),
+        })?;
+        for (level, open) in open.into_iter().enumerate() {
+            for (index, totals) in open {
+                self.open[level].entry(index).or_default().merge(&totals)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The same rollups with each field's item named by `item`.
+    pub fn remap(self, item: &impl Fn(u32) -> io::Result<u32>) -> io::Result<Self> {
+        let mut days = FastMap::default();
+        days.reserve(self.days.len());
+        for ((at, field), day) in self.days {
+            days.insert((at, (item(field.0)?, field.1, field.2)), day);
+        }
+        let mut open: [std::collections::BTreeMap<i32, Totals>; 3] = Default::default();
+        for (level, held) in self.open.into_iter().enumerate() {
+            for (index, totals) in held {
+                open[level].insert(index, totals.remap(item)?);
+            }
+        }
+        Ok(Self {
+            days,
+            daily: self.daily,
+            open,
+        })
+    }
+}
+
+impl Totals {
+    /// The same totals with each field's item named by `item`.
+    pub fn remap(self, item: &impl Fn(u32) -> io::Result<u32>) -> io::Result<Self> {
+        let mut entries = FastMap::default();
+        entries.reserve(self.entries.len());
+        for (field, entry) in self.entries {
+            entries.insert((item(field.0)?, field.1, field.2), entry);
+        }
+        Ok(Self { entries, ..self })
+    }
+}
+
+/// Days and daily gains [`Rollups::split_off`] took out, in key order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
+pub struct Split {
+    pub days: Vec<((i32, Field), Day)>,
+    pub daily: Vec<((i32, u32, u64), [GainDay; 2])>,
+}
+
+impl Split {
+    pub fn is_empty(&self) -> bool {
+        self.days.is_empty() && self.daily.is_empty()
+    }
+}
+
 /// The varints of a saved state, as [`Decode`] reads them back.
 pub struct Out<'a>(pub &'a mut Vec<u8>);
 
@@ -636,6 +790,7 @@ impl Out<'_> {
         self.zig128(day.realized.0);
         self.zig128(day.realized.1);
         self.flag(day.realized_unknown);
+        self.flag(day.upkeep);
     }
 
     fn gain(&mut self, gain: &Gain) {
@@ -736,6 +891,7 @@ fn day(input: &mut Decode<'_>) -> io::Result<Day> {
         covered: input.flag()?,
         realized: (input.zig128()?, input.zig128()?),
         realized_unknown: input.flag()?,
+        upkeep: input.flag()?,
     })
 }
 

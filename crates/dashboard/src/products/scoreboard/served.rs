@@ -1,6 +1,6 @@
 //! The scoreboard's served replies: its column registry, each hour's ranked
-//! index, the index ranked by every column and both ways, and every
-//! country's cells.
+//! index whole and read against the hour before, the index ranked by every
+//! column and both ways, and every country's cells.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -67,6 +67,19 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
                     true,
                 ),
             )?;
+        }
+        // Playback's index, each hour read against the hour before.
+        for pair in branch.hours().windows(2) {
+            let mut params = page(
+                &id,
+                &columns,
+                (&[], true),
+                pair[1],
+                (sort.as_str(), true),
+                true,
+            );
+            params["since"] = json!(pair[0]);
+            ask.ask("scoreboard", params)?;
         }
         for column in &columns {
             for hour in ends {

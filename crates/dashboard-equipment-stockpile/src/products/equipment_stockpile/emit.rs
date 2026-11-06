@@ -216,7 +216,7 @@ impl Coverage {
     /// `status` from `hour` on; one held already changes nothing.
     fn set(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         status: Status,
@@ -226,7 +226,7 @@ impl Coverage {
                 return Ok(());
             }
             if from < hour {
-                append(writer, key, held, from, hour - 1)?;
+                append(writer, key, held, from, hour - 1, false)?;
             }
         }
         self.open = Some((status, hour));
@@ -234,11 +234,11 @@ impl Coverage {
     }
 
     /// Appends what is open through `last`, which stays open.
-    fn cut(&mut self, writer: &mut Writer<'_>, key: KeyHandle, last: i32) -> io::Result<()> {
+    fn cut(&mut self, writer: &mut Writer, key: KeyHandle, last: i32) -> io::Result<()> {
         if let Some((held, from)) = &mut self.open
             && *from <= last
         {
-            append(writer, key, *held, *from, last)?;
+            append(writer, key, *held, *from, last, true)?;
             *from = last + 1;
         }
         Ok(())
@@ -246,27 +246,29 @@ impl Coverage {
 }
 
 fn append(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     key: KeyHandle,
     status: Status,
     first: i32,
     last: i32,
+    cut: bool,
 ) -> io::Result<()> {
     let (known, holder) = match status {
         Status::Known(holder) => (Knownness::Known, Some(holder)),
         Status::Unknown(reason) => (Knownness::Unknown(reason), None),
     };
-    writer.evidence(
-        key,
-        Evidence {
-            span: Span::new(first, last)?,
-            known,
-            supplying_read: None,
-            holder,
-            identity_first: None,
-        },
-        None,
-    )
+    let evidence = Evidence {
+        span: Span::new(first, last)?,
+        known,
+        supplying_read: None,
+        holder,
+        identity_first: None,
+    };
+    if cut {
+        writer.continue_evidence(key, evidence)
+    } else {
+        writer.evidence(key, evidence, None)
+    }
 }
 
 /// A variant's daily row: its stock (absent where it has no stock row, unknown where its sum
@@ -352,7 +354,7 @@ impl<R: Row> Stream<R> {
     #[allow(clippy::too_many_arguments)]
     fn write(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         (slot, id): (u32, u32),
@@ -388,7 +390,7 @@ impl<R: Row> Stream<R> {
 }
 
 fn event(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     key: KeyHandle,
     hour: i32,
     read: Option<i32>,
@@ -735,11 +737,11 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors.key(writer, place, (RunMode::Exact, 0), None)
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 4]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 4]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -762,7 +764,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: columnar::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: columnar::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("stockpile.emit", None);
         let at = hour.hour;
         match self.last {
@@ -822,7 +824,7 @@ impl Emit {
     }
 
     /// Ends what is open after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         self.walking = false;
         self.next = [None; 2];
@@ -840,7 +842,7 @@ impl Emit {
 
     /// The tables' read schedules at `at`: a read off schedule starts one, a read due and
     /// missed ends it.
-    fn schedule(&mut self, writer: &mut Writer<'_>, at: i32, reads: [bool; 2]) -> io::Result<()> {
+    fn schedule(&mut self, writer: &mut Writer, at: i32, reads: [bool; 2]) -> io::Result<()> {
         let keys = self.family(writer)?;
         for stream in 0..2 {
             let period = self.periods[stream];
@@ -862,7 +864,7 @@ impl Emit {
     /// were forgotten, or every name forgotten.
     fn names(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         evidence: VariantHour,
         variants: Vec<Variant>,
@@ -881,7 +883,7 @@ impl Emit {
         }
     }
 
-    fn name(&mut self, writer: &mut Writer<'_>, at: i32, variant: Variant) -> io::Result<()> {
+    fn name(&mut self, writer: &mut Writer, at: i32, variant: Variant) -> io::Result<()> {
         let generation = self.names.generation;
         let named = self.names.variants.get(&variant.id).copied();
         if named
@@ -938,7 +940,7 @@ impl Emit {
     }
 
     /// A type's archetype and domain cells, null where content does not resolve it.
-    fn classified(&self, writer: &mut Writer<'_>, kind: Option<Kind>) -> io::Result<[Cell; 2]> {
+    fn classified(&self, writer: &mut Writer, kind: Option<Kind>) -> io::Result<[Cell; 2]> {
         Ok(match kind {
             Some(kind) => [
                 Cell::Text(writer.text(&kind.key)?),
@@ -949,7 +951,7 @@ impl Emit {
     }
 
     /// Every name is unknown from `at`, where any is known.
-    fn forget(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn forget(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         if !self.names.named {
             return Ok(());
         }
@@ -961,7 +963,7 @@ impl Emit {
 
     /// Each holder's identity from a whole hour's holders: every tag they resolve, and none
     /// for every other.
-    fn identify(&mut self, writer: &mut Writer<'_>, at: i32, holders: &Holders) -> io::Result<()> {
+    fn identify(&mut self, writer: &mut Writer, at: i32, holders: &Holders) -> io::Result<()> {
         self.epoch += 1;
         self.slots.clear();
         engine_allocation::reserve(&mut self.slots, holders.identities.len())?;
@@ -1003,7 +1005,7 @@ impl Emit {
 
     /// Each of the holder's coverages from `at`, as the hour's countries, tables and its
     /// identity leave it: a known one goes on while all three hold.
-    fn cover(&mut self, writer: &mut Writer<'_>, index: usize, at: i32) -> io::Result<()> {
+    fn cover(&mut self, writer: &mut Writer, index: usize, at: i32) -> io::Result<()> {
         let (countries, usable) = (self.countries, self.usable);
         let holder = &mut self.holders[index];
         for stream in 0..3 {
@@ -1035,7 +1037,7 @@ impl Emit {
     /// A holder slot's read, for every tag it holds.
     fn read(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         reads: [bool; 2],
         read: &Read,
@@ -1073,7 +1075,7 @@ impl Emit {
     /// did. A read of a stream that is neither known nor waiting is not the projector's.
     fn start(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         index: usize,
         stream: usize,
@@ -1100,7 +1102,7 @@ impl Emit {
 
     fn daily(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         index: usize,
         read: &Read,
@@ -1159,7 +1161,7 @@ impl Emit {
 
     fn logistics(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         index: usize,
         totals: &Totals<u32, 3>,
@@ -1192,7 +1194,7 @@ impl Emit {
     /// The tokens a logistics read spelled, each written once.
     fn spell(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         spellings: &[(u32, String)],
     ) -> io::Result<()> {
@@ -1220,7 +1222,7 @@ impl Emit {
     /// The read's counts of each table it read, written where the holder's change.
     fn count(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         index: usize,
         read: &Read,
@@ -1250,7 +1252,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         for holder in &mut self.holders {
             for (stream, coverage) in holder.coverage.iter_mut().enumerate() {

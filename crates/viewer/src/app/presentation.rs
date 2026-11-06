@@ -539,7 +539,9 @@ impl Viewer {
             names,
             overlay,
             overlay_tables,
+            held,
         } = layers;
+        self.uploaded.products = held;
         self.music = music;
         self.battles = battles;
         let scene = self

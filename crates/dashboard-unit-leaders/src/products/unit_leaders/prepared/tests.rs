@@ -143,13 +143,6 @@ fn active_refusals_continue_identically_after_serialized_save_and_resume() {
     for (state, fixture) in states.iter_mut().zip(&fixtures) {
         observe(state, &replay, &frames[..3]);
         assert_eq!(state.scan.withheld_active.len(), 1);
-        assert!(state.scan.withheld_bytes > std::mem::size_of::<LeaderWithheld>());
-        assert!(
-            state.buffered_bytes()
-                >= state.scan.pending_bytes
-                    + state.scan.withheld_bytes
-                    + std::mem::size_of::<(u64, usize)>()
-        );
         publish(state, fixture, &cancelled);
     }
     states[1] = resume(&fixtures[1]);
@@ -712,7 +705,6 @@ fn admission_work(
     let changes = tracker.observe(&first, replay.format);
     state.observe(&first, &replay, content, &changes)?;
     let baseline = work(&state);
-    let buffered = state.buffered_bytes();
     let delta = if change.is_some() {
         let next = frames.last().unwrap();
         let changes = tracker.observe(next, replay.format);
@@ -739,13 +731,6 @@ fn admission_work(
             },
         )?
     };
-    if change.is_none() {
-        assert_eq!(
-            state.buffered_bytes(),
-            buffered,
-            "unchanged carry allocates no pending facts"
-        );
-    }
     let mut writer = fixture.writer();
     state.flush(&mut writer, 1, content, &[], &flag)?;
     writer.commit()?;

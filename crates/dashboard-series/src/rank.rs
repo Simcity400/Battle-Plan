@@ -1,7 +1,4 @@
-use crate::{
-    budget::{Budget, Slab},
-    invalid,
-};
+use crate::{Grow, invalid};
 use std::{cmp::Ordering, io};
 
 #[derive(Clone, Copy)]
@@ -25,10 +22,9 @@ struct Node {
     published: Option<usize>,
 }
 pub struct RankBuilder<'a> {
-    budget: &'a Budget,
     actors: &'a [Actor<'a>],
-    nodes: Slab<'a, Node>,
-    forward: Slab<'a, Option<usize>>,
+    nodes: Vec<Node>,
+    forward: Vec<Option<usize>>,
     root: Option<usize>,
     descending: bool,
     include_unknown: bool,
@@ -39,15 +35,14 @@ pub struct RankBuilder<'a> {
 }
 impl<'a> RankBuilder<'a> {
     pub fn new(
-        budget: &'a Budget,
         actors: &'a [Actor<'a>],
         descending: bool,
         include_unknown: bool,
     ) -> io::Result<Self> {
-        let mut nodes = Slab::new(budget, actors.len())?;
-        let mut forward = Slab::new(budget, actors.len())?;
+        let mut nodes = engine_allocation::vec(actors.len())?;
+        let mut forward = engine_allocation::vec(actors.len())?;
         for _ in actors {
-            nodes.push(Node {
+            nodes.try_push(Node {
                 left: None,
                 right: None,
                 height: 1,
@@ -55,10 +50,9 @@ impl<'a> RankBuilder<'a> {
                 amount: Amount::Unknown,
                 published: None,
             })?;
-            forward.push(None)?;
+            forward.try_push(None)?;
         }
         let mut value = Self {
-            budget,
             actors,
             nodes,
             forward,
@@ -239,17 +233,17 @@ impl<'a> RankBuilder<'a> {
             .checked_mul(3)
             .and_then(|n| n.checked_add(2))
             .ok_or_else(engine_allocation::oom)?;
-        let mut handles = Slab::new(self.budget, changes.len())?;
-        let mut old = Slab::new(self.budget, changes.len())?;
-        let mut intervals = Slab::new(self.budget, capacity)?;
-        let mut before = Slab::new(self.budget, changes.len())?;
-        let mut after = Slab::new(self.budget, changes.len())?;
+        let mut handles = engine_allocation::vec(changes.len())?;
+        let mut old = engine_allocation::vec(changes.len())?;
+        let mut intervals = engine_allocation::vec(capacity)?;
+        let mut before = engine_allocation::vec(changes.len())?;
+        let mut after = engine_allocation::vec(changes.len())?;
         for &(handle, _) in changes {
             if handle >= self.nodes.len() {
                 return Err(invalid("unknown rank actor handle"));
             }
-            handles.push(handle)?;
-            old.push(self.position(handle)?)?;
+            handles.try_push(handle)?;
+            old.try_push(self.position(handle)?)?;
         }
         handles.sort_unstable();
         if handles.windows(2).any(|w| w[0] == w[1]) {
@@ -269,18 +263,18 @@ impl<'a> RankBuilder<'a> {
         let new_size = self.size(self.root);
         if self.first {
             if old_size.max(new_size) > 0 {
-                intervals.push((0, old_size.max(new_size) - 1))?;
+                intervals.try_push((0, old_size.max(new_size) - 1))?;
             }
             self.first = false;
         }
         for (index, &(handle, _)) in changes.iter().enumerate() {
             let next = self.position(handle)?;
             if let Some(rank) = old[index] {
-                before.push(rank)?;
+                before.try_push(rank)?;
             }
             if let Some(rank) = next {
-                after.push(rank)?;
-                intervals.push((rank, rank))?;
+                after.try_push(rank)?;
+                intervals.try_push((rank, rank))?;
             }
             if next.is_none() && self.nodes[handle].published.is_some() {
                 actor(self.actors[handle].identity, None)?;
@@ -310,12 +304,12 @@ impl<'a> RankBuilder<'a> {
                 return Err(invalid("rank displacement sweep did not advance"));
             }
             if old_at != new_at {
-                intervals.push((ordinal + new_at, end - 1 + new_at))?;
+                intervals.try_push((ordinal + new_at, end - 1 + new_at))?;
             }
             ordinal = end;
         }
         if old_size > new_size {
-            intervals.push((new_size, old_size - 1))?;
+            intervals.try_push((new_size, old_size - 1))?;
         }
         intervals.sort_unstable();
         let mut at = 0;

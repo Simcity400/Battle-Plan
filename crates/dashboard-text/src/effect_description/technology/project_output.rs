@@ -1,6 +1,15 @@
 use super::*;
-use replay_data::rows::tables;
+use replay_data::rows::{
+    ProjectProgramRow, ProvinceRow, RaidFacilityRow, ScientistRow, ScientistSkillRow, tables,
+};
 use std::collections::BTreeSet;
+
+/// The fields of each table the project outputs read.
+const SCIENTIST: u64 = mask::<ScientistRow>(&["country", "ordinal"]);
+const SKILL: u64 = mask::<ScientistSkillRow>(&["token", "level"]);
+const PROGRAM: u64 = mask::<RaidFacilityRow>(&["id", "province"]);
+const PROVINCE_STATE: u64 = mask::<ProvinceRow>(&["state"]);
+const PROGRAM_BUILDING: u64 = mask::<ProjectProgramRow>(&["building"]);
 
 #[cfg(test)]
 mod tests;
@@ -247,29 +256,26 @@ impl Renderer<'_, '_, '_> {
             .token_of(specialization.as_bytes())
             .map_err(|why| why.to_string())?
             .ok_or("LexicalTokens lacks project specialization")?;
-        let scientists = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::Scientists>()
-            .map_err(|why| why.to_string())?;
-        let skills = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::ScientistSkills>()
-            .map_err(|why| why.to_string())?;
-        let eligible: BTreeSet<_> = skills
-            .iter()
-            .filter(|skill| skill.token == token && skill.level >= 1)
-            .map(|skill| skill.character)
-            .collect();
-        Ok(scientists
-            .iter()
-            .filter(|row| world.slot(row.country) == Some(country))
-            .filter(|row| eligible.contains(&row.character))
-            .min_by_key(|row| row.ordinal)
-            .map(|row| row.character))
+        let scientists = self.complete::<tables::Scientists>(SCIENTIST)?;
+        let skills = self.complete::<tables::ScientistSkills>(SKILL)?;
+        let mut eligible = BTreeSet::new();
+        for skill in each(skills) {
+            let skill = skill?;
+            if skill.token == token && skill.level >= 1 {
+                eligible.insert(skill.character);
+            }
+        }
+        let mut selected: Option<Cow<'_, ScientistRow>> = None;
+        for row in each(scientists) {
+            let row = row?;
+            if world.slot(row.country) == Some(country)
+                && eligible.contains(&row.character)
+                && selected.as_ref().is_none_or(|first| row.ordinal < first.ordinal)
+            {
+                selected = Some(row);
+            }
+        }
+        Ok(selected.map(|row| row.character))
     }
 
     // native program order, explicit state first, then matching
@@ -285,15 +291,13 @@ impl Renderer<'_, '_, '_> {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             _ => 0,
         };
-        let mut programs: Vec<_> = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::RaidFacilities>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .filter(|row| world.slot(row.country) == Some(country))
-            .collect();
+        let mut programs = Vec::new();
+        for row in self
+            .complete::<tables::RaidFacilities>(PROGRAM)?
+            .keyed(|key| world.slot((key >> 32) as u32) == Some(country))
+        {
+            programs.push(row.map_err(built)?);
+        }
         programs.sort_by_key(|row| row.ordinal);
         let state = children(item)
             .iter()
@@ -306,19 +310,10 @@ impl Renderer<'_, '_, '_> {
         if programs.is_empty() || (state.is_none() && specialization.is_none()) {
             return Ok(None);
         }
-        let provinces: BTreeMap<_, _> = self
-            .context
-            .text
-            .frame()
-            .provinces()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .map(|row| (row.id, row.state))
-            .collect();
-        let province_state = |province| {
-            provinces
-                .get(&province)
-                .copied()
+        let provinces = self.complete::<tables::Provinces>(PROVINCE_STATE)?;
+        let province_state = |province: u32| -> Result<u32, String> {
+            keyed(&provinces, u128::from(province))?
+                .map(|row| row.state)
                 .ok_or_else(|| format!("Provinces lacks program province {province}"))
         };
         if let Some(state) = state {
@@ -332,23 +327,14 @@ impl Renderer<'_, '_, '_> {
         let Some(specialization) = specialization else {
             return Ok(None);
         };
-        let rows: BTreeMap<_, _> = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::ProjectPrograms>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .map(|row| (row.id, row))
-            .collect();
+        let rows = self.complete::<tables::ProjectPrograms>(PROGRAM_BUILDING)?;
         let buildings = self
             .context
             .content
             .buildings
             .ok_or_else(|| self.content_gap("buildings"))?;
         for program in programs {
-            let row = rows
-                .get(&program.id)
+            let row = keyed(&rows, u128::from(program.id))?
                 .ok_or("ProjectPrograms lacks roster program configuration")?;
             let name = std::str::from_utf8(&row.building)
                 .map_err(|_| "program building token is not UTF-8")?;

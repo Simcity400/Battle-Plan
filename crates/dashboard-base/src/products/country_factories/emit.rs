@@ -159,12 +159,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn refused(&mut self, writer: &mut Writer<'_>) -> io::Result<KeyHandle> {
+    fn refused(&mut self, writer: &mut Writer) -> io::Result<KeyHandle> {
         if let Some(key) = self.refused {
             return Ok(key);
         }
@@ -181,7 +181,7 @@ impl Emit {
     }
 
     /// The tag actor named `tag`.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -196,7 +196,7 @@ impl Emit {
     }
 
     /// `actor`'s keys, made with its first values.
-    fn keys(&mut self, writer: &mut Writer<'_>, actor: u64) -> io::Result<[KeyHandle; KEYS]> {
+    fn keys(&mut self, writer: &mut Writer, actor: u64) -> io::Result<[KeyHandle; KEYS]> {
         if let Some(keys) = &self.countries[actor as usize].keys {
             return Ok(**keys);
         }
@@ -220,7 +220,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("factories.emit", None);
         let at = hour.hour;
         let adjacent = match self.last {
@@ -290,7 +290,7 @@ impl Emit {
     /// their runs.
     fn identify(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         countries: Option<&Countries>,
         touched: &mut Vec<Touched>,
@@ -349,7 +349,7 @@ impl Emit {
     /// Ends what `actor`'s runs hold.
     fn end(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         touched: &mut Vec<Touched>,
@@ -372,7 +372,7 @@ impl Emit {
     /// segment where they do not go on from the hour before.
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         (adjacent, read): (bool, bool),
         (actor, holder, values): (u64, (u32, u32), Option<Values>),
@@ -448,7 +448,7 @@ impl Emit {
 
     /// Moves the `touched` tags in each ranking to their counts' places; the positions that
     /// changed go on from `hour`.
-    fn rank(&mut self, writer: &mut Writer<'_>, hour: i32, touched: &[Touched]) -> io::Result<()> {
+    fn rank(&mut self, writer: &mut Writer, hour: i32, touched: &[Touched]) -> io::Result<()> {
         if touched.is_empty() {
             return Ok(());
         }
@@ -526,7 +526,7 @@ impl Emit {
     /// text every hour, the rest at a read.
     fn count(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         at: i32,
         adjacent: bool,
@@ -551,7 +551,7 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for country in &mut self.countries {
             country.values = None;
@@ -567,7 +567,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

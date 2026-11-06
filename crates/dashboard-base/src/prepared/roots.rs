@@ -8,12 +8,9 @@
 //! carry the family goes on with, named by their content. A family that moves its output onto
 //! the series engine writes it into this same hierarchy.
 
-use dashboard_series::{self as series, Budget, Cache, PageRead, StoreRead, StoreWrite};
+use dashboard_series::{self as series, PageRead, StoreRead, StoreWrite};
 use serde::{Deserialize, Serialize};
-use std::{
-    io::{self, Read},
-    sync::LazyLock,
-};
+use std::io::{self, Read};
 
 const ROOT: &str = "preparation-root-";
 const LEDGER: &str = "preparation-ledger-";
@@ -22,16 +19,6 @@ const CARRY: &str = "preparation-carry-";
 
 /// Intervals one ledger page holds at most.
 pub const PAGE_INTERVALS: usize = 256;
-
-// Root, node and heap pages of publications read and written; frontiers are small.
-static PAGES: Budget = Budget::new(128 << 20);
-// Counts the rows writers' segments hold until sealed; it admits every one.
-static WRITERS: Budget = Budget::new(usize::MAX);
-static CACHE: LazyLock<Cache<'static>> = LazyLock::new(|| Cache::new(&PAGES));
-
-fn cache() -> &'static Cache<'static> {
-    &CACHE
-}
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -193,9 +180,10 @@ pub struct Frontier {
     pub proof: [u8; 32],
     /// Its ledger's pages, every one full but the last.
     pub ledger_pages: u64,
-    /// Its earliest hours that are not prepared, as far as they reach: no reply needing earlier
-    /// observations answers an hour from them on.
-    pub first_hole: Option<Interval>,
+    /// Its hours that are not prepared, in order, each run of them as far as it reaches. A
+    /// family going on past a lost run answers after it, each total it keeps counted from that
+    /// run's end; none answers an hour within one.
+    pub holes: Vec<Interval>,
     /// The emit state and projector carry it goes on with.
     pub state: Option<Content>,
     pub carry: Option<Content>,
@@ -273,8 +261,8 @@ impl View for store::Writer {
 }
 
 fn checkpoint(mut io: impl PageRead, root: u64) -> io::Result<Root> {
-    let identity = series::query::root_identity(&mut io, cache(), root)?;
-    let mut snapshot = series::Snapshot::open(io, cache(), root, identity)?;
+    let identity = series::query::root_identity(&mut io, root)?;
+    let mut snapshot = series::Snapshot::open(io, root, identity)?;
     let blob = snapshot.checkpoint();
     let length = usize::try_from(blob.len).map_err(|_| invalid("Frontier length"))?;
     let mut bytes = engine_allocation::filled(length, 0_u8)?;
@@ -366,19 +354,19 @@ pub fn ledger(
     Ok(found)
 }
 
-/// What `published` leaves unanswered of `first..=last`: its first hole, from which no reply
-/// needing earlier observations answers, and every hour after its branch ended for it.
+/// What `published` leaves unanswered of `first..=last`: each of its holes there, and every hour
+/// after its branch ended for it.
 pub fn holes(published: &Published, first: i32, last: i32) -> Vec<Interval> {
     let frontier = &published.frontier;
     let mut holes: Vec<Interval> = frontier
-        .first_hole
+        .holes
         .iter()
+        .filter(|hole| hole.last_hour >= first && hole.first_hour <= last)
         .map(|hole| Interval {
             first_hour: hole.first_hour.max(first),
             last_hour: hole.last_hour.min(last),
             ..hole.clone()
         })
-        .filter(|hole| hole.first_hour <= hole.last_hour)
         .collect();
     if let Some(end) = &frontier.end
         && let Some(after) = frontier.last_hour.checked_add(1)
@@ -457,12 +445,12 @@ pub fn directory(
         writer,
         section: &section,
     };
-    let mut snapshot = series::Snapshot::open(io, cache(), published.root, published.identity)?;
+    let mut snapshot = series::Snapshot::open(io, published.root, published.identity)?;
     series::family::Directory::read(&mut snapshot, schema)
 }
 
 /// The series writer a family's step appends its output to.
-pub type Series = series::Writer<'static>;
+pub type Series = series::Writer;
 
 /// The series writer the steps of `family` on `branch` append the family's output to:
 /// `previous`'s publication resumed, or a new one from `first_hour`. Each step's segment is cut
@@ -481,21 +469,19 @@ pub fn writer(
         section: &section,
     };
     match previous {
-        Some(previous) => {
-            series::Writer::resume(&mut io, cache(), &WRITERS, previous.root, identity)
-        }
-        None => series::Writer::new(&WRITERS, identity, first_hour),
+        Some(previous) => series::Writer::resume(&mut io, previous.root, identity),
+        None => series::Writer::new(identity, first_hour),
     }
 }
 
 /// The series writer of a family's first publication on a branch, its hours from `first_hour`.
 pub fn fresh(identity: series::Identity, first_hour: i32) -> io::Result<Series> {
-    series::Writer::new(&WRITERS, identity, first_hour)
+    series::Writer::new(identity, first_hour)
 }
 
 /// What one batch of a family did on a branch.
 pub struct Step<'a> {
-    /// Where it leaves the family; its ledger pages, prepared hours, first hole and state
+    /// Where it leaves the family; its ledger pages, prepared hours, holes and state
     /// contents are filled in from the family's last publication there ([`cut`]).
     pub frontier: Frontier,
     /// The hours it processed, in order, after the previous frontier's.
@@ -551,7 +537,7 @@ pub struct Cut {
 }
 
 /// Cuts `step` of a family on a branch after `last`, its last publication there, which then
-/// names the step: the frontier's ledger pages, prepared hours, first hole and state contents
+/// names the step: the frontier's ledger pages, prepared hours, holes and state contents
 /// are filled in, and the checkpoint the step's series segment holds is returned. The
 /// publication follows `previous`, the last the family's series writer cut there: a segment
 /// within the step's batch ([`seal`]), or `last`'s own. Its hours and its cursor must advance,
@@ -599,14 +585,13 @@ pub fn cut(
     )?;
     frontier.ledger_pages = pages;
     frontier.prepared = before.map_or(0, |before| before.frontier.prepared);
-    frontier.first_hole = before.and_then(|before| before.frontier.first_hole.clone());
+    frontier.holes = before.map_or_else(Vec::new, |before| before.frontier.holes.clone());
     for interval in intervals {
         if interval.held == Held::Prepared {
             frontier.prepared += span(interval.first_hour, interval.last_hour);
             continue;
         }
-        match &mut frontier.first_hole {
-            None => frontier.first_hole = Some(interval.clone()),
+        match frontier.holes.last_mut() {
             Some(hole)
                 if hole.held == interval.held
                     && hole.reason == interval.reason
@@ -614,7 +599,10 @@ pub fn cut(
             {
                 hole.last_hour = interval.last_hour;
             }
-            Some(_) => {}
+            _ => {
+                engine_allocation::reserve(&mut frontier.holes, 1)?;
+                frontier.holes.push(interval.clone());
+            }
         }
     }
     frontier.state = state.as_deref().map(Content::of);
@@ -669,7 +657,7 @@ pub fn write(
     branch: u64,
     identity: series::Identity,
     cut: Cut,
-    pending: &series::Pending<'_>,
+    pending: &series::Pending,
     tree: &mut series::Tree,
 ) -> io::Result<Published> {
     let ledger = ledger_section(family, branch);
@@ -688,7 +676,7 @@ pub fn write(
         section: &section,
     };
     let sealed = pending.seal(&mut io)?;
-    let root = tree.publish(&mut io, cache(), sealed)?;
+    let root = tree.publish(&mut io, sealed)?;
     Ok(Published {
         root,
         identity,
@@ -703,7 +691,7 @@ pub fn seal(
     writer: &mut store::Writer,
     family: &str,
     branch: u64,
-    pending: &series::Pending<'_>,
+    pending: &series::Pending,
     tree: &mut series::Tree,
 ) -> io::Result<()> {
     let section = root_section(family, branch);
@@ -712,7 +700,7 @@ pub fn seal(
         section: &section,
     };
     let sealed = pending.seal(&mut io)?;
-    tree.append(&mut io, cache(), sealed)
+    tree.append(&mut io, sealed)
 }
 
 fn span(first: i32, last: i32) -> u64 {

@@ -1,5 +1,11 @@
 use super::*;
-use replay_data::rows::PowerBalanceRow;
+use replay_data::rows::{PowerBalanceMemberRow, PowerBalanceRangeRow, PowerBalanceRow};
+
+/// The fields of each table the balance descriptions read.
+const BALANCE: u64 = tables::PowerBalances::ID.full_mask();
+const BALANCE_ID: u64 = mask::<PowerBalanceRow>(&["balance"]);
+const MEMBER: u64 = mask::<PowerBalanceMemberRow>(&["country"]);
+const RANGE: u64 = mask::<PowerBalanceRangeRow>(&["identity"]);
 
 #[cfg(test)]
 mod tests;
@@ -41,14 +47,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     // country lookup: first manager entry containing the caller tag.
-    fn balance_current(&self, scopes: Scopes) -> Result<Option<&'f PowerBalanceRow>, String> {
+    fn balance_current(
+        &self,
+        scopes: Scopes,
+    ) -> Result<Option<Cow<'f, PowerBalanceRow>>, String> {
         let country = self.current_country(scopes)?;
-        let frame = self.context.text.frame();
-        let members = frame
-            .complete::<tables::PowerBalanceMembers>()
-            .map_err(|why| why.to_string())?;
+        let members = self.complete::<tables::PowerBalanceMembers>(MEMBER)?;
         let mut record = None;
-        for member in members {
+        for member in each(members) {
+            let member = member?;
             let slot = self
                 .context
                 .text
@@ -59,28 +66,22 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 record = Some(record.map_or(member.record, |old: u32| old.min(member.record)));
             }
         }
-        let rows = frame
-            .complete::<tables::PowerBalances>()
-            .map_err(|why| why.to_string())?;
+        let rows = self.complete::<tables::PowerBalances>(BALANCE)?;
         match record {
-            Some(record) => rows
-                .iter()
-                .find(|row| row.ordinal == record)
+            Some(record) => keyed(&rows, u128::from(record))?
                 .map(Some)
                 .ok_or_else(|| format!("PowerBalances lacks member record {record}")),
             None => Ok(None),
         }
     }
 
-    fn balance_by_id(&self, id: &[u8]) -> Result<Option<&'f PowerBalanceRow>, String> {
-        Ok(self
-            .context
-            .text
-            .frame()
-            .complete::<tables::PowerBalances>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| same(&row.balance, id))) // ID lookup.
+    fn balance_by_id(&self, id: &[u8]) -> Result<Option<Cow<'f, PowerBalanceRow>>, String> {
+        let rows = self.complete::<tables::PowerBalances>(BALANCE)?;
+        // ID lookup.
+        match find(rows.with_mask(BALANCE_ID), |row| same(&row.balance, id))? {
+            Some(row) => keyed(&rows, row.key()),
+            None => Ok(None),
+        }
     }
 
     // localises/expands in a default EMPTY event scope.
@@ -171,7 +172,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let fields = children(item);
         let definition = self.balance_definition(&text(fields, "id"))?;
         let current = self.balance_current(scopes)?;
+        let current = current.as_deref();
         let existing = self.balance_by_id(&definition.id)?;
+        let existing = existing.as_deref();
         let chosen = |name, default: &[u8], recorded: Option<&Vec<u8>>| {
             let explicit = text(fields, name);
             if !explicit.is_empty() {
@@ -285,6 +288,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let fields = children(item);
         let definition = self.balance_definition(&text(fields, "id"))?;
         let current = self.balance_by_id(&definition.id)?;
+        let current = current.as_deref();
         let left = current.map_or(definition.left.as_slice(), |row| row.left.as_slice());
         let right = current.map_or(definition.right.as_slice(), |row| row.right.as_slice());
         let value = field(fields, "value").map_or(0, installed_content_core::modifiers::stored);
@@ -330,15 +334,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(current) = current else {
             return Ok(out);
         }; // Null record has no ranges.
-        let rows = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::PowerBalanceRanges>()
-            .map_err(|why| why.to_string())?;
+        let rows = self.complete::<tables::PowerBalanceRanges>(RANGE)?;
         let mut selected = None;
         // last STRICT interval match in the recorded runtime array.
-        for row in rows.iter().filter(|row| row.record == current.ordinal) {
+        let low = u128::from(current.ordinal) << 32;
+        for row in each(rows.span(low, low | u128::from(u32::MAX))) {
+            let row = row?;
             let Some(range) = self
                 .balance_database()?
                 .range(&definition.id, &row.identity)?

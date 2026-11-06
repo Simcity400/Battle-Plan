@@ -95,7 +95,7 @@ impl Emit {
 
     fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         measure: u64,
         dimension: u64,
     ) -> io::Result<KeyHandle> {
@@ -114,7 +114,7 @@ impl Emit {
     /// Appends what `prepared` wrote at `hour`: its values' changes, corrections and reads.
     pub fn hour(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         prepared: &mut Prepared,
         hour: i32,
     ) -> io::Result<()> {
@@ -178,7 +178,7 @@ impl Emit {
     /// the last cut as known, and the catalogue.
     pub fn cut(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         prepared: &mut Prepared,
         scan: &sinkings::Scanned,
         last: i32,

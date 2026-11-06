@@ -1,6 +1,6 @@
 use crate::{
     add,
-    budget::{Admission, Slab},
+    Grow,
     codec::Binary,
     format::{BLOCK, EVENTS, Entry, Late, Node},
     invalid,
@@ -31,24 +31,24 @@ struct EventKey {
     all: bool,
 }
 /// Selected keys in key order, each once, with their memberships unioned.
-pub(crate) struct EventSet<'a> {
-    keys: Slab<'a, EventKey>,
-    spans: Slab<'a, Span>,
+pub(crate) struct EventSet {
+    keys: Vec<EventKey>,
+    spans: Vec<Span>,
 }
-impl<'a> EventSet<'a> {
-    fn new(budget: Admission<'a>, selected: &[Selection<'_>]) -> io::Result<Self> {
+impl EventSet {
+    fn new(selected: &[Selection<'_>]) -> io::Result<Self> {
         let capacity = selected.iter().try_fold(0_usize, |count, s| {
             count
                 .checked_add(s.membership.map_or(0, |s| s.len()))
                 .ok_or_else(engine_allocation::oom)
         })?;
-        let mut order = Slab::new(budget, selected.len())?;
+        let mut order = engine_allocation::vec(selected.len())?;
         for (index, s) in selected.iter().enumerate() {
-            order.push((s.key, index))?;
+            order.try_push((s.key, index))?;
         }
         order.sort_unstable();
-        let mut keys = Slab::new(budget, selected.len())?;
-        let mut spans = Slab::new(budget, capacity)?;
+        let mut keys = engine_allocation::vec(selected.len())?;
+        let mut spans = engine_allocation::vec(capacity)?;
         let mut at = 0;
         while at < order.len() {
             let key = order[at].0;
@@ -58,7 +58,7 @@ impl<'a> EventSet<'a> {
                 if let Some(members) = selected[order[at].1].membership {
                     for &span in members {
                         Span::new(span.first, span.last)?;
-                        spans.push(span)?;
+                        spans.try_push(span)?;
                     }
                 } else {
                     all = true;
@@ -81,7 +81,7 @@ impl<'a> EventSet<'a> {
                 }
                 spans.truncate(end);
             }
-            keys.push(EventKey {
+            keys.try_push(EventKey {
                 key,
                 first,
                 len: spans.len() - first,
@@ -130,7 +130,7 @@ struct Stream {
 }
 impl Stream {
     fn new<P: PageRead>(
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         key: u64,
         selection: usize,
         low: (i32, u64),
@@ -139,7 +139,7 @@ impl Stream {
         let mut late = Vec::new();
         for reference in s.r.root().nodes.clone() {
             let node = s.r.child(s.io, reference)?;
-            let Some(entry) = s.entry(&node, Subject::key(key))? else {
+            let Some(entry) = s.event_entry(&node, key)? else {
                 continue;
             };
             if entry.late.count == 0 || entry.late.last < low.0 || entry.late.first > high {
@@ -175,7 +175,7 @@ impl Stream {
     }
     fn fill<P: PageRead>(
         &mut self,
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         key: u64,
         selection: Selection<'_>,
         visible: Visibility,
@@ -280,7 +280,7 @@ impl Stream {
     }
     fn fill_late<P: PageRead>(
         &mut self,
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         selection: Selection<'_>,
         visible: Visibility,
     ) -> io::Result<()> {
@@ -304,7 +304,7 @@ impl Stream {
     /// The stream's next event without taking it.
     fn peek<P: PageRead>(
         &mut self,
-        s: &mut Source<'_, '_, P>,
+        s: &mut Source<'_, P>,
         key: u64,
         selection: Selection<'_>,
         visible: Visibility,
@@ -340,8 +340,8 @@ struct HeapItem {
     sort: Order,
     stream: usize,
 }
-fn heap_push(heap: &mut Slab<'_, HeapItem>, item: HeapItem) -> io::Result<()> {
-    heap.push(item)?;
+fn heap_push(heap: &mut Vec<HeapItem>, item: HeapItem) -> io::Result<()> {
+    heap.try_push(item)?;
     let mut at = heap.len() - 1;
     while at > 0 {
         let parent = (at - 1) / 2;
@@ -353,7 +353,7 @@ fn heap_push(heap: &mut Slab<'_, HeapItem>, item: HeapItem) -> io::Result<()> {
     }
     Ok(())
 }
-fn heap_pop(heap: &mut Slab<'_, HeapItem>) -> Option<HeapItem> {
+fn heap_pop(heap: &mut Vec<HeapItem>) -> Option<HeapItem> {
     let last = heap.pop()?;
     if heap.is_empty() {
         return Some(last);
@@ -380,24 +380,24 @@ fn heap_pop(heap: &mut Slab<'_, HeapItem>) -> Option<HeapItem> {
     Some(result)
 }
 
-enum Walk<'a> {
+enum Walk {
     Native {
         streams: Vec<Stream>,
-        heap: Slab<'a, HeapItem>,
+        heap: Vec<HeapItem>,
     },
     Publication {
         segment: Option<i32>,
-        buffer: Slab<'a, EventView>,
+        buffer: Vec<EventView>,
         at: usize,
         after: Option<u64>,
     },
 }
 /// An event page's merge state, kept by the snapshot for the next page of the same reply.
-pub(crate) struct EventWalk<'a> {
+pub(crate) struct EventWalk {
     binding: [u8; 32],
     next: Cursor,
-    selected: EventSet<'a>,
-    walk: Walk<'a>,
+    selected: EventSet,
+    walk: Walk,
     total: u64,
     base: u64,
 }
@@ -412,7 +412,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
     }
     fn event_binding(&self, query: EventQuery<'_>, kind: u8) -> io::Result<[u8; 32]> {
         Span::new(query.native.first, query.native.last)?;
-        let selected = EventSet::new(self.budget, query.selection)?;
+        let selected = EventSet::new(query.selection)?;
         let mut bytes = [0; 6];
         bytes[0] = u8::from(query.as_of.is_some());
         bytes[1..5].copy_from_slice(&query.as_of.unwrap_or(0).to_le_bytes());
@@ -460,7 +460,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
     pub fn event_count(&mut self, query: EventQuery<'_>) -> io::Result<u64> {
         self.event_binding(query, 6)?;
         let visible = self.event_visibility(query.as_of);
-        let selected = EventSet::new(self.budget, query.selection)?;
+        let selected = EventSet::new(query.selection)?;
         let mut count = 0;
         for index in 0..selected.keys.len() {
             self.check()?;
@@ -540,8 +540,8 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
         next: Cursor,
         binding: [u8; 32],
         visible: Visibility,
-    ) -> io::Result<EventWalk<'a>> {
-        let selected = EventSet::new(self.budget, query.selection)?;
+    ) -> io::Result<EventWalk> {
+        let selected = EventSet::new(query.selection)?;
         let total = if cursor.is_some() {
             next.auxiliary
         } else {
@@ -573,7 +573,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
                 let after = cursor.map(|c| c.after);
                 let mut streams = Vec::new();
                 engine_allocation::reserve_exact(&mut streams, selected.keys.len())?;
-                let mut heap = Slab::new(self.budget, selected.keys.len())?;
+                let mut heap = engine_allocation::vec(selected.keys.len())?;
                 for index in 0..selected.keys.len() {
                     let key = selected.keys[index].key;
                     let Some(low) = lower_bound(query.native.first, key, after) else {
@@ -600,7 +600,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
             }
             EventOrder::Publication => Walk::Publication {
                 segment: None,
-                buffer: Slab::new(self.budget, 0)?,
+                buffer: Vec::new(),
                 at: 0,
                 after: cursor.map(|c| c.after[0]),
             },
@@ -616,7 +616,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
     }
     fn walk_next(
         &mut self,
-        walk: &mut EventWalk<'a>,
+        walk: &mut EventWalk,
         query: EventQuery<'_>,
         visible: Visibility,
     ) -> io::Result<Option<EventView>> {
@@ -669,7 +669,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
                     for index in 0..walk.selected.keys.len() {
                         let key = walk.selected.keys[index].key;
                         let selection = walk.selected.selection(index);
-                        let Some(entry) = s.entry(&node, Subject::key(key))? else {
+                        let Some(entry) = s.event_entry(&node, key)? else {
                             continue;
                         };
                         let mut keep = |event: EventView| -> io::Result<()> {
@@ -679,7 +679,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
                                 && selection.includes(hour)
                                 && after.is_none_or(|a| event.sequence() > a)
                             {
-                                buffer.push(event)?;
+                                buffer.try_push(event)?;
                             }
                             Ok(())
                         };
@@ -693,7 +693,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
     }
     fn walk_take(
         &mut self,
-        walk: &mut EventWalk<'a>,
+        walk: &mut EventWalk,
         query: EventQuery<'_>,
         visible: Visibility,
     ) -> io::Result<()> {
@@ -913,17 +913,17 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
             });
         }
         let count = (grid.cells - first).min(allowance as u64) as usize;
-        let mut clusters = Slab::new(self.budget, count)?;
-        let mut firsts: Slab<'_, Option<Order>> = Slab::new(self.budget, count)?;
+        let mut clusters = engine_allocation::vec(count)?;
+        let mut firsts: Vec<Option<Order>> = engine_allocation::vec(count)?;
         for i in 0..count {
-            clusters.push(grid.bin(first + i as u64).map(|span| Cluster {
+            clusters.try_push(grid.bin(first + i as u64).map(|span| Cluster {
                 span,
                 first_hour: None,
                 last_hour: None,
                 first_ordinal: 0,
                 count: 0,
             }))?;
-            firsts.push(None)?;
+            firsts.try_push(None)?;
         }
         let extent = clusters
             .iter()
@@ -935,7 +935,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
                 }))
             });
         let visible = self.event_visibility(query.as_of);
-        let selected = EventSet::new(self.budget, query.selection)?;
+        let selected = EventSet::new(query.selection)?;
         let Some(extent) = extent else {
             cursor.position = add(first, count as u64)?;
             return Ok(PageResult {
@@ -981,15 +981,15 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
                 Ok(true)
             })?;
         }
-        let mut thresholds = Slab::new(self.budget, count)?;
+        let mut thresholds = engine_allocation::vec(count)?;
         for (at, start) in firsts.iter().enumerate() {
             if let Some(start) = start {
-                thresholds.push((*start, at))?;
+                thresholds.try_push((*start, at))?;
             }
         }
-        let mut below = Slab::new(self.budget, thresholds.len() + 1)?;
+        let mut below = engine_allocation::vec(thresholds.len() + 1)?;
         for _ in 0..=thresholds.len() {
-            below.push(0_u64)?;
+            below.try_push(0_u64)?;
         }
         for index in 0..selected.keys.len() {
             self.check()?;
@@ -1075,7 +1075,7 @@ fn lower_bound(first: i32, key: u64, after: Option<[u64; 3]>) -> Option<(i32, u6
 
 /// The least sequence among a key's visible member events at native `hour`.
 fn first_sequence<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     key: u64,
     selection: Selection<'_>,
     hour: i32,
@@ -1103,7 +1103,7 @@ fn first_sequence<P: PageRead>(
 
 /// A segment's events of one key: its on-time blocks, then its own late events.
 fn segment_events<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     node: &Node,
     entry: &Entry,
     key: u64,
@@ -1130,7 +1130,7 @@ fn segment_events<P: PageRead>(
 
 /// A key's last visible member event dated by `through`.
 fn latest<P: PageRead>(
-    s: &mut Source<'_, '_, P>,
+    s: &mut Source<'_, P>,
     selection: Selection<'_>,
     through: i32,
     visible: Visibility,
@@ -1191,7 +1191,7 @@ fn latest<P: PageRead>(
     }
     for reference in s.r.root().nodes.clone() {
         let node = s.r.child(s.io, reference)?;
-        let Some(entry) = s.entry(&node, Subject::key(key))? else {
+        let Some(entry) = s.event_entry(&node, key)? else {
             continue;
         };
         if entry.late.count == 0 || entry.late.first > through {

@@ -183,7 +183,16 @@ pub(super) struct Pages {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pub composite: wgpu::RenderPipeline,
+    /// Keeps the device's composite program for the next view.
+    _program: std::sync::Arc<Program>,
     pub pages: Vec<Page>,
+}
+
+/// The composite program, its layout and sampler: one per device, format and sample count.
+struct Program {
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    composite: wgpu::RenderPipeline,
 }
 
 /// Device pixels cells pack within a side, within the device's limit; a larger cell packs within
@@ -198,84 +207,19 @@ impl Pages {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> Self {
         let limit = device.limits().max_texture_dimension_2d;
         let side = PAGE_SIDE.min(limit);
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("sprite fade page"),
-            entries: &[
-                texture_entry(
-                    0,
-                    wgpu::ShaderStages::FRAGMENT,
-                    wgpu::TextureViewDimension::D2,
-                ),
-                sampler_entry(1),
-            ],
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("sprite fade page"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("sprite fade composite"),
-            source: wgpu::ShaderSource::Wgsl(COMPOSITE.into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("sprite fade composite"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let premultiplied = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
-            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-            operation: wgpu::BlendOperation::Add,
-        };
-        let composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sprite fade composite"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vertex_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<CompositeVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32],
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: samples,
-                ..Default::default()
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fragment_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState {
-                        color: premultiplied,
-                        alpha: premultiplied,
-                    }),
-                    write_mask: wgpu::ColorWrites::COLOR,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let program = crate::map::device_shared::shared(
+            device,
+            ("sprite fade composite", format, samples),
+            || Program::new(device, format, samples),
+        );
         Self {
             side,
             limit,
             format,
-            layout,
-            sampler,
-            composite,
+            layout: program.layout.clone(),
+            sampler: program.sampler.clone(),
+            composite: program.composite.clone(),
+            _program: program,
             pages: Vec::new(),
         }
     }
@@ -427,3 +371,84 @@ fn fragment_main(fragment: CompositeFragment) -> @location(0) vec4<f32> {
 
 #[cfg(test)]
 mod tests;
+
+impl Program {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sprite fade page"),
+            entries: &[
+                texture_entry(
+                    0,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::TextureViewDimension::D2,
+                ),
+                sampler_entry(1),
+            ],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("sprite fade page"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sprite fade composite"),
+            source: wgpu::ShaderSource::Wgsl(COMPOSITE.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sprite fade composite"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let premultiplied = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sprite fade composite"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vertex_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<CompositeVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32],
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                ..Default::default()
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fragment_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: premultiplied,
+                        alpha: premultiplied,
+                    }),
+                    write_mask: wgpu::ColorWrites::COLOR,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self {
+            layout,
+            sampler,
+            composite,
+        }
+    }
+}

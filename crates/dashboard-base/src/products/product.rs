@@ -100,12 +100,6 @@ pub trait Product: 'static {
     /// Whether it answers a hover or label at one hour (one block at most): served on its
     /// own threads, so a whole-recording scan never delays it.
     const INTERACTIVE: bool = false;
-    /// Whether a reply depends on this machine (its displays, settings outside the content, its
-    /// GPU), which no kept reply's identity captures: such a reply is never kept on disk.
-    const MACHINE_DEPENDENT: bool = false;
-    /// Whether a reply reads a prepared family's publication, which grows while the family
-    /// prepares: such a reply is never kept on disk.
-    const PUBLISHED: bool = false;
     /// How its served replies are checked between two preparations of a
     /// recording; none checks them by the generic plan.
     const SERVED: Option<&'static crate::prepared::served::Plan> = None;
@@ -227,24 +221,61 @@ pub fn table_missing_reason(
         TableView::Complete(rows) if rows.table() == table => None,
         TableView::Complete(_) => Some(format!("{table:?} contains another table's rows")),
         TableView::Truncated { .. } => Some(format!("{table:?} is truncated")),
-        TableView::Unavailable { reason } => {
-            if reason.starts_with("missing table baseline") {
-                return Some(format!("{table:?} baseline missing"));
-            }
-            // FrameEncoder withholds partial rows at keyframes, retaining the
-            // truncation count in its named unavailable marker.
-            let truncated = reason
-                .strip_prefix("truncated at keyframe: ")
-                .and_then(|count| count.strip_suffix(" rows not read"))
-                .is_some_and(|count| count.parse::<u32>().is_ok_and(|count| count != 0));
-            Some(if truncated {
-                format!("{table:?} is truncated")
-            } else {
-                reason.clone()
-            })
-        }
+        TableView::Unavailable { reason } => Some(unavailable_reason(table, reason)),
         TableView::NotRecorded { mode } => {
             Some(format!("{table:?} is not recorded in a {mode} recording"))
         }
+    }
+}
+
+/// [`table_missing_reason`] of `table` read through a walk's views.
+pub fn view_missing_reason(
+    view: replay_frame::frame::ColumnView<'_>,
+    table: replay_data::rows::TableId,
+) -> Option<String> {
+    use replay_frame::frame::ColumnView;
+    match view {
+        ColumnView::Complete(_) => None,
+        ColumnView::Truncated { .. } => Some(format!("{table:?} is truncated")),
+        ColumnView::Unavailable { reason } => Some(unavailable_reason(table, reason)),
+        ColumnView::NotRecorded { mode } => {
+            Some(format!("{table:?} is not recorded in a {mode} recording"))
+        }
+    }
+}
+
+/// [`table_missing_reason`] of `table` from its status, wherever a frame holds it.
+pub fn status_missing_reason(
+    status: replay_frame::frame::OperandStatus<'_>,
+    table: replay_data::rows::TableId,
+) -> Option<String> {
+    use replay_frame::frame::OperandStatus;
+    match status {
+        OperandStatus::Complete => None,
+        OperandStatus::WrongLayout => Some(format!("{table:?} contains another table's rows")),
+        OperandStatus::Truncated(_) | OperandStatus::TruncatedWrongLayout(_) => {
+            Some(format!("{table:?} is truncated"))
+        }
+        OperandStatus::Unavailable(reason) => Some(unavailable_reason(table, reason)),
+        OperandStatus::NotRecorded(mode) => {
+            Some(format!("{table:?} is not recorded in a {mode} recording"))
+        }
+    }
+}
+
+fn unavailable_reason(table: replay_data::rows::TableId, reason: &str) -> String {
+    if reason.starts_with("missing table baseline") {
+        return format!("{table:?} baseline missing");
+    }
+    // FrameEncoder withholds partial rows at keyframes, retaining the
+    // truncation count in its named unavailable marker.
+    let truncated = reason
+        .strip_prefix("truncated at keyframe: ")
+        .and_then(|count| count.strip_suffix(" rows not read"))
+        .is_some_and(|count| count.parse::<u32>().is_ok_and(|count| count != 0));
+    if truncated {
+        format!("{table:?} is truncated")
+    } else {
+        reason.to_owned()
     }
 }

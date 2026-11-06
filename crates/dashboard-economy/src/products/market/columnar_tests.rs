@@ -12,7 +12,7 @@ use super::{
 };
 use crate::products::test_support::{countries, frame, set, unavailable};
 use dashboard_series::{
-    Blob, Budget, Cache, Identity, Publication, Snapshot, Span, Writer,
+    Blob, Identity, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -347,11 +347,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -363,7 +362,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -377,8 +375,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -403,9 +401,7 @@ fn rows(frames: &[DecodedFrame]) -> dashboard_base::prepared::series::tests::Fix
 /// Every reply the scenario's checks ask, of the row publication and of `built`'s, equal.
 fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
     let fixture = rows(frames);
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let catalogue = Catalogue::read(&directory).unwrap();
     let cancelled = AtomicBool::new(false);
@@ -524,7 +520,6 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
 #[test]
 fn the_publication_answers_as_the_row_preparation_across_segments_cuts_and_a_resume() {
     let frames = scenario();
-    let budget = Budget::new(256 << 20);
     for (starts, cuts, resume, label) in [
         (&[][..], &[140][..], None, "one segment"),
         (&[111, 128, 137][..], &[107, 117, 124, 134, 140][..], Some(117), "segments and cuts"),
@@ -532,7 +527,7 @@ fn the_publication_answers_as_the_row_preparation_across_segments_cuts_and_a_res
         (&[110, 118][..], &[110, 127, 140][..], Some(127), "resumed after the gap"),
     ] {
         let hours = projected(&frames, starts);
-        let built = build(hours, cuts, resume, &budget);
+        let built = build(hours, cuts, resume);
         check(&built, &frames, label);
     }
 }
@@ -623,16 +618,14 @@ fn refusals_match_the_row_preparations_observed_hours_and_decoder_text() {
             "Market: market occurrences unavailable: hour 106 MarketEvents is not recorded in a full recording (1 observed hours)",
         ]
     );
-    let budget = Budget::new(64 << 20);
     for starts in [&[][..], &[103, 105, 107], &[104, 110], &[101, 102, 106]] {
         let hours = projected(&frames, starts);
         assert_eq!(
             hours.iter().filter(|hour| hour.woke).map(|hour| hour.hour).collect::<Vec<_>>(),
             vec![100, 101, 102, 104, 105, 106, 107, 110],
         );
-        let built = build(hours, &[102, 105, 110], Some(105), &budget);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+        let built = build(hours, &[102, 105, 110], Some(105));
+        let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let catalogue = Catalogue::read(&directory).unwrap();
         let actual = query::history(
@@ -730,10 +723,8 @@ fn check_adjacent_runs(first: DecodedFrame, second: DecodedFrame, warnings: &[&s
     )
     .unwrap();
     assert_eq!(expected.warnings, warnings);
-    let budget = Budget::new(64 << 20);
-    let built = build(hours, &[100, through], Some(100), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(hours, &[100, through], Some(100));
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let catalogue = Catalogue::read(&directory).unwrap();
     let actual = query::history(
@@ -835,7 +826,6 @@ fn refusals_match_the_row_preparation_at_row_block_starts_inside_a_native_run() 
     assert_eq!(expected.warnings, [
         "Market: a market country has no identity (4 observed hours)",
     ]);
-    let budget = Budget::new(64 << 20);
     for starts in [&[][..], &[101, 103, 106], &[102, 104]] {
         let hours = projected_blocks(&frames, starts, &blocks);
         assert_eq!(
@@ -843,9 +833,8 @@ fn refusals_match_the_row_preparation_at_row_block_starts_inside_a_native_run() 
             vec![100, 102, 104, 105],
             "segments at {starts:?}",
         );
-        let built = build(hours, &[101, 103, 106], Some(103), &budget);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+        let built = build(hours, &[101, 103, 106], Some(103));
+        let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let catalogue = Catalogue::read(&directory).unwrap();
         let actual = query::history(
@@ -904,15 +893,14 @@ fn an_hour_hands_on_only_the_rows_it_wrote_in_fields_the_market_reads() {
 }
 
 /// A publication of `hours` emitted directly, cut after the last.
-fn emitted(hours: Vec<facts::Hour>, budget: &Budget) -> Built {
+fn emitted(hours: Vec<facts::Hour>) -> Built {
     let last = hours.last().unwrap().hour;
-    build(hours, &[last], None, budget)
+    build(hours, &[last], None)
 }
 
 /// The history of `view` and a ledger page of `tags` through `through`, from `built`.
-fn replies(built: &Built, tags: &[&str], through: i32, budget: &Budget) -> (MarketHistoryReply, MarketLedgerReply) {
-    let cache = Cache::new(budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+fn replies(built: &Built, tags: &[&str], through: i32) -> (MarketHistoryReply, MarketLedgerReply) {
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let catalogue = Catalogue::read(&directory).unwrap();
     let cancelled = AtomicBool::new(false);
@@ -954,7 +942,6 @@ fn replies(built: &Built, tags: &[&str], through: i32, budget: &Budget) -> (Mark
 /// A variant no read names, named before one a read names, leaves the later one's names known.
 #[test]
 fn a_variant_without_names_hides_no_later_variants_names() {
-    let budget = Budget::new(64 << 20);
     let raw = RawVariant {
         id: 0xa2,
         first_hour: 100,
@@ -989,8 +976,8 @@ fn a_variant_without_names_hides_no_later_variants_names() {
         (VariantHour::Read, vec![(0xa2, raw)]),
         Some(facts),
     )];
-    let built = emitted(hours, &budget);
-    let (history, _) = replies(&built, &[], 100, &budget);
+    let built = emitted(hours);
+    let (history, _) = replies(&built, &[], 100);
     assert!(history.variants["a1"].is_empty());
     assert!(history.variants["a2"].first().is_some_and(|name| name.known));
 }
@@ -1000,7 +987,6 @@ fn a_variant_without_names_hides_no_later_variants_names() {
 /// it did, though nothing the market reads changed then.
 #[test]
 fn an_unproved_first_hour_is_proved_from_the_next_observed_hour() {
-    let budget = Budget::new(64 << 20);
     let facts = Facts {
         identities: Some(Ok(())),
         tags: Some(vec![(10, "SEL".into()), (20, "BUY".into())]),
@@ -1020,8 +1006,8 @@ fn an_unproved_first_hour_is_proved_from_the_next_observed_hour() {
         facts::Hour::of(101, true, carried.clone(), None),
         facts::Hour::of(102, true, carried, None).woken(),
     ];
-    let built = emitted(hours, &budget);
-    let (_, ledger) = replies(&built, &["SEL"], 102, &budget);
+    let built = emitted(hours);
+    let (_, ledger) = replies(&built, &["SEL"], 102);
     assert_eq!(ledger.known, vec![crate::products::keyed::EconomyRun(102, 102, "1".into())]);
     assert_eq!(ledger.rows.len(), 1);
 }
@@ -1124,10 +1110,9 @@ fn a_quiet_hour_after_an_unproved_one_keeps_the_rows_cursors() {
         ],
     );
     let fixture = changed_rows(&frames);
-    let budget = Budget::new(64 << 20);
     // A segment starting at the quiet hour restates it, which the row preparation never saw.
     for starts in [&[][..], &[101], &[102], &[101, 103]] {
-        check_cursors(&fixture, &frames, starts, &budget);
+        check_cursors(&fixture, &frames, starts);
     }
 }
 
@@ -1161,9 +1146,8 @@ fn a_status_moving_at_a_segment_start_keeps_the_rows_cursors() {
         ],
     );
     let fixture = changed_rows(&frames);
-    let budget = Budget::new(64 << 20);
     for starts in [&[][..], &[101], &[102]] {
-        check_cursors(&fixture, &frames, starts, &budget);
+        check_cursors(&fixture, &frames, starts);
     }
 }
 
@@ -1173,11 +1157,9 @@ fn check_cursors(
     fixture: &dashboard_base::prepared::series::tests::Fixture,
     frames: &[DecodedFrame],
     starts: &[i32],
-    budget: &Budget,
 ) {
-    let built = build(projected(frames, starts), &[103], None, budget);
-    let cache = Cache::new(budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(projected(frames, starts), &[103], None);
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let catalogue = Catalogue::read(&directory).unwrap();
     let cancelled = AtomicBool::new(false);

@@ -43,7 +43,7 @@ use replay_data::{rows::RaidScope, rows::RaidTargetStatusRow, rows::tables};
 use super::{
     RaidAssets,
     launch::{Local, RaidPaths},
-    paths::{AskedPairs, HourPaths, PartPaths},
+    paths::{AskedPairs, Held, HourPaths, PartPaths},
     script::{Eval, Scope, Scopes, World},
     target_country,
 };
@@ -85,6 +85,9 @@ pub struct Offers {
 
 /// A target's shown types (or why they are undecided) and launchability.
 pub type Evaluation = (Result<Vec<usize>, Vec<String>>, Eval);
+
+/// An evaluation and the content searches it read, which its holder keeps in the memo.
+pub type Evaluated = (Evaluation, Box<[Held]>);
 
 struct Target<'a> {
     row: &'a RaidTargetStatusRow,
@@ -245,9 +248,12 @@ impl<'s, 'f> Sweep<'s, 'f> {
     /// The targets at ordinals `rows`, in that order, evaluated at this
     /// hour: what evaluating them one after another gives, on as many of
     /// [`Self::workers`] as the batch has parts.
-    pub fn evaluate(&self, rows: &[usize]) -> Vec<Evaluation> {
+    pub fn evaluate(&self, rows: &[usize]) -> Vec<Evaluated> {
         let Some(status) = &self.status else {
-            return rows.iter().map(|_| (Ok(Vec::new()), Eval::False)).collect();
+            return rows
+                .iter()
+                .map(|_| ((Ok(Vec::new()), Eval::False), Box::default()))
+                .collect();
         };
         let parts = self
             .workers
@@ -289,18 +295,19 @@ impl<'s, 'f> Sweep<'s, 'f> {
         local: &Local<'_, 'f>,
         rows: &[usize],
         shown: &[Shown],
-    ) -> Vec<Evaluation> {
+    ) -> Vec<Evaluated> {
         rows.iter()
             .zip(shown)
             .map(|(&at, shown)| {
-                launch(
+                let evaluation = launch(
                     self.assets,
                     &status.launcher,
                     local,
                     &status.allowed,
                     &self.targets[at].scope,
                     shown,
-                )
+                );
+                (evaluation, local.take_held())
             })
             .collect()
     }
@@ -315,7 +322,7 @@ impl<'s, 'f> Sweep<'s, 'f> {
         hour: &HourPaths<'_>,
         rows: &[usize],
         parts: usize,
-    ) -> Vec<Evaluation> {
+    ) -> Vec<Evaluated> {
         let mut asked = hour.asked();
         let chunks: Vec<&[usize]> = rows.chunks(rows.len().div_ceil(parts)).collect();
         // Each part's shown types.
@@ -352,7 +359,7 @@ impl<'s, 'f> Sweep<'s, 'f> {
         self.prefetched
             .fetch_add(_tasks, std::sync::atomic::Ordering::Relaxed);
         // Their launch gates.
-        let done: Vec<OnceLock<(Vec<Evaluation>, AskedPairs)>> =
+        let done: Vec<OnceLock<(Vec<Evaluated>, AskedPairs)>> =
             chunks.iter().map(|_| OnceLock::new()).collect();
         {
             let base = asked.pairs();

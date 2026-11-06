@@ -102,6 +102,12 @@ impl Emit {
         self.scan.publish_counts(writer, self.branch, cancelled)
     }
 
+    /// Hours `first..` were lost from the recording, after those it published: it goes on after
+    /// them, every total restarted.
+    pub fn lost(&mut self, first: i32) -> io::Result<()> {
+        self.scan.lost(first)
+    }
+
     /// What it goes on with after the blocks it published.
     pub fn save(&self) -> io::Result<Vec<u8>> {
         let saving = Saving {

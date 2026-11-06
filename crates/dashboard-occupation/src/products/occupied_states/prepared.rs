@@ -61,7 +61,7 @@ impl Binding {
 
     /// What a projection reads of its walk's world.
     pub fn needs(&self) -> dashboard_world::Needs {
-        columnar::needs()
+        columnar::needs(self.world)
     }
 
     /// A projection of one columnar segment.

@@ -18,17 +18,16 @@ use dashboard_base::prepared::{
     priority::{JobPriority, Level},
     roots::{self, Published},
 };
-use dashboard_world::{Hold, Needs, World};
+use dashboard_world::{Needs, World};
 use engine_allocation::labels::{self, Kind};
 use replay::{
     columnar_frames::{Recording, Segment},
     segments::{
-        self, Carry, Chunk, Ending, Hour, Item, Lane, Loss, Manifest, Operator, Resume, Sink,
-        Start, State,
+        self, Carry, Chunk, Ending, Hour, Item, Lane, Loss, Manifest, Operator, Recovery, Resume,
+        Sink, Start, State,
     },
 };
 use replay_data::rows::TableId;
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
     io,
@@ -86,6 +85,21 @@ pub(crate) trait Native: Send + Sync {
         Vec::new()
     }
 
+    /// Whether its branches go on past a segment the recording lost ([`Self::gap`]); else a loss
+    /// ends the branch there.
+    fn resumes(&self) -> bool {
+        false
+    }
+
+    /// `state`'s branch lost `first..=last`, after the hours its last flush published: it goes
+    /// on from the branch's next segment it is handed, every running total it keeps restarted
+    /// there and dated from `last + 1`, never carried across. Only a family that
+    /// [`Self::resumes`] is asked.
+    fn gap(&self, state: &mut Self::Branch, first: i32, last: i32) -> io::Result<()> {
+        let _ = (state, first, last);
+        Err(io::Error::other("This family does not go on past a lost segment"))
+    }
+
     /// What `state` goes on with after the hours its last flush published, for a later run
     /// of the recording grown to take up ([`Self::resume`]): empty when what the flush wrote
     /// is all it goes on with; None when it cannot be saved, and a branch the recording grows
@@ -120,6 +134,8 @@ pub(crate) struct Going {
     pub ordinal: u32,
     pub published: Published,
     pub carry: Option<Vec<u8>>,
+    /// Its committed hours end with hours it lost: its operator starts where it can after them.
+    pub lost: bool,
 }
 
 /// What a family takes up of the branches its committed publications hold: those it has
@@ -323,6 +339,9 @@ pub(crate) trait Member: Send {
 
     /// What its backend counted over the run ([`Native::counts`]).
     fn counts(&self) -> Vec<(&'static str, u64)>;
+
+    /// Whether its branches go on past a lost segment ([`Native::resumes`]).
+    fn resumes(&self) -> bool;
 }
 
 /// A native backend bound to its family's stage.
@@ -353,6 +372,8 @@ struct Emit<'p, 's, N: Native> {
     complete: BTreeSet<u64>,
     ended: BTreeSet<u64>,
     short: BTreeSet<u64>,
+    /// Of those, the hours each branch going on past a loss lost since its state last published.
+    gaps: BTreeMap<u64, (i32, i32)>,
     /// What each branch's operator hands on past the segment processed last: saved past the
     /// last the recording holds, else None, and nothing goes on from a state saved there.
     carries: BTreeMap<u64, Option<Vec<u8>>>,
@@ -369,6 +390,7 @@ impl<'p, 's, N: Native> Bound<'p, 's, N> {
                 run: going.run,
                 ordinal: going.ordinal,
                 carry: going.carry.as_deref(),
+                lost: going.lost,
             })
             .collect();
         Self {
@@ -394,6 +416,7 @@ impl<'p, 's, N: Native> Bound<'p, 's, N> {
                 complete: BTreeSet::new(),
                 ended: BTreeSet::new(),
                 short: BTreeSet::new(),
+                gaps: BTreeMap::new(),
                 carries: BTreeMap::new(),
                 spent: Spent::default(),
             },
@@ -451,6 +474,11 @@ impl<'p, N: Native> Member for Bound<'p, '_, N> {
         .reads(native.tables())
         .passes(passes)
         .resumes(resumes)
+        .recovers(if native.resumes() {
+            Recovery::Resumes
+        } else {
+            Recovery::Ends
+        })
     }
 
     fn settle(&mut self) -> io::Result<()> {
@@ -467,6 +495,10 @@ impl<'p, N: Native> Member for Bound<'p, '_, N> {
     fn counts(&self) -> Vec<(&'static str, u64)> {
         self.native.counts()
     }
+
+    fn resumes(&self) -> bool {
+        self.native.resumes()
+    }
 }
 
 /// A lane in the place of families that does none of their work: it reads their tables and what
@@ -477,26 +509,18 @@ pub(crate) struct Floor {
     tables: Vec<TableId>,
     needs: Needs,
     idle: bool,
+    /// Some member goes on past a lost segment, so its walks do.
+    resumes: bool,
 }
 
-/// A floor's operator: it takes every frame hold its families declared each hour and gives it
-/// back, as their operators do. Unasked, the world's lazy views would note no edits.
-struct Nothing<'f> {
-    asks: &'f [(TableId, Hold)],
-    frame: DecodedFrame,
-}
+/// A floor's operator: nothing. The world keeps the views its families declared every hour,
+/// asked or not.
+struct Nothing;
 
-impl<'a> Operator<Walked<'a>> for Nothing<'_> {
+impl<'a> Operator<Walked<'a>> for Nothing {
     type Output = ();
 
-    fn hour(&mut self, hour: &Hour<'_, Walked<'a>>, _: &mut dyn Sink<()>) -> io::Result<()> {
-        if self.asks.is_empty() {
-            return Ok(());
-        }
-        hour.world
-            .world
-            .frame_held_into(hour.state, self.asks, &mut self.frame)?;
-        dashboard_world::release(&mut self.frame, self.asks);
+    fn hour(&mut self, _: &Hour<'_, Walked<'a>>, _: &mut dyn Sink<()>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -533,6 +557,7 @@ impl Floor {
                 ),
                 needs: Needs::union(&needs),
                 idle: working.is_empty(),
+                resumes: working.iter().any(|member| member.resumes()),
             }));
         }
         Ok(floors)
@@ -558,24 +583,20 @@ impl Member for Floor {
 
     fn lane<'a>(&'a mut self, walking: &'a Walking<'a>) -> Lane<'a, Walked<'a>> {
         let this: &'a Floor = self;
-        let asks: &'a [(TableId, Hold)] = &this.needs.frame;
         Lane::new(
             "walk only",
             move |_: &Segment| {
                 walking.job.clone().enter(Level::Normal);
-                Ok(Nothing {
-                    asks,
-                    frame: DecodedFrame {
-                        branch: 0,
-                        hour: 0,
-                        tables: std::array::from_fn(|_| not_selected()),
-                        metrics: Metrics::default(),
-                    },
-                })
+                Ok(Nothing)
             },
             |_: Chunk<'_, ()>| Ok(()),
         )
         .reads(&this.tables)
+        .recovers(if this.resumes {
+            Recovery::Resumes
+        } else {
+            Recovery::Ends
+        })
     }
 
     fn settle(&mut self) -> io::Result<()> {
@@ -588,6 +609,10 @@ impl Member for Floor {
 
     fn counts(&self) -> Vec<(&'static str, u64)> {
         Vec::new()
+    }
+
+    fn resumes(&self) -> bool {
+        self.resumes
     }
 }
 
@@ -651,10 +676,18 @@ impl<N: Native> Emit<'_, '_, N> {
                 reason: crate::QueryError::from(error),
                 from: None,
             },
-            Some(Ending::Lost(loss)) => Made::Lost {
-                reason: lost(loss),
-                ends: true,
-            },
+            Some(Ending::Lost(loss)) => {
+                if native.resumes() {
+                    let placed = walking.shape.get(at);
+                    let lost = (placed.first_hour, placed.last_hour);
+                    let held = self.gaps.entry(branch).or_insert(lost);
+                    *held = (held.0.min(lost.0), held.1.max(lost.1));
+                }
+                Made::Lost {
+                    reason: lost(loss),
+                    ends: !native.resumes(),
+                }
+            }
         };
         self.processed(native, walking, at, made)
     }
@@ -687,13 +720,15 @@ impl<N: Native> Emit<'_, '_, N> {
         let started = walking.measuring.then(cycles);
         let placed = *walking.shape.get(at);
         let whole = made == Made::Prepared;
+        // A loss its family goes on past ends nothing: its state publishes and saves, restarted.
+        let goes_on = matches!(made, Made::Lost { ends: false, .. });
         if whole && placed.ends_branch {
             self.complete.insert(placed.branch);
         }
-        if !whole || placed.ends_branch {
+        if !(whole || goes_on) || placed.ends_branch {
             self.ended.insert(placed.branch);
         }
-        if !whole {
+        if !(whole || goes_on) {
             self.short.insert(placed.branch);
         }
         self.dirty.insert(placed.branch);
@@ -767,6 +802,11 @@ impl<N: Native> Emit<'_, '_, N> {
                     .flush(state, &mut self.stage, branch, through, walking.cancelled)
                     .map_err(alone)?;
             }
+            if let Some((first, last)) = self.gaps.remove(&branch)
+                && let Some(state) = self.states.get_mut(&branch)
+            {
+                native.gap(state, first, last).map_err(alone)?;
+            }
             if !self.short.remove(&branch) {
                 let carry = self.carries.get(&branch);
                 let saved = match self.states.get_mut(&branch) {
@@ -823,6 +863,9 @@ pub(super) fn lost(loss: &Loss) -> String {
         Loss::Damaged(damage) => format!("The recording cannot be read here: {damage}"),
         Loss::After(before) => {
             format!("Its hours before here could not be read, from segment {before} of the run")
+        }
+        Loss::Earlier => {
+            "Its hours before here could not be read, in an earlier preparation".to_owned()
         }
     }
 }

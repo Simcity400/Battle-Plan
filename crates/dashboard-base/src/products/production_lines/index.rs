@@ -12,6 +12,13 @@
 //! chunk where it starts. One still open when its chunk is written is carried into every
 //! later chunk its history writes until one closes it; while none has, it ends at its
 //! history's horizon.
+//!
+//! A native recording's chunks follow its segments: one through each segment's first census,
+//! then one or more after it. After that census a country's lines are folded per segment, in
+//! parallel, into a lens: parts of their own, keyed past [`LENS`], shared by every history
+//! that reads that country there. Such a history's chunk holds only its [`Binding`]: the lens
+//! it reads and how the lens's ids, appearances, counts, versions and anchors read as its own.
+//! A history's ids are numbered from its chunk's number up, so later chunks' come after.
 
 use super::*;
 use crate::prepared::pages::Pages;
@@ -27,19 +34,19 @@ pub(super) const CHUNKS: &str = "production-chunks";
 pub(super) const ABSENCE: &str = "production-absence";
 
 pub(super) fn index_section(branch: u64) -> String {
-    format!("{INDEX}-v3-{branch}")
+    format!("{INDEX}-v4-{branch}")
 }
 pub(super) fn commits_section(branch: u64) -> String {
-    format!("{COMMITS}-v3-{branch}")
+    format!("{COMMITS}-v4-{branch}")
 }
 pub(super) fn ledger_section(branch: u64) -> String {
-    format!("{LEDGER}-v2-{branch}")
+    format!("{LEDGER}-v3-{branch}")
 }
 pub(super) fn chunks_section(branch: u64) -> String {
-    format!("{CHUNKS}-v1-{branch}")
+    format!("{CHUNKS}-v2-{branch}")
 }
 pub(super) fn absence_section(branch: u64) -> String {
-    format!("{ABSENCE}-v1-{branch}")
+    format!("{ABSENCE}-v2-{branch}")
 }
 
 const MAGIC: &[u8; 4] = b"PLX1";
@@ -51,6 +58,15 @@ const LEVEL: i32 = 1;
 
 /// The history a chunk's branch-wide parts belong to; histories count from 1.
 pub(super) const GLOBAL: u64 = 0;
+/// A lens's parts lie under its id with this bit set; no history is numbered this far.
+pub(super) const LENS: u64 = 1 << 63;
+/// The bits of an id below its chunk's number.
+pub(super) const ID_BITS: u32 = 32;
+
+/// The least id a history allocates in chunk `chunk`.
+pub(super) fn id_floor(chunk: u64) -> u64 {
+    chunk << ID_BITS
+}
 
 /// Chunks in one page of `production-chunks`.
 pub(super) const CHUNK_PAGE: usize = 1024;
@@ -70,6 +86,12 @@ pub(super) enum Part {
     Versions = 6,
     Countries = 7,
     Modifiers = 8,
+    /// A history's [`Binding`] to the lens it reads in a chunk.
+    Binding = 9,
+    /// A lens's conditional versions and names ([`Marks`]).
+    Marks = 10,
+    /// Each variant's icon as the census inputs held it, where it changed ([`Timeline`]).
+    Timeline = 11,
 }
 
 /// A lifetime as the read that began it named it.
@@ -139,7 +161,9 @@ pub(super) struct Overview {
     pub output_variants: BTreeSet<u64>,
     /// Organisation versions whose naming operands differ from the version before.
     pub names: Vec<(u64, RawOrganisation)>,
-    pub icons: Vec<(u64, i32, IconChoice)>,
+    /// Each variant's runs of consecutive censuses producing it, first and last census hour:
+    /// a census's icon of it is the [`Timeline`]'s at that hour.
+    pub produced: Vec<(u64, i32, i32)>,
     pub counters: Counters,
 }
 
@@ -342,6 +366,67 @@ pub(super) struct Modifiers {
     pub records: Vec<ModifierRecord>,
 }
 
+/// One lifetime's modifier reads as a chunk records them, until stored: each read's hours,
+/// close and country row, and its line operands, run values and organisation only where they
+/// differ from the read before, each by the read's place.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ModifierLog {
+    pub carried_last: Option<i32>,
+    first: Vec<i32>,
+    last: Vec<i32>,
+    closed: Vec<bool>,
+    country: Vec<u32>,
+    lines: Vec<(u32, ProductionLineModifiersRow)>,
+    /// Kept without their hours, which are each read's own.
+    values: Vec<(u32, RawRun)>,
+    organisations: Vec<(u32, Option<String>)>,
+}
+
+impl ModifierLog {
+    /// Adds a read at `hour`, its line operands none where they equal the read before's: its
+    /// place.
+    pub fn push(
+        &mut self,
+        hour: i32,
+        country: u32,
+        line: Option<&ProductionLineModifiersRow>,
+        run: &RawRun,
+        organisation: Option<String>,
+    ) -> usize {
+        let at = self.first.len();
+        let place = at as u32;
+        self.first.push(hour);
+        self.last.push(hour);
+        self.closed.push(false);
+        self.country.push(country);
+        if let Some(line) = line {
+            self.lines.push((place, line.clone()));
+        }
+        let values = RawRun {
+            first_hour: 0,
+            last_hour: 0,
+            ..*run
+        };
+        if self.values.last().is_none_or(|(_, held)| *held != values) {
+            self.values.push((place, values));
+        }
+        if self
+            .organisations
+            .last()
+            .is_none_or(|(_, held)| *held != organisation)
+        {
+            self.organisations.push((place, organisation));
+        }
+        at
+    }
+
+    /// Ends the read at `at` at hour `last`.
+    pub fn close(&mut self, at: usize, last: i32) {
+        self.last[at] = last;
+        self.closed[at] = true;
+    }
+}
+
 /// What one history recorded since the flush before.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Events {
@@ -349,7 +434,7 @@ pub(super) struct Events {
     pub detail: Detail,
     pub versions: Versions,
     pub countries: Vec<Arc<CountryProductionModifiersRow>>,
-    pub modifiers: BTreeMap<u64, Modifiers>,
+    pub modifiers: BTreeMap<u64, ModifierLog>,
     /// What the buffer holds, as the batch budget counts it.
     pub bytes: usize,
     /// Anything was recorded, the counts included.
@@ -360,6 +445,62 @@ impl Events {
     pub fn is_empty(&self) -> bool {
         !self.touched
     }
+}
+
+/// A chunk's changes to the icons the census inputs held, in hour order: each variant's from
+/// an hour on, and the hours an input began anew, holding none until it chose one again (an
+/// hour's choices come after its beginning).
+#[derive(Clone, Debug, Default)]
+pub(super) struct Timeline {
+    pub changes: Vec<(i32, u64, IconChoice)>,
+    pub resets: Vec<i32>,
+}
+
+impl Timeline {
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty() && self.resets.is_empty()
+    }
+}
+
+/// What a lens holds of its own at the census it began from, as one history held it then:
+/// its lines' lifetimes (with the history's appearance), runs (with where the history's run
+/// began), steps and output reads, and the history's counts then.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Start {
+    pub lifetimes: Vec<(u64, u64, u32)>,
+    pub runs: Vec<(u64, u64, i32, bool)>,
+    pub steps: Vec<(u64, u64)>,
+    pub outputs: Vec<(u64, u64)>,
+    pub counters: Counters,
+    /// How many more appearances of each handle the census held than the lens.
+    pub appearances: Vec<(u64, i64)>,
+}
+
+/// How one history reads a lens's parts in a chunk as its own. A lens id it does not name is
+/// the history's `(map << ID_BITS) | id`; a lens's appearance of a handle reads `delta` more.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Binding {
+    /// The lens's id in the chunk.
+    pub lens: u64,
+    /// The chunk whose binding holds [`Start`]: the first the history read the lens in.
+    pub map: u64,
+    pub start: Option<Start>,
+    /// The conditional versions ([`Marks`]) the history pushed, and those it named.
+    pub included: Vec<u32>,
+    pub named: Vec<u32>,
+    /// Where the version holding when the chunk began was pushed, for each the lens names.
+    pub design_anchors: BTreeMap<u64, Option<u64>>,
+    pub organisation_anchors: BTreeMap<u64, Option<u64>>,
+    pub appearances: Vec<(u64, i64)>,
+}
+
+/// A lens's versions and names a history pushes only as its own last versions say: each by
+/// its place in the lens's lists, with its condition's number.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Marks {
+    pub designs: Vec<(u32, u32)>,
+    pub organisations: Vec<(u32, u32)>,
+    pub names: Vec<(u32, u32)>,
 }
 
 pub(super) fn encode_row(rows: TableRows) -> io::Result<Vec<u8>> {
@@ -406,33 +547,45 @@ pub(super) struct StoredModifiers {
 }
 
 impl StoredModifiers {
-    fn of(modifiers: &Modifiers) -> io::Result<Self> {
-        let mut stored = Self {
-            carried_last: modifiers.carried_last,
-            first: Vec::with_capacity(modifiers.records.len()),
-            last: Vec::with_capacity(modifiers.records.len()),
-            closed: Vec::with_capacity(modifiers.records.len()),
-            country: Vec::with_capacity(modifiers.records.len()),
-            line: Vec::with_capacity(modifiers.records.len()),
-            values: Values::default(),
-            organisation: Vec::with_capacity(modifiers.records.len()),
-        };
-        for record in &modifiers.records {
-            stored.first.push(record.first_hour);
-            stored.last.push(record.last_hour);
-            stored.closed.push(record.closed);
-            stored.country.push(record.country);
-            stored.line.push(
-                record
-                    .line
-                    .as_ref()
-                    .map(|line| encode_row(TableRows::ProductionLineModifiers(vec![line.clone()])))
+    fn of(log: &ModifierLog) -> io::Result<Self> {
+        let len = log.first.len();
+        let mut line = Vec::with_capacity(len);
+        let mut lines = log.lines.iter().peekable();
+        let mut values = Values::default();
+        let mut runs = log.values.iter().peekable();
+        let mut run = None;
+        let mut organisation = Vec::with_capacity(len);
+        let mut names = log.organisations.iter().peekable();
+        let mut name = None;
+        for at in 0..len as u32 {
+            line.push(
+                lines
+                    .next_if(|(place, _)| *place == at)
+                    .map(|(_, row)| encode_row(TableRows::ProductionLineModifiers(vec![row.clone()])))
                     .transpose()?,
             );
-            stored.values.push(&record.run);
-            stored.organisation.push(record.organisation.clone());
+            if let Some((_, held)) = runs.next_if(|(place, _)| *place == at) {
+                run = Some(held);
+            }
+            values.push(run.ok_or_else(|| crate::invalid("A production modifier read has no run"))?);
+            if let Some((_, held)) = names.next_if(|(place, _)| *place == at) {
+                name = Some(held);
+            }
+            organisation.push(
+                name.ok_or_else(|| crate::invalid("A production modifier read has no organisation"))?
+                    .clone(),
+            );
         }
-        Ok(stored)
+        Ok(Self {
+            carried_last: log.carried_last,
+            first: log.first.clone(),
+            last: log.last.clone(),
+            closed: log.closed.clone(),
+            country: log.country.clone(),
+            line,
+            values,
+            organisation,
+        })
     }
 
     pub fn records(self) -> io::Result<Modifiers> {
@@ -963,7 +1116,7 @@ product_codec::product! { impl Overview {
     wakes: Vec<Wake>,
     output_variants: BTreeSet<u64>,
     names: Vec<(u64, RawOrganisation)>,
-    icons: Vec<(u64, i32, IconChoice)>,
+    produced: Vec<(u64, i32, i32)>,
     counters: Counters,
 } default {} }
 product_codec::product! { impl Wake {
@@ -1015,6 +1168,33 @@ product_codec::product! { impl Versions {
     organisations: Vec<(u64, RawOrganisation)>,
     design_anchors: BTreeMap<u64, Option<u64>>,
     organisation_anchors: BTreeMap<u64, Option<u64>>,
+} default {} }
+product_codec::product! { impl Timeline {
+    changes: Vec<(i32, u64, IconChoice)>,
+    resets: Vec<i32>,
+} default {} }
+product_codec::product! { impl Start {
+    lifetimes: Vec<(u64, u64, u32)>,
+    runs: Vec<(u64, u64, i32, bool)>,
+    steps: Vec<(u64, u64)>,
+    outputs: Vec<(u64, u64)>,
+    counters: Counters,
+    appearances: Vec<(u64, i64)>,
+} default {} }
+product_codec::product! { impl Binding {
+    lens: u64,
+    map: u64,
+    start: Option<Start>,
+    included: Vec<u32>,
+    named: Vec<u32>,
+    design_anchors: BTreeMap<u64, Option<u64>>,
+    organisation_anchors: BTreeMap<u64, Option<u64>>,
+    appearances: Vec<(u64, i64)>,
+} default {} }
+product_codec::product! { impl Marks {
+    designs: Vec<(u32, u32)>,
+    organisations: Vec<(u32, u32)>,
+    names: Vec<(u32, u32)>,
 } default {} }
 product_codec::product! { impl StoredModifiers {
     carried_last: Option<i32>,

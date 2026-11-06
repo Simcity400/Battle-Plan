@@ -9,14 +9,10 @@
 //! exactly (an error, a gap, a keyframe whose extra table would fail the
 //! decoder) is read directly as before and not kept.
 //!
-//! The cache keeps at most [`CACHE_BYTES`] per source, counting everything an
-//! entry keeps alive: each read's frames whole (every table's update, read or
-//! not, and the hour's metrics), the rows they hold with every string, list and
-//! nested value each row owns at its capacity, and the reasons of unavailable
-//! tables. It evicts
-//! the least recently used entry first; an entry larger than the budget serves
-//! only the requests waiting on its read. A reader publishes its read and
-//! accounts it before other requests may read the same block or hour.
+//! An entry lives while a request uses or reads it; besides, each branch keeps
+//! the hour it reconstructed last and the block it read last, which the
+//! widgets showing that hour read next. A reader publishes its read before
+//! other requests may read the same block or hour.
 //!
 //! A request made without block decodes ([`super::progressive::without_block_decodes`])
 //! takes what the cache holds and never waits on another request's read: it is
@@ -36,20 +32,16 @@ use std::{
     time::Duration,
 };
 
-/// Bytes kept per source: the newest hours' frames and blocks for the tables
-/// several widgets read, not a recording's history.
-pub const CACHE_BYTES: usize = 512 << 20;
-
 /// How often a request waiting on another's read checks its cancellation.
 const WAIT_CHECK: Duration = Duration::from_millis(50);
 
 /// A source's cached reads: see the module documentation.
 pub struct FrameCache {
     entries: BTreeMap<Key, Entry>,
-    bytes: usize,
-    /// Bytes kept at most: [`CACHE_BYTES`].
-    budget: usize,
-    clock: u64,
+    /// Each branch's latest hour (false) and block (true).
+    latest: BTreeMap<(u64, bool), Key>,
+    /// Whether the latest are kept; a test turns it off to see what requests alone hold.
+    keep: bool,
     /// Block reads and hour seeks made through the cache.
     reads: (usize, usize),
 }
@@ -58,9 +50,8 @@ impl Default for FrameCache {
     fn default() -> Self {
         Self {
             entries: BTreeMap::new(),
-            bytes: 0,
-            budget: CACHE_BYTES,
-            clock: 0,
+            latest: BTreeMap::new(),
+            keep: true,
             reads: (0, 0),
         }
     }
@@ -79,28 +70,16 @@ pub fn reads(source: &Source) -> (usize, usize) {
     lock(&source.state::<FrameCache>()).reads
 }
 
-/// Bytes `source`'s cache holds.
+/// The entries `source`'s cache holds a value of.
 #[cfg(any(test, feature = "test-support"))]
-pub fn held_bytes(source: &Source) -> usize {
-    lock(&source.state::<FrameCache>()).bytes
-}
-
-/// Whether `source`'s cache accounts exactly what its entries hold: each
-/// entry's bytes are its published value's, and the total is their sum.
-#[cfg(any(test, feature = "test-support"))]
-pub fn accounted(source: &Source) -> bool {
+pub fn held(source: &Source) -> usize {
     let cache = source.state::<FrameCache>();
     let cache = lock(&cache);
-    cache.bytes
-        == cache
-            .entries
-            .values()
-            .map(|entry| entry.bytes)
-            .sum::<usize>()
-        && cache.entries.values().all(|entry| {
-            let state = lock(&entry.slot.state);
-            entry.bytes == state.value.as_ref().map_or(0, |_| state.bytes)
-        })
+    cache
+        .entries
+        .values()
+        .filter(|entry| lock(&entry.slot.state).value.is_some())
+        .count()
 }
 
 #[cfg(test)]
@@ -159,10 +138,16 @@ pub(crate) fn entries(source: &Source) -> usize {
     lock(&source.state::<FrameCache>()).entries.len()
 }
 
-/// Keep at most `budget` bytes for `source` from now on.
+/// Whether `source` keeps each branch's latest hour and block from now on.
 #[cfg(any(test, feature = "test-support"))]
-pub fn set_budget(source: &Source, budget: usize) {
-    lock(&source.state::<FrameCache>()).budget = budget;
+pub fn keep_latest(source: &Source, keep: bool) {
+    let cache = source.state::<FrameCache>();
+    let mut cache = lock(&cache);
+    cache.keep = keep;
+    let latest: Vec<Key> = cache.latest.values().copied().collect();
+    for key in latest {
+        release(&mut cache, key);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,15 +156,23 @@ enum Key {
     Hour { branch: u64, hour: i32 },
 }
 
+impl Key {
+    /// Which of its branch's latest it may be.
+    fn latest(self) -> (u64, bool) {
+        match self {
+            Self::Block { branch, .. } => (branch, true),
+            Self::Hour { branch, .. } => (branch, false),
+        }
+    }
+}
+
 struct Entry {
     slot: Arc<Slot>,
-    used: u64,
-    bytes: usize,
-    /// Requests using its value meanwhile ([`Lease`]); a leased entry is not evicted.
+    /// Requests using its value meanwhile ([`Lease`]); a leased entry stays.
     leases: usize,
 }
 
-/// A request's use of an entry's value: the entry stays held and accounted until it ends.
+/// A request's use of an entry's value: the entry stays held until it ends.
 struct Lease<'a> {
     source: &'a Source,
     key: Key,
@@ -211,16 +204,24 @@ impl Drop for Lease<'_> {
             .filter(|entry| Arc::ptr_eq(&entry.slot, &self.slot))
         {
             entry.leases -= 1;
-            // The last lease of an entry left empty takes it, as its read's end would have.
             if entry.leases == 0 {
-                let state = lock(&self.slot.state);
-                if state.value.is_none() && !state.reading {
-                    drop(state);
-                    cache.entries.remove(&self.key);
-                }
+                release(&mut cache, self.key);
             }
         }
-        trim(&mut cache);
+    }
+}
+
+/// Remove `key`'s entry once nothing uses or reads it, unless it is its branch's latest kept.
+fn release(cache: &mut FrameCache, key: Key) {
+    if cache.keep && cache.latest.get(&key.latest()) == Some(&key) {
+        return;
+    }
+    let idle = cache
+        .entries
+        .get(&key)
+        .is_some_and(|entry| entry.leases == 0 && !lock(&entry.slot.state).reading);
+    if idle {
+        cache.entries.remove(&key);
     }
 }
 
@@ -234,8 +235,6 @@ struct Slot {
 struct SlotState {
     reading: bool,
     value: Option<Value>,
-    /// What `value` keeps alive.
-    bytes: usize,
 }
 
 #[derive(Clone)]
@@ -550,7 +549,7 @@ impl HourRead for Decoders<'_, '_, '_> {
 /// Request-local decoder state; reconstructed hours are retained only by the
 /// shared hour cache. Different windows never lock each other's block walk.
 struct BlockDecoder<'a> {
-    /// Keeps the block's entry held and accounted while this decoder reads it.
+    /// Keeps the block's entry held while this decoder reads it.
     _lease: Option<Lease<'a>>,
     branch: u64,
     reads: Vec<BlockRead>,
@@ -704,31 +703,25 @@ fn joined(held: &[TableId], added: &[TableId]) -> Vec<TableId> {
     tables
 }
 
-/// `key`'s entry, made when there is none, marked used now.
-fn used(cache: &mut FrameCache, key: Key) -> io::Result<&mut Entry> {
-    cache.clock += 1;
-    let clock = cache.clock;
+/// `key`'s entry, made when there is none.
+fn entry(cache: &mut FrameCache, key: Key) -> io::Result<&mut Entry> {
     if !cache.entries.contains_key(&key) {
         super::progressive::decodes_allowed()?;
     }
-    let entry = cache.entries.entry(key).or_insert_with(|| Entry {
+    Ok(cache.entries.entry(key).or_insert_with(|| Entry {
         slot: Arc::default(),
-        used: 0,
-        bytes: 0,
         leases: 0,
-    });
-    entry.used = clock;
-    Ok(entry)
+    }))
 }
 
-/// The entry of `key`, marked used now and leased under the same lock, so no
-/// other request's release can evict it first. A request that may not decode
+/// The entry of `key`, leased under the same lock, so no other request's
+/// release can remove it first. A request that may not decode
 /// ([`super::progressive::without_block_decodes`]) and finds none is refused
 /// without one being made: it could only wait for a read or read itself.
 fn leased_slot(source: &Source, key: Key) -> io::Result<(Arc<Slot>, Lease<'_>)> {
     let cache = source.state::<FrameCache>();
     let mut cache = lock(&cache);
-    let entry = used(&mut cache, key)?;
+    let entry = entry(&mut cache, key)?;
     entry.leases += 1;
     let slot = Arc::clone(&entry.slot);
     let lease = Lease {
@@ -739,63 +732,40 @@ fn leased_slot(source: &Source, key: Key) -> io::Result<(Arc<Slot>, Lease<'_>)> 
     Ok((slot, lease))
 }
 
-/// Remove `key`'s entry when it is `slot`, unleased, and neither holds a value
-/// nor is being read, so no empty entry outlives the requests using it.
+/// Remove `key`'s entry when it is `slot` and nothing uses or reads it, unless it holds its
+/// branch's latest kept value, so no entry outlives the requests using it otherwise.
 fn discard(source: &Source, key: Key, slot: &Arc<Slot>) {
     let cache = source.state::<FrameCache>();
     let mut cache = lock(&cache);
-    let empty = cache.entries.get(&key).is_some_and(|entry| {
-        Arc::ptr_eq(&entry.slot, slot) && entry.leases == 0 && {
-            let state = lock(&slot.state);
-            state.value.is_none() && !state.reading
-        }
-    });
-    if empty {
-        cache.entries.remove(&key);
+    if cache
+        .entries
+        .get(&key)
+        .is_some_and(|entry| Arc::ptr_eq(&entry.slot, slot))
+    {
+        release(&mut cache, key);
     }
 }
 
-/// Account `key`'s filled `bytes` (none: nothing kept, so the entry goes) and
-/// evict least recently used entries beyond the budget, this one included.
-fn settle(source: &Source, key: Key, slot: &Arc<Slot>, bytes: Option<usize>) {
+/// `key`'s read ended: one holding a value is its branch's latest, the one it replaces let go;
+/// one holding nothing goes once unleased.
+fn settle(source: &Source, key: Key, slot: &Arc<Slot>, kept: bool) {
     let cache = source.state::<FrameCache>();
     let mut cache = lock(&cache);
-    let cache = &mut *cache;
-    let Some(entry) = cache
+    if !cache
         .entries
-        .get_mut(&key)
-        .filter(|entry| Arc::ptr_eq(&entry.slot, slot))
-    else {
+        .get(&key)
+        .is_some_and(|entry| Arc::ptr_eq(&entry.slot, slot))
+    {
         return;
-    };
-    cache.bytes -= entry.bytes;
-    match bytes {
-        Some(bytes) => {
-            entry.bytes = bytes;
-            cache.bytes += bytes;
-        }
-        // Requests still using a leased entry find it again; their last release removes it.
-        None if entry.leases > 0 => entry.bytes = 0,
-        None => {
-            cache.entries.remove(&key);
-        }
     }
-    trim(cache);
-}
-
-/// Evict least recently used entries beyond the budget; a leased entry stays until released.
-fn trim(cache: &mut FrameCache) {
-    while cache.bytes > cache.budget {
-        let Some((&oldest, _)) = cache
-            .entries
-            .iter()
-            .filter(|(_, entry)| entry.bytes > 0 && entry.leases == 0)
-            .min_by_key(|(_, entry)| entry.used)
-        else {
-            break;
-        };
-        let entry = cache.entries.remove(&oldest).expect("listed entry");
-        cache.bytes -= entry.bytes;
+    if kept {
+        if let Some(previous) = cache.latest.insert(key.latest(), key)
+            && previous != key
+        {
+            release(&mut cache, previous);
+        }
+    } else if cache.entries[&key].leases == 0 {
+        cache.entries.remove(&key);
     }
 }
 
@@ -821,41 +791,23 @@ impl Drop for Reading<'_> {
     }
 }
 
-/// End `reading`, `key`'s read: publish `value` with the bytes it keeps alive
-/// (none: the read keeps nothing, and an entry holding nothing goes) and
-/// account it, before any other request may read the entry.
-/// A whole map node for one entry of `T`: a node holds at least one entry and
-/// reserves room for eleven, its metadata and an internal node's twelve edges.
-const fn map_node_bytes<T>() -> usize {
-    11 * std::mem::size_of::<T>() + 16 * std::mem::size_of::<usize>()
-}
-
-/// What an entry holds beyond its value: its shared slot (lock, condition
-/// and state) and a whole node of the cache's map, a bound on its place there.
-const ENTRY_BYTES: usize = 2 * std::mem::size_of::<usize>()
-    + std::mem::size_of::<Slot>()
-    + map_node_bytes::<(Key, Entry)>();
-
+/// End `reading`, `key`'s read: publish `value` (none: the read keeps nothing, and an entry
+/// holding nothing goes) before any other request may read the entry.
 fn publish(
     source: &Source,
     key: Key,
     slot: &Arc<Slot>,
     reading: Reading<'_>,
-    value: Option<(Value, usize)>,
+    value: Option<Value>,
 ) {
-    let bytes = {
+    let kept = {
         let mut state = lock(&slot.state);
-        match value {
-            Some((value, bytes)) => {
-                let bytes = bytes + ENTRY_BYTES;
-                state.value = Some(value);
-                state.bytes = bytes;
-                Some(bytes)
-            }
-            None => state.value.is_some().then_some(state.bytes),
+        if let Some(value) = value {
+            state.value = Some(value);
         }
+        state.value.is_some()
     };
-    settle(source, key, slot, bytes);
+    settle(source, key, slot, kept);
     drop(reading);
 }
 
@@ -934,17 +886,6 @@ pub(crate) fn update_bytes(update: &TableUpdate) -> usize {
     }
 }
 
-/// What a read's frames keep alive: each frame whole (every table's update
-/// and the hour's metrics) and what each update holds.
-fn frames_bytes(frames: &Vec<Frame>) -> usize {
-    let mut bytes = crate::prepared::prepass::HeldBytes::default();
-    bytes.add(frames.capacity() * size_of::<Frame>());
-    for frame in frames {
-        bytes.heap(frame);
-    }
-    bytes.total() as usize
-}
-
 /// What one table's view keeps alive: its shared allocation and its rows or reason.
 pub(crate) fn view_bytes(view: &TableView) -> usize {
     let held = match view {
@@ -973,7 +914,7 @@ fn independent_keyframe(frame: &Frame) -> bool {
 /// as `Replay::read_block_selected(block, read tables)` returned them. Every
 /// read holds the block's frames in order; together the reads hold `tables`.
 /// `None` when the cache cannot answer exactly and the caller reads directly.
-/// The answer keeps the block's entry held and counted until it is dropped.
+/// The answer keeps the block's entry held until it is dropped.
 pub fn block<'a>(
     source: &'a Source,
     block: &BlockIndex,
@@ -988,8 +929,8 @@ pub fn block<'a>(
     )
 }
 
-/// A block's reads, and for the cache's answer the lease that keeps its entry held and
-/// counted while they are used.
+/// A block's reads, and for the cache's answer the lease that keeps its entry held while
+/// they are used.
 pub struct LeasedReads<'a> {
     reads: Vec<BlockRead>,
     _lease: Option<Lease<'a>>,
@@ -1023,7 +964,7 @@ pub(crate) fn leased<'a>(
     Ok(leased_block(source, block, tables, &AtomicBool::new(false))?.map(|(_, lease)| lease))
 }
 
-/// [`block`], its entry leased to the caller so it stays held and accounted while used.
+/// [`block`], its entry leased to the caller so it stays held while used.
 fn leased_block<'a>(
     source: &'a Source,
     block: &BlockIndex,
@@ -1035,7 +976,7 @@ fn leased_block<'a>(
         branch: block.branch,
         offset: block.offset,
     };
-    // Held from the start, so a block being read or answered stays found and accounted.
+    // Held from the start, so a block being read or answered stays found.
     let (slot, lease) = leased_slot(source, key)?;
     #[cfg(test)]
     ON_LEASED.with_borrow(|hook| {
@@ -1131,25 +1072,13 @@ fn leased_block<'a>(
         publish(source, key, &slot, reading, None);
         return Err(error);
     }
-    let bytes = frames_bytes(&frames);
     let mut reads = (*held).clone();
     reads.push(BlockRead {
         tables: added,
         frames: Arc::new(frames),
     });
     let answer = covering(&reads).expect("the reads hold every wanted table");
-    // The held reads' frames stay accounted as they were; the containers
-    // holding every read are accounted again as they now are.
-    let held_bytes = lock(&slot.state).bytes;
-    // The held charge includes its entry's bytes, which publishing adds again.
-    let held_containers = if held.is_empty() {
-        0
-    } else {
-        block_containers(&held) + ENTRY_BYTES
-    };
-    let value_bytes = held_bytes.saturating_sub(held_containers) + bytes + block_containers(&reads);
-    let value = (Value::Block(Arc::new(reads)), value_bytes);
-    publish(source, key, &slot, reading, Some(value));
+    publish(source, key, &slot, reading, Some(Value::Block(Arc::new(reads))));
     Ok(Some((answer, lease)))
 }
 
@@ -1260,12 +1189,10 @@ fn seek_with(
         let result = read(tables);
         let kept = match &result {
             Ok(SeekResult::Frame(frame)) => {
-                let kept = HourFrame {
+                Some(Value::Hour(Arc::new(HourFrame {
                     tables: wanted,
                     frame: (**frame).clone(),
-                };
-                let bytes = hour_bytes(&kept);
-                Some((Value::Hour(Arc::new(kept)), bytes))
+                })))
             }
             _ => None,
         };
@@ -1299,46 +1226,8 @@ fn seek_with(
         publish(source, key, &slot, reading, None);
         return read(tables);
     };
-    let bytes = hour_bytes(&kept);
-    publish(
-        source,
-        key,
-        &slot,
-        reading,
-        Some((Value::Hour(Arc::new(kept)), bytes)),
-    );
+    publish(source, key, &slot, reading, Some(Value::Hour(Arc::new(kept))));
     Ok(SeekResult::Frame(Box::new(answer)))
-}
-
-/// What holds a block's reads beyond their frames: the shared list, each
-/// read's table selection and the allocation holding its frames.
-fn block_containers(reads: &Vec<BlockRead>) -> usize {
-    const SHARED: usize = 2 * std::mem::size_of::<usize>();
-    SHARED
-        + std::mem::size_of::<Vec<BlockRead>>()
-        + reads.capacity() * std::mem::size_of::<BlockRead>()
-        + reads
-            .iter()
-            .map(|read| {
-                read.tables.capacity() * std::mem::size_of::<TableId>()
-                    + SHARED
-                    + std::mem::size_of::<Vec<Frame>>()
-            })
-            .sum::<usize>()
-}
-
-/// What a held hour keeps alive: its frame, its table selection, the
-/// allocation holding them, and the views of the tables it reconstructed
-/// (every other table shares the one unselected view).
-fn hour_bytes(held: &HourFrame) -> usize {
-    2 * std::mem::size_of::<usize>()
-        + std::mem::size_of::<HourFrame>()
-        + held.tables.capacity() * std::mem::size_of::<TableId>()
-        + held
-            .tables
-            .iter()
-            .map(|table| view_bytes(&held.frame.tables[table.index()]))
-            .sum::<usize>()
 }
 
 /// `held`'s frame with only `wanted` reconstructed, the rest unselected exactly as

@@ -8,12 +8,10 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { subjectHandle } from '../../dashboard/chosen';
 import { pendingReplyAt } from '../../dashboard/preparedPrefix';
-import { useFollowedProduct } from '../../dashboard/products';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { runAt } from '../../charts/series';
-import { leadersAt, topLeader, validateUnitLeadersReply, withheldLeadersAt, withheldLeaderState } from '../generals/generalsData';
-import type { UnitLeadersData } from '../generals/generalsData';
-import { useLeaderCountries } from '../generals/useLeaders';
+import { leadersAt, topLeader, withheldLeadersAt, withheldLeaderState } from '../generals/generalsData';
+import { useLeaderboardHour, useLeaderCountries } from '../generals/useLeaders';
 import { OPTIONS } from './definition';
 import CareerView from './CareerView';
 
@@ -38,11 +36,9 @@ function TopGeneralCareer(props: WidgetProps & { hour: number }) {
   const dashboard = widget.countries.kind === 'selected';
   const tag = dashboard ? defaultCountryTag(track) : null;
   const selection = useLeaderCountries(widget, runtime, hour, active);
-  const request = track && selection.requestSelection ? { sourceId: track.source.id, revision: track.source.revision, product: 'unit-leaders',
-    params: { branchId: track.branch.id, selection: selection.requestSelection, view: 'leaderboard', leaders: 'land', hour } } : null;
   // The last ranking stays shown while the next hour's is read.
-  const { data, error, retry, moment } = useFollowedProduct<UnitLeadersData>(runtime.client, request, ['hour'], active, validateUnitLeadersReply, track?.source);
-  const read = data && moment ? (JSON.parse(moment) as [number])[0] : hour;
+  const { data, error, retry, answered } = useLeaderboardHour(runtime, track, selection.requestSelection, 'land', hour, active);
+  const read = data && answered !== undefined ? answered : hour;
   const rows = useMemo(() => data && selection.countries !== undefined ? leadersAt(data, read, selection.countries, 'land') : [],
     [data, read, selection.countries]);
   const top = useMemo(() => topLeader(rows), [rows]);

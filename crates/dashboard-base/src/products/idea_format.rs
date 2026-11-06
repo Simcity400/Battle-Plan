@@ -148,6 +148,26 @@ pub fn index_recorded(
         .collect()
 }
 
+/// [`index_recorded`] of any frame's tables, a walk's views among them: `rows` built whole.
+pub fn index_rowsets(
+    rows: replay_frame::frame::Rowset<'_, ModifierDefinitionRow>,
+    lexical: replay_frame::frame::Rowset<'_, LexicalTokenRow>,
+) -> io::Result<BTreeMap<String, ModifierDefinitionRow>> {
+    let literal = replay_data::rows::column::<LexicalTokenRow>("literal");
+    let mut index = BTreeMap::new();
+    for row in rows.iter() {
+        let row = row?;
+        let Some(spelling) = lexical.text(u128::from(row.token), |row| &row.literal, literal)? else {
+            continue;
+        };
+        let Ok(key) = std::str::from_utf8(spelling) else {
+            continue;
+        };
+        index.insert(key.to_ascii_lowercase(), row.into_owned());
+    }
+    Ok(index)
+}
+
 /// Localise `key` through the shared localiser with its stored argument as the string
 /// `ARG` (type 1) when it has one, else with none. A key the content lacks is
 /// its own bytes; the error names why the text cannot be shown.

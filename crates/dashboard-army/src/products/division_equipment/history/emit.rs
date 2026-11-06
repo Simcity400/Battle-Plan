@@ -173,13 +173,13 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
     /// The catalogued number of `operand`, catalogued at its first naming.
-    fn catalogue(&mut self, writer: &mut Writer<'_>, operand: Operand) -> io::Result<u64> {
+    fn catalogue(&mut self, writer: &mut Writer, operand: Operand) -> io::Result<u64> {
         fn json(value: &impl Serialize) -> io::Result<Scalar> {
             Ok(Scalar::Text(serde_json::to_vec(value)?.into_boxed_slice()))
         }
@@ -243,7 +243,7 @@ impl Emit {
     }
 
     /// The number of the pair of catalogued `kind` and `handle`.
-    fn pair(&mut self, writer: &mut Writer<'_>, kind: u64, handle: u64) -> io::Result<u64> {
+    fn pair(&mut self, writer: &mut Writer, kind: u64, handle: u64) -> io::Result<u64> {
         if let Some(&number) = self.pairs.get(&(kind, handle)) {
             return Ok(number);
         }
@@ -261,7 +261,7 @@ impl Emit {
     }
 
     /// Keeps one projected item.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("division_equipment.emit", None);
         match hour.projected {
             Projected::Lead(input) => {
@@ -287,7 +287,7 @@ impl Emit {
         }
     }
 
-    fn output(&mut self, writer: &mut Writer<'_>, output: Output, handed: bool) -> io::Result<()> {
+    fn output(&mut self, writer: &mut Writer, output: Output, handed: bool) -> io::Result<()> {
         let at = output.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
@@ -326,7 +326,7 @@ impl Emit {
 
     fn apply(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         output: Output,
         numbers: &mut Numbers,
     ) -> io::Result<()> {
@@ -431,7 +431,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, and the hours since the last cut as prepared.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

@@ -256,7 +256,7 @@ fn a_renamed_viewpoint_keeps_its_wars() {
 }
 
 #[test]
-fn obsolete_war_content_versions_are_replaced_without_evicting_other_views() {
+fn obsolete_war_content_versions_go_and_held_views_stay() {
     let replay = Arc::new(
         Replay::from_records(
             b"analytics-test".to_vec(),
@@ -280,73 +280,33 @@ fn obsolete_war_content_versions_are_replaced_without_evicting_other_views() {
     let (cat, _folder) = catalogue::tests::folder_catalogue(&[]);
     let obsolete = Arc::new(scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap());
     let released = Arc::downgrade(&obsolete);
-    let state = source.state::<Vec<Cache>>();
-    state.lock().unwrap().extend([
-        Cache {
-            branch: 1,
+    let state = source.state::<Cache>();
+    state.lock().unwrap().put(
+        1,
+        ReplyKey {
             view: None,
             identities: None,
             catalogue: Some(Arc::new(cat)),
-            reply: obsolete,
         },
-        Cache {
-            branch: 1,
-            view: Some("TWO".into()),
-            identities: None,
-            catalogue: None,
-            reply: Arc::new(scan(&replay, 1, Some("TWO"), None, &AtomicBool::new(false)).unwrap()),
-        },
-    ]);
-    let params = WarsParams {
-        branch_id: "1".into(),
-        viewpoint_tag: None,
-    };
-    let context = LoadContext { content: None };
-    Wars::shared(&source, &params, None, &context, &AtomicBool::new(false)).unwrap();
-    let cache = state.lock().unwrap();
-    assert_eq!(cache.len(), 2);
-    assert_eq!(cache.iter().filter(|entry| entry.view.is_none()).count(), 1);
-    assert!(
-        cache
-            .iter()
-            .any(|entry| entry.view.as_deref() == Some("TWO"))
+        &obsolete,
     );
-    assert!(released.upgrade().is_none());
-    // A hit becomes the most recent; a new view evicts the least recently requested.
-    let reply = Arc::clone(&cache[0].reply);
-    drop(cache);
-    state
-        .lock()
-        .unwrap()
-        .extend((0..CACHED_REPLIES).map(|view| Cache {
-            branch: 1,
-            view: Some(format!("V{view}")),
-            identities: None,
-            catalogue: None,
-            reply: Arc::clone(&reply),
-        }));
-    for view in ["TWO", "THREE"] {
+    drop(obsolete);
+    let context = LoadContext { content: None };
+    let shared = |view: Option<&str>| {
         let params = WarsParams {
             branch_id: "1".into(),
-            viewpoint_tag: Some(view.into()),
+            viewpoint_tag: view.map(str::to_owned),
         };
-        Wars::shared(&source, &params, None, &context, &AtomicBool::new(false)).unwrap();
-    }
-    let views: Vec<_> = state
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|entry| entry.view.clone())
-        .collect();
-    assert_eq!(
-        views,
-        [
-            Some("THREE".to_owned()),
-            Some("TWO".to_owned()),
-            None,
-            Some("V0".to_owned())
-        ]
-    );
+        Wars::shared(&source, &params, None, &context, &AtomicBool::new(false)).unwrap()
+    };
+    let first = shared(None);
+    // Another catalogue's reply goes once nothing holds it.
+    assert!(released.upgrade().is_none());
+    // The branch's latest view hits; an earlier one while a request holds it.
+    let two = shared(Some("TWO"));
+    assert!(Arc::ptr_eq(&two, &shared(Some("TWO"))));
+    assert!(Arc::ptr_eq(&first, &shared(None)));
+    assert_eq!(state.lock().unwrap().held(), 2);
 }
 
 #[test]

@@ -1,6 +1,41 @@
 //! Country balance-of-power properties.
 use super::*;
 use installed_content_localisation::localisation::Argument;
+use replay_data::rows::{
+    ModifierDefinitionRow, PowerBalanceMemberRow, PowerBalanceModifierBreakdownRow,
+    PowerBalanceRow, SimulationFeatureRow,
+};
+
+/// The fields of each table the balance properties read.
+const DEFINITION_TEXT: u64 = mask::<ModifierDefinitionRow>(&[
+    "token",
+    "name_key",
+    "postfix_key",
+    "argument",
+    "flags",
+    "category_mask",
+    "feature_selector",
+    "precision",
+    "eligibility",
+]);
+const DEFINITION_VALUE: u64 = mask::<ModifierDefinitionRow>(&["flags", "precision", "postfix_key"]);
+const DLC: u64 = mask::<SimulationFeatureRow>(&["dlc_mask"]);
+const MEMBER: u64 = mask::<PowerBalanceMemberRow>(&[
+    "country",
+    "daily_raw",
+    "weekly_raw",
+    "daily_flags",
+    "weekly_flags",
+]);
+const BALANCE: u64 = mask::<PowerBalanceRow>(&[
+    "value_raw",
+    "balance",
+    "left",
+    "right",
+    "trending",
+    "active_range",
+]);
+const SOURCES: u64 = mask::<PowerBalanceModifierBreakdownRow>(&["sources"]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BalanceProperty {
@@ -138,19 +173,26 @@ impl<'a> ScriptedText<'a> {
     ) -> Result<String, String> {
         let definitions = self
             .frame
-            .complete::<tables::ModifierDefinitions>()
+            .complete::<tables::ModifierDefinitions>(DEFINITION_TEXT)
             .map_err(|e| format!("{name}: {e}"))?;
-        let tokens = self.frame.lexical().map_err(|e| format!("{name}: {e}"))?;
-        let tokens: std::collections::BTreeMap<_, _> =
-            tokens.iter().map(|r| (r.token, &r.literal)).collect();
+        let tokens = self
+            .frame
+            .complete::<tables::LexicalTokens>(0)
+            .map_err(|e| format!("{name}: {e}"))?;
         let mut registry = std::collections::BTreeMap::new();
-        for definition in definitions.iter().filter(|r| r.token != 0) {
-            let literal = tokens.get(&definition.token).ok_or_else(|| {
-                format!(
-                    "{name}: modifier {} has no lexical token {}",
-                    definition.index, definition.token
-                )
-            })?;
+        for definition in each(definitions) {
+            let definition = definition.map_err(|e| format!("{name}: {e}"))?;
+            if definition.token == 0 {
+                continue;
+            }
+            let literal = spelled(&tokens, definition.token)
+                .map_err(|e| format!("{name}: {e}"))?
+                .ok_or_else(|| {
+                    format!(
+                        "{name}: modifier {} has no lexical token {}",
+                        definition.index, definition.token
+                    )
+                })?;
             registry.insert(literal.to_ascii_lowercase(), definition);
         }
         let database = installed_content_core::power_balance::read(&self.content.layers.layers, &|key| {
@@ -172,7 +214,7 @@ impl<'a> ScriptedText<'a> {
                 .map(|m| {
                     registry
                         .get(m.name.as_bytes())
-                        .map(|d| (m, *d))
+                        .map(|d| (m, d))
                         .ok_or_else(|| {
                             format!("{name}: modifier {} has no recorded definition", m.key)
                         })
@@ -200,11 +242,11 @@ impl<'a> ScriptedText<'a> {
                 if definition.feature_selector != 0 {
                     // The definition's feature selector requires any matching bit
                     // in the recorded DLC mask.
-                    let Ok([features]) = self
-                        .frame
-                        .complete::<tables::SimulationFeatures>()
-                        .map(<[_]>::as_ref)
-                    else {
+                    let features = match self.frame.complete::<tables::SimulationFeatures>(DLC) {
+                        Ok(rows) if rows.len() == 1 => each(rows).next().transpose()?,
+                        _ => None,
+                    };
+                    let Some(features) = features else {
                         missing.push(modifier.key.as_str());
                         continue;
                     };
@@ -329,7 +371,7 @@ impl<'a> ScriptedText<'a> {
         &self,
         sources: &[Vec<u8>],
     ) -> Result<[Vec<replay_data::rows::ModifierBreakdownNode>; 2], String> {
-        let registry = replay_derive::modifier_registry::Registry::from_frame(self.frame)?;
+        let registry = replay_derive::modifier_registry::Registry::from_tables(&self.frame, 0)?;
         let effects = self.content.effects()?;
         let statics = effects
             .view(None)
@@ -391,10 +433,11 @@ impl<'a> ScriptedText<'a> {
         // Whole membership is required, including records preceding a found one.
         let members = self
             .frame
-            .complete::<tables::PowerBalanceMembers>()
+            .complete::<tables::PowerBalanceMembers>(MEMBER)
             .map_err(|e| format!("{name}: {e}"))?;
         let mut selected = None;
-        for row in members {
+        for row in each(members) {
+            let row = row?;
             let owner = self.scopes.slot(row.country).ok_or_else(|| {
                 format!(
                     "{name}: balance member country {} is unresolved",
@@ -407,19 +450,17 @@ impl<'a> ScriptedText<'a> {
         }
         let records = self
             .frame
-            .complete::<tables::PowerBalances>()
+            .complete::<tables::PowerBalances>(BALANCE)
             .map_err(|e| format!("{name}: {e}"))?;
         let record = match selected {
             Some(id) => Some(
-                records
-                    .iter()
-                    .find(|r| r.ordinal == id)
+                keyed(&records, u128::from(id))?
                     .ok_or_else(|| format!("{name}: balance record {id} is missing"))?,
             ),
             None => None,
         };
         if which < 6 {
-            let Some(record) = record else {
+            let Some(record) = record.as_deref() else {
                 // Null identities are empty.
                 return Ok(Some(String::new()));
             };
@@ -448,7 +489,7 @@ impl<'a> ScriptedText<'a> {
             return Ok(Some(text));
         }
         if matches!(which, 9..=12) {
-            return match record {
+            return match record.as_deref() {
                 Some(record) => self
                     .active_range_description(slot, record, name, which, scopes)
                     .map(Some),
@@ -456,25 +497,22 @@ impl<'a> ScriptedText<'a> {
             };
         }
         if which == 8 {
-            let Some(record) = record else {
+            let Some(record) = record.as_deref() else {
                 return Ok(Some(String::new()));
             };
             let sources = self
                 .frame
-                .complete::<tables::PowerBalanceModifierBreakdowns>()
+                .complete::<tables::PowerBalanceModifierBreakdowns>(SOURCES)
                 .map_err(|e| format!("{name}: {e}"))?;
-            let sources = sources
-                .iter()
-                .find(|r| r.record == record.ordinal)
-                .ok_or_else(|| {
-                    format!(
-                        "{name}: balance record {} has no modifier sources",
-                        record.ordinal
-                    )
-                })?;
+            let sources = keyed(&sources, u128::from(record.ordinal))?.ok_or_else(|| {
+                format!(
+                    "{name}: balance record {} has no modifier sources",
+                    record.ordinal
+                )
+            })?;
             let definitions = self
                 .frame
-                .complete::<tables::ModifierDefinitions>()
+                .complete::<tables::ModifierDefinitions>(DEFINITION_VALUE)
                 .map_err(|e| format!("{name}: {e}"))?;
             let trees = self
                 .balance_trees(&sources.sources)
@@ -490,9 +528,7 @@ impl<'a> ScriptedText<'a> {
                     &trees[1],
                 ),
             ] {
-                let definition = definitions
-                    .iter()
-                    .find(|r| r.index == key)
+                let definition = keyed(&definitions, u128::from(key))?
                     .ok_or_else(|| format!("{name}: modifier definition {key} is missing"))?;
                 let text = crate::modifier_text::breakdown(
                     nodes,
@@ -513,7 +549,7 @@ impl<'a> ScriptedText<'a> {
                             text.push_str(": ");
                         }
                         text.push_str(&crate::modifier_text::value_text(
-                            definition,
+                            &definition,
                             node.value,
                             2,
                             false,
@@ -549,7 +585,9 @@ impl<'a> ScriptedText<'a> {
         }
         let (mut daily, mut weekly) = (0_i64, 0_i64);
         if let Some(record) = record {
-            for m in members.iter().filter(|m| m.record == record.ordinal) {
+            let low = u128::from(record.ordinal) << 32;
+            for m in each(members.span(low, low | u128::from(u32::MAX))) {
+                let m = m?;
                 let native = engine_power_balance::power_balance_record::MemberRow {
                     daily_raw: m.daily_raw,
                     weekly_raw: m.weekly_raw,

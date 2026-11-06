@@ -23,7 +23,18 @@ mod uploads;
 #[cfg(any(test, feature = "test-support"))]
 pub use uploads::FrozenBufferWrites;
 
+/// One user's pipeline: a device's shared [`Core`] and the bind groups this user's own arena made.
 pub struct Pipeline {
+    core: Arc<Core>,
+    /// Stamped with this user's arena frames, so users of one core never prune each other's.
+    groups: Arc<Mutex<Groups>>,
+    /// Shader-filtered variants by native binding mask, made for this user.
+    variants: Mutex<HashMap<u32, Cached>>,
+}
+
+/// What a pipeline is on its device: the compiled program, its layouts and samplers. Every user
+/// on the device with the same key draws with one core ([`Cache`]).
+pub struct Core {
     pub pipeline: wgpu::RenderPipeline,
     label: String,
     null_cube: Option<wgpu::TextureView>,
@@ -37,7 +48,24 @@ pub struct Pipeline {
     filtered: Vec<u32>,
     fallback: Option<Fallback>,
     packed_inputs: [super::vertices::Packing; 4],
-    groups: Arc<Mutex<Groups>>,
+}
+
+impl std::ops::Deref for Pipeline {
+    type Target = Core;
+    fn deref(&self) -> &Core {
+        &self.core
+    }
+}
+
+impl Pipeline {
+    /// A new user of `core`, with bind groups of its own.
+    fn over(core: Arc<Core>) -> Self {
+        Self {
+            core,
+            groups: Arc::default(),
+            variants: Mutex::default(),
+        }
+    }
 }
 
 /// Float formats are known only when views are bound; keep variants by native binding mask.
@@ -47,7 +75,6 @@ struct Fallback {
     technique: Technique,
     state: State,
     pass: Pass,
-    variants: Mutex<HashMap<u32, Cached>>,
 }
 
 /// Bind groups by resource identity: constants per arena buffer, textures per view list.
@@ -536,8 +563,67 @@ type PackedKey = (
     wgpu::PrimitiveTopology,
 );
 
+/// Every device's pipeline cores by [`PipelineKey`], held weakly: a cache that misses takes a core
+/// another user on its device already holds, so N map views compile each pipeline once, and the
+/// last user lets it go. Failures are not shared; each cache keeps its own.
+struct DeviceCores(Mutex<Vec<DeviceEntry>>);
+
+struct DeviceEntry {
+    device: wgpu::Device,
+    cores: HashMap<u64, Vec<(PipelineKey, std::sync::Weak<Core>, Diagnostics)>>,
+}
+
+static DEVICE_CORES: DeviceCores = DeviceCores(Mutex::new(Vec::new()));
+
+impl DeviceCores {
+    /// The live core on `device` that `matches`, else the one `create` makes, recorded under
+    /// `key`. Held through creation, so users asking at once compile it once.
+    fn get_or_create(
+        &self,
+        device: &wgpu::Device,
+        hash: u64,
+        matches: impl Fn(&PipelineKey) -> bool,
+        key: impl FnOnce() -> PipelineKey,
+        create: impl FnOnce() -> (Result<Arc<Core>, String>, Diagnostics),
+    ) -> (Result<Arc<Core>, String>, Diagnostics) {
+        let mut devices = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        devices.retain_mut(|entry| {
+            entry.cores.retain(|_, cores| {
+                cores.retain(|(_, core, _)| core.strong_count() != 0);
+                !cores.is_empty()
+            });
+            !entry.cores.is_empty() || entry.device == *device
+        });
+        let at = match devices.iter().position(|entry| entry.device == *device) {
+            Some(at) => at,
+            None => {
+                devices.push(DeviceEntry {
+                    device: device.clone(),
+                    cores: HashMap::new(),
+                });
+                devices.len() - 1
+            }
+        };
+        let bucket = devices[at].cores.entry(hash).or_default();
+        if let Some((core, diagnostics)) = bucket.iter().find_map(|(cached, core, diagnostics)| {
+            matches(cached)
+                .then(|| core.upgrade())
+                .flatten()
+                .map(|core| (core, diagnostics.clone()))
+        }) {
+            return (Ok(core), diagnostics);
+        }
+        let (result, diagnostics) = create();
+        if let Ok(core) = &result {
+            bucket.push((key(), Arc::downgrade(core), diagnostics.clone()));
+        }
+        (result, diagnostics)
+    }
+}
+
 /// Device-scoped pipelines, including validation failures, keyed by effect, technique, sampler
-/// state and the complete pass. One cache belongs to one device. A hit clones no key.
+/// state and the complete pass. One cache belongs to one device. A hit clones no key. A miss
+/// shares the device's core when any user holds one ([`DeviceCores`]), with bind groups its own.
 #[derive(Default)]
 pub struct Cache {
     /// Packed passes derive their complete vertex layout only on a state-cache miss.
@@ -636,10 +722,8 @@ impl Cache {
         pass: &Pass,
     ) -> Result<Arc<Pipeline>, String> {
         let effect = &selection.effect;
-        let bucket = self
-            .entries
-            .entry(PipelineKey::hash(effect.id, selection.index, state, pass))
-            .or_default();
+        let hash = PipelineKey::hash(effect.id, selection.index, state, pass);
+        let bucket = self.entries.entry(hash).or_default();
         let result = match bucket
             .iter()
             .find(|(key, _, _)| key.matches(effect.id, selection.index, state, pass))
@@ -649,21 +733,7 @@ impl Cache {
                 result.clone()
             }
             None => {
-                let (result, diagnostics) = diagnostics::capture(|| {
-                    let compiled = effect.compiled(selection.index)?;
-                    let pipeline = Pipeline::for_pass(
-                        device,
-                        &compiled,
-                        &effect.source,
-                        &effect.source.techniques[selection.index],
-                        state,
-                        pass,
-                    )?;
-                    self.created += 1;
-                    Ok(Arc::new(pipeline))
-                });
-                diagnostics.credit();
-                let key = PipelineKey {
+                let key = || PipelineKey {
                     effect: effect.id,
                     technique: selection.index,
                     samplers: state
@@ -675,7 +745,31 @@ impl Cache {
                     write_mask: state.write_mask,
                     pass: pass.clone(),
                 };
-                bucket.push((key, result.clone(), diagnostics));
+                let created = &mut self.created;
+                let (result, diagnostics) = DEVICE_CORES.get_or_create(
+                    device,
+                    hash,
+                    |cached| cached.matches(effect.id, selection.index, state, pass),
+                    key,
+                    || {
+                        diagnostics::capture(|| {
+                            let compiled = effect.compiled(selection.index)?;
+                            let core = Core::for_pass(
+                                device,
+                                &compiled,
+                                &effect.source,
+                                &effect.source.techniques[selection.index],
+                                state,
+                                pass,
+                            )?;
+                            *created += 1;
+                            Ok(Arc::new(core))
+                        })
+                    },
+                );
+                let result = result.map(|core| Arc::new(Pipeline::over(core)));
+                diagnostics.credit();
+                bucket.push((key(), result.clone(), diagnostics));
                 result
             }
         };
@@ -697,16 +791,14 @@ impl Pipeline {
                 ..Default::default()
             };
         }
-        if let Some(fallback) = &self.fallback {
-            for pipeline in fallback
-                .variants
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .values()
-                .filter_map(|result| result.as_ref().ok())
-            {
-                pipeline.release_bind_groups();
-            }
+        for pipeline in self
+            .variants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter_map(|result| result.as_ref().ok())
+        {
+            pipeline.release_bind_groups();
         }
     }
 
@@ -757,6 +849,20 @@ impl Pipeline {
         state: &State,
         pass: &Pass,
     ) -> Result<Self, String> {
+        Core::for_pass(device, compiled, program, technique, state, pass)
+            .map(|core| Self::over(Arc::new(core)))
+    }
+}
+
+impl Core {
+    fn for_pass(
+        device: &wgpu::Device,
+        compiled: &Compiled,
+        program: &Program,
+        technique: &Technique,
+        state: &State,
+        pass: &Pass,
+    ) -> Result<Self, String> {
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let result = Self::create(device, compiled, &program.effect, technique, state, pass, 0);
@@ -783,7 +889,6 @@ impl Pipeline {
                     technique: technique.clone(),
                     state: state.clone(),
                     pass: pass.clone(),
-                    variants: Mutex::default(),
                 });
             }
             pipeline
@@ -1038,11 +1143,12 @@ impl Pipeline {
             packed_inputs: super::vertices::Declaration::ALL.map(|declaration| {
                 super::vertices::Packing::new(declaration, &compiled.vertex.inputs)
             }),
-            groups: Arc::default(),
             fallback: None,
         })
     }
+}
 
+impl Pipeline {
     /// Resources are keyed by `binding(slot, stage)`: native vertex/pixel slots are independent.
     /// Slots without an upload must be supplied by the caller's retained bind state.
     pub fn prepare(
@@ -1172,14 +1278,14 @@ impl Pipeline {
                 mask | if manual { 1 << binding } else { 0 }
             });
             if mask != 0 {
-                let variant = fallback
+                let variant = self
                     .variants
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .entry(mask)
                     .or_insert_with(|| {
                         scoped(device, || {
-                            Self::create(
+                            Core::create(
                                 device,
                                 &fallback.compiled,
                                 &fallback.effect,
@@ -1190,7 +1296,7 @@ impl Pipeline {
                             )
                         })
                         .and_then(|result| result)
-                        .map(Arc::new)
+                        .map(|core| Arc::new(Pipeline::over(Arc::new(core))))
                         .map_err(|reason| {
                             format!(
                                 "effect {:?}, technique {:?}: {reason}",

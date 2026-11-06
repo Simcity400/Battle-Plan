@@ -17,17 +17,47 @@ struct Paged {
     episode: Episode,
 }
 
-/// An open battle's runs and loss reads paged out before those it holds, and
-/// the page of those before them.
-#[derive(Serialize, Deserialize)]
+/// An open battle's loss reads paged out before those it holds, and the page
+/// of those before them.
+#[derive(replay_spool::Spooled)]
 struct Earlier {
-    runs: Vec<LandBattleRun>,
     losses: Vec<losses::LossRead>,
+    /// The [`Course`] page of the runs paged out with these reads, and the reads wired.
+    course: u64,
     earlier: Option<u64>,
     /// The hour this page and those before it hold every run that ended before.
     before: i32,
     /// The peaks of every run in this page and those before it.
     peaks: [Option<LandBattlePeak>; 3],
+}
+
+/// The runs an [`Earlier`] page paged out and its reads as the course reply
+/// sends them, wired on from those before them; and the page of those before.
+#[derive(replay_spool::Spooled)]
+struct Course {
+    runs: Vec<LandBattleRun>,
+    losses: Vec<LandBattleCourseRead>,
+    earlier: Option<u64>,
+}
+
+/// Where a battle's course reply stands after the reads it paged out, so its
+/// course page holds only what it keeps.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub(super) struct Carried {
+    /// Each side's variants at the last paged-out read ([`losses::LossRead::wire`]).
+    previous: [Option<Vec<(usize, i64)>>; 2],
+    /// The branch designs the paged-out reads named, in the reply's order.
+    designs: Vec<usize>,
+    /// The newest [`Course`] page.
+    course: Option<u64>,
+}
+
+/// A battle's course page: the reply of the runs and reads it holds, after
+/// those its [`Course`] pages hold from `history` back.
+#[derive(Serialize, Deserialize)]
+struct CoursePage {
+    history: Option<u64>,
+    reply: LandBattleCourseReply,
 }
 
 /// An earlier window as a publication redraws it: every battle that may fall
@@ -57,12 +87,104 @@ fn read_page<T: DeserializeOwned>(
     Ok(serde_json::from_slice(&series::decompress(&bytes)?)?)
 }
 
-fn history_page(writer: &mut store::Writer, branch: u64, page: u64) -> io::Result<Earlier> {
-    read_page(
-        writer,
-        &format!("land-battle-history-{branch}"),
-        page as usize,
-    )
+fn unspool<T: replay_spool::Spooled>(compressed: &[u8]) -> io::Result<T> {
+    let bytes = series::decompress(compressed)?;
+    let mut restored = replay_spool::Restored::default();
+    let mut reader = replay_spool::Reader::new(&bytes, &mut restored);
+    let page = T::unspool(&mut reader)?;
+    reader.finish()?;
+    Ok(page)
+}
+
+fn spool<T: replay_spool::Spooled>(
+    writer: &mut store::Writer,
+    section: &str,
+    value: &T,
+    scratch: &mut Vec<u8>,
+) -> io::Result<u64> {
+    scratch.clear();
+    {
+        let mut shared = replay_spool::Shared::default();
+        value.spool(&mut replay_spool::Writer::new(scratch, &mut shared))?;
+    }
+    writer.write(section, series::compress(scratch, 3)?.as_slice())
+}
+
+fn spooled_page<T: replay_spool::Spooled>(
+    writer: &mut store::Writer,
+    section: &str,
+    page: u64,
+) -> io::Result<T> {
+    let mut range = writer
+        .read_at(section, page)?
+        .ok_or_else(|| io::Error::other(format!("Prepared {section} page {page} is missing")))?;
+    let mut bytes = Vec::new();
+    range.read_to_end(&mut bytes)?;
+    unspool(&bytes)
+}
+
+/// Adds `item`'s JSON to a reply of `bytes` whose array holds `held` items,
+/// refusing the reply once it passes its limit.
+fn grow(bytes: &mut usize, held: &mut usize, item: &impl Serialize) -> io::Result<()> {
+    let len = json_len(item, MAX_PRODUCT_REPLY_BYTES).ok_or_else(too_long)?;
+    *bytes = bytes.saturating_add(len + usize::from(*held > 0));
+    *held += 1;
+    if *bytes > MAX_PRODUCT_REPLY_BYTES {
+        return Err(too_long());
+    }
+    Ok(())
+}
+
+/// `course`'s whole reply with `warnings`: the runs and wired reads of its
+/// [`Course`] pages, oldest first, ahead of those its page holds. Read newest
+/// page first, it is refused as soon as it would pass the reply limit.
+fn stored_course(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    course: CoursePage,
+    warnings: Vec<String>,
+    cancelled: &AtomicBool,
+) -> io::Result<LandBattleCourseReply> {
+    let CoursePage { history, mut reply } = course;
+    reply.content_warnings = warnings;
+    if history.is_none() {
+        return bounded(reply);
+    }
+    // Counted exactly as `bounded` counts the whole reply.
+    let mut bytes = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(too_long)?;
+    let mut held = (reply.battle.runs.len(), reply.battle.losses.len());
+    let section = format!("land-battle-course-history-{branch}");
+    let mut pages = Vec::new();
+    let mut next = history;
+    while let Some(page) = next {
+        check_cancel(cancelled)?;
+        let mut range = store.read(key, &section, page)?.ok_or_else(|| {
+            dashboard_core::invalid("Prepared land battle course history is missing")
+        })?;
+        let mut compressed = Vec::new();
+        range.read_to_end(&mut compressed)?;
+        let part: Course = unspool(&compressed)?;
+        for run in &part.runs {
+            grow(&mut bytes, &mut held.0, run)?;
+        }
+        for read in &part.losses {
+            grow(&mut bytes, &mut held.1, read)?;
+        }
+        next = part.earlier;
+        pages.push(part);
+    }
+    let mut runs = Vec::with_capacity(held.0);
+    let mut losses = Vec::with_capacity(held.1);
+    for part in pages.into_iter().rev() {
+        runs.extend(part.runs);
+        losses.extend(part.losses);
+    }
+    runs.append(&mut reply.battle.runs);
+    losses.append(&mut reply.battle.losses);
+    reply.battle.runs = runs;
+    reply.battle.losses = losses;
+    Ok(reply)
 }
 
 /// What [`slice`] has taken of a battle's segments, newest first.
@@ -134,10 +256,17 @@ fn slice<'a>(
     let mut peaks = None;
     loop {
         check_cancel(cancelled)?;
-        let part = history_page(writer, branch, page)?;
+        let part: Earlier = spooled_page(writer, &format!("land-battle-history-{branch}"), page)?;
         // Every run this page and those before it hold ended before `first`.
         let held = part.before <= first;
-        slicing.take(&part.runs, &part.losses, peaks.is_none() && !held);
+        let with_runs = peaks.is_none() && !held;
+        let runs = if with_runs {
+            let section = format!("land-battle-course-history-{branch}");
+            spooled_page::<Course>(writer, &section, part.course)?.runs
+        } else {
+            Vec::new()
+        };
+        slicing.take(&runs, &part.losses, with_runs);
         if held && peaks.is_none() {
             peaks = Some(part.peaks.clone());
         }
@@ -167,106 +296,8 @@ fn slice<'a>(
     reads.reverse();
     slice.losses = reads;
     slice.history = None;
+    slice.carried = None;
     Ok(Cow::Owned(slice))
-}
-
-/// A course page serialized as its battle's history is read, a page at a time.
-struct Streamed<'w, 'a> {
-    writer: std::cell::RefCell<&'w mut store::Writer>,
-    branch: u64,
-    /// The battle's history pages, oldest first.
-    pages: &'a [u64],
-    episode: &'a Episode,
-    designs: std::cell::RefCell<Numbered<usize>>,
-    table: &'a [LandEquipmentDesign],
-    failed: std::cell::RefCell<Option<io::Error>>,
-    cancelled: &'a AtomicBool,
-}
-impl Streamed<'_, '_> {
-    fn page(&self, page: u64) -> Result<Earlier, String> {
-        check_cancel(self.cancelled)
-            .and_then(|()| history_page(&mut self.writer.borrow_mut(), self.branch, page))
-            .map_err(|error| {
-                let reason = error.to_string();
-                *self.failed.borrow_mut() = Some(error);
-                reason
-            })
-    }
-}
-struct StreamedRuns<'s, 'w, 'a>(&'s Streamed<'w, 'a>);
-impl Serialize for StreamedRuns<'_, '_, '_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{Error as _, SerializeSeq as _};
-        let mut seq = serializer.serialize_seq(None)?;
-        for &page in self.0.pages {
-            for run in &self.0.page(page).map_err(S::Error::custom)?.runs {
-                seq.serialize_element(run)?;
-            }
-        }
-        for run in &self.0.episode.runs {
-            seq.serialize_element(run)?;
-        }
-        seq.end()
-    }
-}
-struct StreamedLosses<'s, 'w, 'a>(&'s Streamed<'w, 'a>);
-impl Serialize for StreamedLosses<'_, '_, '_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{Error as _, SerializeSeq as _};
-        let mut seq = serializer.serialize_seq(None)?;
-        let mut previous = [None, None];
-        let mut designs = self.0.designs.borrow_mut();
-        for &page in self.0.pages {
-            for read in &self.0.page(page).map_err(S::Error::custom)?.losses {
-                seq.serialize_element(&read.wire(&mut previous, &mut designs))?;
-            }
-        }
-        for read in &self.0.episode.losses {
-            seq.serialize_element(&read.wire(&mut previous, &mut designs))?;
-        }
-        seq.end()
-    }
-}
-/// The fields of [`LandBattleCourse`], in its order.
-struct StreamedBattle<'s, 'w, 'a>(&'s Streamed<'w, 'a>);
-impl Serialize for StreamedBattle<'_, '_, '_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct as _;
-        let episode = self.0.episode;
-        let end = episode.end.as_ref();
-        let mut battle = serializer.serialize_struct("LandBattleCourse", 9)?;
-        battle.serialize_field("id", &episode.id)?;
-        battle.serialize_field("provinceId", &episode.province)?;
-        battle.serialize_field("start", &episode.start)?;
-        battle.serialize_field("end", &end.map(|(_, end)| end))?;
-        battle.serialize_field(
-            "endUnknownHour",
-            &end.and_then(|(hour, end)| matches!(end, BattleEnd::Unknown { .. }).then_some(*hour)),
-        )?;
-        battle.serialize_field("counterBase", &episode.counter_base)?;
-        battle.serialize_field("runs", &StreamedRuns(self.0))?;
-        battle.serialize_field("losses", &StreamedLosses(self.0))?;
-        battle.serialize_field("result", &episode.result)?;
-        battle.end()
-    }
-}
-/// The fields of [`LandBattleCourseReply`], in its order.
-struct StreamedReply<'s, 'w, 'a>(&'s Streamed<'w, 'a>);
-impl Serialize for StreamedReply<'_, '_, '_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct as _;
-        let mut reply = serializer.serialize_struct("LandBattleCourseReply", 3)?;
-        reply.serialize_field("battle", &StreamedBattle(self.0))?;
-        // The battle's reads numbered its designs as they were serialized.
-        let designs: Vec<_> = std::mem::take(&mut *self.0.designs.borrow_mut())
-            .into_vec()
-            .into_iter()
-            .map(|design| &self.0.table[design])
-            .collect();
-        reply.serialize_field("designs", &designs)?;
-        reply.serialize_field("contentWarnings", &[] as &[String])?;
-        reply.end()
-    }
 }
 
 impl Census {
@@ -341,34 +372,43 @@ impl Census {
                 if runs.is_empty() {
                     return None;
                 }
-                let mut row = episode.as_ref().clone();
-                row.history = None;
-                row.runs = runs;
-                let loss_first = first.min(row.runs[0].first_hour);
+                let loss_first = first.min(runs[0].first_hour);
                 // Append order: a backdated finalizer's read supersedes reads appended before it.
                 let carried = episode
                     .losses
                     .iter()
                     .rposition(|read| read.hour <= loss_first);
-                row.losses = episode
-                    .losses
-                    .iter()
-                    .enumerate()
-                    .filter(|&(at, read)| {
-                        Some(at) == carried || read.hour > loss_first && read.hour <= last
-                    })
-                    .map(|(_, read)| read.clone())
-                    .collect();
-                row.loss_inputs = None;
-                row.prior_peaks = std::array::from_fn(|index| {
-                    first.checked_sub(1).and_then(|hour| {
-                        if index == 0 {
-                            episode.peak_before(hour)
-                        } else {
-                            episode.side_peak_before(hour, index - 1)
-                        }
-                    })
-                });
+                // Built from its parts: the battle's whole runs and reads are never copied.
+                let row = Episode {
+                    id: episode.id.clone(),
+                    province: episode.province,
+                    start: episode.start.clone(),
+                    end: episode.end.clone(),
+                    counter_base: episode.counter_base,
+                    runs,
+                    losses: episode
+                        .losses
+                        .iter()
+                        .enumerate()
+                        .filter(|&(at, read)| {
+                            Some(at) == carried || read.hour > loss_first && read.hour <= last
+                        })
+                        .map(|(_, read)| read.clone())
+                        .collect(),
+                    result: episode.result.clone(),
+                    loss_inputs: None,
+                    prior_peaks: std::array::from_fn(|index| {
+                        first.checked_sub(1).and_then(|hour| {
+                            if index == 0 {
+                                episode.peak_before(hour)
+                            } else {
+                                episode.side_peak_before(hour, index - 1)
+                            }
+                        })
+                    }),
+                    history: None,
+                    carried: None,
+                };
                 Some((at, row))
             })
             .collect();
@@ -570,6 +610,7 @@ impl Census {
             // Pages are numbered as written: in battle order, not the open map's hash order.
             let mut open: Vec<usize> = self.open.values().copied().collect();
             open.sort_unstable();
+            let mut spooled = Vec::new();
             for at in open {
                 let episode = held(&mut self.episodes, at);
                 let runs = episode
@@ -585,17 +626,39 @@ impl Census {
                 }
                 let runs: Vec<_> = episode.runs.drain(..runs).collect();
                 episode.fold_peaks(&runs);
+                let losses: Vec<_> = episode.losses.drain(..losses).collect();
+                // The course query reads these as wired here, and the course page
+                // goes on wiring reads where they leave off.
+                let carried = episode.carried.get_or_insert_with(Default::default);
+                let mut designs = Numbered::from_order(carried.designs.iter().copied());
+                let wired = losses
+                    .iter()
+                    .map(|read| read.wire(&mut carried.previous, &mut designs))
+                    .collect();
+                carried.designs = designs.into_vec();
+                let course = spool(
+                    writer,
+                    &format!("land-battle-course-history-{branch}"),
+                    &Course {
+                        runs,
+                        losses: wired,
+                        earlier: carried.course,
+                    },
+                    &mut spooled,
+                )?;
+                carried.course = Some(course);
                 let earlier = Earlier {
-                    runs,
-                    losses: episode.losses.drain(..losses).collect(),
+                    losses,
+                    course,
                     earlier: episode.history,
                     before,
                     peaks: episode.prior_peaks.clone(),
                 };
-                let json = serde_json::to_vec(&earlier)?;
-                episode.history = Some(writer.write(
+                episode.history = Some(spool(
+                    writer,
                     &format!("land-battle-history-{branch}"),
-                    series::compress(&json, 3)?.as_slice(),
+                    &earlier,
+                    &mut spooled,
                 )?);
             }
             self.warnings.retain_from(before);
@@ -612,55 +675,36 @@ impl Census {
             &paged,
         )
     }
-    /// Writes `episode`'s course page, serialized as its history is read.
+    /// Writes `episode`'s course page: the runs and reads it holds, wired on
+    /// from those it paged out, which its history pages hold.
     fn write_course(
         &self,
         writer: &mut store::Writer,
         branch: u64,
         page: u64,
         episode: &Episode,
-        cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let section = format!("land-battle-course-{branch}");
-        // A battle that paged nothing out holds its whole course, kept short by paging.
-        if episode.history.is_none() {
-            let mut used = Numbered::default();
-            let battle = episode.course(&mut used);
-            return series::write_reply(
-                writer,
-                &section,
-                page,
-                &LandBattleCourseReply {
+        let (mut previous, mut used) = match episode.carried.as_deref() {
+            Some(carried) => (
+                carried.previous.clone(),
+                Numbered::from_order(carried.designs.iter().copied()),
+            ),
+            None => ([None, None], Numbered::default()),
+        };
+        let battle = episode.course(&mut previous, &mut used);
+        series::write_reply(
+            writer,
+            &format!("land-battle-course-{branch}"),
+            page,
+            &CoursePage {
+                history: episode.carried.as_ref().and_then(|carried| carried.course),
+                reply: LandBattleCourseReply {
                     battle,
                     designs: self.reply_designs(used),
                     content_warnings: Vec::new(),
                 },
-            );
-        }
-        let mut pages = Vec::new();
-        let mut next = episode.history;
-        while let Some(page) = next {
-            check_cancel(cancelled)?;
-            pages.push(page);
-            next = history_page(writer, branch, page)?.earlier;
-        }
-        pages.reverse();
-        let streamed = Streamed {
-            writer: std::cell::RefCell::new(writer),
-            branch,
-            pages: &pages,
-            episode,
-            designs: Default::default(),
-            table: &self.designs.values,
-            failed: Default::default(),
-            cancelled,
-        };
-        let compressed = series::compress_serialized(&StreamedReply(&streamed), 3);
-        if let Some(error) = streamed.failed.take() {
-            return Err(error);
-        }
-        let compressed = compressed?;
-        series::write_compressed(streamed.writer.into_inner(), &section, page, &compressed)
+            },
+        )
     }
     pub fn publish_block(
         &mut self,
@@ -670,9 +714,20 @@ impl Census {
         ordinal: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.publish_block_in(writer, &windows(replay, branch), branch, ordinal, cancelled)
+    }
+    /// [`Self::publish_block`] with the branch's blocks, as the emit holds them.
+    pub(super) fn publish_block_in(
+        &mut self,
+        writer: &mut store::Writer,
+        windows: &[BattleWindow],
+        branch: u64,
+        ordinal: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         let mut own = std::mem::take(&mut self.refusals);
         let published = dashboard_text::catalogue::own_refusals(&mut own, || {
-            self.publish_own_block(writer, replay, branch, ordinal, cancelled)
+            self.publish_own_block(writer, windows, branch, ordinal, cancelled)
         });
         self.refusals = own;
         published
@@ -680,14 +735,13 @@ impl Census {
     fn publish_own_block(
         &mut self,
         writer: &mut store::Writer,
-        replay: &Replay,
+        windows: &[BattleWindow],
         branch: u64,
         ordinal: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         check_cancel(cancelled)?;
         self.materialize()?;
-        let windows = windows(replay, branch);
         let window = &windows[ordinal];
         let boundary = if ordinal == 0 {
             i32::MIN
@@ -703,7 +757,7 @@ impl Census {
             cancelled,
         )?;
 
-        let unused = self.resolve(writer, branch, &windows, ordinal, cancelled)?;
+        let unused = self.resolve(writer, branch, windows, ordinal, cancelled)?;
         let mut changed = BTreeSet::from([ordinal]);
         let course = format!("land-battle-course-{branch}");
         for &at in self.dirty.union(&unused) {
@@ -725,7 +779,7 @@ impl Census {
                     }
                 }
             }
-            self.write_course(writer, branch, at as u64, episode, cancelled)?;
+            self.write_course(writer, branch, at as u64, episode)?;
         }
         let mut ranking_changed = changed.clone();
         for at in &self.dirty {
@@ -747,7 +801,7 @@ impl Census {
         for index in ranking_changed {
             check_cancel(cancelled)?;
             let interval = BattleWindow {
-                first_hour: self.interval_first(&windows, index),
+                first_hour: self.interval_first(windows, index),
                 last_hour: windows[index].last_hour,
             };
             let drawn = self.drawn(writer, branch, ordinal, index, &interval, cancelled)?;
@@ -805,7 +859,7 @@ impl Census {
             0,
             &self.content_warnings(),
         )?;
-        self.page_out(writer, branch, &windows, ordinal)
+        self.page_out(writer, branch, windows, ordinal)
     }
 }
 
@@ -948,13 +1002,13 @@ pub fn query(
             }
             let page =
                 page.ok_or_else(|| dashboard_core::invalid("Battle not in this recording branch"))?;
-            let mut reply: LandBattleCourseReply =
+            let course: CoursePage =
                 series::read_reply(store, key, &format!("land-battle-course-{branch}"), page)?
                     .ok_or_else(|| {
                         dashboard_core::invalid("Prepared land battle course is missing")
                     })?;
-            reply.content_warnings = warnings;
-            serde_json::to_value(bounded(reply)?).map_err(Into::into)
+            let reply = stored_course(store, key, branch, course, warnings, cancelled)?;
+            serde_json::to_value(reply).map_err(Into::into)
         }
         "land-battles" => {
             let warnings: Vec<String> =

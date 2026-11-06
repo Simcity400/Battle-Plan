@@ -53,6 +53,11 @@ impl<K: Eq> Ledger<K> {
     pub fn len(&self) -> usize {
         self.flights.len()
     }
+
+    /// A new in-flight width; flights past it finish, and no new plan starts until under it.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.max(1);
+    }
     pub fn get(&self, ticket: Ticket) -> Option<&Flight<K>> {
         self.flights.get(&ticket)
     }
@@ -159,6 +164,21 @@ impl<K: Eq> Ledger<K> {
         } else {
             Phase::Parts
         };
+        true
+    }
+
+    /// Parts that arrive by event with no job of this target's: accepted, so never cancelled.
+    pub fn awaiting(&mut self, ticket: Ticket, parts: u8) -> bool {
+        let Some(flight) = self.flights.get_mut(&ticket) else {
+            return false;
+        };
+        if parts == 0 {
+            return true;
+        }
+        if flight.phase != Phase::Parts || parts & (flight.accepted | flight.complete) != 0 {
+            return false;
+        }
+        flight.accepted |= parts;
         true
     }
 

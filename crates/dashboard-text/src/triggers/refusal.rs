@@ -306,6 +306,23 @@ pub(crate) fn input_error(table: TableId, why: std::io::Error) -> Failure {
     failure.resolution_failed();
     failure
 }
+/// `T` when complete, each row holding the fields `mask` names, as
+/// [`FrameInputs::trigger_table`] reads it of any frame's tables.
+pub(crate) fn complete_table<F, T>(
+    frame: &F,
+    mask: u64,
+) -> Result<replay_frame::frame::Rowset<'_, T::Row>, Failure>
+where
+    F: replay_frame::frame::Tables + ?Sized,
+    T: replay_data::rows::TableSchema,
+{
+    frame.complete_rows::<T>(mask).map_err(|why| {
+        let failure = Failure::input(T::ID, "", None, why.to_string());
+        failure.resolution_failed();
+        failure
+    })
+}
+
 impl FrameInputs for replay_frame::frame::DecodedFrame {
     fn trigger_table<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], Failure> {
         self.complete::<T>().map_err(|why| {

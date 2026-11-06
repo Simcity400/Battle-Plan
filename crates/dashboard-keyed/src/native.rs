@@ -33,9 +33,7 @@ use replay_data::{
     rows::{Field, RowCodec, RowsPairVisit, RowsVisit, TableId, TableRows},
     scope::CaptureMode,
 };
-use replay_frame::frame::{
-    DecodedFrame, Metrics, TableView, not_selected,
-};
+use replay_frame::frame::{ColumnFrame, DecodedFrame, Metrics, TableView, not_selected};
 use serde::{Deserialize, Serialize};
 use std::{io, marker::PhantomData, sync::atomic::AtomicBool};
 
@@ -80,6 +78,7 @@ impl<O: Observer> Segmented for Native<O> {
         Box::new(Keep::<O> {
             format,
             keeper: O::native_keeper(),
+            fields: None,
         })
     }
 }
@@ -97,7 +96,11 @@ impl<O: Observer> Native<O> {
         }
         segment::Operator::with_reader(
             format,
-            Box::new(Keep::<O> { format, keeper }),
+            Box::new(Keep::<O> {
+                format,
+                keeper,
+                fields: Some(fields::<O>()?),
+            }),
         )
     }
 }
@@ -112,13 +115,13 @@ pub trait Keeper<O: Observer>: Send {
         Ok(())
     }
 
-    /// The operands of an hour the observer observes, from `frame`, its tables as the world
-    /// lends them, and what the hour changed of each; and the bytes they hold that the hours
-    /// kept before do not.
+    /// The operands of an hour the observer observes, read from `frame`, the hour through the
+    /// walk's views of its tables, and what the hour changed of each; and the bytes they hold
+    /// that the hours kept before do not.
     fn keep(
         &mut self,
         format: FormatVersion,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         touched: &Touched,
     ) -> io::Result<(Box<dyn Operands<O>>, usize)>;
 }
@@ -174,16 +177,33 @@ impl<O: Observer> replay_spool::Spooled for Kept<O> {
     }
 }
 
+/// The fields the observer reads of each of its tables, in [`Observer::TABLES`] order: every
+/// field of a table it names none of.
+fn fields<O: Observer>() -> io::Result<Vec<u64>> {
+    let named = O::fields()?;
+    Ok(O::TABLES
+        .iter()
+        .map(|&table| {
+            named
+                .iter()
+                .find(|fields| fields.table == table)
+                .map_or(table.full_mask(), |fields| fields.fields)
+        })
+        .collect())
+}
+
 /// A segment's reader, or the observer's keeper.
 struct Keep<O: Observer> {
     format: FormatVersion,
     keeper: Option<Box<dyn Keeper<O>>>,
+    /// [`fields`], once read.
+    fields: Option<Vec<u64>>,
 }
 
 impl<O: Observer> Reader<Native<O>> for Keep<O> {
     fn read(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         changes: &FrameChanges,
         touched: &Touched,
     ) -> io::Result<(Kept<O>, usize)> {
@@ -197,11 +217,20 @@ impl<O: Observer> Reader<Native<O>> for Keep<O> {
                 bytes + size_of::<FrameChanges>(),
             ));
         }
+        let fields = match &mut self.fields {
+            Some(fields) => fields,
+            unread => unread.insert(fields::<O>()?),
+        };
         let mut bytes =
             size_of::<Metrics>() + size_of::<FrameChanges>() + O::TABLES.len() * hand::Hand::BYTES;
         let mut hands = Vec::with_capacity(O::TABLES.len());
-        for &table in O::TABLES {
-            let (hand, held) = hand::Hand::of(&frame.tables[table.index()], touched.of(table))?;
+        for (&table, &read) in O::TABLES.iter().zip(fields.iter()) {
+            let (hand, held) = hand::Hand::of(
+                frame.view(table),
+                frame.sampled_at(table),
+                touched.of(table),
+                read,
+            )?;
             bytes += held;
             hands.push(hand);
         }
@@ -302,7 +331,7 @@ impl<O: Observer> Emit<O> {
     /// One hour, after the last one given.
     pub fn hour(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: segment::Hour<Native<O>>,
     ) -> io::Result<()> {
         let at = hour.hour;
@@ -392,7 +421,7 @@ impl<O: Observer> Emit<O> {
     }
 
     /// Writes the runs the scan's last hour gave its batch.
-    fn runs(&mut self, writer: &mut Writer<'_>) -> io::Result<()> {
+    fn runs(&mut self, writer: &mut Writer) -> io::Result<()> {
         let mut calls = std::mem::take(&mut self.scan.batch_mut().calls);
         for &(key, hour, value, starts) in &calls {
             let handle = self.key(writer, key, hour)?;
@@ -406,7 +435,7 @@ impl<O: Observer> Emit<O> {
     }
 
     /// The series key of scan key `key`, every key before it made first, in order.
-    fn key(&mut self, writer: &mut Writer<'_>, key: u64, hour: i32) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, key: u64, hour: i32) -> io::Result<KeyHandle> {
         let at = usize::try_from(key).map_err(|_| invalid("A keyed scan key is out of range"))?;
         while self.keys.len() <= at {
             let next = self.keys.len() as u64;
@@ -437,7 +466,7 @@ impl<O: Observer> Emit<O> {
     }
 
     /// The hours walked since the domain's last row, through `last`, as known.
-    fn known(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if let Some(first) = self.first.take() {
             writer.domain(
                 DOMAIN,
@@ -455,7 +484,7 @@ impl<O: Observer> Emit<O> {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, and the observer where it changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.known(writer, last)?;
         if self.stale {

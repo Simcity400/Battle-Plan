@@ -246,7 +246,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn lane(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         faction: u64,
         kind: Kind,
@@ -311,7 +311,7 @@ impl Emit {
     /// segment.
     fn observe(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         lane: u32,
         hour: i32,
         value: Option<i128>,
@@ -325,7 +325,7 @@ impl Emit {
     /// `lane`'s value from `hour` on; a known one after an unavailable one starts a segment.
     fn value(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         lane: u32,
         hour: i32,
         value: i128,
@@ -341,7 +341,7 @@ impl Emit {
     /// `lane`'s choice from `hour` on, numbered where it first appears.
     fn choice(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         lane: u32,
         hour: i32,
         choice: Choice,
@@ -389,7 +389,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn known(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         faction: u64,
         channel: usize,
@@ -411,7 +411,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn finish_group(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         (owner, kind): (u64, Kind),
         now: BTreeSet<u32>,
@@ -444,7 +444,7 @@ impl Emit {
     /// Keeps one projected hour: lanes, choices and goal books numbered in the order the hour
     /// observes them, retained owners, and every faction the publication holds that the hour
     /// lists nowhere.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("faction emit", None);
         let at = hour.hour;
         let starts = match self.last {
@@ -541,7 +541,7 @@ impl Emit {
 
     fn accounts(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         starts: bool,
         accounts: Accounts,
@@ -595,7 +595,7 @@ impl Emit {
 
     fn account(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         starts: bool,
         account: u32,
@@ -691,7 +691,7 @@ impl Emit {
 
     fn faction(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         ops: FactionOps,
         reads: [bool; CHANNELS.len()],
@@ -766,7 +766,7 @@ impl Emit {
     /// A faction the publication holds that the hour lists nowhere: it has no rows anywhere.
     fn absent(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         faction: u64,
         starts: bool,
@@ -800,7 +800,7 @@ impl Emit {
 
     fn group(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         faction: u64,
         group: u32,
@@ -816,7 +816,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn selections(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         faction: u64,
         kind: Kind,
@@ -836,7 +836,7 @@ impl Emit {
 
     fn manpower(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         faction: u64,
         op: ManpowerOp,
@@ -888,7 +888,7 @@ impl Emit {
 
     fn goals(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         faction: u64,
         op: GoalsOp,
@@ -938,7 +938,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the lanes and books that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.known_through(writer, last)?;
         for lane in std::mem::take(&mut self.stale) {
@@ -958,7 +958,7 @@ impl Emit {
     }
 
     /// The hours walked since the last known span, through `last`, as known.
-    fn known_through(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known_through(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if let Some(first) = self.first.take() {
             writer.domain(
                 DOMAIN,

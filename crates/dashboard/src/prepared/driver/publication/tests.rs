@@ -937,10 +937,11 @@ fn a_frontier_summarises_its_holes_and_its_ledger_is_read_page_by_page() {
     assert_eq!(
         published
             .frontier
-            .first_hole
-            .as_ref()
-            .map(|hole| (hole.first_hour, hole.last_hour)),
-        Some((1001, 1001))
+            .holes
+            .iter()
+            .map(|hole| (hole.first_hour, hole.last_hour))
+            .collect::<Vec<_>>(),
+        [(1001, 1001)]
     );
     // The frontier does not grow with the ledger it counts.
     assert!(

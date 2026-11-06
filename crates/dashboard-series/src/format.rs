@@ -288,6 +288,18 @@ pub(crate) struct Entry {
     pub late_at: u64,
     pub detail: Option<Detail>,
     pub last_row: Option<LastRow>,
+    /// Set where the node holds no rows of the key, only the ones it continues unchanged.
+    pub held: Option<Held>,
+}
+/// What a node continues of a key unchanged through all its hours, by where each began: its
+/// run and evidence are read from the segments that began them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Held {
+    pub runs: bool,
+    pub evidence: bool,
+    pub coverage: bool,
+    pub origin: i32,
+    pub evidence_origin: i32,
 }
 /// A shared domain's last appended row, as the writer's handle names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,9 +338,62 @@ impl Entry {
             late_at: 0,
             detail: None,
             last_row: None,
+            held: None,
         }
     }
+    /// A held entry continuing `held` from `row_start` rows and `canonicals` canonical runs.
+    pub fn holding(key: u64, held: Held, row_start: u64, canonicals: u64) -> Self {
+        Self {
+            row_start,
+            canonical_start: canonicals,
+            canonical_end: canonicals,
+            held: Some(held),
+            ..Self::empty(key)
+        }
+    }
+    /// The entry with a held entry's tracks over a node of `segments` segments spanning `hours`:
+    /// one row of each held table per segment.
+    pub fn shaped(mut self, hours: Span, segments: u64) -> Self {
+        if let Some(held) = self.held {
+            let track = |on: bool| {
+                if on {
+                    Track {
+                        count: segments,
+                        first: hours.first,
+                        last: hours.last,
+                        head: Chain {
+                            continues: true,
+                            end: hours.last,
+                            through: true,
+                        },
+                    }
+                } else {
+                    Track::default()
+                }
+            };
+            self.runs = track(held.runs);
+            self.evidence = track(held.evidence);
+            self.coverage = track(held.coverage);
+        }
+        self
+    }
     pub fn put(&self, s: &mut Sink) -> io::Result<()> {
+        if let Some(held) = self.held {
+            s.u8(1
+                | u8::from(held.runs) << 1
+                | u8::from(held.evidence) << 2
+                | u8::from(held.coverage) << 3)?;
+            s.var(self.row_start)?;
+            s.var(self.canonical_start)?;
+            if held.runs {
+                s.zig(i64::from(held.origin))?;
+            }
+            if held.evidence {
+                s.zig(i64::from(held.evidence_origin))?;
+            }
+            return Ok(());
+        }
+        s.u8(0)?;
         self.runs.put(s)?;
         s.var(self.row_start)?;
         s.var(self.canonical_start)?;
@@ -391,6 +456,33 @@ impl Entry {
         Ok(())
     }
     pub fn get(key: u64, d: &mut Decode<'_>) -> io::Result<Self> {
+        let kind = d.u8()?;
+        if kind != 0 {
+            let held = Held {
+                runs: kind & 2 != 0,
+                evidence: kind & 4 != 0,
+                coverage: kind & 8 != 0,
+                origin: 0,
+                evidence_origin: 0,
+            };
+            if kind & 1 == 0 || kind > 15 || kind & 14 == 0 || (held.coverage && !held.evidence) {
+                return Err(invalid("series held entry flags"));
+            }
+            let row_start = d.var()?;
+            let canonicals = d.var()?;
+            let origin = if held.runs { hour(d)? } else { 0 };
+            let evidence_origin = if held.evidence { hour(d)? } else { 0 };
+            return Ok(Self::holding(
+                key,
+                Held {
+                    origin,
+                    evidence_origin,
+                    ..held
+                },
+                row_start,
+                canonicals,
+            ));
+        }
         let runs = Track::get(d)?;
         let row_start = d.var()?;
         let canonical_start = d.var()?;
@@ -477,6 +569,7 @@ impl Entry {
             late_at,
             detail,
             last_row,
+            held: None,
         })
     }
     /// The canonical id of this node's first run row.

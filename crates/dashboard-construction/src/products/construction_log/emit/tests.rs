@@ -14,7 +14,7 @@ use super::{Emit, SCHEMA};
 use crate::products::construction_spending;
 use dashboard_base::products::{battles::BattleWindow, country_groups::HourSpan};
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -413,10 +413,9 @@ fn windows() -> Vec<HourSpan> {
 
 /// The publication of `hours`, cut after each of `cuts`' hours, the emit saved at `resume` and
 /// going on from the publication.
-fn build(hours: Vec<observed::Hour>, cuts: &[i32], resume: i32, budget: &Budget) -> (Memory, u64) {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<observed::Hour>, cuts: &[i32], resume: i32) -> (Memory, u64) {
     let mut pages = Memory::default();
-    let mut writer = Writer::new(budget, identity(), FIRST).unwrap();
+    let mut writer = Writer::new(identity(), FIRST).unwrap();
     let mut emit = Emit::new(windows());
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -435,7 +434,6 @@ fn build(hours: Vec<observed::Hour>, cuts: &[i32], resume: i32, budget: &Budget)
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -449,8 +447,8 @@ fn build(hours: Vec<observed::Hour>, cuts: &[i32], resume: i32, budget: &Budget)
         if cut == resume {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(windows(), &directory, &saved).unwrap();
         }
@@ -477,10 +475,8 @@ fn the_publication_answers_every_window_and_leaf_as_the_row_scan_does_across_cut
         (&[119, 151, LAST][..], 151),
         (&[100, 135, 142, LAST][..], 135),
     ] {
-        let budget = Budget::new(64 << 20);
-        let (pages, root) = build(projected().0, cuts, resume, &budget);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+        let (pages, root) = build(projected().0, cuts, resume);
+        let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         for window in 0..battle.len() {
             let reply =

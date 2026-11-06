@@ -444,7 +444,7 @@ mod tests {
         }
     }
     #[test]
-    fn overlapping_shards_share_records_and_keep_weak_allocations_charged() {
+    fn overlapping_shards_share_records_and_free_them_with_their_last_shard() {
         let recorder = Recorder::new(&ResolvedLayers::default());
         recorder.record(read("map", Outcome::Probe { present: true }));
         recorder.record(read("audio", Outcome::Probe { present: false }));
@@ -459,14 +459,10 @@ mod tests {
             assert!(Arc::ptr_eq(record, shared));
         }
         let record = Arc::downgrade(&map.records[1]);
-        let allocation = Arc::downgrade(&map.records[1]._allocation);
         drop(map);
         drop(all);
         recorder.shards.lock().unwrap().clear();
         assert!(record.upgrade().is_none());
-        assert!(allocation.upgrade().is_some());
-        drop(recorder);
-        assert!(allocation.upgrade().is_none());
     }
     #[test]
     fn purpose_shards_are_immutable_and_late_negative_and_error_reads_invalidate_only_dependents() {

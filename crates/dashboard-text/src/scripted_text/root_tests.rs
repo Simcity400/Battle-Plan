@@ -51,7 +51,10 @@ fn root_views_share_only_the_same_hour_input_owners() {
     assert!(Arc::ptr_eq(&first.lexical_names, &second.lexical_names));
     assert_eq!(first.viewing_country(), 1);
     assert_eq!(second.viewing_country(), 2);
-    assert!(std::ptr::eq(first.frame(), second.frame()));
+    assert!(std::ptr::eq(
+        first.tables().decoded().unwrap().decoded_frame(),
+        second.tables().decoded().unwrap().decoded_frame()
+    ));
     assert!(std::ptr::eq(first.content(), second.content()));
     let unrelated = fixture.text(2);
     assert!(!Arc::ptr_eq(&first.scopes, &unrelated.scopes));

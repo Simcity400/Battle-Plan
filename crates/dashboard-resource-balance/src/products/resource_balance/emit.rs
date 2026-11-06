@@ -92,6 +92,10 @@ struct Resource {
     /// It ever held a run, and the longest balance bar its runs drew.
     series: bool,
     size: i128,
+    /// The open run and whether it was named when last published: publishing them again
+    /// observes only values its keys hold.
+    #[serde(skip)]
+    shown: Option<(Run, bool)>,
 }
 
 /// An open deal of a tag: its terms and the run they hold.
@@ -178,6 +182,7 @@ impl Country {
                         applied: None,
                         series: false,
                         size: 0,
+                        shown: None,
                     },
                 );
                 at
@@ -283,7 +288,7 @@ impl Emit {
 
     fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         measure: u64,
         dimension: Option<u64>,
@@ -302,7 +307,7 @@ impl Emit {
     }
 
     /// The tag actor named `tag`.
-    fn actor(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn actor(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -322,7 +327,7 @@ impl Emit {
     /// hour without one starts a run.
     fn observe(
         carry: &mut Carry,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         held: &mut Held,
         hour: i32,
         value: Option<i128>,
@@ -339,7 +344,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("resources.emit", None);
         let at = hour.hour;
         let gap = match self.last {
@@ -495,7 +500,7 @@ impl Emit {
     /// The countries the hour resolves: the actors live before or now.
     fn identify(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         countries: &Countries,
     ) -> io::Result<Vec<u64>> {
@@ -539,7 +544,7 @@ impl Emit {
     /// observes a tag, then publishes what changed.
     fn observe_country(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         at: i32,
         [pools, deals]: [bool; 2],
@@ -700,21 +705,20 @@ impl Emit {
     /// went on through the hour before (`was_open`) or goes on now.
     fn publish(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         at: i32,
         [pools, deals]: [bool; 2],
         was_open: &[u32],
     ) -> io::Result<()> {
         if pools {
-            let resources: Vec<u32> = self.countries[actor as usize]
-                .resources
-                .iter()
-                .filter(|held| held.open || was_open.binary_search(&held.resource).is_ok())
-                .map(|held| held.resource)
-                .collect();
-            for resource in resources {
-                self.publish_pool(writer, actor, resource, at)?;
+            let mut position = 0;
+            while let Some(held) = self.countries[actor as usize].resources.get(position) {
+                let resource = held.resource;
+                if held.open || was_open.binary_search(&resource).is_ok() {
+                    self.publish_pool(writer, actor, resource, at)?;
+                }
+                position += 1;
             }
         }
         if deals {
@@ -725,7 +729,7 @@ impl Emit {
 
     fn publish_pool(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         resource: u32,
         at: i32,
@@ -746,6 +750,9 @@ impl Emit {
             .is_some_and(|names| names.binary_search_by_key(&resource, |&(id, _)| id).is_ok());
         let held = self.countries[index].resource(resource);
         let run = held.run.filter(|_| held.open);
+        if run.is_some() && held.shown == run.map(|run| (run, named)) {
+            return Ok(());
+        }
         let mut keys = held.keys.expect("published pool keys");
         let starts = run.is_some_and(|run| run.first == at && run.starts);
         if let Some(run) = run
@@ -781,6 +788,7 @@ impl Emit {
         }
         let held = self.countries[index].resource(resource);
         held.keys = Some(keys);
+        held.shown = run.map(|run| (run, named));
         if let Some(native) = native {
             let size = size(&native);
             if size > held.size {
@@ -791,7 +799,7 @@ impl Emit {
         Ok(())
     }
 
-    fn publish_deals(&mut self, writer: &mut Writer<'_>, actor: u64, at: i32) -> io::Result<()> {
+    fn publish_deals(&mut self, writer: &mut Writer, actor: u64, at: i32) -> io::Result<()> {
         let index = actor as usize;
         let (open, span) = {
             let country = &self.countries[index];
@@ -935,13 +943,13 @@ impl Emit {
     }
 
     /// Ends every run after `last`, the hour before one not walked, and the hours known.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         self.known(writer, last)
     }
 
     /// The hours walked since the last cut or hour not walked, through `last`, as known.
-    fn known(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if let Some(first) = self.first.take() {
             writer.domain(
                 DOMAIN,
@@ -959,7 +967,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.known(writer, last)?;
         let counting: Vec<u64> = self.counting.iter().copied().collect();

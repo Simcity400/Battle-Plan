@@ -241,7 +241,7 @@ fn observe_country(
         && let Ok(rows) = convoys
     {
         let rows = convoy_reads(rows.iter().filter(|row| ours(row.owner_country)));
-        convoy_rows(scanned, state, hour, &rows);
+        convoy_rows(scanned, state, hour, &rows, |_, _| {});
     }
     let lend_lease = decoded.complete::<tables::LendLeaseEquipment>();
     if slot_read(
@@ -310,7 +310,7 @@ fn combat_log(
     for country in countries {
         let first = rows.partition_point(|row| row.country < country);
         let last = rows.partition_point(|row| row.country <= country);
-        combat_rows(scanned, state, hour, &log_reads(&rows[first..last]));
+        combat_rows(scanned, state, hour, &log_reads(&rows[first..last]), |_, _| {});
     }
     Ok(())
 }

@@ -106,15 +106,16 @@ impl<'a> Texts<'a> {
 }
 /// The selected country's slot, which goal names and descriptions expand in.
 pub(super) fn viewer_root(frame: &DecodedFrame) -> Result<u32, String> {
-    let raw = super::viewer::viewing(frame)?
-        .ok_or("Faction goal text needs the selected country")?;
-    crate::metadata::link_slot(
-        frame
-            .complete::<tables::CountryLinks>()
-            .map_err(|why| why.to_string())?,
-        raw,
+    viewer_root_in(replay_frame::frame::HourFrame::from(frame))
+}
+
+/// [`viewer_root`] of any frame's tables, a walk's views among them.
+pub(super) fn viewer_root_in(frame: replay_frame::frame::HourFrame<'_>) -> Result<u32, String> {
+    super::viewer::viewer_slot(
+        frame,
+        "Faction goal text needs the selected country",
+        "Faction goal text needs the selected country's identity",
     )
-    .ok_or_else(|| "Faction goal text needs the selected country's identity".to_owned())
 }
 // The command creates a fresh leader scope, then binds the acting country as FROM.
 fn command_scopes(leader: u32, actor: u32) -> Scopes {

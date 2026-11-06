@@ -1,11 +1,12 @@
 //! What production reads of one hour, from a row frame or a columnar walk alike
 //! ([`super::ProductionAccumulator::ingest_hour`]).
 
+use super::fold::OutputChanges;
 use crate::products::equipment::{
     RawVariant,
     production::{CountryHolders, Rows},
 };
-use replay_data::rows::{ProductionLineOutputRow, ProductionLineRow, RocketProductionOutputRow};
+use replay_data::rows::{ProductionLineRow, RocketProductionOutputRow};
 use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, HashSet},
@@ -122,8 +123,8 @@ pub(crate) struct Hour<'a> {
     pub design_changed: bool,
     /// What names designs moved: a name read anew or dropped, or a naming table or its shape.
     pub naming_moved: bool,
-    /// Read only while complete.
-    pub output: Rows<'a, ProductionLineOutputRow>,
+    /// What the line output changed since the hour before, while it is complete.
+    pub output: Option<OutputChanges>,
     /// Why the line output is unavailable, where it is.
     pub output_reason: Option<&'a str>,
     pub lines: Lines<'a>,

@@ -9,9 +9,14 @@ use crate::triggers::Failure;
 
 use installed_content_core::{scope::Keyword, scope::Names, scope::Scope, scope::ScopeKind};
 use installed_content_core::{tag_aliases::TagAlias, tag_aliases::TagAliases};
-use replay_data::{rows::FactionMemberRow, rows::TableSchema, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
+use replay_data::{
+    rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
+    rows::CountryRow, rows::FactionMemberRow, rows::GlobalSavedEventTargetRow, rows::PoliticsRow,
+    rows::StateRow, rows::TableSchema, rows::column, rows::mask, rows::tables,
+};
+use replay_frame::frame::{HourFrame, OperandStatus, Rowset, TableView};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     sync::{Arc, OnceLock},
 };
@@ -96,6 +101,7 @@ struct CountryValues {
     values: BTreeMap<u32, i32>,
     unresolved: Option<Failure>,
 }
+
 impl CountryValues {
     fn get(&self, slot: u32) -> Result<Option<i32>, Failure> {
         if let Some(value) = self.values.get(&slot) {
@@ -115,9 +121,9 @@ type CharactersByToken = BTreeMap<String, Vec<(u32, u32)>>;
 /// The recorded facts scopes resolve through, read from one hour. Each map is
 /// built from the hour's tables when a query first needs it.
 #[derive(Clone, Debug, Default)]
-pub struct RecordedScopes {
+pub struct RecordedScopes<'a> {
     /// The hour's tables the maps below are built from.
-    views: Option<Arc<Views>>,
+    frame: Option<HourFrame<'a>>,
     /// Raw country link to canonical slot (`CountryLinks`).
     links: OnceLock<BTreeMap<u32, u32>>,
     /// Canonical slot to tag, and back (`Countries`).
@@ -144,7 +150,7 @@ pub struct RecordedScopes {
     /// (`CountryCounterInputs.owned_state_count`).
     owned: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
     /// Exact recorded original-tag buckets and physical country-array order.
-    original_tags: OriginalTagLists,
+    original_tags: OriginalTagLists<'a>,
     /// The content's tag alias database.
     aliases: Arc<TagAliases>,
     saved_targets_complete: bool,
@@ -152,33 +158,57 @@ pub struct RecordedScopes {
     gaps: BTreeMap<&'static str, String>,
 }
 
-/// The hour's tables recorded scopes read.
-#[derive(Clone, Debug)]
-struct Views {
-    links: SharedView,
-    countries: SharedView,
-    states: SharedView,
-    politics: SharedView,
-    appearance: SharedView,
-    faction_members: SharedView,
-    counters: SharedView,
-    characters: replay_frame::frame::SharedCharacters,
-    lexical: replay_frame::frame::SharedLexical,
-    saved_targets: SharedView,
+/// The fields of each table recorded scopes read.
+const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
+const TAG: usize = column::<CountryRow>("tag");
+const STATE: u64 = mask::<StateRow>(&["owner", "controller"]);
+const CAPITAL: u64 = mask::<PoliticsRow>(&["capital"]);
+const OVERLORD: u64 = mask::<CountryAppearanceRow>(&["overlord"]);
+const OWNED: u64 = mask::<CountryCounterInputRow>(&["owned_state_count"]);
+const MEMBER: u64 = mask::<FactionMemberRow>(&["faction", "ordinal"]);
+const SAVED: u64 = tables::GlobalSavedEventTargets::ID.full_mask();
+/// A character's script token, and its country.
+const CHARACTER: u64 = crate::identity::CHARACTER_IDENTITY
+    | mask::<replay_data::rows::CharacterRow>(&["country"]);
+
+/// Whether `status` is a complete table's, whatever its layout, as a complete view is.
+fn whole(status: OperandStatus<'_>) -> bool {
+    matches!(status, OperandStatus::Complete | OperandStatus::WrongLayout)
 }
 
-/// A view's rows: none when the table is unavailable.
-fn view_rows<T: TableSchema>(view: Option<&SharedView>) -> &[T::Row] {
+/// Why a table at `status` may hold no row for a key, as [`gap`] says of its view.
+pub fn status_gap(status: OperandStatus<'_>) -> String {
+    match status {
+        OperandStatus::WrongLayout => OperandStatus::Complete.gap(),
+        OperandStatus::TruncatedWrongLayout(missing) => OperandStatus::Truncated(missing).gap(),
+        status => status.gap(),
+    }
+}
+
+/// A table's rows, a walked row building the fields `mask` names; none, refused where
+/// reached, when the table is unavailable.
+fn held_rows<'a, T: TableSchema>(frame: Option<HourFrame<'a>>, mask: u64) -> Rowset<'a, T::Row> {
     // Built for a recorded query, whose own result is its input.
-    crate::triggers::inputs::unrecorded(|| match view.map(|view| &**view) {
-        Some(TableView::Complete(rows) | TableView::Truncated { rows, .. }) => {
-            rows.rows::<T>().unwrap_or_default()
+    crate::triggers::inputs::unrecorded(|| match frame {
+        Some(frame)
+            if !matches!(
+                frame.status(T::ID),
+                OperandStatus::Unavailable(_) | OperandStatus::NotRecorded(_)
+            ) =>
+        {
+            frame.held::<T>(mask)
         }
         _ => {
             crate::triggers::refusal::missing_reference(T::ID, None).resolution_failed();
-            &[]
+            Rowset::Decoded(&[])
         }
     })
+}
+
+/// `rows`' failure to build a row of `T`, refused where it is reached.
+fn walked<T: TableSchema>(why: std::io::Error) -> Failure {
+    crate::triggers::refusal::input_error(T::ID, why)
 }
 
 /// A table's rows, and why an entry it lacks is unknown.
@@ -195,6 +225,14 @@ pub(crate) fn table<T: TableSchema>(
     (rows, gap(view))
 }
 
+/// [`table`] of any frame's tables, each row holding the fields `mask` names.
+pub(crate) fn table_in<'a, T: TableSchema>(
+    frame: HourFrame<'a>,
+    mask: u64,
+) -> (Rowset<'a, T::Row>, String) {
+    (frame.held::<T>(mask), status_gap(frame.status(T::ID)))
+}
+
 /// Why `view` may hold no row for a key.
 pub fn gap(view: &TableView) -> String {
     match view {
@@ -208,7 +246,6 @@ pub fn gap(view: &TableView) -> String {
         }
     }
 }
-
 /// Saved-target validity using captured object liveness.
 pub(crate) fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRow) -> bool {
     !r.name.is_empty()
@@ -330,7 +367,7 @@ impl std::hash::Hash for ScopeKey {
     }
 }
 
-impl RecordedScopes {
+impl RecordedScopes<'_> {
     /// The digest `query` reads in this hour's scopes.
     pub fn reread(&self, query: &Query) -> u64 {
         crate::triggers::inputs::resolved_digest(|| match query {
@@ -394,67 +431,54 @@ impl RecordedScopes {
     }
 }
 
-impl RecordedScopes {
+impl<'a> RecordedScopes<'a> {
     /// Reads scope facts and native country-list snapshots at this hour.
-    pub fn read(frame: &dyn replay_frame::frame::DecodedSource, aliases: Arc<TagAliases>) -> Self {
-        Self::read_with(frame, OriginalTagLists::read(frame), aliases)
+    pub fn read(frame: &'a dyn replay_frame::frame::DecodedSource, aliases: Arc<TagAliases>) -> Self {
+        Self::read_in(HourFrame::Decoded(frame), aliases)
+    }
+
+    /// [`Self::read`] of any frame's tables, a walk's views among them.
+    pub fn read_in(frame: HourFrame<'a>, aliases: Arc<TagAliases>) -> Self {
+        Self::read_with(frame, OriginalTagLists::read_in(frame), aliases)
     }
 
     /// Uses a selectively read native-list snapshot for this same hour.
     pub fn read_with(
-        frame: &dyn replay_frame::frame::DecodedSource,
-        original_tags: OriginalTagLists,
+        frame: impl Into<HourFrame<'a>>,
+        original_tags: OriginalTagLists<'a>,
         aliases: Arc<TagAliases>,
     ) -> Self {
-        let complete = |id: replay_data::rows::TableId| {
-            matches!(frame.view(id.index()), TableView::Complete(_))
-        };
+        let frame = frame.into();
+        let complete = |id: replay_data::rows::TableId| whole(frame.status(id));
+        let gap = |id: replay_data::rows::TableId| status_gap(frame.status(id));
         let mut gaps = BTreeMap::new();
-        gaps.insert("CountryLinks", table::<tables::CountryLinks>(frame).1);
-        gaps.insert("Countries", table::<tables::Countries>(frame).1);
-        gaps.insert("States", table::<tables::States>(frame).1);
-        gaps.insert("Politics", table::<tables::Politics>(frame).1);
-        gaps.insert(
-            "CountryAppearance",
-            table::<tables::CountryAppearance>(frame).1,
-        );
-        gaps.insert("FactionMembers", table::<tables::FactionMembers>(frame).1);
-        gaps.insert(
-            "CountryCounterInputs",
-            table::<tables::CountryCounterInputs>(frame).1,
-        );
+        gaps.insert("CountryLinks", gap(tables::CountryLinks::ID));
+        gaps.insert("Countries", gap(tables::Countries::ID));
+        gaps.insert("States", gap(tables::States::ID));
+        gaps.insert("Politics", gap(tables::Politics::ID));
+        gaps.insert("CountryAppearance", gap(tables::CountryAppearance::ID));
+        gaps.insert("FactionMembers", gap(tables::FactionMembers::ID));
+        gaps.insert("CountryCounterInputs", gap(tables::CountryCounterInputs::ID));
         gaps.insert(
             "Characters",
             format!(
                 "{} (LexicalTokens: {})",
-                frame.row_gap(tables::Characters::ID),
-                frame.row_gap(tables::LexicalTokens::ID)
+                gap(tables::Characters::ID),
+                gap(tables::LexicalTokens::ID)
             ),
         );
         gaps.insert(
             "GlobalSavedEventTargets",
-            table::<tables::GlobalSavedEventTargets>(frame).1,
+            gap(tables::GlobalSavedEventTargets::ID),
         );
-        let view = |id: replay_data::rows::TableId| frame.shared(id.index());
         Self {
-            views: Some(Arc::new(Views {
-                links: view(tables::CountryLinks::ID),
-                countries: view(tables::Countries::ID),
-                states: view(tables::States::ID),
-                politics: view(tables::Politics::ID),
-                appearance: view(tables::CountryAppearance::ID),
-                faction_members: view(tables::FactionMembers::ID),
-                counters: view(tables::CountryCounterInputs::ID),
-                characters: frame.shared_characters(),
-                lexical: frame.shared_lexical(),
-                saved_targets: view(tables::GlobalSavedEventTargets::ID),
-            })),
+            frame: Some(frame),
             countries_complete: complete(tables::Countries::ID),
             faction_members_complete: complete(tables::FactionMembers::ID),
             // A character's script token is its name token id spelled by the
             // hour's LexicalTokens (`Characters.token` is its saved name).
-            characters_complete: frame.character_status().is_table_complete()
-                && frame.lexical_status().is_table_complete(),
+            characters_complete: complete(tables::Characters::ID)
+                && complete(tables::LexicalTokens::ID),
             saved_targets_complete: complete(tables::GlobalSavedEventTargets::ID),
             original_tags,
             aliases,
@@ -463,66 +487,74 @@ impl RecordedScopes {
         }
     }
 
+    /// Whether `table` is complete this hour, as a complete view is.
+    fn complete(&self, table: replay_data::rows::TableId) -> bool {
+        self.frame.is_some_and(|frame| whole(frame.status(table)))
+    }
+
     fn input<T: TableSchema>(
         &self,
         field: &str,
         scope: Option<crate::triggers::Store>,
         message: impl Into<String>,
     ) -> Failure {
-        let complete = self.views.as_deref().is_some_and(|views| {
-            use replay_data::rows::TableId;
-            let view = match T::ID {
-                TableId::Countries => &views.countries,
-                TableId::CountryLinks => &views.links,
-                TableId::States => &views.states,
-                TableId::Politics => &views.politics,
-                TableId::CountryAppearance => &views.appearance,
-                TableId::CountryCounterInputs => &views.counters,
-                TableId::Characters => return views.characters.status().is_table_complete(),
-                TableId::LexicalTokens => return views.lexical.status().is_table_complete(),
-                TableId::FactionMembers => &views.faction_members,
-                TableId::GlobalSavedEventTargets => &views.saved_targets,
-                _ => unreachable!("scope input table"),
-            };
-            matches!(&**view, TableView::Complete(_))
-        });
-        let (field, scope) = if complete { (field, scope) } else { ("", None) };
+        let (field, scope) = if self.complete(T::ID) {
+            (field, scope)
+        } else {
+            ("", None)
+        };
         Failure::input(T::ID, field, scope, message)
     }
 
-    fn rows<T: TableSchema>(&self, view: impl Fn(&Views) -> &SharedView) -> &[T::Row] {
-        view_rows::<T>(self.views.as_deref().map(view))
+    fn rows<T: TableSchema>(&self, mask: u64) -> Rowset<'a, T::Row> {
+        held_rows::<T>(self.frame, mask)
     }
 
     fn links(&self) -> &BTreeMap<u32, u32> {
         self.links.get_or_init(|| {
-            self.rows::<tables::CountryLinks>(|views| &views.links)
-                .iter()
-                .map(|link| (link.id, link.canonical_slot))
-                .collect()
+            let mut links = BTreeMap::new();
+            for link in self.rows::<tables::CountryLinks>(LINK).iter() {
+                match link {
+                    Ok(link) => {
+                        links.insert(link.id, link.canonical_slot);
+                    }
+                    Err(why) => walked::<tables::CountryLinks>(why).reached(),
+                }
+            }
+            links
         })
     }
 
     fn tags(&self) -> &BTreeMap<u32, String> {
         self.tags.get_or_init(|| {
-            self.rows::<tables::Countries>(|views| &views.countries)
-                .iter()
-                .map(|country| {
-                    (
-                        country.canonical_slot,
-                        String::from_utf8_lossy(&country.tag).into_owned(),
-                    )
-                })
-                .collect()
+            let mut tags = BTreeMap::new();
+            for country in self.rows::<tables::Countries>(SLOT).with_text(|row| &row.tag, TAG) {
+                match country {
+                    Ok((country, tag)) => {
+                        tags.insert(
+                            country.canonical_slot,
+                            String::from_utf8_lossy(tag).into_owned(),
+                        );
+                    }
+                    Err(why) => walked::<tables::Countries>(why).reached(),
+                }
+            }
+            tags
         })
     }
 
     fn raw_ids(&self) -> &BTreeMap<u32, u32> {
         self.raw_ids.get_or_init(|| {
-            self.rows::<tables::Countries>(|views| &views.countries)
-                .iter()
-                .map(|row| (row.canonical_slot, row.id))
-                .collect()
+            let mut ids = BTreeMap::new();
+            for row in self.rows::<tables::Countries>(SLOT).iter() {
+                match row {
+                    Ok(row) => {
+                        ids.insert(row.canonical_slot, row.id);
+                    }
+                    Err(why) => walked::<tables::Countries>(why).reached(),
+                }
+            }
+            ids
         })
     }
 
@@ -537,23 +569,36 @@ impl RecordedScopes {
 
     fn states(&self) -> &BTreeMap<u32, (u32, u32)> {
         self.states.get_or_init(|| {
-            self.rows::<tables::States>(|views| &views.states)
-                .iter()
-                .map(|state| (state.id, (state.owner, state.controller)))
-                .collect()
+            let mut states = BTreeMap::new();
+            for state in self.rows::<tables::States>(STATE).iter() {
+                match state {
+                    Ok(state) => {
+                        states.insert(state.id, (state.owner, state.controller));
+                    }
+                    Err(why) => walked::<tables::States>(why).reached(),
+                }
+            }
+            states
         })
     }
 
     fn country_values<T: TableSchema>(
         &self,
-        view: impl Fn(&Views) -> &SharedView,
+        mask: u64,
         value: impl Fn(&T::Row) -> (u32, i32),
     ) -> crate::triggers::refusal::Resolved<CountryValues> {
         crate::triggers::refusal::Resolved::new(|| {
             crate::triggers::refusal::deferred(|| {
                 let mut out = CountryValues::default();
-                for row in self.rows::<T>(view) {
-                    let (raw, value) = value(row);
+                for row in self.rows::<T>(mask).iter() {
+                    let row = match row {
+                        Ok(row) => row,
+                        Err(why) => {
+                            out.unresolved.get_or_insert_with(|| walked::<T>(why));
+                            continue;
+                        }
+                    };
+                    let (raw, value) = value(&row);
                     match self.slot(raw) {
                         Some(slot) => {
                             out.values.insert(slot, value);
@@ -577,10 +622,7 @@ impl RecordedScopes {
     fn capitals(&self) -> &CountryValues {
         self.capitals
             .get_or_init(|| {
-                self.country_values::<tables::Politics>(
-                    |views| &views.politics,
-                    |row| (row.country, row.capital),
-                )
+                self.country_values::<tables::Politics>(CAPITAL, |row| (row.country, row.capital))
             })
             .value()
     }
@@ -588,10 +630,9 @@ impl RecordedScopes {
     fn overlords(&self) -> &CountryValues {
         self.overlords
             .get_or_init(|| {
-                self.country_values::<tables::CountryAppearance>(
-                    |views| &views.appearance,
-                    |row| (row.country, row.overlord),
-                )
+                self.country_values::<tables::CountryAppearance>(OVERLORD, |row| {
+                    (row.country, row.overlord)
+                })
             })
             .value()
     }
@@ -599,49 +640,31 @@ impl RecordedScopes {
     fn owned(&self) -> &CountryValues {
         self.owned
             .get_or_init(|| {
-                self.country_values::<tables::CountryCounterInputs>(
-                    |views| &views.counters,
-                    |row| (row.country, row.owned_state_count),
-                )
+                self.country_values::<tables::CountryCounterInputs>(OWNED, |row| {
+                    (row.country, row.owned_state_count)
+                })
             })
             .value()
     }
 
     fn characters(&self) -> &CharactersByToken {
-        fn rows<'a, R>(
-            table: replay_data::rows::TableId,
-            view: Option<(
-                replay_frame::frame::OperandStatus<'_>,
-                replay_frame::frame::Rows<'a, R>,
-            )>,
-        ) -> replay_frame::frame::Rows<'a, R> {
-            use replay_frame::frame::OperandStatus;
-            crate::triggers::inputs::unrecorded(|| match view {
-                Some((OperandStatus::Unavailable(_) | OperandStatus::NotRecorded(_), _)) | None => {
-                    crate::triggers::refusal::missing_reference(table, None).resolution_failed();
-                    replay_frame::frame::Rows::empty()
-                }
-                Some((_, rows)) => rows,
-            })
-        }
         self.characters
             .get_or_init(|| {
                 crate::triggers::refusal::Resolved::new(|| {
-                    let lexical = rows(
-                        tables::LexicalTokens::ID,
-                        self.views
-                            .as_ref()
-                            .map(|views| (views.lexical.status(), views.lexical.rows())),
-                    );
-                    let characters = rows(
-                        tables::Characters::ID,
-                        self.views
-                            .as_ref()
-                            .map(|views| (views.characters.status(), views.characters.rows())),
-                    );
+                    let lexical = self.rows::<tables::LexicalTokens>(0);
+                    let characters =
+                        self.rows::<tables::Characters>(CHARACTER);
                     let mut by_token = CharactersByToken::new();
-                    for row in characters {
-                        if let Some(token) = crate::identity::character_script_token(row, lexical) {
+                    for row in characters.iter() {
+                        let row = match row {
+                            Ok(row) => row,
+                            Err(why) => {
+                                walked::<tables::Characters>(why).reached();
+                                continue;
+                            }
+                        };
+                        if let Some(token) = crate::identity::character_script_token_in(&row, lexical)
+                        {
                             by_token
                                 .entry(token.to_ascii_lowercase())
                                 .or_default()
@@ -654,12 +677,20 @@ impl RecordedScopes {
             .value()
     }
 
-    fn faction_members(&self) -> &[FactionMemberRow] {
-        self.rows::<tables::FactionMembers>(|views| &views.faction_members)
+    /// FactionMembers' rows in key order, each read once.
+    fn faction_members(&self) -> impl Iterator<Item = Result<Cow<'a, FactionMemberRow>, Failure>> {
+        self.rows::<tables::FactionMembers>(MEMBER)
+            .iter()
+            .map(|row| row.map_err(walked::<tables::FactionMembers>))
     }
 
-    fn saved_targets(&self) -> &[replay_data::rows::GlobalSavedEventTargetRow] {
-        self.rows::<tables::GlobalSavedEventTargets>(|views| &views.saved_targets)
+    /// GlobalSavedEventTargets' rows in key order, each read once.
+    fn saved_targets(
+        &self,
+    ) -> impl Iterator<Item = Result<Cow<'a, GlobalSavedEventTargetRow>, Failure>> {
+        self.rows::<tables::GlobalSavedEventTargets>(SAVED)
+            .iter()
+            .map(|row| row.map_err(walked::<tables::GlobalSavedEventTargets>))
     }
 
     /// Return the first name match, even when that record is invalid;
@@ -667,7 +698,7 @@ impl RecordedScopes {
     pub(crate) fn saved_target(
         &self,
         name: &[u8],
-    ) -> Result<Option<&replay_data::rows::GlobalSavedEventTargetRow>, Failure> {
+    ) -> Result<Option<Cow<'a, GlobalSavedEventTargetRow>>, Failure> {
         crate::triggers::inputs::query_debug_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::SavedTarget(name.to_vec())),
             || self.saved_target_unrecorded(name),
@@ -677,7 +708,7 @@ impl RecordedScopes {
     fn saved_target_unrecorded(
         &self,
         name: &[u8],
-    ) -> Result<Option<&replay_data::rows::GlobalSavedEventTargetRow>, Failure> {
+    ) -> Result<Option<Cow<'a, GlobalSavedEventTargetRow>>, Failure> {
         if !self.saved_targets_complete {
             return Err(self.input::<tables::GlobalSavedEventTargets>(
                 "",
@@ -692,7 +723,13 @@ impl RecordedScopes {
                 ),
             ));
         }
-        Ok(self.saved_targets().iter().find(|r| r.name == name))
+        for row in self.saved_targets() {
+            let row = row?;
+            if row.name == name {
+                return Ok(Some(row));
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn saved_selection(
@@ -714,7 +751,7 @@ impl RecordedScopes {
         use crate::triggers::saved_event_targets::{Selected, select};
         Ok(self
             .saved_target(name)?
-            .map_or(Selected::Missing, |r| select(r, reader)))
+            .map_or(Selected::Missing, |r| select(&r, reader)))
     }
 
     pub(crate) fn saved_country(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, Failure> {
@@ -947,14 +984,14 @@ impl RecordedScopes {
     }
 
     /// Exact recorded original-tag buckets and physical country-array order.
-    pub fn original_tags(&self) -> &OriginalTagLists {
+    pub fn original_tags(&self) -> &OriginalTagLists<'a> {
         crate::triggers::inputs::query_debug_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OriginalTags),
             || self.original_tags_unrecorded(),
         )
     }
 
-    fn original_tags_unrecorded(&self) -> &OriginalTagLists {
+    fn original_tags_unrecorded(&self) -> &OriginalTagLists<'a> {
         &self.original_tags
     }
 
@@ -1029,12 +1066,11 @@ impl RecordedScopes {
         if slot == 0 {
             return self.original_tags.reserved_faction();
         }
-        if let Some(member) = self
-            .faction_members()
-            .iter()
-            .find(|row| row.country != 0 && self.slot(row.country) == Some(slot))
-        {
-            return Ok(Some(member.faction));
+        for member in self.faction_members() {
+            let member = member?;
+            if member.country != 0 && self.slot(member.country) == Some(slot) {
+                return Ok(Some(member.faction));
+            }
         }
         if !self.faction_members_complete {
             return Err(self.input::<tables::FactionMembers>(
@@ -1046,15 +1082,14 @@ impl RecordedScopes {
                 ),
             ));
         }
-        if let Some(row) = self
-            .faction_members()
-            .iter()
-            .find(|row| row.country != 0 && self.slot(row.country).is_none())
-        {
-            return Err(self.input::<tables::CountryLinks>("canonical_slot", None, format!(
-                "the faction of country slot {slot} is unknown: a FactionMembers row's country link {} resolves to no country: CountryLinks {}",
-                row.country, self.gaps["CountryLinks"]
-            )));
+        for row in self.faction_members() {
+            let row = row?;
+            if row.country != 0 && self.slot(row.country).is_none() {
+                return Err(self.input::<tables::CountryLinks>("canonical_slot", None, format!(
+                    "the faction of country slot {slot} is unknown: a FactionMembers row's country link {} resolves to no country: CountryLinks {}",
+                    row.country, self.gaps["CountryLinks"]
+                )));
+            }
         }
         Ok(None)
     }
@@ -1069,11 +1104,15 @@ impl RecordedScopes {
     }
 
     fn faction_first_raw_unrecorded(&self, faction: u64) -> Result<u32, Failure> {
-        self.faction_members()
-            .iter()
-            .find(|row| row.faction == faction && row.ordinal == 0)
-            .map(|row| row.country)
-            .ok_or_else(|| -> Failure {
+        let mut first = None;
+        for row in self.faction_members() {
+            let row = row?;
+            if row.faction == faction && row.ordinal == 0 {
+                first = Some(row.country);
+                break;
+            }
+        }
+        first.ok_or_else(|| -> Failure {
                 self.input::<tables::FactionMembers>(
                     "",
                     None,
@@ -1197,10 +1236,8 @@ impl RecordedScopes {
                         "character {token}: the scope has no country, which the game requires"
                     )));
                 };
-                if self
-                    .views
-                    .as_deref()
-                    .is_some_and(|views| !views.lexical.status().is_table_complete())
+                if self.frame.is_some()
+                    && !self.complete(tables::LexicalTokens::ID)
                 {
                     return Err(Missing(self.input::<tables::LexicalTokens>(
                         "",
@@ -1415,7 +1452,7 @@ impl RecordedScopes {
     }
 }
 
-impl Names for RecordedScopes {
+impl Names for RecordedScopes<'_> {
     /// A recorded country's tag, or a tag alias, which then
     /// resolves to a named refusal ([`Self::alias`]).
     fn is_country(&self, tag: &str) -> bool {
@@ -1427,16 +1464,9 @@ impl Names for RecordedScopes {
     fn is_character(&self, token: &str) -> bool {
         let found = self.characters().contains_key(&token.to_ascii_lowercase());
         for (complete, table) in [
+            (self.complete(tables::Characters::ID), tables::Characters::ID),
             (
-                self.views
-                    .as_deref()
-                    .is_some_and(|views| views.characters.status().is_table_complete()),
-                tables::Characters::ID,
-            ),
-            (
-                self.views
-                    .as_deref()
-                    .is_some_and(|views| views.lexical.status().is_table_complete()),
+                self.complete(tables::LexicalTokens::ID),
                 tables::LexicalTokens::ID,
             ),
         ] {
@@ -1464,6 +1494,7 @@ mod faction_zero_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use super::*;
+    use replay_frame::frame::DecodedFrame;
     use replay_data::{
         rows::CharacterRow, rows::CountryAppearanceRow, rows::CountryCounterInputRow,
         rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::PoliticsRow,
@@ -1649,12 +1680,15 @@ pub mod tests {
                 rows[1].original_tag_reference = Recorded::Value(Some(100));
                 rows[1].original_tag = Recorded::Value(Some(b"GER".to_vec()));
             }
-            RecordedScopes::read(&frame, Arc::default())
+            frame
         };
-        assert_eq!(counts(1, 3).resolve_tag("GER"), Ok(1));
-        assert_eq!(counts(0, 3).resolve_tag("GER"), Ok(2));
+        let resolve = |frame: DecodedFrame| {
+            RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER")
+        };
+        assert_eq!(resolve(counts(1, 3)), Ok(1));
+        assert_eq!(resolve(counts(0, 3)), Ok(2));
         // No candidate owns a state: the tag's own country.
-        assert_eq!(counts(0, 0).resolve_tag("GER"), Ok(1));
+        assert_eq!(resolve(counts(0, 0)), Ok(1));
         let mut frame = positive_frame();
         *frame.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
             reason: "not sampled".into(),
@@ -1861,7 +1895,8 @@ pub mod tests {
 
     #[test]
     fn scopes_resolve_through_the_recorded_tables_and_refuse_the_rest() {
-        let scopes = RecordedScopes::read(&positive_frame(), Arc::default());
+        let frame = positive_frame();
+        let scopes = RecordedScopes::read(&frame, Arc::default());
         let sov = Context::country(2);
         let resolve = |text: &str, context: &Context| {
             scopes
@@ -1993,7 +2028,8 @@ pub mod tests {
             &[("a.txt", b"SPA = { }")],
             &installed_content_core::key_names::KeyNames::default(),
         );
-        let scopes = RecordedScopes::read(&positive_frame(), Arc::new(aliases));
+        let frame = positive_frame();
+        let scopes = RecordedScopes::read(&frame, Arc::new(aliases));
         let sov = Context::country(2);
         assert_eq!(
             scopes.resolve_text("SPA", false, &sov),
@@ -2010,7 +2046,7 @@ pub mod tests {
             unknown: vec!["common/country_tag_aliases/a.txt: line 2: x".into()],
             ..Default::default()
         };
-        let scopes = RecordedScopes::read(&positive_frame(), Arc::new(short));
+        let scopes = RecordedScopes::read(&frame, Arc::new(short));
         assert!(matches!(
             scopes.resolve_text("XYZ", false, &sov),
             Err(Unresolved::Missing(reason)) if reason.contains("whether it is a tag alias")

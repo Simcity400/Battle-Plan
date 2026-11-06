@@ -2,35 +2,27 @@
 //! branch's series root ([`dashboard_base::prepared::roots`]) read through the store session
 //! the query pinned, as of its last segment before the query's first hole
 //! ([`super::coverage::declared`]), and its directory ([`Directory`]), read once per
-//! publication and kept.
+//! publication and shared while any query holds it open. An open publication holds its root and
+//! interior nodes ([`Pinned`]), which each of its reads starts from.
 
 use super::{coverage, files, roots};
 use crate::{Source, products::ContentOptions};
-use dashboard_series::{Budget, Cache, Identity, Snapshot, StoreRead, family::Directory};
+use dashboard_series::{Identity, Pinned, Snapshot, StoreRead, family::Directory, shared::Shared};
 use std::{
-    collections::HashMap,
     io,
-    sync::{Arc, LazyLock, Mutex, PoisonError, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool},
 };
 
-// Decoded pages every query of these families shares, under one budget.
-static BUDGET: Budget = Budget::new(256 << 20);
-static CACHE: LazyLock<Cache<'static>> = LazyLock::new(|| Cache::new(&BUDGET));
-
-/// Directories kept, by root range, the generation read and schema; dropped whole past this
-/// many bytes.
-const DIRECTORY_BYTES: usize = 64 << 20;
-type Directories = HashMap<([u64; 3], u64, u64), Arc<Directory>>;
-static DIRECTORIES: LazyLock<Mutex<(Directories, usize)>> = LazyLock::new(Mutex::default);
+/// Each open publication's directory, by root range, the generation read and schema.
+static DIRECTORIES: Shared<([u64; 3], u64, u64), Directory> = Shared::new();
 
 /// A family's publication on a branch, as a query reads it.
 pub struct Opened {
     snapshot: store::Snapshot,
     section: String,
-    root: u64,
-    identity: Identity,
     /// The last hour before the query's first hole.
     through: Option<i32>,
+    pinned: Pinned,
     directory: Arc<Directory>,
     /// The root's range and the generation read: equal stamps, equal publications.
     stamp: ([u64; 3], u64),
@@ -44,7 +36,7 @@ fn pinned<'s>(
     identity: Identity,
     through: Option<i32>,
 ) -> io::Result<Option<Snapshot<'s, StoreRead<'s>>>> {
-    let snapshot = Snapshot::open(store, &CACHE, root, identity)?;
+    let snapshot = Snapshot::open(store, root, identity)?;
     match through {
         Some(through) => snapshot.through(through),
         None => Ok(Some(snapshot)),
@@ -85,32 +77,14 @@ impl Opened {
             return Ok(None);
         };
         let held = (range, series.publication().generation, schema);
-        let kept = DIRECTORIES
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .0
-            .get(&held)
-            .cloned();
-        let directory = match kept {
-            Some(directory) => directory,
-            None => {
-                let directory = Arc::new(Directory::read(&mut series, schema)?);
-                let mut kept = DIRECTORIES.lock().unwrap_or_else(PoisonError::into_inner);
-                if kept.1 + directory.bytes() > DIRECTORY_BYTES {
-                    *kept = Default::default();
-                }
-                kept.1 += directory.bytes();
-                kept.0.insert(held, Arc::clone(&directory));
-                directory
-            }
-        };
+        let directory = DIRECTORIES.get_or_make(held, || Directory::read(&mut series, schema))?;
+        let pinned = series.pin()?;
         drop(series);
         Ok(Some(Self {
             snapshot,
             section,
-            root,
-            identity,
             through,
+            pinned,
             directory,
             stamp: (held.0, held.1),
         }))
@@ -137,9 +111,7 @@ impl Opened {
             snapshot: &self.snapshot,
             section: &self.section,
         };
-        let mut snapshot = pinned(store, self.root, self.identity, self.through)?
-            .ok_or_else(|| crate::invalid("A family's pinned segment is missing"))?
-            .with_cancellation(cancelled);
+        let mut snapshot = Snapshot::open_pinned(store, &self.pinned).with_cancellation(cancelled);
         read(&mut snapshot, &self.directory)
     }
 }

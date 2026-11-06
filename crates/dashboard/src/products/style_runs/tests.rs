@@ -4,7 +4,7 @@ use dashboard_base::products::country_styles::{
     CountryFactRuns, CountryFlagChoice, HourStyles, StyleInputs,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -66,12 +66,10 @@ fn build(
     hours: Vec<Hour>,
     cuts: &[i32],
     restarts: &[i32],
-    budget: &Budget,
 ) -> Built {
-    let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = configured.emit();
     let mut root = 0;
     let mut generation = 0;
@@ -85,7 +83,6 @@ fn build(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -99,7 +96,7 @@ fn build(
         if restarts.contains(&cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
             emit = emit::Emit::load(configured, &directory, &saved).unwrap();
         }
@@ -237,11 +234,9 @@ fn the_facts_reply_gives_each_tags_runs_and_flag_choices() {
     let localisation: Localisation = [("GER".to_owned(), "German Reich".to_owned())]
         .into_iter()
         .collect();
-    let budget = Budget::new(64 << 20);
     for restarts in [&[][..], &[103][..]] {
-        let built = build(&configured, hours.clone(), &[103, 106], restarts, &budget);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+        let built = build(&configured, hours.clone(), &[103, 106], restarts);
+        let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
         let cancelled = AtomicBool::new(false);
         let reply = facts_reply(
@@ -383,10 +378,8 @@ fn refused_content_names_its_refusal_in_every_flag() {
             fact((1, 1), Some([1, 2, 3]), ("GER", None), chain(&["GER"])),
         )],
     )];
-    let budget = Budget::new(16 << 20);
-    let built = build(&configured, hours, &[0], &[], &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(&configured, hours, &[0], &[]);
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     let reply = facts_reply(
         &mut snapshot,
@@ -457,10 +450,8 @@ fn fifteen_hundred_countries_keep_their_runs_through_cuts() {
             .collect();
         hours.push(hour(at, true, whole, &named, countries));
     }
-    let budget = Budget::new(256 << 20);
-    let built = build(&configured, hours, &[17, 60, 98, HOURS - 1], &[60], &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(&configured, hours, &[17, 60, 98, HOURS - 1], &[60]);
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     let cancelled = AtomicBool::new(false);
     let reply = facts_reply(

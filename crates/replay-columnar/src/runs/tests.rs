@@ -7,7 +7,6 @@ use crate::{
     walk::State,
     writer::{Coverage, Dictionary as Interned, Evidence, Input, Sample as Sampled, TableWriter},
 };
-use engine_allocation::credit::MemoryBudget;
 
 const UNITS: &[Kind] = &[
     Kind::U32,
@@ -33,13 +32,6 @@ const BROAD: Layout = Layout {
 };
 const RUNS: [(u64, i32, u32); 3] = [(1, 100, 260), (1, 500, 90), (2, 10_000, 130)];
 const SEGMENT: u32 = 37;
-/// The strings a cursor's dictionary holds before it drops those no live cell names.
-const STRINGS: usize = 1 << 20;
-
-/// What a cursor's tables may hold: far more than any fixture's.
-fn tables_memory() -> MemoryBudget {
-    MemoryBudget::new(1 << 30)
-}
 
 fn schema() -> Vec<Vec<Kind>> {
     [UNITS, READS, WIDE, OTHER]
@@ -659,21 +651,12 @@ fn seeks_hold_what_walking_held_at_every_hour() {
     let runs = churned(&RUNS);
     for layout in [NARROW, BROAD] {
         let (index, memory) = segmented(layout, &runs);
-        // A dictionary held to a few bytes drops what no live cell names at every move.
-        for (workers, strings) in [(1, STRINGS), (3, 64)] {
-            let mut cursor = Cursor::new(
-                &index,
-                schema(),
-                &INDEXED,
-                workers,
-                strings,
-                tables_memory(),
-            )
-            .unwrap();
+        for workers in [1, 3] {
+            let mut cursor = Cursor::new(&index, schema(), &INDEXED, workers).unwrap();
             for (number, run) in (0..).zip(&runs) {
                 for ordinal in 0..run.reads.len() as u32 {
                     cursor
-                        .seek(&index, &memory, number, ordinal, &|| {}, &|| false)
+                        .seek(&index, &memory, number, ordinal, &|| {})
                         .unwrap();
                     assert_eq!(cursor.fresh(), ordinal == 0);
                     holds(&cursor, run, ordinal);
@@ -685,7 +668,7 @@ fn seeks_hold_what_walking_held_at_every_hour() {
                 let run = &runs[number as usize];
                 let ordinal = random.below(run.reads.len() as u64) as u32;
                 cursor
-                    .seek(&index, &memory, number, ordinal, &|| {}, &|| false)
+                    .seek(&index, &memory, number, ordinal, &|| {})
                     .unwrap();
                 holds(&cursor, run, ordinal);
             }
@@ -705,12 +688,11 @@ fn a_withheld_table_is_indexed_as_holding_nothing() {
             let starts = segments(run.reads.len() as u32, SEGMENT);
             pieces_withholding(layout, number, run, &starts, None, Some(WITHHELD))
         });
-        let mut cursor =
-            Cursor::new(&index, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+        let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1).unwrap();
         for (number, run) in (0..).zip(&runs) {
             for ordinal in 0..run.reads.len() as u32 {
                 cursor
-                    .seek(&index, &memory, number, ordinal, &|| {}, &|| false)
+                    .seek(&index, &memory, number, ordinal, &|| {})
                     .unwrap();
                 cursor.withhold(WITHHELD, Some("withheld by its format")).unwrap();
                 let state = cursor.state();
@@ -778,10 +760,10 @@ fn a_page_holding_no_cell_of_a_live_row_is_refused() {
     let refused = |error: io::Error| assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     // No slot, no unrecorded cell and no change: key 1's value would read as a recorded zero.
     let empty = replaced(&index, &mut memory, &[0, 0, 0], 0);
-    let mut cursor = Cursor::new(&empty, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+    let mut cursor = Cursor::new(&empty, schema(), &INDEXED, 1).unwrap();
     refused(
         cursor
-            .seek(&empty, &memory, 0, 0, &|| {}, &|| false)
+            .seek(&empty, &memory, 0, 0, &|| {})
             .unwrap_err(),
     );
     refused(rows_at(&empty, &memory, 0, 0, 0, &[1]).unwrap_err());
@@ -789,9 +771,9 @@ fn a_page_holding_no_cell_of_a_live_row_is_refused() {
     let short = replaced(&index, &mut memory, &[1, 0, 1, 0], 0);
     for path in [&[0, 1][..], &[1]] {
         let mut cursor =
-            Cursor::new(&short, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+            Cursor::new(&short, schema(), &INDEXED, 1).unwrap();
         for &ordinal in path {
-            let moved = cursor.seek(&short, &memory, 0, ordinal, &|| {}, &|| false);
+            let moved = cursor.seek(&short, &memory, 0, ordinal, &|| {});
             match ordinal {
                 0 => {
                     moved.unwrap();
@@ -825,37 +807,36 @@ fn a_difference_with_no_cell_set_before_is_refused() {
     let refused = |error: io::Error| assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     // Key 1's value, 1, at ordinal 0; at ordinal 1 a zero difference at key 2's slot.
     let moved = replaced(&index, &mut memory, &[1, 0, 1, 3, 1, 2, 12, 0], 1);
-    let mut cursor = Cursor::new(&moved, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+    let mut cursor = Cursor::new(&moved, schema(), &INDEXED, 1).unwrap();
     cursor
-        .seek(&moved, &memory, 0, 0, &|| {}, &|| false)
+        .seek(&moved, &memory, 0, 0, &|| {})
         .unwrap();
     holds(&cursor, &runs[0], 0);
     refused(
         cursor
-            .seek(&moved, &memory, 0, 1, &|| {}, &|| false)
+            .seek(&moved, &memory, 0, 1, &|| {})
             .unwrap_err(),
     );
-    let mut fresh = Cursor::new(&moved, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+    let mut fresh = Cursor::new(&moved, schema(), &INDEXED, 1).unwrap();
     refused(
         fresh
-            .seek(&moved, &memory, 0, 1, &|| {}, &|| false)
+            .seek(&moved, &memory, 0, 1, &|| {})
             .unwrap_err(),
     );
     refused(rows_at(&moved, &memory, 0, 1, 0, &[2]).unwrap_err());
     // The same page setting key 2's value whole at ordinal 1 is read as written.
     let set = replaced(&index, &mut memory, &[1, 0, 1, 3, 1, 2, 8, 2], 1);
-    let mut cursor = Cursor::new(&set, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+    let mut cursor = Cursor::new(&set, schema(), &INDEXED, 1).unwrap();
     for ordinal in [0, 1, 0, 1] {
         cursor
-            .seek(&set, &memory, 0, ordinal, &|| {}, &|| false)
+            .seek(&set, &memory, 0, ordinal, &|| {})
             .unwrap();
         holds(&cursor, &runs[0], ordinal);
     }
 }
 
-/// A slot count is admitted only as far as the blocks its table's strips hold, and only as far
-/// as its cursor's memory: an index naming slots no strip holds is refused as it is read, and
-/// one held in memory is refused before its tables grow.
+/// A slot count is admitted only as far as the blocks its table's strips hold: an index naming
+/// slots no strip holds is refused as it is read.
 #[test]
 fn a_slot_count_past_its_strips_is_refused_before_tables_grow() {
     let runs = [churn(1, 0, 3, |_| vec![plain(1)])];
@@ -871,23 +852,11 @@ fn a_slot_count_past_its_strips_is_refused_before_tables_grow() {
     wider.runs[0].series[0].slots[0].1 = NARROW.block + 1;
     assert!(Index::read(&wider.write().unwrap(), &schema()).is_err());
     assert!(Index::read(&index.write().unwrap(), &schema()).unwrap() == index);
-    let budget = MemoryBudget::new(1 << 20);
-    let mut cursor =
-        Cursor::new(&inflated, schema(), &INDEXED, 1, STRINGS, budget.clone()).unwrap();
-    let error = cursor
-        .seek(&inflated, &memory, 0, 0, &|| {}, &|| false)
-        .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-    assert!(budget.peak() <= 1 << 20);
-    // The same budget holds the index as written.
-    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1, STRINGS, budget.clone()).unwrap();
+    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1).unwrap();
     for ordinal in [0, 2, 1] {
-        cursor
-            .seek(&index, &memory, 0, ordinal, &|| {}, &|| false)
-            .unwrap();
+        cursor.seek(&index, &memory, 0, ordinal, &|| {}).unwrap();
         holds(&cursor, &runs[0], ordinal);
     }
-    assert!(budget.used() > 0);
 }
 
 /// A page's changes lie within the ordinals its directory entry names: a page whose changes
@@ -913,23 +882,23 @@ fn a_page_whose_changes_disagree_with_its_directory_is_refused() {
     };
     let refused = |error: io::Error| assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     let early = with_last(0);
-    let mut cursor = Cursor::new(&early, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+    let mut cursor = Cursor::new(&early, schema(), &INDEXED, 1).unwrap();
     for ordinal in [1, 0] {
         refused(
             cursor
-                .seek(&early, &memory, 0, ordinal, &|| {}, &|| false)
+                .seek(&early, &memory, 0, ordinal, &|| {})
                 .unwrap_err(),
         );
     }
     let late = with_last(2);
-    let mut cursor = Cursor::new(&late, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+    let mut cursor = Cursor::new(&late, schema(), &INDEXED, 1).unwrap();
     cursor
-        .seek(&late, &memory, 0, 0, &|| {}, &|| false)
+        .seek(&late, &memory, 0, 0, &|| {})
         .unwrap();
     holds(&cursor, &runs[0], 0);
     refused(
         cursor
-            .seek(&late, &memory, 0, 2, &|| {}, &|| false)
+            .seek(&late, &memory, 0, 2, &|| {})
             .unwrap_err(),
     );
     assert!(Index::read(&with_last(3).write().unwrap(), &schema()).is_err());
@@ -975,13 +944,30 @@ fn a_key_back_in_an_earlier_block_is_found_at_its_new_slot() {
     let (index, memory) = segmented(layout, &runs);
     for path in [&[3, 4, 2][..], &[4, 0, 3, 1, 4]] {
         let mut cursor =
-            Cursor::new(&index, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+            Cursor::new(&index, schema(), &INDEXED, 1).unwrap();
         for &ordinal in path {
             cursor
-                .seek(&index, &memory, 0, ordinal, &|| {}, &|| false)
+                .seek(&index, &memory, 0, ordinal, &|| {})
                 .unwrap();
             holds(&cursor, &runs[0], ordinal);
         }
+    }
+}
+
+/// A slot a page's base did not cover, first written after a delta gave the page's integers a
+/// last difference, is written whole and read back.
+#[test]
+fn a_slot_past_the_base_after_a_delta_is_written_whole() {
+    let runs = [churn(1, 0, 3, |ordinal| match ordinal {
+        0 => vec![plain(1)],
+        1 => vec![Unit { value: 5, ..plain(1) }],
+        _ => vec![Unit { value: 5, ..plain(1) }, plain(2)],
+    })];
+    let (index, memory) = segmented(BROAD, &runs);
+    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1).unwrap();
+    for ordinal in 0..3 {
+        cursor.seek(&index, &memory, 0, ordinal, &|| {}).unwrap();
+        holds(&cursor, &runs[0], ordinal);
     }
 }
 
@@ -1030,10 +1016,10 @@ fn a_value_written_to_most_of_a_block_is_one_change() {
     assert!(fills >= 30, "{fills} fills");
     assert!(cells < fills * 16, "{cells} cells beside {fills} fills");
     let (index, memory) = segmented(BROAD, &runs);
-    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1).unwrap();
     for ordinal in [5, 6, 7, 36, 42, 200, 41, 6] {
         cursor
-            .seek(&index, &memory, 0, ordinal, &|| {}, &|| false)
+            .seek(&index, &memory, 0, ordinal, &|| {})
             .unwrap();
         holds(&cursor, &runs[0], ordinal);
     }
@@ -1122,10 +1108,10 @@ fn growing_lists_and_steady_steps_are_written_as_what_changed() {
         }
     }
     let (index, memory) = segmented(layout, &runs);
-    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1).unwrap();
     for ordinal in [0, 1, 2, 3, 50, 51, 119, 7, 118, 119] {
         cursor
-            .seek(&index, &memory, 0, ordinal, &|| {}, &|| false)
+            .seek(&index, &memory, 0, ordinal, &|| {})
             .unwrap();
         holds(&cursor, &runs[0], ordinal);
     }
@@ -1174,10 +1160,10 @@ fn moves_name_every_row_and_cell_that_differs() {
     let runs = churned(&RUNS[..1]);
     let run = &runs[0];
     let (index, memory) = segmented(NARROW, &runs);
-    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 2, STRINGS, tables_memory()).unwrap();
+    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 2).unwrap();
     let mut random = Random(7);
     cursor
-        .seek(&index, &memory, 0, 0, &|| {}, &|| false)
+        .seek(&index, &memory, 0, 0, &|| {})
         .unwrap();
     let mut from = 0_u32;
     for step in 0..400 {
@@ -1187,7 +1173,7 @@ fn moves_name_every_row_and_cell_that_differs() {
             random.below(run.reads.len() as u64) as u32
         };
         cursor
-            .seek(&index, &memory, 0, to, &|| {}, &|| false)
+            .seek(&index, &memory, 0, to, &|| {})
             .unwrap();
         for (at, &table) in INDEXED.iter().enumerate() {
             names_every_difference(
@@ -1238,18 +1224,18 @@ fn segments_written_apart_stitch_into_the_index_one_walk_writes() {
         pieces(NARROW, number, run, &[0], None)
     });
     let mut cursors = [
-        Cursor::new(&serial.0, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap(),
-        Cursor::new(&whole.0, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap(),
+        Cursor::new(&serial.0, schema(), &INDEXED, 1).unwrap(),
+        Cursor::new(&whole.0, schema(), &INDEXED, 1).unwrap(),
     ];
     let mut random = Random(3);
     for _ in 0..300 {
         let number = random.below(runs.len() as u64) as u32;
         let ordinal = random.below(runs[number as usize].reads.len() as u64) as u32;
         cursors[0]
-            .seek(&serial.0, &serial.1, number, ordinal, &|| {}, &|| false)
+            .seek(&serial.0, &serial.1, number, ordinal, &|| {})
             .unwrap();
         cursors[1]
-            .seek(&whole.0, &whole.1, number, ordinal, &|| {}, &|| false)
+            .seek(&whole.0, &whole.1, number, ordinal, &|| {})
             .unwrap();
         holds(&cursors[0], &runs[number as usize], ordinal);
         holds(&cursors[1], &runs[number as usize], ordinal);
@@ -1265,13 +1251,13 @@ fn a_seek_reads_one_page_per_strip_whatever_the_recording_s_length() {
         let runs = churned(&[(1, 100, ordinals)]);
         let (index, memory) = segmented(NARROW, &runs);
         let mut cursor =
-            Cursor::new(&index, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+            Cursor::new(&index, schema(), &INDEXED, 1).unwrap();
         let mut random = Random(11);
         let (mut pages, mut bytes) = (0, 0);
         for _ in 0..400 {
             let ordinal = random.below(u64::from(ordinals)) as u32;
             cursor
-                .seek(&index, &memory, 0, ordinal, &|| {}, &|| false)
+                .seek(&index, &memory, 0, ordinal, &|| {})
                 .unwrap();
             let strips: usize = INDEXED
                 .iter()
@@ -1401,139 +1387,12 @@ fn holds_the_fill(cursor: &Cursor) -> bool {
     (0..64).all(|slot| opaque.cell(slot) == Some(Cell::Opaque(&big)))
 }
 
-/// A page's cells are admitted to their cursor's memory before they are held: a fill of a
-/// mebibyte into every cell of a block is refused by name, holding nothing after, by a budget
-/// short of what it expands to, before a cell of it is set; and is held within one that is not,
-/// as the page a strip keeps for its changes is, until the cells shrink and give it back.
+/// A fill of a mebibyte sets every cell of its block.
 #[test]
-fn a_fill_s_cells_are_admitted_before_they_are_held() {
+fn a_fill_sets_every_cell_of_its_block() {
     let (index, memory) = filled();
-    let short = MemoryBudget::new(16 * MEBIBYTE);
-    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 2, STRINGS, short.clone()).unwrap();
-    cursor
-        .seek(&index, &memory, 0, 0, &|| {}, &|| false)
-        .unwrap();
-    // The strip keeps its page for the fill still to come.
-    assert!(short.used() >= MEBIBYTE, "{}", short.used());
-    let error = cursor
-        .seek(&index, &memory, 0, 1, &|| {}, &|| false)
-        .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-    assert!(beyond_memory(&error), "{error}");
-    assert_eq!(short.used(), 0);
-    let ample = MemoryBudget::new(256 * MEBIBYTE);
-    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 2, STRINGS, ample.clone()).unwrap();
-    cursor
-        .seek(&index, &memory, 0, 1, &|| {}, &|| false)
-        .unwrap();
+    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 2).unwrap();
+    cursor.seek(&index, &memory, 0, 0, &|| {}).unwrap();
+    cursor.seek(&index, &memory, 0, 1, &|| {}).unwrap();
     assert!(holds_the_fill(&cursor));
-    assert!(ample.used() >= 64 * MEBIBYTE, "{}", ample.used());
-    cursor
-        .seek(&index, &memory, 0, 0, &|| {}, &|| false)
-        .unwrap();
-    assert!(ample.used() < 8 * MEBIBYTE, "{}", ample.used());
-}
-
-/// A move its memory is short for while another holder holds it waits for it, holding nothing
-/// meanwhile, and goes on once that is released; asked to stop while it waits, it stops,
-/// holding nothing.
-#[test]
-fn a_move_short_of_memory_waits_for_it_holding_nothing() {
-    let (index, memory) = filled();
-    let budget = MemoryBudget::new(96 * MEBIBYTE);
-    let other = budget.admit(64 * MEBIBYTE).unwrap();
-    let mut cursor = Cursor::new(&index, schema(), &INDEXED, 1, STRINGS, budget.clone()).unwrap();
-    let stopped = cursor
-        .seek(&index, &memory, 0, 1, &|| {}, &|| true)
-        .unwrap_err();
-    assert_eq!(stopped.kind(), io::ErrorKind::Interrupted);
-    assert_eq!(budget.used(), 64 * MEBIBYTE);
-    let (waiting, waited) = std::sync::mpsc::channel();
-    std::thread::scope(|scope| {
-        let (cursor, index, memory) = (&mut cursor, &index, &memory);
-        let mover = scope.spawn(move || {
-            cursor.seek(index, memory, 0, 1, &|| {}, &|| {
-                let _ = waiting.send(());
-                false
-            })
-        });
-        waited.recv().unwrap();
-        assert_eq!(budget.used(), 64 * MEBIBYTE);
-        drop(other);
-        mover.join().unwrap().unwrap();
-    });
-    assert!(holds_the_fill(&cursor));
-    assert!(budget.used() >= 64 * MEBIBYTE, "{}", budget.used());
-}
-
-#[test]
-fn a_share_gives_back_what_it_drops_and_needs_only_what_it_was_refused() {
-    let ledger = Arc::new(cell::Ledger::new(MemoryBudget::new(1 << 20)));
-    let mut first = cell::Share::of(&ledger).unwrap();
-    let mut second = cell::Share::of(&ledger).unwrap();
-    ledger.begin();
-    first.take(768 << 10).unwrap();
-    first.give(640 << 10);
-    // What the first dropped went back, so the second's fill fits beside what it still holds.
-    second.take(768 << 10).unwrap();
-    let error = second.take(512 << 10).unwrap_err();
-    assert!(cell::short_of(&error));
-    // Needed at once: what both held when the second was refused, and what it asked for.
-    assert_eq!(ledger.peak(), (128 << 10) + (768 << 10) + (512 << 10));
-}
-
-#[test]
-fn a_retry_recycles_every_byte_a_share_drops_into_what_it_waited_for() {
-    let ledger = Arc::new(cell::Ledger::new(MemoryBudget::new(1 << 20)));
-    let mut first = cell::Share::of(&ledger).unwrap();
-    let mut second = cell::Share::of(&ledger).unwrap();
-    ledger.begin();
-    // The retry waited for exactly what the move needed at once.
-    *ledger.spare.lock().unwrap() = Some(ledger.budget.admit(1 << 20).unwrap());
-    first.take(10 << 10).unwrap();
-    first.give(9 << 10);
-    // What the first dropped is the second's: the whole move fits what was waited for.
-    second.take(1023 << 10).unwrap();
-    assert_eq!(ledger.peak(), 1 << 20);
-}
-
-#[test]
-fn a_move_needs_the_most_its_workers_held_and_asked_for_at_once() {
-    let ledger = Arc::new(cell::Ledger::new(MemoryBudget::new(1 << 20)));
-    let mut first = cell::Share::of(&ledger).unwrap();
-    let mut second = cell::Share::of(&ledger).unwrap();
-    ledger.begin();
-    *ledger.spare.lock().unwrap() = Some(ledger.budget.admit(640 << 10).unwrap());
-    first.take(768 << 10).unwrap();
-    let error = second.take(512 << 10).unwrap_err();
-    assert!(cell::short_of(&error));
-    // The first worker unwinding before the move gives up does not shrink what it needed.
-    first.give(640 << 10);
-    assert_eq!(ledger.peak(), (768 << 10) + (512 << 10));
-}
-
-#[test]
-fn a_dropped_share_leaves_the_ledger_with_what_it_held() {
-    let ledger = Arc::new(cell::Ledger::new(MemoryBudget::new(1 << 20)));
-    let mut kept = cell::Share::of(&ledger).unwrap();
-    let mut dropped = cell::Share::of(&ledger).unwrap();
-    dropped.take(256 << 10).unwrap();
-    drop(dropped);
-    ledger.begin();
-    kept.take(900 << 10).unwrap();
-    // A move after a worker is dropped needs only what the shares still there hold.
-    assert_eq!(ledger.peak(), 900 << 10);
-}
-
-#[test]
-fn in_a_retry_a_share_takes_exactly_what_it_holds() {
-    let ledger = Arc::new(cell::Ledger::new(MemoryBudget::new(1 << 20)));
-    let mut share = cell::Share::of(&ledger).unwrap();
-    ledger.begin();
-    *ledger.spare.lock().unwrap() = Some(ledger.budget.admit(4 << 10).unwrap());
-    share.take(4 << 10).unwrap();
-    share.take(10).unwrap();
-    // No grain past what it holds: a retry's credit is its demand.
-    assert_eq!(ledger.budget.used(), (4 << 10) + 10);
-    assert_eq!(ledger.peak(), (4 << 10) + 10);
 }

@@ -289,6 +289,22 @@ impl ShipHistory {
             }
         }
     }
+    /// Hours from its next on were lost from the recording: every occurrence still waiting for
+    /// a country is dropped with them, so no revision of one counts after them, and its next
+    /// reads begin a stretch as its branch's first did: a running tally counts nothing sunk or
+    /// read before them, and the next convoy read is a baseline.
+    pub(crate) fn lost(&mut self) {
+        self.prepared_pending.clear();
+        self.prepared_references = None;
+        let scan = &mut self.scan;
+        scan.unresolved.clear();
+        scan.uncertain_victims.clear();
+        scan.uncertain_attackers.clear();
+        scan.uncertain_convoy_owners.clear();
+        scan.uncertain_convoy_killers.clear();
+        scan.stretch_ship_read = None;
+        scan.stretch_convoy_read = None;
+    }
     pub fn prepared_scope_changed(&self) -> bool {
         self.countries.changed
     }

@@ -15,15 +15,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use replay_data::{
-    rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
-    rows::ReservedCountryNamingRow, rows::TableId, rows::TableSchema, rows::tables,
+use std::borrow::Cow;
+
+use replay_data::rows::{
+    AutonomyRow, CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow,
+    PoliticsRow, ReservedCountryNamingRow, RowCodec, TableId, TableSchema, mask, tables,
 };
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
-use replay_frame::frame::TableView;
+use replay_frame::frame::{Rowset, Tables};
 
 use crate::localisation::{Argument, Localisation};
+
+#[path = "country_names/tables.rs"]
+mod table_reads;
+pub use table_reads::original_or_own_tag as original_or_own_tag_tables;
 
 /// Every table the resolver reads, for a reader that reconstructs only those.
 pub const TABLES: [TableId; 7] = [
@@ -244,10 +250,7 @@ impl<'a> CountryNames<'a> {
     }
     /// Reads the operands of every country in `frame`. A country whose inputs
     /// are missing this hour keeps the reason instead of a name.
-    pub fn read(
-        frame: &dyn replay_frame::frame::DecodedSource,
-        localisation: &'a Localisation,
-    ) -> Self {
+    pub fn read<F: Tables + ?Sized>(frame: &F, localisation: &'a Localisation) -> Self {
         let (operands, reserved_built) = Self::recorded_operands(frame);
         Self::recorded(localisation, operands, reserved_built)
     }
@@ -255,8 +258,8 @@ impl<'a> CountryNames<'a> {
     /// Every country's operands at `frame`'s hour, slot zero's among them, and which of slot
     /// zero's names its reserved row has built, as [`Self::read`] reads them: kept, they name
     /// later through [`Self::recorded`].
-    pub fn recorded_operands(
-        frame: &dyn replay_frame::frame::DecodedSource,
+    pub fn recorded_operands<F: Tables + ?Sized>(
+        frame: &F,
     ) -> (BTreeMap<u32, Result<Operands, String>>, Option<u8>) {
         let mut operands = operands(frame);
         operands.insert(0, reserved_zero(frame));
@@ -281,8 +284,8 @@ impl<'a> CountryNames<'a> {
     /// Reads only the requested canonical slots and their overlords. Raw table
     /// keys are sorted; canonical aliases retain the last Countries row, as
     /// [`Self::read`] does. Names are built the same way.
-    pub fn read_selected(
-        frame: &dyn replay_frame::frame::DecodedSource,
+    pub fn read_selected<F: Tables + ?Sized>(
+        frame: &F,
         localisation: &'a Localisation,
         slots: impl IntoIterator<Item = u32>,
     ) -> Self {
@@ -298,22 +301,20 @@ impl<'a> CountryNames<'a> {
         } else {
             None
         };
-        if let Ok(countries) = frame.complete::<tables::Countries>() {
-            let links = links(frame);
-            let by_slot = |slot: u32| {
-                countries
-                    .iter()
-                    .rev()
-                    .find(|row| row.canonical_slot == slot)
-            };
+        if let Some(inputs) = Inputs::read(frame) {
             while let Some(slot) = pending.pop() {
                 if operands.contains_key(&slot) {
                     continue;
                 }
-                let Some(country) = by_slot(slot) else {
-                    continue;
+                let country = match inputs.country(slot) {
+                    Ok(Some(country)) => country,
+                    Ok(None) => continue,
+                    Err(reason) => {
+                        operands.insert(slot, Err(reason));
+                        continue;
+                    }
                 };
-                let input = country_operands(frame, &by_slot, &links, country);
+                let input = inputs.operands(&country);
                 if let Some(overlord) = input.as_ref().ok().and_then(|input| input.overlord) {
                     pending.push(overlord);
                 }
@@ -515,13 +516,18 @@ fn unscripted(key: &str, text: String) -> Result<String, String> {
     Ok(text)
 }
 
-/// The rows a table holds this hour and whether that is all of them.
-fn partial<T: TableSchema>(frame: &dyn replay_frame::frame::DecodedSource) -> (&[T::Row], bool) {
-    match frame.view(T::ID.index()) {
-        TableView::Complete(rows) => (rows.rows::<T>().unwrap_or(&[]), true),
-        TableView::Truncated { rows, .. } => (rows.rows::<T>().unwrap_or(&[]), false),
-        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => (&[], false),
+/// The rows a table holds this hour, each of the fields `mask` names, and whether that is all
+/// of them.
+fn partial<F: Tables + ?Sized, T: TableSchema>(frame: &F, mask: u64) -> (Rowset<'_, T::Row>, bool) {
+    match frame.rows::<T>(mask) {
+        Some(rows) => (rows, frame.table_status(T::ID).is_table_complete()),
+        None => (Rowset::Decoded(&[]), false),
     }
+}
+
+/// The row keyed `key`, or why it cannot be built.
+fn keyed<'f, R: RowCodec>(rows: &Rowset<'f, R>, key: u128) -> Result<Option<Cow<'f, R>>, String> {
+    rows.get(key).map_err(|why| why.to_string())
 }
 
 /// Flag file keys in lookup order: `<cosmetic>_<group>`, `<cosmetic>`, then
@@ -550,64 +556,115 @@ fn text(bytes: &[u8], what: &str) -> Result<String, String> {
     String::from_utf8(bytes.to_vec()).map_err(|_| format!("{what} is not UTF-8"))
 }
 
-fn reserved_zero_row(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<&ReservedCountryNamingRow, String> {
+fn reserved_zero_row<F: Tables + ?Sized>(
+    frame: &F,
+) -> Result<Cow<'_, ReservedCountryNamingRow>, String> {
     let rows = frame
-        .complete::<tables::ReservedCountryNaming>()
+        .complete_rows::<tables::ReservedCountryNaming>(RESERVED)
         .map_err(|why| format!("ReservedCountryNaming is unavailable this hour: {why}"))?;
-    match rows {
-        [row] => Ok(row),
+    let mut rows = rows.iter();
+    match (rows.next(), rows.next()) {
+        (Some(row), None) => row.map_err(|why| why.to_string()),
         _ => Err("ReservedCountryNaming has no singleton row for country zero".into()),
     }
 }
 
-/// Raw zero's tag comes from the reserved country database row.
+/// `bytes` as text: borrowed where the row is the frame's, else owned.
+fn row_text<'f, R: Clone>(
+    row: Cow<'f, R>,
+    bytes: impl Fn(&R) -> &[u8],
+    what: &str,
+) -> Result<Cow<'f, str>, String> {
+    let utf8 = || format!("{what} is not UTF-8");
+    match row {
+        Cow::Borrowed(row) => std::str::from_utf8(bytes(row))
+            .map(Cow::Borrowed)
+            .map_err(|_| utf8()),
+        Cow::Owned(row) => std::str::from_utf8(bytes(&row))
+            .map(|text| Cow::Owned(text.to_owned()))
+            .map_err(|_| utf8()),
+    }
+}
+
+/// A decoded frame's text, which it lends.
+fn lent(text: Result<Cow<'_, str>, String>) -> Result<&str, String> {
+    match text? {
+        Cow::Borrowed(text) => Ok(text),
+        Cow::Owned(_) => Err("a decoded frame's tag was not lent".into()),
+    }
+}
+
+/// [`reserved_zero_tag_in`] of a decoded frame, borrowed from its row.
 pub fn reserved_zero_tag(frame: &dyn replay_frame::frame::DecodedSource) -> Result<&str, String> {
-    std::str::from_utf8(&reserved_zero_row(frame)?.tag)
-        .map_err(|_| "reserved country tag is not UTF-8".into())
+    lent(reserved_zero_tag_in(frame))
+}
+
+/// [`reserved_zero_original_tag_in`] of a decoded frame, borrowed from its row.
+pub fn reserved_zero_original_tag(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<&str, String> {
+    lent(reserved_zero_original_tag_in(frame))
+}
+
+/// [`original_or_own_tag_in`] of a decoded frame, borrowed from its rows.
+pub fn original_or_own_tag(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    slot: u32,
+) -> Result<&str, String> {
+    lent(original_or_own_tag_in(frame, slot))
+}
+
+/// Raw zero's tag comes from the reserved country database row.
+pub fn reserved_zero_tag_in<F: Tables + ?Sized>(frame: &F) -> Result<Cow<'_, str>, String> {
+    row_text(reserved_zero_row(frame)?, |row| &row.tag, "reserved country tag")
 }
 
 /// Resolve the reserved row's original-or-own tag from its recorded bytes.
 /// The name generator's dynamic-only `name_tag` is a separate witness.
-pub fn reserved_zero_original_tag(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> Result<&str, String> {
+pub fn reserved_zero_original_tag_in<F: Tables + ?Sized>(
+    frame: &F,
+) -> Result<Cow<'_, str>, String> {
     let row = reserved_zero_row(frame)?;
     let reference = row
         .original_tag_reference
         .require("ReservedCountryNaming.original_tag_reference")?
         .ok_or("ReservedCountryNaming.original_tag_reference capture refused")?;
-    let bytes = if reference > 0 {
+    if reference > 0 {
         row.original_tag
             .require("ReservedCountryNaming.original_tag")?
             .as_ref()
-            .ok_or("ReservedCountryNaming.original_tag capture refused")?
-    } else {
-        &row.tag
-    };
-    std::str::from_utf8(bytes).map_err(|_| "reserved original-or-own tag is not UTF-8".into())
+            .ok_or("ReservedCountryNaming.original_tag capture refused")?;
+    }
+    row_text(
+        row,
+        |row| match (reference > 0, row.original_tag.require("")) {
+            (true, Ok(Some(tag))) => tag,
+            _ => &row.tag,
+        },
+        "reserved original-or-own tag",
+    )
 }
 
 /// Exact original-or-own tag bytes for a canonical country slot.
 /// Zero has its own authenticated singleton, outside the positive census.
-pub fn original_or_own_tag(
-    frame: &dyn replay_frame::frame::DecodedSource,
+pub fn original_or_own_tag_in<F: Tables + ?Sized>(
+    frame: &F,
     slot: u32,
-) -> Result<&str, String> {
+) -> Result<Cow<'_, str>, String> {
     if slot == 0 {
-        return reserved_zero_original_tag(frame);
+        return reserved_zero_original_tag_in(frame);
     }
-    let (country, row) = original_rows(frame, slot)?;
-    original_tag(country, row)
+    match original_rows(frame, slot)? {
+        (Cow::Borrowed(country), Cow::Borrowed(row)) => {
+            original_tag(country, row).map(Cow::Borrowed)
+        }
+        (country, row) => original_tag(&country, &row).map(|tag| Cow::Owned(tag.to_owned())),
+    }
 }
 
 /// Selected signed original-or-own tag word. This numeric getter does not
 /// require the separately optional tag-string payload.
-pub fn original_or_own_reference(
-    frame: &dyn replay_frame::frame::DecodedSource,
-    slot: u32,
-) -> Result<i32, String> {
+pub fn original_or_own_reference<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<i32, String> {
     if slot == 0 {
         let raw = reserved_zero_row(frame)?
             .original_tag_reference
@@ -627,24 +684,34 @@ pub fn original_or_own_reference(
     }
 }
 
-fn original_rows(
-    frame: &dyn replay_frame::frame::DecodedSource,
+/// The last Countries row of `slot`, and its CountryAppearance row.
+#[allow(clippy::type_complexity)]
+fn original_rows<F: Tables + ?Sized>(
+    frame: &F,
     slot: u32,
-) -> Result<(&CountryRow, &CountryAppearanceRow), String> {
-    let (countries, countries_complete) = partial::<tables::Countries>(frame);
-    let country = countries
-        .iter()
-        .rev()
-        .find(|country| country.canonical_slot == slot)
-        .ok_or_else(|| {
-            if countries_complete {
-                format!("country slot {slot} has no Countries row")
-            } else {
-                format!("Countries is incomplete this hour: country slot {slot} is unknown")
-            }
-        })?;
-    let (appearance, appearance_complete) = partial::<tables::CountryAppearance>(frame);
-    let row = last_by_key(appearance, country.id, |row| row.country).ok_or_else(|| {
+) -> Result<(Cow<'_, CountryRow>, Cow<'_, CountryAppearanceRow>), String> {
+    let (countries, countries_complete) = partial::<F, tables::Countries>(frame, COUNTRY);
+    let mut last = None;
+    for row in countries.with_mask(SLOT).iter() {
+        let row = row.map_err(|why| why.to_string())?;
+        if row.canonical_slot == slot {
+            last = Some(row.key());
+        }
+    }
+    let country = match last {
+        Some(key) => keyed(&countries, key)?,
+        None => None,
+    }
+    .ok_or_else(|| {
+        if countries_complete {
+            format!("country slot {slot} has no Countries row")
+        } else {
+            format!("Countries is incomplete this hour: country slot {slot} is unknown")
+        }
+    })?;
+    let (appearance, appearance_complete) =
+        partial::<F, tables::CountryAppearance>(frame, APPEARANCE);
+    let row = keyed(&appearance, u128::from(country.id))?.ok_or_else(|| {
         if appearance_complete {
             format!("country slot {slot} has no CountryAppearance row")
         } else {
@@ -656,7 +723,7 @@ fn original_rows(
 
 /// Slot zero's naming operands from its dedicated singleton. These operands
 /// never admit zero into Countries, CountryLinks or CountryAppearance.
-pub fn reserved_zero(frame: &dyn replay_frame::frame::DecodedSource) -> Result<Operands, String> {
+pub fn reserved_zero<F: Tables + ?Sized>(frame: &F) -> Result<Operands, String> {
     let row = reserved_zero_row(frame)?;
     let tag = if row.name_tag.is_empty() {
         &row.tag
@@ -665,10 +732,10 @@ pub fn reserved_zero(frame: &dyn replay_frame::frame::DecodedSource) -> Result<O
     };
     let overlord = if row.overlord > 0 {
         let links = frame
-            .complete::<tables::CountryLinks>()
+            .complete_rows::<tables::CountryLinks>(LINK)
             .map_err(|why| format!("CountryLinks is unavailable this hour: {why}"))?;
         Some(
-            last_by_key(links, row.overlord as u32, |row| row.id)
+            keyed(&links, u128::from(row.overlord as u32))?
                 .ok_or_else(|| format!("overlord link {} has no country", row.overlord))?
                 .canonical_slot,
         )
@@ -681,13 +748,17 @@ pub fn reserved_zero(frame: &dyn replay_frame::frame::DecodedSource) -> Result<O
                 return Err("reserved current autonomy has no definition".into());
             }
             let countries = frame
-                .complete::<tables::Countries>()
+                .complete_rows::<tables::Countries>(COUNTRY)
                 .map_err(|why| format!("Countries is unavailable this hour: {why}"))?;
-            let overlord = countries
-                .iter()
-                .rev()
-                .find(|country| country.canonical_slot == slot)
-                .ok_or_else(|| format!("overlord slot {slot} has no country"))?;
+            let mut overlord = None;
+            for country in countries.iter() {
+                let country = country.map_err(|why| why.to_string())?;
+                if country.canonical_slot == slot {
+                    overlord = Some(country);
+                }
+            }
+            let overlord =
+                overlord.ok_or_else(|| format!("overlord slot {slot} has no country"))?;
             (
                 underscore(text(&overlord.tag, "overlord tag")?),
                 underscore(text(autonomy, "autonomy")?),
@@ -737,120 +808,176 @@ fn naming_tag<'a>(
 /// The original-or-own tag, shared with the collector's status summary.
 pub use replay_data::country_flags::original_tag;
 
-/// CountryLinks, or why it is unavailable; only a positive overlord reads it.
-fn links(frame: &dyn replay_frame::frame::DecodedSource) -> Result<&[CountryLinkRow], String> {
-    frame
-        .complete::<tables::CountryLinks>()
-        .map_err(|why| format!("CountryLinks is unavailable this hour: {why}"))
+/// The fields the resolver reads of each table.
+const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
+const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const APPEARANCE: u64 = mask::<CountryAppearanceRow>(&[
+    "cosmetic_tag",
+    "name_tag",
+    "leader_ideology",
+    "overlord",
+    "original_tag",
+    "original_tag_reference",
+]);
+const POLITICS: u64 = mask::<PoliticsRow>(&["ruling_party"]);
+const PARTY: u64 = mask::<PoliticalPartyRow>(&["token"]);
+const AUTONOMY: u64 = mask::<AutonomyRow>(&["state"]);
+const RESERVED: u64 = mask::<ReservedCountryNamingRow>(&[
+    "tag",
+    "name_tag",
+    "cosmetic_tag",
+    "leader_ideology",
+    "group",
+    "overlord",
+    "autonomy",
+    "built",
+    "original_tag",
+    "original_tag_reference",
+]);
+
+/// What a positive country's operands are read from at one hour: the complete Countries table
+/// with each canonical slot's last row, and the tables each country's operands read.
+struct Inputs<'f> {
+    countries: Rowset<'f, CountryRow>,
+    /// Each canonical slot's last Countries row's key.
+    slots: BTreeMap<u32, u128>,
+    /// CountryLinks, or why it is unavailable; only a positive overlord reads it.
+    links: Result<Rowset<'f, CountryLinkRow>, String>,
+    appearance: (Rowset<'f, CountryAppearanceRow>, bool),
+    politics: (Rowset<'f, PoliticsRow>, bool),
+    parties: (Rowset<'f, PoliticalPartyRow>, bool),
+    autonomy: (Rowset<'f, AutonomyRow>, bool),
+}
+
+impl<'f> Inputs<'f> {
+    /// None without a complete Countries table.
+    fn read<F: Tables + ?Sized>(frame: &'f F) -> Option<Self> {
+        let countries = frame.complete_rows::<tables::Countries>(COUNTRY).ok()?;
+        let mut slots = BTreeMap::new();
+        // The last row of a slot wins, as a reverse search would find it.
+        for row in countries.with_mask(SLOT).iter() {
+            let row = row.ok()?;
+            slots.insert(row.canonical_slot, row.key());
+        }
+        Some(Self {
+            countries,
+            slots,
+            links: frame
+                .complete_rows::<tables::CountryLinks>(LINK)
+                .map_err(|why| format!("CountryLinks is unavailable this hour: {why}")),
+            appearance: partial::<F, tables::CountryAppearance>(frame, APPEARANCE),
+            politics: partial::<F, tables::Politics>(frame, POLITICS),
+            parties: partial::<F, tables::PoliticalParties>(frame, PARTY),
+            autonomy: partial::<F, tables::Autonomy>(frame, AUTONOMY),
+        })
+    }
+
+    /// The last Countries row of `slot`.
+    fn country(&self, slot: u32) -> Result<Option<Cow<'f, CountryRow>>, String> {
+        match self.slots.get(&slot) {
+            Some(&key) => keyed(&self.countries, key),
+            None => Ok(None),
+        }
+    }
+
+    /// `country`'s operands, or why they are unavailable this hour.
+    fn operands(&self, country: &CountryRow) -> Result<Operands, String> {
+        let table = |name: &str, complete: bool| {
+            (!complete).then(|| format!("{name} is incomplete this hour"))
+        };
+        let id = u128::from(country.id);
+        let (appearance, appearance_complete) = &self.appearance;
+        let row = keyed(appearance, id)?.ok_or_else(|| {
+            table("CountryAppearance", *appearance_complete)
+                .unwrap_or_else(|| "no naming operands recorded".into())
+        })?;
+        let tag = naming_tag(country, &row)?.to_owned();
+        let (politics, politics_complete) = &self.politics;
+        let group = match keyed(politics, id)? {
+            Some(politics) => match politics.ruling_party {
+                Some(party) => {
+                    let (parties, parties_complete) = &self.parties;
+                    match keyed(parties, id << 32 | u128::from(party))? {
+                        Some(party) => text(&party.token, "ideology group")?,
+                        None => {
+                            return Err(table("PoliticalParties", *parties_complete)
+                                .unwrap_or_else(|| "ruling party has no recorded row".into()));
+                        }
+                    }
+                }
+                None => String::new(),
+            },
+            None => {
+                return Err(table("Politics", *politics_complete)
+                    .unwrap_or_else(|| "no politics row recorded".into()));
+            }
+        };
+        let overlord = if row.overlord > 0 {
+            let links = self.links.as_ref().map_err(String::clone)?;
+            Some(
+                keyed(links, u128::from(row.overlord as u32))?
+                    .ok_or_else(|| format!("overlord link {} has no country", row.overlord))?
+                    .canonical_slot,
+            )
+        } else {
+            None
+        };
+        // Subject rungs require both a current autonomy status and a positive
+        // overlord.
+        let (autonomy, autonomy_complete) = &self.autonomy;
+        let state = match overlord {
+            Some(_) => keyed(autonomy, id)?,
+            None => None,
+        };
+        let (overlord_suffix, autonomy_suffix) = match (overlord, state) {
+            (Some(slot), Some(state)) => {
+                if state.state.is_empty() {
+                    return Err("current autonomy has no definition".into());
+                }
+                let overlord = self
+                    .country(slot)?
+                    .ok_or_else(|| format!("overlord slot {slot} has no country"))?;
+                (
+                    format!("_{}", text(&overlord.tag, "overlord tag")?),
+                    format!("_{}", text(&state.state, "autonomy")?),
+                )
+            }
+            (Some(_), None) if !autonomy_complete => {
+                return Err("Autonomy is incomplete this hour".into());
+            }
+            _ => (String::new(), String::new()),
+        };
+        Ok(Operands {
+            tag,
+            cosmetic: text(&row.cosmetic_tag, "cosmetic tag")?,
+            overlord,
+            overlord_suffix,
+            subtype_suffix: underscore(text(&row.leader_ideology, "leader ideology")?),
+            group_suffix: underscore(group),
+            autonomy_suffix,
+        })
+    }
 }
 
 /// Per canonical slot: the operands, or why they are unavailable this hour.
-fn operands(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> BTreeMap<u32, Result<Operands, String>> {
-    let Ok(countries) = frame.complete::<tables::Countries>() else {
+fn operands<F: Tables + ?Sized>(frame: &F) -> BTreeMap<u32, Result<Operands, String>> {
+    let Some(inputs) = Inputs::read(frame) else {
         return BTreeMap::new();
     };
-    let links = links(frame);
-    // The last row of a slot wins, as a reverse search would find it.
-    let slots: BTreeMap<u32, &CountryRow> = countries
+    // A slot's operands are its last row's, as a later row of the slot replaces an earlier.
+    inputs
+        .slots
         .iter()
-        .map(|row| (row.canonical_slot, row))
-        .collect();
-    let by_slot = |slot: u32| slots.get(&slot).copied();
-    countries
-        .iter()
-        .map(|country| {
-            (
-                country.canonical_slot,
-                country_operands(frame, &by_slot, &links, country),
-            )
+        .map(|(&slot, &key)| {
+            let operands = match keyed(&inputs.countries, key) {
+                Ok(Some(country)) => inputs.operands(&country),
+                Ok(None) => Err(format!("country slot {slot} has no Countries row")),
+                Err(reason) => Err(reason),
+            };
+            (slot, operands)
         })
         .collect()
-}
-
-/// Last matching key, preserving the maps' overwrite rule without indexing a
-/// table. Decoded rows ascend by their raw table key.
-fn last_by_key<T, K: Ord>(rows: &[T], wanted: K, key: impl Fn(&T) -> K) -> Option<&T> {
-    let end = rows.partition_point(|row| key(row) <= wanted);
-    rows.get(end.checked_sub(1)?)
-        .filter(|row| key(row) == wanted)
-}
-
-fn country_operands<'r>(
-    frame: &dyn replay_frame::frame::DecodedSource,
-    by_slot: &dyn Fn(u32) -> Option<&'r CountryRow>,
-    links: &Result<&[CountryLinkRow], String>,
-    country: &CountryRow,
-) -> Result<Operands, String> {
-    let table =
-        |name: &str, complete: bool| (!complete).then(|| format!("{name} is incomplete this hour"));
-    let (appearance, appearance_complete) = partial::<tables::CountryAppearance>(frame);
-    let (politics, politics_complete) = partial::<tables::Politics>(frame);
-    let (parties, parties_complete) = partial::<tables::PoliticalParties>(frame);
-    let (autonomy, autonomy_complete) = partial::<tables::Autonomy>(frame);
-    let row = last_by_key(appearance, country.id, |row| row.country).ok_or_else(|| {
-        table("CountryAppearance", appearance_complete)
-            .unwrap_or_else(|| "no naming operands recorded".into())
-    })?;
-    let tag = naming_tag(country, row)?.to_owned();
-    let group = match last_by_key(politics, country.id, |row| row.country) {
-        Some(row) => match row.ruling_party {
-            Some(party) => {
-                match last_by_key(parties, (country.id, party), |row| (row.country, row.id)) {
-                    Some(row) => text(&row.token, "ideology group")?,
-                    None => {
-                        return Err(table("PoliticalParties", parties_complete)
-                            .unwrap_or_else(|| "ruling party has no recorded row".into()));
-                    }
-                }
-            }
-            None => String::new(),
-        },
-        None => {
-            return Err(table("Politics", politics_complete)
-                .unwrap_or_else(|| "no politics row recorded".into()));
-        }
-    };
-    let overlord = if row.overlord > 0 {
-        let links = *links.as_ref().map_err(String::clone)?;
-        Some(
-            last_by_key(links, row.overlord as u32, |row| row.id)
-                .ok_or_else(|| format!("overlord link {} has no country", row.overlord))?
-                .canonical_slot,
-        )
-    } else {
-        None
-    };
-    // Subject rungs require both a current autonomy status and a positive
-    // overlord.
-    let state = last_by_key(autonomy, country.id, |row| row.subject);
-    let (overlord_suffix, autonomy_suffix) = match (overlord, state) {
-        (Some(slot), Some(state)) => {
-            if state.state.is_empty() {
-                return Err("current autonomy has no definition".into());
-            }
-            let overlord =
-                by_slot(slot).ok_or_else(|| format!("overlord slot {slot} has no country"))?;
-            (
-                format!("_{}", text(&overlord.tag, "overlord tag")?),
-                format!("_{}", text(&state.state, "autonomy")?),
-            )
-        }
-        (Some(_), None) if !autonomy_complete => {
-            return Err("Autonomy is incomplete this hour".into());
-        }
-        _ => (String::new(), String::new()),
-    };
-    Ok(Operands {
-        tag,
-        cosmetic: text(&row.cosmetic_tag, "cosmetic tag")?,
-        overlord,
-        overlord_suffix,
-        subtype_suffix: underscore(text(&row.leader_ideology, "leader ideology")?),
-        group_suffix: underscore(group),
-        autonomy_suffix,
-    })
 }
 
 #[cfg(test)]

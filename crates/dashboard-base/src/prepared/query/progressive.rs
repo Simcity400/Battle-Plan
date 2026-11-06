@@ -701,7 +701,6 @@ fn supplying_hour(
         block,
         &(hour, table.index(), cadence),
         cancelled,
-        |_: &Option<i32>| std::mem::size_of::<Option<i32>>(),
         || supplying_read(source, branch, hour, table, cadence, walk, cancelled),
     )?;
     Ok(*supplying)
@@ -1000,11 +999,6 @@ fn tail_cached_selected(
             block,
             &(&selected, &keys, all),
             cancelled,
-            |samples: &Samples| {
-                let mut bytes = crate::prepared::prepass::HeldBytes::default();
-                bytes.value(samples);
-                bytes.total() as usize
-            },
             || {
                 let keyframe = source.replay_ref().read_keyframe_recorded(block, tables)?;
                 let mut decoder = FrameDecoder::for_tables(tables);
@@ -1103,11 +1097,6 @@ pub fn points_cached(
             block,
             &(&selected, requested, hour),
             cancelled,
-            |values: &Samples| {
-                let mut bytes = crate::prepared::prepass::HeldBytes::default();
-                bytes.value(values);
-                bytes.total() as usize
-            },
             || {
                 frame_at(source, branch, hour, tables, cancelled)?
                     .map(|frame| sample(&frame, Some(requested)))
@@ -1218,7 +1207,7 @@ pub fn tail_projected<T: Send + Sync + 'static>(
         })
         .collect();
     let exact = blocks.len() <= EXACT_ZOOM_BLOCKS;
-    let cache = super::observations::scope(source, product, None).working_set(blocks.len());
+    let cache = super::observations::scope(source, product, None);
     let selected: Vec<_> = tables.iter().map(|table| table.index()).collect();
     let mut result = TailData::default();
     for block in blocks {
@@ -1230,11 +1219,6 @@ pub fn tail_projected<T: Send + Sync + 'static>(
             block,
             &(&selected, requested, extent, exact, params),
             cancelled,
-            |observed: &(TailData, Option<T>)| {
-                tail_bytes(&observed.0)
-                    + observed.1.as_ref().map_or(0, &bytes)
-                    + std::mem::size_of::<(TailData, Option<T>)>()
-            },
             || {
                 let previous = finish();
                 let sampled = Cell::new(false);
@@ -1655,7 +1639,7 @@ fn cached_recorded_blocks(
     all: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<TailData> {
-    let cache = super::observations::scope(source, product, None).working_set(blocks.len());
+    let cache = super::observations::scope(source, product, None);
     let mut result = TailData::default();
     let mut selected: Vec<_> = tables.iter().map(|table| table.index()).collect();
     selected.sort_unstable();
@@ -1712,7 +1696,6 @@ fn cached_recorded_blocks(
                     block,
                     &("points", &selected, &keys, all, &hours),
                     cancelled,
-                    block_sample_bytes,
                     || {
                         sample_blocks(
                             source,
@@ -1739,7 +1722,6 @@ fn cached_recorded_blocks(
                 block,
                 &(&selected, &keys, cadence, all, extent),
                 cancelled,
-                block_sample_bytes,
                 || {
                     // The cadence bounds the look-back; its block count cannot
                     // turn this exact cache entry into a keyframe sample.
@@ -2383,9 +2365,7 @@ mod tests {
                 without_block_decodes(|| latest_read(&source, 1, at, table, 24, &[table], &flag));
             assert!(!refused);
             assert_eq!(cached.unwrap().unwrap().hour, read.hour);
-            let (bytes, bound, computations) =
-                super::super::observations::usage(&source, "supplying-reads");
-            assert!(bytes > 0 && bytes <= bound);
+            let computations = super::super::observations::computations(&source, "supplying-reads");
             assert_eq!(computations, 1, "a cached supplying lookup is not repeated");
             let first = frames::reads(&source);
             assert_eq!(
@@ -2412,7 +2392,6 @@ mod tests {
                 *expected
             );
             assert_eq!(frames::reads(&source), (first.0, first.1 + 1));
-            assert!(frames::accounted(&source));
             drop(source);
             let _ = std::fs::remove_dir_all(root);
         }
@@ -2572,7 +2551,7 @@ mod tests {
         use super::super::frames;
         let source = varied_source();
         // Nothing held: every walked hour is reconstructed by the walk.
-        frames::set_budget(&source, 0);
+        frames::keep_latest(&source, false);
         let flag = AtomicBool::new(false);
         let tables = [TableId::Countries, TableId::CountryLinks];
         let expected = |hour| match source.replay_ref().seek_selected(1, hour, Some(&tables)) {
@@ -2602,7 +2581,7 @@ mod tests {
     fn a_walk_its_block_refuses_seeks_the_hour_alone_and_reads_the_next_block_afresh() {
         use super::super::frames;
         let source = varied_source();
-        frames::set_budget(&source, 0);
+        frames::keep_latest(&source, false);
         let flag = AtomicBool::new(false);
         let tables = [TableId::Countries, TableId::CountryLinks];
         let expected = |hour| match source.replay_ref().seek_selected(1, hour, Some(&tables)) {
@@ -2679,16 +2658,14 @@ mod tests {
                         .all(|(a, b)| a.sampled_at() == b.sampled_at())
                 );
             }
-            assert!(frames::accounted(&source));
         }
-        frames::set_budget(&source, 0);
+        frames::keep_latest(&source, false);
         let actual = read_window(&source, 1, 4, 7, crate::prepared_measure::TABLES, &flag).unwrap();
         assert_eq!(
             actual.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
             [4, 5, 6, 7]
         );
-        assert_eq!(frames::held_bytes(&source), 0);
-        assert!(frames::accounted(&source));
+        assert_eq!(frames::held(&source), 0);
     }
 
     #[test]
@@ -2751,7 +2728,6 @@ mod tests {
                 );
             }
         });
-        assert!(frames::accounted(source));
     }
 
     /// Ends a hold and this thread's wait hook however a test ends, so a request waiting
@@ -2779,7 +2755,7 @@ mod tests {
         assert_eq!(frames::reads(&source), (0, 1));
         // Nothing fits, so publishing the block read for B would evict the hour; and A is
         // damaged after the hour, so only a join onto the held A answers.
-        frames::set_budget(&source, 0);
+        frames::keep_latest(&source, false);
         frames::DAMAGED.set(vec![a]);
         let read = read_window(&source, 1, 5, 5, &tables, &flag);
         frames::DAMAGED.set(Vec::new());
@@ -2796,8 +2772,7 @@ mod tests {
             (1, 1),
             "one block read, for B alone, joined to the held A"
         );
-        assert_eq!(frames::held_bytes(&source), 0);
-        assert!(frames::accounted(&source));
+        assert_eq!(frames::held(&source), 0);
     }
 
     #[test]
@@ -2821,11 +2796,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(frames::reads(&source), (0, 1));
-        assert!(frames::accounted(&source));
     }
 
     #[test]
-    fn concurrent_windows_over_budget_share_one_accounted_block_read() {
+    fn concurrent_windows_share_one_block_read() {
         use super::super::frames;
         use std::sync::mpsc::channel;
         use std::time::Duration;
@@ -2846,8 +2820,8 @@ mod tests {
         else {
             panic!("a recorded hour");
         };
-        // Nothing fits: whatever the windows share is over budget while they use it.
-        frames::set_budget(&source, 0);
+        // Nothing is kept: whatever the windows share lives only while they use it.
+        frames::keep_latest(&source, false);
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         std::thread::scope(|scope| {
             // Another request is reading the block until both windows wait for it.
@@ -2867,7 +2841,7 @@ mod tests {
                         {
                             let source = Arc::clone(&source);
                             frames::ON_RELEASE.set(Some(Box::new(move || {
-                                seen.lock().unwrap().push(frames::held_bytes(&source));
+                                seen.lock().unwrap().push(frames::held(&source));
                             })));
                         }
                         let read =
@@ -2898,8 +2872,7 @@ mod tests {
             seen.iter().any(|&bytes| bytes > 0),
             "the block read stayed held and counted while the windows used it: {seen:?}"
         );
-        assert_eq!(frames::held_bytes(&source), 0, "released, the budget holds");
-        assert!(frames::accounted(&source));
+        assert_eq!(frames::held(&source), 0, "released, nothing is kept");
     }
 
     #[test]
@@ -2915,19 +2888,18 @@ mod tests {
         let tables = crate::prepared_measure::TABLES;
         let flag = AtomicBool::new(false);
         // Nothing fits: only the answer being held keeps the block.
-        frames::set_budget(&source, 0);
+        frames::keep_latest(&source, false);
         let held = frames::block(&source, block, tables, &flag)
             .unwrap()
             .expect("a kept block read");
-        assert!(frames::held_bytes(&source) > 0, "counted while held");
+        assert!(frames::held(&source) > 0, "counted while held");
         let again = frames::block(&source, block, tables, &flag)
             .unwrap()
             .expect("a kept block read");
         assert_eq!(frames::reads(&source).0, 1, "the held read answers again");
         assert_eq!(held.len(), again.len());
         drop((held, again));
-        assert_eq!(frames::held_bytes(&source), 0);
-        assert!(frames::accounted(&source));
+        assert_eq!(frames::held(&source), 0);
     }
 
     #[test]
@@ -2942,7 +2914,7 @@ mod tests {
             .unwrap();
         let tables = crate::prepared_measure::TABLES;
         // Nothing fits: only a lease keeps the block.
-        frames::set_budget(source, 0);
+        frames::keep_latest(source, false);
         let first = frames::leased(source, block, tables)
             .unwrap()
             .expect("a kept block read");
@@ -2962,8 +2934,8 @@ mod tests {
         );
         assert_eq!(frames::reads(source).0, 1, "answered from the held read");
         assert!(
-            frames::held_bytes(source) > 0,
-            "held and counted while leased, over budget"
+            frames::held(source) > 0,
+            "held while leased"
         );
         // A later request finds it rather than reading the block again.
         let third = frames::leased(source, block, tables)
@@ -2971,8 +2943,7 @@ mod tests {
             .expect("a kept block read");
         assert_eq!(frames::reads(source).0, 1);
         drop((second, third));
-        assert_eq!(frames::held_bytes(source), 0);
-        assert!(frames::accounted(source));
+        assert_eq!(frames::held(source), 0);
     }
 
     #[test]
@@ -3018,15 +2989,13 @@ mod tests {
             source.replay_ref().section_decodes().is_empty(),
             "the token must reach the replay reader before it decodes any table"
         );
-        assert_eq!(frames::held_bytes(&source), 0);
-        assert!(frames::accounted(&source));
+        assert_eq!(frames::held(&source), 0);
         flag.store(false, Ordering::Release);
         let following = frames::block(&source, block, tables, &flag)
             .unwrap()
             .expect("the following read must fill the abandoned cache slot");
         assert!(!following.is_empty());
         assert_eq!(frames::reads(&source).0, 2);
-        assert!(frames::accounted(&source));
     }
 
     #[test]
@@ -3108,8 +3077,7 @@ mod tests {
                     (block.first_hour..=block.last_hour).collect::<Vec<_>>()
                 );
             }
-            assert_eq!(frames::held_bytes(&source), 0);
-            assert!(frames::accounted(&source));
+            assert_eq!(frames::held(&source), 0);
         }
         flag.store(false, Ordering::Release);
         samples.borrow_mut().clear();
@@ -3120,7 +3088,6 @@ mod tests {
             (block.first_hour..=block.last_hour).collect::<Vec<_>>()
         );
         assert_eq!(frames::reads(&source).0, 3);
-        assert!(frames::accounted(&source));
     }
 
     #[test]
@@ -3137,7 +3104,7 @@ mod tests {
             .unwrap();
         let failing_tables = [TableId::Campaign, TableId::Countries];
         let kept_tables = [TableId::Campaign, TableId::CountryLinks];
-        frames::set_budget(source, 0);
+        frames::keep_latest(source, false);
         std::thread::scope(|scope| {
             let (reading, read) = channel();
             let (go, proceed) = channel::<()>();
@@ -3181,10 +3148,9 @@ mod tests {
                 .unwrap()
                 .expect("the queued selection is read and kept");
             assert!(
-                frames::held_bytes(source) > 0,
+                frames::held(source) > 0,
                 "the queued read is held and counted in the entry it waited on"
             );
-            assert!(frames::accounted(source));
             let again = frames::leased(source, block, &kept_tables)
                 .unwrap()
                 .expect("a kept block read");
@@ -3195,8 +3161,7 @@ mod tests {
             );
             drop((lease, again));
         });
-        assert_eq!(frames::held_bytes(source), 0);
-        assert!(frames::accounted(source));
+        assert_eq!(frames::held(source), 0);
     }
 
     #[test]
@@ -3240,7 +3205,6 @@ mod tests {
                 [18, 19]
             );
         });
-        assert!(frames::accounted(source));
     }
 
     fn renamed_seed_recording() -> Replay {
@@ -3970,9 +3934,7 @@ mod tests {
         assert!(!refused);
         assert_eq!(again.unwrap(), expected);
         assert_eq!(calls.get(), before);
-        let (bytes, bound, _) = super::super::observations::usage(&source, "test-sparse-state");
-        assert!(bytes > 0 && bytes <= bound);
-    }
+            }
 
     #[test]
     fn sparse_state_returns_a_check_refusal_before_any_requested_projection() {
@@ -4074,9 +4036,7 @@ mod tests {
             assert_eq!(metadata.get(), Some(19));
             assert_eq!(calls.get(), before, "held folds were sampled again");
         }
-        let (bytes, bound, computations) =
-            super::super::observations::usage(&source, "test-projected-tail");
-        assert!(bytes > 0 && bytes <= bound);
+        let computations = super::super::observations::computations(&source, "test-projected-tail");
         assert_eq!(
             computations, 8,
             "five initial blocks and three clipped boundary blocks"
@@ -4397,8 +4357,7 @@ mod tests {
             );
         }
         assert_eq!(calls.get(), computed);
-        let (bytes, bound, entries) = super::super::observations::usage(&source, "test-stateless");
-        assert!(bytes > 0 && bytes <= bound);
+        let entries = super::super::observations::computations(&source, "test-stateless");
         assert_eq!(entries, 2);
     }
 
@@ -5215,18 +5174,16 @@ mod tests {
     }
 
     #[test]
-    fn the_frame_cache_keeps_its_byte_budget_and_evicts_the_least_recently_used() {
+    fn the_frame_cache_keeps_each_branchs_latest_hour_and_lets_the_one_before_go() {
         let source = varied_source();
         let measure = crate::prepared_measure::TABLES;
         let flag = AtomicBool::new(false);
         frame_at(&source, 1, 1, measure, &flag).unwrap().unwrap();
-        let one = super::super::frames::held_bytes(&source);
-        assert!(one > 0);
-        super::super::frames::set_budget(&source, one * 3 / 2);
+        frame_at(&source, 1, 1, measure, &flag).unwrap().unwrap();
+        assert_eq!(super::super::frames::reads(&source).1, 1);
         frame_at(&source, 1, 2, measure, &flag).unwrap().unwrap();
-        assert!(super::super::frames::held_bytes(&source) <= one * 3 / 2);
         assert_eq!(super::super::frames::reads(&source).1, 2);
-        // Hour 2 is held; hour 1, used least recently, was evicted.
+        // Hour 2 is kept; hour 1, which it replaced, is read again.
         frame_at(&source, 1, 2, measure, &flag).unwrap().unwrap();
         assert_eq!(super::super::frames::reads(&source).1, 2);
         frame_at(&source, 1, 1, measure, &flag).unwrap().unwrap();
@@ -5234,7 +5191,8 @@ mod tests {
         // An hour outside the recording is a gap, never kept.
         assert!(frame_at(&source, 1, 99, measure, &flag).unwrap().is_none());
         assert!(frame_at(&source, 1, 13, measure, &flag).unwrap().is_none());
-        assert!(super::super::frames::held_bytes(&source) <= one * 3 / 2);
+        super::super::frames::keep_latest(&source, false);
+        assert_eq!(super::super::frames::held(&source), 0);
     }
 
     #[test]
@@ -5291,105 +5249,6 @@ mod tests {
     }
 
     #[test]
-    fn a_read_is_accounted_before_it_is_released() {
-        use super::super::frames;
-        let source = Arc::new(varied_source());
-        let checks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        {
-            let source = Arc::clone(&source);
-            let checks = std::rc::Rc::clone(&checks);
-            frames::ON_RELEASE.set(Some(Box::new(move || {
-                checks.borrow_mut().push(frames::accounted(&source));
-            })));
-        }
-        let key: (String, String) = ("GER".into(), "politicalPower".into());
-        let flag = AtomicBool::new(false);
-        // Narrower reads first, then wider ones joined to them, of an hour and a
-        // block; a one-block window is read on this thread.
-        frame_at(&source, 1, 5, &[TableId::Countries], &flag).unwrap();
-        frame_at(&source, 1, 5, crate::prepared_measure::TABLES, &flag).unwrap();
-        for tables in [
-            &[TableId::Campaign, TableId::Countries][..],
-            crate::prepared_measure::TABLES,
-        ] {
-            tail(
-                &source,
-                1,
-                None,
-                tables,
-                std::slice::from_ref(&key),
-                (0, 3),
-                &crate::prepared_measure::sample,
-                &flag,
-            )
-            .unwrap();
-        }
-        // A gap is released holding nothing.
-        frame_at(&source, 1, 99, crate::prepared_measure::TABLES, &flag).unwrap();
-        frames::ON_RELEASE.set(None);
-        let checks = checks.borrow();
-        assert_eq!(checks.len(), 5, "two hour reads, two block reads and a gap");
-        assert!(
-            checks.iter().all(|&accounted| accounted),
-            "every release found its read accounted: {checks:?}"
-        );
-        assert!(frames::accounted(&source));
-    }
-
-    #[test]
-    fn cached_reads_count_their_frames_whole_and_their_nested_rows() {
-        use super::super::frames;
-        let source = varied_source();
-        let key: (String, String) = ("GER".into(), "politicalPower".into());
-        let flag = AtomicBool::new(false);
-        // One four-hour block, read for one table: every frame is kept whole.
-        tail(
-            &source,
-            1,
-            None,
-            &[TableId::Countries],
-            std::slice::from_ref(&key),
-            (0, 3),
-            &crate::prepared_measure::sample,
-            &flag,
-        )
-        .unwrap();
-        assert!(
-            frames::held_bytes(&source) >= 4 * std::mem::size_of::<Frame>(),
-            "{} bytes for four whole frames",
-            frames::held_bytes(&source)
-        );
-        // A row's list is counted, not only the row.
-        let mut long = frame(1, 0, Some(1));
-        if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Countries(
-            rows,
-        )) = &mut *long.tables[TableId::Countries.index()]
-        {
-            rows[0].tag = vec![b'x'; 256 << 10];
-        }
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![long])]).unwrap();
-        let source = Source::from_replay(
-            crate::SourceKey {
-                source_id: "long".into(),
-                revision: "1".into(),
-            },
-            "memory.battleplan".into(),
-            Arc::new(replay),
-            &flag,
-        )
-        .unwrap();
-        frame_at(&source, 1, 0, &[TableId::Countries], &flag)
-            .unwrap()
-            .unwrap();
-        assert!(
-            frames::held_bytes(&source) >= 256 << 10,
-            "{} bytes for a 256 KiB tag",
-            frames::held_bytes(&source)
-        );
-        assert!(frames::accounted(&source));
-    }
-
-    #[test]
     fn requests_without_block_decodes_never_wait_on_another_read() {
         use super::super::frames;
         let source = varied_source();
@@ -5438,51 +5297,9 @@ mod tests {
         // Nor does a read that found nothing to keep.
         assert!(frame_at(&source, 1, 99, measure, &flag).unwrap().is_none());
         assert_eq!(frames::entries(&source), 0);
-        assert_eq!(frames::held_bytes(&source), 0);
+        assert_eq!(frames::held(&source), 0);
     }
 
-    #[test]
-    fn held_rows_count_every_nested_allocation() {
-        use super::super::frames;
-        use replay_data::{rows::PowerBalanceModifierBreakdownRow, rows::TableRows};
-        const SOURCES: usize = 10_000;
-        let mut decoded = frame(1, 0, Some(1));
-        *decoded.tables[TableId::PowerBalanceModifierBreakdowns.index()] =
-            replay_frame::frame::TableView::Complete(TableRows::PowerBalanceModifierBreakdowns(
-                vec![PowerBalanceModifierBreakdownRow {
-                    record: 1,
-                    // Each empty source encodes in four bytes but holds a list.
-                    sources: vec![Vec::new(); SOURCES],
-                    ..Default::default()
-                }],
-            ));
-        let flag = AtomicBool::new(false);
-        let source = Source::from_replay(
-            crate::SourceKey {
-                source_id: "nested".into(),
-                revision: "1".into(),
-            },
-            "memory.battleplan".into(),
-            Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded])]).unwrap()),
-            &flag,
-        )
-        .unwrap();
-        frame_at(
-            &source,
-            1,
-            0,
-            &[TableId::PowerBalanceModifierBreakdowns],
-            &flag,
-        )
-        .unwrap()
-        .unwrap();
-        assert!(
-            frames::held_bytes(&source) >= SOURCES * std::mem::size_of::<Vec<u8>>(),
-            "{} bytes for {SOURCES} held lists",
-            frames::held_bytes(&source)
-        );
-        assert!(frames::accounted(&source));
-    }
     #[test]
     fn supplying_read_lookups_share_a_bounded_cache_across_hour_variants() {
         use crate::test_fixtures::file_source;
@@ -5510,20 +5327,18 @@ mod tests {
         };
         for hour in 0..24 {
             assert_eq!(ask(hour), 0);
-            let (bytes, bound, _) = super::super::observations::usage(&source, "supplying-reads");
-            assert!(bytes > 0 && bytes <= bound);
-        }
-        let computed = super::super::observations::usage(&source, "supplying-reads").2;
+                    }
+        let computed = super::super::observations::computations(&source, "supplying-reads");
         assert_eq!(ask(23), 0);
         assert_eq!(
-            super::super::observations::usage(&source, "supplying-reads").2,
+            super::super::observations::computations(&source, "supplying-reads"),
             computed
         );
         assert_eq!(ask(0), 0);
         assert_eq!(
-            super::super::observations::usage(&source, "supplying-reads").2,
+            super::super::observations::computations(&source, "supplying-reads"),
             computed + 1,
-            "the oldest hour was evicted under the single-block bound"
+            "the block keeps only the hour asked last"
         );
         drop(source);
         let _ = std::fs::remove_dir_all(root);

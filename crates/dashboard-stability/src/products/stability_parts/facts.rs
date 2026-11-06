@@ -24,7 +24,7 @@ use crate::products::country_stability::{
 };
 use dashboard_text::{
     catalogue::Refusals,
-    identity::{CivilWars, NamingCountry},
+    identity::{CHARACTER_IDENTITY, CivilWars, LOOK, NamingCountry},
 };
 use dashboard_world::{Hold, Needs, Roster, Tag, World};
 use replay::{
@@ -32,16 +32,16 @@ use replay::{
     segments::{self, Operator, Sink},
 };
 use replay_data::rows::{
-    CharacterRow, CountryStabilityInputRow, CountryStabilityLineRow, LexicalTokenRow, TableId,
-    tables,
+    CharacterRow, CountryRow, CountryStabilityInputRow, CountryStabilityLineRow, LexicalTokenRow,
+    TableId, mask, tables,
 };
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
+use replay_frame::frame::{Rowset, Tables};
 use std::{
     cell::OnceCell,
     collections::{BTreeSet, HashMap},
     io,
     mem::{size_of, take},
-    sync::{Arc, LazyLock},
+    sync::Arc,
 };
 
 /// The tables a projection reads.
@@ -80,61 +80,43 @@ const CHARACTER_FIELDS: [&str; 7] = [
     "template_generated",
 ];
 
-/// How a projection asks the walk's frame for the tables it reads as rows: what a character
-/// line's naming reads, and what a country's naming reads, its civil war among it, each in
-/// the fields read.
-struct Asks {
-    characters: Vec<(TableId, Hold)>,
-    naming: Vec<(TableId, Hold)>,
-    both: Vec<(TableId, Hold)>,
-}
-
-fn asks() -> &'static Asks {
-    static ASKS: LazyLock<Asks> = LazyLock::new(|| {
-        let field_mask = dashboard_base::prepared::frame_changes::field_mask;
-        let characters = vec![
-            (
-                TableId::Characters,
-                Hold::Fields(field_mask(TableId::Characters, &CHARACTER_FIELDS))
-                    .of(TableId::Characters),
-            ),
-            (TableId::LexicalTokens, Hold::Whole),
-        ];
-        let mut naming: Vec<(TableId, Hold)> =
-            [TableId::CountryAppearance, TableId::ReservedCountryNaming]
-                .into_iter()
-                .map(|table| (table, Hold::Whole))
-                .collect();
-        for read in dashboard_text::identity::civil_war_reads() {
-            let mut fields = read.fields;
-            // An original-or-own tag falls back to the country's own tag.
-            if read.table == TableId::Countries {
-                fields |= field_mask(TableId::Countries, &["tag"]);
-            }
-            match naming.iter_mut().find(|(table, _)| *table == read.table) {
-                Some((_, Hold::Fields(held))) => *held |= fields,
-                Some((_, Hold::Whole)) => {}
-                None => naming.push((read.table, Hold::Fields(fields))),
-            }
+/// The tables a projection reads through the walk's views, each in the fields read: what a
+/// character line's naming reads, and what a country's naming reads, its civil war among it.
+fn holds() -> Vec<(TableId, Hold)> {
+    let field_mask = dashboard_base::prepared::frame_changes::field_mask;
+    let mut holds = vec![
+        (
+            TableId::Characters,
+            Hold::Fields(field_mask(TableId::Characters, &CHARACTER_FIELDS))
+                .of(TableId::Characters),
+        ),
+        (TableId::LexicalTokens, Hold::Whole),
+        (TableId::CountryAppearance, Hold::Whole),
+        (TableId::ReservedCountryNaming, Hold::Whole),
+    ];
+    for read in dashboard_text::identity::civil_war_reads() {
+        let mut fields = read.fields;
+        // An original-or-own tag falls back to the country's own tag.
+        if read.table == TableId::Countries {
+            fields |= field_mask(TableId::Countries, &["tag"]);
         }
-        for (table, hold) in &mut naming {
-            *hold = hold.of(*table);
+        match holds.iter_mut().find(|(table, _)| *table == read.table) {
+            Some((_, Hold::Fields(held))) => *held |= fields,
+            Some((_, Hold::Whole)) => {}
+            None => holds.push((read.table, Hold::Fields(fields))),
         }
-        let both = characters.iter().chain(&naming).copied().collect();
-        Asks {
-            characters,
-            naming,
-            both,
-        }
-    });
-    &ASKS
+    }
+    for (table, hold) in &mut holds {
+        *hold = hold.of(*table);
+    }
+    holds
 }
 
 /// What a projection reads of its walk's world.
 pub fn needs() -> Needs {
     Needs {
         countries: true,
-        frame: asks().both.clone(),
+        frame: holds(),
         ..Needs::default()
     }
 }
@@ -427,8 +409,6 @@ pub struct Projector {
     failing: BTreeSet<u32>,
     /// The hour before read its inputs and their reads whole.
     admitted: bool,
-    /// The frame the world's views are lent into for an hour, given back before it ends.
-    frame: DecodedFrame,
     scratch: Scratch,
 }
 
@@ -474,19 +454,12 @@ fn line_country(key: u128) -> u32 {
     (key >> 64) as u32
 }
 
-/// The world's views lent into `frame` for the projection's asks, given back when dropped.
-struct Lent<'o> {
-    frame: &'o mut DecodedFrame,
-}
-
-impl Drop for Lent<'_> {
-    fn drop(&mut self) {
-        dashboard_world::release(self.frame, &asks().both);
-    }
-}
+/// The fields a country's naming reads of its spellings and its Countries row.
+const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
+const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
 
 /// A character row's naming as a character line names it, with the hour's tokens.
-fn character_of(row: &CharacterRow, lexical: Option<&[LexicalTokenRow]>) -> Character {
+fn character_of(row: &CharacterRow, lexical: Option<Rowset<'_, LexicalTokenRow>>) -> Character {
     let found = recorded_character_row(row, lexical);
     (
         found.script.map(str::to_owned),
@@ -497,15 +470,14 @@ fn character_of(row: &CharacterRow, lexical: Option<&[LexicalTokenRow]>) -> Char
     )
 }
 
-/// Character `id` as the hour's `characters` hold it.
+/// Character `id` as the hour's `characters` hold it; none where its row cannot be built.
 fn recorded(
-    characters: Option<&[CharacterRow]>,
-    lexical: Option<&[LexicalTokenRow]>,
+    characters: Option<Rowset<'_, CharacterRow>>,
+    lexical: Option<Rowset<'_, LexicalTokenRow>>,
     id: u32,
 ) -> Option<Character> {
-    let rows = characters?;
-    let at = rows.binary_search_by_key(&id, |row| row.id).ok()?;
-    Some(character_of(&rows[at], lexical))
+    let row = characters?.get(u128::from(id)).ok()??;
+    Some(character_of(&row, lexical))
 }
 
 /// Whether `line` names a character, whose naming completes its part's id.
@@ -836,12 +808,6 @@ impl Projector {
             dynamic: BTreeSet::new(),
             failing: BTreeSet::new(),
             admitted: false,
-            frame: DecodedFrame {
-                branch: 0,
-                hour: 0,
-                tables: std::array::from_fn(|_| not_selected()),
-                metrics: Metrics::default(),
-            },
             scratch: Scratch::default(),
         })
     }
@@ -1378,7 +1344,6 @@ impl Projector {
         let wants_naming = plans.iter().any(|&(_, naming)| naming);
 
         let Self {
-            frame,
             handed,
             countries,
             dynamic,
@@ -1388,30 +1353,28 @@ impl Projector {
             plain: plain_names,
             ..
         } = self;
-        let asked = match (wants_characters, wants_naming) {
-            (true, true) => Some(&asks().both),
-            (true, false) => Some(&asks().characters),
-            (false, true) => Some(&asks().naming),
-            (false, false) => None,
-        };
-        let mut lent = None;
-        if let Some(asked) = asked {
-            let _cpu = replay_frame::cpu::scope("parts.columnar.frame", None);
-            let held = Lent { frame };
-            hour.world.frame_held_into(state, asked, &mut *held.frame)?;
-            lent = Some(held);
-        }
-        let frame: Option<&DecodedFrame> = lent.as_ref().map(|held| &*held.frame);
-        let characters = frame.and_then(|frame| frame.complete::<tables::Characters>().ok());
-        let lexical = frame.and_then(|frame| frame.complete::<tables::LexicalTokens>().ok());
+        let frame = (wants_characters || wants_naming).then(|| hour.world.columns(state));
+        // Each read sees only the tables it asks for: a character line's naming, or a country's.
+        let character_frame = frame.as_ref().filter(|_| wants_characters);
+        let naming_frame = frame.as_ref().filter(|_| wants_naming);
+        let characters = character_frame.and_then(|frame| {
+            frame
+                .complete_rows::<tables::Characters>(CHARACTER_IDENTITY)
+                .ok()
+        });
+        let lexical =
+            character_frame.and_then(|frame| frame.complete_rows::<tables::LexicalTokens>(LITERAL).ok());
         let recorded_characters = match characters.filter(|_| characters_complete) {
             None if !characters_complete || restated => Characters::Unknown,
-            Some(rows) if restated => Characters::Every(
-                rows.iter()
-                    .map(|row| (row.id, character_of(row, lexical)))
-                    .collect(),
-            ),
-            // The frame is held whenever a character's naming may have changed.
+            Some(rows) if restated => {
+                let mut every = Vec::with_capacity(rows.len());
+                for row in rows.iter() {
+                    let row = row?;
+                    every.push((row.id, character_of(&row, lexical)));
+                }
+                Characters::Every(every)
+            }
+            // The frame is read whenever a character's naming may have changed.
             rows => Characters::Changed(
                 renamed_characters
                     .iter()
@@ -1420,13 +1383,14 @@ impl Projector {
                     .collect(),
             ),
         };
-        let appearances =
-            frame.and_then(|frame| frame.complete::<tables::CountryAppearance>().ok());
-        let rows = frame.and_then(|frame| frame.complete::<tables::Countries>().ok());
+        let appearances = naming_frame
+            .and_then(|frame| frame.complete_rows::<tables::CountryAppearance>(LOOK).ok());
+        let rows =
+            naming_frame.and_then(|frame| frame.complete_rows::<tables::Countries>(COUNTRY).ok());
         // The hour's civil wars, indexed once for every dynamic country named.
         let wars: OnceCell<Result<CivilWars<'_>, String>> = OnceCell::new();
         let civil_war = |slot: u32| -> Result<bool, String> {
-            let frame = frame.ok_or("the hour's civil-war tables are not held")?;
+            let frame = naming_frame.ok_or("the hour's civil-war tables are not held")?;
             wars.get_or_init(|| CivilWars::new(frame))
                 .as_ref()
                 .map_err(Clone::clone)?
@@ -1461,19 +1425,22 @@ impl Projector {
             let naming = match (&entry.naming, read_naming) {
                 (Some((_, naming)), false) => Arc::clone(naming),
                 _ => {
-                    let row = rows.and_then(|rows| {
-                        rows.binary_search_by_key(&id, |row| row.id)
-                            .ok()
-                            .map(|at| &rows[at])
-                    });
-                    let naming = match (row, frame) {
+                    let row = match rows {
+                        Some(rows) => rows.get(u128::from(id))?,
+                        None => None,
+                    };
+                    let naming = match (row, naming_frame) {
                         (Some(row), Some(frame)) => {
-                            let appearance = appearances.and_then(|rows| {
-                                rows.binary_search_by_key(&id, |row| row.country)
-                                    .ok()
-                                    .map(|at| &rows[at])
-                            });
-                            NamingCountry::read_with_civil_war(frame, row, appearance, &civil_war)
+                            let appearance = match appearances {
+                                Some(rows) => rows.get(u128::from(id))?,
+                                None => None,
+                            };
+                            NamingCountry::read_with_civil_war(
+                                frame,
+                                &row,
+                                appearance.as_deref(),
+                                &civil_war,
+                            )
                         }
                         _ => NamingCountry {
                             slot: holder.0,

@@ -1114,10 +1114,7 @@ fn predictions_wait_for_decisions_and_exclude_refused_loads_exactly_as_save_does
             session.file_name().unwrap(),
             0,
         ));
-    let published = replay::columnar_frames::Recording::open_path(
-        published,
-        replay::columnar_frames::Limits::default(),
-    )
+    let published = replay::columnar_frames::Recording::open_path(published)
     .unwrap();
     assert!(published.damage().is_empty(), "{:?}", published.damage());
     assert_eq!(published.run_count(), 1);

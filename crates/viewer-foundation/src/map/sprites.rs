@@ -686,6 +686,8 @@ pub struct SpritePass {
     /// Refusals of the most recent frame, by effect/path/compiler reason.
     pub native_refusals: BTreeMap<String, u64>,
     pipeline: wgpu::RenderPipeline,
+    /// Keeps the device's sprite pipelines for the next view.
+    _pipelines: Arc<SpritePipelines>,
     bind_groups: Vec<wgpu::BindGroup>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -747,16 +749,15 @@ struct Icon {
 /// Vertices a freshly built pass can hold before it grows; six per quad.
 const INITIAL_VERTICES: u64 = 6 * 4096;
 
-impl SpritePass {
-    /// Builds the pipeline over already-uploaded icon pages.
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        samples: u32,
-        textures: &IconTextures,
-        lazy: &Arc<LazyTextures>,
-        format: wgpu::TextureFormat,
-    ) -> io::Result<Self> {
+/// The sprite pipelines and their layout, one per device, format and sample count.
+struct SpritePipelines {
+    layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    fade_legacy: wgpu::RenderPipeline,
+}
+
+impl SpritePipelines {
+    fn new(device: &wgpu::Device, samples: u32, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sprite texture"),
             entries: &[
@@ -768,7 +769,6 @@ impl SpritePass {
                 sampler_entry(1),
             ],
         });
-        let bind_groups = textures.bind_all(device, &layout, textures.screen_clamp());
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sprites"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -865,6 +865,31 @@ impl SpritePass {
             multiview_mask: None,
             cache: None,
         });
+        Self {
+            layout,
+            pipeline,
+            fade_legacy,
+        }
+    }
+}
+
+impl SpritePass {
+    /// Builds the pipeline over already-uploaded icon pages.
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        samples: u32,
+        textures: &IconTextures,
+        lazy: &Arc<LazyTextures>,
+        format: wgpu::TextureFormat,
+    ) -> io::Result<Self> {
+        let pipelines = super::device_shared::shared(device, ("sprites", format, samples), || {
+            SpritePipelines::new(device, samples, format)
+        });
+        let layout = pipelines.layout.clone();
+        let bind_groups = textures.bind_all(device, &layout, textures.screen_clamp());
+        let pipeline = pipelines.pipeline.clone();
+        let fade_legacy = pipelines.fade_legacy.clone();
         let empty = upload(
             device,
             queue,
@@ -893,6 +918,7 @@ impl SpritePass {
             native_samples: samples,
             native_refusals: Default::default(),
             pipeline,
+            _pipelines: pipelines,
             bind_groups,
             layout,
             sampler: textures.screen_clamp().clone(),

@@ -143,6 +143,29 @@ impl<'r, 's, P: PageRead> Reader<'r, 's, P> {
         Ok(Cells(cells))
     }
 
+    /// A power row's record and the item its event names.
+    fn power(&mut self, fields: dashboard_series::Blob) -> io::Result<PowerRecord> {
+        let mut record: PowerRecord = self.record(fields, 0)?;
+        record.item = self.ordinal(fields, 1)?;
+        Ok(record)
+    }
+
+    /// A cost's record and the item its event names.
+    fn cost(&mut self, fields: dashboard_series::Blob) -> io::Result<CostRecord> {
+        let mut record: CostRecord = self.record(fields, 0)?;
+        record.item = self.ordinal(fields, 1)?;
+        Ok(record)
+    }
+
+    /// The item ordinal cell `at` of `fields` holds.
+    fn ordinal(&mut self, fields: dashboard_series::Blob, at: u64) -> io::Result<u32> {
+        match self.snapshot.field(fields, at)? {
+            Cell::Unsigned(ordinal) => u32::try_from(ordinal).ok(),
+            _ => None,
+        }
+        .ok_or_else(|| invalid("A politics ledger item is malformed"))
+    }
+
     /// The record cell `at` of `fields` holds ([`super::records`]).
     fn record<T: DeserializeOwned>(
         &mut self,
@@ -561,12 +584,12 @@ impl Country {
             for measure in POWER {
                 let key = keys.key(reader.directory, measure);
                 for event in reader.events(key, first, last)? {
-                    let record: PowerRecord = reader.record(event.fields, 0)?;
+                    let record = reader.power(event.fields)?;
                     power.push((read_of(&event), event.sequence, record));
                 }
             }
             for event in reader.events(keys.key(reader.directory, COSTS), first, last)? {
-                let record: CostRecord = reader.record(event.fields, 0)?;
+                let record = reader.cost(event.fields)?;
                 costs.push((read_of(&event), event.sequence, record));
             }
             for event in reader.events(keys.key(reader.directory, DAILY), first, last)? {
@@ -617,16 +640,13 @@ impl Country {
         }
         let key = self.keys.key(reader.directory, ITEMS);
         for event in reader.events(key, i32::MIN, i32::MAX)? {
-            let ordinal = match reader.snapshot.field(event.fields, 0)? {
-                Cell::Unsigned(ordinal) => u32::try_from(ordinal).ok(),
-                _ => None,
-            }
-            .ok_or_else(|| invalid("A politics ledger item is malformed"))?;
+            let ordinal = reader.ordinal(event.fields, 0)?;
             if !missing.contains(&ordinal) || self.items.contains_key(&ordinal) {
                 continue;
             }
             let stored: ItemRecord = reader.record(event.fields, 1)?;
-            self.items.insert(ordinal, Shown::of(stored));
+            self.items
+                .insert(ordinal, Shown::of(stored.keyed(&self.tag, ordinal)));
         }
         if missing.iter().any(|ordinal| !self.items.contains_key(ordinal)) {
             return Err(invalid(
@@ -2000,12 +2020,12 @@ fn totals<P: PageRead>(
                 emit::POWER_KIND => late_rows.push(Late::Power((
                     read_of(&event),
                     event.sequence,
-                    reader.record(event.fields, 0)?,
+                    reader.power(event.fields)?,
                 ))),
                 emit::COST_KIND => late_rows.push(Late::Cost((
                     read_of(&event),
                     event.sequence,
-                    reader.record(event.fields, 0)?,
+                    reader.cost(event.fields)?,
                 ))),
                 _ => stale = true,
             }

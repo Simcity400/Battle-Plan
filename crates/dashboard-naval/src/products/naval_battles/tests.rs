@@ -1205,8 +1205,8 @@ fn naval_battles_wire_windows_cache_and_no_ship_name_tables() {
     assert!(Arc::ptr_eq(&first, &state.lock().unwrap().get(1).unwrap()));
     state.lock().unwrap().insert(3, Arc::new(Scan::default()));
     assert!(
-        state.lock().unwrap().get(2).is_none(),
-        "least recently used branch evicted, never rows"
+        state.lock().unwrap().get(2).is_some(),
+        "each branch keeps its census"
     );
 }
 

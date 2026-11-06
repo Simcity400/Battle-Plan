@@ -195,10 +195,10 @@ impl World {
         }
         for owner in 1..=self.countries {
             let (c, d) = (country(owner), diplomacy(owner));
-            p64(&mut bytes, c, ccountry::VTABLE_RVA as u64);
+            p64(&mut bytes, c, ccountry::VTABLE_RVA.0 as u64);
             p32(&mut bytes, c + ccountry::ID, owner as u32);
             p64(&mut bytes, c + ccountry::DIPLOMACY_STATUS, d as u64);
-            p64(&mut bytes, d, cdiplomacy_status::VTABLE_RVA as u64);
+            p64(&mut bytes, d, cdiplomacy_status::VTABLE_RVA.0 as u64);
             p64(&mut bytes, d + cdiplomacy_status::COUNTRY, c as u64);
             let cells: Vec<u64> = (0..slots).map(|t| status(owner, t) as u64).collect();
             vector(
@@ -216,7 +216,7 @@ impl World {
             );
             for target in 0..slots {
                 let s = status(owner, target);
-                p64(&mut bytes, s, crelation_status::VTABLE_RVA as u64);
+                p64(&mut bytes, s, crelation_status::VTABLE_RVA.0 as u64);
                 p64(&mut bytes, s + crelation_status::DIPLOMACY_STATUS, d as u64);
                 p32(
                     &mut bytes,
@@ -251,7 +251,7 @@ impl World {
         }
         for (index, w) in self.wars.iter().enumerate() {
             let at = war(index);
-            p64(&mut bytes, at, cwar_relation::VTABLE_RVA as u64);
+            p64(&mut bytes, at, cwar_relation::VTABLE_RVA.0 as u64);
             p32(&mut bytes, at + crelation::TYPE_ID, cwar_relation::TYPE);
             p32(&mut bytes, at + crelation::FIRST_COUNTRY, w.first);
             p32(&mut bytes, at + crelation::SECOND_COUNTRY, w.second);

@@ -11,7 +11,7 @@ fn an_hour_named_with_another_localisation_is_read_again() {
     let english: Arc<Localisation> = Arc::new(Localisation::default());
     let french: Arc<Localisation> = Arc::new(Localisation::default());
     let key = |localisation: Option<&Arc<Localisation>>| HourKey {
-        branch_id: "1".into(),
+        branch: 1,
         hour: 100,
         localisation: localisation.cloned(),
     };

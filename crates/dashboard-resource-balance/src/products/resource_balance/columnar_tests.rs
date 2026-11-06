@@ -13,7 +13,7 @@ use dashboard_base::{
     test_fixtures::{CAMPAIGN, continuation_records, file_source, records, resource_frame},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -216,11 +216,10 @@ struct Built {
 
 /// A publication of `hours`, cut after each of `cuts`' hours; when `resume` names one of them,
 /// the emit is saved there and goes on from the publication.
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -234,7 +233,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -248,8 +246,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -280,7 +278,6 @@ fn request(tag: &str, extra: serde_json::Value) -> (query::Params, serde_json::V
 /// reads it: its pool runs, known deal hours, trades and warnings.
 #[test]
 fn replies_from_the_publication_are_the_row_census_across_segments_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let frames = scenario();
     let replay = recording(&frames);
     let cancelled = AtomicBool::new(false);
@@ -315,10 +312,9 @@ fn replies_from_the_publication_are_the_row_census_across_segments_cuts_and_a_re
                 .map(|frame| frame.hour)
                 .find(|&hour| hour > resume)
         }));
-        let built = build(projected(&frames, &starts), cuts, resume, &budget);
-        let cache = Cache::new(&budget);
+        let built = build(projected(&frames, &starts), cuts, resume);
         let mut snapshot =
-            Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+            Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         for (tag, scanned) in &expected {
             let want = super::reply(
@@ -376,12 +372,10 @@ fn the_scenario_counts_unnamed_and_unresolved_rows_every_hour_read() {
 /// from a pool change to the next.
 #[test]
 fn dense_views_summarise_and_navigation_steps_between_changes() {
-    let budget = Budget::new(256 << 20);
     let frames = scenario();
     let (source, _root) = file_source(recording(&frames));
-    let built = build(projected(&frames, &[]), &[135], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(projected(&frames, &[]), &[135], None);
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let context = LoadContext { content: None };
     let coverage = Coverage {
@@ -431,12 +425,10 @@ fn dense_views_summarise_and_navigation_steps_between_changes() {
 /// hours asked for: the reply is the one that never drew those lines.
 #[test]
 fn a_halved_page_keeps_no_samples_of_the_lines_it_gives_away() {
-    let budget = Budget::new(256 << 20);
     let frames = scenario();
     let (source, _root) = file_source(recording(&frames));
-    let built = build(projected(&frames, &[]), &[135], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(projected(&frames, &[]), &[135], None);
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let context = LoadContext { content: None };
     let coverage = Coverage {

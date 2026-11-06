@@ -3,11 +3,7 @@ use crate::{
     Source, SourceKey, map_settings,
     products::{self, ContentOptions, LoadContext},
     protocol::{CampaignMapSettings, replay_revision},
-    reply_cache,
-    transport::{
-        HistoryCacheReply, MapSettingsTarget, ProductRequest, SourceReply, bounded_json,
-        bounded_text,
-    },
+    transport::{MapSettingsTarget, ProductRequest, SourceReply, bounded_json, bounded_text},
 };
 use job_priority::SpawnCarried as _;
 use std::{
@@ -1404,8 +1400,7 @@ impl Inner {
                 }
             }
             LoadJob::PreparedQuery { .. } => Lane::Prepared,
-            LoadJob::HistoryCache { .. }
-            | LoadJob::Preparation { .. }
+            LoadJob::Preparation { .. }
             | LoadJob::PreparationPreferences { .. } => Lane::Interactive,
             LoadJob::PreparationRefresh { .. } | LoadJob::MapSettings(_) | LoadJob::Open(_) => {
                 Lane::History
@@ -1775,17 +1770,6 @@ impl Inner {
                 );
                 self.complete(request, result.map_err(Into::into));
             }
-            LoadJob::HistoryCache {
-                request,
-                clear,
-                options,
-            } => {
-                if request.cancelled() {
-                    return;
-                }
-                let result = history_cache(&options, clear, &request.cancelled);
-                self.complete(request, result.map_err(Into::into));
-            }
             LoadJob::PreparedQuery {
                 request,
                 source,
@@ -2081,23 +2065,6 @@ fn request_result<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, Stri
         .unwrap_or_else(|_| Err("Dashboard request failed while reading the recording".into()))
 }
 
-/// The history cache's size, after clearing it when asked.
-fn history_cache(
-    options: &installed_content_core::ResolveOptions,
-    clear: bool,
-    cancelled: &AtomicBool,
-) -> Result<String, String> {
-    let folder = reply_cache::folder(options);
-    if clear {
-        reply_cache::clear(&folder).map_err(|error| error.to_string())?;
-    }
-    let reply = HistoryCacheReply {
-        bytes: reply_cache::size(&folder),
-        limit: reply_cache::LIMIT,
-    };
-    bounded_json(&reply, cancelled)
-}
-
 pub(super) struct MapSettingsJob {
     pub(super) target: MapSettingsTarget,
     pub(super) request: Arc<Request>,
@@ -2144,11 +2111,6 @@ pub(super) enum LoadJob {
         run: Arc<dyn Fn() + Send + Sync>,
     },
     MapSettings(MapSettingsJob),
-    HistoryCache {
-        request: Arc<Request>,
-        clear: bool,
-        options: installed_content_core::ResolveOptions,
-    },
     Open(OpenJob),
     Product {
         request: Arc<Request>,
@@ -2179,7 +2141,7 @@ impl LoadJob {
             Self::PreparationRefresh { .. } => return None,
             Self::MapSettings(job) => &job.request,
             Self::Open(job) => &job.request,
-            Self::HistoryCache { request, .. } | Self::Product { request, .. } => request,
+            Self::Product { request, .. } => request,
             Self::PreparedQuery { request, .. } | Self::Preparation { request, .. } => request,
             Self::PreparationPreferences { request, .. } => request,
             #[cfg(test)]

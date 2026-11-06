@@ -31,3 +31,29 @@ pub fn command_power(
         },
     )
 }
+
+/// [`command_power`] of any frame's tables, its row holding the fields `mask` names.
+pub fn command_power_in(
+    frame: replay_frame::frame::HourFrame<'_>,
+    slot: u32,
+    mask: u64,
+) -> Option<std::borrow::Cow<'_, CountryCommandPowerRow>> {
+    use replay_data::rows::{TableSchema, tables::CountryCommandPower};
+    let rows = frame
+        .complete::<CountryCommandPower>(mask)
+        .map_err(|why| {
+            crate::triggers::Failure::input(CountryCommandPower::ID, "", None, why.to_string())
+                .resolution_failed();
+        })
+        .ok()?;
+    crate::triggers::refusal::reference(
+        rows.get(u128::from(slot)).ok().flatten(),
+        slot != 0,
+        || {
+            crate::triggers::refusal::missing_reference(
+                replay_data::rows::TableId::CountryCommandPower,
+                Some(crate::triggers::Store::Country(slot)),
+            )
+        },
+    )
+}

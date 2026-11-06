@@ -8,15 +8,20 @@
 //! hour that changes nothing read carries nothing but its hour.
 
 use dashboard_base::products::{idea_format, idea_history::refusal};
-use dashboard_text::identity::{NamingCountry, built_template, character_script_token};
+use dashboard_text::identity::{
+    CHARACTER_IDENTITY, LOOK, NamingCountry, built_template_in, character_script_token_in,
+};
 use dashboard_world::{Hold, Needs, Roster, Tagged, World};
 use installed_content_core::characters::BuiltTemplate;
 use replay::{
     columns,
     segments::{self, Operator, Sink, State},
 };
-use replay_data::rows::{CountryRow, ModifierDefinitionRow, TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::{
+    ActiveIdeaRow, CountryRow, HiredAdvisorRow, LexicalTokenRow, ModifierDefinitionRow, TableId,
+    mask as fields, tables,
+};
+use replay_frame::frame::Tables;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -256,11 +261,18 @@ fn changed(state: &State, table: TableId, mask: u64) -> io::Result<(Vec<u128>, V
 }
 
 /// The rows of `rows`, sorted by owner, that `raw` owns.
-fn owned<R>(rows: &[R], raw: u32, owner: impl Fn(&R) -> u32) -> &[R] {
-    let first = rows.partition_point(|row| owner(row) < raw);
-    let end = rows.partition_point(|row| owner(row) <= raw);
-    &rows[first..end]
+/// The keys of `raw`'s rows of a table keyed by country then ordinal.
+fn owned(raw: u32) -> (u128, u128) {
+    let first = u128::from(raw) << 32;
+    (first, first | u128::from(u32::MAX))
 }
+
+/// The fields a read takes of each table.
+const TOKEN: u64 = fields::<ActiveIdeaRow>(&["token"]);
+const ADVISOR: u64 = fields::<HiredAdvisorRow>(&["character", "idea", "slot"]);
+const IDEA: u64 = fields::<HiredAdvisorRow>(&["idea"]);
+const LITERAL: u64 = fields::<LexicalTokenRow>(&["literal"]);
+const NAMED: u64 = fields::<ModifierDefinitionRow>(&["token"]);
 
 /// What a projection kept of a country it read: the characters and spellings its holdings read.
 #[derive(Default)]
@@ -271,7 +283,6 @@ struct Reader {
 
 /// One segment's projection: every segment starts cold.
 pub struct Projector {
-    asks: Vec<(TableId, Hold)>,
     fields: Fields,
     cold: bool,
     last: Option<i32>,
@@ -298,7 +309,7 @@ const SAVED: &[u8] = b"ideas projector: cold";
 impl Projector {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
-            asks: asks()?,
+
             fields: Fields {
                 characters: mask(
                     TableId::Characters,
@@ -409,22 +420,31 @@ impl Projector {
     }
 
     /// The tag at `index`'s holdings, read from `frame` as the row scan observes them.
-    fn read(&mut self, frame: &DecodedFrame, roster: &Roster, index: usize) -> io::Result<Read> {
+    fn read<F: Tables + ?Sized>(
+        &mut self,
+        frame: &F,
+        roster: &Roster,
+        index: usize,
+    ) -> io::Result<Read> {
         let (tag, holder) = &self.roster[index];
         let (slot, id) = holder.ok_or_else(|| io::Error::other("An unresolved tag was read"))?;
         let tag = Arc::clone(tag);
-        let ideas = frame.complete::<tables::ActiveIdeas>()?;
-        let advisors = frame.complete::<tables::HiredAdvisors>()?;
-        let characters = frame.complete::<tables::Characters>().ok();
-        let lexical = frame.complete::<tables::LexicalTokens>().ok();
+        let ideas = frame.complete_rows::<tables::ActiveIdeas>(TOKEN)?;
+        let advisors = frame.complete_rows::<tables::HiredAdvisors>(ADVISOR)?;
+        let characters = frame
+            .complete_rows::<tables::Characters>(CHARACTER_IDENTITY)
+            .ok();
+        let lexical = frame.complete_rows::<tables::LexicalTokens>(LITERAL).ok();
         let mut reader = Reader::default();
         let mut refused = Vec::new();
         let mut tokenless = Vec::new();
         let mut templates: Vec<(u32, Template)> = Vec::new();
-        let mut roles: BTreeMap<&[u8], Arc<Role>> = BTreeMap::new();
-        let mut held: BTreeSet<&[u8]> = BTreeSet::new();
+        let mut roles: BTreeMap<Vec<u8>, Arc<Role>> = BTreeMap::new();
+        let mut held: BTreeSet<Vec<u8>> = BTreeSet::new();
         for &raw in roster.aliases(slot) {
-            for advisor in owned(advisors, raw, |row| row.country) {
+            let (first, last) = owned(raw);
+            for advisor in advisors.span(first, last).iter() {
+                let advisor = advisor?;
                 let Ok(seat) = std::str::from_utf8(&advisor.slot) else {
                     refused.push((Refusal::Seat, (id, advisor.ordinal, advisor.slot.clone().into())));
                     continue;
@@ -433,11 +453,11 @@ impl Projector {
                     tokenless.push((advisor.character, seat.into()));
                     continue;
                 }
-                let row = characters.and_then(|rows| {
-                    rows.binary_search_by_key(&advisor.character, |character| character.id)
-                        .ok()
-                        .map(|at| &rows[at])
-                });
+                let row = match &characters {
+                    Some(rows) => rows.get(u128::from(advisor.character))?,
+                    None => None,
+                };
+                let row = row.as_deref();
                 reader.characters.push(advisor.character);
                 if let Some(row) = row {
                     reader.spellings.extend(u32::try_from(row.name_token_id).ok());
@@ -447,14 +467,14 @@ impl Projector {
                 }
                 let token = row
                     .zip(lexical)
-                    .and_then(|(row, lexical)| character_script_token(row, lexical))
+                    .and_then(|(row, lexical)| character_script_token_in(row, lexical))
                     .unwrap_or_default();
                 let name = row
                     .and_then(|row| std::str::from_utf8(&row.token).ok())
                     .unwrap_or_default();
                 if !templates.iter().any(|(held, _)| *held == advisor.character) {
                     let template = match row {
-                        Some(row) => Template::Built(built_template(row, lexical)),
+                        Some(row) => Template::Built(built_template_in(row, lexical)),
                         None => Template::Missing {
                             complete: characters.is_some(),
                         },
@@ -462,7 +482,7 @@ impl Projector {
                     templates.push((advisor.character, template));
                 }
                 roles.insert(
-                    advisor.idea.as_slice(),
+                    advisor.idea.clone(),
                     Arc::new(Role {
                         seat: seat.to_owned(),
                         id: advisor.character,
@@ -471,19 +491,20 @@ impl Projector {
                     }),
                 );
             }
-            for idea in owned(ideas, raw, |row| row.country) {
+            for idea in ideas.span(first, last).iter() {
+                let idea = idea?;
                 if !idea.token.is_empty() {
-                    held.insert(idea.token.as_slice());
+                    held.insert(idea.into_owned().token);
                 }
             }
         }
-        held.extend(roles.keys().copied());
+        held.extend(roles.keys().cloned());
         let mut holdings = Vec::with_capacity(held.len());
         for token in held {
-            match std::str::from_utf8(token) {
+            match std::str::from_utf8(&token) {
                 Ok(text) => holdings.push(Holding {
                     token: Arc::from(text),
-                    role: roles.get(token).cloned(),
+                    role: roles.get(&token).cloned(),
                 }),
                 Err(_) => refused.push((Refusal::Token, (id, 0, token.into()))),
             }
@@ -494,15 +515,11 @@ impl Projector {
             tag: tag.as_bytes().to_vec(),
             ..Default::default()
         };
-        let appearance = frame
-            .complete::<tables::CountryAppearance>()
-            .ok()
-            .and_then(|rows| {
-                rows.binary_search_by_key(&id, |row| row.country)
-                    .ok()
-                    .map(|at| &rows[at])
-            });
-        let naming = NamingCountry::read_with_appearance(frame, &country, appearance);
+        let appearance = match frame.complete_rows::<tables::CountryAppearance>(LOOK) {
+            Ok(rows) => rows.get(u128::from(id))?,
+            Err(_) => None,
+        };
+        let naming = NamingCountry::read_with_appearance(frame, &country, appearance.as_deref());
         if naming
             .look
             .as_ref()
@@ -555,21 +572,30 @@ impl Projector {
     }
 
     /// The modifier definitions `frame` records, where they differ from those last handed.
-    fn definitions(&mut self, frame: &DecodedFrame) -> Option<Arc<Definitions>> {
+    fn definitions<F: Tables + ?Sized>(
+        &mut self,
+        frame: &F,
+    ) -> io::Result<Option<Arc<Definitions>>> {
         let (Ok(rows), Ok(lexical)) = (
-            frame.complete::<tables::ModifierDefinitions>(),
-            frame.complete::<tables::LexicalTokens>(),
+            frame.complete_rows::<tables::ModifierDefinitions>(
+                TableId::ModifierDefinitions.full_mask(),
+            ),
+            frame.complete_rows::<tables::LexicalTokens>(LITERAL),
         ) else {
-            return None;
+            return Ok(None);
         };
-        self.named = rows.iter().map(|row| row.token).collect();
-        let index = idea_format::index_recorded(rows, lexical);
+        let mut named = Vec::with_capacity(rows.len());
+        for row in rows.with_mask(NAMED).iter() {
+            named.push(row?.token);
+        }
+        self.named = named.into_iter().collect();
+        let index = idea_format::index_rowsets(rows, lexical)?;
         if self.definitions.as_deref() == Some(&index) {
-            return None;
+            return Ok(None);
         }
         let index = Arc::new(index);
         self.definitions = Some(Arc::clone(&index));
-        Some(index)
+        Ok(Some(index))
     }
 
     fn heap(&self) -> usize {
@@ -711,9 +737,9 @@ impl Operator<World> for Projector {
                 facts: None,
             });
         }
-        let frame = world.frame_held(state, &self.asks)?;
+        let frame = world.columns(state);
         let definitions = if definitions {
-            self.definitions(&frame)
+            self.definitions(&frame)?
         } else {
             None
         };
@@ -737,10 +763,8 @@ impl Operator<World> for Projector {
                     }
                 }
             }
-            let ideas = frame.complete::<tables::ActiveIdeas>()?;
-            let advisors = frame.complete::<tables::HiredAdvisors>()?;
-            let idea = |row: &replay_data::rows::ActiveIdeaRow| (row.country, row.ordinal);
-            let advisor = |row: &replay_data::rows::HiredAdvisorRow| (row.country, row.ordinal);
+            let ideas = frame.complete_rows::<tables::ActiveIdeas>(TOKEN)?;
+            let advisors = frame.complete_rows::<tables::HiredAdvisors>(IDEA)?;
             let refused = &mut facts.refused;
             let mut refuse_idea = |this: &Self, row: &replay_data::rows::ActiveIdeaRow| {
                 if let Some(why) =
@@ -750,14 +774,13 @@ impl Operator<World> for Projector {
                 }
             };
             if whole {
-                for row in ideas {
-                    refuse_idea(self, row);
+                for row in ideas.iter() {
+                    refuse_idea(self, &*row?);
                 }
             } else {
                 for &key in &written[0] {
-                    let key = ((key >> 32) as u32, key as u32);
-                    if let Ok(at) = ideas.binary_search_by_key(&key, idea) {
-                        refuse_idea(self, &ideas[at]);
+                    if let Some(row) = ideas.get(key)? {
+                        refuse_idea(self, &row);
                     }
                 }
             }
@@ -772,14 +795,13 @@ impl Operator<World> for Projector {
                 }
             };
             if whole {
-                for row in advisors {
-                    refuse_advisor(self, row);
+                for row in advisors.iter() {
+                    refuse_advisor(self, &*row?);
                 }
             } else {
                 for &key in &written[1] {
-                    let key = ((key >> 32) as u32, key as u32);
-                    if let Ok(at) = advisors.binary_search_by_key(&key, advisor) {
-                        refuse_advisor(self, &advisors[at]);
+                    if let Some(row) = advisors.get(key)? {
+                        refuse_advisor(self, &row);
                     }
                 }
             }
@@ -794,7 +816,6 @@ impl Operator<World> for Projector {
                 }
             }
         }
-        drop(frame);
         out.push(Hour {
             branch: hour.branch,
             hour: at,

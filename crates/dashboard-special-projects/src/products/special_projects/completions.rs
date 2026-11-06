@@ -8,9 +8,6 @@ use replay::container::Replay;
 use replay_frame::frame::FrameDecoder;
 
 #[cfg(any(test, feature = "test-support"))]
-const CACHED_BRANCHES: usize = 4;
-
-#[cfg(any(test, feature = "test-support"))]
 const UNMAPPED_PROJECT_OWNER: &str = "Project owner has no recorded CountryLinks mapping.";
 #[cfg(any(test, feature = "test-support"))]
 const UNMAPPED_HISTORY_OWNER: &str = "Project history owner has no recorded CountryLinks mapping.";
@@ -353,7 +350,7 @@ pub(super) fn present_observations(
                     }
                     if scoped && let Some(content) = content.as_deref_mut() {
                         names.observe(
-                            frame,
+                            dashboard_world::Viewed::decoded(frame),
                             &history::Actors::read(frame),
                             slot_read(replay.format, &frame.metrics, TableId::Projects, frame.hour),
                             content,
@@ -581,18 +578,8 @@ pub fn completion_events(
     let held = {
         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
         if same_content(&cache.catalogue) {
-            if let Some(index) = cache
-                .completions
-                .iter()
-                .position(|(seen, _)| *seen == branch)
-            {
-                let entry = cache
-                    .completions
-                    .remove(index)
-                    .expect("cached branch exists");
-                let events = Arc::clone(&entry.1);
-                cache.completions.push_back(entry);
-                return Ok(events);
+            if let Some(events) = cache.completions.get(&branch) {
+                return Ok(Arc::clone(events));
             }
             Some((cache.content.clone(), cache.content_error.clone()))
         } else {
@@ -636,12 +623,7 @@ pub fn completion_events(
         cache.content = content;
         cache.content_error = content_error;
     }
-    cache.completions.retain(|(seen, _)| *seen != branch);
-    cache.completions.push_back((branch, Arc::clone(&events)));
-    // A cache budget, never a country limit or a truncation of branch facts.
-    while cache.completions.len() > CACHED_BRANCHES {
-        cache.completions.pop_front();
-    }
+    cache.completions.insert(branch, Arc::clone(&events));
     Ok(events)
 }
 

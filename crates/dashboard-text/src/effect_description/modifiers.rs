@@ -6,7 +6,46 @@ use crate::{
 };
 use installed_content_core::{modifiers::Modifiers, scope::Scope as Parsed};
 use installed_content_localisation::localisation::crt_case_text;
-use replay_data::{rows::CachedModifier, rows::ModifierDefinitionRow, rows::tables};
+use replay_data::rows::{
+    AdvisorTokenRow, CachedModifier, CountryAppearanceRow, LexicalTokenRow,
+    ModifierDefinitionRow, ReservedCountryNamingRow, SimulationFeatureRow, TimedIdeaRow, tables,
+};
+
+/// The fields of each table the modifier descriptions read.
+pub(super) const DEFINITION_TEXT: u64 = mask::<ModifierDefinitionRow>(&[
+    "token",
+    "name_key",
+    "postfix_key",
+    "argument",
+    "flags",
+    "category_mask",
+    "feature_selector",
+    "precision",
+]);
+const DEFINITION_TOKEN: u64 = mask::<ModifierDefinitionRow>(&["token"]);
+const FEATURES: u64 = mask::<SimulationFeatureRow>(&["dlc_mask"]);
+const LOOK: u64 = mask::<CountryAppearanceRow>(&["name_tag", "cosmetic_tag"]);
+const RESERVED_LOOK: u64 = mask::<ReservedCountryNamingRow>(&["name_tag", "cosmetic_tag"]);
+const TIMED: u64 = mask::<TimedIdeaRow>(&["token", "days"]);
+const ADVISOR_TOKEN: usize = replay_data::rows::column::<AdvisorTokenRow>("token");
+
+/// The first definition, in index order, whose token LexicalTokens spells `name` without case,
+/// holding the fields `definitions` builds; a walk builds the others' tokens alone.
+fn named_definition<'f>(
+    definitions: Rowset<'f, ModifierDefinitionRow>,
+    tokens: &Rowset<'f, LexicalTokenRow>,
+    name: &[u8],
+) -> Result<Option<Cow<'f, ModifierDefinitionRow>>, String> {
+    for row in each(definitions.with_mask(DEFINITION_TOKEN)) {
+        let row = row?;
+        if crate::scripted_text::spelled(tokens, row.token)?
+            .is_some_and(|literal| literal.eq_ignore_ascii_case(name))
+        {
+            return keyed(&definitions, row.key());
+        }
+    }
+    Ok(None)
+}
 
 mod advisors;
 mod power_balance;
@@ -93,14 +132,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let rows = self
             .context
             .world()?
-            .frame()
-            .lexical()
+            .tables()
+            .complete::<tables::LexicalTokens>(0)
             .map_err(|why| why.to_string())?;
-        let literal = rows
-            .iter()
-            .find(|row| row.token == token)
+        let literal = crate::scripted_text::spelled(&rows, token)?
             .ok_or_else(|| format!("idea variable references unrecorded lexer token {token}"))?;
-        let literal = std::str::from_utf8(installed_content_core::parser::c_string(&literal.literal))
+        let literal = std::str::from_utf8(installed_content_core::parser::c_string(literal))
             .map_err(|_| "idea variable token is not UTF-8")?;
         self.idea(literal)
     }
@@ -127,17 +164,24 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .name_lists
             .ok_or_else(|| self.content_gap("name lists"))?;
         let world = self.context.world()?;
-        let civil = identity::civil_war(world.frame(), country);
+        let frame = world.tables();
+        let civil = identity::civil_war(&frame, country);
         let original_or_own_tag =
-            installed_content_country_names::country_names::original_or_own_tag(world.frame(), country);
+            installed_content_country_names::country_names::original_or_own_tag_in(&frame, country);
+        let reserved;
+        let appearance;
         let look = if country == 0 {
-            let rows = world
-                .frame()
-                .complete::<tables::ReservedCountryNaming>()
+            let rows = frame
+                .complete::<tables::ReservedCountryNaming>(RESERVED_LOOK)
                 .map_err(|why| why.to_string())?;
-            let [row] = rows else {
+            if rows.len() != 1 {
                 return Err("ReservedCountryNaming has no singleton row for country zero".into());
-            };
+            }
+            reserved = each(rows)
+                .next()
+                .transpose()?
+                .ok_or("ReservedCountryNaming has no singleton row for country zero")?;
+            let row = &reserved;
             Some(CountryLook {
                 name_tag: std::str::from_utf8(&row.name_tag)
                     .map_err(|_| "reserved idea name_tag is not UTF-8")?,
@@ -147,12 +191,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 civil_war: Ok(false), // tests canonical zero, not a dynamic country.
             })
         } else {
-            world
-                .frame()
-                .complete::<tables::CountryAppearance>()
+            appearance = frame
+                .complete::<tables::CountryAppearance>(LOOK)
                 .map_err(|why| why.to_string())?
-                .iter()
-                .find(|row| world.recorded().slot(row.country) == Some(country))
+                .keyed(|key| world.recorded().slot(key as u32) == Some(country))
+                .next()
+                .transpose()
+                .map_err(built)?;
+            appearance
+                .as_ref()
                 .map(|row| -> Result<_, String> {
                     Ok(CountryLook {
                         name_tag: std::str::from_utf8(&row.name_tag)
@@ -360,14 +407,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn idea_advisor(&self, token: &str) -> Result<bool, String> {
         // registered advisor tokens take precedence over idea.
-        Ok(self
-            .context
-            .text
-            .frame()
-            .complete::<tables::AdvisorTokens>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .any(|row| row.token.eq_ignore_ascii_case(token.as_bytes())))
+        for text in self
+            .complete::<tables::AdvisorTokens>(0)?
+            .texts(|row| &row.token, ADVISOR_TOKEN)
+        {
+            if text.map_err(built)?.eq_ignore_ascii_case(token.as_bytes()) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(super) fn ideas_effect(
@@ -400,9 +448,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .effect_character(Scope::Character(character))?
                     .ok_or_else(|| format!("Characters lacks advisor character {character}"))?;
                 names.push(if tokens.len() == 1 {
-                    self.advisor_idea_tooltip(character, token, scopes, remove, show)?
+                    self.advisor_idea_tooltip(&character, token, scopes, remove, show)?
                 } else {
-                    let mut name = self.effect_character_name(character)?;
+                    let mut name = self.effect_character_name(&character)?;
                     // also tries the idea name, even for an advisor.
                     if show && let Some(idea) = self.idea(token)? {
                         name.push_str(&self.idea_name(idea, scopes)?);
@@ -476,17 +524,20 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<Option<i32>, String> {
         let country = self.current_country(scopes)?;
         let world = self.context.world()?;
-        Ok(world
-            .frame()
-            .complete::<tables::TimedIdeas>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .filter(|row| {
-                world.slot(row.country) == Some(country)
-                    && row.token.eq_ignore_ascii_case(idea.token.as_bytes())
-            })
-            .min_by_key(|row| row.ordinal)
-            .map(|row| row.days))
+        let rows = world
+            .tables()
+            .complete::<tables::TimedIdeas>(TIMED)
+            .map_err(|why| why.to_string())?;
+        let mut first: Option<Cow<'_, TimedIdeaRow>> = None;
+        for row in rows.keyed(|key| world.slot((key >> 32) as u32) == Some(country)) {
+            let row = row.map_err(built)?;
+            if row.token.eq_ignore_ascii_case(idea.token.as_bytes())
+                && first.as_ref().is_none_or(|first| row.ordinal < first.ordinal)
+            {
+                first = Some(row);
+            }
+        }
+        Ok(first.map(|row| row.days))
     }
 
     pub(super) fn modify_timed_idea(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -506,9 +557,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             }
         }
         let (year, month, day) = super::numeric::numeric_date_parts(
-            self.context
-                .text
-                .frame()
+            self.tables()
                 .hour()
                 .wrapping_add(added.wrapping_add(days).wrapping_mul(24)),
         );
@@ -1175,23 +1224,19 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .unwrap_or_default();
         let modifiers = installed_content_core::modifiers::values(fields);
         let mut text = String::new();
-        let frame = self.context.world()?.frame();
+        let frame = self.context.world()?.tables();
         let definitions = frame
-            .complete::<tables::ModifierDefinitions>()
+            .complete::<tables::ModifierDefinitions>(DEFINITION_TEXT)
             .map_err(|why| why.to_string())?;
-        let tokens = frame.lexical().map_err(|why| why.to_string())?;
+        let tokens = frame
+            .complete::<tables::LexicalTokens>(0)
+            .map_err(|why| why.to_string())?;
         for modifier in modifiers.listed() {
-            let definition = definitions
-                .iter()
-                .find(|definition| {
-                    tokens.iter().any(|token| {
-                        token.token == definition.token
-                            && token.literal.eq_ignore_ascii_case(modifier.name.as_bytes())
-                    })
-                })
+            let definition = named_definition(definitions, &tokens, modifier.name.as_bytes())?
                 .ok_or_else(|| {
                     format!("state modifier {} has no recorded definition", modifier.key)
                 })?;
+            let definition = &*definition;
             if !feature_enabled(frame, definition)? {
                 continue;
             }
@@ -1295,22 +1340,17 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if let Some(why) = modifiers.unheld.cause() {
             return Err(why.to_owned());
         }
-        let frame = self.context.world()?.frame();
+        let frame = self.context.world()?.tables();
         let definitions = frame
-            .complete::<tables::ModifierDefinitions>()
+            .complete::<tables::ModifierDefinitions>(DEFINITION_TEXT)
             .map_err(|why| why.to_string())?;
-        let tokens = frame.lexical().map_err(|why| why.to_string())?;
+        let tokens = frame
+            .complete::<tables::LexicalTokens>(0)
+            .map_err(|why| why.to_string())?;
         let mut values = modifiers
             .listed()
             .map(|modifier| {
-                let definition = definitions
-                    .iter()
-                    .find(|definition| {
-                        tokens.iter().any(|token| {
-                            token.token == definition.token
-                                && token.literal.eq_ignore_ascii_case(modifier.name.as_bytes())
-                        })
-                    })
+                let definition = named_definition(definitions, &tokens, modifier.name.as_bytes())?
                     .ok_or_else(|| {
                         format!("idea modifier {} has no recorded definition", modifier.key)
                     })?;
@@ -1318,6 +1358,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             })
             .collect::<Result<Vec<_>, String>>()?;
         values.sort_by_key(|(_, definition)| definition.index);
+        let values: Vec<(i64, &ModifierDefinitionRow)> =
+            values.iter().map(|(value, definition)| (*value, &**definition)).collect();
         self.modifier_description_values(&values, &modifiers.tooltips(), prefix, options)
     }
 
@@ -1376,27 +1418,23 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if entries.is_empty() {
             return self.modifier_description_values(&[], tooltips, prefix, options);
         }
-        let definitions = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::ModifierDefinitions>()
-            .map_err(|why| why.to_string())?;
+        let definitions = self.complete::<tables::ModifierDefinitions>(DEFINITION_TEXT)?;
         let values = entries
             .iter()
             .map(|entry| {
-                let definition = definitions
-                    .iter()
-                    .find(|definition| definition.index == entry.definition)
-                    .ok_or_else(|| {
+                let definition = keyed(&definitions, u128::from(entry.definition))?.ok_or_else(
+                    || {
                         format!(
                             "advisor cached modifier {} has no recorded definition",
                             entry.definition
                         )
-                    })?;
+                    },
+                )?;
                 Ok((entry.value, definition))
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let values: Vec<(i64, &ModifierDefinitionRow)> =
+            values.iter().map(|(value, definition)| (*value, &**definition)).collect();
         self.modifier_description_values(&values, tooltips, prefix, options)
     }
 
@@ -1413,7 +1451,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 options.outer_colour
             ));
         }
-        let frame = self.context.text.frame();
+        let frame = self.tables();
         let mut out = String::new();
         if options.outer_colour != 0 {
             // these bytes precede the first line's separator check.
@@ -1501,17 +1539,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
 /// Whether `definition`'s feature selector, if it has one, is in the
 /// recorded DLC mask.
-fn feature_enabled(
-    frame: &dyn replay_frame::frame::DecodedSource,
-    definition: &ModifierDefinitionRow,
-) -> Result<bool, String> {
+fn feature_enabled(frame: HourFrame<'_>, definition: &ModifierDefinitionRow) -> Result<bool, String> {
     if definition.feature_selector == 0 {
         return Ok(true);
     }
-    let [features] = frame
-        .complete::<tables::SimulationFeatures>()
-        .map_err(|why| why.to_string())?
-    else {
+    let features = frame
+        .complete::<tables::SimulationFeatures>(FEATURES)
+        .map_err(|why| why.to_string())?;
+    let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
         return Err("SimulationFeatures has no unique feature mask".into());
     };
     Ok(features.dlc_mask & definition.feature_selector != 0)

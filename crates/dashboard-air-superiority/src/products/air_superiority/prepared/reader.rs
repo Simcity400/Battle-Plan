@@ -5,14 +5,9 @@ use super::*;
 use crate::products::air_superiority::daily::{
     self, Compose, Day, DayOperands, Group, Layout, Pair, Tags, Theatres, View,
 };
-use dashboard_base::prepared::facts::{
-    Facts, MemoryBudget, ReadPages, ReadPhase, Resident, Status,
-};
+use dashboard_base::prepared::facts::{Facts, ReadPages, ReadPhase, Resident, Status};
 use serde::de::DeserializeOwned;
 use std::{borrow::Cow, sync::Mutex};
-
-/// The page cache one read of the facts keeps.
-const READ_CACHE_BYTES: usize = 8 << 20;
 
 #[cfg(test)]
 thread_local! {
@@ -36,7 +31,6 @@ impl Reads<'_> {
         daily: &Daily,
         name: &'static str,
         params: &impl Serialize,
-        bytes: impl FnOnce(&T) -> usize,
         extract: impl FnOnce() -> io::Result<T>,
     ) -> io::Result<Arc<T>> {
         match self.source {
@@ -47,7 +41,6 @@ impl Reads<'_> {
                         params,
                         &daily.publication,
                         self.cancelled,
-                        bytes,
                         extract,
                     )
             }
@@ -154,33 +147,6 @@ impl Resolved {
             .filter(|position| !self.remnants.contains_key(position));
         groups.chain(remnants).chain(lone).min()
     }
-
-    fn bytes(&self) -> usize {
-        let text = |text: &str| text.len() + size_of::<String>();
-        size_of::<Self>()
-            + self.layout.bytes()
-            + self
-                .groups
-                .iter()
-                .map(|(key, faction, (name, leader, tag, _, factions, colour))| {
-                    text(key)
-                        + faction.as_deref().map_or(0, text)
-                        + text(name)
-                        + leader.as_deref().map_or(0, text)
-                        + tag.as_deref().map_or(0, text)
-                        + factions
-                            .iter()
-                            .map(|(id, name)| text(id) + text(name))
-                            .sum::<usize>()
-                        + colour.as_deref().map_or(0, text)
-                })
-                .sum::<usize>()
-            + self
-                .remnants
-                .values()
-                .map(|key| text(key) + 8)
-                .sum::<usize>()
-    }
 }
 
 /// The present countries' identities at an hour, as side keys name them,
@@ -214,20 +180,6 @@ impl Identities {
             counts,
             remnants,
         })
-    }
-
-    fn bytes(&self) -> usize {
-        self.by_tag
-            .iter()
-            .map(|(tag, identity)| tag.len() + identity.len() + 64)
-            .sum::<usize>()
-            + self
-                .remnants
-                .iter()
-                .map(|tag| tag.len() + 24)
-                .sum::<usize>()
-            + self.counts.bytes()
-            + size_of::<Self>()
     }
 }
 
@@ -424,15 +376,6 @@ impl Catalogue {
                 .collect(),
         }
     }
-
-    fn bytes(&self) -> usize {
-        self.active.capacity() * 16
-            + self
-                .pairs
-                .iter()
-                .map(|(tag, regions)| tag.capacity() + 64 + regions.capacity() * 40)
-                .sum::<usize>()
-    }
 }
 
 /// A day composed from the hourly series at one hour: the branch's open
@@ -457,10 +400,6 @@ pub(super) struct Daily {
     /// The pages this state was read from, which every read it keeps names.
     publication: Vec<u8>,
     columns: Option<facts::Columns>,
-    /// Counts what the restored columns retain, which the observation cache bounds.
-    budget: MemoryBudget,
-    /// The bytes the restored columns retain.
-    facts_bytes: usize,
     /// Consecutive runs with the same theatres, for theatre filters.
     theatres: Vec<(i32, i32, Arc<Theatres>)>,
     epochs: Vec<i32>,
@@ -686,8 +625,6 @@ impl Daily {
             groups,
             fields: std::sync::OnceLock::new(),
             publication: Vec::new(),
-            budget: MemoryBudget::new(usize::MAX / 4),
-            facts_bytes: 0,
             theatres: Vec::new(),
             columns: None,
             epochs: Vec::new(),
@@ -716,9 +653,8 @@ impl Daily {
         daily.state = state;
         if let Some(saved) = daily.state.facts.checkpoints().cloned() {
             let mut session = reads.session()?;
-            let columns =
-                facts::Columns::restore(&mut session, &saved, &daily.budget, READ_CACHE_BYTES)?;
-            let phase = ReadPhase::new(&mut session, daily.budget.clone(), READ_CACHE_BYTES)?;
+            let columns = facts::Columns::restore(&mut session, &saved)?;
+            let phase = ReadPhase::new(&mut session);
             let sets: Vec<Tags> = entries(&phase, &columns.sets, cancelled)?
                 .into_iter()
                 .map(|set: Vec<String>| set.into())
@@ -805,8 +741,6 @@ impl Daily {
                     .push((run.first, run.last, Arc::clone(&run.data.theatres))),
             }
         }
-        // Read phases are over: the budget now holds what the columns retain.
-        daily.facts_bytes = daily.budget.used();
         Ok(daily)
     }
 
@@ -908,10 +842,6 @@ impl Daily {
             self,
             "air-superiority:viewpoint",
             &key,
-            |(sides, index): &(Vec<AirSide>, HashMap<String, u32>)| {
-                dashboard_base::prepared::query::observations::serde_bytes(sides)
-                    + index.keys().map(|key| key.len() + 40).sum::<usize>()
-            },
             || {
                 let mut sides = Vec::new();
                 let mut index = HashMap::new();
@@ -1093,75 +1023,6 @@ impl Daily {
             pairs,
             country: scores,
         }))
-    }
-
-    pub fn bytes(&self) -> usize {
-        use dashboard_base::prepared::query::observations::serde_bytes;
-        let anchors = &self.anchors;
-        let mut rosters = HashSet::new();
-        let mut operands = HashSet::new();
-        let mut theatres = HashSet::new();
-        let mut runs = self.runs.capacity() * size_of::<Run>();
-        for run in &self.runs {
-            let data = &run.data;
-            runs += size_of::<DayData>() + data.used.as_ref().map_or(0, |used| used.capacity() * 4);
-            if let Some(roster) = &data.roster
-                && rosters.insert(Arc::as_ptr(roster))
-            {
-                runs += roster.bytes();
-            }
-            if operands.insert(Arc::as_ptr(&data.operands)) {
-                let tags = |tags: &Tags| tags.iter().map(|tag| tag.len() + 24).sum::<usize>();
-                runs += tags(&data.operands.present)
-                    + tags(&data.operands.witnessed)
-                    + tags(&data.operands.invalid);
-            }
-            if theatres.insert(Arc::as_ptr(&data.theatres)) {
-                runs += serde_bytes(&*data.theatres);
-            }
-        }
-        let identities: usize = self
-            .identities
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .values()
-            .flatten()
-            .map(|identities| identities.bytes())
-            .sum();
-        size_of::<Self>()
-            + serde_bytes(&self.state)
-            + serde_bytes(&self.state.keys)
-            + serde_bytes(&self.groups)
-            + self.groups.dictionary_bytes()
-            + self.active.bytes()
-            + serde_bytes(&(
-                &anchors.countries,
-                &anchors.factions,
-                &anchors.faction_hours,
-                &anchors.country_reads,
-                &anchors.faction_reads,
-            ))
-            // The fields parsed from the keys.
-            + serde_bytes(&self.state.keys)
-            + self.publication.capacity()
-            + self.epochs.capacity() * 4
-            + identities
-            + self.catalogue.bytes()
-            + runs
-            + self.tail.as_ref().map_or(0, |(_, pairs)| serde_bytes(pairs))
-            + serde_bytes(&*self.dictionary)
-            + self.index.keys().map(|key| key.len() + 40).sum::<usize>()
-            + self
-                .activity
-                .values()
-                .map(|totals| totals.capacity() * size_of::<(i32, i32, u128)>() + 48)
-                .sum::<usize>()
-            + self
-                .columns
-                .as_ref()
-                .map_or(0, |_| size_of::<facts::Columns>())
-            + self.facts_bytes
-            + self.theatres.capacity() * size_of::<(i32, i32, Arc<Theatres>)>()
     }
 }
 
@@ -1370,13 +1231,6 @@ impl CountryScores {
             .filter(|(first, _, _)| *first <= day)
             .and_then(|(_, _, value)| *value)
     }
-
-    fn bytes(&self) -> usize {
-        self.regions
-            .values()
-            .map(|runs| runs.capacity() * size_of::<(i32, i32, Option<(i64, i64)>)>() + 48)
-            .sum()
-    }
 }
 
 impl Daily {
@@ -1396,7 +1250,6 @@ impl Daily {
             self,
             "air-superiority:country",
             &tag,
-            CountryScores::bytes,
             || {
                 let samples = self.sample_hours();
                 let hours: Vec<i32> = samples.iter().map(|(_, hour)| *hour).collect();
@@ -1460,29 +1313,23 @@ impl Daily {
         reads: &Reads<'_>,
         mut visit: impl FnMut(u32, &[(i32, i32, Arc<Vec<Pair>>)]) -> io::Result<()>,
     ) -> io::Result<()> {
-        let mut regions: BTreeMap<u32, RegionPairs> = BTreeMap::new();
-        if let Some(columns) = &self.columns {
-            let mut session = reads.session()?;
-            let phase = ReadPhase::new(&mut session, self.budget.clone(), READ_CACHE_BYTES)?;
-            for region in keys(&phase, &columns.pairs)? {
-                let pairs = intervals(&phase, &columns.pairs, &region, reads.cancelled)?
-                    .into_iter()
-                    .map(|(first, last, pairs)| (first, last, Arc::new(pairs)))
-                    .collect();
-                regions.insert(region, pairs);
-            }
-        }
+        let read = self.read_pairs(reads)?;
+        let mut tails: BTreeMap<u32, RegionPairs> = BTreeMap::new();
         if let Some((day, tail)) = &self.tail {
             for (region, pairs) in tail {
-                regions
-                    .entry(*region)
-                    .or_default()
-                    .push((*day, *day, Arc::new(pairs.clone())));
+                let mut held = read.get(region).cloned().unwrap_or_default();
+                held.push((*day, *day, Arc::new(pairs.clone())));
+                tails.insert(*region, held);
             }
         }
-        for (region, pairs) in regions {
+        let regions: BTreeSet<u32> = read.keys().chain(tails.keys()).copied().collect();
+        for region in regions {
             check_cancel(reads.cancelled)?;
-            visit(region, &pairs)?;
+            let pairs = tails
+                .get(&region)
+                .or_else(|| read.get(&region))
+                .map_or(&[][..], Vec::as_slice);
+            visit(region, pairs)?;
         }
         Ok(())
     }
@@ -1518,8 +1365,6 @@ impl Daily {
         view: RequestView<'_>,
         keys: Option<&HashSet<&str>>,
     ) -> io::Result<Totals<'d>> {
-        let spans_bytes =
-            |spans: &Spans| spans.capacity() * size_of::<(i32, i32, u128, u128)>() + 48;
         match view {
             RequestView::Sides => {
                 let Some(keys) = keys else {
@@ -1529,14 +1374,6 @@ impl Daily {
                     self,
                     "air-superiority:side-totals",
                     &(),
-                    |totals: &HashMap<u32, HashMap<u32, Spans>>| {
-                        totals
-                            .values()
-                            .flat_map(|sides| sides.values())
-                            .map(spans_bytes)
-                            .sum::<usize>()
-                            + totals.len() * 64
-                    },
                     || {
                         let mut totals: HashMap<u32, HashMap<u32, Spans>> = HashMap::new();
                         let mut composed: HashMap<*const DayData, Compose> = HashMap::new();
@@ -1576,9 +1413,6 @@ impl Daily {
                     self,
                     "air-superiority:view-totals",
                     &viewpoint,
-                    |totals: &HashMap<u32, Spans>| {
-                        totals.values().map(spans_bytes).sum::<usize>() + totals.len() * 32
-                    },
                     || {
                         let mut totals: HashMap<u32, Spans> = HashMap::new();
                         let mut composed: HashMap<*const DayData, Compose> = HashMap::new();
@@ -1603,9 +1437,6 @@ impl Daily {
                     self,
                     "air-superiority:country-totals",
                     &tag,
-                    |totals: &HashMap<u32, Spans>| {
-                        totals.values().map(spans_bytes).sum::<usize>() + totals.len() * 32
-                    },
                     || {
                         let mut totals: HashMap<u32, Spans> = HashMap::new();
                         let mut composed: HashMap<*const DayData, Compose> = HashMap::new();
@@ -1638,33 +1469,28 @@ impl Daily {
         }
     }
 
-    /// `region`'s representatives' pairs over every day it was active, read
-    /// once a publication; the open day's are the tail's.
-    fn region_pairs(&self, reads: &Reads<'_>, region: u32) -> io::Result<Arc<RegionPairs>> {
+    /// Every region's representatives' pairs over every day it was active,
+    /// read once a publication; the open day's are the tail's.
+    fn read_pairs(&self, reads: &Reads<'_>) -> io::Result<Arc<BTreeMap<u32, RegionPairs>>> {
         let Some(columns) = &self.columns else {
             return Ok(Arc::default());
         };
         reads.cached(
             self,
             "air-superiority:pairs",
-            &region,
-            |pairs: &RegionPairs| {
-                pairs.capacity() * size_of::<(i32, i32, Arc<Vec<Pair>>)>()
-                    + pairs
-                        .iter()
-                        .map(|(_, _, pairs)| {
-                            pairs.capacity() * size_of::<Pair>()
-                                + pairs.iter().map(|(tag, _)| tag.capacity()).sum::<usize>()
-                        })
-                        .sum::<usize>()
-            },
+            &(),
             || {
                 let mut session = reads.session()?;
-                let phase = ReadPhase::new(&mut session, self.budget.clone(), READ_CACHE_BYTES)?;
-                Ok(intervals(&phase, &columns.pairs, &region, reads.cancelled)?
-                    .into_iter()
-                    .map(|(first, last, pairs)| (first, last, Arc::new(pairs)))
-                    .collect())
+                let phase = ReadPhase::new(&mut session);
+                let mut regions = BTreeMap::new();
+                for region in keys(&phase, &columns.pairs)? {
+                    let pairs = intervals(&phase, &columns.pairs, &region, reads.cancelled)?
+                        .into_iter()
+                        .map(|(first, last, pairs)| (first, last, Arc::new(pairs)))
+                        .collect();
+                    regions.insert(region, pairs);
+                }
+                Ok(regions)
             },
         )
     }
@@ -1889,15 +1715,19 @@ pub(super) fn timeline(
         Some(tag) => Some(daily.country_scores(reads, tag)?),
         None => None,
     };
+    let read_pairs = match view {
+        RequestView::Country(_) => None,
+        _ => Some(daily.read_pairs(reads)?),
+    };
     let mut composed: HashMap<*const DayData, Compose> = HashMap::new();
     let mut indices: HashMap<(*const DayData, u32), u32> = HashMap::new();
     let mut rows = Vec::new();
     for (region, _) in ranked {
         check_cancel(reads.cancelled)?;
-        let region_pairs = match view {
-            RequestView::Country(_) => Arc::default(),
-            _ => daily.region_pairs(reads, region)?,
-        };
+        let region_pairs = read_pairs
+            .as_ref()
+            .and_then(|read| read.get(&region))
+            .map_or(&[][..], Vec::as_slice);
         let active = daily.activity.get(&region).map_or(&[][..], Vec::as_slice);
         let mut cells: Vec<(usize, AirCell)> = Vec::new();
         // The inputs of the cell last composed, which a day with the same repeats.

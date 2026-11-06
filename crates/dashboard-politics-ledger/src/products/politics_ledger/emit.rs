@@ -1,35 +1,33 @@
-//! The ledger's emit: the accounting of each projected hour ([`facts::Hour`]), written as the
-//! family's series publication. A country's native rows are recorded once, as the read that first
-//! named their identity's tag saw them, each as the reply shows it ([`super::records`]), and each
-//! item once, named at its first payment; its spending coverage, holds and spending parts as
-//! runs and events that change only when they do; the census as the branch's,
-//! and each tag's presence in it where that changes. An hour that changes nothing of a country
-//! appends nothing.
+//! The ledger's emit: the accounting of each projected hour ([`facts::Hour`], [`super::ledger`]),
+//! written as the family's series publication. A country's native rows are recorded once, as the
+//! read that first named their identity's tag saw them, each as the reply shows it
+//! ([`super::records`]), and each item once, named at its first payment; its spending coverage,
+//! holds and spending parts as runs and events that change only when they do; the census as the
+//! branch's, and each tag's presence in it where that changes. An hour that changes nothing of a
+//! country appends nothing.
 //!
-//! The emit holds what only earlier hours know: tags by capture identity, which rows were
-//! recorded, the rows waiting for a tag, the native tables as the hour leaves them, each
-//! country's open coverage, holds and day parts, and warning rates. A reply reads everything
-//! else back from the publication ([`super::query`]).
+//! The walk's lens folds most countries of a segment itself ([`super::lens`]): the emit folds
+//! each until the lens binds it, two days into the segment, where the two hold it alike; from
+//! there it only replays what the lens hands it, writing the country's rows, items and parts,
+//! and adds the rollups the lens settles to those it held before. It folds the country itself
+//! again from where the lens hands it back. A reply reads everything back from the publication
+//! ([`super::query`]).
 
-use super::facts::{self, CensusRow, Cost, Government, Hour, Power};
-use super::records::{self, CostRecord, DailyRecord, PowerRecord};
-use super::rows::Holder;
-use super::tally::{self, Contribution};
+use super::facts::{self, Hour};
+use super::ledger::{self, Country, Field, Ledger, Out, Raw};
+use super::lens::{self, Bind, Op, Piece, Taken};
+use super::packed;
+use super::tally;
 use super::*;
-use super::{items, present};
 use dashboard_base::prepared::codec;
 use dashboard_base::products::politics_content::PoliticsContent;
+use dashboard_series::hash::FastMap;
 use dashboard_series::{
-    Cell, Event, Evidence, Knownness, RunMode, Span, Writer,
+    Blob, Cell, Event, Evidence, Knownness, RunMode, Span, Writer,
     carry::Carry,
     codec::Decode,
     family::{Actors, Directory, Place},
 };
-use dashboard_series::hash::{FastMap, Words};
-use std::{collections::HashSet, hash::BuildHasherDefault};
-
-/// A set keyed by [`Words`], as [`FastMap`] is.
-type FastSet<K> = HashSet<K, BuildHasherDefault<Words>>;
 
 /// The family's keys are spelled under it.
 pub const SCHEMA: u64 = 10;
@@ -114,641 +112,142 @@ pub const DECIMALS: u8 = 5;
 const DOMAIN: u64 = 0;
 /// The branch's actor.
 pub const BRANCH: &[u8] = b"";
-const CURRENCIES: [&str; 2] = ["Political", "Command"];
+pub(super) const CURRENCIES: [&str; 2] = ["Political", "Command"];
+
+/// The measures a tag's keys are cached for: every one below [`CENSUS`].
+const MEASURES: usize = CENSUS as usize;
+
+/// An item the lens names that the emit has not.
+const UNNAMED: u32 = u32::MAX;
 
 fn invalid(what: &str) -> io::Error {
     dashboard_core::invalid(format!("Politics ledger emit: {what}"))
 }
 
-fn text(writer: &mut Writer<'_>, bytes: &[u8]) -> io::Result<Cell> {
+/// `what`, met while a lens folds countries the emit cannot publish without: the fold is wrong,
+/// never the recorded data, so it ends the family rather than refuse its hour.
+fn unrefused(error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::InvalidData {
+        io::Error::other(format!("Politics ledger lens: {error}"))
+    } else {
+        error
+    }
+}
+
+fn lens_failure(what: &str) -> io::Error {
+    io::Error::other(format!("Politics ledger lens: {what}"))
+}
+
+fn text(writer: &mut Writer, bytes: &[u8]) -> io::Result<Cell> {
     if bytes.is_empty() {
         return Ok(Cell::Text(dashboard_series::Blob::EMPTY));
     }
     Ok(Cell::Text(writer.bytes(bytes)?))
 }
 
-/// The native day a power row closes: daily upkeep and gains only.
-fn power_day(row: &CountryPowerChangeRow) -> Option<i32> {
-    matches!(row.cause, PowerCause::AbilityUpkeep | PowerCause::DailyGain)
-        .then(|| row.hour.div_euclid(24) * 24)
-}
-
-/// A tag's capture coverage at a read, as its account reads and writes it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Coverage {
-    country: Option<u32>,
-    instance: Option<u32>,
-    since_hour: Option<i32>,
-    through_hour: Option<i32>,
-    epoch: Option<u64>,
-    streams: u8,
-    reason: Option<Gap>,
-}
-
-/// Why a read holds no current capture.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum Gap {
-    Unavailable,
-    Stale,
-}
-
-impl Gap {
-    fn text(self) -> &'static str {
-        match self {
-            Self::Unavailable => "country identity or politics coverage unavailable",
-            Self::Stale => "politics coverage is stale at this read",
-        }
-    }
-}
-
-impl Coverage {
-    /// A capture as a read's coverage names it.
-    fn of(row: &PoliticsCaptureCoverageRow) -> Self {
-        Self {
-            country: Some(row.country),
-            instance: Some(row.instance),
-            since_hour: Some(row.since_hour),
-            through_hour: Some(row.through_hour),
-            epoch: Some(row.epoch),
-            streams: row.streams,
-            reason: None,
-        }
-    }
-
-    fn identity(&self) -> Option<(u32, u64)> {
-        self.country.zip(self.epoch)
-    }
-
-    /// Whether `value` continues `self`, the coverage a country's last read gave.
-    fn continued_by(&self, value: &Self) -> bool {
-        self.country == value.country
-            && self.instance == value.instance
-            && self.epoch == value.epoch
-            && self.streams == value.streams
-            && self.reason == value.reason
-            && self.through_hour.and_then(|hour| hour.checked_add(1)) == value.through_hour
-            && self
-                .through_hour
-                .zip(value.since_hour)
-                .is_some_and(|(last, first)| first <= last.saturating_add(1))
-    }
-}
-
-/// A row waiting for its identity's tag.
-enum Waiting {
-    Power(Power),
-    Cost(Cost),
-    Government(Government),
-}
-
-/// A recorded daily row.
-struct Day {
-    row: CountryPowerDailyRow,
-    reads: (Option<i32>, Option<i32>),
-    tag: u32,
-}
-
-/// A held power row: what its deletion and the account's indexes read of it.
-#[derive(Clone, Copy)]
-struct HeldPower {
-    country: u32,
-    epoch: u64,
-    sequence: u64,
-    hour: i32,
-    index: Indexed,
-}
-
-/// The account's index a held power row is in ([`Emit::index_power`]).
-#[derive(Clone, Copy)]
-enum Indexed {
-    None,
-    DailyGain,
-    /// An addition without an evaluated operand, by its currency's capture bit.
-    UnknownAdd(u8),
-}
-
-impl HeldPower {
-    fn of(row: &CountryPowerChangeRow) -> Self {
-        let index = if row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political
-        {
-            Indexed::DailyGain
-        } else if row.operation == PowerOperation::Add && row.requested_delta_raw.is_none() {
-            Indexed::UnknownAdd(match row.currency {
-                PowerCurrency::Political => PoliticsCaptureCoverageRow::PP,
-                PowerCurrency::Command => PoliticsCaptureCoverageRow::CP,
-            })
-        } else {
-            Indexed::None
-        };
-        Self {
-            country: row.country,
-            epoch: row.epoch,
-            sequence: row.sequence,
-            hour: row.hour,
-            index,
-        }
-    }
-}
-
-/// A held cost: what its day's sums and records read of it.
-#[derive(Clone, Copy, Serialize, Deserialize)]
-struct HeldCost {
-    country: u32,
-    epoch: u64,
-    day_hour: i32,
-    pp_sequence: u64,
-    ordinal: u32,
-    cost_raw: i64,
-}
-
-impl HeldCost {
-    fn of(row: &CountryPowerDailyCostRow) -> Self {
-        Self {
-            country: row.country,
-            epoch: row.epoch,
-            day_hour: row.day_hour,
-            pp_sequence: row.pp_sequence,
-            ordinal: row.ordinal,
-            cost_raw: row.cost_raw,
-        }
-    }
-
-    /// Its row's key in the cost table.
-    fn key(&self) -> u128 {
-        Self::slot(self.country, self.ordinal)
-    }
-
-    /// The cost table's key of `country`'s cost `ordinal`.
-    fn slot(country: u32, ordinal: u32) -> u128 {
-        CountryPowerDailyCostRow {
-            country,
-            ordinal,
-            ..CountryPowerDailyCostRow::default()
-        }
-        .key()
-    }
-
-    fn application(&self) -> (u32, u64, i32, u64) {
-        (self.country, self.epoch, self.day_hour, self.pp_sequence)
-    }
-}
-
-/// What one country's costs of a day and application read alike at an hour
-/// ([`Emit::cost_day`]).
-#[derive(Clone, Copy)]
-struct CostDay {
-    of: (u32, u64, i32, u64),
-    tag: Option<u32>,
-    covered: bool,
-    late: bool,
-    matched: bool,
-    read: i32,
-}
-
-/// A recorded cost: what its revisions keep.
-struct Recorded {
-    row: CountryPowerDailyCostRow,
-    covered: bool,
-    item: u32,
-}
-
-/// A hold snapshot's operands: its total, holders and why its total is missing.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct Snapshot {
-    total: Option<i64>,
-    holders: Vec<(String, Holder)>,
-    missing: Option<String>,
-}
-
-#[derive(Default, Serialize, Deserialize)]
-struct Holds {
-    identity: Option<(u32, u64)>,
-    sequence: Option<u64>,
-    last: Option<i32>,
-    active: BTreeMap<String, Holder>,
-    snapshot: Option<Snapshot>,
-}
-
-/// A capture identity's spending parts of one day.
-#[derive(Default, Serialize, Deserialize)]
-struct DayParts {
-    /// The capture epoch they are of: another's start over.
-    epoch: Option<u64>,
-    day: i32,
-    values: BTreeMap<u64, Option<i128>>,
-    since: [Option<i32>; 2],
-    last: Option<i32>,
-    first: Option<i32>,
-}
-
-/// One tag's accounting.
-#[derive(Default, Serialize, Deserialize)]
-struct Country {
+/// A tag's actor, and its series keys as interned by measure and by part dimension: an
+/// account finds each without hashing.
+struct Keys {
     actor: u64,
-    #[serde(skip)]
-    slots: Vec<u32>,
-    active: bool,
-    coverage: Option<Coverage>,
-    spending: Option<LedgerSpendCoverage>,
-    cover: Option<(bool, bool, Option<String>)>,
-    identity: Option<(u32, u64)>,
-    holds: Holds,
-    parts: BTreeMap<u32, DayParts>,
-    /// Each category's first hour, by part dimension.
-    categories: BTreeMap<u64, i32>,
-    categories_changed: bool,
-    /// Warning rates counted for every accepted hour after `rated`.
-    rates: BTreeMap<String, u64>,
-    rated: Option<i32>,
-    warnings: BTreeMap<String, u64>,
-    warnings_changed: bool,
-    /// Whether the census last listed it present, and refused.
-    #[serde(default)]
-    presence: (bool, bool),
-    /// Its items' keys in the order first paid.
-    #[serde(skip)]
-    items: Vec<[u8; 32]>,
-    #[serde(skip)]
-    item_index: FastMap<[u8; 32], u32>,
-    /// Saved in the binary part with `items` ([`Emit::save`]).
-    #[serde(skip)]
-    rollups: tally::Rollups,
-    /// Its series keys as interned, by measure and by part dimension: an account finds each
-    /// without hashing.
-    #[serde(skip)]
     keys: [Option<u64>; MEASURES],
-    #[serde(skip)]
-    part_keys: Vec<Option<u64>>,
+    parts: Vec<Option<u64>>,
 }
 
-/// The measures a tag's keys are cached for: every one below [`CENSUS`].
-const MEASURES: usize = CENSUS as usize;
-
-impl Country {
-    /// Counts its rates through `through`.
-    fn materialize(&mut self, through: i32) {
-        let Some(rated) = self.rated else {
-            return;
-        };
-        let hours = u64::try_from(i64::from(through) - i64::from(rated)).unwrap_or(0);
-        if hours != 0 {
-            for (reason, rate) in &self.rates {
-                *self.warnings.entry(reason.clone()).or_default() += rate * hours;
-                self.warnings_changed = true;
-            }
-            self.rated = Some(through);
-        }
-    }
-
-    /// Its rates from `hour` on, `hour` counted now.
-    fn rate(&mut self, hour: i32, rates: BTreeMap<String, u64>) {
-        self.materialize(hour.saturating_sub(1));
-        for (reason, rate) in &rates {
-            *self.warnings.entry(reason.clone()).or_default() += rate;
-            self.warnings_changed = true;
-        }
-        self.rated = (!rates.is_empty()).then_some(hour);
-        self.rates = rates;
-    }
-}
-
-/// A payment recorded this hour, for its country's day parts.
-struct Paid {
-    currency: PowerCurrency,
-    category: Arc<str>,
-    hour: i32,
-    charge: Option<i128>,
-}
-
-/// Tags by number, as one bit each: the accounting takes them in ascending order.
-#[derive(Default)]
-struct Tags(Vec<u64>);
-
-impl Tags {
-    fn insert(&mut self, tag: u32) {
-        let word = (tag / 64) as usize;
-        if word >= self.0.len() {
-            self.0.resize(word + 1, 0);
-        }
-        self.0[word] |= 1 << (tag % 64);
-    }
-
-    fn iter(&self) -> Ascending {
-        Ascending {
-            words: self.0.clone(),
-            at: 0,
-        }
-    }
-}
-
-impl FromIterator<u32> for Tags {
-    fn from_iter<I: IntoIterator<Item = u32>>(tags: I) -> Self {
-        let mut set = Self::default();
-        set.extend(tags);
-        set
-    }
-}
-
-impl Extend<u32> for Tags {
-    fn extend<I: IntoIterator<Item = u32>>(&mut self, tags: I) {
-        for tag in tags {
-            self.insert(tag);
-        }
-    }
-}
-
-impl IntoIterator for Tags {
-    type Item = u32;
-    type IntoIter = Ascending;
-
-    fn into_iter(self) -> Ascending {
-        Ascending {
-            words: self.0,
-            at: 0,
-        }
-    }
-}
-
-/// The tags of [`Tags`], ascending.
-struct Ascending {
-    words: Vec<u64>,
-    at: usize,
-}
-
-impl Iterator for Ascending {
-    type Item = u32;
-
-    fn next(&mut self) -> Option<u32> {
-        while let Some(word) = self.words.get_mut(self.at) {
-            if *word != 0 {
-                let bit = word.trailing_zeros();
-                *word &= *word - 1;
-                return Some(self.at as u32 * 64 + bit);
-            }
-            self.at += 1;
-        }
-        None
-    }
-}
-
-/// What the hour joins, as the accounting reads it.
-#[derive(Default)]
-struct Joined {
-    /// Tags whose inputs the hour changed.
-    dirty: Tags,
-    /// Command power rows recorded this hour by identity: covered, and their holder's operands.
-    command: FastMap<(u32, u64), Vec<(CountryPowerChangeRow, bool, Option<Holder>)>>,
-    /// Costs recorded this hour by tag: their amount and whether their application matched.
-    costs: FastMap<u32, Vec<(i64, bool)>>,
-    payments: FastMap<u32, Vec<Paid>>,
-    /// Raw countries with a political daily gain read before its application.
-    unmatched: FastSet<u32>,
-}
-
-/// The family's emit on one branch.
-pub struct Emit {
-    actors: Actors,
-    carry: Carry,
-    /// The recorded content items and holders are named with.
-    content: Option<Arc<PoliticsContent>>,
-    content_failure: Option<String>,
-    /// Whether the content's power warnings were written since the emit began.
-    power_warned: bool,
-    last: Option<i32>,
-    /// The first hour of the accepted stretch not yet given its evidence.
-    known_from: Option<i32>,
-    begun: bool,
-    census: BTreeMap<u32, CensusRow>,
-    census_complete: bool,
-    known: FastMap<u32, u32>,
-    tags: Vec<Box<str>>,
-    numbers: FastMap<Box<str>, u32>,
-    countries: Vec<Country>,
-    slot_tags: FastMap<u32, u32>,
-    refused: BTreeMap<u32, String>,
-    links: FastMap<u32, u32>,
-    raw_slots: FastMap<u32, Vec<u32>>,
-    witnesses: FastMap<u32, PoliticsCaptureCoverageRow>,
-    extended: Arc<[u32]>,
-    extended_through: i32,
-    /// The raw countries whose capture moved on at the last hour, ascending.
-    advanced: Vec<u32>,
-    /// The extended list and the captures that followed, in the order handed, `advanced` was
-    /// made of: an hour handing both again leaves it as it was.
-    advanced_from: Option<(Arc<[u32]>, Vec<u32>)>,
-    /// Tags whose last account read inputs of its hour alone: accounted again at the next.
-    volatile: Tags,
-    identities: FastMap<(u32, u64), Vec<(i32, u32)>>,
-    complete: u16,
-    power: FastMap<u128, HeldPower>,
-    /// Of `power`, the political daily gains by raw country and hour, and the additions without
-    /// an evaluated operand by raw country, epoch, hour and currency bit: what an account asks
-    /// of a country's rows, found without walking them.
-    daily_gains: BTreeSet<(u32, i32, u128)>,
-    unknown_adds: BTreeSet<(u32, u64, i32, u8, u128)>,
-    /// The held government rows' identities.
-    governments: FastMap<u128, (u32, u64, u64)>,
-    recorded: FastSet<(u32, u64, u64)>,
-    waiting: BTreeMap<(u8, u128), Waiting>,
-    daily: FastMap<u32, CountryPowerDailyRow>,
-    days: BTreeMap<(u32, u64, i32), Day>,
-    costs: FastMap<u128, HeldCost>,
-    recorded_costs: FastMap<(u32, u64, i32, u32), Recorded>,
-    sums: FastMap<(u32, u64, i32, u64), (i64, u32)>,
-    command: FastMap<u32, i64>,
-    presence: Option<(Vec<Box<str>>, Vec<Box<str>>)>,
-    settled: Option<i32>,
-    settled_written: Option<i32>,
-    /// The frontier the rollups were last settled at.
-    rolled: Option<i32>,
-    warnings: BTreeMap<String, u64>,
-    warnings_changed: bool,
-    /// Each currency's categories by name, with their part dimension.
-    categories: [FastMap<Box<str>, u64>; 2],
-    category_currency: FastMap<u64, usize>,
-    tomorrow: BTreeMap<i32, BTreeSet<u32>>,
-    /// The branch's accepted and census keys as interned.
-    branch_keys: [Option<u64>; 2],
-    scratch: Scratch,
-}
-
-/// The buffers each account's parts reuse ([`Emit::write_parts`]).
-#[derive(Default)]
-struct Scratch {
-    values: Vec<(u64, Option<i128>)>,
-    categories: Vec<(u64, Option<usize>)>,
-}
-
-impl Emit {
-    pub fn new(content: &Result<Option<Arc<PoliticsContent>>, String>) -> Self {
+impl Keys {
+    fn of(actor: u64) -> Self {
         Self {
-            actors: Actors::new(SCHEMA),
-            carry: Carry::default(),
-            content: content.as_ref().ok().cloned().flatten(),
-            content_failure: content.as_ref().err().cloned(),
-            power_warned: false,
-            last: None,
-            known_from: None,
-            begun: false,
-            census: BTreeMap::new(),
-            census_complete: false,
-            known: FastMap::default(),
-            tags: Vec::new(),
-            numbers: FastMap::default(),
-            countries: Vec::new(),
-            slot_tags: FastMap::default(),
-            refused: BTreeMap::new(),
-            links: FastMap::default(),
-            raw_slots: FastMap::default(),
-            witnesses: FastMap::default(),
-            extended: Arc::from(Vec::new()),
-            extended_through: 0,
-            advanced: Vec::new(),
-            advanced_from: None,
-            volatile: Tags::default(),
-            identities: FastMap::default(),
-            complete: 0,
-            power: FastMap::default(),
-            daily_gains: BTreeSet::new(),
-            unknown_adds: BTreeSet::new(),
-            governments: FastMap::default(),
-            recorded: FastSet::default(),
-            waiting: BTreeMap::new(),
-            daily: FastMap::default(),
-            days: BTreeMap::new(),
-            costs: FastMap::default(),
-            recorded_costs: FastMap::default(),
-            sums: FastMap::default(),
-            command: FastMap::default(),
-            presence: None,
-            settled: None,
-            settled_written: None,
-            rolled: None,
-            warnings: BTreeMap::new(),
-            warnings_changed: false,
-            categories: [FastMap::default(), FastMap::default()],
-            category_currency: FastMap::default(),
-            tomorrow: BTreeMap::new(),
-            branch_keys: [None; 2],
-            scratch: Scratch::default(),
-        }
-    }
-
-    /// The tag spelled `spelling`, numbered and catalogued as an actor when new.
-    fn tag(&mut self, writer: &mut Writer<'_>, spelling: &str, hour: i32) -> io::Result<u32> {
-        if let Some(&tag) = self.numbers.get(spelling) {
-            return Ok(tag);
-        }
-        let actor = self.actors.actor(writer, spelling.as_bytes(), hour)?;
-        let tag = u32::try_from(self.tags.len()).map_err(|_| invalid("tags exhausted"))?;
-        self.tags.push(spelling.into());
-        self.numbers.insert(spelling.into(), tag);
-        self.countries.push(Country {
             actor,
-            ..Country::default()
-        });
-        Ok(tag)
+            keys: [None; MEASURES],
+            parts: Vec::new(),
+        }
     }
+}
 
-    fn key(
-        &mut self,
-        writer: &mut Writer<'_>,
-        actor: u64,
-        measure: u64,
-        dimension: Option<u64>,
-    ) -> io::Result<u64> {
-        let decimals = if measure == PARTS {
-            DECIMALS
-        } else {
-            0
-        };
-        self.actors.key(
-            writer,
-            Place {
-                actor,
-                measure,
-                dimension,
-            },
-            (RunMode::Exact, decimals),
-            Some(DOMAIN),
-        )
-    }
+/// The accounting written into the series.
+struct Direct<'a> {
+    writer: &'a mut Writer,
+    actors: &'a mut Actors,
+    carry: &'a mut Carry,
+    keys: &'a mut Vec<Keys>,
+    /// The last record written, and its blob: a row recorded twice is written once.
+    record: &'a mut (Vec<u8>, Blob),
+}
 
-    fn tag_key(
-        &mut self,
-        writer: &mut Writer<'_>,
-        tag: u32,
-        measure: u64,
-        dimension: Option<u64>,
-    ) -> io::Result<u64> {
-        let country = &self.countries[tag as usize];
+macro_rules! direct {
+    ($emit:ident, $writer:expr) => {
+        Direct {
+            writer: $writer,
+            actors: &mut $emit.actors,
+            carry: &mut $emit.carry,
+            keys: &mut $emit.keys,
+            record: &mut $emit.record,
+        }
+    };
+}
+
+impl Direct<'_> {
+    fn key(&mut self, tag: u32, measure: u64, dimension: Option<u64>) -> io::Result<u64> {
+        let keys = self
+            .keys
+            .get_mut(tag as usize)
+            .ok_or_else(|| invalid("a tag without keys"))?;
         let held = match dimension {
-            None => country.keys.get(measure as usize).copied().flatten(),
-            Some(dimension) if measure == PARTS => {
-                country.part_keys.get(dimension as usize).copied().flatten()
-            }
+            None => keys.keys.get(measure as usize).copied().flatten(),
+            Some(dimension) if measure == PARTS => keys.parts.get(dimension as usize).copied().flatten(),
             Some(_) => None,
         };
         if let Some(key) = held {
             return Ok(key);
         }
-        let key = self.key(writer, country.actor, measure, dimension)?;
-        let country = &mut self.countries[tag as usize];
+        let decimals = if measure == PARTS { DECIMALS } else { 0 };
+        let key = self.actors.key(
+            self.writer,
+            Place {
+                actor: keys.actor,
+                measure,
+                dimension,
+            },
+            (RunMode::Exact, decimals),
+            Some(DOMAIN),
+        )?;
         match dimension {
             None => {
-                if let Some(slot) = country.keys.get_mut(measure as usize) {
+                if let Some(slot) = keys.keys.get_mut(measure as usize) {
                     *slot = Some(key);
                 }
             }
             Some(dimension) if measure == PARTS => {
                 let at = usize::try_from(dimension).map_err(|_| invalid("part dimension"))?;
-                if at >= country.part_keys.len() {
-                    country.part_keys.resize(at + 1, None);
+                if at >= keys.parts.len() {
+                    keys.parts.resize(at + 1, None);
                 }
-                country.part_keys[at] = Some(key);
+                keys.parts[at] = Some(key);
             }
             Some(_) => {}
         }
         Ok(key)
     }
 
-    fn branch_key(&mut self, writer: &mut Writer<'_>, measure: u64, hour: i32) -> io::Result<u64> {
-        let at = match measure {
-            ACCEPTED => Some(0),
-            CENSUS => Some(1),
-            _ => None,
-        };
-        if let Some(&Some(key)) = at.and_then(|at| self.branch_keys.get(at)) {
-            return Ok(key);
+    fn record(&mut self, bytes: &[u8]) -> io::Result<Blob> {
+        if !bytes.is_empty() && self.record.0 == bytes {
+            return Ok(self.record.1);
         }
-        let actor = self.actors.actor(writer, BRANCH, hour)?;
-        let key = self.key(writer, actor, measure, None)?;
-        if let Some(at) = at {
-            self.branch_keys[at] = Some(key);
-        }
-        Ok(key)
-    }
-
-    fn event(
-        writer: &mut Writer<'_>,
-        key: u64,
-        hours: (i32, Option<i32>),
-        kind: u64,
-        cells: &[Cell],
-    ) -> io::Result<u64> {
-        let fields = writer.cells(cells.iter().copied())?;
-        Self::put(writer, key, hours, kind, fields)
+        let blob = self.writer.bytes(bytes)?;
+        self.record.0.clear();
+        self.record.0.extend_from_slice(bytes);
+        self.record.1 = blob;
+        Ok(blob)
     }
 
     fn put(
-        writer: &mut Writer<'_>,
+        &mut self,
         key: u64,
         (native, read): (i32, Option<i32>),
         kind: u64,
-        fields: dashboard_series::Blob,
+        fields: Blob,
     ) -> io::Result<u64> {
-        let sequence = writer.sequence()?;
-        writer.event(Event {
+        let sequence = self.writer.sequence()?;
+        self.writer.event(Event {
             key,
             native_hour: native,
             read_hour: read,
@@ -759,98 +258,227 @@ impl Emit {
         Ok(sequence)
     }
 
-    /// The tag of capture identity (`country`, `epoch`) at `hour`: the latest begun by then,
-    /// else its first.
-    fn tag_at(&self, country: u32, epoch: u64, hour: i32) -> Option<u32> {
-        let tags = self.identities.get(&(country, epoch))?;
-        let at = tags.partition_point(|&(begun, _)| begun <= hour);
-        at.checked_sub(1)
-            .and_then(|at| tags.get(at))
-            .or_else(|| tags.first())
-            .map(|&(_, tag)| tag)
-    }
-
-    /// Raw country `raw`'s capture as of the hour.
-    fn witness(&self, raw: u32) -> Option<PoliticsCaptureCoverageRow> {
-        let mut row = self.witnesses.get(&raw)?.clone();
-        if self.extended.binary_search(&raw).is_ok() {
-            row.through_hour = self.extended_through;
+    /// `tag`'s periods `closed`, settled at `at`.
+    fn closed(&mut self, tag: u32, at: i32, closed: Vec<(usize, i32, tally::Totals)>) -> io::Result<()> {
+        for (level, index, totals) in closed {
+            let key = self.key(tag, ROLLUP, None)?;
+            let size = tally::PERIOD_DAYS[level];
+            let last = (index * size + size) * 24 - 1;
+            let kind = ROLLUP_KIND + level as u64;
+            let fields = self.writer.cells(tally::cells(&totals))?;
+            self.put(key, (last, Some(at)), kind, fields)?;
         }
-        Some(row)
+        Ok(())
+    }
+}
+
+impl Out for Direct<'_> {
+    fn keeps(&self, _: u32) -> bool {
+        true
     }
 
-    /// `slot`'s capture: that of its last linked raw country holding one.
-    fn slot_witness(&self, slot: u32) -> Option<PoliticsCaptureCoverageRow> {
-        self.raw_slots
-            .get(&slot)?
-            .iter()
-            .rev()
-            .find_map(|&raw| self.witness(raw))
-    }
-
-    fn covered(&self, country: u32, epoch: u64, event: i32, bits: u8, hour: i32) -> bool {
-        self.witness(country).is_some_and(|row| {
-            row.epoch == epoch
-                && row.through_hour == hour
-                && row.streams & bits == bits
-                && event >= row.since_hour
-                && event <= row.through_hour
-        })
-    }
-
-    /// The valid tag of the slot `raw` links to.
-    fn raw_tag(&self, raw: u32) -> Option<u32> {
-        self.links
-            .get(&raw)
-            .and_then(|slot| self.slot_tags.get(slot))
-            .copied()
-    }
-
-    /// Item `ordinal` of `tag`, first paid by `row` (of `cause`, with `component`), as replies
-    /// show it: named from the facts its hour recorded, `dated`, and written to the catalogue.
-    #[allow(clippy::too_many_arguments)]
-    fn show(
-        &mut self,
-        writer: &mut Writer<'_>,
-        tag: u32,
-        ordinal: u32,
-        hours: (i32, i32),
-        first: String,
-        row: &PaidRow,
-        (identity, cause, component): (&PowerIdentity, PowerCause, Option<PowerDailyCostKind>),
-        dated: Option<&facts::DatedFacts>,
-    ) -> io::Result<()> {
-        let dated = dated
-            .map(|dated| codec::decode::<items::Dated>(&dated.bytes))
-            .transpose()?;
-        let shown = present::show(
-            &self.tags[tag as usize],
-            ordinal,
-            first,
-            row,
-            identity,
-            cause,
-            dated.as_ref(),
-            component,
-            self.content.as_deref(),
-        );
-        let key = self.tag_key(writer, tag, ITEMS, None)?;
-        let cells = [
-            Cell::Unsigned(u64::from(ordinal)),
-            records::cell(writer, &shown)?,
-        ];
-        let kind = if component.is_some() { COST_KIND } else { POWER_KIND };
-        Self::event(writer, key, (hours.0, Some(hours.1)), kind, &cells)?;
+    fn tagged(&mut self, tag: u32, spelling: &str, hour: i32) -> io::Result<()> {
+        let actor = self.actors.actor(self.writer, spelling.as_bytes(), hour)?;
+        if self.keys.len() != tag as usize {
+            return Err(invalid("tags numbered out of order"));
+        }
+        self.keys.push(Keys::of(actor));
         Ok(())
     }
 
-    fn warn(&mut self, reason: String, count: u64) {
-        *self.warnings.entry(reason).or_default() += count;
-        self.warnings_changed = true;
+    fn event(
+        &mut self,
+        tag: u32,
+        measure: u64,
+        hours: (i32, Option<i32>),
+        kind: u64,
+        fields: &[Field<'_>],
+    ) -> io::Result<u64> {
+        let key = self.key(tag, measure, None)?;
+        let mut cells = [Cell::Null; 2];
+        if fields.len() > cells.len() {
+            return Err(invalid("an event of too many fields"));
+        }
+        for (cell, field) in cells.iter_mut().zip(fields) {
+            *cell = match *field {
+                Field::Plain(cell) => cell,
+                Field::Record(bytes) => Cell::Text(self.record(bytes)?),
+                Field::Item(ordinal) => Cell::Unsigned(u64::from(ordinal)),
+            };
+        }
+        let blob = self.writer.cells(cells[..fields.len()].iter().copied())?;
+        self.put(key, hours, kind, blob)
+    }
+
+    fn value(
+        &mut self,
+        tag: u32,
+        measure: u64,
+        dimension: Option<u64>,
+        hour: i32,
+        value: Option<i128>,
+        starts: bool,
+    ) -> io::Result<()> {
+        let key = self.key(tag, measure, dimension)?;
+        self.carry.value(self.writer, key, hour, value, starts)?;
+        Ok(())
+    }
+
+    fn named(&mut self, dimension: u64, currency: usize, category: &str) -> io::Result<()> {
+        let spelling = ledger::spelling(currency, category);
+        let cell = text(self.writer, spelling.as_bytes())?;
+        self.writer.catalogue(CATEGORY_NAMES + dimension, cell)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn item(
+        &mut self,
+        tag: u32,
+        ordinal: u32,
+        _: &[u8; 32],
+        new: bool,
+        shown: Option<&[u8]>,
+        hours: (i32, Option<i32>),
+        kind: u64,
+    ) -> io::Result<()> {
+        if !new {
+            return Ok(());
+        }
+        let shown = shown.ok_or_else(|| invalid("an item first paid without its record"))?;
+        self.event(
+            tag,
+            ITEMS,
+            hours,
+            kind,
+            &[Field::Item(ordinal), Field::Record(shown)],
+        )?;
+        Ok(())
+    }
+
+    fn category(&mut self, _: u32, _: u64) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn first(&mut self, _: u32, _: u64, _: i32) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn unpaid(&mut self, _: u32, _: usize, _: i32, _: Option<i128>, _: bool) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn settled(
+        &mut self,
+        tag: u32,
+        at: i32,
+        _: i32,
+        closed: Vec<(usize, i32, tally::Totals)>,
+        split: tally::Split,
+    ) -> io::Result<()> {
+        if !split.is_empty() {
+            return Err(invalid("days split apart where no lens folds them"));
+        }
+        self.closed(tag, at, closed)
+    }
+}
+
+/// A country the lens folds, as the emit bound it.
+struct Bound {
+    number: u32,
+    slots: Vec<u32>,
+    raws: Vec<u32>,
+    /// The emit's ordinal of each of the lens's items; [`UNNAMED`] for one not yet named.
+    items: Vec<u32>,
+    /// Its categories the lens never paid in since its segment began, by currency.
+    extra: [Vec<u64>; 2],
+    /// Where its own rollups settle next, and what the lens settled of the hour.
+    due: Option<i32>,
+    settled: Vec<(Vec<(usize, i32, tally::Totals)>, tally::Split)>,
+}
+
+/// The family's emit on one branch.
+pub struct Emit {
+    actors: Actors,
+    carry: Carry,
+    keys: Vec<Keys>,
+    record: (Vec<u8>, Blob),
+    ledger: Ledger,
+    content_failure: Option<String>,
+    /// Whether the content's power warnings were written since the emit began.
+    power_warned: bool,
+    /// The first hour of the accepted stretch not yet given its evidence.
+    known_from: Option<i32>,
+    begun: bool,
+    presence: Option<(Vec<Box<str>>, Vec<Box<str>>)>,
+    settled_written: Option<i32>,
+    /// The branch's accepted and census keys as interned.
+    branch_keys: [Option<u64>; 2],
+    /// The countries the walk's lens bound, by the number it names them by: the emit's tag where
+    /// the emit bound it too, None where the emit folds it itself.
+    numbers: FastMap<u32, Option<u32>>,
+    bound: FastMap<u32, Bound>,
+    /// The lens's category dimensions: their currency and name, and the emit's dimension.
+    lens_names: FastMap<u64, (usize, Box<str>)>,
+    lens_dims: FastMap<u64, u64>,
+    /// The record shapes the lens named.
+    packed: packed::Named,
+    /// The bound tags whose own rollups, those of the hours before the lens bound them, settle
+    /// at each frontier.
+    prior: BTreeSet<(i32, u32)>,
+}
+
+impl Emit {
+    pub fn new(content: &Result<Option<Arc<PoliticsContent>>, String>) -> Self {
+        Self {
+            actors: Actors::new(SCHEMA),
+            carry: Carry::default(),
+            keys: Vec::new(),
+            record: (Vec::new(), Blob::EMPTY),
+            ledger: Ledger::new(content.as_ref().ok().cloned().flatten()),
+            content_failure: content.as_ref().err().cloned(),
+            power_warned: false,
+            known_from: None,
+            begun: false,
+            presence: None,
+            settled_written: None,
+            branch_keys: [None; 2],
+            numbers: FastMap::default(),
+            bound: FastMap::default(),
+            lens_names: FastMap::default(),
+            lens_dims: FastMap::default(),
+            packed: packed::Named::default(),
+            prior: BTreeSet::new(),
+        }
+    }
+
+    fn branch_key(&mut self, writer: &mut Writer, measure: u64, hour: i32) -> io::Result<u64> {
+        let at = match measure {
+            ACCEPTED => Some(0),
+            CENSUS => Some(1),
+            _ => None,
+        };
+        if let Some(&Some(key)) = at.and_then(|at| self.branch_keys.get(at)) {
+            return Ok(key);
+        }
+        let actor = self.actors.actor(writer, BRANCH, hour)?;
+        let key = self.actors.key(
+            writer,
+            Place {
+                actor,
+                measure,
+                dimension: None,
+            },
+            (RunMode::Exact, 0),
+            Some(DOMAIN),
+        )?;
+        if let Some(at) = at {
+            self.branch_keys[at] = Some(key);
+        }
+        Ok(key)
     }
 
     /// Gives the accepted stretch since its first hour its evidence, through `last`.
-    fn evidence(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn evidence(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if let Some(first) = self.known_from.take() {
             writer.domain(
                 DOMAIN,
@@ -866,22 +494,62 @@ impl Emit {
         Ok(())
     }
 
-    /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: Hour) -> io::Result<()> {
+    /// Keeps one projected hour, or what the lens hands back after the hour kept last.
+    pub fn hour(&mut self, writer: &mut Writer, mut hour: Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit", None);
-        let at = hour.hour;
-        let previous = self.last;
-        let adjacent = previous.and_then(|last| last.checked_add(1)) == Some(at);
-        if let Some(last) = previous.filter(|_| !adjacent) {
-            for country in &mut self.countries {
-                country.materialize(last);
-                country.rated = None;
-                country.coverage = None;
-                country.spending = None;
-                country.cover = None;
-                country.identity = None;
-                country.holds.last = None;
+        let part = hour.lens.take();
+        if hour.handover {
+            if self.ledger.last != Some(hour.hour) {
+                return Err(lens_failure("it hands back an hour the emit did not keep"));
             }
+            if let Some(part) = part {
+                self.packed.extend(part.shapes).map_err(unrefused)?;
+                self.returned(part.returned).map_err(unrefused)?;
+            }
+            return Ok(());
+        }
+        // Only the walk's read of an hour refuses it while the lens folds countries: the lens
+        // hands them back through the hour before. An hour the emit itself would refuse then
+        // could not publish them, so it ends the family instead.
+        match self.keep(writer, hour, part) {
+            Err(error) if !self.bound.is_empty() => Err(unrefused(error)),
+            kept => kept,
+        }
+    }
+
+    fn keep(
+        &mut self,
+        writer: &mut Writer,
+        hour: Hour,
+        part: Option<Box<lens::Part>>,
+    ) -> io::Result<()> {
+        let at = hour.hour;
+        let mut part = part.map(|part| *part).unwrap_or_default();
+        if part.begins {
+            if !self.bound.is_empty() {
+                return Err(lens_failure("it began again holding countries"));
+            }
+            self.numbers.clear();
+            self.lens_names.clear();
+            self.lens_dims.clear();
+            self.packed.clear();
+        }
+        self.packed
+            .extend(std::mem::take(&mut part.shapes))
+            .map_err(unrefused)?;
+        self.returned(std::mem::take(&mut part.returned))
+            .map_err(unrefused)?;
+        for (dimension, currency, name) in std::mem::take(&mut part.named) {
+            self.lens_names
+                .insert(dimension, (usize::from(currency), name));
+        }
+        let mut joined = self.ledger.open(&hour);
+        let adjacent = joined.adjacent;
+        if let Some(last) = joined.previous.filter(|_| !adjacent) {
+            if !self.bound.is_empty() {
+                return Err(lens_failure("it did not hand its countries back before a gap"));
+            }
+            self.ledger.gap(last);
             self.evidence(writer, last)?;
             self.carry.close(writer, last)?;
         }
@@ -889,13 +557,12 @@ impl Emit {
             writer.catalogue(FIRST, Cell::Integer(i128::from(at)))?;
             if let Some(reason) = self.content_failure.clone() {
                 // The content's refusal is the branch's once, whatever its hours.
-                self.warnings.entry(reason).or_insert(1);
-                self.warnings_changed = true;
+                self.ledger.warnings.entry(reason).or_insert(1);
+                self.ledger.warnings_changed = true;
             }
             self.begun = true;
         }
         self.known_from.get_or_insert(at);
-        self.last = Some(at);
         let accepted = self.branch_key(writer, ACCEPTED, at)?;
         self.carry.value(writer, accepted, at, Some(1), !adjacent)?;
         let census_complete = hour.complete & facts::bit(TableId::Countries) != 0;
@@ -907,316 +574,98 @@ impl Emit {
             census_complete.then_some(1),
             !adjacent,
         )?;
-        let mut joined = Joined::default();
-        joined.dirty.extend(std::mem::take(&mut self.volatile));
-        if !adjacent || hour.complete != self.complete {
-            joined.dirty.extend(0..self.countries.len() as u32);
-        }
-        self.complete = hour.complete;
-        while let Some(entry) = self.tomorrow.first_entry() {
-            if *entry.key() > at {
-                break;
-            }
-            joined.dirty.extend(entry.remove());
-        }
         let identities = ::replay_frame::cpu::scope("politics_ledger.emit.identities", None);
-        let census_changed = hour.census.is_some() || census_complete != self.census_complete;
-        self.census_complete = census_complete;
-        if census_changed {
-            let census: Vec<CensusRow> = if census_complete {
-                match hour.census.as_deref() {
-                    Some(census) => census.to_vec(),
-                    None => self.census.values().cloned().collect(),
-                }
-            } else {
-                Vec::new()
-            };
-            self.apply_census(writer, &census, at, &mut joined)?;
-        }
-        let links_changed = hour.links.is_some();
-        if let Some(links) = hour.links.as_deref() {
-            self.apply_links(links, &mut joined);
-        }
-        let touched = self.apply_captures(&hour.captures, at, hour.whole, &mut joined);
-        let raws: Vec<u32> = if census_changed || links_changed {
-            self.witnesses.keys().copied().collect()
-        } else {
-            touched
+        let census_changed = {
+            let mut direct = direct!(self, &mut *writer);
+            self.ledger.join(&mut direct, &hour, &mut joined)?
         };
-        let tagged = self.tag_identities(raws, at);
+        if census_changed || hour.links.is_some() {
+            self.verify_bound().map_err(unrefused)?;
+        }
         if census_changed {
             self.presence(writer, at)?;
         }
         drop(identities);
         let rows = ::replay_frame::cpu::scope("politics_ledger.emit.rows", None);
-        self.apply_rows(writer, hour, at, previous, tagged, &mut joined)?;
+        {
+            let mut direct = direct!(self, &mut *writer);
+            self.ledger.rows(&mut direct, &hour, &mut joined)?;
+        }
         drop(rows);
         let accounts = ::replay_frame::cpu::scope("politics_ledger.emit.accounts", None);
+        let payload = std::mem::take(&mut part.payload);
+        let mut replays: Vec<(u32, Vec<Op>)> = std::mem::take(&mut part.ops)
+            .into_iter()
+            .filter_map(|(number, ops)| match self.numbers.get(&number) {
+                Some(&Some(tag)) => Some((tag, ops)),
+                // A country the emit folds itself: its ops are of no further use.
+                _ => None,
+            })
+            .collect();
+        replays.sort_unstable_by_key(|(tag, _)| *tag);
+        let mut replays = replays.into_iter().peekable();
+        // Tags in ascending order, as the accounts write them: categories are numbered so.
         for tag in std::mem::take(&mut joined.dirty) {
-            self.account(writer, tag, at, previous, &joined)?;
+            while let Some(&(next, _)) = replays.peek()
+                && next < tag
+            {
+                if let Some((next, ops)) = replays.next() {
+                    self.replay(writer, next, ops, &payload).map_err(unrefused)?;
+                }
+            }
+            if self.bound.contains_key(&tag) {
+                continue;
+            }
+            let mut direct = direct!(self, &mut *writer);
+            self.ledger.account(&mut direct, tag, at, &joined)?;
+        }
+        for (tag, ops) in replays {
+            self.replay(writer, tag, ops, &payload).map_err(unrefused)?;
         }
         drop(accounts);
         let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.settle", None);
-        self.settle(writer, at)
-    }
-
-    /// `tag`'s item of `key`: its ordinal, and whether this payment is its first.
-    fn item(&mut self, tag: u32, key: [u8; 32]) -> (u32, bool) {
-        let country = &mut self.countries[tag as usize];
-        if let Some(&ordinal) = country.item_index.get(&key) {
-            return (ordinal, false);
-        }
-        let ordinal = country.items.len() as u32;
-        country.items.push(key);
-        country.item_index.insert(key, ordinal);
-        (ordinal, true)
-    }
-
-    /// Writes each country's periods the settled frontier closed since it last moved.
-    fn settle(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
-        let Some(settled) = self.settled.filter(|settled| self.rolled != Some(*settled)) else {
-            return Ok(());
-        };
-        self.rolled = Some(settled);
-        for tag in 0..self.countries.len() {
-            let rollups = &mut self.countries[tag].rollups;
-            if rollups.days.is_empty()
-                && rollups.daily.is_empty()
-                && rollups.open.iter().all(|open| open.is_empty())
-            {
-                continue;
-            }
-            for (level, index, totals) in rollups.settle(settled)? {
-                let key = self.tag_key(writer, tag as u32, ROLLUP, None)?;
-                let size = tally::PERIOD_DAYS[level];
-                let last = (index * size + size) * 24 - 1;
-                let kind = ROLLUP_KIND + level as u64;
-                Self::event(writer, key, (last, Some(at)), kind, &tally::cells(&totals))?;
-            }
-        }
-        Ok(())
-    }
-
-    /// The census of the hour, every row by id (none while it is not complete): each slot's
-    /// last row, its tag valid or refused.
-    fn apply_census(
-        &mut self,
-        writer: &mut Writer<'_>,
-        census: &[CensusRow],
-        hour: i32,
-        joined: &mut Joined,
-    ) -> io::Result<()> {
-        let before: BTreeSet<u32> = self.slot_tags.values().copied().collect();
-        self.census.clear();
-        self.slot_tags.clear();
-        self.refused.clear();
-        for row in census {
-            self.census.insert(row.slot, row.clone());
-        }
-        for country in &mut self.countries {
-            country.slots.clear();
-        }
-        let rows: Vec<CensusRow> = self.census.values().cloned().collect();
-        for row in rows {
-            match rows::valid_tag(row.id, row.slot, &row.tag) {
-                Ok(spelling) => {
-                    let spelling = spelling.to_owned();
-                    let tag = self.tag(writer, &spelling, hour)?;
-                    self.slot_tags.insert(row.slot, tag);
-                    self.known.insert(row.slot, tag);
-                    self.countries[tag as usize].slots.push(row.slot);
-                }
-                Err(reason) => {
-                    self.refused.insert(row.slot, reason);
-                }
-            }
-        }
-        // A refused country no valid tag named before counts once for the branch.
-        let unknown: Vec<String> = self
-            .refused
-            .iter()
-            .filter(|(slot, _)| !self.known.contains_key(slot))
-            .map(|(_, reason)| reason.clone())
-            .collect();
-        for reason in unknown {
-            self.warn(reason, 1);
-        }
-        let after: BTreeSet<u32> = self.slot_tags.values().copied().collect();
-        for &tag in &after {
-            joined.dirty.insert(tag);
-            self.countries[tag as usize].active = true;
-        }
-        for &tag in before.difference(&after) {
-            joined.dirty.insert(tag);
-            self.countries[tag as usize].active = false;
-        }
-        for slot in self.refused.keys() {
-            if let Some(&tag) = self.known.get(slot) {
-                joined.dirty.insert(tag);
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_links(&mut self, links: &[(u32, u32)], joined: &mut Joined) {
-        for slot in self.links.values() {
-            if let Some(&tag) = self.slot_tags.get(slot) {
-                joined.dirty.insert(tag);
-            }
-        }
-        self.links = links.iter().copied().collect();
-        self.raw_slots.clear();
-        for &(raw, slot) in links {
-            self.raw_slots.entry(slot).or_default().push(raw);
-            if let Some(&tag) = self.slot_tags.get(&slot) {
-                joined.dirty.insert(tag);
-            }
-        }
-        for raws in self.raw_slots.values_mut() {
-            raws.sort_unstable();
-        }
-    }
-
-    /// The hour's captures: the raw countries whose capture changed, or moved on this hour and
-    /// not the hour before, or the hour before and not now. A capture moves on when only its
-    /// last hour reached does, or when its read follows the one held, of the same capture and
-    /// streams, its window starting at the hour the held one reached: its tag's account holds
-    /// unchanged for it.
-    fn apply_captures(
-        &mut self,
-        captures: &facts::Captures,
-        hour: i32,
-        whole: bool,
-        joined: &mut Joined,
-    ) -> Vec<u32> {
-        // The captures that moved on the hour before only moving on again touch nothing.
-        if !whole
-            && captures.changed.is_empty()
-            && captures.deleted.is_empty()
-            && *self.advanced == *captures.extended
+        let moved = self.ledger.settled.is_some() && self.ledger.settled != self.ledger.rolled;
         {
-            self.extended = Arc::clone(&captures.extended);
-            self.extended_through = hour;
-            return Vec::new();
+            let mut direct = direct!(self, &mut *writer);
+            self.ledger.settle(&mut direct, at)?;
         }
-        let mut touched = BTreeSet::new();
-        if whole {
-            touched.extend(self.witnesses.keys().copied());
-            self.witnesses.clear();
+        if moved {
+            self.settle_bound(writer, at).map_err(unrefused)?;
         }
-        // A capture leaving the extended list keeps the last hour it reached.
-        if *self.extended != *captures.extended {
-            for &raw in self.extended.iter() {
-                if captures.extended.binary_search(&raw).is_err()
-                    && let Some(row) = self.witnesses.get_mut(&raw)
-                {
-                    row.through_hour = self.extended_through;
-                }
-            }
+        let binds = std::mem::take(&mut part.bound);
+        if !binds.is_empty() {
+            self.bind(binds, at);
         }
-        let mut followed = Vec::new();
-        for &raw in &captures.deleted {
-            self.witnesses.remove(&raw);
-            touched.insert(raw);
-        }
-        for row in &captures.changed {
-            let follows = match self.witnesses.entry(row.country) {
-                std::collections::hash_map::Entry::Occupied(mut held) => {
-                    let follows = {
-                        let held = held.get();
-                        held.instance == row.instance
-                            && held.epoch == row.epoch
-                            && held.streams == row.streams
-                            && held.through_hour == row.since_hour
-                            && row.through_hour == hour
-                    };
-                    held.get_mut().clone_from(row);
-                    follows
-                }
-                std::collections::hash_map::Entry::Vacant(held) => {
-                    held.insert(row.clone());
-                    false
-                }
-            };
-            if follows {
-                followed.push(row.country);
-            } else {
-                touched.insert(row.country);
-            }
-        }
-        let same = !whole
-            && self.advanced_from.as_ref().is_some_and(|(extended, held)| {
-                **extended == *captures.extended && *held == followed
-            });
-        if !same {
-            let mut advanced = Vec::with_capacity(captures.extended.len() + followed.len());
-            advanced.extend_from_slice(&captures.extended);
-            advanced.extend_from_slice(&followed);
-            advanced.sort_unstable();
-            let (mut a, mut b) = (0, 0);
-            while a < self.advanced.len() || b < advanced.len() {
-                match (self.advanced.get(a).copied(), advanced.get(b).copied()) {
-                    (Some(x), Some(y)) if x == y => {
-                        a += 1;
-                        b += 1;
-                    }
-                    (Some(x), y) if y.is_none_or(|y| x < y) => {
-                        touched.insert(x);
-                        a += 1;
-                    }
-                    (_, Some(y)) => {
-                        touched.insert(y);
-                        b += 1;
-                    }
-                    _ => break,
-                }
-            }
-            self.advanced = advanced;
-            self.advanced_from = Some((Arc::clone(&captures.extended), followed));
-        }
-        self.extended = Arc::clone(&captures.extended);
-        self.extended_through = hour;
-        for &raw in &touched {
-            if let Some(tag) = self.raw_tag(raw) {
-                joined.dirty.insert(tag);
-            }
-        }
-        touched.into_iter().collect()
+        Ok(())
     }
 
-    /// Names a tag for the identities of `raws`' captures linked to a census country with a
-    /// valid tag: the identities named their first tag now.
-    fn tag_identities(&mut self, raws: Vec<u32>, hour: i32) -> Vec<(u32, u64)> {
-        let mut tagged = Vec::new();
-        for raw in raws {
-            let (Some(witness), Some(tag)) = (self.witness(raw), self.raw_tag(raw)) else {
-                continue;
-            };
-            let tags = self
-                .identities
-                .entry((witness.country, witness.epoch))
-                .or_default();
-            if tags.last().is_none_or(|&(_, old)| old != tag) {
-                if tags.is_empty() {
-                    tagged.push((witness.country, witness.epoch));
-                }
-                tags.push((hour, tag));
+    /// The bound countries hold the slots and raw countries they held when bound: the lens
+    /// hands one back before an hour that changes them.
+    fn verify_bound(&self) -> io::Result<()> {
+        for (&tag, bound) in &self.bound {
+            let country = &self.ledger.countries[tag as usize];
+            if !country.active
+                || country.slots != bound.slots
+                || self.ledger.raws_of(tag) != bound.raws
+            {
+                return Err(lens_failure("it kept a country whose census or links changed"));
             }
         }
-        tagged
+        Ok(())
     }
 
     /// The branch's present and refused tags, at each change: each tag's where it changed, every
     /// tag first absent from the first hour any is listed.
-    fn presence(&mut self, writer: &mut Writer<'_>, hour: i32) -> io::Result<()> {
-        if !self.census_complete {
+    fn presence(&mut self, writer: &mut Writer, hour: i32) -> io::Result<()> {
+        let ledger = &self.ledger;
+        if !ledger.census_complete {
             return Ok(());
         }
-        let mut states = vec![(false, false); self.tags.len()];
-        for &tag in self.slot_tags.values() {
+        let mut states = vec![(false, false); ledger.tags.len()];
+        for &tag in ledger.slot_tags.values() {
             states[tag as usize].0 = true;
         }
-        for &tag in self.refused.keys().filter_map(|slot| self.known.get(slot)) {
+        for &tag in ledger.refused.keys().filter_map(|slot| ledger.known.get(slot)) {
             states[tag as usize].1 = true;
         }
         let spellings = |listed: &dyn Fn(&(bool, bool)) -> bool| -> Vec<Box<str>> {
@@ -1224,7 +673,7 @@ impl Emit {
                 .iter()
                 .enumerate()
                 .filter(|(_, state)| listed(state))
-                .map(|(tag, _)| self.tags[tag].clone())
+                .map(|(tag, _)| ledger.tags[tag].clone())
                 .collect();
             tags.sort_unstable();
             tags
@@ -1238,1276 +687,646 @@ impl Emit {
         }
         self.presence = Some(value);
         for (tag, state) in states.into_iter().enumerate() {
-            if self.countries[tag].presence == state {
+            if self.ledger.countries[tag].presence == state {
                 continue;
             }
-            self.countries[tag].presence = state;
-            let key = self.tag_key(writer, tag as u32, PRESENT, None)?;
-            let cells = [records::cell(writer, &state)?];
-            Self::event(writer, key, (hour, None), PRESENCE_KIND, &cells)?;
-        }
-        Ok(())
-    }
-
-    /// The hour's native rows: each table's held rows changed, and the rows recorded.
-    fn apply_rows(
-        &mut self,
-        writer: &mut Writer<'_>,
-        hour: Hour,
-        at: i32,
-        previous: Option<i32>,
-        tagged: Vec<(u32, u64)>,
-        joined: &mut Joined,
-    ) -> io::Result<()> {
-        let Hour {
-            whole,
-            power,
-            governments,
-            daily,
-            costs,
-            deleted,
-            command,
-            command_whole,
-            ..
-        } = hour;
-        let [
-            power_deleted,
-            government_deleted,
-            daily_deleted,
-            cost_deleted,
-        ] = deleted;
-        let mut newest = None::<i32>;
-        if whole {
-            // A table handed whole replaces what was held: rows it no longer holds are gone.
-            let current: FastSet<(u32, u64, u64)> = power
-                .iter()
-                .map(|power| (power.row.country, power.row.epoch, power.row.sequence))
-                .chain(governments.iter().map(|government| {
-                    (
-                        government.row.country,
-                        government.row.epoch,
-                        government.row.sequence,
-                    )
-                }))
-                .collect();
-            self.recorded.retain(|key| current.contains(key));
-            // What the replacement leaves out changes the accounts of the tags holding it.
-            let raws: BTreeSet<u32> = self
-                .daily
-                .keys()
-                .copied()
-                .chain(self.power.values().map(|row| row.country))
-                .chain(self.costs.values().map(|row| row.country))
-                .collect();
-            for raw in raws {
-                self.dirty_days(raw, joined);
-            }
-            self.waiting.clear();
-            self.power.clear();
-            self.daily_gains.clear();
-            self.unknown_adds.clear();
-            self.governments.clear();
-            self.daily.clear();
-            self.costs.clear();
-            self.sums.clear();
-        }
-        // A held power row an account reads changing re-accounts its raw country's current tag,
-        // whether or not the row is recorded again.
-        for key in power_deleted {
-            if let Some(row) = self.power.remove(&key) {
-                self.index_power(key, row, false);
-                self.recorded
-                    .remove(&(row.country, row.epoch, row.sequence));
-                joined.dirty.extend(self.raw_tag(row.country));
-            }
-            self.waiting.remove(&(0, key));
-        }
-        for power in &power {
-            let key = power.row.key();
-            let held = HeldPower::of(&power.row);
-            if let Some(old) = self.power.insert(key, held) {
-                self.index_power(key, old, false);
-            }
-            self.index_power(key, held, true);
-            joined.dirty.extend(self.raw_tag(power.row.country));
-            newest = newest.max(power_day(&power.row));
-        }
-        for key in government_deleted {
-            if let Some(identity) = self.governments.remove(&key) {
-                self.recorded.remove(&identity);
-            }
-            self.waiting.remove(&(2, key));
-        }
-        for government in &governments {
-            let row = &government.row;
-            self.governments
-                .insert(row.key(), (row.country, row.epoch, row.sequence));
-            newest = newest.max(Some(government.row.hour.div_euclid(24) * 24));
-        }
-        // A raw country's daily row is its current tag's reconciliation, and decides whether the
-        // days it holds under any tag count as that tag's income.
-        for key in daily_deleted {
-            self.daily.remove(&(key as u32));
-            self.dirty_days(key as u32, joined);
-        }
-        for row in &daily {
-            self.daily.insert(row.country, row.clone());
-            newest = newest.max(Some(row.day_hour));
-            self.dirty_days(row.country, joined);
-        }
-        for key in cost_deleted {
-            if let Some(row) = self.costs.remove(&key) {
-                self.unsum(row);
-                joined.dirty.extend(self.raw_tag(row.country));
-            }
-            self.waiting.remove(&(1, key));
-        }
-        for cost in &costs {
-            joined.dirty.extend(self.raw_tag(cost.row.country));
-            let held = HeldCost::of(&cost.row);
-            if let Some(old) = self.costs.insert(cost.row.key(), held) {
-                self.unsum(old);
-            }
-            let sum = self.sums.entry(held.application()).or_default();
-            sum.0 = sum.0.wrapping_add(cost.row.cost_raw);
-            sum.1 += 1;
-        }
-        if whole || !costs.is_empty() {
-            // A cost key a complete publication removed cannot return.
-            let held = &self.costs;
-            self.recorded_costs
-                .retain(|&(country, epoch, day_hour, ordinal), _| {
-                    held.get(&HeldCost::slot(country, ordinal))
-                        .is_some_and(|row| row.epoch == epoch && row.day_hour == day_hour)
-                });
-        }
-        // Totals the table does not hold whole this hour are unknown; a whole read replaces them.
-        let command_known = self.complete & facts::bit(TableId::CountryCommandPower) != 0;
-        if !command_known || command_whole {
-            for slot in std::mem::take(&mut self.command).into_keys() {
-                joined.dirty.extend(self.slot_tags.get(&slot).copied());
-            }
-        }
-        for (slot, value) in command {
-            let changed = match value {
-                Some(value) => self.command.insert(slot, value) != Some(value),
-                None => self.command.remove(&slot).is_some(),
-            };
-            if changed {
-                joined.dirty.extend(self.slot_tags.get(&slot).copied());
-            }
-        }
-        if let Some(newest) = newest
-            && self.settled.is_none_or(|settled| newest > settled)
-        {
-            self.settled = Some(newest);
-        }
-        // Rows of identities tagged this hour that waited, then the hour's own rows.
-        let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.rows.record", None);
-        let mut queue: Vec<Waiting> = Vec::new();
-        if !tagged.is_empty() {
-            let tagged: FastSet<(u32, u64)> = tagged.into_iter().collect();
-            let keys: Vec<(u8, u128)> = self
-                .waiting
-                .iter()
-                .filter(|(_, row)| {
-                    tagged.contains(&match row {
-                        Waiting::Power(power) => (power.row.country, power.row.epoch),
-                        Waiting::Cost(cost) => (cost.row.country, cost.row.epoch),
-                        Waiting::Government(government) => {
-                            (government.row.country, government.row.epoch)
-                        }
-                    })
-                })
-                .map(|(key, _)| *key)
-                .collect();
-            for key in keys {
-                if let Some(mut row) = self.waiting.remove(&key) {
-                    // Facts are the event hour's or the read before's; any other row's are not.
-                    let frameless = |date: i32| date != at && Some(date) != previous;
-                    match &mut row {
-                        Waiting::Power(power) if frameless(power.row.hour) => power.undate(),
-                        Waiting::Cost(cost) if frameless(cost.row.day_hour) => cost.undate(),
-                        _ => {}
-                    }
-                    queue.push(row);
-                }
-            }
-        }
-        queue.extend(power.into_iter().map(Waiting::Power));
-        queue.extend(governments.into_iter().map(Waiting::Government));
-        for row in queue {
-            match row {
-                Waiting::Power(power) => {
-                    self.record_power(writer, power, at, joined)?
-                }
-                Waiting::Government(government) => {
-                    self.record_government(writer, government, at, joined)?
-                }
-                Waiting::Cost(cost) => self.record_cost(writer, cost, at, &mut None, joined)?,
-            }
-        }
-        drop(_cpu);
-        let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.rows.daily", None);
-        for row in daily {
-            self.record_daily(writer, row, at, joined)?;
-        }
-        drop(_cpu);
-        // The hour's rows are all in place: a country's costs of one day read alike.
-        let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.rows.costs", None);
-        let mut run = None;
-        for cost in costs {
-            self.record_cost(writer, cost, at, &mut run, joined)?;
-        }
-        Ok(())
-    }
-
-    /// Dirties raw country `raw`'s current tag and every tag holding a day of it.
-    fn dirty_days(&self, raw: u32, joined: &mut Joined) {
-        joined.dirty.extend(self.raw_tag(raw));
-        joined.dirty.extend(
-            self.days
-                .range((raw, 0, i32::MIN)..=(raw, u64::MAX, i32::MAX))
-                .map(|(_, day)| day.tag),
-        );
-    }
-
-    fn unsum(&mut self, row: HeldCost) {
-        let key = row.application();
-        if let Some(sum) = self.sums.get_mut(&key) {
-            sum.0 = sum.0.wrapping_sub(row.cost_raw);
-            sum.1 -= 1;
-            if sum.1 == 0 {
-                self.sums.remove(&key);
-            }
-        }
-    }
-
-    /// Whether a contribution dated `hour` reaches a native day already settled: a reply shows
-    /// it on its own, beside its month.
-    fn late(&self, hour: i32) -> bool {
-        self.settled
-            .is_some_and(|settled| hour.div_euclid(24) * 24 < settled)
-    }
-
-    fn record_power(
-        &mut self,
-        writer: &mut Writer<'_>,
-        mut power: Power,
-        at: i32,
-        joined: &mut Joined,
-    ) -> io::Result<()> {
-        let row = &power.row;
-        let identity = (row.country, row.epoch, row.sequence);
-        if self.recorded.contains(&identity) {
-            return Ok(());
-        }
-        if row.cause == PowerCause::DailyGain
-            && row.currency == PowerCurrency::Political
-            && !self.applied(row.country, row.epoch, row.hour, row.sequence)
-        {
-            joined.unmatched.insert(row.country);
-        }
-        let Some(tag) = self.tag_at(row.country, row.epoch, row.hour) else {
-            self.waiting.insert((0, row.key()), Waiting::Power(power));
-            return Ok(());
-        };
-        self.recorded.insert(identity);
-        let bit = match row.currency {
-            PowerCurrency::Political => PoliticsCaptureCoverageRow::PP,
-            PowerCurrency::Command => PoliticsCaptureCoverageRow::CP,
-        };
-        let covered = self.covered(row.country, row.epoch, row.hour, bit, at);
-        let measure = POWER[usize::from(row.currency == PowerCurrency::Command)];
-        let key = self.tag_key(writer, tag, measure, None)?;
-        let late = self.late(row.hour);
-        let charge = rows::charge(row);
-        let fixed = matches!(
-            row.cause,
-            PowerCause::DailyGain
-                | PowerCause::CapCorrection
-                | PowerCause::ResetSetup
-                | PowerCause::Console
-        );
-        let class = match charge {
-            Some(_) => PAYMENT,
-            None if fixed => SKIPPED,
-            None => BALANCE,
-        };
-        let category = power.dating.category.as_deref().unwrap_or("");
-        let (recurring, upkeep) = (rows::is_recurring(category), category == "upkeep");
-        let resolved = match power.resolved.take() {
-            Some(resolved) => resolved,
-            None => power.resolve(),
-        };
-        let (ordinal, new) = self.item(tag, resolved.item);
-        if new {
-            let first = rows::mutation_id(row.country, row.epoch, row.sequence);
-            self.show(
-                writer,
-                tag,
-                ordinal,
-                (row.hour, at),
-                first,
-                &rows::paid(row),
-                (&row.identity, row.cause, None),
-                power.dating.dated.as_ref(),
+            self.ledger.countries[tag].presence = state;
+            let bytes = codec::encode(&state)?;
+            let mut direct = direct!(self, &mut *writer);
+            direct.event(
+                tag as u32,
+                PRESENT,
+                (hour, None),
+                PRESENCE_KIND,
+                &[Field::Record(&bytes)],
             )?;
         }
-        let record = PowerRecord {
-            country: row.country,
-            epoch: row.epoch,
-            sequence: row.sequence,
-            hour: row.hour,
-            command: row.currency == PowerCurrency::Command,
-            realized: row.realized_delta_raw(),
-            covered,
-            item: ordinal,
-            class,
-            late,
-            recurring,
-            upkeep,
-            charge: charge.flatten(),
-        };
-        let cell = records::cell(writer, &record)?;
-        let sequence = Self::event(writer, key, (row.hour, Some(at)), POWER_KIND, &[cell])?;
-        if late && class != SKIPPED {
-            let held = self.tag_key(writer, tag, LATE, None)?;
-            Self::event(writer, held, (row.hour, Some(at)), POWER_KIND, &[cell])?;
-        } else if class == BALANCE {
-            self.countries[tag as usize].rollups.count(
-                Some((ordinal, row.country, row.epoch)),
-                row.hour,
-                false,
-            );
-        } else if class == PAYMENT {
-            {
-                self.countries[tag as usize].rollups.add(&Contribution {
-                    field: (ordinal, row.country, row.epoch),
-                    recurring,
-                    upkeep,
-                    hour: row.hour,
-                    read: at,
-                    order: (at, sequence),
-                    sequence: row.sequence,
-                    ordinal: 0,
-                    charge: charge.flatten(),
-                    covered,
-                    realized: Some(i128::from(row.realized_delta_raw())),
-                })?;
-            }
-        }
-        joined.dirty.insert(tag);
-        if let (Some(charge), Some(category)) = (charge, power.dating.category)
-            && category.as_ref() != "dailyDeficit"
-        {
-            joined.payments.entry(tag).or_default().push(Paid {
-                currency: row.currency,
-                category,
-                hour: row.hour,
-                charge,
-            });
-        }
-        if power.row.currency == PowerCurrency::Command {
-            joined
-                .command
-                .entry((power.row.country, power.row.epoch))
-                .or_default()
-                .push((power.row, covered, resolved.holder));
-        }
         Ok(())
     }
 
-    fn record_government(
-        &mut self,
-        writer: &mut Writer<'_>,
-        government: Government,
-        at: i32,
-        joined: &mut Joined,
-    ) -> io::Result<()> {
-        let row = &government.row;
-        let identity = (row.country, row.epoch, row.sequence);
-        if self.recorded.contains(&identity) {
-            return Ok(());
-        }
-        let Some(tag) = self.tag_at(row.country, row.epoch, row.hour) else {
-            self.waiting
-                .insert((2, row.key()), Waiting::Government(government));
-            return Ok(());
-        };
-        self.recorded.insert(identity);
-        let covered = self.covered(
-            row.country,
-            row.epoch,
-            row.hour,
-            PoliticsCaptureCoverageRow::GOVERNMENT,
-            at,
-        );
-        let key = self.tag_key(writer, tag, GOVERNMENTS, None)?;
-        let shown = rows::government(row, at, government.tokens.clone(), covered);
-        let cell = records::cell(writer, &shown)?;
-        Self::event(writer, key, (row.hour, Some(at)), GOVERNMENT_KIND, &[cell])?;
-        joined.dirty.insert(tag);
-        Ok(())
-    }
-
-    fn record_daily(
-        &mut self,
-        writer: &mut Writer<'_>,
-        row: CountryPowerDailyRow,
-        at: i32,
-        joined: &mut Joined,
-    ) -> io::Result<()> {
-        let Some(tag) = self.tag_at(row.country, row.epoch, row.day_hour) else {
-            return Ok(());
-        };
-        let key = (row.country, row.epoch, row.day_hour);
-        let (pp, cp) = rows::daily_parts(&row);
-        let mut reads = (pp.then_some(at), cp.then_some(at));
-        if let Some(old) = self.days.get(&key) {
-            if old.row == row {
-                return Ok(());
-            }
-            // An application commits its matching political operands together,
-            // independently of command power.
-            if rows::daily_political(&row) == rows::daily_political(&old.row) {
-                reads.0 = old.reads.0;
-            }
-            if rows::daily_command(&row) == rows::daily_command(&old.row) {
-                reads.1 = old.reads.1;
-            }
-        }
-        let daily_key = self.tag_key(writer, tag, DAILY, None)?;
-        let record = DailyRecord {
-            epoch: row.epoch,
-            daily: rows::daily(&row, at, reads),
-        };
-        let cells = [records::cell(writer, &record)?];
-        // A revision of a settled day is also kept apart: no rollup counts it.
-        if self.late(row.day_hour) {
-            let held = self.tag_key(writer, tag, LATE, None)?;
-            Self::event(
-                writer,
-                held,
-                (row.day_hour, Some(at)),
-                DAILY_KIND,
-                &cells,
-            )?;
-        } else {
-            let gains = [
-                rows::native_gain(&row, reads, false),
-                rows::native_gain(&row, reads, true),
-            ];
-            self.countries[tag as usize]
-                .rollups
-                .add_daily((row.day_hour, row.country, row.epoch), gains);
-        }
-        Self::event(
-            writer,
-            daily_key,
-            (row.day_hour, Some(at)),
-            DAILY_KIND,
-            &cells,
-        )?;
-        // The daily table holds one day per country: its earlier days are of no further hour.
-        let earlier: Vec<(u32, u64, i32)> = self
-            .days
-            .range((row.country, 0, i32::MIN)..=(row.country, u64::MAX, i32::MAX))
-            .map(|(&key, _)| key)
-            .filter(|key| key.2 < row.day_hour)
-            .collect();
-        for key in earlier {
-            if let Some(day) = self.days.remove(&key) {
-                joined.dirty.insert(day.tag);
-            }
-        }
-        if let Some(old) = self.days.insert(key, Day { row, reads, tag }) {
-            joined.dirty.insert(old.tag);
-        }
-        joined.dirty.insert(tag);
-        Ok(())
-    }
-
-    /// What every cost of `row`'s country, day and application reads alike at hour `at`.
-    fn cost_day(&self, row: &CountryPowerDailyCostRow, at: i32) -> CostDay {
-        let day = self.days.get(&(row.country, row.epoch, row.day_hour));
-        CostDay {
-            of: (row.country, row.epoch, row.day_hour, row.pp_sequence),
-            tag: self.tag_at(row.country, row.epoch, row.day_hour),
-            covered: self.covered(
-                row.country,
-                row.epoch,
-                row.day_hour,
-                PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::PP_DAILY_COSTS,
-                at,
-            ) && !self.unreconciled(row.country),
-            late: self.late(row.day_hour),
-            matched: self.applied(row.country, row.epoch, row.day_hour, row.pp_sequence)
-                || day.is_some_and(|day| day.row.pp_sequence == Some(row.pp_sequence)),
-            // The day's political application read by then dates the payment's read.
-            read: day
-                .and_then(|day| day.reads.0)
-                .map_or(at, |read| read.max(at)),
-        }
-    }
-
-    /// Records `cost`; `run` holds what the costs recorded before it this hour read alike, for
-    /// a run of one country's day.
-    fn record_cost(
-        &mut self,
-        writer: &mut Writer<'_>,
-        cost: Cost,
-        at: i32,
-        run: &mut Option<CostDay>,
-        joined: &mut Joined,
-    ) -> io::Result<()> {
-        let row = &cost.row;
-        let key = (row.country, row.epoch, row.day_hour, row.ordinal);
-        let of = (row.country, row.epoch, row.day_hour, row.pp_sequence);
-        let day = match run.filter(|day| day.of == of) {
-            Some(day) => day,
-            None => *run.insert(self.cost_day(row, at)),
-        };
-        let Some(tag) = day.tag else {
-            self.waiting.insert((1, row.key()), Waiting::Cost(cost));
-            return Ok(());
-        };
-        let (covered, revision, held_item) = match self.recorded_costs.get(&key) {
-            Some(old) if old.row == *row => return Ok(()),
-            // A revision keeps what the first record read.
-            Some(old) => (old.covered, true, Some(old.item)),
-            None => (day.covered, false, None),
-        };
-        let CostDay {
-            late,
-            matched,
-            read,
-            ..
-        } = day;
-        let class = if row.cost_raw == 0 {
-            SKIPPED
-        } else if !matched {
-            UNMATCHED
-        } else if row.cost_raw < 0 {
-            CREDIT
-        } else {
-            PAYMENT
-        };
-        let category = cost.dating.category.as_deref().unwrap_or("");
-        let (recurring, upkeep) = (rows::is_recurring(category), category == "upkeep");
-        let (ordinal, new) = match held_item {
-            Some(ordinal) => (ordinal, false),
-            None => self.item(tag, cost.item.unwrap_or_else(|| cost.resolve())),
-        };
-        if new {
-            let first = rows::cost_id(row.country, row.epoch, row.day_hour, row.ordinal);
-            self.show(
-                writer,
-                tag,
-                ordinal,
-                (row.day_hour, at),
-                first,
-                &rows::paid_cost(row),
-                (&row.identity, row.cause, Some(row.component)),
-                cost.dating.dated.as_ref(),
-            )?;
-        }
-        // Replies read only a cost's first record, and only one that charges.
-        if !revision && class != SKIPPED {
-            let record = CostRecord {
-                country: row.country,
-                epoch: row.epoch,
-                day_hour: row.day_hour,
-                ordinal: row.ordinal,
-                pp_sequence: row.pp_sequence,
-                covered,
-                cost_raw: row.cost_raw,
-                item: ordinal,
-                class,
-                late,
-                recurring,
-                upkeep,
-            };
-            let cell = records::cell(writer, &record)?;
-            let cost_key = self.tag_key(writer, tag, COSTS, None)?;
-            let sequence =
-                Self::event(writer, cost_key, (row.day_hour, Some(at)), COST_KIND, &[cell])?;
-            let field = (ordinal, row.country, row.epoch);
-            if late {
-                let held = self.tag_key(writer, tag, LATE, None)?;
-                Self::event(writer, held, (row.day_hour, Some(at)), COST_KIND, &[cell])?;
-            } else if class == UNMATCHED || class == CREDIT {
-                let field = (class == CREDIT).then_some(field);
-                self.countries[tag as usize]
-                    .rollups
-                    .count(field, row.day_hour, true);
-            } else {
-                self.countries[tag as usize].rollups.add(&Contribution {
-                    field,
-                    recurring,
-                    upkeep,
-                    hour: row.day_hour,
-                    read,
-                    order: (at, sequence),
-                    sequence: row.pp_sequence,
-                    ordinal: row.ordinal,
-                    charge: Some(i128::from(row.cost_raw)),
-                    covered,
-                    realized: None,
-                })?;
-            }
-        }
-        if row.cost_raw != 0 {
-            joined
-                .costs
-                .entry(tag)
-                .or_default()
-                .push((row.cost_raw, matched));
-            if matched
-                && row.cost_raw > 0
-                && let Some(category) = cost.dating.category
-            {
-                joined.payments.entry(tag).or_default().push(Paid {
-                    currency: PowerCurrency::Political,
-                    category,
-                    hour: row.day_hour,
-                    charge: Some(i128::from(row.cost_raw)),
-                });
-            }
-        }
-        self.recorded_costs.insert(
-            key,
-            Recorded {
-                row: cost.row,
-                covered,
-                item: ordinal,
-            },
-        );
-        joined.dirty.insert(tag);
-        Ok(())
-    }
-
-    /// Whether the daily table holds the political application (`country`, `epoch`, `day_hour`,
-    /// `sequence`) now: the gains and costs it applies match it. It holds one day a country.
-    fn applied(&self, country: u32, epoch: u64, day_hour: i32, sequence: u64) -> bool {
-        self.daily.get(&country).is_some_and(|row| {
-            row.epoch == epoch && row.day_hour == day_hour && row.pp_sequence == Some(sequence)
-        })
-    }
-
-    /// Whether raw country `raw`'s daily political cost differs from its components' sum.
-    fn unreconciled(&self, raw: u32) -> bool {
-        self.daily.get(&raw).is_some_and(|row| {
-            row.pp_sequence.is_some_and(|sequence| {
-                let key = (row.country, row.epoch, row.day_hour, sequence);
-                row.pp_cost_raw
-                    .is_none_or(|cost| self.sums.get(&key).map_or(0, |sum| sum.0) != cost)
-            })
-        })
-    }
-
-    /// Adds held power row `row`, under `key`, to the indexes an account asks, or takes it out.
-    fn index_power(&mut self, key: u128, row: HeldPower, held: bool) {
-        match row.index {
-            Indexed::DailyGain => {
-                let entry = (row.country, row.hour, key);
-                if held {
-                    self.daily_gains.insert(entry);
-                } else {
-                    self.daily_gains.remove(&entry);
-                }
-            }
-            Indexed::UnknownAdd(bit) => {
-                let entry = (row.country, row.epoch, row.hour, bit, key);
-                if held {
-                    self.unknown_adds.insert(entry);
-                } else {
-                    self.unknown_adds.remove(&entry);
-                }
-            }
-            Indexed::None => {}
-        }
-    }
-
-    /// The currencies an addition without an evaluated operand leaves unknown, among the
-    /// hour's power rows of `witness`'s capture.
-    fn unknown_additions(&self, witness: &PoliticsCaptureCoverageRow) -> u8 {
-        let (country, epoch) = (witness.country, witness.epoch);
-        if witness.since_hour > witness.through_hour {
-            return 0;
-        }
-        self.unknown_adds
-            .range(
-                (country, epoch, witness.since_hour, 0, 0)
-                    ..=(country, epoch, witness.through_hour, u8::MAX, u128::MAX),
-            )
-            .fold(0, |bits, &(.., bit, _)| bits | bit)
-    }
-
-    /// Whether `raw`'s hour holds a political daily gain within `since..=hour`.
-    fn has_daily(&self, raw: u32, since: i32, hour: i32) -> bool {
-        since <= hour
-            && self
-                .daily_gains
-                .range((raw, since, 0)..=(raw, hour, u128::MAX))
-                .next()
-                .is_some()
-    }
-
-    /// One tag's accounting at `hour`: its coverage, spending coverage, holds, income, parts
-    /// and warning rates, written where they change.
-    fn account(
-        &mut self,
-        writer: &mut Writer<'_>,
-        tag: u32,
-        hour: i32,
-        previous: Option<i32>,
-        joined: &Joined,
-    ) -> io::Result<()> {
-        let adjacent = previous.and_then(|last| last.checked_add(1)) == Some(hour);
-        let slots = self.countries[tag as usize].slots.len();
-        let active = self.countries[tag as usize].active && slots != 0;
-        let changes_known = self.complete & facts::bit(TableId::CountryPowerChanges) != 0;
-        let daily_known = self.complete & facts::bit(TableId::CountryPowerDaily) != 0
-            && self.complete & facts::bit(TableId::CountryPowerDailyCosts) != 0;
-        let mut rates = BTreeMap::<String, u64>::new();
-        let mut coverage = self.countries[tag as usize].coverage.take();
-        let mut spending = None;
-        let mut current = false;
-        for at in (0..slots).filter(|_| active) {
-            let slot = self.countries[tag as usize].slots[at];
-            let Some(country) = self.census.get(&slot).map(|row| row.id) else {
-                continue;
-            };
-            let witness = self.slot_witness(slot);
-            let mut value = witness.as_ref().map_or(
-                Coverage {
-                    country: Some(country),
-                    instance: None,
-                    since_hour: Some(hour),
-                    through_hour: Some(hour),
-                    epoch: None,
-                    streams: 0,
-                    reason: Some(Gap::Unavailable),
-                },
-                Coverage::of,
-            );
-            if value.through_hour != Some(hour) {
-                value = Coverage {
-                    streams: 0,
-                    since_hour: Some(hour),
-                    through_hour: Some(hour),
-                    reason: Some(Gap::Stale),
-                    ..value
-                };
-            }
-            let raw = witness.as_ref().map_or(country, |row| row.country);
-            let steady = self.unreconciled(raw);
-            let unreconciled = steady || joined.unmatched.contains(&raw);
-            let has_daily = self.has_daily(raw, value.since_hour.unwrap_or(hour), hour);
-            let unknown = witness
-                .as_ref()
-                .map_or(0, |witness| self.unknown_additions(witness));
-            if has_daily || unknown != 0 || joined.unmatched.contains(&raw) {
-                self.volatile.insert(tag);
-            }
-            let political = value.streams & PoliticsCaptureCoverageRow::PP != 0
-                && changes_known
-                && daily_known
-                && !unreconciled
-                && (!has_daily || value.streams & PoliticsCaptureCoverageRow::PP_DAILY_COSTS != 0)
-                && unknown & PoliticsCaptureCoverageRow::PP == 0;
-            let command = value.streams & PoliticsCaptureCoverageRow::CP != 0
-                && changes_known
-                && unknown & PoliticsCaptureCoverageRow::CP == 0;
-            let reason = if !changes_known {
-                Some("Spending events were not recorded at this read".into())
-            } else if !daily_known
-                || unreconciled
-                || has_daily && value.streams & PoliticsCaptureCoverageRow::PP_DAILY_COSTS == 0
-            {
-                Some("Daily political power costs were not recorded at this read".into())
-            } else if unknown != 0 {
-                Some(
-                    match unknown {
-                        PoliticsCaptureCoverageRow::PP => {
-                            "A political power adjustment has no recorded evaluated operand"
-                        }
-                        PoliticsCaptureCoverageRow::CP => {
-                            "A command power adjustment has no recorded evaluated operand"
-                        }
-                        _ => {
-                            "Political and command power adjustments have no recorded evaluated operands"
-                        }
-                    }
-                    .into(),
-                )
-            } else {
-                value.reason.map(|gap| gap.text().to_owned())
-            };
-            spending = Some(LedgerSpendCoverage {
-                read_hour: hour,
-                since_hour: Some(hour),
-                through_hour: Some(hour),
-                political,
-                command,
-                reason,
-            });
-            // The open piece goes on when the hour continues it.
-            coverage = Some(match coverage.take() {
-                Some(mut old)
-                    if adjacent
-                        && Coverage {
-                            through_hour: Some(hour - 1),
-                            ..old
-                        }
-                        .continued_by(&value) =>
-                {
-                    old.through_hour = value.through_hour;
-                    old
-                }
-                _ => value,
-            });
-            current = true;
-            if steady {
-                *rates
-                    .entry(
-                        "Daily PP rates/components have no matching native application and wrapping sum"
-                            .into(),
-                    )
-                    .or_default() += 1;
-            }
-            for table in [
-                TableId::CountryPowerChanges,
-                TableId::GovernmentChanges,
-                TableId::CountryPowerDaily,
-                TableId::CountryPowerDailyCosts,
-            ] {
-                if self.complete & facts::bit(table) == 0 {
-                    *rates
-                        .entry(format!("{table:?} unavailable in part of this branch"))
-                        .or_default() += 1;
-                }
-            }
-            if joined.unmatched.contains(&raw) && !steady {
-                // A gain read before its application warns once, not as a rate.
-                let country = &mut self.countries[tag as usize];
-                *country
-                    .warnings
-                    .entry(
-                        "Daily PP rates/components have no matching native application and wrapping sum"
-                            .into(),
-                    )
-                    .or_default() += 1;
-                country.warnings_changed = true;
-            }
-        }
-        for (slot, reason) in &self.refused {
-            if self.known.get(slot) == Some(&tag) {
-                *rates.entry(reason.clone()).or_default() += 1;
-            }
-        }
-        self.countries[tag as usize].rate(hour, rates);
-        if !current {
-            coverage = None;
-        }
-        // A cost read at the hour without its matched application, or negative, leaves the
-        // read's political spending unknown.
-        if joined.costs.get(&tag).is_some_and(|costs| !costs.is_empty()) {
-            self.volatile.insert(tag);
-        }
-        if let Some(spending) = spending.as_mut() {
-            for &(amount, matched) in joined.costs.get(&tag).into_iter().flatten() {
-                if !matched {
-                    spending.political = false;
-                    spending.reason = Some(
-                        "Daily political power costs have no matched payment at this read".into(),
-                    );
-                } else if amount < 0 {
-                    spending.political = false;
-                    spending.reason = Some(
-                        "Negative daily political power cost components are not included in spending"
-                            .into(),
-                    );
-                }
-            }
-        }
-        let identity = coverage
-            .filter(|row| row.through_hour == Some(hour))
-            .and_then(|row| row.identity());
-        let starts = !adjacent || identity != self.countries[tag as usize].identity;
-        self.countries[tag as usize].coverage = coverage;
-        self.write_spending(writer, tag, hour, adjacent, starts, spending)?;
-        self.write_holds(writer, tag, hour, adjacent, active, joined)?;
-        self.write_parts(writer, tag, hour, previous, starts, identity, joined)?;
-        self.countries[tag as usize].identity = identity;
-        Ok(())
-    }
-
-    /// Whether `tag`'s spending is recorded at `hour` in each currency, and why not.
-    fn write_spending(
-        &mut self,
-        writer: &mut Writer<'_>,
-        tag: u32,
-        hour: i32,
-        adjacent: bool,
-        starts: bool,
-        value: Option<LedgerSpendCoverage>,
-    ) -> io::Result<()> {
-        let keys = [
-            self.tag_key(writer, tag, COVERED[0], None)?,
-            self.tag_key(writer, tag, COVERED[1], None)?,
-        ];
-        let Some(value) = value else {
-            for key in keys {
-                self.carry.value(writer, key, hour, None, false)?;
-            }
-            self.countries[tag as usize].spending = None;
-            return Ok(());
-        };
-        let merged = match self.countries[tag as usize].spending.take() {
-            Some(mut old)
-                if adjacent
-                    && old.political == value.political
-                    && old.command == value.command
-                    && old.reason == value.reason =>
-            {
-                old.through_hour = Some(hour);
-                old
-            }
-            _ => value,
-        };
-        for (key, known) in keys.into_iter().zip([merged.political, merged.command]) {
-            self.carry
-                .value(writer, key, hour, known.then_some(1), starts)?;
-        }
-        let held = self.countries[tag as usize]
-            .cover
-            .as_ref()
-            .is_some_and(|(political, command, reason)| {
-                *political == merged.political
-                    && *command == merged.command
-                    && *reason == merged.reason
-            });
-        if !held {
-            let cover = (merged.political, merged.command, merged.reason.clone());
-            let key = self.tag_key(writer, tag, COVER_REASONS, None)?;
-            let cells = [records::cell(writer, &merged)?];
-            Self::event(writer, key, (hour, None), COVER_KIND, &cells)?;
-            self.countries[tag as usize].cover = Some(cover);
-        }
-        self.countries[tag as usize].spending = Some(merged);
-        Ok(())
-    }
-
-    /// `tag`'s command power holds at `hour`: the allocators carried on, the hour's command rows
-    /// applied, and a snapshot of the hour's total, written when it differs.
-    fn write_holds(
-        &mut self,
-        writer: &mut Writer<'_>,
-        tag: u32,
-        hour: i32,
-        adjacent: bool,
-        active: bool,
-        joined: &Joined,
-    ) -> io::Result<()> {
-        let mutations_complete = self.complete & facts::bit(TableId::CountryPowerChanges) != 0;
-        let slot = self.countries[tag as usize].slots.last().copied();
-        let witness = slot.and_then(|slot| self.slot_witness(slot));
-        let (total, refusal) = if active {
-            let identity = witness.as_ref().map(|row| (row.country, row.epoch));
-            let total = slot.and_then(|slot| self.command.get(&slot).copied());
-            let holds = &mut self.countries[tag as usize].holds;
-            let contiguous = adjacent && holds.last.is_some() && holds.identity == identity;
-            if holds.identity != identity {
-                holds.identity = identity;
-                holds.sequence = None;
-                holds.active.clear();
-            }
-            if !contiguous
-                || !mutations_complete
-                || !witness.as_ref().is_some_and(|row| {
-                    row.streams & PoliticsCaptureCoverageRow::CP != 0
-                        && row.since_hour <= hour
-                        && row.through_hour >= hour
-                })
-            {
-                holds.active.clear();
-            }
-            if let Some(rows) = identity.and_then(|identity| joined.command.get(&identity)) {
-                let mut rows: Vec<_> = rows.iter().collect();
-                rows.sort_by_key(|(row, ..)| row.sequence);
-                for (row, covered, holder) in rows {
-                    if !covered {
-                        if rows::is_hold(row) {
-                            holds.active.clear();
-                        }
-                        continue;
-                    }
-                    apply_hold(holds, row, holder.clone());
-                }
-            }
-            (total, None)
-        } else {
-            let refusal = self
-                .refused
-                .iter()
-                .find(|(slot, _)| self.known.get(*slot) == Some(&tag))
-                .map(|(_, reason)| reason.clone());
-            let total = (self.census_complete && refusal.is_none()).then_some(0);
-            let holds = &mut self.countries[tag as usize].holds;
-            holds.active.clear();
-            holds.identity = None;
-            holds.sequence = None;
-            (total, refusal)
-        };
-        let missing = if active {
-            "CountryCommandPower row unavailable"
-        } else {
-            refusal.as_deref().unwrap_or("Countries unavailable")
-        };
-        let holds = &mut self.countries[tag as usize].holds;
-        settle_holds(holds, total);
-        let continues = adjacent
-            && holds.last.is_some()
-            && holds
-                .snapshot
-                .as_ref()
-                .is_some_and(|held| held.reads(total, &holds.active, missing));
-        holds.last = Some(hour);
-        if continues {
-            return Ok(());
-        }
-        let snapshot = Snapshot::of(&holds.active, total, missing);
-        holds.snapshot = Some(snapshot.clone());
-        let key = self.tag_key(writer, tag, HOLDS, None)?;
-        let shown = present::hold(
-            hour,
-            snapshot.total,
-            &snapshot.holders,
-            snapshot.missing.as_deref(),
-            self.content.as_deref(),
-        );
-        let cells = [records::cell(writer, &shown)?];
-        Self::event(writer, key, (hour, None), HOLD_KIND, &cells)?;
-        Ok(())
-    }
-
-    /// `tag`'s current daily income by currency: its latest recorded day the daily table holds.
-    /// The part dimension of `category` in `currency`, numbered and named when new.
-    fn category(
-        &mut self,
-        writer: &mut Writer<'_>,
-        currency: PowerCurrency,
-        category: &str,
-    ) -> io::Result<u64> {
-        let index = usize::from(currency == PowerCurrency::Command);
-        if let Some(&dimension) = self.categories[index].get(category) {
+    /// The emit's dimension of lens category dimension `dimension`, named when new, which bound
+    /// country `tag` pays in.
+    fn dimension(&mut self, writer: &mut Writer, tag: u32, dimension: u64) -> io::Result<u64> {
+        if dimension < CATEGORY_PARTS {
             return Ok(dimension);
         }
-        let held = self.categories.iter().map(FastMap::len).sum::<usize>();
-        let dimension = CATEGORY_PARTS + held as u64;
-        let spelling = format!("{}:{category}", CURRENCIES[index]);
-        let cell = text(writer, spelling.as_bytes())?;
-        writer.catalogue(CATEGORY_NAMES + dimension, cell)?;
-        self.categories[index].insert(category.into(), dimension);
-        self.category_currency.insert(dimension, index);
-        Ok(dimension)
+        let held = match self.lens_dims.get(&dimension) {
+            Some(&held) => held,
+            None => {
+                let (currency, name) = self
+                    .lens_names
+                    .get(&dimension)
+                    .cloned()
+                    .ok_or_else(|| lens_failure("it names a category it never named"))?;
+                let mut direct = direct!(self, &mut *writer);
+                let held = self.ledger.category(&mut direct, currency, &name)?;
+                self.lens_dims.insert(dimension, held);
+                held
+            }
+        };
+        if let Some(bound) = self.bound.get_mut(&tag)
+            && let Some(&currency) = self.ledger.category_currency.get(&held)
+        {
+            bound.extra[currency].retain(|&extra| extra != held);
+        }
+        Ok(held)
     }
 
-    /// `tag`'s spending parts at `hour`: its capture identity's income of the day and its spending
-    /// by category, each currency's while its spending was recorded since the day began.
-    #[allow(clippy::too_many_arguments)]
-    fn write_parts(
+    /// Writes what bound country `tag` wrote in the lens at the hour.
+    fn replay(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         tag: u32,
-        hour: i32,
-        previous: Option<i32>,
-        starts: bool,
-        identity: Option<(u32, u64)>,
-        joined: &Joined,
+        ops: Vec<Op>,
+        payload: &[u8],
     ) -> io::Result<()> {
-        let day = hour.div_euclid(24) * 24;
-        let known = self.countries[tag as usize]
-            .cover
-            .as_ref()
-            .map_or([false; 2], |cover| [cover.0, cover.1]);
-        let mut paid = Vec::new();
-        for payment in joined.payments.get(&tag).into_iter().flatten() {
-            if payment.hour < day || payment.hour > day.saturating_add(23) {
-                continue;
-            }
-            let dimension = self.category(writer, payment.currency, &payment.category)?;
-            paid.push((dimension, payment.charge));
-        }
-        let mut income: [Option<i128>; 6] = [None; 6];
-        // The day's values by part dimension, ascending.
-        let mut values = std::mem::take(&mut self.scratch.values);
-        values.clear();
-        let mut since = [None; 2];
-        if let Some((country, epoch)) = identity {
-            let parts = self.countries[tag as usize]
-                .parts
-                .entry(country)
-                .or_default();
-            if parts.epoch != Some(epoch) {
-                *parts = DayParts {
-                    epoch: Some(epoch),
-                    ..DayParts::default()
-                };
-            }
-            if !starts
-                && previous.and_then(|last| last.checked_add(1)) == Some(hour)
-                && parts.last.is_some()
-            {
-                parts.last = previous;
-            }
-            if parts.last.and_then(|last| last.checked_add(1)) != Some(hour) {
-                parts.first = Some(hour);
-            }
-            let first = *parts.first.get_or_insert(hour);
-            if parts.day != day {
-                parts.day = day;
-                parts.values.clear();
-            }
-            for (dimension, charge) in paid {
-                let value = parts.values.entry(dimension).or_insert(Some(0));
-                *value = rows::sum_raw([*value, charge].into_iter())?;
-            }
-            for (index, known) in known.into_iter().enumerate() {
-                parts.since[index] = known.then(|| {
-                    if parts.last.and_then(|last| last.checked_add(1)) == Some(hour) {
-                        parts.since[index].unwrap_or(hour)
-                    } else {
-                        hour
+        for op in ops {
+            match op {
+                Op::Event {
+                    measure,
+                    hours,
+                    kind,
+                    fields,
+                } => {
+                    let bound = self
+                        .bound
+                        .get(&tag)
+                        .ok_or_else(|| lens_failure("ops of a country it did not bind"))?;
+                    let mut records: [Vec<u8>; 2] = Default::default();
+                    if fields.len() > records.len() {
+                        return Err(lens_failure("an event of too many fields"));
                     }
-                });
-            }
-            parts.last = Some(hour);
-            values.extend(parts.values.iter().map(|(&dimension, &value)| (dimension, value)));
-            since = parts.since;
-            if first <= day {
-                let held = || {
-                    self.days
-                        .range((country, 0, day)..=(country, u64::MAX, day))
-                        .map(|(_, held)| held)
-                        .filter(move |held| held.tag == tag && held.row.day_hour == day)
-                };
-                // One capture's later read revises its day; only separate captures are ambiguous.
-                let supplied = |command: bool| {
-                    let mut found = held().filter(|held| {
-                        if command { held.reads.1 } else { held.reads.0 }
-                            .is_some_and(|read| read <= hour)
-                    });
-                    let first = found.next();
-                    if found.next().is_some() { None } else { first }
-                };
-                if let Some(row) = supplied(false).map(|held| &held.row)
-                    && let (Some(gross), Some(cost), Some(net)) =
-                        (row.pp_gross_gain_raw, row.pp_cost_raw, row.pp_net_gain_raw)
-                {
-                    let (gross, cost, net) = (i128::from(gross), i128::from(cost), i128::from(net));
-                    income[0] = Some(gross);
-                    income[1] = Some(-cost);
-                    income[2] = Some(net - (gross - cost));
-                    income[3] = Some(net);
+                    for (record, piece) in records.iter_mut().zip(&fields) {
+                        if let Piece::Record(at, len) = *piece {
+                            self.packed.unpack(slice(payload, (at, len))?, record)?;
+                        }
+                    }
+                    let mut held = [Field::Item(0); 2];
+                    for ((field, piece), record) in held.iter_mut().zip(&fields).zip(&records) {
+                        *field = match *piece {
+                            Piece::Record(..) => Field::Record(record),
+                            Piece::Item(ordinal) => Field::Item(
+                                bound
+                                    .items
+                                    .get(ordinal as usize)
+                                    .copied()
+                                    .filter(|&held| held != UNNAMED)
+                                    .ok_or_else(|| lens_failure("an item it never named"))?,
+                            ),
+                        };
+                    }
+                    let mut direct = direct!(self, &mut *writer);
+                    direct.event(tag, measure, hours, kind, &held[..fields.len()])?;
                 }
-                if let Some(cp) = supplied(true).and_then(|held| held.row.cp_gain_raw) {
-                    income[4] = Some(i128::from(cp));
-                    income[5] = Some(i128::from(cp));
+                Op::Value {
+                    measure,
+                    dimension,
+                    hour,
+                    value,
+                    starts,
+                } => {
+                    let dimension = match dimension {
+                        Some(dimension) if measure == PARTS => {
+                            Some(self.dimension(writer, tag, dimension)?)
+                        }
+                        dimension => dimension,
+                    };
+                    let mut direct = direct!(self, &mut *writer);
+                    direct.value(tag, measure, dimension, hour, value, starts)?;
                 }
-            }
-            // A day's income and spending alike end at its midnight, where a currency covered
-            // since within the day is covered whole.
-            if (!values.is_empty()
-                || income.iter().any(Option::is_some)
-                || since.iter().flatten().any(|&first| first > day))
-                && let Some(next) = day.checked_add(24)
-            {
-                self.tomorrow.entry(next).or_default().insert(tag);
+                Op::Item {
+                    ordinal,
+                    key,
+                    shown,
+                    hours,
+                    kind,
+                } => {
+                    let country = &mut self.ledger.countries[tag as usize];
+                    let (held, new) = match country.item_index.get(&key) {
+                        Some(&held) => (held, false),
+                        None => {
+                            let held = country.items.len() as u32;
+                            country.items.push(key);
+                            country.item_index.insert(key, held);
+                            (held, true)
+                        }
+                    };
+                    let bound = self
+                        .bound
+                        .get_mut(&tag)
+                        .ok_or_else(|| lens_failure("ops of a country it did not bind"))?;
+                    let at = ordinal as usize;
+                    if bound.items.len() <= at {
+                        bound.items.resize(at + 1, UNNAMED);
+                    }
+                    bound.items[at] = held;
+                    if new {
+                        let shown = shown
+                            .ok_or_else(|| lens_failure("an item the emit never read, unshown"))?;
+                        let mut record = Vec::new();
+                        self.packed.unpack(slice(payload, shown)?, &mut record)?;
+                        let mut direct = direct!(self, &mut *writer);
+                        direct.event(
+                            tag,
+                            ITEMS,
+                            hours,
+                            kind,
+                            &[Field::Item(held), Field::Record(&record)],
+                        )?;
+                    }
+                }
+                Op::Category(dimension) => {
+                    self.dimension(writer, tag, dimension)?;
+                }
+                Op::First { dimension, hour } => {
+                    let dimension = self.dimension(writer, tag, dimension)?;
+                    let country = &mut self.ledger.countries[tag as usize];
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        country.categories.entry(dimension)
+                    {
+                        entry.insert(hour);
+                        country.categories_changed = true;
+                    }
+                }
+                Op::Unpaid {
+                    currency,
+                    hour,
+                    value,
+                    starts,
+                } => {
+                    let extra = self
+                        .bound
+                        .get(&tag)
+                        .and_then(|bound| bound.extra.get(usize::from(currency)))
+                        .ok_or_else(|| lens_failure("ops of a country it did not bind"))?
+                        .clone();
+                    let mut direct = direct!(self, &mut *writer);
+                    for dimension in extra {
+                        direct.value(tag, PARTS, Some(dimension), hour, value, starts)?;
+                    }
+                }
+                Op::Settled {
+                    settled,
+                    closed,
+                    split,
+                } => {
+                    if Some(settled) != self.ledger.settled {
+                        return Err(lens_failure("it settled at another frontier"));
+                    }
+                    self.bound
+                        .get_mut(&tag)
+                        .ok_or_else(|| lens_failure("ops of a country it did not bind"))?
+                        .settled
+                        .push((closed, split));
+                }
             }
         }
-        for (dimension, value) in income.into_iter().enumerate() {
-            let key = self.tag_key(writer, tag, PARTS, Some(dimension as u64))?;
-            self.carry.value(writer, key, hour, value, starts)?;
-        }
-        // The tag's categories, ascending, with their currency.
-        let mut categories = std::mem::take(&mut self.scratch.categories);
-        categories.clear();
-        {
-            let country = &mut self.countries[tag as usize];
-            for &(dimension, _) in &values {
-                if let std::collections::btree_map::Entry::Vacant(entry) =
-                    country.categories.entry(dimension)
-                {
-                    entry.insert(hour);
-                    country.categories_changed = true;
-                }
-            }
-            categories.extend(country.categories.keys().map(|&dimension| {
-                (dimension, self.category_currency.get(&dimension).copied())
-            }));
-        }
-        let value = |dimension: u64| {
-            values
-                .binary_search_by_key(&dimension, |&(held, _)| held)
-                .map_or(Some(0), |at| values[at].1)
+        Ok(())
+    }
+
+    /// Settles, at `at`, the rollups of the bound countries the frontier reached: those each
+    /// held before the lens bound it, with what the lens settled of the hours since.
+    fn settle_bound(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
+        let Some(settled) = self.ledger.settled else {
+            return Ok(());
         };
-        for index in 0..2 {
-            let covered = since[index].is_some_and(|first| first <= day);
-            let mine = || {
-                categories
-                    .iter()
-                    .filter(move |&&(_, currency)| currency == Some(index))
-                    .map(|&(dimension, _)| dimension)
-            };
-            let total = if covered {
-                rows::sum_raw(mine().map(value))?
-            } else {
-                None
-            };
-            let shown = covered && total.is_some();
-            let key = self.tag_key(writer, tag, PARTS, Some(ZERO[index]))?;
-            self.carry
-                .value(writer, key, hour, shown.then_some(0), starts)?;
-            for dimension in mine() {
-                let key = self.tag_key(writer, tag, PARTS, Some(dimension))?;
-                let value = shown.then(|| value(dimension)).flatten();
-                self.carry.value(writer, key, hour, value, starts)?;
+        let mut tags = BTreeSet::new();
+        while let Some(&(due, tag)) = self.prior.first() {
+            if due > settled {
+                break;
             }
-            let key = self.tag_key(writer, tag, PARTS, Some(TOTAL[index]))?;
-            self.carry.value(writer, key, hour, total, starts)?;
+            self.prior.pop_first();
+            if let Some(bound) = self.bound.get_mut(&tag) {
+                bound.due = None;
+            }
+            tags.insert(tag);
         }
-        self.scratch = Scratch { values, categories };
+        tags.extend(
+            self.bound
+                .iter()
+                .filter(|(_, bound)| !bound.settled.is_empty())
+                .map(|(&tag, _)| tag),
+        );
+        for tag in tags {
+            let bound = self
+                .bound
+                .get_mut(&tag)
+                .ok_or_else(|| lens_failure("it settled a country it did not bind"))?;
+            let lensed = std::mem::take(&mut bound.settled);
+            let items = &bound.items;
+            let item = |ordinal: u32| -> io::Result<u32> {
+                items
+                    .get(ordinal as usize)
+                    .copied()
+                    .filter(|&held| held != UNNAMED)
+                    .ok_or_else(|| lens_failure("it settled an item it never named"))
+            };
+            let rollups = &mut self.ledger.countries[tag as usize].rollups;
+            let mut closed: BTreeMap<(usize, i32), tally::Totals> = BTreeMap::new();
+            let mut later = Vec::with_capacity(lensed.len());
+            for (held, split) in lensed {
+                rollups.join(remap_split(split, &item)?)?;
+                later.push(held);
+            }
+            for (level, index, totals) in rollups.settle(settled)? {
+                closed.insert((level, index), totals);
+            }
+            for (level, index, totals) in later.into_iter().flatten() {
+                let totals = totals.remap(&item)?;
+                match closed.entry((level, index)) {
+                    std::collections::btree_map::Entry::Occupied(held) => {
+                        held.into_mut().merge(&totals)?
+                    }
+                    std::collections::btree_map::Entry::Vacant(held) => {
+                        held.insert(totals);
+                    }
+                }
+            }
+            let due = rollups.due();
+            bound.due = due;
+            if let Some(due) = due {
+                self.prior.insert((due, tag));
+            }
+            let closed = closed
+                .into_iter()
+                .map(|((level, index), totals)| (level, index, totals))
+                .collect();
+            let mut direct = direct!(self, &mut *writer);
+            direct.closed(tag, at, closed)?;
+        }
+        Ok(())
+    }
+
+    /// Binds, at the end of hour `at`, each country the lens binds whose state is the emit's.
+    fn bind(&mut self, binds: Vec<Bind>, at: i32) {
+        let mut named: FastMap<u32, Vec<u32>> = FastMap::default();
+        for (&(raw, _), tags) in &self.ledger.identities {
+            for &(_, tag) in tags {
+                named.entry(tag).or_default().push(raw);
+            }
+        }
+        for bind in binds {
+            let bound = self.bound_of(&bind, &named, at);
+            self.numbers
+                .insert(bind.number, bound.as_ref().map(|(tag, _)| *tag));
+            let Some((tag, mut bound)) = bound else {
+                continue;
+            };
+            let ledger = &mut self.ledger;
+            ledger.countries[tag as usize].materialize(at);
+            for &raw in &bound.raws {
+                ledger.lensed.insert(raw, tag);
+            }
+            ledger.volatile.remove(tag);
+            for tags in ledger.tomorrow.values_mut() {
+                tags.remove(&tag);
+            }
+            ledger.tomorrow.retain(|_, tags| !tags.is_empty());
+            ledger.unschedule(tag);
+            bound.due = ledger.countries[tag as usize].rollups.due();
+            if let Some(due) = bound.due {
+                self.prior.insert((due, tag));
+            }
+            self.bound.insert(tag, bound);
+        }
+    }
+
+    /// The country `bind` names, bound as the lens binds it, where the emit holds it alike at
+    /// the end of hour `at`: its slots, raw countries, their rows and capture identities, its
+    /// accounting and what its keys hold. `named` holds the raw countries each tag's capture
+    /// identities name.
+    fn bound_of(
+        &self,
+        bind: &Bind,
+        named: &FastMap<u32, Vec<u32>>,
+        at: i32,
+    ) -> Option<(u32, Bound)> {
+        let ledger = &self.ledger;
+        if (ledger.settled, ledger.rolled) != bind.settled {
+            return None;
+        }
+        let &tag = ledger.numbers.get(&*bind.tag)?;
+        if self.bound.contains_key(&tag) {
+            return None;
+        }
+        let real = &ledger.countries[tag as usize];
+        let lens = &bind.country;
+        if !real.active || real.slots.is_empty() || real.slots != lens.slots {
+            return None;
+        }
+        let raws = ledger.raws_of(tag);
+        if raws.len() != bind.raws.len() || raws.iter().zip(&bind.raws).any(|(a, (b, _))| a != b) {
+            return None;
+        }
+        if ledger
+            .refused
+            .keys()
+            .any(|slot| ledger.known.get(slot) == Some(&tag))
+            || named
+                .get(&tag)
+                .is_some_and(|named| named.iter().any(|raw| raws.binary_search(raw).is_err()))
+        {
+            return None;
+        }
+        let mut identities = Vec::new();
+        for &raw in &raws {
+            for (&key, tags) in ledger.identities.range((raw, 0)..=(raw, u64::MAX)) {
+                if tags.iter().any(|&(_, held)| held != tag) {
+                    return None;
+                }
+                identities.push(key);
+            }
+        }
+        if identities != bind.identities
+            || lens::stale(ledger, &raws) != bind.stale
+            || bind
+                .witnesses
+                .iter()
+                .any(|(raw, witness)| ledger.witnesses.get(raw) != witness.as_ref())
+            || bind
+                .command
+                .iter()
+                .any(|&(slot, value)| ledger.command.get(&slot).copied() != value)
+        {
+            return None;
+        }
+        let empty = Raw::default();
+        let mut days = 0;
+        for (raw, theirs) in &bind.raws {
+            let ours = ledger.raws.get(raw).unwrap_or(&empty);
+            if !same_rows(
+                ours,
+                theirs,
+                (tag, bind.number),
+                (real.items.as_slice(), lens.items.as_slice()),
+            ) {
+                return None;
+            }
+            days += ours.days.len();
+        }
+        if ledger.day_counts.get(tag as usize).copied() != Some(days as u32) {
+            return None;
+        }
+        // The lens's categories as the emit numbers them; the emit's others the lens never paid.
+        let dimension = |held: u64| -> Option<u64> {
+            if held < CATEGORY_PARTS {
+                return Some(held);
+            }
+            let (currency, name) = self.lens_names.get(&held)?;
+            ledger.categories.get(*currency)?.get(&**name).copied()
+        };
+        let mut known = BTreeSet::new();
+        for &held in lens.categories.keys() {
+            let held = dimension(held)?;
+            if !real.categories.contains_key(&held) {
+                return None;
+            }
+            known.insert(held);
+        }
+        let mut extra: [Vec<u64>; 2] = Default::default();
+        for &held in real.categories.keys() {
+            if !known.contains(&held) {
+                extra[*ledger.category_currency.get(&held)?].push(held);
+            }
+        }
+        let day = at.div_euclid(24) * 24;
+        let alike = match (&real.coverage, &lens.coverage) {
+            (Some(ours), Some(theirs)) => ours.alike(theirs),
+            (None, None) => true,
+            _ => false,
+        } && match (&real.spending, &lens.spending) {
+            (Some(ours), Some(theirs)) => {
+                ours.political == theirs.political
+                    && ours.command == theirs.command
+                    && ours.reason == theirs.reason
+            }
+            (None, None) => true,
+            _ => false,
+        } && real.cover == lens.cover
+            && real.identity == lens.identity
+            && real.holds == lens.holds
+            && real.rates == lens.rates
+            && real.rated.map(|rated| rated.max(at)) == lens.rated
+            && raws.iter().all(|raw| match (real.parts.get(raw), lens.parts.get(raw)) {
+                (Some(ours), Some(theirs)) => ours.alike(theirs, day, &dimension),
+                (None, None) => true,
+                _ => false,
+            })
+            && ledger.volatile.contains(tag) == bind.volatile
+            && lens::tomorrow(ledger, tag) == bind.tomorrow;
+        if !alike {
+            return None;
+        }
+        // What the carry holds of its keys is what the lens's does.
+        let keys = self.keys.get(tag as usize)?;
+        let carried = |measure: u64, dimension: Option<u64>| {
+            self.actors
+                .held(Place {
+                    actor: keys.actor,
+                    measure,
+                    dimension,
+                })
+                .and_then(|key| self.carry.held(key))
+        };
+        for &((measure, held), value) in &bind.held {
+            let held = match held {
+                Some(held) if measure == PARTS => Some(dimension(held)?),
+                held => held,
+            };
+            if carried(measure, held) != value {
+                return None;
+            }
+        }
+        for (currency, extra) in extra.iter().enumerate() {
+            if extra
+                .iter()
+                .any(|&held| carried(PARTS, Some(held)) != bind.unpaid[currency])
+            {
+                return None;
+            }
+        }
+        let items = lens
+            .items
+            .iter()
+            .map(|key| real.item_index.get(key).copied().unwrap_or(UNNAMED))
+            .collect();
+        Some((
+            tag,
+            Bound {
+                number: bind.number,
+                slots: real.slots.clone(),
+                raws,
+                items,
+                extra,
+                due: None,
+                settled: Vec::new(),
+            },
+        ))
+    }
+
+    /// Takes back the countries the lens returns, as the hours it folded leave them.
+    fn returned(&mut self, returned: Vec<Taken>) -> io::Result<()> {
+        for taken in returned {
+            let entry = self
+                .numbers
+                .remove(&taken.number)
+                .ok_or_else(|| lens_failure("it returns a country it never bound"))?;
+            let Some(tag) = entry else {
+                continue;
+            };
+            let bound = self
+                .bound
+                .remove(&tag)
+                .ok_or_else(|| lens_failure("it returns a country the emit did not bind"))?;
+            if bound.number != taken.number || !bound.settled.is_empty() {
+                return Err(lens_failure("it returns a country out of turn"));
+            }
+            self.install(tag, bound, taken)?;
+        }
+        Ok(())
+    }
+
+    /// Bound country `tag`'s accounting, its raw countries' rows and its rollups, as the lens
+    /// hands them back in `taken`, with what the emit held of them before.
+    fn install(&mut self, tag: u32, bound: Bound, taken: Taken) -> io::Result<()> {
+        let Taken {
+            country: lens,
+            raws,
+            stale,
+            volatile,
+            tomorrow,
+            ..
+        } = taken;
+        let Bound {
+            raws: held_raws,
+            mut items,
+            due,
+            ..
+        } = bound;
+        let lens = *lens;
+        let ledger = &mut self.ledger;
+        // A lens item its ops never named was named before it bound: the emit holds its key.
+        if items.len() < lens.items.len() {
+            items.resize(lens.items.len(), UNNAMED);
+        }
+        for (ordinal, key) in lens.items.iter().enumerate() {
+            if items[ordinal] == UNNAMED
+                && let Some(&held) = ledger.countries[tag as usize].item_index.get(key)
+            {
+                items[ordinal] = held;
+            }
+        }
+        let item = |ordinal: u32| -> io::Result<u32> {
+            items
+                .get(ordinal as usize)
+                .copied()
+                .filter(|&held| held != UNNAMED)
+                .ok_or_else(|| lens_failure("it hands back an item it never named"))
+        };
+        for raw in &held_raws {
+            ledger.lensed.remove(raw);
+            ledger.stale_costs.remove(raw);
+        }
+        ledger.stale_costs.extend(stale);
+        for (raw, mut held) in raws {
+            for recorded in held.recorded_costs.values_mut() {
+                recorded.item = item(recorded.item)?;
+            }
+            for day in held.days.values_mut() {
+                day.tag = tag;
+            }
+            let count = held.days.len() as u32;
+            if let Some(old) = ledger.raws.insert(raw, held) {
+                for day in old.days.values() {
+                    if let Some(count) = ledger.day_counts.get_mut(day.tag as usize) {
+                        *count = count.saturating_sub(1);
+                    }
+                }
+            }
+            ledger.day_counts[tag as usize] += count;
+        }
+        let dimensions = &self.lens_dims;
+        let dimension = |held: u64| -> io::Result<u64> {
+            if held < CATEGORY_PARTS {
+                return Ok(held);
+            }
+            dimensions
+                .get(&held)
+                .copied()
+                .ok_or_else(|| lens_failure("it hands back a category it never named"))
+        };
+        let real = &mut ledger.countries[tag as usize];
+        real.coverage = lens.coverage;
+        real.spending = lens.spending;
+        real.cover = lens.cover;
+        real.identity = lens.identity;
+        real.holds = lens.holds;
+        for raw in &held_raws {
+            match lens.parts.get(raw) {
+                Some(parts) => {
+                    let mut parts = parts.clone();
+                    let mut values = BTreeMap::new();
+                    for (held, value) in std::mem::take(&mut parts.values) {
+                        values.insert(dimension(held)?, value);
+                    }
+                    parts.values = values;
+                    real.parts.insert(*raw, parts);
+                }
+                None => {
+                    real.parts.remove(raw);
+                }
+            }
+        }
+        real.rates = lens.rates;
+        real.rated = lens.rated;
+        for (reason, count) in lens.warnings {
+            *real.warnings.entry(reason).or_default() += count;
+        }
+        real.warnings_changed |= lens.warnings_changed;
+        real.rollups.merge(lens.rollups.remap(&item)?)?;
+        if volatile {
+            ledger.volatile.insert(tag);
+        }
+        for at in tomorrow {
+            ledger.tomorrow.entry(at).or_default().insert(tag);
+        }
+        ledger.reschedule(tag);
+        if let Some(due) = due {
+            self.prior.remove(&(due, tag));
+        }
         Ok(())
     }
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts next,
     /// with its evidence and every scalar that changed since the last cut.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
+        if !self.bound.is_empty() {
+            return Err(lens_failure("it did not hand its countries back before a cut"));
+        }
+        // A blob of the segment cut is not referred to again.
+        self.record = (Vec::new(), Blob::EMPTY);
         self.carry.cut(writer, last)?;
         self.evidence(writer, last)?;
-        if self.last == Some(last) {
+        if self.ledger.last == Some(last) {
             self.known_from = None;
         }
-        if self.settled != self.settled_written
-            && let Some(settled) = self.settled
+        if self.ledger.settled != self.settled_written
+            && let Some(settled) = self.ledger.settled
         {
             writer.catalogue(SETTLED, Cell::Integer(i128::from(settled)))?;
-            self.settled_written = self.settled;
+            self.settled_written = self.ledger.settled;
         }
-        for country in &mut self.countries {
+        for country in &mut self.ledger.countries {
             country.materialize(last);
         }
-        if self.warnings_changed {
-            let cell = reasons(writer, &self.warnings)?;
+        if self.ledger.warnings_changed {
+            let cell = reasons(writer, &self.ledger.warnings)?;
             writer.catalogue(WARNINGS, cell)?;
-            self.warnings_changed = false;
+            self.ledger.warnings_changed = false;
         }
         // The content's power diagnostics are reachable once an item demanded its power content.
         if !self.power_warned
-            && let Some(content) = self.content.as_deref()
+            && let Some(content) = self.ledger.content.as_deref()
             && content.power_requested()
         {
             let mut cells = Vec::new();
@@ -2518,23 +1337,24 @@ impl Emit {
             writer.catalogue(POWER_WARNINGS, cell)?;
             self.power_warned = true;
         }
-        for at in 0..self.countries.len() {
-            if self.countries[at].warnings_changed {
-                let warnings = self.countries[at].warnings.clone();
-                let cell = reasons(writer, &warnings)?;
-                writer.catalogue(TAG_WARNINGS + self.countries[at].actor, cell)?;
-                self.countries[at].warnings_changed = false;
+        for at in 0..self.ledger.countries.len() {
+            let actor = self.keys[at].actor;
+            let country = &mut self.ledger.countries[at];
+            if country.warnings_changed {
+                let cell = reasons(writer, &country.warnings)?;
+                writer.catalogue(TAG_WARNINGS + actor, cell)?;
+                country.warnings_changed = false;
             }
-            if self.countries[at].categories_changed {
+            if country.categories_changed {
                 let mut cells = Vec::new();
-                for (&dimension, &first) in &self.countries[at].categories {
+                for (&dimension, &first) in &country.categories {
                     let pair = writer
                         .cells([Cell::Unsigned(dimension), Cell::Integer(i128::from(first))])?;
                     cells.push(Cell::List(pair));
                 }
                 let cell = Cell::List(writer.cells(cells)?);
-                writer.catalogue(TAG_CATEGORIES + self.countries[at].actor, cell)?;
-                self.countries[at].categories_changed = false;
+                writer.catalogue(TAG_CATEGORIES + actor, cell)?;
+                country.categories_changed = false;
             }
         }
         Ok(())
@@ -2543,17 +1363,21 @@ impl Emit {
     /// What the emit goes on with after a cut. A restart goes on at a segment's first hour, whose
     /// projection hands every table whole.
     pub fn save(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        if !self.bound.is_empty() {
+            return Err(lens_failure("it did not hand its countries back before a save"));
+        }
+        let ledger = &self.ledger;
         let state = Saved {
-            last: self.last,
+            last: ledger.last,
             known_from: self.known_from,
             begun: self.begun,
-            census_complete: self.census_complete,
-            tags: self.tags.iter().map(|tag| tag.to_string()).collect(),
-            countries: &self.countries,
-            refused: self.refused.clone(),
-            volatile: self.volatile.iter().collect(),
-            complete: self.complete,
-            command: self
+            census_complete: ledger.census_complete,
+            tags: ledger.tags.iter().map(|tag| tag.to_string()).collect(),
+            countries: &ledger.countries,
+            refused: ledger.refused.clone(),
+            volatile: ledger.volatile.iter().collect(),
+            complete: ledger.complete,
+            command: ledger
                 .command
                 .iter()
                 .map(|(&slot, &value)| (slot, value))
@@ -2564,38 +1388,38 @@ impl Emit {
                     refused.iter().map(|tag| tag.to_string()).collect(),
                 )
             }),
-            settled: self.settled,
+            settled: ledger.settled,
             settled_written: self.settled_written,
-            warnings: self.warnings.clone(),
-            categories: self
+            warnings: ledger.warnings.clone(),
+            categories: ledger
                 .categories
                 .iter()
-                .zip(CURRENCIES)
-                .flat_map(|(categories, currency)| {
+                .enumerate()
+                .flat_map(|(currency, categories)| {
                     categories.iter().map(move |(category, &dimension)| {
-                        (format!("{currency}:{category}"), dimension)
+                        (ledger::spelling(currency, category), dimension)
                     })
                 })
                 .collect(),
-            tomorrow: self.tomorrow.clone(),
+            tomorrow: ledger.tomorrow.clone(),
         };
         let json = serde_json::to_vec(&state)?;
-        // The census, links, captures and held rows with their records, as varints.
+        // The census, links, captures and each raw country's held rows with their records.
         let mut rows = Vec::new();
         let mut put = tally::Out(&mut rows);
-        put.len(self.census.len());
-        for row in self.census.values() {
+        put.len(ledger.census.len());
+        for row in ledger.census.values() {
             put.var(u64::from(row.id));
             put.var(u64::from(row.slot));
             put_bytes(&mut put, &row.tag);
         }
-        put_pairs(&mut put, &self.known);
-        put_pairs(&mut put, &self.links);
-        put_words(&mut put, &self.extended);
-        put.int(self.extended_through);
-        put_words(&mut put, &self.advanced);
-        put.len(self.identities.len());
-        for (&(country, epoch), tags) in &self.identities {
+        put_pairs(&mut put, &ledger.known);
+        put_pairs(&mut put, &ledger.links);
+        put_words(&mut put, &ledger.extended);
+        put.int(ledger.extended_through);
+        put_words(&mut put, &ledger.advanced);
+        put.len(ledger.identities.len());
+        for (&(country, epoch), tags) in &ledger.identities {
             put.var(u64::from(country));
             put.var(epoch);
             put.len(tags.len());
@@ -2604,46 +1428,50 @@ impl Emit {
                 put.var(u64::from(tag));
             }
         }
-        put.len(self.recorded.len());
-        for &(country, epoch, sequence) in &self.recorded {
-            put.var(u64::from(country));
-            put.var(epoch);
-            put.var(sequence);
-        }
-        put.len(self.witnesses.len());
-        for row in self.witnesses.values() {
+        put.len(ledger.witnesses.len());
+        for row in ledger.witnesses.values() {
             put_capture(&mut put, row);
         }
-        put.len(self.daily.len());
-        for row in self.daily.values() {
-            put_daily(&mut put, row);
-        }
-        put.len(self.days.len());
-        for day in self.days.values() {
-            put_daily(&mut put, &day.row);
-            put_hour(&mut put, day.reads.0);
-            put_hour(&mut put, day.reads.1);
-            put.var(u64::from(day.tag));
-        }
-        put.len(self.costs.len());
-        for cost in self.costs.values() {
-            put.var(u64::from(cost.country));
-            put.var(cost.epoch);
-            put.int(cost.day_hour);
-            put.var(cost.pp_sequence);
-            put.var(u64::from(cost.ordinal));
-            put.zig128(i128::from(cost.cost_raw));
-        }
-        put.len(self.recorded_costs.len());
-        for cost in self.recorded_costs.values() {
-            put_cost(&mut put, &cost.row);
-            put.flag(cost.covered);
-            put.var(u64::from(cost.item));
+        let mut raws: Vec<(&u32, &Raw)> = ledger.raws.iter().collect();
+        raws.sort_unstable_by_key(|(raw, _)| **raw);
+        put.len(raws.len());
+        for (&raw, held) in raws {
+            put.var(u64::from(raw));
+            put.len(held.recorded.len());
+            for &(epoch, sequence) in &held.recorded {
+                put.var(epoch);
+                put.var(sequence);
+            }
+            put.flag(held.daily.is_some());
+            if let Some(row) = &held.daily {
+                put_daily(&mut put, row);
+            }
+            put.len(held.days.len());
+            for day in held.days.values() {
+                put_daily(&mut put, &day.row);
+                put_hour(&mut put, day.reads.0);
+                put_hour(&mut put, day.reads.1);
+                put.var(u64::from(day.tag));
+            }
+            put.len(held.costs.len());
+            for cost in held.costs.values() {
+                put.var(cost.epoch);
+                put.int(cost.day_hour);
+                put.var(cost.pp_sequence);
+                put.var(u64::from(cost.ordinal));
+                put.zig128(i128::from(cost.cost_raw));
+            }
+            put.len(held.recorded_costs.len());
+            for cost in held.recorded_costs.values() {
+                put_cost(&mut put, &cost.row);
+                put.flag(cost.covered);
+                put.var(u64::from(cost.item));
+            }
         }
         // Each country's rollups and items, the bulk of a long campaign's state, as varints.
         let mut binary = Vec::new();
         let mut put = tally::Out(&mut binary);
-        for country in &self.countries {
+        for country in &ledger.countries {
             country.rollups.save(&mut put);
             put.len(country.items.len());
             for key in &country.items {
@@ -2674,20 +1502,38 @@ impl Emit {
         let mut emit = Self::new(content);
         emit.actors = Actors::resume(SCHEMA, directory)?;
         emit.carry = Carry::load(&bytes[at..])?;
-        emit.last = saved.last;
         emit.known_from = saved.known_from;
         emit.begun = saved.begun;
-        emit.census_complete = saved.census_complete;
-        emit.tags = saved.tags.into_iter().map(Into::into).collect();
-        emit.numbers = emit
+        emit.settled_written = saved.settled_written;
+        emit.presence = saved.presence.map(|(present, refused)| {
+            (
+                present.into_iter().map(Into::into).collect(),
+                refused.into_iter().map(Into::into).collect(),
+            )
+        });
+        for tag in &saved.tags {
+            let actor = emit
+                .actors
+                .find(tag.as_bytes())
+                .ok_or_else(|| invalid("a saved tag without its actor"))?;
+            emit.keys.push(Keys::of(actor));
+        }
+        let ledger = &mut emit.ledger;
+        ledger.last = saved.last;
+        ledger.census_complete = saved.census_complete;
+        ledger.tags = saved.tags.into_iter().map(Into::into).collect();
+        ledger.numbers = ledger
             .tags
             .iter()
             .enumerate()
             .map(|(at, tag)| (tag.clone(), at as u32))
             .collect();
-        emit.countries = saved.countries;
+        ledger.countries = saved.countries;
+        if ledger.countries.len() != ledger.tags.len() {
+            return Err(invalid("saved countries and tags disagree"));
+        }
         let mut binary = Decode::new(parts[2]);
-        for country in &mut emit.countries {
+        for country in &mut ledger.countries {
             country.rollups = tally::Rollups::load(&mut binary)?;
             let count = tally::len(&mut binary)?;
             country
@@ -2697,9 +1543,6 @@ impl Emit {
             for _ in 0..count {
                 country.items.push(binary.array::<32>()?);
             }
-        }
-        binary.end()?;
-        for country in &mut emit.countries {
             country.item_index = country
                 .items
                 .iter()
@@ -2707,104 +1550,106 @@ impl Emit {
                 .map(|(ordinal, key)| (*key, ordinal as u32))
                 .collect();
         }
-        if emit.countries.len() != emit.tags.len() {
-            return Err(invalid("saved countries and tags disagree"));
-        }
-        emit.refused = saved.refused;
+        binary.end()?;
+        ledger.refused = saved.refused;
         let mut rows = Decode::new(parts[1]);
         for _ in 0..tally::len(&mut rows)? {
             let id = tally::word(&mut rows)?;
             let slot = tally::word(&mut rows)?;
             let tag = Arc::from(read_bytes(&mut rows)?);
-            emit.census.insert(slot, CensusRow { id, slot, tag });
+            ledger.census.insert(slot, facts::CensusRow { id, slot, tag });
         }
-        emit.known = read_pairs(&mut rows)?;
-        emit.links = read_pairs(&mut rows)?;
-        emit.extended = Arc::from(read_words(&mut rows)?);
-        emit.extended_through = tally::int(&mut rows)?;
-        emit.advanced = read_words(&mut rows)?;
+        ledger.known = read_pairs(&mut rows)?;
+        ledger.links = read_pairs(&mut rows)?;
+        ledger.extended = Arc::from(read_words(&mut rows)?);
+        ledger.extended_through = tally::int(&mut rows)?;
+        ledger.advanced = read_words(&mut rows)?;
         for _ in 0..tally::len(&mut rows)? {
             let identity = (tally::word(&mut rows)?, rows.var()?);
             let mut tags = Vec::new();
             for _ in 0..tally::len(&mut rows)? {
                 tags.push((tally::int(&mut rows)?, tally::word(&mut rows)?));
             }
-            emit.identities.insert(identity, tags);
-        }
-        for _ in 0..tally::len(&mut rows)? {
-            emit.recorded
-                .insert((tally::word(&mut rows)?, rows.var()?, rows.var()?));
+            ledger.identities.insert(identity, tags);
         }
         for _ in 0..tally::len(&mut rows)? {
             let row = read_capture(&mut rows)?;
-            emit.witnesses.insert(row.country, row);
+            ledger.witnesses.insert(row.country, row);
         }
+        ledger.day_counts = vec![0; ledger.tags.len()];
         for _ in 0..tally::len(&mut rows)? {
-            let row = read_daily(&mut rows)?;
-            emit.daily.insert(row.country, row);
-        }
-        for _ in 0..tally::len(&mut rows)? {
-            let row = read_daily(&mut rows)?;
-            let reads = (read_hour(&mut rows)?, read_hour(&mut rows)?);
-            let tag = tally::word(&mut rows)?;
-            let key = (row.country, row.epoch, row.day_hour);
-            emit.days.insert(key, Day { row, reads, tag });
-        }
-        for _ in 0..tally::len(&mut rows)? {
-            let row = HeldCost {
-                country: tally::word(&mut rows)?,
-                epoch: rows.var()?,
-                day_hour: tally::int(&mut rows)?,
-                pp_sequence: rows.var()?,
-                ordinal: tally::word(&mut rows)?,
-                cost_raw: signed(&mut rows)?,
-            };
-            let sum = emit.sums.entry(row.application()).or_default();
-            sum.0 = sum.0.wrapping_add(row.cost_raw);
-            sum.1 += 1;
-            emit.costs.insert(row.key(), row);
-        }
-        for _ in 0..tally::len(&mut rows)? {
-            let row = read_cost(&mut rows)?;
-            let covered = rows.flag()?;
-            let item = tally::word(&mut rows)?;
-            emit.recorded_costs.insert(
-                (row.country, row.epoch, row.day_hour, row.ordinal),
-                Recorded { row, covered, item },
-            );
+            let country = tally::word(&mut rows)?;
+            let mut held = Raw::default();
+            for _ in 0..tally::len(&mut rows)? {
+                held.recorded.insert((rows.var()?, rows.var()?));
+            }
+            if rows.flag()? {
+                held.daily = Some(read_daily(&mut rows)?);
+            }
+            for _ in 0..tally::len(&mut rows)? {
+                let row = read_daily(&mut rows)?;
+                let reads = (read_hour(&mut rows)?, read_hour(&mut rows)?);
+                let tag = tally::word(&mut rows)?;
+                *ledger
+                    .day_counts
+                    .get_mut(tag as usize)
+                    .ok_or_else(damaged)? += 1;
+                held.days
+                    .insert((row.epoch, row.day_hour), ledger::Day { row, reads, tag });
+            }
+            for _ in 0..tally::len(&mut rows)? {
+                let cost = ledger::HeldCost {
+                    country,
+                    epoch: rows.var()?,
+                    day_hour: tally::int(&mut rows)?,
+                    pp_sequence: rows.var()?,
+                    ordinal: tally::word(&mut rows)?,
+                    cost_raw: signed(&mut rows)?,
+                };
+                let sum = held
+                    .sums
+                    .entry((cost.epoch, cost.day_hour, cost.pp_sequence))
+                    .or_default();
+                sum.0 = sum.0.wrapping_add(cost.cost_raw);
+                sum.1 += 1;
+                held.costs.insert(cost.key(), cost);
+            }
+            for _ in 0..tally::len(&mut rows)? {
+                let row = read_cost(&mut rows)?;
+                let covered = rows.flag()?;
+                let item = tally::word(&mut rows)?;
+                held.recorded_costs.insert(
+                    (row.epoch, row.day_hour, row.ordinal),
+                    ledger::Recorded { row, covered, item },
+                );
+            }
+            ledger.raws.insert(country, held);
         }
         rows.end()?;
-        for (&raw, &slot) in &emit.links {
-            emit.raw_slots.entry(slot).or_default().push(raw);
+        for (&raw, &slot) in &ledger.links {
+            ledger.raw_slots.entry(slot).or_default().push(raw);
         }
-        for raws in emit.raw_slots.values_mut() {
+        for raws in ledger.raw_slots.values_mut() {
             raws.sort_unstable();
         }
-        let slots: Vec<(u32, CensusRow)> = emit
+        let slots: Vec<(u32, facts::CensusRow)> = ledger
             .census
             .iter()
             .map(|(&slot, row)| (slot, row.clone()))
             .collect();
         for (slot, row) in slots {
             if let Ok(spelling) = rows::valid_tag(row.id, row.slot, &row.tag)
-                && let Some(&tag) = emit.numbers.get(spelling)
+                && let Some(&tag) = ledger.numbers.get(spelling)
             {
-                emit.slot_tags.insert(slot, tag);
-                emit.countries[tag as usize].slots.push(slot);
+                ledger.slot_tags.insert(slot, tag);
+                ledger.countries[tag as usize].slots.push(slot);
             }
         }
-        emit.volatile = saved.volatile.into_iter().collect();
-        emit.complete = saved.complete;
-        emit.command = saved.command.into_iter().collect();
-        emit.presence = saved.presence.map(|(present, refused)| {
-            (
-                present.into_iter().map(Into::into).collect(),
-                refused.into_iter().map(Into::into).collect(),
-            )
-        });
-        emit.settled = saved.settled;
-        emit.settled_written = saved.settled_written;
-        emit.warnings = saved.warnings;
+        ledger.volatile = saved.volatile.into_iter().collect();
+        ledger.complete = saved.complete;
+        ledger.command = saved.command.into_iter().collect();
+        ledger.settled = saved.settled;
+        ledger.warnings = saved.warnings;
         for (spelling, dimension) in saved.categories {
             let (index, category) = CURRENCIES
                 .iter()
@@ -2814,108 +1659,82 @@ impl Emit {
                     Some((index, category))
                 })
                 .ok_or_else(|| invalid("saved category spelling"))?;
-            emit.category_currency.insert(dimension, index);
-            emit.categories[index].insert(category.into(), dimension);
+            ledger.category_currency.insert(dimension, index);
+            ledger.categories[index].insert(category.into(), dimension);
         }
-        emit.tomorrow = saved.tomorrow;
+        ledger.tomorrow = saved.tomorrow;
+        for tag in 0..ledger.countries.len() as u32 {
+            ledger.reschedule(tag);
+        }
         Ok(emit)
     }
 }
 
+/// Whether the emit's rows of a raw country, `ours`, are the lens's, `theirs`: the lens's days
+/// recorded under its own number for the tag, its records naming its own items.
+fn same_rows(
+    ours: &Raw,
+    theirs: &Raw,
+    (tag, number): (u32, u32),
+    (our_items, their_items): (&[[u8; 32]], &[[u8; 32]]),
+) -> bool {
+    ours.power == theirs.power
+        && ours.governments == theirs.governments
+        && ours.recorded == theirs.recorded
+        && ours.waiting.is_empty()
+        && theirs.waiting.is_empty()
+        && ours.daily == theirs.daily
+        && ours.costs == theirs.costs
+        && ours.sums == theirs.sums
+        && ours.days.len() == theirs.days.len()
+        && ours.days.iter().zip(&theirs.days).all(|((key, day), (held, other))| {
+            key == held
+                && day.row == other.row
+                && day.reads == other.reads
+                && day.tag == tag
+                && other.tag == number
+        })
+        && ours.recorded_costs.len() == theirs.recorded_costs.len()
+        && ours.recorded_costs.iter().all(|(key, cost)| {
+            theirs.recorded_costs.get(key).is_some_and(|other| {
+                cost.row == other.row
+                    && cost.covered == other.covered
+                    && our_items.get(cost.item as usize).is_some()
+                    && our_items.get(cost.item as usize) == their_items.get(other.item as usize)
+            })
+        })
+}
+
+/// The packed record at `at..at + len` of a lens part's `payload`.
+fn slice(payload: &[u8], (at, len): (u32, u32)) -> io::Result<&[u8]> {
+    payload
+        .get(at as usize..(at as usize).saturating_add(len as usize))
+        .ok_or_else(|| lens_failure("a record outside its payload"))
+}
+
+/// `split`, its fields' items named by `item`.
+fn remap_split(
+    split: tally::Split,
+    item: &impl Fn(u32) -> io::Result<u32>,
+) -> io::Result<tally::Split> {
+    let mut days = Vec::with_capacity(split.days.len());
+    for ((at, field), day) in split.days {
+        days.push(((at, (item(field.0)?, field.1, field.2)), day));
+    }
+    Ok(tally::Split {
+        days,
+        daily: split.daily,
+    })
+}
+
 /// `reasons` as a catalogue list of (reason, count) pairs.
-fn reasons(writer: &mut Writer<'_>, reasons: &BTreeMap<String, u64>) -> io::Result<Cell> {
+fn reasons(writer: &mut Writer, reasons: &BTreeMap<String, u64>) -> io::Result<Cell> {
     let mut cells = Vec::with_capacity(reasons.len());
     for (reason, &count) in reasons {
         let pair = [text(writer, reason.as_bytes())?, Cell::Unsigned(count)];
         cells.push(Cell::List(writer.cells(pair)?));
     }
     Ok(Cell::List(writer.cells(cells)?))
-}
-
-/// Applies a covered command power row to `holds`: allocations add their holder, releases and
-/// refunds remove theirs, and anything a refund cannot name clears every holder.
-fn apply_hold(holds: &mut Holds, row: &CountryPowerChangeRow, holder: Option<Holder>) {
-    if holds.sequence.is_some_and(|old| row.sequence <= old) {
-        return;
-    }
-    holds.sequence = Some(row.sequence);
-    if !rows::is_hold(row) || row.operation == PowerOperation::AllocationClamp {
-        return;
-    }
-    let amount = row.requested_delta_raw.map(i128::from);
-    let key = rows::holder_key(&LedgerItem::from(&row.identity));
-    if row.cause == PowerCause::AllocationRefund {
-        // Anonymous releases cannot tell which named allocator left.
-        let Some((key, amount)) = key.zip(amount).filter(|(_, amount)| *amount > 0) else {
-            holds.active.clear();
-            return;
-        };
-        match holds.active.get_mut(&key) {
-            Some(held) if amount < held.amount => held.amount -= amount,
-            Some(held) if amount == held.amount => {
-                holds.active.remove(&key);
-            }
-            _ => holds.active.clear(),
-        }
-        return;
-    }
-    if row.site == PowerSite::ReleaseCommandPower {
-        holds.active.clear();
-        return;
-    }
-    if row.site != PowerSite::AllocateCommandPower {
-        return;
-    }
-    // A charged allocation records the evaluated negative operand; uncharged ones have none, and
-    // the hour's total keeps their unidentified remainder.
-    let Some((key, amount)) = key.zip(amount).filter(|(_, amount)| *amount < 0) else {
-        return;
-    };
-    let amount = -amount;
-    match holds.active.get_mut(&key) {
-        Some(held) => held.amount += amount,
-        None => {
-            if let Some(mut holder) = holder {
-                holder.amount = amount;
-                holds.active.insert(key, holder);
-            }
-        }
-    }
-}
-
-/// Settles `holds` against the hour's total: an observed total never keeps stale identities
-/// or invents a negative remainder.
-fn settle_holds(holds: &mut Holds, total: Option<i64>) {
-    let attributed: i128 = holds.active.values().map(|holder| holder.amount).sum();
-    if total.is_none_or(|value| value == 0 || attributed > i128::from(value)) {
-        holds.active.clear();
-    }
-}
-
-impl Snapshot {
-    /// The settled holders against `total`, `missing` naming why a total is unknown.
-    fn of(active: &BTreeMap<String, Holder>, total: Option<i64>, missing: &str) -> Self {
-        Self {
-            total,
-            holders: active
-                .iter()
-                .map(|(id, holder)| (id.clone(), holder.clone()))
-                .collect(),
-            missing: total.is_none().then(|| missing.to_owned()),
-        }
-    }
-
-    /// Whether it is [`Self::of`] these.
-    fn reads(&self, total: Option<i64>, active: &BTreeMap<String, Holder>, missing: &str) -> bool {
-        self.total == total
-            && self.missing.as_deref() == total.is_none().then_some(missing)
-            && self.holders.len() == active.len()
-            && self
-                .holders
-                .iter()
-                .zip(active)
-                .all(|((id, holder), (held, active))| id == held && holder == active)
-    }
 }
 
 #[derive(Serialize)]

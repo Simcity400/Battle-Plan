@@ -23,7 +23,7 @@ use dashboard_core::invalid;
 #[cfg(test)]
 use dashboard_text::metadata::recorded_rows;
 use dashboard_text::metadata::check_cancel;
-use dashboard_text::metadata::{link_slots, tagged_countries_indexed};
+use dashboard_text::metadata::tagged_countries_indexed;
 use replay::container::Replay;
 #[cfg(any(test, feature = "test-support"))]
 use replay_data::rows::TableId;
@@ -92,14 +92,12 @@ impl AirBranch {
         }
     }
 }
-#[cfg(test)]
-type ViewpointEntry = (u64, String, bool, Arc<AirBranch>);
-
+/// Each branch's days, and its latest viewpoint's.
 #[cfg(test)]
 #[derive(Default)]
 struct AirCache {
-    branches: Vec<(u64, Arc<AirBranch>)>,
-    viewpoints: Vec<ViewpointEntry>,
+    branches: BTreeMap<u64, Arc<AirBranch>>,
+    viewpoints: BTreeMap<u64, (String, bool, Arc<AirBranch>)>,
 }
 #[cfg(test)]
 impl Clone for AirCache {
@@ -113,8 +111,8 @@ impl Clone for AirCache {
             viewpoints: self
                 .viewpoints
                 .iter()
-                .map(|(branch, tag, country, data)| {
-                    (*branch, tag.clone(), *country, Arc::new(data.fork()))
+                .map(|(branch, (tag, country, data))| {
+                    (*branch, (tag.clone(), *country, Arc::new(data.fork())))
                 })
                 .collect(),
         }
@@ -125,36 +123,25 @@ fn cached_branch(source: &Source, branch: u64, view: Option<(&str, bool)>) -> Ar
     let registry = source.append_state::<AirCache>();
     let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((tag, country)) = view {
-        let entry = if let Some(index) = registry
-            .viewpoints
-            .iter()
-            .position(|(old, key, kind, _)| *old == branch && key == tag && *kind == country)
+        if let Some((key, kind, data)) = registry.viewpoints.get(&branch)
+            && key == tag
+            && *kind == country
         {
-            registry.viewpoints.remove(index)
-        } else {
-            let data = AirBranch::default();
-            *data.data.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(DayCache {
-                viewpoint: Some(tag.into()),
-                viewpoint_country: country,
-                ..Default::default()
-            });
-            (branch, tag.into(), country, Arc::new(data))
-        };
-        let result = Arc::clone(&entry.3);
-        registry.viewpoints.insert(0, entry);
-        registry.viewpoints.truncate(2);
-        result
+            return Arc::clone(data);
+        }
+        let data = AirBranch::default();
+        *data.data.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(DayCache {
+            viewpoint: Some(tag.into()),
+            viewpoint_country: country,
+            ..Default::default()
+        });
+        let data = Arc::new(data);
+        registry
+            .viewpoints
+            .insert(branch, (tag.into(), country, Arc::clone(&data)));
+        data
     } else {
-        let entry =
-            if let Some(index) = registry.branches.iter().position(|(old, _)| *old == branch) {
-                registry.branches.remove(index)
-            } else {
-                (branch, Arc::new(AirBranch::default()))
-            };
-        let result = Arc::clone(&entry.1);
-        registry.branches.insert(0, entry);
-        registry.branches.truncate(2);
-        result
+        Arc::clone(registry.branches.entry(branch).or_default())
     }
 }
 #[cfg(test)]

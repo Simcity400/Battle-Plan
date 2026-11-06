@@ -1,7 +1,8 @@
 //! Measures a native preparation of a recording as production prepares it
 //! ([`dashboard::prepared::driver::native`]): every family with a native backend, or those
 //! `--family` names, prepared from the native recording into a scratch store under `--output`,
-//! after the change-run index production prepares first.
+//! with the change-run index as production prepares it: a lane of the union run when it indexes
+//! that recording alone, else first, in runs of its own.
 //! Reports what it cost per game hour beside the goal it is judged on: each family's operators,
 //! ordered emit and publication, the walks every lane shares, the slowest serial lane and the
 //! peak resident bytes, with every status row that failed. `served-check` checks the replies.
@@ -22,7 +23,7 @@ use dashboard::{
     prepared::driver::native,
 };
 use engine_allocation::labels::{self, Kind, Phase};
-use replay::columnar_frames::{Limits, Recording};
+use replay::columnar_frames::Recording;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -145,54 +146,59 @@ fn run() -> io::Result<()> {
     let cancelled = AtomicBool::new(false);
     // The content resolves beside the index, as production prepares it.
     let options = content.as_ref().map(|content| &content.options);
-    let (index, index_seconds, index_cpu, index_working, index_commit, damage, accepted, measured) =
+    let (index, damage, accepted, measured, failure) =
         source.resolving_ahead(options, &cancelled, || -> io::Result<_> {
-            // The change-run index first, as production prepares it: native readers serve from it.
+            let span = replay_frame::timeline::span("recording open");
+            let file = Recording::open_path(&columnar)?;
+            let damage: Vec<String> = file.damage().iter().map(ToString::to_string).collect();
+            drop(span);
+            // The change-run index as production prepares it: native readers serve from it.
             let span = replay_frame::timeline::span("index");
             labels::phase("index run");
             let started = std::time::Instant::now();
             let cpu_before = replay_frame::cpu::process_cpu_ns();
-            let index = dashboard::prepared::change_runs::prepare(&source, &cancelled)?;
-            let index_seconds = started.elapsed().as_secs_f64();
-            let index_cpu = cpu_before
+            let plan = dashboard::prepared::change_runs::plan(&source)?;
+            let (riding, prepared) = plan.take(Some(&file), &cancelled)?;
+            let seconds = started.elapsed().as_secs_f64();
+            let cpu = cpu_before
                 .zip(replay_frame::cpu::process_cpu_ns())
                 .map(|(before, after)| after.saturating_sub(before) as f64 / 1e9);
-            // The process's peaks so far: the index is its first heavy work.
-            let (index_working, index_commit) = native::peaks()?;
+            // The process's peaks so far: an index prepared alone is its first heavy work.
+            let (working, commit) = native::peaks()?;
+            let runs: Vec<native::Run> =
+                prepared.runs.into_iter().map(native::Run::from).collect();
+            // Riding, its cost is the union run's, in `measured`.
+            let index = json!({
+                "rode": riding.is_some(),
+                "seconds": seconds,
+                "refused": prepared.refused,
+                "cpu_seconds": cpu,
+                "peak_working_set_bytes": working,
+                "peak_commit_bytes": commit,
+                "runs": runs,
+            });
             labels::phase("families open");
             drop(span);
-            let span = replay_frame::timeline::span("recording open");
-            let file = Recording::open_path(&columnar, Limits::default())?;
-            let damage: Vec<String> = file.damage().iter().map(ToString::to_string).collect();
-            drop(span);
             let span = replay_frame::timeline::span("families");
-            let (accepted, measured) = native::measure(
+            let (accepted, measured, failure) = native::measure(
                 &source,
                 content.as_ref(),
                 file,
+                riding,
                 named.as_deref(),
                 threads,
                 walk_only,
                 &cancelled,
             )?;
             drop(span);
-            Ok((
-                index,
-                index_seconds,
-                index_cpu,
-                index_working,
-                index_commit,
-                damage,
-                accepted,
-                measured,
-            ))
+            let failure = failure.map(|error| error.to_string());
+            Ok((index, damage, accepted, measured, failure))
         })?;
     let failed: Vec<_> = accepted
         .sections
         .iter()
         .filter(|section| section.error.is_some())
         .collect();
-    let runs: Vec<native::Run> = index.runs.into_iter().map(native::Run::from).collect();
     let resolved = content.as_ref().map(|content| {
         let stats = source
             .bound_content(&content.options)
@@ -217,14 +223,8 @@ fn run() -> io::Result<()> {
         "columnar": columnar,
         "damage": damage,
         "measured": measured,
-        "index": {
-            "seconds": index_seconds,
-            "refused": index.refused,
-            "cpu_seconds": index_cpu,
-            "peak_working_set_bytes": index_working,
-            "peak_commit_bytes": index_commit,
-            "runs": runs,
-        },
+        "index": index,
+        "failure": failure,
         "content": resolved,
         "failed": failed,
         "scopes": scopes.then(replay_frame::cpu::snapshot),

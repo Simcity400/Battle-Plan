@@ -238,6 +238,21 @@ impl Projector {
         Ok(Some(moved))
     }
 
+    /// Copies `asks` of the walk's views into the frame, in the fields each is held by, with the
+    /// hour's metrics.
+    fn copy(
+        &mut self,
+        state: &segments::State,
+        world: &Shared,
+        asks: &[(TableId, Hold)],
+    ) -> io::Result<()> {
+        self.frame.metrics.clone_from(world.metrics());
+        for &(table, hold) in asks {
+            self.frame.tables[table.index()] = world.copy(state, table, hold)?;
+        }
+        Ok(())
+    }
+
     /// The views of `asks` the frame holds, and the hour's metrics.
     fn views(&self, asks: &[(TableId, Hold)]) -> (Vec<(TableId, SharedView)>, Box<Metrics>) {
         let views = asks
@@ -250,7 +265,10 @@ impl Projector {
     /// The hour carried whole: every table's view, and the places and counters of the relations
     /// it joins.
     fn whole(&mut self, state: &segments::State, world: &Shared) -> io::Result<Facts> {
-        world.frame_held_into(state, &self.asks, &mut self.frame)?;
+        let asks = std::mem::take(&mut self.asks);
+        let copied = self.copy(state, world, &asks);
+        self.asks = asks;
+        copied?;
         self.places.clear();
         self.sent.clear();
         self.joined = joins(&self.frame, &self.campaign);
@@ -317,7 +335,10 @@ impl Operator<Shared> for Projector {
             .iter()
             .any(|&(table, fields)| world.touched(table, fields))
         {
-            world.frame_held_into(state, &self.names, &mut self.frame)?;
+            let names = std::mem::take(&mut self.names);
+            let copied = self.copy(state, world, &names);
+            self.names = names;
+            copied?;
             let views = self.views(&self.names);
             dashboard_world::release(&mut self.frame, &self.names);
             Some(views)

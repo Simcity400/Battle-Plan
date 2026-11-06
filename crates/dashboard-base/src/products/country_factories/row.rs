@@ -10,9 +10,7 @@ use crate::{
 use replay::container::Replay;
 use replay_data::rows::{TableId, tables};
 use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
-use std::{collections::VecDeque, sync::atomic::Ordering};
-
-const CACHED_BRANCHES: usize = 2;
+use std::sync::atomic::Ordering;
 
 /// One tag's runs, and the identity and hour its last run was extended to.
 #[derive(Default, Serialize, Deserialize)]
@@ -393,14 +391,14 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     Ok(observer.finish())
 }
 
-/// The branches scanned, most recent last, and how many scans have run. Its lock is
+/// Each branch's scan for this revision, and how many scans have run. Its lock is
 /// held while a branch is scanned, as the service's other products hold their
 /// caches: requests for the product on one source run one scan at a time, so
 /// widgets asking at once (each with its own top N) share the first one's scan
 /// instead of each scanning the branch and holding its history.
 #[derive(Default)]
 pub struct Scans {
-    entries: VecDeque<(u64, Arc<ScannedFactories>)>,
+    entries: BTreeMap<u64, Arc<ScannedFactories>>,
     pub runs: usize,
 }
 
@@ -413,15 +411,12 @@ pub fn scanned_branch(
 ) -> io::Result<Arc<ScannedFactories>> {
     let state = source.state::<Scans>();
     let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((_, scanned)) = scans.entries.iter().find(|(cached, _)| *cached == branch) {
+    if let Some(scanned) = scans.entries.get(&branch) {
         return Ok(Arc::clone(scanned));
     }
     scans.runs += 1;
     let scanned = Arc::new(scan(&source.replay(), branch, cancelled)?);
-    scans.entries.push_back((branch, Arc::clone(&scanned)));
-    while scans.entries.len() > CACHED_BRANCHES {
-        scans.entries.pop_front();
-    }
+    scans.entries.insert(branch, Arc::clone(&scanned));
     Ok(scanned)
 }
 

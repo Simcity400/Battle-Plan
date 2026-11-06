@@ -1,4 +1,3 @@
-use dashboard_base::prepared::facts::{Credit, MemoryBudget};
 use std::io;
 
 pub(super) fn pressure(owner: &'static str, error: io::Error) -> io::Error {
@@ -16,30 +15,12 @@ pub(super) fn bytes<T>(count: usize) -> io::Result<usize> {
         .ok_or_else(|| pressure("allocation size", io::ErrorKind::OutOfMemory.into()))
 }
 
-pub(super) fn admit(bytes: usize, owner: &'static str) -> io::Result<Credit> {
-    admit_in(&MemoryBudget::preparation(), bytes, owner)
-}
-
-pub(super) fn admit_in(
-    budget: &MemoryBudget,
-    bytes: usize,
-    owner: &'static str,
-) -> io::Result<Credit> {
-    budget.admit(bytes).map_err(|error| pressure(owner, error))
-}
-
-pub(super) fn vector<T>(count: usize, owner: &'static str) -> io::Result<(Vec<T>, Credit)> {
-    let credit = admit(bytes::<T>(count)?, owner)?;
+pub(super) fn vector<T>(count: usize, owner: &'static str) -> io::Result<Vec<T>> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)
         .map_err(|error| pressure(owner, io::Error::new(io::ErrorKind::OutOfMemory, error)))?;
-    Ok((values, credit))
-}
-
-// One maximum 11-slot B-tree node per entry covers even singleton/split nodes.
-pub(super) fn tree_entry<K, V>() -> io::Result<usize> {
-    add(160, bytes::<(K, V)>(11)?)
+    Ok(values)
 }
 
 pub(super) fn name(id: u32, measure: &str) -> io::Result<String> {

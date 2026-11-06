@@ -466,7 +466,9 @@ impl Prepared {
         let identity_changed =
             restoring || country_changed || changes.rows_changed[TableId::CountryLinks.index()];
         if identity_changed {
-            self.score_identity = Some(scan::score_countries(frame)?);
+            self.score_identity = Some(scan::score_countries(
+                replay_frame::frame::HourFrame::from(frame),
+            )?);
             self.verified = None;
             let countries = frame.complete::<tables::Countries>().unwrap_or(&[]);
             self.country_keys = Some(dashboard_text::metadata::CountryKeys::read(countries));
@@ -1414,7 +1416,6 @@ fn daily_state(
             &(),
             &reader::publication(store, key, branch)?,
             cancelled,
-            reader::Daily::bytes,
             || reader::Daily::read(&reads),
         )
 }

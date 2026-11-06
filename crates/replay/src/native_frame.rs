@@ -20,6 +20,7 @@
 
 use crate::{
     columnar_file::{RestartState, referenced_ids},
+    columnar_frames::LAST_COMPLETE,
     frame::{FrameEncoder, FrameInput, Metrics, TRUNCATED_KEYFRAME_REASON, TableInput, TableView},
     native_columns::{self, RowCells, TableHour, TableInput as Native},
     format::FormatVersion,
@@ -28,6 +29,7 @@ use crate::{
 };
 use replay_columnar::{
     manifest::{self, Manifest, Section, Status},
+    restart::Last,
     writer::{Dictionary, Prepared, Sample, Strings, Sweep, TableWriter},
 };
 use replay_data::{BranchId, sliced::SliceUpdate};
@@ -225,7 +227,11 @@ impl FrameWriter {
         for id in TableId::ALL {
             let kinds = native_columns::columns(id.schema())?;
             columns.push(kinds.len());
-            tables.push(TableWriter::new(&kinds)?);
+            let mut writer = TableWriter::new(&kinds)?;
+            if LAST_COMPLETE.contains(&id) {
+                writer.keep_last();
+            }
+            tables.push(writer);
             let change = id.last_change();
             absent.push(if change.present(format) {
                 None
@@ -700,9 +706,15 @@ impl FrameWriter {
         let mut tables = Vec::new();
         engine_allocation::reserve(&mut tables, self.tables.len())?;
         for writer in &self.tables {
+            let mut ids = referenced_ids(writer.table(), writer.acquisition().refusal)?;
+            if let Some(Last::Apart(apart, _)) = writer.last() {
+                let more = referenced_ids(apart, None)?;
+                engine_allocation::reserve(&mut ids, more.len())?;
+                ids.extend(more);
+            }
             tables.push(RestartState {
                 bytes: writer.restart()?,
-                ids: referenced_ids(writer.table(), writer.acquisition().refusal)?,
+                ids,
             });
         }
         Ok((std::mem::take(&mut self.since_restart), tables))

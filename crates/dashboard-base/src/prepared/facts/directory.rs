@@ -1,6 +1,6 @@
 use super::*;
 use index::{IndexCursor, IndexRoot};
-use pages::Cache;
+use pages::Pages;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Root {
@@ -10,12 +10,6 @@ pub(super) struct Root {
 impl Resident for Root {
     fn heap_bytes(&self) -> usize {
         0
-    }
-    fn decode_budget() -> DecodeBudget {
-        DecodeBudget {
-            fixed_bytes: size_of::<Self>(),
-            bytes_per_encoded_byte: 0,
-        }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,16 +22,9 @@ impl Resident for Entry {
     fn heap_bytes(&self) -> usize {
         0
     }
-    fn decode_budget() -> DecodeBudget {
-        DecodeBudget {
-            fixed_bytes: size_of::<Self>(),
-            bytes_per_encoded_byte: 0,
-        }
-    }
 }
 pub(super) fn append(
     writer: &mut store::Writer,
-    budget: &MemoryBudget,
     section: &str,
     root: &mut Root,
     entry: Entry,
@@ -48,7 +35,6 @@ pub(super) fn append(
     }
     root.index = index::put(
         writer,
-        budget,
         section,
         root.index,
         &entry.last,
@@ -59,7 +45,7 @@ pub(super) fn append(
     Ok(())
 }
 pub(super) fn cursor<R: ReadPages>(
-    cache: &mut Cache<'_, R>,
+    cache: &mut Pages<'_, R>,
     section: String,
     root: Root,
     first: i32,

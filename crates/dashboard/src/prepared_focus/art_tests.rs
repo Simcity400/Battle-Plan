@@ -6,11 +6,9 @@ use replay::container::Replay;
 use replay_data::rows::{CompletedFocusRow, FocusRow, TableRows};
 use std::sync::Arc;
 
-/// Kept art stays within its byte budget: the least recently used goes
-/// first, art larger than the budget is not kept, and a replaced key counts
-/// once.
+/// Kept art is one entry a key, however large and however often it is kept.
 #[test]
-fn kept_art_stays_within_its_budget_evicting_the_least_recently_used() {
+fn kept_art_holds_one_entry_a_key() {
     let art = |token: &str, icon: usize| -> crate::catalogue::Drawn<artwork::ResolvedArt> {
         crate::catalogue::Drawn::new(|| {
             (
@@ -33,24 +31,15 @@ fn kept_art_stays_within_its_budget_evicting_the_least_recently_used() {
             String::new(),
         )
     };
-    let mut kept = art::Kept::with_budget(100_000);
+    let mut kept = art::Kept::default();
     kept.insert(key("a"), art("a", 40_000));
     kept.insert(key("b"), art("b", 40_000));
-    // Using a makes b the least recently used.
-    assert!(kept.get(&key("a")).is_some());
-    kept.insert(key("c"), art("c", 40_000));
-    assert!(kept.bytes() <= 100_000);
-    assert!(
-        kept.get(&key("b")).is_none(),
-        "the least recently used is evicted"
-    );
-    assert!(kept.get(&key("a")).is_some() && kept.get(&key("c")).is_some());
-    kept.insert(key("c"), art("c", 40_000));
-    assert_eq!(kept.count(), 2);
-    assert!(kept.bytes() <= 100_000);
     kept.insert(key("huge"), art("huge", 200_000));
-    assert!(kept.get(&key("huge")).is_none(), "larger than the budget");
-    assert_eq!(kept.count(), 2);
+    kept.insert(key("a"), art("a", 40_000));
+    assert_eq!(kept.count(), 3);
+    for token in ["a", "b", "huge"] {
+        assert_eq!(kept.get(&key(token)).unwrap().0.token, token);
+    }
 }
 
 /// `focus-art` evaluates any recorded hour as hourly preparation presented

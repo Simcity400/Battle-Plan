@@ -278,7 +278,7 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         match self.actors.held(place) {
             Some(key) => Ok(key),
             None => self
@@ -287,7 +287,7 @@ impl Emit {
         }
     }
 
-    fn family_key(&mut self, writer: &mut Writer<'_>, measure: u64) -> io::Result<KeyHandle> {
+    fn family_key(&mut self, writer: &mut Writer, measure: u64) -> io::Result<KeyHandle> {
         self.key(
             writer,
             Place {
@@ -299,7 +299,7 @@ impl Emit {
     }
 
     /// The number of `text`, catalogued when new.
-    fn text(&mut self, writer: &mut Writer<'_>, text: &str) -> io::Result<u64> {
+    fn text(&mut self, writer: &mut Writer, text: &str) -> io::Result<u64> {
         if let Some(&id) = self.texts.get(text) {
             return Ok(id);
         }
@@ -312,7 +312,7 @@ impl Emit {
     }
 
     /// The number of `reason`, catalogued when new.
-    fn reason(&mut self, writer: &mut Writer<'_>, reason: &str) -> io::Result<u64> {
+    fn reason(&mut self, writer: &mut Writer, reason: &str) -> io::Result<u64> {
         if let Some(&id) = self.reasons.get(reason) {
             return Ok(id);
         }
@@ -327,7 +327,7 @@ impl Emit {
     /// An event of the family key `measure` at `at`: `id`, then `text`.
     fn event(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         measure: u64,
         kind: u64,
         at: i32,
@@ -349,7 +349,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("production_catalogue.emit", None);
         let at = hour.hour;
         if let Some(last) = self.last {
@@ -412,7 +412,7 @@ impl Emit {
     }
 
     /// A domain's values from `at`.
-    fn domain(&mut self, writer: &mut Writer<'_>, at: i32, sent: Sent) -> io::Result<()> {
+    fn domain(&mut self, writer: &mut Writer, at: i32, sent: Sent) -> io::Result<()> {
         let index = usize::from(sent.domain);
         let mut now = HashSet::new();
         for (field, value) in sent.values {
@@ -451,7 +451,7 @@ impl Emit {
     }
 
     /// Each refusal holding from `at`, with its count.
-    fn refuse(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn refuse(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         let mut open = HashSet::with_capacity(self.refusals.len());
         for (reason, count) in self.refusals.clone() {
             let id = self.reason(writer, &reason)?;
@@ -477,14 +477,14 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.known(writer, last)
     }
 
     /// Writes the hours handed since the domain's evidence was last written, through `last`, as
     /// known: a run must lie within its key's evidence.
-    fn known(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         let Some(first) = self.first.take() else {
             return Ok(());
         };

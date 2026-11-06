@@ -12,7 +12,7 @@ use dashboard_base::{
     products::country_history::{CountryIdentityRun, RecordedCountry, RecordedHistories},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -47,11 +47,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -65,7 +64,6 @@ fn build(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -79,8 +77,8 @@ fn build(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -177,7 +175,6 @@ fn runs_of(
 /// starting at 4.
 #[test]
 fn runs_ranks_and_cells_follow_holders_unknowns_gaps_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let named = [(0, "GER"), (1, "FRA")];
     let (ger, fra) = ((1, 1), (2, 2));
     let hours = vec![
@@ -211,9 +208,8 @@ fn runs_ranks_and_cells_follow_holders_unknowns_gaps_cuts_and_a_resume() {
         hour(8, &[], None, vec![country(1, (2, 3), Some(20))]),
         hour(9, &[], None, Vec::new()),
     ];
-    let built = build(hours, &[3, 9], Some(3), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(hours, &[3, 9], Some(3));
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let divisions = channel(ArmyMeasure::Divisions, ArmyAttribution::Owner) as u64;
     assert_eq!(
@@ -340,7 +336,6 @@ fn next(seed: &mut u64) -> u64 {
 #[test]
 fn fifteen_hundred_countries_rank_as_a_fresh_sort_through_cuts_and_a_resume() {
     const COUNT: u32 = 1500;
-    let budget = Budget::new(1 << 30);
     let names: Vec<String> = (0..COUNT)
         .map(|at| format!("C{:04}", at % 1000 * 7 % 1000 + at / 1000 * 1000))
         .collect();
@@ -378,9 +373,8 @@ fn fifteen_hundred_countries_rank_as_a_fresh_sort_through_cuts_and_a_resume() {
         let live: Vec<u32> = (0..COUNT).collect();
         hours.push(hour(at, &named, starts.then_some(&live[..]), countries));
     }
-    let built = build(hours, &cuts, Some(39), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(hours, &cuts, Some(39));
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let channel = channel(ArmyMeasure::Battalions, ArmyAttribution::Host);
     let positions = directory
@@ -699,10 +693,8 @@ fn the_projector_counts_the_army_as_the_game_does_and_hands_only_what_changed() 
         out[1].countries[0].mix.as_ref().unwrap()
     ));
 
-    let budget = Budget::new(64 << 20);
-    let built = build(out, &[101, 102, 103], Some(102), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(out, &[101, 102, 103], Some(102));
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     for (tag, before, after) in [
         ("GER", ger(100_000, true), ger(120_000, true)),
@@ -754,7 +746,6 @@ fn channel_of(complete: bool, values: &[(&Party, i64)], reasons: &[&str]) -> aid
 /// the tally's disagreement and refusal are warned once each.
 #[test]
 fn volunteer_links_read_back_with_their_tallies_unobserved_hours_and_warnings() {
-    let budget = Budget::new(64 << 20);
     let (ger, ita) = (party(1, "GER"), party(3, "ITA"));
     let sender = |land: i64, tally: Option<i64>| Sender {
         party: ger.clone(),
@@ -785,9 +776,8 @@ fn volunteer_links_read_back_with_their_tallies_unobserved_hours_and_warnings() 
         aided(1, false, vec![sender(3, Some(2))], [true; 3]),
         aided(2, false, vec![sender(3, None)], [true, true, false]),
     ];
-    let built = build(hours, &[2], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(hours, &[2], None);
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let prefix = Prefix {
         coverage: Coverage {
@@ -874,7 +864,6 @@ fn volunteer_links_read_back_with_their_tallies_unobserved_hours_and_warnings() 
 /// before the family read any hour stays unknown while preparing.
 #[test]
 fn a_window_reply_reads_the_selected_country_within_its_identity() {
-    let budget = Budget::new(64 << 20);
     let named = [(0, "GER"), (1, "FRA")];
     let hours = vec![
         hour(
@@ -887,9 +876,8 @@ fn a_window_reply_reads_the_selected_country_within_its_identity() {
         hour(2, &[], None, Vec::new()),
         hour(3, &[], None, Vec::new()),
     ];
-    let built = build(hours, &[3], None, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let built = build(hours, &[3], None);
+    let mut snapshot = Snapshot::open(built.pages, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let fixture = crate::products::force_fixtures::Fixture::recording_only();
     let params = ArmySizeParams {

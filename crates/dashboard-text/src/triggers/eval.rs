@@ -149,7 +149,7 @@ pub(super) enum Child<'t> {
 /// looked up by token. Every unavailable classification is kept, including
 /// those followed by a recognised keyword or nested inside a scope chain.
 struct LoadNames<'n> {
-    recorded: &'n crate::scope::RecordedScopes,
+    recorded: &'n crate::scope::RecordedScopes<'n>,
     templates: &'n dyn Fn() -> Result<&'n BTreeSet<Vec<u8>>, &'n str>,
     asked: RefCell<Vec<Failure>>,
 }
@@ -634,7 +634,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     Ok(false) => {}
                 }
                 return match self.world.recorded().saved_target(name.as_bytes()) {
-                    Ok(target) => Eval::from_bool(target.is_some_and(valid_saved_target)),
+                    Ok(target) => Eval::from_bool(target.as_deref().is_some_and(valid_saved_target)),
                     Err(why) => Eval::unknown(why),
                 };
             }
@@ -934,8 +934,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// The index of the active resource whose token
     /// is `token`, found in ResourceDefinitions.
     fn resource_index(&self, token: u32) -> Result<Option<u32>, Failure> {
-        let definitions =
-            counted::<tables::ResourceDefinitions>(self.world, "ResourceDefinitions")?;
+        let definitions = counted::<tables::ResourceDefinitions>(
+            self.world,
+            "ResourceDefinitions",
+            replay_data::rows::mask::<replay_data::rows::ResourceDefinitionRow>(&[
+                "token", "active",
+            ]),
+        )?;
         Ok(definitions
             .iter()
             .find(|row| row.token == token && row.active != 0)
@@ -1360,15 +1365,21 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let world = self.world;
         let (in_states, in_provinces) = (provincial != Some(true), provincial != Some(false));
         let province_rows = || {
-            super::world::provinces(world.frame()).map_err(|error| {
-                error.context(|error| format!("Provinces is not complete this hour: {error}"))
-            })
+            super::world::province_values(world.tables())
+                .map_err(|error| {
+                    error.context(|error| format!("Provinces is not complete this hour: {error}"))
+                })?
+                .collect::<Result<Vec<_>, Failure>>()
         };
         let (states, provinces): (BTreeSet<u32>, BTreeSet<u32>) = match target {
             Target::Country(slot) => {
                 let mut states = BTreeSet::new();
                 if in_states {
-                    for state in counted::<tables::States>(world, "States")? {
+                    for state in counted::<tables::States>(
+                        world,
+                        "States",
+                        replay_data::rows::mask::<replay_data::rows::StateRow>(&["owner"]),
+                    )? {
                         if self.owned_by(state.owner, slot).map_err(|why| {
                             why.context(|why| format!("the owner of state {}: {why}", state.id))
                         })? {
@@ -1406,19 +1417,20 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 return Err("reads no character scope (mask 6: state, country)".into());
             }
         };
-        let level = |rows: &[BuildingRow], at: &BTreeSet<u32>| {
+        const LEVEL: u64 = replay_data::rows::mask::<BuildingRow>(&["level"]);
+        let level = |rows: &[std::borrow::Cow<'_, BuildingRow>], at: &BTreeSet<u32>| {
             rows.iter()
                 .filter(|row| row.building_type == token && at.contains(&row.location))
                 .fold(0_i32, |sum, row| sum.wrapping_add(i32::from(row.level)))
         };
         let mut sum = 0_i32;
         if in_states {
-            let rows = counted::<tables::StateBuildings>(world, "StateBuildings")?;
-            sum = sum.wrapping_add(level(rows, &states));
+            let rows = counted::<tables::StateBuildings>(world, "StateBuildings", LEVEL)?;
+            sum = sum.wrapping_add(level(&rows, &states));
         }
         if in_provinces {
-            let rows = counted::<tables::ProvinceBuildings>(world, "ProvinceBuildings")?;
-            sum = sum.wrapping_add(level(rows, &provinces));
+            let rows = counted::<tables::ProvinceBuildings>(world, "ProvinceBuildings", LEVEL)?;
+            sum = sum.wrapping_add(level(&rows, &provinces));
         }
         Ok(sum)
     }
@@ -1444,7 +1456,14 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 return Err("reads no character scope (mask 6: state, country)".into());
             }
         };
-        let rows = counted::<tables::CountryResources>(self.world, "CountryResources")?;
+        let rows = counted::<tables::CountryResources>(
+            self.world,
+            "CountryResources",
+            replay_data::rows::mask::<replay_data::rows::CountryResourceRow>(&[
+                "produced",
+                "adjustment",
+            ]),
+        )?;
         let mut found = None;
         for row in rows.iter().filter(|row| row.resource == index) {
             if self.owned_by(row.country, slot).map_err(|why| {
@@ -1493,7 +1512,14 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let Target::Country(slot) = target else {
             return Err("reads only a country scope (mask 4)".into());
         };
-        let parties = counted::<tables::PoliticalParties>(self.world, "PoliticalParties")?;
+        let parties = counted::<tables::PoliticalParties>(
+            self.world,
+            "PoliticalParties",
+            replay_data::rows::mask::<replay_data::rows::PoliticalPartyRow>(&[
+                "token",
+                "popularity",
+            ]),
+        )?;
         let (mut total, mut matching) = (0_i64, 0_i64);
         for party in parties {
             if !self.owned_by(party.country, slot).map_err(|why| {
@@ -1915,10 +1941,15 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                             .token_of(bytes)?
                             .ok_or("has_ideology content token is absent from LexicalTokens")?;
                         let mut found = false;
-                        for role in
-                            counted::<tables::CountryLeaderRoles>(self.world, "CountryLeaderRoles")?
-                                .iter()
-                                .filter(|role| role.character == character)
+                        for role in counted::<tables::CountryLeaderRoles>(
+                            self.world,
+                            "CountryLeaderRoles",
+                            replay_data::rows::mask::<replay_data::rows::CountryLeaderRoleRow>(
+                                &["current_ideology"],
+                            ),
+                        )?
+                        .iter()
+                        .filter(|role| role.character == character)
                         {
                             let ideology = *super::refusal::optional(
                                 &role.current_ideology,
@@ -1968,8 +1999,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 fn counted<'a, T: replay_data::rows::TableSchema>(
     world: &World<'a>,
     name: &str,
-) -> Result<&'a [T::Row], Failure> {
-    table::<T>(world.frame()).map_err(|error| {
-        error.context(|error| format!("{name} is not complete this hour: {error}"))
-    })
+    mask: u64,
+) -> Result<Vec<std::borrow::Cow<'a, T::Row>>, Failure> {
+    table::<T>(world.tables(), mask)
+        .map_err(|error| {
+            error.context(|error| format!("{name} is not complete this hour: {error}"))
+        })?
+        .iter()
+        .map(|row| row.map_err(|why| super::refusal::input_error(T::ID, why)))
+        .collect()
 }

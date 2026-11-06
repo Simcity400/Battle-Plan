@@ -16,7 +16,8 @@ pub(super) struct PowerRecord {
     pub command: bool,
     pub realized: i128,
     pub covered: bool,
-    /// Its item's ordinal ([`ItemRecord`]).
+    /// Its item's ordinal ([`ItemRecord`]): its event's second cell, named as the emit writes it.
+    #[serde(skip)]
     pub item: u32,
     /// [`emit::PAYMENT`], [`emit::BALANCE`] or [`emit::SKIPPED`].
     pub class: u64,
@@ -38,6 +39,8 @@ pub(super) struct CostRecord {
     pub pp_sequence: u64,
     pub covered: bool,
     pub cost_raw: i64,
+    /// As [`PowerRecord::item`].
+    #[serde(skip)]
     pub item: u32,
     /// [`emit::PAYMENT`], [`emit::UNMATCHED`] or [`emit::CREDIT`].
     pub class: u64,
@@ -54,7 +57,8 @@ pub(super) struct DailyRecord {
 }
 
 /// An item as every reply shows it, resolved at its first payment from the facts that payment's
-/// hour recorded and the recorded content.
+/// hour recorded and the recorded content. Its tooltip's token is named by its tag and ordinal
+/// as a reply reads it ([`Self::keyed`]): a lens resolves items before the emit numbers them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct ItemRecord {
     /// Its id is its first payment's.
@@ -72,7 +76,33 @@ pub(super) struct ItemRecord {
     pub daily: Option<(String, String)>,
 }
 
+impl ItemRecord {
+    /// Item `ordinal` of `tag`, its tooltip keyed as every reply keys it.
+    pub fn keyed(mut self, tag: &str, ordinal: u32) -> Self {
+        if self.item.tooltip_token.is_some() {
+            let token = format!("idea:{tag}:{ordinal}");
+            if let Some(ideas) = &mut self.ideas {
+                for idea in &mut ideas.ideas {
+                    idea.token.clone_from(&token);
+                }
+                for art in &mut ideas.artwork {
+                    art.token.clone_from(&token);
+                }
+            }
+            self.item.tooltip_token = Some(token);
+        }
+        self
+    }
+}
+
 /// `value` as a stored record's cell.
-pub(super) fn cell<T: Serialize>(writer: &mut Writer<'_>, value: &T) -> io::Result<Cell> {
-    Ok(Cell::Text(writer.bytes(&codec::encode(value)?)?))
+pub(super) fn cell<T: Serialize>(writer: &mut Writer, value: &T) -> io::Result<Cell> {
+    thread_local! {
+        static ENCODED: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    ENCODED.with_borrow_mut(|encoded| {
+        encoded.clear();
+        codec::encode_into(encoded, value)?;
+        Ok(Cell::Text(writer.bytes(encoded.as_slice())?))
+    })
 }

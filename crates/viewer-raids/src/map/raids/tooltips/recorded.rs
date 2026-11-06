@@ -408,8 +408,14 @@ impl Context<'_, '_> {
                     kind.speed_multiplier_raw,
                     self.assets.tooltip.speed.as_ref()?,
                 );
-                let distance =
-                    unit_inputs::target_distance(self.assets, self.world.frame(), raid, target)?;
+                // The hour's raid unit keeps what this reads ([`crate::map::raid_arrows`]).
+                let distance = unit_inputs::target_distance(
+                    self.assets,
+                    self.world.frame(),
+                    raid,
+                    target,
+                    &mut Vec::new(),
+                )?;
                 (
                     viewer_foundation::map::unit_pose::elapsed_hours(travelled, speed),
                     viewer_foundation::map::unit_pose::remaining_hours(distance, travelled, speed),

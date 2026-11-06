@@ -10,33 +10,34 @@
 
 use super::{
     Reads, TABLES,
-    delta::{self, Keyed, Listed},
+    delta::{self, Keyed},
 };
 use crate::products::{
-    agency_comparison::{self, Acquired, AgencyRead, RosterCounts, ScannedUpgrades},
+    agency_comparison::{self, Acquired, AgencyRead, AgencyTouched, ScannedUpgrades},
     country_name_cache::{SlotNames, slot_names},
-    decryption::{self, CipherRead, PairRead},
-    espionage_log::{self, CensusRead, Completion, OperationRead},
-    operative_placements::{self, PlacementRead},
+    decryption::{self, CipherRead, CipherTouched, PairRead},
+    espionage_log::{self, CensusRead, CensusTouched, Completion, OperationRead},
+    operative_placements::{self, PlacementDelta, PlacementRead, PlacementTouched},
     operative_rows::CountryInputs,
-    operatives_roster::{self, Experience, Flags, Member, Members},
+    operatives_roster::{self, Experience, Flags, Member, Members, MembersTouched},
 };
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_text::metadata::link_slot;
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
-    segments::{self, Operator, Sink},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{
     AutonomyRow, CountryAppearanceRow, CountryRow, IntelligenceAgencyRow, PoliticalPartyRow,
-    PoliticsRow, RaidIntelInputRow, TABLE_COUNT, TableId, TableSchema, tables,
+    PoliticsRow, RaidIntelInputRow, RowCodec, TABLE_COUNT, TableId, TableSchema, tables,
 };
 use replay_frame::frame::{
-    DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, SharedView, TableView, not_selected,
+    ColumnView, DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, SharedView, TableView,
+    not_selected,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io,
     mem::size_of,
 };
@@ -157,7 +158,7 @@ pub struct Hour {
     /// Countries and CountryLinks as the observers read them, where either changed.
     pub(crate) countries: Option<[SharedView; 2]>,
     pub(crate) cipher: Option<Box<CipherDelta>>,
-    pub(crate) placements: Option<Box<PlacementRead>>,
+    pub(crate) placements: Option<Box<PlacementDelta>>,
     pub(crate) agencies: Option<Box<AgencyDelta>>,
     pub(crate) members: Option<Box<MembersDelta>>,
     pub(crate) operations: Option<Option<Vec<(u64, Option<String>)>>>,
@@ -172,13 +173,15 @@ pub struct Hour {
 pub const MEMBERSHIPS_READ: u8 = 1;
 pub const OPERATIONS_READ: u8 = 2;
 
-/// The cipher scan's read as read again.
+/// The cipher scan's read as read again: the pairs that changed or came, in row order, and the
+/// raw keys of those gone, or the read whole.
 #[derive(replay_spool::Spooled)]
 pub(crate) enum CipherDelta {
     Whole(CipherRead),
     Pairs {
         incomplete: Option<String>,
-        pairs: Listed<PairRead>,
+        set: Vec<PairRead>,
+        gone: Vec<(u32, u32)>,
     },
 }
 
@@ -189,8 +192,18 @@ pub(crate) struct AgencyDelta {
     complete: bool,
     refused: usize,
     slots: Option<Keyed<u32, Option<IntelligenceAgencyRow>>>,
-    roster: Option<Option<RosterCounts>>,
+    /// None where the memberships were not complete.
+    roster: Option<Option<CountsDelta>>,
     acquired: Option<AcquiredDelta>,
+}
+
+/// A membership read's counts as counted again: each slot's count where it changed, with the
+/// rows it could not count and those of unsupported rosters by kind.
+#[derive(replay_spool::Spooled)]
+pub(crate) struct CountsDelta {
+    counts: Keyed<u32, u32>,
+    unresolved: usize,
+    unsupported: BTreeMap<u8, usize>,
 }
 
 #[derive(replay_spool::Spooled)]
@@ -222,35 +235,69 @@ pub(crate) enum SlotPatch {
     Gone,
 }
 
-/// The espionage log's operations census as read again.
+/// The espionage log's operations census as read again: the operations that changed or came,
+/// in row order, and the handles of those gone, or the census whole.
 #[derive(replay_spool::Spooled)]
 pub(crate) enum CensusDelta {
     Whole(CensusRead),
     Rows {
         lexical: bool,
-        rows: Listed<OperationRead>,
+        set: Vec<OperationRead>,
+        gone: Vec<u64>,
     },
 }
 
+/// What an hour's reads changed of those the emit holds, as each observer takes it.
+#[derive(Default)]
+pub(crate) struct Touched {
+    pub(crate) cipher: CipherTouched,
+    pub(crate) placements: PlacementTouched,
+    pub(crate) agencies: AgencyTouched,
+    pub(crate) members: MembersTouched,
+    pub(crate) census: CensusTouched,
+    /// The completions were handed on again.
+    pub(crate) completions: bool,
+}
+
+impl Touched {
+    /// Every observer goes through all it holds.
+    fn everything(&mut self) {
+        self.cipher.all = true;
+        self.placements.all = true;
+        self.agencies.all = true;
+        self.members.all = true;
+        self.census.all = true;
+    }
+}
+
 impl Reads {
-    /// The reads `hour` handed on, applied to those held.
-    pub(crate) fn apply(&mut self, hour: &mut Hour) {
+    /// The reads `hour` handed on, applied to those held: what they changed. An hour that opens
+    /// changed everything.
+    pub(crate) fn apply(&mut self, hour: &mut Hour) -> Touched {
+        let mut touched = Touched::default();
+        if hour.opens {
+            touched.everything();
+        }
         if let Some(cipher) = hour.cipher.take() {
             match *cipher {
-                CipherDelta::Whole(read) => self.cipher = read,
+                CipherDelta::Whole(read) => self.cipher.replace(read, &mut touched.cipher),
                 CipherDelta::Pairs {
-                    incomplete: read,
-                    pairs: changed,
+                    incomplete,
+                    set,
+                    gone,
                 } => {
-                    if let CipherRead::Rows { incomplete, pairs } = &mut self.cipher {
-                        *incomplete = read;
-                        changed.apply(pairs);
+                    self.cipher.set_incomplete(incomplete);
+                    for key in gone {
+                        self.cipher.remove(key, &mut touched.cipher);
+                    }
+                    for pair in set {
+                        self.cipher.set(pair, &mut touched.cipher);
                     }
                 }
             }
         }
         if let Some(placements) = hour.placements.take() {
-            self.placements = Some(*placements);
+            PlacementRead::apply(&mut self.placements, *placements, &mut touched.placements);
         }
         if let Some(agencies) = hour.agencies.take() {
             let AgencyDelta {
@@ -261,23 +308,46 @@ impl Reads {
                 acquired,
             } = *agencies;
             let held = &mut self.agencies;
+            let touch = &mut touched.agencies;
             held.complete = complete;
             held.refused = refused;
             if let Some(slots) = slots {
+                touch_slots(touch, &slots);
                 slots.apply(&mut held.slots);
             }
-            if let Some(roster) = roster {
-                held.roster = roster;
+            match roster {
+                Some(None) => {
+                    held.roster = None;
+                    touch.all = true;
+                }
+                Some(Some(CountsDelta {
+                    counts,
+                    unresolved,
+                    unsupported,
+                })) => {
+                    touch_slots(touch, &counts);
+                    let (by_slot, held_unresolved, held_unsupported) =
+                        held.roster.get_or_insert_with(Default::default);
+                    counts.apply(by_slot);
+                    *held_unresolved = unresolved;
+                    *held_unsupported = unsupported;
+                }
+                None => {}
             }
             match acquired {
-                Some(AcquiredDelta::Whole(acquired)) => held.acquired = acquired,
+                Some(AcquiredDelta::Whole(acquired)) => {
+                    held.acquired = acquired;
+                    touch.all = true;
+                }
                 Some(AcquiredDelta::Slots { slots, default }) => {
-                    if let Ok((by_slot, held)) = &mut held.acquired {
+                    if let Ok((by_slot, held_default)) = &mut held.acquired {
                         if let Some(slots) = slots {
+                            touch_slots(touch, &slots);
                             slots.apply(by_slot);
                         }
                         if let Some(default) = default {
-                            *held = default;
+                            *held_default = default;
+                            touch.all = true;
                         }
                     }
                 }
@@ -286,16 +356,21 @@ impl Reads {
         }
         if let Some(members) = hour.members.take() {
             match *members {
-                MembersDelta::Whole(members) => self.roster.members = Some(members),
+                MembersDelta::Whole(members) => {
+                    self.roster.members = Some(members);
+                    touched.members.all = true;
+                }
                 MembersDelta::Slots {
                     notes,
                     links_known,
                     slots,
                 } => {
                     if let Some(held) = &mut self.roster.members {
+                        touched.members.all |= held.links_known != links_known;
                         held.notes = notes;
                         held.links_known = links_known;
                         for (slot, patch) in slots {
+                            touched.members.slots.push(slot);
                             match patch {
                                 SlotPatch::Whole(members) => {
                                     held.by_slot.insert(slot, members);
@@ -324,23 +399,28 @@ impl Reads {
         }
         if let Some(census) = hour.census.take() {
             match *census {
-                CensusDelta::Whole(census) => self.operations = Some(census),
-                CensusDelta::Rows { lexical, rows } => {
-                    if let Some(CensusRead {
-                        rows: Some(held),
-                        lexical: held_lexical,
-                    }) = &mut self.operations
-                    {
-                        *held_lexical = lexical;
-                        rows.apply(held);
-                    }
+                CensusDelta::Whole(census) => self.operations.replace(census, &mut touched.census),
+                CensusDelta::Rows { lexical, set, gone } => {
+                    self.operations
+                        .patch(lexical, set, gone, &mut touched.census)
                 }
             }
         }
         if let Some(completions) = hour.completions.take() {
-            self.completions = completions;
+            self.before = std::mem::replace(&mut self.completions, completions);
+            touched.completions = true;
         }
+        touched
     }
+}
+
+/// Tells `touched` the slots `keyed` changed: every slot where it was taken whole.
+fn touch_slots<V>(touched: &mut AgencyTouched, keyed: &Keyed<u32, V>) {
+    touched.all |= keyed.whole;
+    touched
+        .slots
+        .extend(keyed.set.iter().map(|(slot, _)| *slot));
+    touched.slots.extend(keyed.gone.iter().copied());
 }
 
 /// What one view keeps alive: its allocation and its rows or reason.
@@ -381,65 +461,269 @@ where
     view
 }
 
+fn country(row: &CountryRow) -> CountryRow {
+    CountryRow {
+        id: row.id,
+        canonical_slot: row.canonical_slot,
+        tag: row.tag.clone(),
+        ..Default::default()
+    }
+}
+
+fn raid(row: &RaidIntelInputRow) -> RaidIntelInputRow {
+    RaidIntelInputRow {
+        country: row.country,
+        crypto_strength: row.crypto_strength,
+        ..Default::default()
+    }
+}
+
+fn agency(row: &IntelligenceAgencyRow) -> IntelligenceAgencyRow {
+    IntelligenceAgencyRow {
+        country: row.country,
+        defense_raw: row.defense_raw,
+        active_count: row.active_count,
+        unknown_f0: row.unknown_f0,
+        name: row.name.clone(),
+        created: row.created,
+        ..Default::default()
+    }
+}
+
+fn appearance(row: &CountryAppearanceRow) -> CountryAppearanceRow {
+    CountryAppearanceRow {
+        country: row.country,
+        cosmetic_tag: row.cosmetic_tag.clone(),
+        name_tag: row.name_tag.clone(),
+        leader_ideology: row.leader_ideology.clone(),
+        overlord: row.overlord,
+        ..Default::default()
+    }
+}
+
+fn politics(row: &PoliticsRow) -> PoliticsRow {
+    PoliticsRow {
+        country: row.country,
+        ruling_party: row.ruling_party,
+        ..Default::default()
+    }
+}
+
+fn party(row: &PoliticalPartyRow) -> PoliticalPartyRow {
+    PoliticalPartyRow {
+        country: row.country,
+        id: row.id,
+        token: row.token.clone(),
+        ..Default::default()
+    }
+}
+
+fn autonomy(row: &AutonomyRow) -> AutonomyRow {
+    AutonomyRow {
+        subject: row.subject,
+        state: row.state.clone(),
+        ..Default::default()
+    }
+}
+
 /// `view` of `table` as the observers read it: the walk's frame holds a table by some fields
 /// with its others as last built, so those tables keep only the fields read, as default, and
 /// equal reads share one view.
 fn read_view(table: TableId, view: &SharedView, held: &mut Option<SharedView>) -> SharedView {
     match table {
-        TableId::Countries => reduced::<tables::Countries>(view, held, |row| CountryRow {
-            id: row.id,
-            canonical_slot: row.canonical_slot,
-            tag: row.tag.clone(),
-            ..Default::default()
-        }),
-        TableId::RaidIntelInputs => {
-            reduced::<tables::RaidIntelInputs>(view, held, |row| RaidIntelInputRow {
-                country: row.country,
-                crypto_strength: row.crypto_strength,
-                ..Default::default()
-            })
-        }
+        TableId::Countries => reduced::<tables::Countries>(view, held, country),
+        TableId::RaidIntelInputs => reduced::<tables::RaidIntelInputs>(view, held, raid),
         TableId::IntelligenceAgencies => {
-            reduced::<tables::IntelligenceAgencies>(view, held, |row| IntelligenceAgencyRow {
-                country: row.country,
-                defense_raw: row.defense_raw,
-                active_count: row.active_count,
-                unknown_f0: row.unknown_f0,
-                name: row.name.clone(),
-                created: row.created,
-                ..Default::default()
-            })
+            reduced::<tables::IntelligenceAgencies>(view, held, agency)
         }
-        TableId::CountryAppearance => {
-            reduced::<tables::CountryAppearance>(view, held, |row| CountryAppearanceRow {
-                country: row.country,
-                cosmetic_tag: row.cosmetic_tag.clone(),
-                name_tag: row.name_tag.clone(),
-                leader_ideology: row.leader_ideology.clone(),
-                overlord: row.overlord,
-                ..Default::default()
-            })
-        }
-        TableId::Politics => reduced::<tables::Politics>(view, held, |row| PoliticsRow {
-            country: row.country,
-            ruling_party: row.ruling_party,
-            ..Default::default()
-        }),
-        TableId::PoliticalParties => {
-            reduced::<tables::PoliticalParties>(view, held, |row| PoliticalPartyRow {
-                country: row.country,
-                id: row.id,
-                token: row.token.clone(),
-                ..Default::default()
-            })
-        }
-        TableId::Autonomy => reduced::<tables::Autonomy>(view, held, |row| AutonomyRow {
-            subject: row.subject,
-            state: row.state.clone(),
-            ..Default::default()
-        }),
+        TableId::CountryAppearance => reduced::<tables::CountryAppearance>(view, held, appearance),
+        TableId::Politics => reduced::<tables::Politics>(view, held, politics),
+        TableId::PoliticalParties => reduced::<tables::PoliticalParties>(view, held, party),
+        TableId::Autonomy => reduced::<tables::Autonomy>(view, held, autonomy),
         _ => view.clone(),
     }
+}
+
+/// `rows`, ascending by key, with the rows `set` and the keys `gone` applied, both ascending.
+fn merge<R: RowCodec>(rows: &[R], set: Vec<R>, gone: &[u128]) -> Vec<R> {
+    let mut merged = Vec::with_capacity(rows.len() + set.len());
+    let mut set = set.into_iter().peekable();
+    let mut gone = gone.iter().copied().peekable();
+    for row in rows {
+        let key = row.key();
+        while let Some(next) = set.next_if(|next| next.key() < key) {
+            merged.push(next);
+        }
+        if let Some(next) = set.next_if(|next| next.key() == key) {
+            merged.push(next);
+            continue;
+        }
+        while gone.next_if(|&gone| gone < key).is_some() {}
+        if gone.next_if(|&gone| gone == key).is_some() {
+            continue;
+        }
+        merged.push(row.clone());
+    }
+    merged.extend(set);
+    merged
+}
+
+/// `held`, a complete table as the frame last read it, with the rows the hour's own changes name
+/// read again by `mask` and `reduce`: `held` itself where none reads otherwise; None where the
+/// changes cannot tell.
+fn patched<T: TableSchema>(
+    world: &World,
+    state: &State,
+    (table, mask): (TableId, u64),
+    held: &SharedView,
+    reduce: impl Fn(&T::Row) -> T::Row,
+) -> io::Result<Option<SharedView>> {
+    let (TableView::Complete(old), ColumnView::Complete(columns), Some(changes)) = (
+        &**held,
+        world.view(state, table),
+        state.changes(table.index()),
+    ) else {
+        return Ok(None);
+    };
+    let Some(old) = T::borrow(old) else {
+        return Ok(None);
+    };
+    if changes.truncated {
+        return Ok(None);
+    }
+    let at = |key: u128| old.binary_search_by_key(&key, |row| row.key());
+    let mut slots: Vec<u32> = changes
+        .changed
+        .iter()
+        .chain(&changes.inserted)
+        .chain(&changes.fill_slots)
+        .copied()
+        .collect();
+    slots.sort_unstable();
+    slots.dedup();
+    let mut set = Vec::new();
+    for slot in slots {
+        // A slot deleted since holds no row.
+        let Some(key) = columns.table().key(slot) else {
+            continue;
+        };
+        let row = reduce(&columns.row::<T::Row>(slot, mask)?);
+        if !at(key).is_ok_and(|at| old[at] == row) {
+            set.push(row);
+        }
+    }
+    let mut gone: Vec<u128> = changes
+        .deleted_keys
+        .iter()
+        .copied()
+        .filter(|&key| columns.find(key).is_none() && at(key).is_ok())
+        .collect();
+    if set.is_empty() && gone.is_empty() {
+        return Ok(Some(held.clone()));
+    }
+    set.sort_unstable_by_key(|row| row.key());
+    gone.sort_unstable();
+    gone.dedup();
+    let rows = merge(old, set, &gone);
+    Ok(Some(TableView::Complete(T::wrap(rows)).into()))
+}
+
+/// [`patched`] of `ask`'s table, its rows read as [`read_view`] reads them.
+fn patched_view(
+    world: &World,
+    state: &State,
+    ask: (TableId, u64),
+    held: &SharedView,
+) -> io::Result<Option<SharedView>> {
+    let (w, s, h) = (world, state, held);
+    match ask.0 {
+        TableId::Countries => patched::<tables::Countries>(w, s, ask, h, country),
+        TableId::RaidIntelInputs => patched::<tables::RaidIntelInputs>(w, s, ask, h, raid),
+        TableId::IntelligenceAgencies => {
+            patched::<tables::IntelligenceAgencies>(w, s, ask, h, agency)
+        }
+        TableId::CountryAppearance => {
+            patched::<tables::CountryAppearance>(w, s, ask, h, appearance)
+        }
+        TableId::Politics => patched::<tables::Politics>(w, s, ask, h, politics),
+        TableId::PoliticalParties => patched::<tables::PoliticalParties>(w, s, ask, h, party),
+        TableId::Autonomy => patched::<tables::Autonomy>(w, s, ask, h, autonomy),
+        TableId::CountryLinks => patched::<tables::CountryLinks>(w, s, ask, h, Clone::clone),
+        TableId::Cryptology => patched::<tables::Cryptology>(w, s, ask, h, Clone::clone),
+        TableId::SimulationFeatures => {
+            patched::<tables::SimulationFeatures>(w, s, ask, h, Clone::clone)
+        }
+        TableId::OperativeMemberships => {
+            patched::<tables::OperativeMemberships>(w, s, ask, h, Clone::clone)
+        }
+        TableId::CharacterOperatives => {
+            patched::<tables::CharacterOperatives>(w, s, ask, h, Clone::clone)
+        }
+        TableId::CharacterPortraits => {
+            patched::<tables::CharacterPortraits>(w, s, ask, h, Clone::clone)
+        }
+        TableId::AgencyUpgradeLevels => {
+            patched::<tables::AgencyUpgradeLevels>(w, s, ask, h, Clone::clone)
+        }
+        TableId::LexicalTokens => patched::<tables::LexicalTokens>(w, s, ask, h, Clone::clone),
+        TableId::Operations => patched::<tables::Operations>(w, s, ask, h, Clone::clone),
+        TableId::OperationAssignments => {
+            patched::<tables::OperationAssignments>(w, s, ask, h, Clone::clone)
+        }
+        TableId::OperationCompletions => {
+            patched::<tables::OperationCompletions>(w, s, ask, h, Clone::clone)
+        }
+        TableId::ReservedCountryNaming => {
+            patched::<tables::ReservedCountryNaming>(w, s, ask, h, Clone::clone)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Whether [`read_view`] reduces `table`'s rows, so its views carry no sample hour.
+fn reduces(table: TableId) -> bool {
+    matches!(
+        table,
+        TableId::Countries
+            | TableId::RaidIntelInputs
+            | TableId::IntelligenceAgencies
+            | TableId::CountryAppearance
+            | TableId::Politics
+            | TableId::PoliticalParties
+            | TableId::Autonomy
+    )
+}
+
+/// `table` this hour as the observers read it ([`read_view`]), the frame holding it as `held`:
+/// where the hour does not open, by the rows its own changes name ([`patched_view`]); else, or
+/// where they cannot tell, copied whole from the walk's views.
+fn read_table(
+    world: &World,
+    state: &State,
+    (table, hold, fields): (TableId, Hold, u64),
+    fresh: bool,
+    held: &SharedView,
+    reduced: &mut Option<SharedView>,
+) -> io::Result<SharedView> {
+    let mask = match hold.of(table) {
+        Hold::Whole => table.full_mask(),
+        Hold::Fields(fields) => fields,
+    };
+    // Fields held beyond those whose changes ask the table again go stale between asks.
+    if !fresh
+        && mask & !fields == 0
+        && let Some(view) = patched_view(world, state, (table, mask), held)?
+    {
+        if !reduces(table) {
+            return Ok(view.with_sampled_at(state.sampled_at(table.index())));
+        }
+        if !SharedView::ptr_eq(&view, held) {
+            *reduced = Some(view.clone());
+        }
+        return Ok(view);
+    }
+    let copied = world.copy(state, table, hold)?;
+    Ok(read_view(table, &copied, reduced))
 }
 
 /// The tables whose change makes the roster's census read again, beside the fields of Operations
@@ -490,8 +774,7 @@ pub struct Projector<'p> {
     /// a reduced table.
     frame: DecodedFrame,
     reduced: Vec<Option<SharedView>>,
-    /// The tables the hour asks of the walk's frame, kept from hour to hour.
-    asks: Vec<(TableId, Hold)>,
+    /// The positions of the tables the hour reads again, kept from hour to hour.
     asked: Vec<usize>,
     countries: CountryInputs,
     cipher: decryption::Reader,
@@ -531,7 +814,6 @@ impl<'p> Projector<'p> {
                 metrics: Metrics::default(),
             },
             reduced: vec![None; TABLES.len()],
-            asks: Vec::with_capacity(TABLES.len()),
             asked: Vec::with_capacity(TABLES.len()),
             countries: CountryInputs::default(),
             cipher: decryption::Reader::default(),
@@ -645,23 +927,22 @@ fn cipher_delta(sent: &mut Option<CipherRead>, new: CipherRead) -> Option<Cipher
                 pairs: old,
             }),
             CipherRead::Rows { incomplete, pairs },
-        ) => match Listed::of(Some(old.as_slice()), pairs, PairRead::key) {
-            None if held == incomplete => return None,
-            None => Some(CipherDelta::Pairs {
+        ) => {
+            let (set, gone) = delta::sorted(old, pairs, PairRead::key);
+            if set.is_empty() && gone.is_empty() && held == incomplete {
+                return None;
+            }
+            CipherDelta::Pairs {
                 incomplete: incomplete.clone(),
-                pairs: Listed::Patched(Vec::new()),
-            }),
-            Some(Listed::Whole(_)) => Some(CipherDelta::Whole(new.clone())),
-            Some(pairs) => Some(CipherDelta::Pairs {
-                incomplete: incomplete.clone(),
-                pairs,
-            }),
-        },
+                set,
+                gone,
+            }
+        }
         (Some(held), _) if *held == new => return None,
-        _ => Some(CipherDelta::Whole(new.clone())),
+        _ => CipherDelta::Whole(new.clone()),
     };
     *sent = Some(new);
-    delta
+    Some(delta)
 }
 
 /// What `new` changed of the agency read `sent`, which it becomes: its slots and acquired levels
@@ -678,7 +959,7 @@ fn agency_delta(
             complete: new.complete,
             refused: new.refused,
             slots: Keyed::of(None, &new.slots),
-            roster: Some(new.roster.clone()),
+            roster: Some(counts_delta(None, new.roster.as_ref())),
             acquired: Some(AcquiredDelta::Whole(new.acquired.clone())),
         }));
     };
@@ -686,7 +967,8 @@ fn agency_delta(
         .0
         .then(|| Keyed::of(Some(&held.slots), &new.slots))
         .flatten();
-    let roster = (read && held.roster != new.roster).then(|| new.roster.clone());
+    let roster = (read && held.roster != new.roster)
+        .then(|| counts_delta(held.roster.as_ref(), new.roster.as_ref()));
     let acquired = if !rebuilt.1 || held.acquired == new.acquired {
         None
     } else {
@@ -724,6 +1006,23 @@ fn agency_delta(
         roster,
         acquired,
     }))
+}
+
+/// What the membership counts `new` changed of `old`.
+fn counts_delta(
+    old: Option<&agency_comparison::RosterCounts>,
+    new: Option<&agency_comparison::RosterCounts>,
+) -> Option<CountsDelta> {
+    let (counts, unresolved, unsupported) = new?;
+    Some(CountsDelta {
+        counts: Keyed::of(old.map(|(counts, _, _)| counts), counts).unwrap_or(Keyed {
+            whole: false,
+            set: Vec::new(),
+            gone: Vec::new(),
+        }),
+        unresolved: *unresolved,
+        unsupported: unsupported.clone(),
+    })
 }
 
 /// What `new` changed of the roster census `sent`, which it becomes.
@@ -790,18 +1089,17 @@ fn census_delta(sent: &mut Option<CensusRead>, new: CensusRead) -> Option<Census
                 lexical,
             }),
             Some(rows),
-        ) => match Listed::of(Some(old.as_slice()), rows, |row: &OperationRead| row.id) {
-            None if *lexical == new.lexical => return None,
-            None => CensusDelta::Rows {
+        ) => {
+            let (set, gone) = delta::sorted(old, rows, |row: &OperationRead| row.id);
+            if set.is_empty() && gone.is_empty() && *lexical == new.lexical {
+                return None;
+            }
+            CensusDelta::Rows {
                 lexical: new.lexical,
-                rows: Listed::Patched(Vec::new()),
-            },
-            Some(Listed::Whole(_)) => CensusDelta::Whole(new.clone()),
-            Some(rows) => CensusDelta::Rows {
-                lexical: new.lexical,
-                rows,
-            },
-        },
+                set,
+                gone,
+            }
+        }
         (Some(held), _) if *held == new => return None,
         _ => CensusDelta::Whole(new.clone()),
     };
@@ -848,35 +1146,34 @@ impl Operator<World> for Projector<'_> {
             || self.last.and_then(|last| last.checked_add(1)) != Some(at);
         self.cold = false;
         self.last = Some(at);
+        if opens {
+            // The emit binds its reads afresh where an hour opens: each is handed on whole.
+            self.sent = Sent::default();
+        }
         let (mut changed, mut rebuilt) = (0_u32, 0_u32);
-        self.asks.clear();
         self.asked.clear();
-        for (position, &(table, hold, fields)) in self.holds.iter().enumerate() {
+        for (position, &(table, _, fields)) in self.holds.iter().enumerate() {
             if !opens && !world.touched(table, u64::MAX) {
                 continue;
             }
             rebuilt |= 1 << position;
             if opens || world.touched(table, fields) {
                 changed |= 1 << position;
-                self.asks.push((table, hold));
                 self.asked.push(position);
             } else if table == AGENCIES {
                 changed |= 1 << position;
             }
         }
-        if !self.asks.is_empty() {
-            let frame = world.frame_held(hour.state, &self.asks)?;
-            for &position in &self.asked {
-                let table = self.holds[position].0;
-                let view = read_view(
-                    table,
-                    &frame.tables[table.index()],
-                    &mut self.reduced[position],
-                );
-                let held = &mut self.frame.tables[table.index()];
-                if !SharedView::ptr_eq(held, &view) {
-                    *held = view;
-                }
+        // Each table the hour changed in a field read, read again from the walk's views in its
+        // hold.
+        let fresh = opens || world.first();
+        for &position in &self.asked {
+            let ask = self.holds[position];
+            let held = &mut self.frame.tables[ask.0.index()];
+            let reduced = &mut self.reduced[position];
+            let view = read_table(world, hour.state, ask, fresh, held, reduced)?;
+            if !SharedView::ptr_eq(held, &view) || held.sampled_at() != view.sampled_at() {
+                *held = view;
             }
         }
         self.frame.branch = hour.branch;
@@ -957,7 +1254,11 @@ impl Operator<World> for Projector<'_> {
                         + pairs.iter().map(PairRead::heap).sum::<usize>()
                 }
                 CipherDelta::Whole(_) => 0,
-                CipherDelta::Pairs { pairs, .. } => pairs.bytes(PairRead::heap),
+                CipherDelta::Pairs { set, gone, .. } => {
+                    set.capacity() * size_of::<PairRead>()
+                        + set.iter().map(PairRead::heap).sum::<usize>()
+                        + gone.capacity() * size_of::<(u32, u32)>()
+                }
             };
         }
         // Placements.
@@ -979,15 +1280,14 @@ impl Operator<World> for Projector<'_> {
                     .ok()
                     .and_then(Option::as_deref)
                     .map(|catalogue| catalogue.localisation.as_ref());
-                whole(
-                    &mut self.sent.placements,
-                    operative_placements::read(captured, inputs, localisation),
-                )
-                .map(Box::new)
+                let read = operative_placements::read(captured, inputs, localisation);
+                let delta = read.delta(self.sent.placements.as_ref());
+                self.sent.placements = Some(read);
+                delta.map(Box::new)
             })
             .flatten();
         if let Some(placements) = &placements {
-            held += size_of::<PlacementRead>() + placements.heap();
+            held += size_of::<PlacementDelta>() + placements.heap();
         }
         // Agencies.
         let agencies = if complete
@@ -1018,8 +1318,9 @@ impl Operator<World> for Projector<'_> {
                     .roster
                     .as_ref()
                     .and_then(Option::as_ref)
-                    .map_or(0, |(counts, _, _)| {
-                        counts.capacity() * size_of::<(u32, u32)>()
+                    .map_or(0, |roster| {
+                        roster.counts.bytes(|_| 0)
+                            + roster.unsupported.len() * size_of::<(u8, usize)>()
                     })
                 + match &agencies.acquired {
                     Some(AcquiredDelta::Whole(Ok((slots, _)))) => slots
@@ -1147,7 +1448,11 @@ impl Operator<World> for Projector<'_> {
                     rows.capacity() * size_of::<OperationRead>()
                         + rows.iter().map(OperationRead::heap).sum::<usize>()
                 }),
-                CensusDelta::Rows { rows, .. } => rows.bytes(OperationRead::heap),
+                CensusDelta::Rows { set, gone, .. } => {
+                    set.capacity() * size_of::<OperationRead>()
+                        + set.iter().map(OperationRead::heap).sum::<usize>()
+                        + gone.capacity() * size_of::<u64>()
+                }
             };
         }
         let completions = (rows(TableId::OperationCompletions) || rows(TableId::LexicalTokens))

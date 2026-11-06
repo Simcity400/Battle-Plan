@@ -144,7 +144,6 @@ fn standalone_readers_check_the_owner_before_decoding_catalogues_or_replies() {
             &fixture.key,
             "casualty",
             1,
-            |_| 0,
         );
         let reply = series::read_branch_reply::<Value>(
             &fixture.store,

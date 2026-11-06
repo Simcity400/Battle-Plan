@@ -6,7 +6,7 @@ use crate::{
     scripted_text::ScriptedText,
 };
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, HourFrame};
 use serde::{Deserialize, Serialize};
 use std::{
     io,
@@ -345,7 +345,12 @@ impl Product for FactionDetails {
             .ok_or_else(|| dashboard_core::refused("Faction text unavailable at this hour"))?;
         }
         if let (Some(cat), Some(details)) = (cat.as_deref(), programme_frame.as_deref())
-            && companions::programmes_need_environment(&frame, details, faction, cat)
+            && companions::programmes_need_environment(
+                replay_frame::frame::HourFrame::from(&*frame),
+                replay_frame::frame::HourFrame::from(details),
+                faction,
+                cat,
+            )
         {
             let tables = selectors::programme_text_tables();
             match crate::prepared::query::native::frame_at(
@@ -699,13 +704,13 @@ impl GoalText for HeldGoalText<'_, '_> {
         self.held.cat()
     }
     fn expand(&self, text: &str) -> Result<String, String> {
-        let root = presentations::viewer_root(self.held.frame())?;
+        let root = presentations::viewer_root_in(self.held.frame())?;
         self.held
             .with(root, |scripted| scripted.expand_faction(text, self.faction))?
     }
 }
 fn label<'d>(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     token: Option<u32>,
     texts: Option<&dyn GoalText>,
     definitions: Option<&'d installed_content_core::faction_goals::Catalog>,
@@ -719,7 +724,7 @@ fn label<'d>(
         return (label, None);
     };
     let mut reach = || -> Result<_, String> {
-        let spelling = faction_names::template_spelling(frame, Some(token))?
+        let spelling = faction_names::template_spelling_in(&frame, Some(token))?
             .ok_or("Faction goal token is absent")?;
         label.token = Some(spelling.clone());
         let definition = definitions
@@ -816,7 +821,7 @@ fn definition(
     lexical: &faction_names::LexicalNames,
 ) -> FactionGoalDefinition {
     let (label, reached) = label(
-        frame,
+        HourFrame::from(frame),
         token,
         texts.map(|texts| texts as &dyn GoalText),
         definitions,
@@ -845,6 +850,38 @@ pub fn goal_labels(
         .into_iter()
         .map(|token| {
             label(
+                HourFrame::from(frame),
+                token,
+                texts.as_ref().map(|texts| texts as &dyn GoalText),
+                definitions.as_deref(),
+                &lexical,
+            )
+            .0
+        })
+        .collect()
+}
+/// [`goal_labels`] of any frame's tables: a walk's scripted texts expand in the selected
+/// country's text, as a decoded frame's do.
+pub fn goal_labels_in(
+    frame: HourFrame<'_>,
+    faction: u64,
+    cat: Option<&catalogue::Catalogue>,
+    tokens: impl IntoIterator<Item = Option<u32>>,
+) -> Vec<GoalLabel> {
+    if let Some(decoded) = frame.decoded() {
+        return goal_labels(decoded.decoded_frame(), faction, cat, tokens);
+    }
+    let definitions =
+        cat.and_then(|cat| installed_content_core::faction_goals::cached(&cat.content.layers).ok());
+    let lexical = faction_names::LexicalNames::from_tables(frame);
+    let viewer = cat.map(|cat| ViewerText::new_in(frame, cat));
+    let texts = viewer
+        .as_ref()
+        .map(|held| HeldGoalText { faction, held });
+    tokens
+        .into_iter()
+        .map(|token| {
+            label(
                 frame,
                 token,
                 texts.as_ref().map(|texts| texts as &dyn GoalText),
@@ -858,7 +895,7 @@ pub fn goal_labels(
 /// `token`'s goal label at the frame's hour, as [`goal_labels`] labels it, its scripted texts
 /// expanded in `held`, the shared text of `frame` and `cat`.
 pub fn goal_label_in(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     faction: u64,
     cat: Option<&catalogue::Catalogue>,
     token: Option<u32>,
@@ -866,8 +903,7 @@ pub fn goal_label_in(
 ) -> GoalLabel {
     let definitions =
         cat.and_then(|cat| installed_content_core::faction_goals::cached(&cat.content.layers).ok());
-    let lexical =
-        faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+    let lexical = faction_names::LexicalNames::from_tables(frame);
     let texts = cat.map(|_| HeldGoalText { faction, held });
     label(
         frame,
@@ -887,19 +923,18 @@ pub fn goal_content_warnings(cat: &catalogue::Catalogue) -> Vec<String> {
 }
 /// Whether a goal's texts expand scripted text; None while its spelling is unread.
 pub fn goal_label_expands(
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     cat: &catalogue::Catalogue,
     token: u32,
 ) -> Option<bool> {
     let Ok(definitions) = installed_content_core::faction_goals::cached(&cat.content.layers) else {
         return Some(false);
     };
-    let spelling = faction_names::template_spelling(frame, Some(token)).ok()??;
+    let spelling = faction_names::template_spelling_in(&frame, Some(token)).ok()??;
     let Ok(Some(definition)) = definitions.get(&spelling) else {
         return Some(false);
     };
-    let lexical =
-        faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+    let lexical = faction_names::LexicalNames::from_tables(frame);
     Some(expands(definition, cat, &lexical))
 }
 fn expands(
@@ -932,6 +967,41 @@ pub fn held_goals(frame: &DecodedFrame, faction: u64) -> io::Result<HeldGoals<'_
         .map(|index| &headers[index])
         .ok_or_else(|| invalid("Faction goal status is absent"))?;
     let entries = companions::selected(entries, faction, |row| row.faction);
+    contiguous(entries.iter())?;
+    Ok(HeldGoals {
+        manifest: header.manifest,
+        entries,
+    })
+}
+/// [`HeldGoals`] of any frame's tables, a walk's entries built.
+pub struct HeldGoalsIn<'a> {
+    pub manifest: Option<u32>,
+    /// Ordered by list kind, then ordinal.
+    pub entries: Vec<std::borrow::Cow<'a, replay_data::rows::FactionGoalEntryRow>>,
+}
+/// [`held_goals`] of any frame's tables, a walk's views among them.
+pub fn held_goals_in(frame: HourFrame<'_>, faction: u64) -> io::Result<HeldGoalsIn<'_>> {
+    let headers = frame.complete::<tables::FactionGoalStatus>(u64::MAX)?;
+    let entries = frame.complete::<tables::FactionGoalEntries>(u64::MAX)?;
+    let header = headers
+        .get(u128::from(faction))?
+        .ok_or_else(|| invalid("Faction goal status is absent"))?;
+    // An entry's key holds its faction above its list kind and ordinal.
+    let low = u128::from(faction) << 40;
+    let entries = entries
+        .span(low, low | ((1_u128 << 40) - 1))
+        .iter()
+        .collect::<io::Result<Vec<_>>>()?;
+    contiguous(entries.iter().map(|row| &**row))?;
+    Ok(HeldGoalsIn {
+        manifest: header.manifest,
+        entries,
+    })
+}
+/// Refuses a faction's goal entries unless each kind's ordinals count up from zero.
+fn contiguous<'r>(
+    entries: impl Iterator<Item = &'r replay_data::rows::FactionGoalEntryRow>,
+) -> io::Result<()> {
     let mut next = [0; 5];
     for row in entries {
         let expected = next
@@ -942,10 +1012,7 @@ pub fn held_goals(frame: &DecodedFrame, faction: u64) -> io::Result<HeldGoals<'_
         }
         *expected += 1;
     }
-    Ok(HeldGoals {
-        manifest: header.manifest,
-        entries,
-    })
+    Ok(())
 }
 fn read(
     frame: &DecodedFrame,

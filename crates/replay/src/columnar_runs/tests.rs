@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     branches::{BranchReason, Parentage},
     columnar_frames::{
-        Limits, fixtures,
+        fixtures,
         synthetic::{Input, Sample, Synthetic},
     },
     frame::SharedView,
@@ -90,10 +90,6 @@ fn wide(runs: &[(u64, i32, u32)]) -> (Vec<u8>, Vec<fixtures::Seen>) {
     )
 }
 
-/// What a cursor's tables may hold: far more than any fixture's.
-fn tables_memory() -> MemoryBudget {
-    MemoryBudget::new(1 << 30)
-}
 
 /// `recording` as an index holds it alone, no session pending.
 fn alone(recording: Recording) -> Whole {
@@ -106,7 +102,7 @@ fn alone(recording: Recording) -> Whole {
 
 /// The index of `tables` of `bytes`, a recording, walked on `threads` workers.
 fn prepared(bytes: &[u8], tables: &[TableId], threads: usize) -> Vec<u8> {
-    let recording = Recording::open(bytes.to_vec(), Limits::default()).unwrap();
+    let recording = Recording::open(bytes.to_vec()).unwrap();
     let (written, _) = prepare(
         &alone(recording),
         tables,
@@ -137,7 +133,7 @@ fn segments_walked_in_parallel_write_the_index_one_worker_writes() {
     let (bytes, _) = fixtures::churned(&RUNS, 1);
     let serial = prepared(&bytes, &TableId::ALL, 1);
     assert_eq!(prepared(&bytes, &TableId::ALL, 4), serial);
-    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let recording = Recording::open(bytes).unwrap();
     assert!(recording.segments().len() > RUNS.len());
     let path = std::env::temp_dir().join(format!("columnar-runs-{}.h4runs", std::process::id()));
     std::fs::write(&path, &serial).unwrap();
@@ -224,7 +220,7 @@ fn an_index_indexes_only_the_recording_it_was_prepared_from() {
     let tables = [TableId::Campaign, TableId::Countries];
     let bytes = countries(&runs, 0, Some(&capture(b"one")));
     let file = IndexFile::from_bytes(prepared(&bytes, &tables, 2)).unwrap();
-    let recording = |bytes: Vec<u8>| Recording::open(bytes, Limits::default()).unwrap();
+    let recording = |bytes: Vec<u8>| Recording::open(bytes).unwrap();
     assert!(file.indexes(&[recording(bytes.clone())], &[], &tables));
     assert_eq!(file.summary().natives[0].capture, Some(capture(b"one")));
     assert_eq!(
@@ -348,7 +344,7 @@ impl TwoSessions {
         let first = self.branches[at].first_hour;
         let runs = [(self.branches[at].id, first, 1)];
         let bytes = countries(&runs, shift, Some(&captured(&self.sessions[at], 1)));
-        Recording::open(bytes, Limits::default()).unwrap()
+        Recording::open(bytes).unwrap()
     }
 }
 
@@ -406,7 +402,6 @@ fn two_sessions_native_recordings_are_indexed_whole_gaps_and_all() {
             FormatVersion::CURRENT,
             CaptureMode::Full,
             1,
-            tables_memory(),
         )
         .unwrap();
         for (branch, hour, held) in [
@@ -456,7 +451,7 @@ fn a_session_of_several_captures_is_indexed_whole_from_them_in_order() {
     let capture = |first: i32, units: u32| {
         let runs = [(1, first, units)];
         let bytes = countries(&runs, 0, Some(&captured(&sessions[0], 1)));
-        Recording::open(bytes, Limits::default()).unwrap()
+        Recording::open(bytes).unwrap()
     };
     let whole = whole_of(named(vec![capture(100, 1), capture(100 + unit, 2)]), held)
         .unwrap()
@@ -506,7 +501,7 @@ fn native_recordings_not_holding_a_replay_whole_are_refused_by_name() {
     let stranger = {
         let runs = [(3, 9_000, 1)];
         let bytes = countries(&runs, 0, Some(&captured(&session(3), 1)));
-        Recording::open(bytes, Limits::default()).unwrap()
+        Recording::open(bytes).unwrap()
     };
     let other = refused(vec![replay.native(0, 0), replay.native(1, 0), stranger]);
     assert!(
@@ -515,7 +510,7 @@ fn native_recordings_not_holding_a_replay_whole_are_refused_by_name() {
     );
     let bare = {
         let runs = [(1, 100, 1)];
-        Recording::open(countries(&runs, 0, None), Limits::default()).unwrap()
+        Recording::open(countries(&runs, 0, None)).unwrap()
     };
     let unnamed = refused(vec![bare, replay.native(1, 0)]);
     assert!(unnamed.contains("names no capture"), "{unnamed}");
@@ -603,7 +598,6 @@ fn a_session_still_being_recorded_is_pending_not_missing() {
         FormatVersion::CURRENT,
         CaptureMode::Full,
         1,
-        tables_memory(),
     )
     .unwrap();
     assert!(snapshots.frame(1, 300, None).unwrap().is_some());
@@ -675,7 +669,6 @@ fn a_pending_session_s_native_recording_landing_makes_the_index_stale_then_whole
         FormatVersion::CURRENT,
         CaptureMode::Full,
         1,
-        tables_memory(),
     )
     .unwrap();
     assert!(snapshots.frame(2, 900, None).unwrap().is_some());
@@ -791,7 +784,6 @@ fn a_replay_none_of_whose_sessions_ended_is_indexed_with_every_session_pending()
         FormatVersion::CURRENT,
         CaptureMode::Full,
         1,
-        tables_memory(),
     )
     .unwrap();
     assert!(snapshots.frame(1, 300, None).unwrap().is_none());
@@ -804,37 +796,6 @@ fn a_replay_none_of_whose_sessions_ended_is_indexed_with_every_session_pending()
     };
     assert!(missing.contains("session 1"), "{missing}");
     assert!(!missing.contains("session 2"), "{missing}");
-}
-
-/// A map whose tables need more than their memory may ever hold is refused by name, never
-/// taken for the recording's gap, and holds nothing after; memory that holds it serves it.
-#[test]
-fn a_map_needing_more_than_its_memory_may_ever_hold_is_refused_by_name() {
-    let tables = [TableId::Campaign, TableId::Countries];
-    let bytes = countries(&[(1, 100, 1)], 0, Some(&capture(b"one")));
-    let file = Arc::new(IndexFile::from_bytes(prepared(&bytes, &tables, 1)).unwrap());
-    let snapshots = |memory: MemoryBudget| {
-        Snapshots::new(
-            Arc::clone(&file),
-            &[TableId::Countries],
-            FormatVersion::CURRENT,
-            CaptureMode::Full,
-            1,
-            memory,
-        )
-        .unwrap()
-    };
-    let small = MemoryBudget::new(1 << 10);
-    let error = snapshots(small.clone()).frame(1, 100, None).unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-    assert!(beyond_memory(&error), "{error}");
-    assert_eq!(small.used(), 0);
-    assert!(
-        snapshots(tables_memory())
-            .frame(1, 100, None)
-            .unwrap()
-            .is_some()
-    );
 }
 
 /// A page is read only from the pages' region, of no more than a page's bytes, and packed only
@@ -975,7 +936,6 @@ fn moves_and_lookups_read_only_the_dictionary_chunks_their_rows_name() {
         FormatVersion::CURRENT,
         CaptureMode::Full,
         2,
-        tables_memory(),
     )
     .unwrap();
     snapshots.frame(1, 700, None).unwrap().unwrap();
@@ -1011,7 +971,6 @@ fn playing_forward_reads_only_the_pages_the_next_hour_opens() {
         FormatVersion::CURRENT,
         CaptureMode::Full,
         1,
-        tables_memory(),
     )
     .unwrap();
     let first = run.first_hour;
@@ -1032,7 +991,7 @@ fn playing_forward_reads_only_the_pages_the_next_hour_opens() {
 #[test]
 fn a_preparation_asked_to_stop_writes_no_index() {
     let (bytes, _) = fixtures::churned(&RUNS[..1], 1);
-    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let recording = Recording::open(bytes).unwrap();
     let stopped = prepare(
         &alone(recording),
         &TABLES,
@@ -1081,7 +1040,6 @@ fn frames_read_from_the_index_are_the_writer_s_at_every_hour() {
                 FormatVersion::CURRENT,
                 CaptureMode::Full,
                 workers,
-                tables_memory(),
             )
             .unwrap();
             let check = |at: usize, snapshots: &mut Snapshots| {
@@ -1104,7 +1062,7 @@ fn frames_read_from_the_index_are_the_writer_s_at_every_hour() {
                 if step % 4 == 0 {
                     // Moves taken without a frame are built into the next one.
                     let (branch, hour) = hours[(at + 1) % hours.len()];
-                    assert!(snapshots.move_to(branch, hour, &alone, &|| false).unwrap());
+                    assert!(snapshots.move_to(branch, hour, &alone).unwrap());
                 }
                 check(at, &mut snapshots);
             }
@@ -1195,12 +1153,11 @@ fn rows_by_key_and_changes_between_moves_are_the_frames() {
         FormatVersion::CURRENT,
         CaptureMode::Full,
         1,
-        tables_memory(),
     )
     .unwrap();
     let mut before: Option<BTreeSet<u128>> = None;
     for (at, &(branch, hour)) in hours.iter().enumerate().take(2 * UNIT_ORDINALS as usize) {
-        assert!(snapshots.move_to(branch, hour, &|| {}, &|| false).unwrap());
+        assert!(snapshots.move_to(branch, hour, &|| {}).unwrap());
         let changed = snapshots.changed(TableId::Countries).unwrap();
         let inserted: BTreeSet<u128> = changed.inserted.iter().copied().collect();
         let deleted: BTreeSet<u128> = changed.deleted.iter().copied().collect();

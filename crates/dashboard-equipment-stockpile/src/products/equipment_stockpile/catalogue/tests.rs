@@ -7,12 +7,12 @@ use crate::products::equipment_stockpile::emit::{
     SCHEMA,
     tests::{self as walks, Seen},
 };
-use dashboard_series::{Budget, Cache, memory::Memory};
+use dashboard_series::{memory::Memory};
 use replay_data::{format::FormatVersion, rows::TableId};
 use std::collections::BTreeSet;
 
-fn snapshot<'c>(pages: &Memory, root: u64, cache: &'c Cache<'c>) -> (Snapshot<'c, Memory>, Directory) {
-    let mut snapshot = Snapshot::open(pages.clone(), cache, root, walks::identity()).unwrap();
+fn snapshot<'c>(pages: &Memory, root: u64) -> (Snapshot<'c, Memory>, Directory) {
+    let mut snapshot = Snapshot::open(pages.clone(), root, walks::identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     (snapshot, directory)
 }
@@ -55,9 +55,7 @@ fn the_catalogue_holds_every_read_coverage_variant_and_count_the_walks_give() {
     let runs = walks::campaign_runs();
     let expected = walks::expected(&runs, 1);
     let (pages, root) = campaign();
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let (mut snapshot, directory) = snapshot(&pages, root, &cache);
+    let (mut snapshot, directory) = snapshot(&pages, root);
     let reading = Reading::bare(None);
     let format = FormatVersion::CURRENT;
     let frames: Vec<_> = runs.iter().filter(|(branch, _)| *branch == 1).flat_map(|(_, frames)| frames).collect();
@@ -118,9 +116,7 @@ fn a_variant_s_line_is_its_stock_at_every_known_hour_and_breaks_where_it_is_not(
     let runs = walks::campaign_runs();
     let expected = walks::expected(&runs, 1);
     let (pages, root) = campaign();
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let (mut snapshot, directory) = snapshot(&pages, root, &cache);
+    let (mut snapshot, directory) = snapshot(&pages, root);
     let params = StockpileChartParams {
         branch_id: "1".into(),
         holders: vec![holder("GER")],

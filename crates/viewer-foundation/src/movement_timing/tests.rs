@@ -331,7 +331,7 @@ fn missing_location_content_or_geometry_refuse_by_name() {
 }
 
 #[test]
-fn the_cache_holds_the_hours_in_flight_and_evicts_the_oldest() {
+fn the_cache_holds_the_hours_in_flight_and_the_latest() {
     let cache = EtaCache::default();
     let built = Cell::new(0);
     let fill = |hour: replay_data::Hour| {
@@ -342,23 +342,19 @@ fn the_cache_holds_the_hours_in_flight_and_evicts_the_oldest() {
             })
             .expect("the build cannot fail")
     };
-    // A worker builds the hours ahead; the window then arrives at them.
-    for hour in 1..=3 {
-        fill(hour);
-    }
+    // A worker builds the hours ahead and holds them; the window then arrives at them.
+    let ahead: Vec<_> = (1..=3).map(fill).collect();
     assert_eq!(built.get(), 3);
     fill(1);
     fill(2);
     assert_eq!(built.get(), 3, "the look-ahead must still be cached");
-    // The ninth distinct key evicts the first.
-    for hour in 4..=9 {
-        fill(hour);
-    }
-    assert_eq!(built.get(), 9);
-    fill(9);
-    assert_eq!(built.get(), 9);
+    drop(ahead);
+    // Nothing holds hour 1 once hour 4 is the latest: it derives again.
+    fill(4);
+    fill(4);
+    assert_eq!(built.get(), 4);
     fill(1);
-    assert_eq!(built.get(), 10, "hour 1 should have been evicted");
+    assert_eq!(built.get(), 5, "hour 1 should have gone");
 }
 
 /// Exercise a large synthetic hour without tying correctness to the speed

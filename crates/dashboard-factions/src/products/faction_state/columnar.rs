@@ -2,25 +2,25 @@
 //! walk's first hour reads every input anew, and then follows only what each hour changed: the
 //! walker's change facts name the rows; an hour none of whose changes the projection reads is
 //! projected without a frame, a held dynamic text checked against those facts alone; otherwise
-//! its tables come from the walk's shared frame ([`dashboard_world`]), Countries by its tags and
-//! slots alone. A dynamic text read again or evaluated reads the trigger tables, which the
-//! projection keeps itself, each built at its first ask and patched at later ones by the rows
-//! the hours since changed. Programme operands come from the walk's own supplying reads, or the
-//! recording's for a read before the segment. The ordered emit ([`super::emit`]) numbers and
-//! publishes.
-use super::prepared::{ACCOUNT_FIELDS, CHANNELS, Edits, Frames, Projected, Runtime, Supplying};
+//! it reads the walk's views, which hold every table the family and its dynamic texts read,
+//! and tells a table unchanged since an earlier hour by its epoch ([`Epochs`]). Programme
+//! operands come from the walk's own supplying read: at its hour, its views; after it, the
+//! tables kept from them there. A read the walk never held, one before its restart, is read
+//! from the native capture by a walk of its own ([`Earlier`]). The ordered emit
+//! ([`super::emit`]) numbers and publishes.
+use super::prepared::{ACCOUNT_FIELDS, CHANNELS, Edits, Frames, Projected, Runtime, Supply};
 use dashboard_base::{
-    Source, catalogue,
-    metadata::{slot_read, slot_reads},
+    catalogue,
+    metadata::{check_cancel, slot_read, slot_reads},
     prepared::frame_changes::{FrameChanges, field_mask},
     products::faction_details::selectors,
     triggers::inputs::{self as reuse, TableChange, TableChanges},
 };
-use dashboard_world::{Hold, Needs, World};
+use dashboard_world::{Epochs, Hold, Needs, Viewed, World};
 use replay::{
-    columnar_frames::{Views, metrics},
+    columnar_frames::{Recording, Views, Walker, metrics, schema},
     columns,
-    segments::{self, Manifest, Operator, Sink, Start, State},
+    segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{
     cadence::STAGGER_PERIOD,
@@ -28,7 +28,7 @@ use replay_data::{
     rows::{DeltaRow, TABLE_COUNT, TableId, full_mask},
     scope::CaptureMode,
 };
-use replay_frame::frame::{DecodedFrame, NOT_SELECTED, SharedView, TableView, not_selected};
+use replay_frame::frame::{DecodedFrame, HourFrame};
 use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet},
@@ -74,38 +74,19 @@ pub fn tables() -> &'static [TableId] {
     &WHOLE
 }
 
-/// The programme tables with the naming and the dictionary they name by.
-const PROGRAMME_FRAME: [TableId; 7] = [
-    TableId::ProjectPrograms,
-    TableId::Projects,
-    TableId::Campaign,
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::ReservedCountryNaming,
-    TableId::LexicalTokens,
+/// The tables a held reading tells unchanged by their epochs: the links country naming is
+/// rebuilt by, and the dictionary goal labels are held for.
+const MARKED: [(TableId, Hold); 2] = [
+    (TableId::CountryLinks, Hold::Whole),
+    (TableId::LexicalTokens, Hold::Whole),
 ];
 
-/// `tables` as a projection asks the walk's frame for them: Countries by its tags and slots
-/// alone, as country naming reads it.
-fn held(tables: impl IntoIterator<Item = TableId>) -> io::Result<Vec<(TableId, Hold)>> {
-    let identity = dashboard_world::identity()?;
-    Ok(tables
-        .into_iter()
-        .map(|table| {
-            identity
-                .iter()
-                .copied()
-                .find(|&(named, _)| named == table)
-                .unwrap_or((table, Hold::Whole))
-        })
-        .collect())
-}
-
-/// What a projection reads of its walk's world: its own tables, the programmes and the
-/// naming. The trigger tables a dynamic text reads are the projection's own.
+/// What a projection reads of its walk's world: views of every table it and its dynamic texts
+/// may read ([`tables`]), which cost no rows.
 pub fn needs() -> io::Result<Needs> {
     Ok(Needs {
-        frame: held(own_tables().into_iter().chain(PROGRAMMES).chain(NAMING))?,
+        frame: tables().iter().map(|&table| (table, Hold::Whole)).collect(),
+        lexicon: true,
         ..Needs::default()
     })
 }
@@ -153,14 +134,6 @@ fn watched() -> &'static [TableId] {
     });
     &WATCHED
 }
-
-/// The tables a held text's reuse dates by: the links whose countries own its rows, and the
-/// relations whose spans end.
-const SPANS: [(TableId, Hold); 3] = [
-    (TableId::CountryLinks, Hold::Whole),
-    (TableId::WarRelations, Hold::Whole),
-    (TableId::Subjects, Hold::Whole),
-];
 
 /// Whether the hour's changes of `table`, one of the own frame's, may change what the
 /// projection reads: `whole` when its status changed or the walk started.
@@ -400,262 +373,340 @@ impl Edits for Changes<'_> {
     }
 }
 
+/// A programmes' supplying read kept past its hour: the programme tables, and the
+/// scripted-text tables when it names a scripted project ([`selectors::read_names_scripted`]).
+#[derive(Clone)]
+pub struct Kept {
+    pub(super) hour: i32,
+    pub(super) wide: bool,
+    pub(super) frame: Arc<DecodedFrame>,
+}
+
+/// Where a projection reads a supplying read its walk does not hold: one before the walk's
+/// restart, or one it passed without keeping.
+pub trait Earlier: Send + Sync {
+    /// The latest supplying read of the programmes in `hours` of `branch`, their table
+    /// complete at every hour from it through the last of `hours`, scripted names judged by
+    /// `cat`; None when no hour is one.
+    fn read(
+        &self,
+        branch: u64,
+        hours: (i32, i32),
+        cat: Option<&catalogue::Catalogue>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Kept>>;
+}
+
+fn invalid(what: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, what)
+}
+
+/// The native capture a preparation walks, walked again for supplying reads: from the restart
+/// before them, decoding the programme tables alone, and the scripted-text tables only to a read
+/// that names a scripted project.
+pub struct Capture {
+    narrow: Recording,
+    wide: Recording,
+    format: FormatVersion,
+    mode: CaptureMode,
+}
+
+impl Capture {
+    pub fn new(recording: &Recording, format: FormatVersion, mode: CaptureMode) -> io::Result<Self> {
+        let mut narrow = selectors::PROGRAMME_TABLES.to_vec();
+        let mut wide = selectors::programme_text_tables();
+        narrow.push(TableId::Campaign);
+        wide.push(TableId::Campaign);
+        Ok(Self {
+            narrow: recording.selecting(&narrow)?,
+            wide: recording.selecting(&wide)?,
+            format,
+            mode,
+        })
+    }
+
+    /// [`Earlier::read`] in `recording`, the read's frame holding `tables`.
+    fn walk(
+        &self,
+        recording: &Recording,
+        tables: &[TableId],
+        branch: u64,
+        (lo, hi): (i32, i32),
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<(i32, DecodedFrame)>> {
+        let held = (0..recording.run_count()).find_map(|index| {
+            let run = recording.run(index).ok()?;
+            let last = i64::from(run.first_hour) + i64::from(run.ordinals) - 1;
+            (run.branch == branch && run.first_hour <= hi && i64::from(hi) <= last)
+                .then_some((index, run.first_hour))
+        });
+        let Some((run, first_hour)) = held else {
+            return Err(invalid(format!(
+                "The native capture holds no hour {hi} of branch {branch}"
+            )));
+        };
+        let lo = lo.max(first_hour);
+        if lo > hi {
+            return Ok(None);
+        }
+        let ordinal = |hour: i32| u32::try_from(i64::from(hour) - i64::from(first_hour));
+        let (Ok(from), Ok(to)) = (ordinal(lo), ordinal(hi)) else {
+            return Err(invalid(format!("Hour {hi} is off branch {branch}'s run")));
+        };
+        let mut walker = Walker::new(recording)?;
+        let mut state = State::new(schema()?)?;
+        let mut read = None;
+        let mut begun = false;
+        // The segments after the first go on from the state it left.
+        for segment in recording
+            .segments()
+            .iter()
+            .filter(|segment| segment.run == run && segment.last >= from && segment.first <= to)
+        {
+            if !begun {
+                walker.begin(segment, &mut state)?;
+                begun = true;
+            }
+            let going = walker.walk(segment, &mut state, |state, manifest, _| {
+                check_cancel(cancelled)?;
+                let hour = manifest.hour;
+                if hour < lo {
+                    return Ok(true);
+                }
+                if !columns::complete(state, TableId::ProjectPrograms) {
+                    read = None;
+                } else if slot_read(
+                    self.format,
+                    &metrics(manifest),
+                    TableId::ProjectPrograms,
+                    hour,
+                ) {
+                    let mut views = Views::new(tables, self.format, self.mode)?;
+                    read = Some((hour, views.restored(state, branch, hour)?));
+                }
+                Ok(hour < hi)
+            })?;
+            if !going {
+                break;
+            }
+        }
+        Ok(read)
+    }
+}
+
+impl Earlier for Capture {
+    fn read(
+        &self,
+        branch: u64,
+        hours: (i32, i32),
+        cat: Option<&catalogue::Catalogue>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Kept>> {
+        let _cpu = ::replay_frame::cpu::scope("faction supplying read", None);
+        let narrow = selectors::PROGRAMME_TABLES;
+        let Some((hour, frame)) = self.walk(&self.narrow, narrow, branch, hours, cancelled)?
+        else {
+            return Ok(None);
+        };
+        if !cat.is_some_and(|cat| selectors::read_names_scripted(HourFrame::from(&frame), cat)) {
+            return Ok(Some(Kept {
+                hour,
+                wide: false,
+                frame: Arc::new(frame),
+            }));
+        }
+        let wide = selectors::programme_text_tables();
+        match self.walk(&self.wide, &wide, branch, (hour, hour), cancelled)? {
+            Some((at, frame)) if at == hour => Ok(Some(Kept {
+                hour,
+                wide: true,
+                frame: Arc::new(frame),
+            })),
+            _ => Err(invalid(format!(
+                "The native capture's supplying read at hour {hour} of branch {branch} reads otherwise when walked again"
+            ))),
+        }
+    }
+}
+
+/// The supplying read at `hour` in the walk's views, kept for the hours after it.
+fn keep(
+    (world, state): (&World, &State),
+    hour: i32,
+    cat: Option<&catalogue::Catalogue>,
+) -> io::Result<Kept> {
+    let wide = cat.is_some_and(|cat| {
+        selectors::read_names_scripted(HourFrame::from(world.columns(state)), cat)
+    });
+    let tables = if wide {
+        selectors::programme_text_tables()
+    } else {
+        selectors::PROGRAMME_TABLES.to_vec()
+    };
+    Ok(Kept {
+        hour,
+        wide,
+        frame: Arc::new(world.frame(state, &tables)?),
+    })
+}
+
 /// The programmes' supplying read as the walk finds it: the latest hour that read them, with
-/// their table complete at every hour since, as [`Supplying`] finds it in the recording.
+/// their table complete at every hour since.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Read {
-    /// The walk restarted after a read it has not seen: the recording finds it.
+    /// The walk restarted after a read it has not seen: the capture finds it ([`Earlier`]).
     Unseen,
     At(i32),
     Lost,
 }
 
-/// The tables a dynamic text reads beyond the hour's own frame, and Countries whole: one view
-/// of each for the walk, built at its first ask, then noted every hour by slot and patched at
-/// each later ask by the rows changed since, so an ask costs what changed, not what is held.
-struct Trigger {
-    /// Every table of [`tables`], Countries among them.
-    views: Views,
-    /// Whether each table's view is built, and so noted, since the walk's start.
-    held: [bool; TABLE_COUNT],
-    /// Some table is held.
-    holds: bool,
-    /// The tables an ask builds, kept from ask to ask.
-    wanted: Vec<TableId>,
-    /// One view apart for each table a frame leaves unselected, so a text reading one is not
-    /// taken to read them all.
-    holes: Vec<SharedView>,
-    /// Frames built for dynamic texts, and tables built anew for them.
-    #[cfg(test)]
-    built: usize,
-    #[cfg(test)]
-    anew: u32,
+/// The supplying reads a walk holds past their hour.
+#[derive(Default)]
+struct Reads {
+    /// The read at its last read hour, kept from its views or read from the capture.
+    kept: Option<Kept>,
+    /// The read before its restart, once the capture was asked for it.
+    before: Option<Option<Kept>>,
 }
 
-impl Trigger {
-    fn new(format: FormatVersion, mode: CaptureMode) -> io::Result<Self> {
-        #[cfg_attr(not(test), allow(unused_mut))]
-        let mut views = Views::new(tables(), format, mode)?.by_slot();
-        #[cfg(test)]
-        views.time_builds(true);
-        Ok(Self {
-            views,
-            held: [false; TABLE_COUNT],
-            holds: false,
-            wanted: Vec::new(),
-            holes: Vec::new(),
-            #[cfg(test)]
-            built: 0,
-            #[cfg(test)]
-            anew: 0,
-        })
-    }
-
-    /// Notes the hour's edits of the held tables: a walk's start holds none, building each
-    /// anew at its next ask.
-    fn hour(&mut self, state: &State, manifest: &Manifest<'_>, restart: bool) -> io::Result<()> {
-        if restart {
-            self.held = [false; TABLE_COUNT];
-            self.holds = false;
-        } else if !self.holds {
-            return Ok(());
-        }
-        let held = &self.held;
-        self.views
-            .note_tables(state, manifest, restart, &|table| held[table.index()])
-    }
-
-    /// `own` with each of `tables` the walk reads and Countries whole, every other table
-    /// unselected.
-    fn frame(
-        &mut self,
-        state: &State,
-        own: &DecodedFrame,
-        tables: &[TableId],
-    ) -> io::Result<DecodedFrame> {
-        #[cfg(test)]
-        {
-            self.built += 1;
-        }
-        let mut frame = DecodedFrame {
-            branch: own.branch,
-            hour: own.hour,
-            tables: std::array::from_fn(|index| own.tables[index].clone()),
-            metrics: own.metrics.clone(),
-        };
-        self.wanted.clear();
-        for &table in tables.iter().chain(&[TableId::Countries]) {
-            let index = table.index();
-            let walked = !state.skips(index) && state.status(index).is_some();
-            if walked
-                && (table == TableId::Countries || frame.tables[index].is_not_selected())
-                && self.views.selected().binary_search(&table).is_ok()
-            {
-                self.wanted.push(table);
-            }
-        }
-        self.wanted.sort_unstable();
-        self.wanted.dedup();
-        self.views
-            .update_tables(state, own.hour, &self.wanted, None)?;
-        #[cfg(test)]
-        {
-            self.anew += self.views.times().anew.0;
-        }
-        for &table in &self.wanted {
-            let index = table.index();
-            self.held[index] = true;
-            frame.tables[index] = self
-                .views
-                .view(table)
-                .ok_or_else(|| io::Error::other("A trigger table was not built"))?
-                .clone()
-                .with_sampled_at(state.sampled_at(index));
-        }
-        self.holds |= !self.wanted.is_empty();
-        if self.holes.is_empty() {
-            self.holes = (0..TABLE_COUNT)
-                .map(|_| {
-                    SharedView::from(TableView::Unavailable {
-                        reason: NOT_SELECTED.into(),
-                    })
-                })
-                .collect();
-        }
-        for (view, hole) in frame.tables.iter_mut().zip(&self.holes) {
-            if view.is_not_selected() {
-                *view = hole.clone();
-            }
-        }
-        Ok(frame)
-    }
-}
-
-/// The hour's own frame, and the frames a programme or dynamic text asks for, built when first
-/// asked.
-struct Hourly<'p, 'h, 'a> {
-    own: &'p DecodedFrame,
+/// The hour's frames, all the walk's views: they hold every table the family reads, so the own
+/// frame, a dynamic text's and the programmes' supplying read at this hour are one.
+struct Hourly<'p, 'h> {
     hour: &'p segments::Hour<'h, World>,
-    /// [`PROGRAMME_FRAME`] as the walk's frame is asked for it.
-    asks: &'p Asks,
-    trigger: &'p RefCell<Trigger>,
+    epochs: &'p Epochs,
     read: Read,
-    source: &'a Source,
-    /// The recording's supplying reads, for a read before the walk or one it passed.
-    lookback: RefCell<Option<Supplying<'a>>>,
-    programmes: OnceCell<Result<DecodedFrame, String>>,
-    reading: OnceCell<Result<DecodedFrame, String>>,
-    whole: OnceCell<Result<DecodedFrame, String>>,
+    /// The walk's first hour after its restart.
+    first: Option<i32>,
+    reads: &'p RefCell<Reads>,
+    earlier: &'p dyn Earlier,
+    cat: Option<&'p catalogue::Catalogue>,
+    /// Whether a dynamic text asked for every table, or for some, this hour.
+    whole: OnceCell<()>,
+    reading: OnceCell<()>,
+    #[cfg(test)]
+    built: &'p std::cell::Cell<usize>,
 }
 
-impl<'a> Hourly<'_, '_, 'a> {
-    /// The programme tables at this hour, with the naming and the dictionary they name by.
-    fn programmes(&self) -> io::Result<&DecodedFrame> {
-        self.programmes
-            .get_or_init(|| {
-                self.hour
-                    .world
-                    .frame_held(self.hour.state, &self.asks.programmes)
-                    .map_err(|error| error.to_string())
-            })
-            .as_ref()
-            .map_err(|reason| io::Error::other(reason.clone()))
+impl Hourly<'_, '_> {
+    fn views(&self) -> HourFrame<'_> {
+        HourFrame::from(self.hour.world.columns(self.hour.state))
     }
 
-    /// The own frame with `tables` built for a dynamic text, held in `cell`.
-    fn evaluation<'c>(
-        &self,
-        cell: &'c OnceCell<Result<DecodedFrame, String>>,
-        tables: &[TableId],
-    ) -> io::Result<&'c DecodedFrame> {
+    /// Notes a dynamic text's first ask of `cell` this hour.
+    fn asked(&self, cell: &OnceCell<()>) {
         cell.get_or_init(|| {
-            let _cpu = ::replay_frame::cpu::scope("faction trigger frame", None);
-            self.trigger
-                .borrow_mut()
-                .frame(self.hour.state, self.own, tables)
-                .map_err(|error| error.to_string())
-        })
-        .as_ref()
-        .map_err(|reason| io::Error::other(reason.clone()))
+            #[cfg(test)]
+            self.built.set(self.built.get() + 1);
+        });
     }
 
-    fn lookback<T>(&self, read: impl FnOnce(&mut Supplying<'a>) -> io::Result<T>) -> io::Result<T> {
-        let mut lookback = self.lookback.borrow_mut();
-        let (source, branch) = (self.source, self.own.branch);
-        read(lookback.get_or_insert_with(|| Supplying::new(source, branch)))
+    /// The hour of the read before the walk's restart, read from the capture at the first ask.
+    fn before(&self, cancelled: &AtomicBool) -> io::Result<Option<i32>> {
+        let mut reads = self.reads.borrow_mut();
+        if reads.before.is_none() {
+            let first = self
+                .first
+                .ok_or_else(|| io::Error::other("A restart's walk holds no first hour"))?;
+            let hours = (
+                first.saturating_sub(STAGGER_PERIOD - 1),
+                first.saturating_sub(1),
+            );
+            let read = self
+                .earlier
+                .read(self.hour.branch, hours, self.cat, cancelled)?;
+            reads.before = Some(read);
+        }
+        Ok(reads.before.iter().flatten().map(|read| read.hour).next())
+    }
+
+    /// The read at `hour`, an earlier hour the walk found one at: kept, or read from the
+    /// capture.
+    fn held(&self, hour: i32, cancelled: &AtomicBool) -> io::Result<Kept> {
+        let mut reads = self.reads.borrow_mut();
+        let Reads { kept, before } = &mut *reads;
+        if let Some(read) = kept
+            .iter()
+            .chain(before.iter().flatten())
+            .find(|read| read.hour == hour)
+        {
+            return Ok(read.clone());
+        }
+        let read = self
+            .earlier
+            .read(self.hour.branch, (hour, hour), self.cat, cancelled)?
+            .filter(|read| read.hour == hour)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "The native capture holds no supplying read at hour {hour} of branch {}",
+                    self.hour.branch
+                ))
+            })?;
+        *kept = Some(read.clone());
+        Ok(read)
     }
 }
 
-impl Frames for Hourly<'_, '_, '_> {
-    fn own(&self) -> &DecodedFrame {
-        self.own
+impl Frames for Hourly<'_, '_> {
+    fn own(&self) -> Viewed<'_> {
+        Viewed::walked(self.hour.world, self.hour.state, self.epochs)
     }
-    fn whole(&self) -> io::Result<&DecodedFrame> {
-        self.evaluation(&self.whole, tables())
+    fn whole(&self) -> io::Result<HourFrame<'_>> {
+        self.asked(&self.whole);
+        Ok(self.views())
     }
-    fn reading(&self, tables: &[TableId]) -> io::Result<&DecodedFrame> {
+    fn reading(&self, _: &[TableId]) -> io::Result<HourFrame<'_>> {
         // The whole frame holds every table a reading asks for.
-        if let Some(Ok(whole)) = self.whole.get() {
-            return Ok(whole);
+        if self.whole.get().is_none() {
+            self.asked(&self.reading);
         }
-        self.evaluation(&self.reading, tables)
+        Ok(self.views())
     }
     fn read_hour(&self, cancelled: &AtomicBool) -> io::Result<Option<i32>> {
-        match self.read {
-            Read::At(at) => Ok((self.own.hour - at < STAGGER_PERIOD).then_some(at)),
-            Read::Lost => Ok(None),
-            Read::Unseen => self.lookback(|walks| walks.read_hour(self.own, cancelled)),
-        }
+        let at = match self.read {
+            Read::At(at) => at,
+            Read::Lost => return Ok(None),
+            Read::Unseen => match self.before(cancelled)? {
+                Some(at) => at,
+                None => return Ok(None),
+            },
+        };
+        Ok((self.hour.hour - at < STAGGER_PERIOD).then_some(at))
     }
     fn supplying(
         &self,
         hour: i32,
         wide: bool,
         cancelled: &AtomicBool,
-    ) -> io::Result<Option<Arc<DecodedFrame>>> {
-        // The walk holds the read's own hour; an earlier one is the recording's.
-        if self.read != Read::At(hour) || hour != self.own.hour {
-            return self.lookback(|walks| walks.frame(hour, wide, cancelled));
+    ) -> io::Result<Option<Supply>> {
+        // The walk holds the read's own hour; an earlier one is kept, or the capture's.
+        if self.read == Read::At(hour) && hour == self.hour.hour {
+            return Ok(Some(Supply::Own));
         }
-        let frame = if wide {
-            let whole = self.whole()?;
-            let mut frame = DecodedFrame {
-                branch: whole.branch,
-                hour: whole.hour,
-                tables: std::array::from_fn(|_| not_selected()),
-                metrics: whole.metrics.clone(),
-            };
-            for table in selectors::programme_text_tables() {
-                frame.tables[table.index()] = whole.tables[table.index()].clone();
-            }
-            frame
-        } else {
-            self.programmes()?.clone()
-        };
-        Ok(Some(Arc::new(frame)))
+        let read = self.held(hour, cancelled)?;
+        if wide && !read.wide {
+            return Err(io::Error::other(format!(
+                "The supplying read at hour {hour} was kept without the scripted-text tables its names read"
+            )));
+        }
+        Ok(Some(Supply::Read(read.frame)))
     }
-}
-
-/// How a projection asks the walk's frame for its tables.
-struct Asks {
-    own: Vec<(TableId, Hold)>,
-    programmes: Vec<(TableId, Hold)>,
 }
 
 /// A segment's projection. It starts cold at every start, as a walk reads its first
 /// hour anew; what earlier segments published is the emit's.
 pub struct Projector<'a> {
     format: FormatVersion,
-    source: &'a Source,
     cat: Option<Arc<catalogue::Catalogue>>,
+    earlier: Arc<dyn Earlier + 'a>,
+    reads: RefCell<Reads>,
+    /// The walk's first hour after its restart.
+    first: Option<i32>,
     /// The tables whose changes decide whether an hour is evaluated.
     own_tables: Vec<TableId>,
-    asks: Asks,
-    trigger: RefCell<Trigger>,
+    /// The tables a held reading tells unchanged by, moved on at each hour that may change them.
+    epochs: Epochs,
     /// The fields of each table the held dynamic texts read.
     read_fields: Box<[u64; TABLE_COUNT]>,
-    /// A frame kept from hour to hour, holding none of the walk's views between them.
-    kept: Option<DecodedFrame>,
     /// The walk named the countries since its start.
     named: bool,
     country_mask: u64,
@@ -667,40 +718,40 @@ pub struct Projector<'a> {
     moved: Option<(BTreeSet<u64>, columns::Status)>,
     last: Option<i32>,
     cancelled: AtomicBool,
+    /// Frames asked for dynamic texts.
+    #[cfg(test)]
+    built: std::cell::Cell<usize>,
     /// Hours projected from a frame rather than as idle.
     #[cfg(test)]
     pub(super) evaluated: usize,
 }
 
 impl<'a> Projector<'a> {
-    /// A projection of a recording at `format` captured in `mode`, naming by `cat`, the
-    /// recorded stack's catalogue, and reading programme operands it did not walk to from
-    /// `source`.
+    /// A projection of a recording at `format`, naming by `cat`, the recorded stack's
+    /// catalogue, and reading the supplying reads its walk does not hold from `earlier`.
     pub fn new(
-        (format, mode): (FormatVersion, CaptureMode),
-        source: &'a Source,
+        format: FormatVersion,
         cat: Option<Arc<catalogue::Catalogue>>,
+        earlier: Arc<dyn Earlier + 'a>,
     ) -> io::Result<Self> {
-        let own = own_tables();
         Ok(Self {
             format,
-            source,
             cat,
+            earlier,
+            reads: RefCell::new(Reads::default()),
+            first: None,
             named: false,
-            asks: Asks {
-                own: held(own.iter().copied().chain(NAMING))?,
-                programmes: held(PROGRAMME_FRAME)?,
-            },
-            own_tables: own,
-            trigger: RefCell::new(Trigger::new(format, mode)?),
+            own_tables: own_tables(),
+            epochs: Epochs::new(&MARKED)?,
             read_fields: Box::new([0; TABLE_COUNT]),
-            kept: None,
             country_mask: field_mask(TableId::Countries, &["canonical_slot", "tag"]),
             runtime: Runtime::exact(),
             read: Read::Unseen,
             moved: None,
             last: None,
             cancelled: AtomicBool::new(false),
+            #[cfg(test)]
+            built: std::cell::Cell::new(0),
             #[cfg(test)]
             evaluated: 0,
         })
@@ -709,47 +760,30 @@ impl<'a> Projector<'a> {
 
 #[cfg(test)]
 impl Projector<'_> {
-    /// Frames built for dynamic texts since the projection started.
+    /// Frames asked for dynamic texts since the projection started.
     pub(super) fn trigger_frames(&self) -> usize {
-        self.trigger.borrow().built
+        self.built.get()
     }
-
-    /// Trigger tables built anew since the projection started, rather than patched or kept.
-    pub(super) fn trigger_tables_anew(&self) -> u32 {
-        self.trigger.borrow().anew
-    }
-}
-
-/// The kept frame, empty of the walk's views.
-fn taken(kept: &mut Option<DecodedFrame>) -> DecodedFrame {
-    kept.take().unwrap_or_else(|| DecodedFrame {
-        branch: 0,
-        hour: 0,
-        tables: std::array::from_fn(|_| not_selected()),
-        metrics: Default::default(),
-    })
-}
-
-/// Keeps `frame` for the next hour, giving back the walk's views `asks` gave it.
-fn keep(kept: &mut Option<DecodedFrame>, mut frame: DecodedFrame, asks: &[(TableId, Hold)]) {
-    dashboard_world::release(&mut frame, asks);
-    *kept = Some(frame);
 }
 
 impl Operator<World> for Projector<'_> {
     type Output = Hour;
 
-    fn start(&mut self, start: Start<'_>, _: u64, _: i32) -> io::Result<()> {
+    fn start(&mut self, start: Start<'_>, _: u64, first: i32) -> io::Result<()> {
+        // Every table moves on at the segment's first hour.
+        self.epochs.restart();
+        *self.reads.get_mut() = Reads::default();
         // A run's start follows no read the walk could not see.
-        (self.read, self.moved) = match start {
+        (self.read, self.moved, self.first) = match start {
             Start::Restart(state) => (
                 Read::Unseen,
                 Some((
                     BTreeSet::new(),
                     columns::status(state, TableId::FactionPrograms),
                 )),
+                Some(first),
             ),
-            Start::Run { .. } => (Read::Lost, None),
+            Start::Run { .. } => (Read::Lost, None, None),
         };
         Ok(())
     }
@@ -767,11 +801,11 @@ impl Operator<World> for Projector<'_> {
         if restart {
             self.runtime = Runtime::exact();
             self.named = false;
+            self.epochs.restart();
         }
-        self.trigger
-            .get_mut()
-            .hour(state, hour.manifest, restart)?;
         self.runtime.gather_reads(&mut self.read_fields);
+        // Every hour, so no epoch misses an hour that changed its table.
+        self.epochs.hour(world);
         let whole = |table: TableId| restart || world.restated(table);
         let mut changed = [false; TABLE_COUNT];
         for &table in watched() {
@@ -797,6 +831,25 @@ impl Operator<World> for Projector<'_> {
             } else {
                 self.read
             };
+        let held = columns::complete(state, TableId::FactionPrograms)
+            && columns::table(state, TableId::FactionPrograms)?
+                .live()
+                .count()
+                > 0;
+        let reads = self.reads.get_mut();
+        match self.read {
+            Read::At(at) if at == hour.hour => {
+                // Let go first, so the world's views change in place.
+                reads.kept = None;
+                self.runtime.forget_supplying();
+                // A read no faction's programmes ask for yet is rarely asked: the capture serves it.
+                if held {
+                    reads.kept = Some(keep((world, state), at, self.cat.as_deref())?);
+                }
+            }
+            Read::At(at) if hour.hour - at < STAGGER_PERIOD => {}
+            _ => reads.kept = None,
+        }
         self.moved = match self.moved.take() {
             Some((moved, status))
                 if self.read == Read::Unseen
@@ -812,11 +865,7 @@ impl Operator<World> for Projector<'_> {
             || changed[TableId::CountryLinks.index()]
             || world.touched(TableId::Countries, self.country_mask);
         // Programme operands move only for factions that hold programmes.
-        let programmes = columns::complete(state, TableId::FactionPrograms)
-            && columns::table(state, TableId::FactionPrograms)?
-                .live()
-                .count()
-                > 0
+        let programmes = held
             && (slots[TableId::ProjectPrograms.index()]
                 || PROGRAMMES.iter().any(|table| changed[table.index()]));
         let mut evaluated = renamed || programmes || !self.runtime.may_idle(hour.hour);
@@ -826,15 +875,13 @@ impl Operator<World> for Projector<'_> {
             }
             evaluated = reads_change(state, table, whole(table))?;
         }
+        let views = HourFrame::from(world.columns(state));
         if !evaluated && self.runtime.holds_dynamic() {
             // Each held text is checked by the hour's change facts alone.
-            let mut frame = taken(&mut self.kept);
-            world.frame_held_into(state, &SPANS, &mut frame)?;
             let moved = Moved::new((state, world), self.format, restart, &self.read_fields);
-            let since = reuse::Since::hour_before(&frame, &moved);
+            let since = reuse::Since::hour_before_in(views, &moved);
             let fresh = self.runtime.check_held(since.as_ref(), hour.hour);
             drop(since);
-            keep(&mut self.kept, frame, &SPANS);
             evaluated = !fresh;
         }
         if !evaluated {
@@ -854,32 +901,30 @@ impl Operator<World> for Projector<'_> {
         // The projection reads countries by their naming alone.
         changed[TableId::Countries.index()] = renamed;
         changed[TableId::CountryLinks.index()] = renamed;
-        let mut frame = taken(&mut self.kept);
-        world.frame_held_into(state, &self.asks.own, &mut frame)?;
         let edits = Changes {
             moved: Moved::new((state, world), self.format, restart, &self.read_fields),
-            flags: FrameChanges::rebuilt(&frame, self.format, !restart, |table| {
+            flags: FrameChanges::rebuilt_at(world.metrics(), hour.hour, self.format, !restart, |table| {
                 changed[table.index()]
             }),
         };
         self.runtime.kept_programmes = self.moved.as_ref().map(|(moved, _)| moved.clone());
         let frames = Hourly {
-            own: &frame,
             hour,
-            asks: &self.asks,
-            trigger: &self.trigger,
+            epochs: &self.epochs,
             read: self.read,
-            source: self.source,
-            lookback: RefCell::new(None),
-            programmes: OnceCell::new(),
-            reading: OnceCell::new(),
+            first: self.first,
+            reads: &self.reads,
+            earlier: &*self.earlier,
+            cat: self.cat.as_deref(),
             whole: OnceCell::new(),
+            reading: OnceCell::new(),
+            #[cfg(test)]
+            built: &self.built,
         };
         let projected =
             self.runtime
                 .project(&frames, &edits, self.cat.as_deref(), &self.cancelled)?;
         drop((frames, edits));
-        keep(&mut self.kept, frame, &self.asks.own);
         self.last = Some(hour.hour);
         out.push(Hour {
             branch: hour.branch,

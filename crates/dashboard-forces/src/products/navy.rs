@@ -36,8 +36,6 @@ use ts_rs::TS;
 
 pub struct NavySize;
 pub use dashboard_base::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
-#[cfg(any(test, feature = "test-support"))]
-const CACHED_BRANCHES: usize = 2;
 const MAX_EXACT: i64 = (1 << 53) - 1;
 
 type ClassKey = (u32, Option<String>);
@@ -237,10 +235,11 @@ fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
 #[cfg(any(test, feature = "test-support"))]
 use scan::scan;
 
+/// One scan per branch of the source revision.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Scans {
-    entries: std::collections::VecDeque<(u64, Arc<ScannedNavy>)>,
+    entries: std::collections::BTreeMap<u64, Arc<ScannedNavy>>,
     runs: usize,
 }
 
@@ -253,15 +252,12 @@ fn scanned_branch(
     let state = source.state::<Scans>();
     let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
     check_cancel(cancelled)?;
-    if let Some((_, scan)) = scans.entries.iter().find(|(cached, _)| *cached == branch) {
+    if let Some(scan) = scans.entries.get(&branch) {
         return Ok(Arc::clone(scan));
     }
     let scan = Arc::new(scan(source.replay_ref(), branch, cancelled)?);
     scans.runs += 1;
-    scans.entries.push_back((branch, Arc::clone(&scan)));
-    while scans.entries.len() > CACHED_BRANCHES {
-        scans.entries.pop_front();
-    }
+    scans.entries.insert(branch, Arc::clone(&scan));
     Ok(scan)
 }
 

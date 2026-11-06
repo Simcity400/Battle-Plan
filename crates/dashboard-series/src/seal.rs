@@ -1,36 +1,37 @@
 use crate::{
-    budget::{Budget, Slab},
+    Grow,
     codec::Sink,
     format::{
         BLOCK, Block, COVERAGE, Chain, Definition, Detail, EVENTS, EVIDENCE, Entry, EventBlock,
         Events, LastRow, Late, Meta, Node, NodeRef, Origin, RUNS, RunBlock, Segment, State, Track,
     },
+    hierarchy::{Built, HeldRun},
     invalid,
     layout::{Data, Entries, Records, write_heap},
     pages::{self, Kind, PageWrite},
     query::EventView,
     summary::Summary,
     types::*,
-    writer::{Columns, Edge, EvidenceRow, RunRow, same_evidence},
+    writer::{Columns, Edge, EvidenceRow, HeldRow, RunRow, same_evidence},
 };
-use std::io;
+use std::{io, sync::Arc};
 
 /// A cut segment waiting to be sealed. Sealing reads nothing but this segment,
 /// so it runs on any thread and can be retried after a failed write.
-pub struct Pending<'a> {
-    pub(crate) budget: &'a Budget,
+pub struct Pending {
     pub(crate) index: u64,
     pub(crate) hours: Span,
     pub(crate) state: State,
     pub(crate) first_key: u64,
     pub(crate) heap_base: u64,
     pub(crate) sequences: (u64, u64),
-    pub(crate) columns: Columns<'a>,
+    pub(crate) columns: Columns,
 }
-/// A sealed segment, ready for [`crate::Writer::publish`].
+/// A sealed segment, ready for [`crate::Writer::publish`], with what merging it reads.
 pub struct Sealed {
     pub(crate) node: NodeRef,
     pub(crate) state: State,
+    pub(crate) built: Built,
 }
 
 /// What one seal wrote, for bounds that do not depend on timing.
@@ -51,15 +52,11 @@ struct Writers {
 }
 
 /// Stable grouping of row indices by their subject's position in `order`.
-fn group<'a>(
-    budget: &'a Budget,
+fn group(
     order: &[u64],
     subjects: impl Iterator<Item = u64> + Clone,
-) -> io::Result<(Slab<'a, u32>, Slab<'a, u32>)> {
-    let mut starts = Slab::new(budget, order.len() + 1)?;
-    for _ in 0..=order.len() {
-        starts.push(0)?;
-    }
+) -> io::Result<(Vec<u32>, Vec<u32>)> {
+    let mut starts = engine_allocation::filled(order.len() + 1, 0_u32)?;
     let slot = |subject: u64| -> io::Result<usize> {
         order
             .binary_search(&subject)
@@ -73,14 +70,8 @@ fn group<'a>(
     for at in 1..starts.len() {
         starts[at] += starts[at - 1];
     }
-    let mut next = Slab::new(budget, order.len())?;
-    for at in 0..order.len() {
-        next.push(starts[at])?;
-    }
-    let mut grouped = Slab::new(budget, rows)?;
-    for _ in 0..rows {
-        grouped.push(0)?;
-    }
+    let mut next = engine_allocation::copy_vec(&starts[..order.len()])?;
+    let mut grouped = engine_allocation::filled(rows, 0_u32)?;
     for (row, subject) in subjects.enumerate() {
         let at = slot(subject)?;
         grouped[next[at] as usize] =
@@ -99,7 +90,7 @@ fn chain(continues: bool, first_end: i32, carried: bool, hours: Span) -> Chain {
     }
 }
 
-impl<'a> Pending<'a> {
+impl Pending {
     /// The publication it was cut as.
     pub fn publication(&self) -> Publication {
         self.state.publication
@@ -118,10 +109,9 @@ impl<'a> Pending<'a> {
     }
     fn seal_into(&self, io: &mut impl PageWrite) -> io::Result<Sealed> {
         let c = &self.columns;
-        let budget = self.budget;
-        let mut sequences = Slab::new(budget, c.events.len())?;
+        let mut sequences = engine_allocation::vec(c.events.len())?;
         for event in c.events.iter() {
-            sequences.push(event.sequence())?;
+            sequences.try_push(event.sequence())?;
         }
         sequences.sort_unstable();
         if sequences.windows(2).any(|w| w[0] == w[1])
@@ -131,30 +121,30 @@ impl<'a> Pending<'a> {
             return Err(invalid("unreserved/duplicate publication sequence"));
         }
         drop(sequences);
-        let mut keys = Slab::new(budget, c.keys.len())?;
+        let mut keys = engine_allocation::vec(c.keys.len())?;
         for touch in c.keys.iter() {
-            keys.push(*touch)?;
+            keys.try_push(*touch)?;
         }
         keys.sort_unstable_by_key(|touch| touch.id);
-        let mut key_ids = Slab::new(budget, keys.len())?;
+        let mut key_ids = engine_allocation::vec(keys.len())?;
         for touch in keys.iter() {
-            key_ids.push(touch.id)?;
+            key_ids.try_push(touch.id)?;
         }
-        let mut domains = Slab::new(budget, c.domains.len())?;
+        let mut domains = engine_allocation::vec(c.domains.len())?;
         for touch in c.domains.iter() {
-            domains.push(*touch)?;
+            domains.try_push(*touch)?;
         }
         domains.sort_unstable_by_key(|touch| touch.id);
-        let mut domain_ids = Slab::new(budget, domains.len())?;
+        let mut domain_ids = engine_allocation::vec(domains.len())?;
         for touch in domains.iter() {
-            domain_ids.push(touch.id)?;
+            domain_ids.try_push(touch.id)?;
         }
-        let (run_starts, run_rows) = group(budget, &key_ids, c.runs.iter().map(|r| r.key))?;
+        let (run_starts, run_rows) = group(&key_ids, c.runs.iter().map(|r| r.key))?;
         let (evidence_starts, evidence_rows) =
-            group(budget, &key_ids, c.evidence.iter().map(|r| r.subject))?;
-        let (event_starts, event_rows) = group(budget, &key_ids, c.events.iter().map(|e| e.key()))?;
+            group(&key_ids, c.evidence.iter().map(|r| r.subject))?;
+        let (event_starts, event_rows) = group(&key_ids, c.events.iter().map(|e| e.key()))?;
         let (domain_starts, domain_rows) =
-            group(budget, &domain_ids, c.domain_rows.iter().map(|r| r.subject))?;
+            group(&domain_ids, c.domain_rows.iter().map(|r| r.subject))?;
 
         let mut w = Writers {
             data: Data::new(),
@@ -162,13 +152,13 @@ impl<'a> Pending<'a> {
             evidence: Records::new(),
             coverage: Records::new(),
             events: Records::new(),
-            late: Records::new(),
+            late: Records::keeping(),
             block: Sink::default(),
         };
-        let mut merged = Slab::new(budget, 0)?;
-        let mut spans = Slab::new(budget, 0)?;
-        let mut domain_entries = Entries::new();
-        let mut domain_spans: Slab<'_, (u64, Slab<'_, Span>)> = Slab::new(budget, domains.len())?;
+        let mut merged = Vec::new();
+        let mut spans = Vec::new();
+        let mut domain_entries = Entries::keeping();
+        let mut domain_spans: Vec<(u64, Vec<Span>)> = engine_allocation::vec(domains.len())?;
         for (slot, touch) in domains.iter().enumerate() {
             let rows = &domain_rows[domain_starts[slot] as usize..domain_starts[slot + 1] as usize];
             let mut entry = Entry::empty(touch.id);
@@ -198,15 +188,24 @@ impl<'a> Pending<'a> {
                 value: c.domain_rows[row as usize].value,
             });
             domain_entries.push(io, &entry)?;
-            let mut held = Slab::new(budget, spans.len())?;
-            for span in spans.iter() {
-                held.push(*span)?;
-            }
-            domain_spans.push((touch.id, held))?;
+            domain_spans.try_push((touch.id, engine_allocation::copy_vec(&spans)?))?;
         }
 
-        let mut entries = Entries::new();
+        let mut held = engine_allocation::vec(c.held.len())?;
+        for row in c.held.iter() {
+            held.try_push(*row)?;
+        }
+        held.sort_unstable_by_key(|row| row.key);
+        let mut held_runs = engine_allocation::vec(held.len())?;
+        let mut holding = held.iter().peekable();
+        let mut entries = Entries::keeping();
         for (slot, touch) in keys.iter().enumerate() {
+            while let Some(row) = holding.next_if(|row| row.key <= touch.id) {
+                if row.key == touch.id {
+                    return Err(invalid("series key both held and holding rows"));
+                }
+                self.held(io, row, &domain_spans, &mut entries, &mut held_runs)?;
+            }
             let start: Edge = touch.start;
             let end: Edge = touch.end;
             let mut entry = Entry::empty(touch.id);
@@ -254,6 +253,9 @@ impl<'a> Pending<'a> {
             entry.detail = Some(detail);
             entries.push(io, &entry)?;
         }
+        for row in holding {
+            self.held(io, row, &domain_spans, &mut entries, &mut held_runs)?;
+        }
 
         let mut dictionary = Records::<Definition>::new();
         for (at, definition) in c.definitions.iter().enumerate() {
@@ -262,12 +264,12 @@ impl<'a> Pending<'a> {
             }
             dictionary.push(io, definition)?;
         }
-        let mut metadata = Slab::new(budget, c.metadata.len())?;
+        let mut metadata = engine_allocation::vec(c.metadata.len())?;
         for (at, meta) in c.metadata.iter().enumerate() {
-            metadata.push((meta.id, at))?;
+            metadata.try_push((meta.id, at))?;
         }
         metadata.sort_unstable();
-        let mut written = Records::<Meta>::new();
+        let mut written = Records::<Meta>::keeping();
         for (at, &(id, index)) in metadata.iter().enumerate() {
             if metadata.get(at + 1).is_none_or(|next| next.0 != id) {
                 written.push(io, &c.metadata[index])?;
@@ -279,6 +281,10 @@ impl<'a> Pending<'a> {
             w.coverage.finish(io)?,
             w.events.finish(io)?,
         ];
+        let (entries, entry_pages) = entries.finish_kept(io)?;
+        let (domains, domain_pages) = domain_entries.finish_kept(io)?;
+        let (late, late_pages) = w.late.finish_kept(io)?;
+        let (metadata, metadata_pages) = written.finish_kept(io)?;
         let node = Node {
             level: 0,
             first: self.index,
@@ -288,10 +294,10 @@ impl<'a> Pending<'a> {
             heap: (self.heap_base, self.state.heap),
             sequences: self.sequences,
             children: Vec::new(),
-            entries: entries.finish(io)?,
-            domains: domain_entries.finish(io)?,
-            late: w.late.finish(io)?,
-            metadata: written.finish(io)?,
+            entries,
+            domains,
+            late,
+            metadata,
             segment: Some(Segment {
                 state: self.state,
                 dictionary: dictionary.finish(io)?,
@@ -312,7 +318,47 @@ impl<'a> Pending<'a> {
                 hours: self.hours,
             },
             state: self.state,
+            built: Built {
+                node: Arc::new(node),
+                entries: entry_pages,
+                domains: domain_pages,
+                late: late_pages,
+                metadata: metadata_pages,
+                held: Some(held_runs),
+            },
         })
+    }
+
+    /// The entry of a key the segment only continues: a held run of a key bound to a shared
+    /// domain must lie within the domain's known hours.
+    fn held(
+        &self,
+        io: &mut impl PageWrite,
+        row: &HeldRow,
+        domains: &[(u64, Vec<Span>)],
+        entries: &mut Entries,
+        runs: &mut Vec<HeldRun>,
+    ) -> io::Result<()> {
+        if row.held.runs && row.domain != NONE {
+            let known = domains
+                .binary_search_by_key(&row.domain, |(id, _)| *id)
+                .map_or(&[][..], |at| &domains[at].1[..]);
+            let at = known.partition_point(|k| k.first <= self.hours.first);
+            if at == 0 || known[at - 1].last < self.hours.last {
+                return Err(invalid("series run outside known coverage"));
+            }
+        }
+        if row.held.runs {
+            runs.try_push(HeldRun {
+                key: row.key,
+                value: row.value,
+                decimals: row.decimals,
+            })?;
+        }
+        entries.push(
+            io,
+            &Entry::holding(row.key, row.held, row.row_start, row.canonicals),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -324,8 +370,8 @@ impl<'a> Pending<'a> {
         before: Option<Evidence>,
         known_before: Option<i32>,
         after: Option<Evidence>,
-        merged: &mut Slab<'_, Evidence>,
-        spans: &mut Slab<'_, Span>,
+        merged: &mut Vec<Evidence>,
+        spans: &mut Vec<Span>,
         entry: &mut Entry,
         detail: &mut Detail,
     ) -> io::Result<()> {
@@ -340,14 +386,14 @@ impl<'a> Pending<'a> {
                 {
                     last.span.last = value.span.last;
                 }
-                _ => merged.push(value)?,
+                _ => merged.try_push(value)?,
             }
             if value.known == Knownness::Known {
                 match spans.last_mut() {
                     Some(last) if i64::from(last.last) + 1 == i64::from(value.span.first) => {
                         last.last = value.span.last;
                     }
-                    _ => spans.push(value.span)?,
+                    _ => spans.try_push(value.span)?,
                 }
             }
         }
@@ -566,10 +612,10 @@ impl<'a> Pending<'a> {
         detail: &mut Detail,
     ) -> io::Result<()> {
         let c = &self.columns;
-        let mut sorted = Slab::new(self.budget, rows.len())?;
+        let mut sorted = engine_allocation::vec(rows.len())?;
         for &i in rows {
             let event = c.events[i as usize];
-            sorted.push((event.native_hour(), event.sequence(), i))?;
+            sorted.try_push((event.native_hour(), event.sequence(), i))?;
         }
         sorted.sort_unstable();
         let late = sorted.partition_point(|(native, _, _)| *native < self.hours.first);

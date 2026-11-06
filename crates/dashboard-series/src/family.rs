@@ -62,7 +62,7 @@ impl Actors {
     }
 
     /// The actor named `name`, numbered and catalogued at `hour` when it is new.
-    pub fn actor(&mut self, writer: &mut Writer<'_>, name: &[u8], hour: i32) -> io::Result<u64> {
+    pub fn actor(&mut self, writer: &mut Writer, name: &[u8], hour: i32) -> io::Result<u64> {
         if let Some(&actor) = self.names.get(name) {
             return Ok(actor);
         }
@@ -102,7 +102,7 @@ impl Actors {
     /// new key to that shared evidence domain.
     pub fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         place: Place,
         (mode, decimals): (RunMode, u8),
         bound: Option<u64>,
@@ -199,7 +199,6 @@ pub struct Directory {
     /// Each actor's split keys by measure, in dimension order.
     split: HashMap<(u64, u64), Vec<(u64, KeyHandle)>>,
     scalars: HashMap<u64, Scalar>,
-    bytes: usize,
 }
 
 impl Directory {
@@ -222,7 +221,6 @@ impl Directory {
         for (id, cell) in cells {
             let value = scalar(snapshot, cell, 0)?;
             if id < ACTORS {
-                directory.bytes += 64;
                 engine_allocation::reserve_map(&mut directory.scalars, 1)?;
                 directory.scalars.insert(id, value);
                 continue;
@@ -241,7 +239,6 @@ impl Directory {
                 ),
                 _ => return Err(invalid("series actor cell")),
             };
-            directory.bytes += 2 * name.len() + 64;
             engine_allocation::reserve(&mut directory.actors, 1)?;
             engine_allocation::reserve_map(&mut directory.names, 1)?;
             directory.names.insert(name.into(), actor);
@@ -277,7 +274,6 @@ impl Directory {
                 }
                 _ => return Err(invalid("series key dimension")),
             };
-            directory.bytes += 48;
             if let Some(dimension) = dimension {
                 let split = directory
                     .split
@@ -326,11 +322,6 @@ impl Directory {
     pub fn scalar(&self, id: u64) -> Option<&Scalar> {
         self.scalars.get(&id)
     }
-
-    /// The bytes it holds, for the cache keeping it.
-    pub fn bytes(&self) -> usize {
-        self.bytes + std::mem::size_of::<Self>()
-    }
 }
 
 /// `cell` read whole, lists `depth` deep at most.
@@ -368,7 +359,7 @@ fn scalar<P: PageRead>(
 }
 
 /// Writes `scalar` as a catalogue cell's value.
-pub fn cell(writer: &mut Writer<'_>, scalar: &Scalar) -> io::Result<Cell> {
+pub fn cell(writer: &mut Writer, scalar: &Scalar) -> io::Result<Cell> {
     Ok(match scalar {
         Scalar::Null => Cell::Null,
         Scalar::Integer(value) => Cell::Integer(*value),

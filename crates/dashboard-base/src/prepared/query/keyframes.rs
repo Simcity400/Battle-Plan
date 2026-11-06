@@ -146,9 +146,6 @@ pub fn blocks_after<T: Send + Sync + 'static>(
             block,
             &(&selected, params),
             cancelled,
-            |observation: &Option<T>| {
-                std::mem::size_of::<Option<T>>() + observation.as_ref().map_or(0, bytes)
-            },
             || sample(block),
         )
     };
@@ -282,13 +279,11 @@ mod tests {
         // From before the branch, every block; a complete prefix, none.
         assert_eq!(visits(&source, -1, None).0.len(), 3);
         assert_eq!(visits(&source, 11, None), (Vec::new(), Vec::new()));
-        let (bytes, bound, extractions) =
-            super::super::observations::usage(&source, "test-keyframe");
+        let extractions = super::super::observations::computations(&source, "test-keyframe");
         assert_eq!(
             extractions, 3,
             "every block is sampled once across all re-asks"
         );
-        assert!(bytes <= bound);
     }
 
     #[test]
@@ -366,9 +361,7 @@ mod tests {
             4,
             "extraction parameters separate observations"
         );
-        let (bytes, bound, _) = super::super::observations::usage(&source, "test-declined");
-        assert!(bytes <= bound);
-    }
+            }
 
     #[test]
     fn a_block_starting_in_a_gap_is_never_sampled_even_when_later_hours_are_recorded() {

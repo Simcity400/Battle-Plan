@@ -163,9 +163,6 @@ impl Portraits {
     }
 }
 
-/// Portrait textures kept resident at once, beyond the ones the current frame draws. A
-pub const PORTRAIT_CAPACITY: usize = 1024;
-
 /// Loads one declared portrait sprite, verifying covered texture paths.
 /// Fall back to `GFX_leader_unknown`.
 pub fn load_sprite(
@@ -208,8 +205,7 @@ pub fn load_sprite(
 /// `SpriteSheet` describes a complete horizontal strip, not an arbitrary atlas rectangle.
 /// Native decoded extents and mipmaps are retained. Character files are read
 /// once per content set; textures are read and decoded the first time a counter draws them,
-/// with no per-hour file reads, and at most [`PORTRAIT_CAPACITY`] stay resident beyond the
-/// frame's own.
+/// with no per-hour file reads, and stay resident while counters draw them.
 pub fn load(
     shared: &Arc<ResolvedLayers>,
     sprites: &SpriteSet,
@@ -332,11 +328,10 @@ pub fn load(
             .map_err(|why| io::Error::new(io::ErrorKind::InvalidData, why.to_string()))?;
             Ok(texture.image)
         }),
-        PORTRAIT_CAPACITY,
         lazy,
     );
     let mut warnings = vec![format!(
-        "HQ portraits: {} character tokens, {} distinct authored textures, decoded when a counter first draws them and at most {PORTRAIT_CAPACITY} kept beyond the frame's own; a texture that cannot be decoded is not drawn. Portrait textures outside the content coverage roots remain unverified. Formats before 23 draw the authored token and do not preserve runtime character portrait overrides or non-character portrait strings; format 23 resolves a recorded sprite identity against every declared sprite and a recorded texture path against this authored set only.",
+        "HQ portraits: {} character tokens, {} distinct authored textures, decoded when a counter first draws them and kept while drawn; a texture that cannot be decoded is not drawn. Portrait textures outside the content coverage roots remain unverified. Formats before 23 draw the authored token and do not preserve runtime character portrait overrides or non-character portrait strings; format 23 resolves a recorded sprite identity against every declared sprite and a recorded texture path against this authored set only.",
         tokens.len(),
         textures.len()
     )];
@@ -432,7 +427,6 @@ mod tests {
                     pixels: vec![0; 128],
                 }))
             }),
-            4,
             &lazy,
         );
         let sprite = |name: &str, path: &str, frames| TokenSprite {
@@ -492,7 +486,6 @@ mod tests {
                     pixels: vec![0; width as usize * 16],
                 }))
             }),
-            4,
             &lazy,
         );
         let sprite = |name: &str, path: &str| TokenSprite {

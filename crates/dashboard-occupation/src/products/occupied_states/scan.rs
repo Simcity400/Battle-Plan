@@ -5,7 +5,7 @@ use super::*;
 use dashboard_text::metadata::CountryKeys;
 #[cfg(test)]
 use replay_frame::frame::FrameDecoder;
-use replay_frame::frame::ViewIdentity;
+use replay_frame::frame::{HourFrame, ViewIdentity};
 use std::collections::{BTreeSet, HashSet};
 
 type StateKey = (u32, u32, u32);
@@ -208,6 +208,71 @@ fn manifest(
     (shown, warnings)
 }
 
+/// What a state's garrison shows at a read.
+struct Garrisoned {
+    strength: Option<i64>,
+    required_manpower: Option<i32>,
+    garrison_required_raw: Option<i64>,
+    alert: bool,
+    red: Option<bool>,
+    assigned_manpower: Option<i32>,
+    missing: Option<String>,
+}
+
+/// What `state`'s law is resolved from at a read ([`law_for`]), keyed `state_key`, and the raw
+/// occupied country its group scopes the law's eligibility to.
+fn law_inputs<'c>(
+    context: &'c impl ReadInputs,
+    frame: HourFrame<'c>,
+    links: &[CountryLinkRow],
+    controller: u32,
+    state_key: Option<StateKey>,
+) -> (LawInputs<'c>, Option<u32>) {
+    let override_name = state_key
+        .and_then(|key| context.law(frame, key))
+        .map(|row| row.name.as_slice());
+    let settings = link_slot(links, controller).and_then(|slot| context.settings(frame, slot));
+    let default = settings.map(|row| (row.default_law_present != 0, row.law.as_slice()));
+    let mut scope = None;
+    let group = match state_key {
+        Some((controller, occupied, _)) => {
+            if let Some(reason) = context.group_failure(controller) {
+                GroupLaw::Unknown(reason.clone())
+            } else if let Some(law) = context.group(controller, occupied) {
+                scope = law.1;
+                GroupLaw::Law(law.0)
+            } else if settings.is_some() {
+                GroupLaw::Missing
+            } else {
+                GroupLaw::Unknown("The occupier's occupation settings are missing".into())
+            }
+        }
+        None => GroupLaw::Unknown("Occupation country links are unresolved".into()),
+    };
+    let fallback = settings
+        .ok_or_else(|| "The native database fallback law is missing".to_owned())
+        .and_then(|row| match &row.fallback_law {
+            replay_data::rows::Recorded::Value(Some(bytes)) => Ok(bytes.as_slice()),
+            replay_data::rows::Recorded::Value(None) => {
+                Err("The native database fallback-law capture failed".into())
+            }
+            replay_data::rows::Recorded::NotRecorded => {
+                Err("The native database fallback law is not recorded".into())
+            }
+        });
+    (
+        LawInputs {
+            state: override_name,
+            key_resolved: state_key.is_some(),
+            overrides_complete: context.laws_complete(),
+            group,
+            default,
+            fallback,
+        },
+        scope,
+    )
+}
+
 struct ReadContext {
     garrisons: HashMap<StateKey, usize>,
     laws: HashMap<StateKey, usize>,
@@ -220,20 +285,22 @@ struct ReadContext {
     laws_complete: bool,
 }
 
+/// A read's joins: the row scan's indexes into a decoded frame, or a walk's own rows, which
+/// read no frame.
 trait ReadInputs {
     fn garrison<'a>(
         &'a self,
-        frame: &'a DecodedFrame,
+        frame: HourFrame<'a>,
         key: StateKey,
     ) -> Option<&'a replay_data::rows::StateGarrisonRow>;
     fn law<'a>(
         &'a self,
-        frame: &'a DecodedFrame,
+        frame: HourFrame<'a>,
         key: StateKey,
     ) -> Option<&'a replay_data::rows::StateOccupationLawRow>;
     fn settings<'a>(
         &'a self,
-        frame: &'a DecodedFrame,
+        frame: HourFrame<'a>,
         country: u32,
     ) -> Option<&'a replay_data::rows::OccupationSettingsRow>;
     fn group_failure(&self, country: u32) -> Option<&String>;
@@ -247,33 +314,33 @@ trait ReadInputs {
 impl ReadInputs for ReadContext {
     fn garrison<'a>(
         &'a self,
-        frame: &'a DecodedFrame,
+        frame: HourFrame<'a>,
         key: StateKey,
     ) -> Option<&'a replay_data::rows::StateGarrisonRow> {
         self.garrisons.get(&key).and_then(|&index| {
-            recorded_rows::<tables::StateGarrisons>(frame)
+            recorded_rows::<tables::StateGarrisons>(frame.decoded()?)
                 .ok()?
                 .get(index)
         })
     }
     fn law<'a>(
         &'a self,
-        frame: &'a DecodedFrame,
+        frame: HourFrame<'a>,
         key: StateKey,
     ) -> Option<&'a replay_data::rows::StateOccupationLawRow> {
         self.laws.get(&key).and_then(|&index| {
-            recorded_rows::<tables::StateOccupationLaws>(frame)
+            recorded_rows::<tables::StateOccupationLaws>(frame.decoded()?)
                 .ok()?
                 .get(index)
         })
     }
     fn settings<'a>(
         &'a self,
-        frame: &'a DecodedFrame,
+        frame: HourFrame<'a>,
         country: u32,
     ) -> Option<&'a replay_data::rows::OccupationSettingsRow> {
         self.defaults.get(&country).and_then(|&index| {
-            recorded_rows::<tables::OccupationSettings>(frame)
+            recorded_rows::<tables::OccupationSettings>(frame.decoded()?)
                 .ok()?
                 .get(index)
         })
@@ -738,6 +805,77 @@ impl<'a> Scan<'a> {
         self.refused.note(reason, identity);
     }
 
+    /// `state`'s garrison at the read of `frame`, keyed `state_key`.
+    fn garrisoned<'f>(
+        &mut self,
+        frame: HourFrame<'f>,
+        context: &'f impl ReadInputs,
+        state: u32,
+        state_key: Option<StateKey>,
+    ) -> Garrisoned {
+        let garrison = state_key.and_then(|key| context.garrison(frame, key));
+        let assigned_manpower = state_key
+            .filter(|_| {
+                garrison.is_some()
+                    && context.assigned_complete()
+                    && !context.assigned_unresolved(state)
+            })
+            .map(|key| context.assigned(key));
+        // Requirement failure or a complete assigned-manpower total of zero
+        // returns zero before any equipment/define use.
+        let alert = garrison.is_some_and(|row| row.serialized_flag != 0);
+        let mut missing = if state_key.is_none() {
+            Some("The read's controller or occupied-country link is unresolved; the garrison key cannot be established".into())
+        } else if garrison.is_none() {
+            Some("No matching StateGarrisons row was recorded for the read's controller, occupied country and state".into())
+        } else if !alert && assigned_manpower.is_none() {
+            Some("StateAssignedManpower is incomplete or its links are unresolved at this read; a zero manpower total cannot be established".into())
+        } else {
+            None
+        };
+        let strength = garrison.and_then(|row| {
+            match strength::displayed(row, assigned_manpower, &self.strength_powers, |entry| {
+                let equipment = self.equipment.as_ref().map_err(Clone::clone)?;
+                let lexical = frame
+                    .complete::<tables::LexicalTokens>(0)
+                    .map_err(|e| format!("Garrison equipment dictionary unavailable: {e}"))?;
+                for token in [entry.equipment_token, entry.archetype_token] {
+                    let text = lexical
+                        .text(u128::from(token), |row| row.literal.as_slice(), 0)
+                        .ok()
+                        .flatten()
+                        .filter(|text| !text.is_empty() && !text.contains(&0))
+                        .ok_or_else(|| {
+                            format!("Garrison equipment token {token} has no recorded literal")
+                        })?;
+                    if equipment.named(text).is_none() {
+                        return Err(format!(
+                            "Garrison equipment {} has no recorded-content definition",
+                            String::from_utf8_lossy(text)
+                        ));
+                    }
+                }
+                Ok(())
+            }) {
+                Ok(value) => Some(value),
+                Err(reason) => {
+                    missing = Some(reason.clone());
+                    self.refused.note(reason, format!("state {state}"));
+                    None
+                }
+            }
+        });
+        Garrisoned {
+            strength,
+            required_manpower: garrison.map(|row| row.required_manpower),
+            garrison_required_raw: garrison.map(|row| row.garrison_required),
+            alert,
+            red: strength.and_then(|value| self.red_threshold.map(|threshold| value < threshold)),
+            assigned_manpower,
+            missing,
+        }
+    }
+
     fn read(
         &mut self,
         frame: &DecodedFrame,
@@ -757,12 +895,8 @@ impl<'a> Scan<'a> {
             garrisons_read && frame.complete::<tables::StateGarrisons>().is_ok(),
         );
         self.read_values(
-            eligibility::Frames {
-                hour: frame,
-                holds: &|_| true,
-                every: &|| Ok(frame),
-                built: &|| true,
-            },
+            HourFrame::from(frame),
+            None,
             hour,
             states,
             links,
@@ -775,15 +909,18 @@ impl<'a> Scan<'a> {
         Ok(())
     }
 
-    /// A law's eligibility reads its trigger world from `frames`.
+    /// A law's eligibility reads its trigger world from `frame`, a walk's finding tokens by the
+    /// walk's `lexicon` ([`dashboard_text::triggers::World::with_lexicon`]).
+    #[allow(clippy::too_many_arguments)]
     fn read_values<'w>(
         &mut self,
-        frames: eligibility::Frames<'w>,
+        frame: HourFrame<'w>,
+        lexicon: Option<&'w dashboard_world::Lexicon>,
         hour: i32,
         states: &[StateRow],
         links: &[CountryLinkRow],
         resistance: &[StateResistanceRow],
-        context: &impl ReadInputs,
+        context: &'w impl ReadInputs,
         observe_trend: bool,
     ) -> io::Result<()> {
         #[cfg(test)]
@@ -809,11 +946,10 @@ impl<'a> Scan<'a> {
             .enumerate()
             .map(|(slot, state)| (state.id, slot))
             .collect();
-        let frame = frames.hour;
-        let worlds = [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+        let world = std::sync::OnceLock::new();
         let cat = self.cat;
         self.active.clear();
-        self.complete = frame.complete::<tables::StateResistance>().is_ok();
+        self.complete = frame.complete::<tables::StateResistance>(0).is_ok();
         for resistance in resistance.iter().filter(|row| occupied(row)) {
             let Some(state) = self
                 .state_slots
@@ -838,56 +974,9 @@ impl<'a> Scan<'a> {
                 self.trend
                     .state(resistance, state, &countries.identities, links);
             }
-            let garrison = state_key.and_then(|key| context.garrison(frame, key));
-            let assigned_manpower = state_key
-                .filter(|_| {
-                    garrison.is_some()
-                        && context.assigned_complete()
-                        && !context.assigned_unresolved(state.id)
-                })
-                .map(|key| context.assigned(key));
-            let override_name = state_key
-                .and_then(|key| context.law(frame, key))
-                .map(|row| row.name.as_slice());
-            let default = link_slot(links, state.controller)
-                .and_then(|slot| context.settings(frame, slot))
-                .map(|row| (row.default_law_present != 0, row.law.as_slice()));
-            let settings =
-                link_slot(links, state.controller).and_then(|slot| context.settings(frame, slot));
-            let group = match state_key {
-                Some((controller, occupied, _)) => {
-                    if let Some(reason) = context.group_failure(controller) {
-                        GroupLaw::Unknown(reason.clone())
-                    } else if let Some(law) = context.group(controller, occupied) {
-                        GroupLaw::Law(law.0)
-                    } else if settings.is_some() {
-                        GroupLaw::Missing
-                    } else {
-                        GroupLaw::Unknown("The occupier's occupation settings are missing".into())
-                    }
-                }
-                None => GroupLaw::Unknown("Occupation country links are unresolved".into()),
-            };
-            let fallback = settings
-                .ok_or_else(|| "The native database fallback law is missing".to_owned())
-                .and_then(|row| match &row.fallback_law {
-                    replay_data::rows::Recorded::Value(Some(bytes)) => Ok(bytes.as_slice()),
-                    replay_data::rows::Recorded::Value(None) => {
-                        Err("The native database fallback-law capture failed".into())
-                    }
-                    replay_data::rows::Recorded::NotRecorded => {
-                        Err("The native database fallback law is not recorded".into())
-                    }
-                });
+            let (inputs, _) = law_inputs(context, frame, links, state.controller, state_key);
             let (law, law_missing) = law_for(
-                LawInputs {
-                    state: override_name,
-                    key_resolved: state_key.is_some(),
-                    overrides_complete: context.laws_complete(),
-                    group,
-                    default,
-                    fallback,
-                },
+                inputs,
                 |token| {
                     let definition = self
                         .laws
@@ -914,21 +1003,22 @@ impl<'a> Scan<'a> {
                         return Ok(true);
                     }
                     self.eligibility.evaluate(
-                        frames,
+                        frame,
                         state.id,
                         token,
                         controller,
                         occupied,
                         |frame| {
-                            let built = &worlds[usize::from(!std::ptr::eq(frame, frames.hour))];
                             let world = dashboard_text::triggers::inputs::unrecorded(|| {
-                                built
+                                world
                                     .get_or_init(|| {
                                         let cat = cat.ok_or_else(|| {
                                             "Occupation law eligibility needs recorded content"
                                                 .to_owned()
                                         })?;
-                                        cat.scripted_content()?.recorded_world(frame)
+                                        cat.scripted_content()?
+                                            .recorded_world_in(frame)
+                                            .map(|world| world.with_lexicon(lexicon))
                                     })
                                     .as_ref()
                                     .map_err(Clone::clone)
@@ -948,50 +1038,7 @@ impl<'a> Scan<'a> {
                 );
             }
             let (name, name_missing) = self.name(state);
-            // Requirement failure or a complete assigned-manpower total of zero
-            // returns zero before any equipment/define use.
-            let garrison_alert = garrison.is_some_and(|row| row.serialized_flag != 0);
-            let mut garrison_missing = if state_key.is_none() {
-                Some("The read's controller or occupied-country link is unresolved; the garrison key cannot be established".into())
-            } else if garrison.is_none() {
-                Some("No matching StateGarrisons row was recorded for the read's controller, occupied country and state".into())
-            } else if !garrison_alert && assigned_manpower.is_none() {
-                Some("StateAssignedManpower is incomplete or its links are unresolved at this read; a zero manpower total cannot be established".into())
-            } else {
-                None
-            };
-            let strength = garrison.and_then(|row| {
-                match strength::displayed(row, assigned_manpower, &self.strength_powers, |entry| {
-                    let equipment = self.equipment.as_ref().map_err(Clone::clone)?;
-                    let lexical = frame
-                        .complete::<tables::LexicalTokens>()
-                        .map_err(|e| format!("Garrison equipment dictionary unavailable: {e}"))?;
-                    for token in [entry.equipment_token, entry.archetype_token] {
-                        let text = lexical
-                            .binary_search_by_key(&token, |row| row.token)
-                            .ok()
-                            .map(|index| lexical[index].literal.as_slice())
-                            .filter(|text| !text.is_empty() && !text.contains(&0))
-                            .ok_or_else(|| {
-                                format!("Garrison equipment token {token} has no recorded literal")
-                            })?;
-                        if equipment.named(text).is_none() {
-                            return Err(format!(
-                                "Garrison equipment {} has no recorded-content definition",
-                                String::from_utf8_lossy(text)
-                            ));
-                        }
-                    }
-                    Ok(())
-                }) {
-                    Ok(value) => Some(value),
-                    Err(reason) => {
-                        garrison_missing = Some(reason.clone());
-                        self.refused.note(reason, format!("state {}", state.id));
-                        None
-                    }
-                }
-            });
+            let garrisoned = self.garrisoned(frame, context, state.id, state_key);
             let value = OccupiedValues {
                 name,
                 name_missing,
@@ -1002,14 +1049,13 @@ impl<'a> Scan<'a> {
                 compliance_raw: resistance.compliance,
                 resistance_speed_raw: resistance.speed,
                 compliance_speed_raw: resistance.compliance_speed,
-                garrison_strength_raw: strength,
-                required_manpower: garrison.map(|row| row.required_manpower),
-                garrison_required_raw: garrison.map(|row| row.garrison_required),
-                garrison_alert,
-                garrison_red: strength
-                    .and_then(|value| self.red_threshold.map(|threshold| value < threshold)),
-                assigned_manpower,
-                garrison_missing,
+                garrison_strength_raw: garrisoned.strength,
+                required_manpower: garrisoned.required_manpower,
+                garrison_required_raw: garrisoned.garrison_required_raw,
+                garrison_alert: garrisoned.alert,
+                garrison_red: garrisoned.red,
+                assigned_manpower: garrisoned.assigned_manpower,
+                garrison_missing: garrisoned.missing,
                 law,
                 law_missing,
             };
@@ -1211,7 +1257,7 @@ impl<'a> Scan<'a> {
         // operand. Compare those operands without copying their strings, then
         // retain only typed identity/link inputs and the latest view identities.
         if let Some(changes) = changes {
-            self.eligibility.step(frame, changes);
+            self.eligibility.step(HourFrame::from(frame), changes);
         } else {
             self.eligibility.clear();
         }

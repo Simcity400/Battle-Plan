@@ -13,6 +13,7 @@ import { validateLossesReply } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
 import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import type { PreparedPrefixFields } from '../../dashboard/preparedPrefix';
+import { stretchSince } from '../../dashboard/stretch.ts';
 
 export interface PreparedLosses extends LossesReply {
   preparedReads: number[];
@@ -21,6 +22,8 @@ export interface PreparedLosses extends LossesReply {
   preparedFrom: number;
   preparedTo: number;
   preparedWidth: number;
+  /** The first hour of each stretch after hours the recording lost, where every total restarts. */
+  restarts: number[];
   /** The prepared prefix the reply answers: the preparation coverage it reads
    * through and the requested hours still being prepared. */
   prefix?: PreparedPrefixFields | null;
@@ -38,7 +41,8 @@ export function validatePreparedLosses(value: unknown): PreparedLosses {
     || !reply.preparedReads.includes(reply.preparedHeadHour) || !reply.preparedReads.includes(reply.preparedDetailHour)
     || !Number.isFinite(reply.preparedFrom) || !Number.isFinite(reply.preparedTo)
     || reply.preparedFrom > reply.preparedTo
-    || !Number.isInteger(reply.preparedWidth) || reply.preparedWidth < 1) {
+    || !Number.isInteger(reply.preparedWidth) || reply.preparedWidth < 1
+    || !Array.isArray(reply.restarts) || !reply.restarts.every((restart, index) => hour(restart) && (index === 0 || reply.restarts[index - 1] < restart))) {
     throw new Error('The prepared equipment-loss reads are malformed.');
   }
   reply.prefix = prefix;
@@ -53,10 +57,19 @@ export const preparedLossHour = (reply: PreparedLosses, hour: number) => reply.p
 export function preparedLossWindow(reply: PreparedLosses, view: LossWindow): LossWindow | null {
   const hour = preparedLossHour(reply, view.hour) ? view.hour : reply.preparedHeadHour;
   const prefix = reply.prefix;
-  if (!prefix?.pending.length) return { ...view, hour };
+  if (!prefix?.pending.length) return stretchWindow(reply, { ...view, hour });
   const last = prefix.coverage.lastHour;
   if (view.from != null && view.from > last) return null;
-  return { ...view, hour: Math.min(hour, last), end: Math.min(view.end, last) };
+  return stretchWindow(reply, { ...view, hour: Math.min(hour, last), end: Math.min(view.end, last) });
+}
+
+/** `window` counted within the stretch its hour lies in: totals restart after hours the
+ * recording lost, so one reaching back before them counts from its stretch's first hour,
+ * `since`, and never across them. */
+export function stretchWindow(reply: PreparedLosses, window: LossWindow): LossWindow {
+  const since = stretchSince(reply.restarts, window.hour);
+  if (since === null || window.from != null && window.from >= since) return { ...window, since: null };
+  return { ...window, from: null, since };
 }
 
 /** Shared product routing holds one viewport and its reached exact dates. */

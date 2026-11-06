@@ -439,7 +439,7 @@ impl Emit {
         }
     }
 
-    fn actor(&mut self, writer: &mut Writer<'_>, name: &[u8], hour: i32) -> io::Result<u64> {
+    fn actor(&mut self, writer: &mut Writer, name: &[u8], hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(name) {
             return Ok(actor);
         }
@@ -460,7 +460,7 @@ impl Emit {
     /// `actor`'s key of `measure`, its evidence that of `domain`.
     fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         measure: u64,
         domain: u64,
@@ -489,7 +489,7 @@ impl Emit {
     }
 
     /// The tag actor named `tag`.
-    fn tag(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn tag(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         let actor = self.actor(writer, tag.as_bytes(), hour)?;
         if matches!(self.entities[actor as usize], Entity::Unknown) {
             self.entities[actor as usize] = Entity::Tag(Box::default());
@@ -498,7 +498,7 @@ impl Emit {
     }
 
     /// The actor of native country `country`, with its key.
-    fn native(&mut self, writer: &mut Writer<'_>, country: u32, hour: i32) -> io::Result<u64> {
+    fn native(&mut self, writer: &mut Writer, country: u32, hour: i32) -> io::Result<u64> {
         if let Some(&actor) = self.natives.get(&country) {
             return Ok(actor);
         }
@@ -519,7 +519,7 @@ impl Emit {
     }
 
     /// The keys of tag actor `actor`, interned at its first read.
-    fn keys(&mut self, writer: &mut Writer<'_>, actor: u64) -> io::Result<Keys> {
+    fn keys(&mut self, writer: &mut Writer, actor: u64) -> io::Result<Keys> {
         if let Some(keys) = self.tag_mut(actor).keys {
             return Ok(keys);
         }
@@ -541,7 +541,7 @@ impl Emit {
         Ok(keys)
     }
 
-    fn reason(&mut self, writer: &mut Writer<'_>, reason: &Arc<str>) -> io::Result<u64> {
+    fn reason(&mut self, writer: &mut Writer, reason: &Arc<str>) -> io::Result<u64> {
         if let Some(&id) = self.reasons.get(reason) {
             return Ok(id);
         }
@@ -570,7 +570,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, mut hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, mut hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let previous = self.last;
         let adjacent = previous.and_then(|last| last.checked_add(1)) == Some(at);
@@ -672,7 +672,7 @@ impl Emit {
     }
 
     /// Every open run and read ends at `last`, the hour before a walk's gap.
-    fn gap(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn gap(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.current.close(writer, last)?;
         for actor in 0..self.entities.len() {
             match &mut self.entities[actor] {
@@ -704,7 +704,7 @@ impl Emit {
     /// Ends `actor`'s open read before `hour`.
     fn close(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         hour: i32,
         touched: &mut BTreeSet<u64>,
@@ -732,7 +732,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn offer(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         adjacent: bool,
         actor: u64,
@@ -827,7 +827,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn read(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         identity: Identity,
@@ -991,7 +991,7 @@ impl Emit {
 
     fn read_cells(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         read: &RawRead,
         consumption: &RawConsumption,
         (starts, consumption_starts, segment): (bool, bool, i32),
@@ -1083,7 +1083,7 @@ impl Emit {
     /// before it, or a keyframe where the chain is full or either pack is refused.
     fn demand(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         at: i32,
         pack: Arc<Encoded>,
@@ -1156,7 +1156,7 @@ impl Emit {
     /// reads the hour changed.
     fn segments(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         adjacent: bool,
         touched: &BTreeSet<u64>,
@@ -1222,7 +1222,7 @@ impl Emit {
     }
 
     /// Writes the day measures falling due through `through`.
-    fn drain(&mut self, writer: &mut Writer<'_>, through: i32) -> io::Result<()> {
+    fn drain(&mut self, writer: &mut Writer, through: i32) -> io::Result<()> {
         while let Some(due) = self.queue.front().copied().filter(|due| due.at <= through) {
             self.queue.pop_front();
             let tag = tag_of(&mut self.entities, due.tag);
@@ -1265,7 +1265,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours walked through it as known in both domains, and the cells that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.current.cut(writer, last)?;
         self.days.cut(writer, last)?;
         let from = self.cut.map_or(i32::MIN, |cut| cut + 1);

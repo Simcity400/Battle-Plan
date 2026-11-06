@@ -15,9 +15,9 @@ use dashboard_keyed::{
 use replay::container::TableFields;
 use replay_data::{
     format::FormatVersion,
-    rows::{AirStatisticsRow, TableId, tables},
+    rows::{AirStatisticsRow, TableId},
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{ColumnFrame, Columns};
 use std::{collections::HashMap, io, mem::size_of};
 
 /// The tables an observation reads.
@@ -234,39 +234,45 @@ impl Observe {
     }
 
     /// Each row country and its name now, in row order.
-    fn name_rows(&mut self, rows: &[AirStatisticsRow]) {
+    fn name_rows(&mut self, rows: Option<Columns<'_>>) {
         self.order.clear();
         let Some(countries) = self.countries.take() else {
             return;
         };
         let mut last = None;
-        for row in rows {
-            if last == Some(row.country) {
+        for &slot in rows.map_or(&[][..], Columns::slots) {
+            let country = rows.map_or(0, |rows| (rows.key(slot) >> 32) as u32);
+            if last == Some(country) {
                 continue;
             }
-            last = Some(row.country);
-            let name = match self.raws.get(&row.country) {
+            last = Some(country);
+            let name = match self.raws.get(&country) {
                 Some(&name) => name,
                 None => {
-                    let name = countries.raw(row.country).map(|name| self.name(name));
-                    self.raws.insert(row.country, name);
+                    let name = countries.raw(country).map(|name| self.name(name));
+                    self.raws.insert(country, name);
                     name
                 }
             };
-            self.order.push((row.country, name));
+            self.order.push((country, name));
         }
         self.countries = Some(countries);
     }
 
     /// The units' values of `rows`, every row's country named, as changes to the last held.
-    fn values(&mut self, rows: &[AirStatisticsRow]) -> Values {
+    fn values(&mut self, rows: Option<Columns<'_>>) -> io::Result<Values> {
         self.generation += 1;
         let generation = self.generation;
         self.next.clear();
         // `order` holds each run of a country's rows once, in row order.
         let mut at = 0;
         let mut current: Option<(u32, u32)> = None;
-        for row in rows {
+        for (&slot, rows) in rows
+            .iter()
+            .flat_map(|&rows| rows.slots().iter().map(move |slot| (slot, rows)))
+        {
+            let row: AirStatisticsRow = rows.row(slot, TableId::AirStatistics.full_mask())?;
+            let row = &row;
             let name = match current {
                 Some((country, name)) if country == row.country => name,
                 _ => {
@@ -328,15 +334,11 @@ impl Observe {
             self.held[unit as usize].present = true;
             self.present.push(unit);
         }
-        out
+        Ok(out)
     }
 
     /// The verdict of the hour, `read` its statistics' supplying read, and the bindings it froze.
-    fn verdict(
-        &mut self,
-        read: bool,
-        rows: &io::Result<&[AirStatisticsRow]>,
-    ) -> (Verdict, Option<Bindings>) {
+    fn verdict(&mut self, read: bool, rows: Result<(), String>) -> (Verdict, Option<Bindings>) {
         // A read frees the bindings before it binds anew; a refused one leaves none.
         let previous = if read {
             self.bindings.replace(None).flatten()
@@ -347,8 +349,8 @@ impl Observe {
         if self.countries.is_none() {
             return refused(UNIDENTIFIED.into());
         }
-        if let Err(error) = rows {
-            return refused(error.to_string());
+        if let Err(why) = rows {
+            return refused(why);
         }
         if read {
             let mut bound = HashMap::with_capacity(self.order.len());
@@ -402,7 +404,7 @@ impl Observe {
 impl Reader<Segments> for Observe {
     fn read(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         changes: &FrameChanges,
         touched: &Touched,
     ) -> io::Result<(Facts, usize)> {
@@ -412,25 +414,26 @@ impl Reader<Segments> for Observe {
         let renamed =
             touched.of(TableId::Countries).any() || touched.of(TableId::CountryLinks).any();
         if fresh || renamed {
-            self.countries = Countries::read(frame);
+            self.countries = Countries::read_walked(frame)?;
             self.raws.clear();
         }
-        let rows = frame.complete::<tables::AirStatistics>();
+        let rows = frame.complete(TableId::AirStatistics);
         let values = if fresh || renamed || touched.of(TableId::AirStatistics).any() {
-            let all: &[AirStatisticsRow] = match &rows {
-                Ok(rows) => *rows,
-                Err(_) => &[],
-            };
+            let all = rows.as_ref().ok().copied();
             self.name_rows(all);
             self.complete = self.countries.is_some()
                 && rows.is_ok()
                 && self.order.iter().all(|&(_, name)| name.is_some());
-            self.complete.then(|| self.values(all))
+            match self.complete {
+                true => Some(self.values(all)?),
+                false => None,
+            }
         } else {
             // Nothing it reads moved: what it held holds.
             self.complete.then(Values::default)
         };
-        let (verdict, bindings) = self.verdict(read, &rows);
+        let (verdict, bindings) =
+            self.verdict(read, rows.as_ref().map(drop).map_err(ToString::to_string));
         let facts = Facts {
             fresh,
             verdict,

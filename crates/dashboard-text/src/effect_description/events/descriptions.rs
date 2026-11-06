@@ -1,4 +1,13 @@
 use super::*;
+use replay_data::rows::{
+    CountryCounterInputRow, CountryRow, IndustrialOrganisationRow, SimulationFeatureRow,
+};
+
+/// The fields of each table the event descriptions read.
+const COUNTRY_TAG: usize = replay_data::rows::column::<CountryRow>("tag");
+const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["country", "ordinal", "token"]);
+const MIO_POLICIES: u64 = mask::<CountryCounterInputRow>(&["mio_policies"]);
+const INSTANT: u64 = mask::<SimulationFeatureRow>(&["instant_decisions"]);
 
 impl Renderer<'_, '_, '_> {
     // Decision effects take the held scalar; mission effects additionally read
@@ -352,25 +361,31 @@ impl Renderer<'_, '_, '_> {
         let seed = if definition.fixed_random_seed {
             self.decision_description_seed(definition, None, owner, target)
         } else {
-            let row = world
-                .frame()
-                .complete::<tables::Decisions>()
-                .ok()
-                .and_then(|rows| {
-                    rows.iter()
-                        .filter(|row| {
-                            world.recorded().slot(row.country) == Some(owner)
-                                && row.token.eq_ignore_ascii_case(&definition.id)
-                                && row.numeric_target == state
-                                && (if row.country_target == 0 {
-                                    None
-                                } else {
-                                    world.recorded().slot(row.country_target)
-                                }) == country
-                        })
-                        .min_by_key(|row| row.ordinal)
-                });
-            self.decision_description_seed(definition, row, owner, target)
+            let row = match world.tables().complete::<tables::Decisions>(DECISION) {
+                Err(_) => None,
+                Ok(rows) => {
+                    // The owner is the key's high word.
+                    let mut first: Option<Cow<'_, DecisionRow>> = None;
+                    for row in
+                        rows.keyed(|key| world.recorded().slot((key >> 40) as u32) == Some(owner))
+                    {
+                        let row = row.map_err(built)?;
+                        if row.token.eq_ignore_ascii_case(&definition.id)
+                            && row.numeric_target == state
+                            && (if row.country_target == 0 {
+                                None
+                            } else {
+                                world.recorded().slot(row.country_target)
+                            }) == country
+                            && first.as_ref().is_none_or(|first| row.ordinal < first.ordinal)
+                        {
+                            first = Some(row);
+                        }
+                    }
+                    first
+                }
+            };
+            self.decision_description_seed(definition, row.as_deref(), owner, target)
         };
         let target = country
             .map(EventObject::Country)
@@ -472,7 +487,7 @@ impl Renderer<'_, '_, '_> {
                     let world = self.context.world()?;
                     let original = world.unit_leader(leader).map_err(|why| why.to_string())?
                         .ok_or("state_event scope leader is not recorded")?;
-                    match crate::character_scope::Tables::read(world.frame())
+                    match crate::character_scope::Tables::read_in(world.tables())
                         .unit_leader(original.character_id).map_err(|why| why.to_string())? {
                         Some(crate::character_scope::UnitLeader::Direct(row)) => {
                             let country = if row.owner == 0 { 0 } else {
@@ -505,14 +520,19 @@ impl Renderer<'_, '_, '_> {
                 lower.as_slice(),
                 b"owner" | b"controller" | b"occupied" | b"from" | b"root" | b"prev"
             );
-            let tag = self
+            let countries = self
                 .context
                 .world()?
-                .frame()
-                .complete::<tables::Countries>()
-                .map_err(|why| why.to_string())?
-                .iter()
-                .any(|row| row.tag.eq_ignore_ascii_case(operand));
+                .tables()
+                .complete::<tables::Countries>(0)
+                .map_err(|why| why.to_string())?;
+            let mut tag = false;
+            for text in countries.texts(|row| &row.tag, COUNTRY_TAG) {
+                if text.map_err(built)?.eq_ignore_ascii_case(operand) {
+                    tag = true;
+                    break;
+                }
+            }
             let country = if link || tag {
                 self.country_target(target, scopes)?.unwrap_or(0)
             } else {
@@ -604,13 +624,23 @@ impl Renderer<'_, '_, '_> {
         let world = self.context.world()?;
         let mut instance = None;
         if let Some(id) = world.token_of(&token).map_err(|why| why.to_string())? {
-            instance = world
-                .frame()
-                .complete::<tables::IndustrialOrganisations>()
-                .map_err(|why| why.to_string())?
-                .iter()
-                .filter(|row| world.slot(row.country) == Some(country) && row.token == id)
-                .min_by_key(|row| row.ordinal);
+            let organisations = world
+                .tables()
+                .complete::<tables::IndustrialOrganisations>(ORGANISATION)
+                .map_err(|why| why.to_string())?;
+            for row in each(organisations) {
+                let row = row?;
+                if world.slot(row.country) == Some(country)
+                    && row.token == id
+                    && instance
+                        .as_ref()
+                        .is_none_or(|first: &Cow<'_, IndustrialOrganisationRow>| {
+                            row.ordinal < first.ordinal
+                        })
+                {
+                    instance = Some(row);
+                }
+            }
         }
         let (name, initial, trait_country) = if let Some(row) = instance {
             let (_, initial) = database.display_fields(&token)?;
@@ -732,11 +762,13 @@ impl Renderer<'_, '_, '_> {
         };
         let definition = if country > 0 {
             let row = world
-                .frame()
-                .complete::<tables::CountryCounterInputs>()
+                .tables()
+                .complete::<tables::CountryCounterInputs>(MIO_POLICIES)
                 .map_err(|why| why.to_string())?
-                .iter()
-                .find(|row| world.slot(row.country) == Some(country))
+                .keyed(|key| world.slot(key as u32) == Some(country))
+                .next()
+                .transpose()
+                .map_err(built)?
                 .ok_or("CountryCounterInputs lacks MIO policy roster")?;
             let policies = row
                 .mio_policies
@@ -808,13 +840,8 @@ impl Renderer<'_, '_, '_> {
         if days <= 0 {
             return Ok(days);
         }
-        let [features] = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::SimulationFeatures>()
-            .map_err(|why| why.to_string())?
-        else {
+        let features = self.complete::<tables::SimulationFeatures>(INSTANT)?;
+        let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
             return Err("SimulationFeatures lacks instant_decisions".into());
         };
         let instant = features

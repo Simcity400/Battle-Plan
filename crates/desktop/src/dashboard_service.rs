@@ -645,27 +645,6 @@ pub async fn dashboard_map_settings(
 }
 
 #[tauri::command]
-pub async fn dashboard_history_cache(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    clear: bool,
-    request_id: String,
-) -> Result<Response, QueryError> {
-    request(
-        &window,
-        &host,
-        &service,
-        request_id.clone(),
-        DataCommand::HistoryCache {
-            id: request_id,
-            clear,
-        },
-    )
-    .await
-}
-
-#[tauri::command]
 pub fn dashboard_cancel(
     host: State<'_, NativeHost>,
     service: State<'_, DashboardService>,

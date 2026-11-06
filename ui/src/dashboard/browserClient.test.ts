@@ -157,17 +157,6 @@ test('an open cancelled after its body begins releases the late lease on the con
   } finally { await transport.drain(); transport.restore(); }
 });
 
-test('the history cache request says only whether to clear', async () => {
-  const bodies: unknown[] = [];
-  globalThis.fetch = (async (_url: string, init: RequestInit) => {
-    bodies.push(JSON.parse(String(init.body)));
-    return { ok: true, text: async () => JSON.stringify({ bytes: 0, limit: 1 }) };
-  }) as unknown as typeof fetch;
-  const { browserDashboardClient: client } = await import('./browserClient.ts');
-  assert.deepEqual(await client.historyCache!(true, AbortSignal.timeout(1000)), { bytes: 0, limit: 1 });
-  assert.deepEqual(bodies, [{ type: 'historyCache', clear: true }]);
-});
-
 test('prepared pages use reserved query capacity, preserve exact values, and reject another revision', async () => {
   const { browserDashboardClient: client } = await import('./browserClient.ts');
   const transport = pendingTransport();

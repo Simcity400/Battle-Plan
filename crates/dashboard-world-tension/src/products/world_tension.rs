@@ -70,7 +70,7 @@ pub mod row;
 pub mod served;
 
 #[cfg(any(test, feature = "test-support"))]
-pub use row::{CACHED_BRANCHES, Scan, scan};
+pub use row::{Scan, scan};
 
 /// World tension units per percentage point: contributions' units over the
 /// divisor the engine stores the clamped sum with.
@@ -248,23 +248,14 @@ impl Product for WorldTension {
         let state = source.state::<row::Cache>();
         let cached = {
             let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache
-                .entries
-                .iter()
-                .find(|(cached, _)| *cached == branch)
-                .map(|(_, scanned)| Arc::clone(scanned))
+            cache.entries.get(&branch).map(Arc::clone)
         };
         let scanned = match cached {
             Some(scanned) => scanned,
             None => {
                 let scanned = Arc::new(row::scan(&source.replay(), branch, cancelled)?);
                 let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache.entries.retain(|(cached, _)| *cached != branch);
-                cache.entries.push_back((branch, Arc::clone(&scanned)));
-                while cache.entries.len() > CACHED_BRANCHES {
-                    cache.entries.pop_front();
-                }
-                scanned
+                Arc::clone(cache.entries.entry(branch).or_insert(scanned))
             }
         };
         let history = branch_histories(source, branch, false, &[], cancelled)?;

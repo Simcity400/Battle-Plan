@@ -4,10 +4,10 @@ use dashboard_text::metadata::{TaggedCountry, link_slot, tagged_countries};
 use replay_data::{
     cadence::{self, Cadence},
     format::FormatVersion,
-    rows::{TableId, tables},
+    rows::{CountryLinkRow, CountryRow, RowCodec, TableId, mask, tables},
 };
-use replay_frame::frame::DecodedFrame;
-use std::collections::BTreeMap;
+use replay_frame::frame::Tables;
+use std::{borrow::Cow, collections::BTreeMap, io};
 
 #[derive(Default)]
 pub(super) struct Joins {
@@ -17,10 +17,41 @@ pub(super) struct Joins {
     pub(super) unresolved: usize,
 }
 
+/// The rows of `T`'s complete table, each of the fields `mask` names; none when it is not
+/// complete.
+fn complete<T: replay_data::rows::TableSchema>(
+    frame: &(impl Tables + ?Sized),
+    mask: u64,
+) -> io::Result<Option<Vec<T::Row>>>
+where
+    T::Row: RowCodec,
+{
+    let Ok(rows) = frame.complete_rows::<T>(mask) else {
+        return Ok(None);
+    };
+    rows.iter()
+        .map(|row| row.map(Cow::into_owned))
+        .collect::<io::Result<Vec<_>>>()
+        .map(Some)
+}
+
 impl Joins {
-    pub(super) fn read(frame: &DecodedFrame) -> Option<Self> {
-        let countries = frame.complete::<tables::Countries>().ok()?;
-        let links = frame.complete::<tables::CountryLinks>().ok()?;
+    /// The identities of the countries and links, each of the fields the joins read; none
+    /// unless both are complete.
+    pub(super) fn read(frame: &(impl Tables + ?Sized)) -> io::Result<Option<Self>> {
+        let Some(countries) = complete::<tables::Countries>(
+            frame,
+            mask::<CountryRow>(&["canonical_slot", "tag"]),
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(links) =
+            complete::<tables::CountryLinks>(frame, mask::<CountryLinkRow>(&["canonical_slot"]))?
+        else {
+            return Ok(None);
+        };
+        let (countries, links) = (countries.as_slice(), links.as_slice());
         let mut out = Self::default();
         let mut slots = BTreeMap::new();
         for (tag, lookup) in tagged_countries(countries, links) {
@@ -52,7 +83,7 @@ impl Joins {
                     .push(link.id);
             }
         }
-        Some(out)
+        Ok(Some(out))
     }
 }
 

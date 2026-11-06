@@ -46,6 +46,7 @@ import type { CasualtyChord } from './casualtyChord';
 import { casualtyPairIds, pairHistory, pinPairs, readPairSelection } from './casualtyPairDrill';
 import { definition, DETAIL } from './definition';
 import './casualtyPairs.css';
+import { useReplyGaps } from '../../dashboard/replyGaps';
 
 const SORT = { column: 'value', direction: 'descending' } as const;
 const pairKey = (flow: PairFlow) => flow.id;
@@ -96,6 +97,8 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const chordCache = useMemo(() => new CasualtyChordCache(), []);
   const segmentCache = useMemo(() => new CasualtyChordSegmentCache(), []);
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
+  // Its charts draw casualty-pairs replies: cut only where the families they read lost hours.
+  const gaps = useReplyGaps(track?.source.id, track?.branch.id, 'casualty-pairs');
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = window?.lastHour ?? track?.branch.lastHour ?? 0;
   const pinned = options.show === DETAIL.id;
@@ -253,7 +256,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
           : !rows.length ? <p className="drill-empty">No selected casualty pairs at this time.</p>
             : <PairRows rows={rows} label={detailLabel} hour={detailThrough} colors={colorById} columns={columns} speed={speed} narrow={narrowTableOf(options)}
               height={height} onPick={pickDay} runtime={runtime} trackId={track.id} />}
-    <div className="casualty-pair-history"><TimeChart label="Positive recorded casualties by directed pair over time"
+    <div className="casualty-pair-history"><TimeChart gaps={gaps} label="Positive recorded casualties by directed pair over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
       playhead={effectiveDrill.follow ? clockHour : null} playback="cursor" hoursPerSecond={speed}
       axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}

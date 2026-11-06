@@ -2,16 +2,25 @@
 //! writer assigned the row. Runs apply in place, column by column; the writer certifies
 //! each change, so nothing here compares values. An error leaves the table partly
 //! changed: its reader starts again from the next restart.
+//!
+//! Columns, keys and the key index are held in pages shared copy-on-write ([`paged`]): a
+//! table shared from another ([`Table::share`]), as every walk starting at one restart shares
+//! its decoded tables, holds of its own only the pages its hours wrote. Bools are a bit each,
+//! and a list or opaque column one buffer of items per page with each slot's end in it.
 
 use crate::{
     invalid,
     leaf::{Int, Le, SLOT_WORDS, Writer},
     section::{PatchItems, Patches},
 };
-use std::{collections::HashMap, io};
+use std::io;
 
+mod paged;
 #[cfg(test)]
 mod tests;
+
+pub use paged::{Bools, Lists, PAGE, Paged, PagedBits};
+use paged::{WeakLists, WeakPaged};
 
 /// A field's cell type, as the recording's schema names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,19 +43,6 @@ pub enum Kind {
     U32List,
     U64List,
     Opaque,
-}
-
-impl Kind {
-    /// The bytes one slot of a column of this kind holds, a list's or opaque cell's items aside.
-    pub fn slot_bytes(self) -> usize {
-        match self {
-            Self::U8 | Self::I8 | Self::Bool => 1,
-            Self::U16 | Self::I16 => 2,
-            Self::U32 | Self::I32 | Self::Bytes | Self::OptionalI32 | Self::OptionalU32 => 4,
-            Self::U64 | Self::I64 | Self::OptionalI64 | Self::OptionalU64 => 8,
-            Self::U32List | Self::U64List | Self::Opaque => size_of::<Box<[u8]>>(),
-        }
-    }
 }
 
 /// Slots, one bit each; bits past the end are clear. Every bit names a `u32` slot.
@@ -122,29 +118,61 @@ impl Bits {
             *word &= !(1 << (bit % 64));
         }
     }
+
+    fn copy(&self) -> io::Result<Self> {
+        Ok(Self {
+            words: engine_allocation::copy_vec(&self.words)?,
+        })
+    }
+
+    fn held_bytes(&self) -> usize {
+        self.words.capacity() * size_of::<u64>()
+    }
 }
 
 /// One field's values at every slot. An optional field keeps a presence bit per slot,
 /// so a missing value is never read as zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Column {
-    U8(Vec<u8>),
-    I8(Vec<i8>),
-    U16(Vec<u16>),
-    I16(Vec<i16>),
-    U32(Vec<u32>),
-    I32(Vec<i32>),
-    U64(Vec<u64>),
-    I64(Vec<i64>),
-    Bool(Vec<bool>),
-    OptionalI32(Vec<i32>, Bits),
-    OptionalU32(Vec<u32>, Bits),
-    OptionalI64(Vec<i64>, Bits),
-    OptionalU64(Vec<u64>, Bits),
-    Bytes(Vec<u32>),
-    U32List(Vec<Box<[u32]>>),
-    U64List(Vec<Box<[u64]>>),
-    Opaque(Vec<Box<[u8]>>),
+    U8(Paged<u8>),
+    I8(Paged<i8>),
+    U16(Paged<u16>),
+    I16(Paged<i16>),
+    U32(Paged<u32>),
+    I32(Paged<i32>),
+    U64(Paged<u64>),
+    I64(Paged<i64>),
+    Bool(Bools),
+    OptionalI32(Paged<i32>, PagedBits),
+    OptionalU32(Paged<u32>, PagedBits),
+    OptionalI64(Paged<i64>, PagedBits),
+    OptionalU64(Paged<u64>, PagedBits),
+    Bytes(Paged<u32>),
+    U32List(Lists<u32>),
+    U64List(Lists<u64>),
+    Opaque(Lists<u8>),
+}
+
+/// A [`Column`] whose pages are held weakly.
+#[derive(Debug)]
+enum WeakColumn {
+    U8(WeakPaged<u8>),
+    I8(WeakPaged<i8>),
+    U16(WeakPaged<u16>),
+    I16(WeakPaged<i16>),
+    U32(WeakPaged<u32>),
+    I32(WeakPaged<i32>),
+    U64(WeakPaged<u64>),
+    I64(WeakPaged<i64>),
+    Bool((WeakPaged<u64>, usize)),
+    OptionalI32(WeakPaged<i32>, WeakPaged<u64>),
+    OptionalU32(WeakPaged<u32>, WeakPaged<u64>),
+    OptionalI64(WeakPaged<i64>, WeakPaged<u64>),
+    OptionalU64(WeakPaged<u64>, WeakPaged<u64>),
+    Bytes(WeakPaged<u32>),
+    U32List(WeakLists<u32>),
+    U64List(WeakLists<u64>),
+    Opaque(WeakLists<u8>),
 }
 
 /// The values one run carries, in slot order. Optional kinds carry a presence bit per
@@ -215,17 +243,8 @@ pub enum Cell<'a> {
     Opaque(&'a [u8]),
 }
 
-fn grow<T: Default>(values: &mut Vec<T>, slots: usize) -> io::Result<()> {
-    if values.len() < slots {
-        engine_allocation::resize_default(values, slots)?;
-    }
-    Ok(())
-}
-
-fn at<T>(values: &mut [T], slot: u32) -> io::Result<&mut T> {
-    values
-        .get_mut(slot as usize)
-        .ok_or_else(|| invalid(format!("Column run names slot {slot} past the table")))
+fn past(slot: u32) -> io::Error {
+    invalid(format!("Column run names slot {slot} past the table"))
 }
 
 fn same_length(slots: &[u32], values: usize) -> io::Result<()> {
@@ -238,24 +257,25 @@ fn same_length(slots: &[u32], values: usize) -> io::Result<()> {
     Ok(())
 }
 
-fn set_plain<T: Copy>(column: &mut [T], slots: &[u32], values: &[T]) -> io::Result<()> {
+fn set_plain<T: Copy>(column: &mut Paged<T>, slots: &[u32], values: &[T]) -> io::Result<()> {
     same_length(slots, values.len())?;
-    for (&slot, &value) in slots.iter().zip(values) {
-        *at(column, slot)? = value;
-    }
-    Ok(())
+    column.each_mut(slots, past, |index, cell| {
+        *cell = values[index];
+        Ok(())
+    })
 }
 
-fn set_bool(column: &mut [bool], slots: &[u32], values: &[u8]) -> io::Result<()> {
-    same_length(slots, values.len())?;
-    for (&slot, &value) in slots.iter().zip(values) {
-        *at(column, slot)? = match value {
-            0 => false,
-            1 => true,
-            other => return Err(invalid(format!("Bool column value {other}"))),
-        };
+fn bool_of(value: u8) -> io::Result<bool> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(invalid(format!("Bool column value {other}"))),
     }
-    Ok(())
+}
+
+fn set_bool(column: &mut Bools, slots: &[u32], values: &[u8]) -> io::Result<()> {
+    same_length(slots, values.len())?;
+    column.put_each(slots, past, |index| bool_of(values[index]))
 }
 
 fn presence(present: &[u64], index: usize) -> io::Result<bool> {
@@ -266,30 +286,26 @@ fn presence(present: &[u64], index: usize) -> io::Result<bool> {
 }
 
 fn set_optional<T: Copy>(
-    column: &mut [T],
-    bits: &mut Bits,
+    column: &mut Paged<T>,
+    bits: &mut PagedBits,
     slots: &[u32],
     present: &[u64],
     values: &[T],
 ) -> io::Result<()> {
     let mut next = 0;
-    for (index, &slot) in slots.iter().enumerate() {
+    column.each_mut(slots, past, |index, cell| {
         if presence(present, index)? {
-            let value = *values
+            *cell = *values
                 .get(next)
                 .ok_or_else(|| invalid("Optional run has fewer values than present slots"))?;
-            *at(column, slot)? = value;
-            bits.set(slot)?;
             next += 1;
-        } else {
-            at(column, slot)?;
-            bits.clear(slot);
         }
-    }
+        Ok(())
+    })?;
     if next != values.len() {
         return Err(invalid("Optional run has more values than present slots"));
     }
-    Ok(())
+    bits.put_each(slots, |index| presence(present, index))
 }
 
 fn cell_range(ends: &[u32], index: usize, items: usize) -> io::Result<std::ops::Range<usize>> {
@@ -305,8 +321,14 @@ fn cell_range(ends: &[u32], index: usize, items: usize) -> io::Result<std::ops::
     Ok(start..end)
 }
 
-fn set_cells<T: Copy>(
-    column: &mut [Box<[T]>],
+fn put_items<T: Copy>(out: &mut Vec<T>, items: &[T]) -> io::Result<()> {
+    engine_allocation::reserve(out, items.len())?;
+    out.extend_from_slice(items);
+    Ok(())
+}
+
+fn set_cells<T: Copy + Default>(
+    column: &mut Lists<T>,
     slots: &[u32],
     ends: &[u32],
     items: &[T],
@@ -315,11 +337,9 @@ fn set_cells<T: Copy>(
     if ends.last().map_or(0, |&end| end as usize) != items.len() {
         return Err(invalid("Cell run's items do not end at its last offset"));
     }
-    for (index, &slot) in slots.iter().enumerate() {
-        let range = cell_range(ends, index, items.len())?;
-        *at(column, slot)? = engine_allocation::copy_vec(&items[range])?.into_boxed_slice();
-    }
-    Ok(())
+    column.rewrite(slots, past, |index, _, out| {
+        put_items(out, &items[cell_range(ends, index, items.len())?])
+    })
 }
 
 trait Wrapping: Copy {
@@ -338,18 +358,17 @@ macro_rules! wrapping {
 wrapping!(u8, i8, u16, i16, u32, i32, u64, i64);
 
 // The writer encodes an exact difference at the column's width, so wrapping reproduces it.
-fn add_plain<T: Wrapping>(column: &mut [T], slots: &[u32], deltas: &[T]) -> io::Result<()> {
+fn add_plain<T: Wrapping>(column: &mut Paged<T>, slots: &[u32], deltas: &[T]) -> io::Result<()> {
     same_length(slots, deltas.len())?;
-    for (&slot, &delta) in slots.iter().zip(deltas) {
-        let value = at(column, slot)?;
-        *value = value.wrapping(delta);
-    }
-    Ok(())
+    column.each_mut(slots, past, |index, value| {
+        *value = value.wrapping(deltas[index]);
+        Ok(())
+    })
 }
 
 fn add_optional<T: Wrapping>(
-    column: &mut [T],
-    bits: &Bits,
+    column: &mut Paged<T>,
+    bits: &PagedBits,
     slots: &[u32],
     deltas: &[T],
 ) -> io::Result<()> {
@@ -369,16 +388,16 @@ fn one<T: Copy>(values: &[T]) -> io::Result<T> {
     }
 }
 
-fn fill_plain<T: Copy>(column: &mut [T], slots: &[u32], value: T) -> io::Result<()> {
-    for &slot in slots {
-        *at(column, slot)? = value;
-    }
-    Ok(())
+fn fill_plain<T: Copy>(column: &mut Paged<T>, slots: &[u32], value: T) -> io::Result<()> {
+    column.each_mut(slots, past, |_, cell| {
+        *cell = value;
+        Ok(())
+    })
 }
 
 fn fill_optional<T: Copy>(
-    column: &mut [T],
-    bits: &mut Bits,
+    column: &mut Paged<T>,
+    bits: &mut PagedBits,
     slots: &[u32],
     present: &[u64],
     values: &[T],
@@ -390,21 +409,19 @@ fn fill_optional<T: Copy>(
     } else {
         return Err(invalid("FILL to missing carries a value"));
     };
-    for &slot in slots {
-        let cell = at(column, slot)?;
-        match value {
-            Some(value) => {
-                *cell = value;
-                bits.set(slot)?;
+    match value {
+        Some(value) => fill_plain(column, slots, value)?,
+        None => {
+            if let Some(&slot) = slots.iter().find(|&&slot| slot as usize >= column.len()) {
+                return Err(past(slot));
             }
-            None => bits.clear(slot),
         }
     }
-    Ok(())
+    bits.put_each(slots, |_| Ok(value.is_some()))
 }
 
-fn fill_cells<T: Copy>(
-    column: &mut [Box<[T]>],
+fn fill_cells<T: Copy + Default>(
+    column: &mut Lists<T>,
     slots: &[u32],
     ends: &[u32],
     items: &[T],
@@ -412,10 +429,7 @@ fn fill_cells<T: Copy>(
     if ends.len() != 1 || ends[0] as usize != items.len() {
         return Err(invalid("FILL carries one cell"));
     }
-    for &slot in slots {
-        *at(column, slot)? = engine_allocation::copy_vec(items)?.into_boxed_slice();
-    }
-    Ok(())
+    column.rewrite(slots, past, |_, _, out| put_items(out, items))
 }
 
 impl Values<'_> {
@@ -442,26 +456,44 @@ impl Values<'_> {
     }
 }
 
+/// `$body` for each column variant holding one [`Paged`] alone, as `$values`.
+macro_rules! plain_columns {
+    ($column:expr, $values:ident => $body:expr, $($rest:tt)*) => {
+        match $column {
+            Column::U8($values) => $body,
+            Column::I8($values) => $body,
+            Column::U16($values) => $body,
+            Column::I16($values) => $body,
+            Column::U32($values) => $body,
+            Column::I32($values) => $body,
+            Column::U64($values) => $body,
+            Column::I64($values) => $body,
+            Column::Bytes($values) => $body,
+            $($rest)*
+        }
+    };
+}
+
 impl Column {
     pub fn new(kind: Kind) -> Self {
         match kind {
-            Kind::U8 => Self::U8(Vec::new()),
-            Kind::I8 => Self::I8(Vec::new()),
-            Kind::U16 => Self::U16(Vec::new()),
-            Kind::I16 => Self::I16(Vec::new()),
-            Kind::U32 => Self::U32(Vec::new()),
-            Kind::I32 => Self::I32(Vec::new()),
-            Kind::U64 => Self::U64(Vec::new()),
-            Kind::I64 => Self::I64(Vec::new()),
-            Kind::Bool => Self::Bool(Vec::new()),
-            Kind::OptionalI32 => Self::OptionalI32(Vec::new(), Bits::default()),
-            Kind::OptionalU32 => Self::OptionalU32(Vec::new(), Bits::default()),
-            Kind::OptionalI64 => Self::OptionalI64(Vec::new(), Bits::default()),
-            Kind::OptionalU64 => Self::OptionalU64(Vec::new(), Bits::default()),
-            Kind::Bytes => Self::Bytes(Vec::new()),
-            Kind::U32List => Self::U32List(Vec::new()),
-            Kind::U64List => Self::U64List(Vec::new()),
-            Kind::Opaque => Self::Opaque(Vec::new()),
+            Kind::U8 => Self::U8(Paged::default()),
+            Kind::I8 => Self::I8(Paged::default()),
+            Kind::U16 => Self::U16(Paged::default()),
+            Kind::I16 => Self::I16(Paged::default()),
+            Kind::U32 => Self::U32(Paged::default()),
+            Kind::I32 => Self::I32(Paged::default()),
+            Kind::U64 => Self::U64(Paged::default()),
+            Kind::I64 => Self::I64(Paged::default()),
+            Kind::Bool => Self::Bool(Bools::default()),
+            Kind::OptionalI32 => Self::OptionalI32(Paged::default(), PagedBits::default()),
+            Kind::OptionalU32 => Self::OptionalU32(Paged::default(), PagedBits::default()),
+            Kind::OptionalI64 => Self::OptionalI64(Paged::default(), PagedBits::default()),
+            Kind::OptionalU64 => Self::OptionalU64(Paged::default(), PagedBits::default()),
+            Kind::Bytes => Self::Bytes(Paged::default()),
+            Kind::U32List => Self::U32List(Lists::default()),
+            Kind::U64List => Self::U64List(Lists::default()),
+            Kind::Opaque => Self::Opaque(Lists::default()),
         }
     }
 
@@ -487,35 +519,64 @@ impl Column {
         }
     }
 
-    /// The bytes its values hold, list and opaque cells' items included.
+    /// The bytes its values hold, list and opaque cells' items included, pages shared with
+    /// other tables too.
     pub fn held_bytes(&self) -> usize {
-        fn bytes<T>(values: &Vec<T>) -> usize {
-            values.capacity() * size_of::<T>()
-        }
-        fn cells<T>(values: &Vec<Box<[T]>>) -> usize {
-            bytes(values)
-                + values
-                    .iter()
-                    .map(|cell| cell.len() * size_of::<T>())
-                    .sum::<usize>()
-        }
-        match self {
-            Self::U8(values) => bytes(values),
-            Self::I8(values) => bytes(values),
-            Self::U16(values) => bytes(values),
-            Self::I16(values) => bytes(values),
-            Self::U32(values) | Self::Bytes(values) => bytes(values),
-            Self::I32(values) => bytes(values),
-            Self::U64(values) => bytes(values),
-            Self::I64(values) => bytes(values),
-            Self::Bool(values) => bytes(values),
-            Self::OptionalI32(values, present) => bytes(values) + bytes(&present.words),
-            Self::OptionalU32(values, present) => bytes(values) + bytes(&present.words),
-            Self::OptionalI64(values, present) => bytes(values) + bytes(&present.words),
-            Self::OptionalU64(values, present) => bytes(values) + bytes(&present.words),
-            Self::U32List(values) => cells(values),
-            Self::U64List(values) => cells(values),
-            Self::Opaque(values) => cells(values),
+        plain_columns!(self, values => values.held_bytes(),
+            Self::Bool(values) => values.held_bytes(),
+            Self::OptionalI32(values, present) => values.held_bytes() + present.held_bytes(),
+            Self::OptionalU32(values, present) => values.held_bytes() + present.held_bytes(),
+            Self::OptionalI64(values, present) => values.held_bytes() + present.held_bytes(),
+            Self::OptionalU64(values, present) => values.held_bytes() + present.held_bytes(),
+            Self::U32List(values) => values.held_bytes(),
+            Self::U64List(values) => values.held_bytes(),
+            Self::Opaque(values) => values.held_bytes(),
+        )
+    }
+
+    /// [`Self::held_bytes`] of the pages no other table shares.
+    pub fn owned_bytes(&self) -> usize {
+        plain_columns!(self, values => values.owned_bytes(),
+            Self::Bool(values) => values.owned_bytes(),
+            Self::OptionalI32(values, present) => values.owned_bytes() + present.owned_bytes(),
+            Self::OptionalU32(values, present) => values.owned_bytes() + present.owned_bytes(),
+            Self::OptionalI64(values, present) => values.owned_bytes() + present.owned_bytes(),
+            Self::OptionalU64(values, present) => values.owned_bytes() + present.owned_bytes(),
+            Self::U32List(values) => values.owned_bytes(),
+            Self::U64List(values) => values.owned_bytes(),
+            Self::Opaque(values) => values.owned_bytes(),
+        )
+    }
+
+    /// The bytes of the pages only it and `other`, a column of its kind, hold.
+    pub fn shared_bytes(&self, other: &Self) -> usize {
+        match (self, other) {
+            (Self::U8(mine), Self::U8(theirs)) => mine.shared_bytes(theirs),
+            (Self::I8(mine), Self::I8(theirs)) => mine.shared_bytes(theirs),
+            (Self::U16(mine), Self::U16(theirs)) => mine.shared_bytes(theirs),
+            (Self::I16(mine), Self::I16(theirs)) => mine.shared_bytes(theirs),
+            (Self::U32(mine), Self::U32(theirs)) => mine.shared_bytes(theirs),
+            (Self::I32(mine), Self::I32(theirs)) => mine.shared_bytes(theirs),
+            (Self::U64(mine), Self::U64(theirs)) => mine.shared_bytes(theirs),
+            (Self::I64(mine), Self::I64(theirs)) => mine.shared_bytes(theirs),
+            (Self::Bytes(mine), Self::Bytes(theirs)) => mine.shared_bytes(theirs),
+            (Self::Bool(mine), Self::Bool(theirs)) => mine.shared_bytes(theirs),
+            (Self::OptionalI32(mine, held), Self::OptionalI32(theirs, present)) => {
+                mine.shared_bytes(theirs) + held.shared_bytes(present)
+            }
+            (Self::OptionalU32(mine, held), Self::OptionalU32(theirs, present)) => {
+                mine.shared_bytes(theirs) + held.shared_bytes(present)
+            }
+            (Self::OptionalI64(mine, held), Self::OptionalI64(theirs, present)) => {
+                mine.shared_bytes(theirs) + held.shared_bytes(present)
+            }
+            (Self::OptionalU64(mine, held), Self::OptionalU64(theirs, present)) => {
+                mine.shared_bytes(theirs) + held.shared_bytes(present)
+            }
+            (Self::U32List(mine), Self::U32List(theirs)) => mine.shared_bytes(theirs),
+            (Self::U64List(mine), Self::U64List(theirs)) => mine.shared_bytes(theirs),
+            (Self::Opaque(mine), Self::Opaque(theirs)) => mine.shared_bytes(theirs),
+            _ => 0,
         }
     }
 
@@ -552,24 +613,69 @@ impl Column {
     }
 
     pub(crate) fn grow(&mut self, slots: usize) -> io::Result<()> {
-        match self {
-            Self::U8(values) => grow(values, slots),
-            Self::I8(values) => grow(values, slots),
-            Self::U16(values) => grow(values, slots),
-            Self::I16(values) => grow(values, slots),
-            Self::U32(values) | Self::Bytes(values) => grow(values, slots),
-            Self::I32(values) => grow(values, slots),
-            Self::U64(values) => grow(values, slots),
-            Self::I64(values) => grow(values, slots),
-            Self::Bool(values) => grow(values, slots),
-            Self::OptionalI32(values, _) => grow(values, slots),
-            Self::OptionalU32(values, _) => grow(values, slots),
-            Self::OptionalI64(values, _) => grow(values, slots),
-            Self::OptionalU64(values, _) => grow(values, slots),
-            Self::U32List(values) => grow(values, slots),
-            Self::U64List(values) => grow(values, slots),
-            Self::Opaque(values) => grow(values, slots),
-        }
+        plain_columns!(self, values => values.resize(slots),
+            Self::Bool(values) => values.resize(slots),
+            Self::OptionalI32(values, _) => values.resize(slots),
+            Self::OptionalU32(values, _) => values.resize(slots),
+            Self::OptionalI64(values, _) => values.resize(slots),
+            Self::OptionalU64(values, _) => values.resize(slots),
+            Self::U32List(values) => values.resize(slots),
+            Self::U64List(values) => values.resize(slots),
+            Self::Opaque(values) => values.resize(slots),
+        )
+    }
+
+    /// A copy sharing every page.
+    pub fn share(&self) -> io::Result<Self> {
+        Ok(match self {
+            Self::U8(values) => Self::U8(values.share()?),
+            Self::I8(values) => Self::I8(values.share()?),
+            Self::U16(values) => Self::U16(values.share()?),
+            Self::I16(values) => Self::I16(values.share()?),
+            Self::U32(values) => Self::U32(values.share()?),
+            Self::I32(values) => Self::I32(values.share()?),
+            Self::U64(values) => Self::U64(values.share()?),
+            Self::I64(values) => Self::I64(values.share()?),
+            Self::Bool(values) => Self::Bool(values.share()?),
+            Self::OptionalI32(values, bits) => Self::OptionalI32(values.share()?, bits.share()?),
+            Self::OptionalU32(values, bits) => Self::OptionalU32(values.share()?, bits.share()?),
+            Self::OptionalI64(values, bits) => Self::OptionalI64(values.share()?, bits.share()?),
+            Self::OptionalU64(values, bits) => Self::OptionalU64(values.share()?, bits.share()?),
+            Self::Bytes(values) => Self::Bytes(values.share()?),
+            Self::U32List(values) => Self::U32List(values.share()?),
+            Self::U64List(values) => Self::U64List(values.share()?),
+            Self::Opaque(values) => Self::Opaque(values.share()?),
+        })
+    }
+
+    fn downgrade(&self) -> io::Result<WeakColumn> {
+        Ok(match self {
+            Self::U8(values) => WeakColumn::U8(values.downgrade()?),
+            Self::I8(values) => WeakColumn::I8(values.downgrade()?),
+            Self::U16(values) => WeakColumn::U16(values.downgrade()?),
+            Self::I16(values) => WeakColumn::I16(values.downgrade()?),
+            Self::U32(values) => WeakColumn::U32(values.downgrade()?),
+            Self::I32(values) => WeakColumn::I32(values.downgrade()?),
+            Self::U64(values) => WeakColumn::U64(values.downgrade()?),
+            Self::I64(values) => WeakColumn::I64(values.downgrade()?),
+            Self::Bool(values) => WeakColumn::Bool(values.downgrade()?),
+            Self::OptionalI32(values, bits) => {
+                WeakColumn::OptionalI32(values.downgrade()?, bits.downgrade()?)
+            }
+            Self::OptionalU32(values, bits) => {
+                WeakColumn::OptionalU32(values.downgrade()?, bits.downgrade()?)
+            }
+            Self::OptionalI64(values, bits) => {
+                WeakColumn::OptionalI64(values.downgrade()?, bits.downgrade()?)
+            }
+            Self::OptionalU64(values, bits) => {
+                WeakColumn::OptionalU64(values.downgrade()?, bits.downgrade()?)
+            }
+            Self::Bytes(values) => WeakColumn::Bytes(values.downgrade()?),
+            Self::U32List(values) => WeakColumn::U32List(values.downgrade()?),
+            Self::U64List(values) => WeakColumn::U64List(values.downgrade()?),
+            Self::Opaque(values) => WeakColumn::Opaque(values.downgrade()?),
+        })
     }
 
     fn set(&mut self, slots: &[u32], values: Values<'_>) -> io::Result<()> {
@@ -651,12 +757,8 @@ impl Column {
             (Self::U64(column), Values::U64(value)) => fill_plain(column, slots, one(value)?),
             (Self::I64(column), Values::I64(value)) => fill_plain(column, slots, one(value)?),
             (Self::Bool(column), Values::Bool(value)) => {
-                let value = match one(value)? {
-                    0 => false,
-                    1 => true,
-                    other => return Err(invalid(format!("Bool column value {other}"))),
-                };
-                fill_plain(column, slots, value)
+                let value = bool_of(one(value)?)?;
+                column.put_each(slots, past, |_| Ok(value))
             }
             (Self::OptionalI32(column, bits), Values::OptionalI32 { present, values }) => {
                 fill_optional(column, bits, slots, present, values)
@@ -729,57 +831,124 @@ impl Column {
         }
     }
 
-    /// A deleted row's cells release what they hold; its optional values become missing.
-    fn release(&mut self, slot: u32) {
-        let at = slot as usize;
+    /// Deleted rows' cells, at `slots` (ascending), release what they hold; their optional
+    /// values become missing. A cell holding nothing already leaves its page shared.
+    fn release(&mut self, slots: &[u32]) -> io::Result<()> {
+        fn zero<T: Copy + Default + PartialEq>(
+            values: &mut Paged<T>,
+            slots: &[u32],
+        ) -> io::Result<()> {
+            for &slot in slots {
+                let at = slot as usize;
+                if values.get(at).is_some_and(|value| *value != T::default())
+                    && let Some(value) = values.get_mut(at)?
+                {
+                    *value = T::default();
+                }
+            }
+            Ok(())
+        }
+        fn missing(bits: &mut PagedBits, slots: &[u32]) -> io::Result<()> {
+            for &slot in slots {
+                if bits.get(slot) {
+                    bits.put(slot, false)?;
+                }
+            }
+            Ok(())
+        }
         match self {
             // Restarts omit freed cells; hot walks must leave the same page bases.
-            Self::U8(values) => values[at] = 0,
-            Self::I8(values) => values[at] = 0,
-            Self::U16(values) => values[at] = 0,
-            Self::I16(values) => values[at] = 0,
-            Self::U32(values) | Self::Bytes(values) => values[at] = 0,
-            Self::I32(values) => values[at] = 0,
-            Self::U64(values) => values[at] = 0,
-            Self::I64(values) => values[at] = 0,
-            Self::Bool(values) => values[at] = false,
+            Self::U8(values) => zero(values, slots),
+            Self::I8(values) => zero(values, slots),
+            Self::U16(values) => zero(values, slots),
+            Self::I16(values) => zero(values, slots),
+            Self::U32(values) | Self::Bytes(values) => zero(values, slots),
+            Self::I32(values) => zero(values, slots),
+            Self::U64(values) => zero(values, slots),
+            Self::I64(values) => zero(values, slots),
+            Self::Bool(values) => {
+                for &slot in slots {
+                    if values.get(slot as usize) == Some(&true) {
+                        values.put(slot, false)?;
+                    }
+                }
+                Ok(())
+            }
             Self::OptionalI32(_, bits)
             | Self::OptionalU32(_, bits)
             | Self::OptionalI64(_, bits)
-            | Self::OptionalU64(_, bits) => bits.clear(slot),
-            Self::U32List(values) => {
-                if let Some(cell) = values.get_mut(at) {
-                    *cell = Box::default();
-                }
-            }
-            Self::U64List(values) => {
-                if let Some(cell) = values.get_mut(at) {
-                    *cell = Box::default();
-                }
-            }
-            Self::Opaque(values) => {
-                if let Some(cell) = values.get_mut(at) {
-                    *cell = Box::default();
-                }
-            }
+            | Self::OptionalU64(_, bits) => missing(bits, slots),
+            Self::U32List(values) => values.clear(slots, past),
+            Self::U64List(values) => values.clear(slots, past),
+            Self::Opaque(values) => values.clear(slots, past),
         }
     }
 }
 
-fn write_plain<T: Le>(writer: &mut Writer, column: &[T], slots: &[u32]) -> io::Result<()> {
+/// The part an upgrade found, or None from the enclosing upgrade when a page is gone.
+macro_rules! some {
+    ($upgraded:expr) => {
+        match $upgraded {
+            Some(upgraded) => upgraded,
+            None => return Ok(None),
+        }
+    };
+}
+
+impl WeakColumn {
+    fn upgrade(&self) -> io::Result<Option<Column>> {
+        Ok(Some(match self {
+            Self::U8(values) => Column::U8(some!(values.upgrade()?)),
+            Self::I8(values) => Column::I8(some!(values.upgrade()?)),
+            Self::U16(values) => Column::U16(some!(values.upgrade()?)),
+            Self::I16(values) => Column::I16(some!(values.upgrade()?)),
+            Self::U32(values) => Column::U32(some!(values.upgrade()?)),
+            Self::I32(values) => Column::I32(some!(values.upgrade()?)),
+            Self::U64(values) => Column::U64(some!(values.upgrade()?)),
+            Self::I64(values) => Column::I64(some!(values.upgrade()?)),
+            Self::Bool(values) => Column::Bool(some!(Bools::upgrade(values)?)),
+            Self::OptionalI32(values, bits) => {
+                Column::OptionalI32(some!(values.upgrade()?), some!(PagedBits::upgrade(bits)?))
+            }
+            Self::OptionalU32(values, bits) => {
+                Column::OptionalU32(some!(values.upgrade()?), some!(PagedBits::upgrade(bits)?))
+            }
+            Self::OptionalI64(values, bits) => {
+                Column::OptionalI64(some!(values.upgrade()?), some!(PagedBits::upgrade(bits)?))
+            }
+            Self::OptionalU64(values, bits) => {
+                Column::OptionalU64(some!(values.upgrade()?), some!(PagedBits::upgrade(bits)?))
+            }
+            Self::Bytes(values) => Column::Bytes(some!(values.upgrade()?)),
+            Self::U32List(values) => Column::U32List(some!(values.upgrade()?)),
+            Self::U64List(values) => Column::U64List(some!(values.upgrade()?)),
+            Self::Opaque(values) => Column::Opaque(some!(values.upgrade()?)),
+        }))
+    }
+}
+
+fn write_plain<T: Le + Copy>(
+    writer: &mut Writer,
+    column: &Paged<T>,
+    slots: &[u32],
+) -> io::Result<()> {
     let values = engine_allocation::collect_vec(slots.iter().map(|&slot| column[slot as usize]))?;
     writer.values(&values)
 }
 
-fn write_ints<T: Int>(writer: &mut Writer, column: &[T], slots: &[u32]) -> io::Result<()> {
+fn write_ints<T: Int + Copy>(
+    writer: &mut Writer,
+    column: &Paged<T>,
+    slots: &[u32],
+) -> io::Result<()> {
     let values = engine_allocation::collect_vec(slots.iter().map(|&slot| column[slot as usize]))?;
     writer.ints(&values)
 }
 
-fn write_optional<T: Int>(
+fn write_optional<T: Int + Copy>(
     writer: &mut Writer,
-    column: &[T],
-    bits: &Bits,
+    column: &Paged<T>,
+    bits: &PagedBits,
     slots: &[u32],
 ) -> io::Result<()> {
     let mut present = engine_allocation::filled(slots.len().div_ceil(64), 0u64)?;
@@ -797,7 +966,7 @@ fn write_optional<T: Int>(
 
 fn write_cells<T: Copy>(
     writer: &mut Writer,
-    column: &[Box<[T]>],
+    column: &Lists<T>,
     slots: &[u32],
     items_of: fn(&mut Writer, &[T]) -> io::Result<()>,
 ) -> io::Result<()> {
@@ -817,24 +986,24 @@ fn write_cells<T: Copy>(
 
 /// Each slot's held cell with its value's hunks applied: kept items, removed items and
 /// inserted items, then the rest of the held cell.
-fn patch_cells<T: Copy>(
-    column: &mut [Box<[T]>],
+fn patch_cells<T: Copy + Default>(
+    column: &mut Lists<T>,
     slots: &[u32],
     patches: Patches<'_>,
     items: &[T],
 ) -> io::Result<()> {
     same_length(slots, patches.hunks.len())?;
     let (mut edit, mut item) = (0usize, 0usize);
-    for (&slot, &count) in slots.iter().zip(patches.hunks) {
-        let held = at(column, slot)?;
+    column.rewrite(slots, past, |index, held, cell| {
+        let count = patches.hunks[index] as usize;
         let edits = patches
             .edits
-            .get(edit..edit + count as usize)
+            .get(edit..edit + count)
             .ok_or_else(|| invalid("PATCH run ends inside its hunks"))?;
-        edit += count as usize;
+        edit += count;
         let removed: usize = edits.iter().map(|edit| edit.1 as usize).sum();
         let inserted: usize = edits.iter().map(|edit| edit.2 as usize).sum();
-        let mut cell = engine_allocation::vec(held.len().saturating_sub(removed) + inserted)?;
+        engine_allocation::reserve(cell, held.len().saturating_sub(removed) + inserted)?;
         let mut from = 0usize;
         for &(skip, removed, inserted) in edits {
             let kept = from
@@ -854,8 +1023,8 @@ fn patch_cells<T: Copy>(
             item = end;
         }
         cell.extend_from_slice(&held[from..]);
-        *held = cell.into_boxed_slice();
-    }
+        Ok(())
+    })?;
     if edit != patches.edits.len() || item != items.len() {
         return Err(invalid("PATCH run carries edits past its values"));
     }
@@ -864,6 +1033,208 @@ fn patch_cells<T: Copy>(
 
 fn mismatch(column: Kind, values: Kind) -> io::Error {
     invalid(format!("{values:?} values for a {column:?} column"))
+}
+
+/// A bucket of [`Slots`] holding no slot, and one whose slot was let go.
+const EMPTY: u64 = u64::MAX;
+const GONE: u64 = u64::MAX - 1;
+
+/// `key`'s hash, below the top bit, which only empty and gone buckets set.
+fn tag(key: u128) -> u32 {
+    let mut x = (key as u64) ^ ((key >> 64) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x as u32) & 0x7FFF_FFFF
+}
+
+/// Each live row's slot by its key: an open-addressed table of slots, each beside its key's
+/// hash, the key itself read from the table's keys. A bucket takes eight bytes, in pages
+/// shared as the table's columns are.
+#[derive(Clone, Debug)]
+pub(crate) struct Slots {
+    buckets: Paged<u64>,
+    len: usize,
+    gone: usize,
+}
+
+impl Default for Slots {
+    fn default() -> Self {
+        Self {
+            buckets: Paged::filled(0, EMPTY).expect("an empty index allocates nothing"),
+            len: 0,
+            gone: 0,
+        }
+    }
+}
+
+impl Slots {
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    fn held_bytes(&self) -> usize {
+        self.buckets.held_bytes()
+    }
+
+    fn owned_bytes(&self) -> usize {
+        self.buckets.owned_bytes()
+    }
+
+    fn shared_bytes(&self, other: &Self) -> usize {
+        self.buckets.shared_bytes(&other.buckets)
+    }
+
+    fn share(&self) -> io::Result<Self> {
+        Ok(Self {
+            buckets: self.buckets.share()?,
+            len: self.len,
+            gone: self.gone,
+        })
+    }
+
+    fn put(&mut self, at: usize, bucket: u64) -> io::Result<()> {
+        *self
+            .buckets
+            .get_mut(at)?
+            .expect("a probe stays among the buckets") = bucket;
+        Ok(())
+    }
+
+    /// The slot it holds for `key`, whose row's key `keys` holds at that slot.
+    pub(crate) fn get(&self, keys: &Paged<u128>, key: u128) -> Option<u32> {
+        if self.buckets.is_empty() {
+            return None;
+        }
+        let (tag, mask) = (tag(key), self.buckets.len() - 1);
+        let mut at = tag as usize & mask;
+        loop {
+            let bucket = self.buckets[at];
+            if bucket == EMPTY {
+                return None;
+            }
+            if bucket != GONE && (bucket >> 32) as u32 == tag {
+                let slot = bucket as u32;
+                if keys.get(slot as usize) == Some(&key) {
+                    return Some(slot);
+                }
+            }
+            at = (at + 1) & mask;
+        }
+    }
+
+    /// Room for `additional` more slots without growing. Rebuilding reads only the hashes it
+    /// holds, never the keys.
+    pub(crate) fn reserve(&mut self, additional: usize) -> io::Result<()> {
+        let used = self
+            .len
+            .checked_add(self.gone)
+            .and_then(|used| used.checked_add(additional))
+            .ok_or_else(engine_allocation::oom)?;
+        // At most three quarters used, so a probe meets an empty bucket.
+        if used.saturating_mul(4) <= self.buckets.len().saturating_mul(3) {
+            return Ok(());
+        }
+        let live = self
+            .len
+            .checked_add(additional)
+            .ok_or_else(engine_allocation::oom)?;
+        // Rebuilt at most five eighths full, so the next rebuild is an eighth of it away.
+        let mut buckets = 8_usize;
+        while buckets.saturating_mul(5) < live.saturating_mul(8) {
+            buckets = buckets
+                .checked_mul(2)
+                .filter(|&buckets| buckets <= 1 << 31)
+                .ok_or_else(engine_allocation::oom)?;
+        }
+        let mut rebuilt = engine_allocation::filled(buckets, EMPTY)?;
+        let mask = buckets - 1;
+        for &bucket in self.buckets.iter() {
+            if bucket >= GONE {
+                continue;
+            }
+            let mut at = (bucket >> 32) as usize & mask;
+            while rebuilt[at] != EMPTY {
+                at = (at + 1) & mask;
+            }
+            rebuilt[at] = bucket;
+        }
+        // The old buckets go before the new pages are made.
+        self.buckets = Paged::filled(0, EMPTY)?;
+        self.buckets = Paged::from_slice(&rebuilt, EMPTY)?;
+        self.gone = 0;
+        Ok(())
+    }
+
+    /// Holds `slot` for `key`, in place of the slot it held for `key`, if any; `keys` holds
+    /// the table's keys at the slots it holds.
+    pub(crate) fn insert(&mut self, keys: &Paged<u128>, key: u128, slot: u32) -> io::Result<()> {
+        self.reserve(1)?;
+        let (tag, mask) = (tag(key), self.buckets.len() - 1);
+        let entry = u64::from(tag) << 32 | u64::from(slot);
+        let mut at = tag as usize & mask;
+        let mut free = None;
+        loop {
+            let bucket = self.buckets[at];
+            if bucket == EMPTY {
+                break;
+            }
+            if bucket == GONE {
+                free.get_or_insert(at);
+            } else if (bucket >> 32) as u32 == tag && keys.get(bucket as u32 as usize) == Some(&key)
+            {
+                return self.put(at, entry);
+            }
+            at = (at + 1) & mask;
+        }
+        match free {
+            Some(free) => {
+                self.put(free, entry)?;
+                self.gone -= 1;
+            }
+            None => self.put(at, entry)?,
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Lets go of `slot`, held for `key`, whatever key the table holds there now; nothing when
+    /// it holds `slot` for another key, or none.
+    pub(crate) fn remove(&mut self, key: u128, slot: u32) -> io::Result<()> {
+        if self.buckets.is_empty() {
+            return Ok(());
+        }
+        let (tag, mask) = (tag(key), self.buckets.len() - 1);
+        let entry = u64::from(tag) << 32 | u64::from(slot);
+        let mut at = tag as usize & mask;
+        loop {
+            let bucket = self.buckets[at];
+            if bucket == EMPTY {
+                return Ok(());
+            }
+            if bucket == entry {
+                break;
+            }
+            at = (at + 1) & mask;
+        }
+        self.len -= 1;
+        if self.buckets[(at + 1) & mask] != EMPTY {
+            self.put(at, GONE)?;
+            self.gone += 1;
+            return Ok(());
+        }
+        // No probe goes past an empty bucket: gone ones just before it are empty too.
+        self.put(at, EMPTY)?;
+        let mut back = at.wrapping_sub(1) & mask;
+        while self.buckets[back] == GONE {
+            self.put(back, EMPTY)?;
+            self.gone -= 1;
+            back = back.wrapping_sub(1) & mask;
+        }
+        Ok(())
+    }
 }
 
 fn ascending(slots: &[u32]) -> io::Result<()> {
@@ -876,7 +1247,7 @@ fn ascending(slots: &[u32]) -> io::Result<()> {
 /// One table's live rows: their keys and one column per field, at writer-assigned slots.
 #[derive(Clone, Debug)]
 pub struct Table {
-    pub(crate) keys: Vec<u128>,
+    pub(crate) keys: Paged<u128>,
     pub(crate) live: Bits,
     pub(crate) columns: Vec<Column>,
     /// Per column, the slots whose cell the recording did not record: unknown, never the
@@ -884,7 +1255,64 @@ pub struct Table {
     pub(crate) unrecorded: Vec<Bits>,
     pub(crate) slots: usize,
     /// Each live row's slot by its key, for joins between tables.
-    pub(crate) by_key: HashMap<u128, u32, foldhash::fast::RandomState>,
+    pub(crate) by_key: Slots,
+}
+
+/// A [`Table`] whose pages are held weakly: its rows again while every page is still held
+/// by a table sharing them, nothing of its own beside.
+#[derive(Debug)]
+pub struct WeakTable {
+    keys: WeakPaged<u128>,
+    live: Bits,
+    columns: Vec<WeakColumn>,
+    unrecorded: Vec<Bits>,
+    slots: usize,
+    by_key: (WeakPaged<u64>, usize, usize),
+}
+
+impl WeakTable {
+    /// The table, sharing its pages, while every one is still held.
+    pub fn upgrade(&self) -> io::Result<Option<Table>> {
+        let Some(keys) = self.keys.upgrade()? else {
+            return Ok(None);
+        };
+        let Some(buckets) = self.by_key.0.upgrade()? else {
+            return Ok(None);
+        };
+        let mut columns = engine_allocation::vec(self.columns.len())?;
+        for column in &self.columns {
+            let Some(column) = column.upgrade()? else {
+                return Ok(None);
+            };
+            columns.push(column);
+        }
+        let mut unrecorded = engine_allocation::vec(self.unrecorded.len())?;
+        for bits in &self.unrecorded {
+            unrecorded.push(bits.copy()?);
+        }
+        Ok(Some(Table {
+            keys,
+            live: self.live.copy()?,
+            columns,
+            unrecorded,
+            slots: self.slots,
+            by_key: Slots {
+                buckets,
+                len: self.by_key.1,
+                gone: self.by_key.2,
+            },
+        }))
+    }
+
+    /// Whether any of its pages may still be held.
+    pub fn alive(&self) -> bool {
+        self.keys.alive()
+    }
+
+    /// The bytes it holds of its own.
+    pub fn held_bytes(&self) -> usize {
+        self.live.held_bytes() + self.unrecorded.iter().map(Bits::held_bytes).sum::<usize>()
+    }
 }
 
 /// Tables are equal when they hold the same rows at the same slots: what a freed slot
@@ -912,12 +1340,12 @@ impl Eq for Table {}
 impl Table {
     pub fn new(kinds: &[Kind]) -> io::Result<Self> {
         Ok(Self {
-            keys: Vec::new(),
+            keys: Paged::default(),
             live: Bits::default(),
             columns: engine_allocation::collect_vec(kinds.iter().map(|&kind| Column::new(kind)))?,
             unrecorded: engine_allocation::collect_vec(kinds.iter().map(|_| Bits::default()))?,
             slots: 0,
-            by_key: HashMap::default(),
+            by_key: Slots::default(),
         })
     }
 
@@ -960,19 +1388,60 @@ impl Table {
         }
         table.resize(slots)?;
         table.index(keys.len())?;
-        for (slot, &key) in live.ones().zip(keys) {
-            table.keys[slot as usize] = key;
+        let live_slots = engine_allocation::collect_vec(live.ones())?;
+        table.keys.each_mut(&live_slots, past, |index, held| {
+            *held = keys[index];
+            Ok(())
+        })?;
+        for (&slot, &key) in live_slots.iter().zip(keys) {
             table.key_slot(key, slot)?;
         }
         table.live = live;
         Ok(table)
     }
 
-    /// The bytes a table of `kinds` holds over `slots` slots: each slot's key and its cell in
-    /// every column, a list's or opaque cell's items aside.
-    pub fn storage_bytes(kinds: &[Kind], slots: usize) -> io::Result<usize> {
-        let slot = size_of::<u128>() + kinds.iter().map(|kind| kind.slot_bytes()).sum::<usize>();
-        slots.checked_mul(slot).ok_or_else(engine_allocation::oom)
+    /// A copy sharing every page: either then copies a page it writes, alone.
+    pub fn share(&self) -> io::Result<Self> {
+        let mut columns = engine_allocation::vec(self.columns.len())?;
+        for column in &self.columns {
+            columns.push(column.share()?);
+        }
+        let mut unrecorded = engine_allocation::vec(self.unrecorded.len())?;
+        for bits in &self.unrecorded {
+            unrecorded.push(bits.copy()?);
+        }
+        Ok(Self {
+            keys: self.keys.share()?,
+            live: self.live.copy()?,
+            columns,
+            unrecorded,
+            slots: self.slots,
+            by_key: self.by_key.share()?,
+        })
+    }
+
+    /// Its pages held weakly, and a copy of the rest.
+    pub fn downgrade(&self) -> io::Result<WeakTable> {
+        let mut columns = engine_allocation::vec(self.columns.len())?;
+        for column in &self.columns {
+            columns.push(column.downgrade()?);
+        }
+        let mut unrecorded = engine_allocation::vec(self.unrecorded.len())?;
+        for bits in &self.unrecorded {
+            unrecorded.push(bits.copy()?);
+        }
+        Ok(WeakTable {
+            keys: self.keys.downgrade()?,
+            live: self.live.copy()?,
+            columns,
+            unrecorded,
+            slots: self.slots,
+            by_key: (
+                self.by_key.buckets.downgrade()?,
+                self.by_key.len,
+                self.by_key.gone,
+            ),
+        })
     }
 
     pub fn kinds(&self) -> impl Iterator<Item = Kind> + '_ {
@@ -992,15 +1461,36 @@ impl Table {
         self.slots
     }
 
-    /// The bytes its rows hold: keys, bits, every column and the key index.
+    /// The bytes its rows hold: keys, bits, every column and the key index, pages it shares
+    /// with other tables too.
     pub fn held_bytes(&self) -> usize {
-        let bits = |bits: &Bits| bits.words.capacity() * size_of::<u64>();
-        self.keys.capacity() * size_of::<u128>()
-            + bits(&self.live)
-            + self.unrecorded.iter().map(bits).sum::<usize>()
+        self.keys.held_bytes()
+            + self.live.held_bytes()
+            + self.unrecorded.iter().map(Bits::held_bytes).sum::<usize>()
             + self.columns.iter().map(Column::held_bytes).sum::<usize>()
-            // A hash map entry and its control byte.
-            + self.by_key.capacity() * (size_of::<(u128, u32)>() + 1)
+            + self.by_key.held_bytes()
+    }
+
+    /// [`Self::held_bytes`] but of the pages no other table shares: what it holds alone.
+    pub fn owned_bytes(&self) -> usize {
+        self.keys.owned_bytes()
+            + self.live.held_bytes()
+            + self.unrecorded.iter().map(Bits::held_bytes).sum::<usize>()
+            + self.columns.iter().map(Column::owned_bytes).sum::<usize>()
+            + self.by_key.owned_bytes()
+    }
+
+    /// The bytes of the pages only it and `other`, a table of its kinds, hold: what one table
+    /// shared from the other holds of it beside [`Self::owned_bytes`].
+    pub fn shared_bytes(&self, other: &Self) -> usize {
+        self.keys.shared_bytes(&other.keys)
+            + self
+                .columns
+                .iter()
+                .zip(&other.columns)
+                .map(|(mine, theirs)| mine.shared_bytes(theirs))
+                .sum::<usize>()
+            + self.by_key.shared_bytes(&other.by_key)
     }
 
     pub fn live(&self) -> &Bits {
@@ -1013,21 +1503,25 @@ impl Table {
 
     /// The slot of the live row with `key`.
     pub fn slot(&self, key: u128) -> Option<u32> {
-        self.by_key.get(&key).copied()
+        self.by_key.get(&self.keys, key)
     }
 
     fn index(&mut self, additional: usize) -> io::Result<()> {
-        engine_allocation::reserve_map(&mut self.by_key, additional)
+        self.by_key.reserve(additional)
     }
 
+    /// Holds `slot`, whose key the table's keys hold already, by `key`.
     fn key_slot(&mut self, key: u128, slot: u32) -> io::Result<()> {
-        if let Some(held) = self.by_key.get(&key) {
+        if let Some(held) = self
+            .by_key
+            .get(&self.keys, key)
+            .filter(|&held| held != slot)
+        {
             return Err(invalid(format!(
                 "Row key {key:#x} at slot {slot} is already held at slot {held}"
             )));
         }
-        self.by_key.insert(key, slot);
-        Ok(())
+        self.by_key.insert(&self.keys, key, slot)
     }
 
     pub fn column(&self, column: usize) -> Option<&Column> {
@@ -1095,11 +1589,20 @@ impl Table {
         if slots <= self.slots {
             return Ok(());
         }
-        grow(&mut self.keys, slots)?;
+        self.keys.resize(slots)?;
         for column in &mut self.columns {
             column.grow(slots)?;
         }
         self.slots = slots;
+        Ok(())
+    }
+
+    /// Sets the key held at `slot`, a slot of the table.
+    pub(crate) fn put_key(&mut self, slot: u32, key: u128) -> io::Result<()> {
+        *self
+            .keys
+            .get_mut(slot as usize)?
+            .ok_or_else(|| past(slot))? = key;
         Ok(())
     }
 
@@ -1152,9 +1655,12 @@ impl Table {
             self.resize(last as usize + 1)?;
         }
         self.index(slots.len())?;
+        self.keys.each_mut(slots, past, |index, held| {
+            *held = keys[index];
+            Ok(())
+        })?;
         for (&slot, &key) in slots.iter().zip(keys) {
             self.key_slot(key, slot)?;
-            self.keys[slot as usize] = key;
             self.live.set(slot)?;
         }
         Ok(())
@@ -1164,13 +1670,13 @@ impl Table {
         self.live_slots(slots)?;
         for &slot in slots {
             self.live.clear(slot);
-            self.by_key.remove(&self.keys[slot as usize]);
-            for column in &mut self.columns {
-                column.release(slot);
-            }
+            self.by_key.remove(self.keys[slot as usize], slot)?;
             for bits in &mut self.unrecorded {
                 bits.clear(slot);
             }
+        }
+        for column in &mut self.columns {
+            column.release(slots)?;
         }
         Ok(())
     }

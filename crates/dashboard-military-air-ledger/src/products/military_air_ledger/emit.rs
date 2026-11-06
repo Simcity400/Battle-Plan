@@ -147,7 +147,7 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, actor: u64, measure: u64) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, actor: u64, measure: u64) -> io::Result<KeyHandle> {
         self.actors.key(
             writer,
             Place {
@@ -160,7 +160,7 @@ impl Emit {
         )
     }
 
-    fn keys(&mut self, writer: &mut Writer<'_>) -> io::Result<[[KeyHandle; 3]; 2]> {
+    fn keys(&mut self, writer: &mut Writer) -> io::Result<[[KeyHandle; 3]; 2]> {
         if let Some(keys) = self.keys {
             return Ok(keys);
         }
@@ -177,7 +177,7 @@ impl Emit {
     /// The presence key of `country` in `family`.
     fn country(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         family: usize,
         country: &(String, String),
         hour: i32,
@@ -198,7 +198,7 @@ impl Emit {
     /// The presence of `family` from `hour`: the countries `joined` holds, or none.
     fn presence(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         family: usize,
         hour: i32,
         joined: Option<&Arc<Identities>>,
@@ -233,7 +233,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let keys = self.keys(writer)?;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
@@ -306,7 +306,7 @@ impl Emit {
     /// A checked read with events: its counts and its sums.
     fn read(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         family: usize,
         at: i32,
         key: KeyHandle,
@@ -344,7 +344,7 @@ impl Emit {
     }
 
     /// The hours walked since the domain's last row, through `last`, as known.
-    fn known(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         // An hour that failed began none: the cut goes through the last that succeeded.
         if let Some(first) = self.first.take().filter(|&first| first <= last) {
             writer.domain(
@@ -363,7 +363,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the hours since the last cut as known, and the
     /// counts that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.known(writer, last)?;
         if self.stale {

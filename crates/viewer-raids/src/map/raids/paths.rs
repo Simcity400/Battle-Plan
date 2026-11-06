@@ -3,7 +3,8 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{Mutex, MutexGuard, OnceLock},
+    fmt,
+    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak},
 };
 use viewer_foundation::debug_fields;
 
@@ -32,7 +33,7 @@ type Search = Result<Option<i64>, String>;
 type Target = Result<Option<u32>, String>;
 
 type MemoKey = (RaidPathDispatcher, u32, u32);
-type Entry = Option<Search>;
+type Entry = Option<Held>;
 
 pub(super) fn dispatcher(kind: u8) -> Result<RaidPathDispatcher, String> {
     match kind {
@@ -53,79 +54,68 @@ type Key = (u32, u32, RaidPath);
 /// Each province's recorded state, and each state's province count.
 type StateMembers = (BTreeMap<u32, u32>, BTreeMap<u32, usize>);
 
-/// The memory the content search cache may hold, entries and error text.
-pub const CACHE_BUDGET: usize = 4 << 20;
+/// The content searches some holder keeps, by pair.
+type Memo = Mutex<HashMap<Key, Weak<Searched>>>;
 
-/// What one cached entry costs beyond its error text: the map slot, the
-/// recency index entry and their allocator overhead, rounded up.
-const ENTRY_BYTES: usize = 96;
-
-/// Least-recently-used results, bounded by [`CACHE_BUDGET`].
-#[derive(Default)]
-struct Cache {
-    entries: HashMap<Key, (Search, u64)>,
-    recency: BTreeMap<u64, Key>,
-    tick: u64,
-    bytes: usize,
+/// A content search's answer. The memo finds it while a holder keeps a [`Held`] of it: the
+/// cycle's rows ([`super::cycle`]) and the hour's raid units ([`super::super::raid_arrows`]).
+pub struct Searched {
+    result: Search,
+    /// The memo that finds it; `None` for an error, which is searched again.
+    memo: Option<(Weak<Memo>, Key)>,
 }
 
-fn cost(result: &Search) -> usize {
-    ENTRY_BYTES + result.as_ref().err().map_or(0, String::capacity)
-}
+pub type Held = Arc<Searched>;
 
-impl Cache {
-    fn get(&mut self, key: &Key) -> Option<Search> {
-        let (result, stamp) = self.entries.get_mut(key)?;
-        self.recency.remove(stamp);
-        self.tick += 1;
-        *stamp = self.tick;
-        self.recency.insert(self.tick, *key);
-        Some(result.clone())
+impl Searched {
+    fn unkept(result: Search) -> Held {
+        Arc::new(Self { result, memo: None })
     }
+}
 
-    fn insert(&mut self, key: Key, result: Search, budget: usize) {
-        if let Some((old, stamp)) = self.entries.remove(&key) {
-            self.recency.remove(&stamp);
-            self.bytes -= cost(&old);
-        }
-        self.tick += 1;
-        self.bytes += cost(&result);
-        self.recency.insert(self.tick, key);
-        self.entries.insert(key, (result, self.tick));
-        while self.bytes > budget
-            && let Some((_, oldest)) = self.recency.pop_first()
+impl Drop for Searched {
+    fn drop(&mut self) {
+        let this: *const Self = self;
+        let Some((memo, key)) = &self.memo else {
+            return;
+        };
+        let Some(memo) = memo.upgrade() else {
+            return;
+        };
+        let mut entries = memo.lock().unwrap_or_else(PoisonError::into_inner);
+        // A search that raced past this one's end may hold the pair now.
+        if entries
+            .get(key)
+            .is_some_and(|entry| std::ptr::eq(entry.as_ptr(), this))
         {
-            if let Some((old, _)) = self.entries.remove(&oldest) {
-                self.bytes -= cost(&old);
-            }
+            entries.remove(key);
         }
     }
 }
 
-/// The content search, shared by every hour and perspective: its result
-/// depends on content alone, so it is cached for the session within
-/// [`CACHE_BUDGET`], least recently used first out.
+impl fmt::Debug for Searched {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.result.fmt(f)
+    }
+}
+
+/// The content search, shared by every hour and perspective: its result depends on content
+/// alone, so a pair is searched once while some holder keeps its answer.
 pub struct PathSearch {
     graph: ProvinceGraph,
-    cache: Mutex<Cache>,
-    budget: usize,
+    searched: Arc<Memo>,
 }
 debug_fields!(PathSearch(this) {
-    graph, budget
+    graph
 } {
 
 });
 
 impl PathSearch {
     pub fn new(graph: ProvinceGraph) -> Self {
-        Self::with_budget(graph, CACHE_BUDGET)
-    }
-
-    fn with_budget(graph: ProvinceGraph, budget: usize) -> Self {
         Self {
             graph,
-            cache: Mutex::default(),
-            budget,
+            searched: Arc::default(),
         }
     }
 
@@ -133,18 +123,33 @@ impl PathSearch {
         &self.graph
     }
 
-    fn search(&self, geometry: &ProvinceGeometry, from: u32, to: u32, path: RaidPath) -> Search {
+    fn memo(&self) -> MutexGuard<'_, HashMap<Key, Weak<Searched>>> {
+        self.searched
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    // No `Held` may drop while the memo is locked: its drop locks it.
+    fn search(&self, geometry: &ProvinceGeometry, from: u32, to: u32, path: RaidPath) -> Held {
         let key = (from, to, path);
-        if let Some(result) = self.cache.lock().expect("raid path cache").get(&key) {
-            return result;
+        if let Some(held) = self.memo().get(&key).and_then(Weak::upgrade) {
+            return held;
         }
         // Searched outside the lock: builders of other hours may search too.
         let result = raid_distance(&self.graph, geometry, from, to, path);
-        self.cache
-            .lock()
-            .expect("raid path cache")
-            .insert(key, result.clone(), self.budget);
-        result
+        if result.is_err() {
+            return Searched::unkept(result);
+        }
+        let mut memo = self.memo();
+        if let Some(raced) = memo.get(&key).and_then(Weak::upgrade) {
+            return raced;
+        }
+        let held = Arc::new(Searched {
+            result,
+            memo: Some((Arc::downgrade(&self.searched), key)),
+        });
+        memo.insert(key, Arc::downgrade(&held));
+        held
     }
 }
 
@@ -179,6 +184,8 @@ pub struct Ledger<'b> {
     own: RefCell<AskedPairs>,
     /// The last naval target resolved: a target asks it once per source.
     naval_target: RefCell<Option<(RaidScope, Target)>>,
+    /// The content searches needed answers read since [`Self::take_held`].
+    used: RefCell<Vec<Held>>,
 }
 
 impl<'b> Ledger<'b> {
@@ -196,6 +203,14 @@ impl<'b> Ledger<'b> {
             .get(pair)
             .or_else(|| self.base.and_then(|base| base.0.get(pair)))
             .cloned()
+    }
+
+    /// Each content search read since the last take, once.
+    fn take_held(&self) -> Box<[Held]> {
+        let mut used = self.used.take();
+        used.sort_unstable_by_key(Arc::as_ptr);
+        used.dedup_by(|a, b| Arc::ptr_eq(a, b));
+        used.into_boxed_slice()
     }
 }
 
@@ -384,21 +399,34 @@ impl<'a> Distances<'a> {
         needed: bool,
     ) -> Option<Search> {
         let pair = (path_dispatcher(path), from, to);
-        let search = || -> Search {
-            let paths = self.assets.paths.as_ref().map_err(Clone::clone)?;
-            paths.search(&self.assets.geometry, from, to, path)
+        let search = || -> Held {
+            match &self.assets.paths {
+                Ok(paths) => paths.search(&self.assets.geometry, from, to, path),
+                Err(error) => Searched::unkept(Err(error.clone())),
+            }
         };
         if let Ok(Some(result)) = self.recorded(pair) {
             return needed.then_some(Ok(result));
         }
         let known = ledger.get(&pair).flatten();
         let answer = if needed {
-            Some(known.unwrap_or_else(search))
+            let held = known.unwrap_or_else(search);
+            ledger.used.borrow_mut().push(Arc::clone(&held));
+            Some(held)
         } else {
             known
         };
-        ledger.own.borrow_mut().0.insert(pair, answer.clone());
-        answer.filter(|_| needed)
+        let result = answer
+            .as_ref()
+            .filter(|_| needed)
+            .map(|held| held.result.clone());
+        ledger.own.borrow_mut().0.insert(pair, answer);
+        result
+    }
+
+    /// The content searches this hour's distances read since the last take.
+    pub fn take_held(&self) -> Box<[Held]> {
+        self.asked().take_held()
     }
 }
 
@@ -459,6 +487,10 @@ impl super::launch::RaidPaths for HourPaths<'_> {
 
     fn hour(&self) -> Option<&HourPaths<'_>> {
         Some(self)
+    }
+
+    fn take_held(&self) -> Box<[Held]> {
+        self.distances.take_held()
     }
 }
 
@@ -555,28 +587,15 @@ impl super::launch::RaidPaths for PartPaths<'_, '_> {
         )
         .reaches(division, source_province)
     }
+
+    fn take_held(&self) -> Box<[Held]> {
+        self.ledger.take_held()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_cache_evicts_the_least_recently_used_within_its_budget() {
-        let mut cache = Cache::default();
-        let key = |id| (id, id, RaidPath::Land);
-        let budget = 3 * ENTRY_BYTES;
-        for id in 1..=3 {
-            cache.insert(key(id), Ok(Some(i64::from(id))), budget);
-        }
-        assert_eq!(cache.get(&key(1)), Some(Ok(Some(1))));
-        cache.insert(key(4), Ok(None), budget);
-        assert_eq!(cache.get(&key(2)), None, "least recent is gone");
-        assert!(cache.get(&key(1)).is_some() && cache.get(&key(3)).is_some());
-        cache.insert(key(5), Err("x".repeat(ENTRY_BYTES)), budget);
-        assert!(cache.bytes <= budget);
-        assert_eq!(cache.entries.len(), cache.recency.len());
-    }
 
     #[test]
     fn recorded_dispatchers_keep_distances_and_failures_apart_without_a_graph() {
@@ -661,11 +680,14 @@ mod tests {
     fn batches_share_pairs_only_within_the_same_dispatcher() {
         let mut land = AskedPairs::default();
         let mut naval = AskedPairs::default();
-        land.0
-            .insert((RaidPathDispatcher::Land, 7, 9), Some(Ok(Some(900_000))));
-        naval
-            .0
-            .insert((RaidPathDispatcher::Naval, 7, 9), Some(Ok(Some(500_000))));
+        land.0.insert(
+            (RaidPathDispatcher::Land, 7, 9),
+            Some(Searched::unkept(Ok(Some(900_000)))),
+        );
+        naval.0.insert(
+            (RaidPathDispatcher::Naval, 7, 9),
+            Some(Searched::unkept(Ok(Some(500_000)))),
+        );
         assert!(!land.share_a_pair(&naval));
         assert!(land.share_a_pair(&land.clone()));
         land.absorb(naval);

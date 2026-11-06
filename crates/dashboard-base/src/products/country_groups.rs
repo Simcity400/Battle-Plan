@@ -25,15 +25,20 @@ use crate::metadata::validate_campaign;
 use crate::{
     Source, catalogue, content, faction_names,
     metadata::{
-        IdentityTrack, LinkTags, TaggedCountry, branch_bounds, check_cancel, link_slots,
+        IdentityTrack, LinkTags, TaggedCountry, branch_bounds, check_cancel, link_slots_in,
         tagged_countries_indexed,
     },
     transport::json_len,
 };
+use dashboard_world::{Mark, Viewed};
 use installed_content_core::faction_templates::Catalog;
 use installed_content_localisation::localisation::Localisation;
 use replay::container::Replay;
-use replay_data::rows::tables;
+use replay_data::rows::{
+    CapitulationRow, CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, HumanControllerRow,
+    TableId, TableSchema, WarRelationRow, mask, tables,
+};
+use replay_frame::frame::{DecodedFrame, HourFrame, SharedView};
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
@@ -48,11 +53,35 @@ pub mod changes;
 pub mod prepared;
 pub mod served;
 
-pub struct CountryGroups;
+/// The fields of each group table the scan reads; a key's fields come with every row.
+const COUNTRY_FIELDS: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+const LINK_FIELDS: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+const FACTION_FIELDS: u64 = mask::<FactionRow>(&["name", "template_token"]);
+const MEMBER_FIELDS: u64 = mask::<FactionMemberRow>(&["faction", "ordinal"]);
+const HUMAN_FIELDS: u64 = mask::<HumanControllerRow>(&["count"]);
+const WAR_FIELDS: u64 =
+    mask::<WarRelationRow>(&["start_hour", "end_hour", "first_was_instigator"]);
+const CAPITULATION_FIELDS: u64 = mask::<CapitulationRow>(&["capitulated", "capitulated_hour"]);
 
-/// Branches kept per source, so tracks on different branches do not evict each other.
-#[cfg(any(test, feature = "test-support"))]
-pub const CACHED_BRANCHES: usize = 4;
+/// Each row of the complete `T`, read as `read` takes it; none where it is not complete.
+fn read_rows<T: TableSchema, V>(
+    frame: HourFrame<'_>,
+    fields: u64,
+    visits: &mut usize,
+    read: impl Fn(&T::Row) -> V,
+) -> io::Result<Option<Vec<V>>> {
+    let Ok(rows) = frame.complete::<T>(fields) else {
+        return Ok(None);
+    };
+    *visits += rows.len();
+    let mut values = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        values.push(read(&*row?));
+    }
+    Ok(Some(values))
+}
+
+pub struct CountryGroups;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -763,7 +792,7 @@ struct RosterHistory {
     faction_reads: RunHistory<HourSpan>,
     incomplete: usize,
     #[serde(skip)]
-    views: Option<[replay_frame::frame::ViewIdentity; 2]>,
+    views: Option<[Mark; 2]>,
     #[serde(skip)]
     current: Vec<(String, bool)>,
     #[cfg(any(test, feature = "test-support"))]
@@ -786,16 +815,18 @@ impl RosterHistory {
     #[cfg(test)]
     pub(crate) fn observe(
         &mut self,
-        decoded: &replay_frame::frame::DecodedFrame,
+        decoded: &DecodedFrame,
         hour: i32,
         countries_known: bool,
         tags: &HashMap<u32, String>,
         identities_changed: bool,
     ) {
         let mut operands = GroupOperands::default();
-        operands.refresh(decoded, true, true, true, true, true);
+        operands
+            .refresh(HourFrame::from(decoded), true, true, true, true, true)
+            .expect("a decoded frame's rows");
         self.observe_projected(
-            decoded,
+            Viewed::decoded(decoded),
             &operands,
             true,
             hour,
@@ -812,7 +843,7 @@ impl RosterHistory {
     #[allow(clippy::too_many_arguments)]
     fn observe_projected(
         &mut self,
-        decoded: &replay_frame::frame::DecodedFrame,
+        viewed: Viewed<'_>,
         operands: &GroupOperands,
         refresh_countries: bool,
         hour: i32,
@@ -839,16 +870,13 @@ impl RosterHistory {
             return;
         };
         self.faction_reads.record_hour(hour);
-        let views = [
-            replay_data::rows::TableId::Factions,
-            replay_data::rows::TableId::FactionMembers,
-        ]
-        .map(|id| &decoded.tables[id.index()]);
+        let tables = [TableId::Factions, TableId::FactionMembers];
         if !identities_changed
-            && self
-                .views
-                .as_ref()
-                .is_some_and(|old| old.iter().zip(views).all(|(old, view)| old.is(view)))
+            && self.views.as_ref().is_some_and(|old| {
+                old.iter()
+                    .zip(tables)
+                    .all(|(old, table)| viewed.is(table, old))
+            })
         {
             for (id, complete) in &self.current {
                 self.incomplete += usize::from(!complete);
@@ -872,7 +900,7 @@ impl RosterHistory {
             }
             return;
         }
-        self.views = Some(views.map(|view| view.identity()));
+        self.views = Some(tables.map(|table| viewed.mark(table)));
         self.current.clear();
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -1065,21 +1093,21 @@ struct GroupOperands {
 impl GroupOperands {
     fn refresh(
         &mut self,
-        frame: &replay_frame::frame::DecodedFrame,
+        frame: HourFrame<'_>,
         factions: bool,
         members: bool,
         humans: bool,
         wars: bool,
         capitulations: bool,
-    ) -> usize {
+    ) -> io::Result<usize> {
         let mut visits = 0;
         if factions {
-            self.factions = frame.complete::<tables::Factions>().ok().map(|rows| {
-                visits += rows.len();
-                rows.iter()
-                    .map(|row| (row.id, row.name.clone(), row.template_token))
-                    .collect()
-            });
+            self.factions = read_rows::<tables::Factions, _>(
+                frame,
+                FACTION_FIELDS,
+                &mut visits,
+                |row| (row.id, row.name.clone(), row.template_token),
+            )?;
             self.templated = self
                 .factions
                 .as_ref()
@@ -1090,58 +1118,46 @@ impl GroupOperands {
                 .collect();
         }
         if members {
-            self.members = frame.complete::<tables::FactionMembers>().ok().map(|rows| {
-                visits += rows.len();
-                rows.iter()
-                    .map(|row| (row.faction, row.ordinal, row.country))
-                    .collect()
-            });
+            self.members = read_rows::<tables::FactionMembers, _>(
+                frame,
+                MEMBER_FIELDS,
+                &mut visits,
+                |row| (row.faction, row.ordinal, row.country),
+            )?;
         }
         if humans {
-            self.humans = frame
-                .complete::<tables::HumanControllers>()
-                .ok()
-                .map(|rows| {
-                    visits += rows.len();
-                    rows.iter()
-                        .map(|row| (row.country, row.count > 0))
-                        .collect()
-                });
+            self.humans = read_rows::<tables::HumanControllers, _>(
+                frame,
+                HUMAN_FIELDS,
+                &mut visits,
+                |row| (row.country, row.count > 0),
+            )?;
         }
         if wars {
-            self.wars = Self::war_operands(frame);
+            self.wars = Self::war_operands(frame)?;
             visits += self.wars.as_ref().map_or(0, Vec::len);
         }
         if capitulations {
-            self.capitulations = frame.complete::<tables::Capitulation>().ok().map(|rows| {
-                visits += rows.len();
-                rows.iter()
-                    .map(|row| (row.country, row.capitulated != 0, row.capitulated_hour))
-                    .collect()
-            });
+            self.capitulations = read_rows::<tables::Capitulation, _>(
+                frame,
+                CAPITULATION_FIELDS,
+                &mut visits,
+                |row| (row.country, row.capitulated != 0, row.capitulated_hour),
+            )?;
         }
-        visits
+        Ok(visits)
     }
     #[allow(clippy::type_complexity)]
-    fn war_operands(
-        frame: &replay_frame::frame::DecodedFrame,
-    ) -> Option<Vec<(u32, u32, i32, i32, u8)>> {
-        Some(
-            frame
-                .complete::<tables::WarRelations>()
-                .ok()?
-                .iter()
-                .map(|row| {
-                    (
-                        row.first_country,
-                        row.second_country,
-                        row.start_hour,
-                        row.end_hour,
-                        row.first_was_instigator,
-                    )
-                })
-                .collect(),
-        )
+    fn war_operands(frame: HourFrame<'_>) -> io::Result<Option<Vec<(u32, u32, i32, i32, u8)>>> {
+        read_rows::<tables::WarRelations, _>(frame, WAR_FIELDS, &mut 0, |row| {
+            (
+                row.first_country,
+                row.second_country,
+                row.start_hour,
+                row.end_hour,
+                row.first_was_instigator,
+            )
+        })
     }
 }
 
@@ -1188,7 +1204,7 @@ struct Continuation {
     lexical: Option<Lexical>,
     lexical_dictionary: Option<u32>,
     #[serde(skip)]
-    lexical_seen: Option<replay_frame::frame::ViewIdentity>,
+    lexical_seen: Option<Mark>,
     lexical_read: i32,
     deferred: bool,
     rates: (u32, usize, usize),
@@ -1219,36 +1235,59 @@ struct Continuation {
 /// A dictionary read: its table until a resume, and its version once a name reads it.
 #[derive(Clone)]
 struct Lexical {
-    table: Option<replay_frame::frame::SharedView>,
+    table: Option<LexicalRead>,
     version: Option<faction_names::HistoricalDictionary>,
 }
 
+/// The table a dictionary read: a decoded view; a walk's, told by its epoch, as it holds it
+/// unchanged until it is read again.
+#[derive(Clone)]
+enum LexicalRead {
+    View(SharedView),
+    Walked(Mark),
+}
+
 impl Lexical {
-    fn holds(&self, table: &replay_frame::frame::SharedView) -> bool {
+    fn holds(&self, viewed: Viewed<'_>) -> bool {
+        let table = TableId::LexicalTokens;
         match (&self.table, &self.version) {
-            (Some(read), _) => read == table,
-            (None, Some(version)) => version.spells(table),
+            (Some(LexicalRead::View(read)), _) => viewed.view(table).is_some_and(|now| read == now),
+            (Some(LexicalRead::Walked(read)), version) => {
+                viewed.is(table, read)
+                    || version
+                        .as_ref()
+                        .is_some_and(|version| version.spells_in(&viewed.frame))
+            }
+            (None, Some(version)) => version.spells_in(&viewed.frame),
             (None, None) => false,
         }
     }
 
+    /// Its version, added at the first name that reads it: a walk's table is the one `viewed`
+    /// holds, since a changed table is read again before any name reads it.
     fn version(
         &mut self,
         dictionaries: &mut faction_names::DictionaryHistory,
+        viewed: Viewed<'_>,
     ) -> io::Result<Option<faction_names::HistoricalDictionary>> {
-        if self.version.is_none()
-            && let Some(table) = &self.table
-        {
-            self.version = dictionaries.add(table)?;
+        if self.version.is_none() {
+            match &self.table {
+                Some(LexicalRead::View(table)) => self.version = dictionaries.add(table)?,
+                Some(LexicalRead::Walked(_)) => {
+                    self.version = dictionaries.add_in(&viewed.frame)?;
+                }
+                None => {}
+            }
         }
         Ok(self.version.clone())
     }
 }
 
+/// One scan per branch of the recording; appended revisions carry it forward.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct GroupCache {
-    pub entries: Vec<(u64, Arc<GroupBranch>)>,
+    pub entries: BTreeMap<u64, Arc<GroupBranch>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1292,19 +1331,7 @@ pub fn cached_scan(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::
     let state = source.append_state::<GroupCache>();
     let entry = {
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        let entry = if let Some(index) = state
-            .entries
-            .iter()
-            .position(|(cached, _)| *cached == branch)
-        {
-            state.entries.remove(index)
-        } else {
-            (branch, Arc::new(GroupBranch::default()))
-        };
-        let result = Arc::clone(&entry.1);
-        state.entries.insert(0, entry);
-        state.entries.truncate(CACHED_BRANCHES); // Retention only; evicted branches can be rebuilt.
-        result
+        Arc::clone(state.entries.entry(branch).or_default())
     };
     let _scan = entry.gate.lock().unwrap_or_else(|error| error.into_inner());
     let cached = entry
@@ -1399,10 +1426,6 @@ pub fn name_runs<'a>(
 }
 
 impl Scan {
-    /// What the scan holds beyond what it serializes: its names' dictionaries.
-    pub fn dictionary_bytes(&self) -> usize {
-        self.continuation.dictionaries.held_bytes()
-    }
     /// Sum requests share one raw projection per immutable scan. Appends build
     /// another scan with an empty projection, including bounds-only changes.
     pub fn faction_history(&self, cancelled: &AtomicBool) -> io::Result<Arc<FactionHistory>> {
@@ -1896,20 +1919,32 @@ impl Scan {
     #[allow(clippy::type_complexity)]
     pub fn advance_changed(
         &mut self,
-        frame: &replay_frame::frame::DecodedFrame,
+        frame: &DecodedFrame,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<Option<(Vec<(u64, usize)>, Vec<usize>)>> {
-        use replay_data::rows::TableId;
+        self.advance_viewed(Viewed::decoded(frame), changes)
+    }
+
+    /// [`Self::advance_changed`] of any hour's tables, a walk's views among them, each table
+    /// told unchanged since an hour the scan held as `viewed` tells it.
+    #[allow(clippy::type_complexity)]
+    pub fn advance_viewed(
+        &mut self,
+        viewed: Viewed<'_>,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+    ) -> io::Result<Option<(Vec<(u64, usize)>, Vec<usize>)>> {
+        let frame = viewed.frame;
+        let hour = frame.hour();
         let state = &mut self.continuation;
         let countries = changes.rows_changed[TableId::Countries.index()]
             && state.country_keys.as_ref().is_none_or(|keys| {
                 frame
-                    .complete::<tables::Countries>()
-                    .map_or(true, |rows| !keys.same(rows))
+                    .complete::<tables::Countries>(COUNTRY_FIELDS)
+                    .map_or(true, |rows| !keys.same_in(rows))
             });
         let mut wars = false;
         if changes.rows_changed[TableId::WarRelations.index()] {
-            let rows = GroupOperands::war_operands(frame);
+            let rows = GroupOperands::war_operands(frame)?;
             #[cfg(any(test, feature = "test-support"))]
             {
                 state.work.row_visits += rows.as_ref().map_or(0, Vec::len);
@@ -1932,13 +1967,13 @@ impl Scan {
             ]
             .iter()
             .any(|table| changes.rows_changed[table.index()])
-            || state.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour)
-            || state.next_expiry.is_some_and(|hour| hour <= frame.hour);
+            || state.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(hour)
+            || state.next_expiry.is_some_and(|expiry| expiry <= hour);
         if !changed {
-            self.advance_quiet(frame.hour, frame.hour);
+            self.advance_quiet(hour, hour);
             return Ok(None);
         }
-        let boundary = state.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour)
+        let boundary = state.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(hour)
             || state.operands.is_none();
         let holders = countries || changes.rows_changed[TableId::CountryLinks.index()] || boundary;
         let mut updates = Updates {
@@ -1956,7 +1991,7 @@ impl Scan {
             wars: boundary
                 || holders
                 || wars
-                || state.next_expiry.is_some_and(|hour| hour <= frame.hour),
+                || state.next_expiry.is_some_and(|expiry| expiry <= hour),
             capitulations: boundary
                 || holders
                 || changes.rows_changed[TableId::Capitulation.index()],
@@ -1974,7 +2009,7 @@ impl Scan {
             boundary || changes.rows_changed[TableId::HumanControllers.index()],
             false,
             boundary || changes.rows_changed[TableId::Capitulation.index()],
-        );
+        )?;
         if wars || boundary {
             operands.wars = state.war_inputs.clone();
         }
@@ -2005,7 +2040,7 @@ impl Scan {
             frame,
             holders && changes.rows_changed[TableId::Countries.index()],
             changes.rows_changed[TableId::CountryLinks.index()],
-        );
+        )?;
         if updates.dictionary_templates {
             let mut other = updates;
             other.names = false;
@@ -2039,7 +2074,7 @@ impl Scan {
             self.continuation.capitulations_unread,
             self.continuation.rosters.incomplete,
         );
-        self.observe_selected(frame, &operands, updates, &renamed)?;
+        self.observe_selected(viewed, &operands, updates, &renamed)?;
         let state = &mut self.continuation;
         state.operands = Some(operands);
         state.deferred = true;
@@ -2053,11 +2088,7 @@ impl Scan {
             &state.unobserved.factions,
             &state.unobserved.wars,
         ]
-        .map(|spans| {
-            spans
-                .last()
-                .is_some_and(|span| span.last_hour == frame.hour)
-        });
+        .map(|spans| spans.last().is_some_and(|span| span.last_hour == hour));
         if updates.holders {
             state.countries_known = state.country_keys.is_some() && state.link_inputs.is_some();
             state.live_countries = state
@@ -2079,23 +2110,23 @@ impl Scan {
         if updates.humans {
             state
                 .human_open
-                .retain(|_, index| self.humans[*index].last_hour == frame.hour);
+                .retain(|_, index| self.humans[*index].last_hour == hour);
         }
         if updates.factions {
             state
                 .leader_open
-                .retain(|(id, _), index| self.factions[id].leaders[*index].last_hour == frame.hour);
+                .retain(|(id, _), index| self.factions[id].leaders[*index].last_hour == hour);
             state
                 .member_open
-                .retain(|(id, _), index| self.factions[id].members[*index].last_hour == frame.hour);
+                .retain(|(id, _), index| self.factions[id].members[*index].last_hour == hour);
         }
         if updates.wars {
             state
                 .war_open
-                .retain(|_, index| self.wars[*index].last_hour == frame.hour);
+                .retain(|_, index| self.wars[*index].last_hour == hour);
             state.next_expiry = state.war_inputs.as_ref().and_then(|rows| {
                 rows.iter()
-                    .filter(|row| row.3 > row.2 && row.3 > frame.hour)
+                    .filter(|row| row.3 > row.2 && row.3 > hour)
                     .map(|row| row.3)
                     .min()
             });
@@ -2237,42 +2268,42 @@ impl Scan {
             }
         }
     }
-    pub fn observe(&mut self, decoded: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
+    pub fn observe(&mut self, decoded: &DecodedFrame) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("groups-read", None);
-        self.refresh_holders(decoded, true, true);
+        let viewed = Viewed::decoded(decoded);
+        self.refresh_holders(viewed.frame, true, true)?;
         let mut operands = GroupOperands::default();
-        let visits = operands.refresh(decoded, true, true, true, true, true);
+        let visits = operands.refresh(viewed.frame, true, true, true, true, true)?;
         #[cfg(any(test, feature = "test-support"))]
         {
             self.continuation.work.row_visits += visits;
         }
         #[cfg(not(test))]
         let _ = visits;
-        self.observe_selected(decoded, &operands, Updates::ALL, &[])
+        self.observe_selected(viewed, &operands, Updates::ALL, &[])
     }
     fn refresh_holders(
         &mut self,
-        frame: &replay_frame::frame::DecodedFrame,
+        frame: HourFrame<'_>,
         countries: bool,
         links: bool,
-    ) {
+    ) -> io::Result<()> {
         if countries {
-            self.continuation.country_keys = frame
-                .complete::<tables::Countries>()
-                .ok()
-                .map(crate::metadata::CountryKeys::read);
+            let rows = frame.complete::<tables::Countries>(COUNTRY_FIELDS).ok();
+            self.continuation.country_keys = rows
+                .map(crate::metadata::CountryKeys::read_in)
+                .transpose()?;
             #[cfg(any(test, feature = "test-support"))]
             {
-                self.continuation.work.row_visits += frame
-                    .complete::<tables::Countries>()
-                    .map_or(0, |rows| rows.len());
+                self.continuation.work.row_visits += rows.map_or(0, |rows| rows.len());
             }
         }
         if links {
             self.continuation.link_inputs = frame
-                .complete::<tables::CountryLinks>()
+                .complete::<tables::CountryLinks>(LINK_FIELDS)
                 .ok()
-                .map(link_slots);
+                .map(link_slots_in)
+                .transpose()?;
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.continuation.work.row_visits += self
@@ -2282,27 +2313,23 @@ impl Scan {
                     .map_or(0, HashMap::len);
             }
         }
+        Ok(())
     }
     fn observe_selected(
         &mut self,
-        decoded: &replay_frame::frame::DecodedFrame,
+        viewed: Viewed<'_>,
         operands: &GroupOperands,
         updates: Updates,
         renamed: &[u64],
     ) -> io::Result<()> {
-        use replay_data::rows::TableId;
-        let hour = decoded.hour;
+        let frame = viewed.frame;
+        let hour = frame.hour();
         self.unobserved = Arc::default();
         #[cfg(any(test, feature = "test-support"))]
-        {
-            use replay_frame::frame::TableView;
-            if updates.dictionary {
-                self.continuation.work.row_visits +=
-                    match &*decoded.tables[TableId::LexicalTokens.index()] {
-                        TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
-                        _ => 0,
-                    };
-            }
+        if updates.dictionary {
+            self.continuation.work.row_visits += frame
+                .rows::<tables::LexicalTokens>(0)
+                .map_or(0, |rows| rows.len());
         }
         #[cfg(any(test, feature = "test-support"))]
         if updates.dictionary {
@@ -2371,21 +2398,27 @@ impl Scan {
             *continuous_since = None;
         }
         *previous_hour = Some(hour);
-        let current = &decoded.tables[TableId::LexicalTokens.index()];
+        let dictionary = TableId::LexicalTokens;
         if updates.dictionary
-            || decoded.metrics.table_ns[TableId::LexicalTokens.index()] != 0
-            || lexical_seen.as_ref().is_none_or(|seen| !seen.is(current))
+            || frame.metrics().table_ns[dictionary.index()] != 0
+            || lexical_seen
+                .as_ref()
+                .is_none_or(|seen| !viewed.is(dictionary, seen))
         {
             // Equal rows read again keep their version; only this read's table is held.
             let version = lexical
                 .take()
-                .filter(|read| read.holds(current))
+                .filter(|read| read.holds(viewed))
                 .and_then(|read| read.version);
+            let table = match viewed.view(dictionary) {
+                Some(view) => LexicalRead::View(view.clone()),
+                None => LexicalRead::Walked(viewed.mark(dictionary)),
+            };
             *lexical = Some(Lexical {
-                table: Some(current.clone()),
+                table: Some(table),
                 version,
             });
-            *lexical_seen = Some(current.identity());
+            *lexical_seen = Some(viewed.mark(dictionary));
             *lexical_read = hour;
         }
         if updates.names
@@ -2410,13 +2443,13 @@ impl Scan {
                 {
                     previous.last_hour = hour;
                 } else {
-                    let template = faction_names::template_spelling(decoded, *token);
+                    let template = faction_names::template_spelling_in(&frame, *token);
                     // Only a resolved template reads the dictionary.
                     let tokens = if literal.is_empty() && matches!(&template, Ok(Some(_))) {
                         lexical
                             .as_mut()
                             .expect("the hour has a lexical table view")
-                            .version(dictionaries)?
+                            .version(dictionaries, viewed)?
                     } else {
                         None
                     };
@@ -2436,9 +2469,9 @@ impl Scan {
         let updated = if updates.holders {
             tags.update_projected(country_keys.as_ref(), link_inputs.as_ref())
         } else {
-            decoded
-                .complete::<tables::Countries>()
-                .and_then(|_| decoded.complete::<tables::CountryLinks>())
+            frame
+                .complete::<tables::Countries>(0)
+                .and_then(|_| frame.complete::<tables::CountryLinks>(0))
                 .map(|_| false)
         };
         let countries_known = updated.is_ok();
@@ -2477,7 +2510,7 @@ impl Scan {
         }
         if updates.factions || updates.holders {
             rosters.observe_projected(
-                decoded,
+                viewed,
                 operands,
                 updates.holders,
                 hour,

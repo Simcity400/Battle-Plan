@@ -1,4 +1,4 @@
-use super::columnar::{Census, Delta, Designs, Hour as Native, Organisation, Organisations};
+use super::columnar::{Census, Delta, Designs, HourRead as Native, Organisation, Organisations};
 use super::*;
 use crate::prepared::frame_changes::{FrameChanges, field_mask};
 use replay_data::rows::{
@@ -53,6 +53,58 @@ pub(super) struct HourInput {
 }
 
 impl HourInput {
+    /// This input without its rows, organisations, designs or icons: what a span of hours
+    /// that reads nothing folds by.
+    pub fn quiet_copy(&self) -> Self {
+        Self {
+            rows_complete: self.rows_complete,
+            linked: BTreeSet::new(),
+            identities_changed: false,
+            author_names_due: false,
+            hour: self.hour,
+            last_hour: self.last_hour,
+            countries: None,
+            holders: BTreeMap::new(),
+            lines_complete: self.lines_complete,
+            lines_read: false,
+            output_read: false,
+            output_complete: self.output_complete,
+            organisations_complete: self.organisations_complete,
+            organisations_named: self.organisations_named,
+            modifiers_complete: self.modifiers_complete,
+            modifiers_read: false,
+            modifier_refusal: None,
+            lines: BTreeMap::new(),
+            unlinked_lines: Vec::new(),
+            output: BTreeMap::new(),
+            unlinked_output: Vec::new(),
+            modifier_countries: BTreeMap::new(),
+            modifier_lines: BTreeMap::new(),
+            organisations: BTreeMap::new(),
+            author_names: BTreeMap::new(),
+            organisation_names: BTreeMap::new(),
+            designs: BTreeMap::new(),
+            design_revision: self.design_revision,
+            design_read_hour: self.design_read_hour,
+            organisation_read_hour: self.organisation_read_hour,
+            icons: BTreeMap::new(),
+        }
+    }
+
+    /// Holds `icon` as `id`'s from `hour`, noting in `timeline` where it changes.
+    fn hold_icon(
+        &mut self,
+        timeline: &mut index::Timeline,
+        hour: i32,
+        id: u64,
+        icon: IconChoice,
+    ) {
+        if self.icons.get(&id) != Some(&icon) {
+            timeline.changes.push((hour, id, icon.clone()));
+        }
+        self.icons.insert(id, icon);
+    }
+
     pub fn design_bytes(&self, variant: u64) -> usize {
         std::mem::size_of::<DesignRead>()
             + self
@@ -131,24 +183,14 @@ pub(super) struct World {
     icon_cache: BTreeMap<u64, (bool, IconChoice)>,
     /// The variants whose cached choice the native hour input already holds, by `known`.
     icon_held: BTreeMap<u64, bool>,
-    /// How many of the native hour input's census rows produce each variant; None until a
-    /// census is taken whole.
-    census: Option<Produced>,
+    /// Every variant the native hour input's census rows produce, whatever country's; None
+    /// until a census is taken whole.
+    census: Option<BTreeSet<u64>>,
+    /// Each variant's icon as the hour inputs hold it, where it changed since the last chunk.
+    timeline: index::Timeline,
     /// Native censuses by hour, in order, not yet taken: a quiet hour's waits for the next
     /// census the fold takes, each a delta of the one before.
     censuses: Vec<(i32, Census)>,
-}
-
-/// How many of the hour input's census line and output rows produce each variant.
-type Produced = BTreeMap<u64, usize>;
-
-fn forget(variants: &mut Produced, variant: u64) {
-    if let Some(count) = variants.get_mut(&variant) {
-        *count -= 1;
-        if *count == 0 {
-            variants.remove(&variant);
-        }
-    }
 }
 
 fn unheld() -> io::Error {
@@ -170,13 +212,8 @@ fn slot_rows<'a, R>(
 fn take_rows<R: RowCodec>(
     delta: Delta<(Option<u32>, R)>,
     (slotted, unlinked): (&mut BTreeMap<u32, Vec<R>>, &mut Vec<R>),
-    variants: &mut Produced,
-    variant: impl Fn(&R) -> u64,
 ) -> io::Result<()> {
     if delta.whole {
-        for row in slotted.values().flatten().chain(unlinked.iter()) {
-            forget(variants, variant(row));
-        }
         slotted.clear();
         unlinked.clear();
     }
@@ -187,7 +224,7 @@ fn take_rows<R: RowCodec>(
             let at = rows
                 .binary_search_by_key(&key, |row| row.key())
                 .map_err(|_| unheld())?;
-            forget(variants, variant(&rows.remove(at)));
+            rows.remove(at);
             Ok(())
         };
         take(key)?;
@@ -210,7 +247,6 @@ fn take_rows<R: RowCodec>(
             Ok(_) => return Err(unheld()),
             Err(at) => at,
         };
-        *variants.entry(variant(&row)).or_default() += 1;
         rows.insert(at, row);
     }
     let mut changed = delta.changed.into_iter().peekable();
@@ -220,11 +256,6 @@ fn take_rows<R: RowCodec>(
             let at = rows
                 .binary_search_by_key(&row.key(), |row| row.key())
                 .map_err(|_| unheld())?;
-            let (was, now) = (variant(&rows[at]), variant(&row));
-            if was != now {
-                forget(variants, was);
-                *variants.entry(now).or_default() += 1;
-            }
             rows[at] = row;
             Ok(())
         };
@@ -278,6 +309,16 @@ impl World {
     /// The variants whose versions the next chunk holds.
     pub fn take_flushed(&mut self) -> BTreeSet<u64> {
         std::mem::take(&mut self.flushed)
+    }
+
+    /// The icons' changes the next chunk holds.
+    pub fn take_timeline(&mut self) -> index::Timeline {
+        std::mem::take(&mut self.timeline)
+    }
+
+    /// The design revision the latest hour holds.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Marks a variant whose versions a test edited as the next chunk's and ledger record's.
@@ -693,6 +734,10 @@ impl World {
                     .collect()
             })
             .unwrap_or_default();
+        // An input begun anew holds no icon, whatever an earlier one held.
+        if previous.is_none() {
+            self.timeline.resets.push(hour);
+        }
         let mut input = previous.unwrap_or_else(|| HourInput {
             rows_complete: false,
             linked: BTreeSet::new(),
@@ -949,12 +994,11 @@ impl World {
                     .collect();
                 let tags = Tags::new(&owner, links, None);
                 let mut raw = raw_organisation(row, hour, &tags, lexical);
-                if input.author_names.get(&id).is_none_or(|old| {
-                    RawOrganisation {
-                        first_hour: hour,
-                        ..old.clone()
-                    } != raw
-                }) {
+                if input
+                    .author_names
+                    .get(&id)
+                    .is_none_or(|old| !same_but_hour(old, &raw))
+                {
                     crate::prepared::prepass::note("production-lines.organisation_projection");
                     input.organisation_names.insert(
                         id,
@@ -1093,7 +1137,7 @@ impl World {
                     self.icon_events
                         .push((id, hour, icon.clone(), altered.contains(&id)));
                 }
-                input.icons.insert(id, icon);
+                input.hold_icon(&mut self.timeline, hour, id, icon);
             }
         }
         self.views = PreparedTables::tables()
@@ -1210,18 +1254,17 @@ impl World {
                 "A native production census changes one the fold never took",
             ));
         }
-        let variants = self.census.get_or_insert_with(Produced::new);
+        let variants = self.census.get_or_insert_with(BTreeSet::new);
+        if let Some(produced) = census.variants {
+            *variants = produced.into_iter().collect();
+        }
         take_rows(
             census.lines,
             (&mut input.lines, &mut input.unlinked_lines),
-            variants,
-            |row| row.variant,
         )?;
         take_rows(
             census.output,
             (&mut input.output, &mut input.unlinked_output),
-            variants,
-            |row| row.variant,
         )?;
         take_keyed(
             census.modifier_countries,
@@ -1346,6 +1389,8 @@ impl World {
         if previous.is_none() {
             self.icon_held.clear();
             self.census = None;
+            // An input begun anew holds no icon, whatever an earlier one held.
+            self.timeline.resets.push(at);
         }
         let (reads, complete, relevant, rebuilt, stale) = (
             hour.reads,
@@ -1535,12 +1580,11 @@ impl World {
                             continue;
                         };
                         let Organisation { raw, author, name } = *organisation;
-                        if input.author_names.get(&id).is_none_or(|old| {
-                            RawOrganisation {
-                                first_hour: author.first_hour,
-                                ..old.clone()
-                            } != author
-                        }) {
+                        if input
+                            .author_names
+                            .get(&id)
+                            .is_none_or(|old| !same_but_hour(old, &author))
+                        {
                             crate::prepared::prepass::note(
                                 "production-lines.organisation_projection",
                             );
@@ -1584,11 +1628,7 @@ impl World {
             let mut produced = refresh.clone();
             produced.extend(naming.iter().map(|(id, _)| *id));
             if input.lines_read {
-                produced.extend(
-                    self.census
-                        .iter()
-                        .flat_map(|variants| variants.keys().copied()),
-                );
+                produced.extend(self.census.iter().flatten().copied());
             }
             let renamed: BTreeSet<u64> = naming.iter().map(|(id, _)| *id).collect();
             for id in produced {
@@ -1636,7 +1676,7 @@ impl World {
                     self.icon_events
                         .push((id, at, icon.clone(), altered.contains(&id)));
                 }
-                input.icons.insert(id, icon);
+                input.hold_icon(&mut self.timeline, at, id, icon);
                 self.icon_held.insert(id, known);
             }
         }
@@ -1681,6 +1721,28 @@ fn candidates<T: RowCodec>(changes: &FrameChanges, table: TableId, rows: &[T]) -
         None => rows.iter().map(RowCodec::key).collect(),
     }
 }
+/// The same organisation, whatever hour each is from.
+fn same_but_hour(a: &RawOrganisation, b: &RawOrganisation) -> bool {
+    let RawOrganisation {
+        first_hour: _,
+        token,
+        name_key,
+        icon,
+        owner_tag,
+        owner_unknown,
+        state,
+    } = a;
+    (token, name_key, icon, owner_tag, owner_unknown, state)
+        == (
+            &b.token,
+            &b.name_key,
+            &b.icon,
+            &b.owner_tag,
+            &b.owner_unknown,
+            &b.state,
+        )
+}
+
 pub(super) fn remove_user(index: &mut BTreeMap<u32, BTreeSet<u64>>, key: u32, id: u64) {
     if let Some(users) = index.get_mut(&key) {
         users.remove(&id);

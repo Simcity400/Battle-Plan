@@ -139,24 +139,70 @@ pub struct FogProduct {
     pub map_text: Arc<events::Prepared>,
     pub music: Option<Arc<viewer_audio::Chances>>,
     pub battles: Option<Arc<viewer_audio::Battles>>,
+    /// The song evaluations `music` came from, which the next hour of this country confirms
+    /// while this hour is held.
+    music_inputs: Option<music_inputs::Kept>,
 }
 
+type ProvinceFog = viewer_foundation::map::perspective::values::Values<u32, u8>;
+
+/// A perspective's latest intel map and the visibility it was made from, while a holder keeps
+/// the map: the next hour of that perspective patches it instead of building it whole.
+struct IntelMemo {
+    choice: perspective::Choice,
+    visibility: Option<Arc<ProvinceFog>>,
+    intel: std::sync::Weak<IntelMap>,
+}
+
+/// What fog products carry from hour to hour, for each perspective a holder still shows and
+/// nothing else.
+#[derive(Default)]
 pub struct FogMemos {
-    intel: std::sync::Mutex<
-        Option<(
-            Option<Arc<viewer_foundation::map::perspective::values::Values<u32, u8>>>,
-            Arc<IntelMap>,
-        )>,
-    >,
+    intel: std::sync::Mutex<Vec<IntelMemo>>,
     pub music: music_inputs::Memo,
 }
 
 impl FogMemos {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            intel: std::sync::Mutex::new(None),
-            music: music_inputs::Memo::new(capacity),
-        }
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `choice`'s last intel map, while held, and the visibility it was made from.
+    fn intel(
+        &self,
+        choice: &perspective::Choice,
+    ) -> Option<(Option<Arc<ProvinceFog>>, Arc<IntelMap>)> {
+        let mut memos = self
+            .intel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        memos.retain(|memo| memo.intel.strong_count() != 0);
+        memos
+            .iter()
+            .find(|memo| memo.choice == *choice)
+            .and_then(|memo| {
+                memo.intel
+                    .upgrade()
+                    .map(|intel| (memo.visibility.clone(), intel))
+            })
+    }
+
+    fn keep_intel(
+        &self,
+        choice: &perspective::Choice,
+        visibility: Option<Arc<ProvinceFog>>,
+        intel: &Arc<IntelMap>,
+    ) {
+        let mut memos = self
+            .intel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        memos.retain(|memo| memo.intel.strong_count() != 0 && memo.choice != *choice);
+        memos.push(IntelMemo {
+            choice: choice.clone(),
+            visibility,
+            intel: Arc::downgrade(intel),
+        });
     }
 }
 
@@ -476,6 +522,21 @@ impl<'a> ProductHour<'a> {
         Some(memo.chances(self.frame, audio, country, world))
     }
 
+    /// [`Self::music_chances_cached`] with the evaluations the next hour confirms while kept.
+    pub fn music_chances_kept(
+        &self,
+        country: u32,
+        memo: &music_inputs::Memo,
+    ) -> Option<(viewer_audio::Chances, music_inputs::Kept)> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("music/battle/audio descriptors"));
+        let audio = self.content.audio.as_ref()?;
+        if audio.music.songs.is_empty() {
+            return None;
+        }
+        let world = self.trigger_world();
+        Some(memo.chances_kept(self.frame, audio, country, world))
+    }
+
     pub fn fog(
         &self,
         choice: &perspective::Choice,
@@ -485,11 +546,9 @@ impl<'a> ProductHour<'a> {
         let vision = spans.measure("fog.vision", |_| self.vision(choice))?;
         let visibility = vision.shared_province_fog();
         let intel = spans.measure("fog.intel_patch", |_| -> io::Result<_> {
-            let mut state = memos
-                .intel
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((old, intel)) = &*state {
+            // Taken out of the memo, so views of other perspectives patch theirs meanwhile.
+            let previous = memos.intel(choice);
+            if let Some((old, intel)) = &previous {
                 match (old, visibility) {
                     (None, None) => return Ok(Arc::clone(intel)),
                     (Some(old), Some(next)) if Arc::ptr_eq(old, next) => {
@@ -498,7 +557,7 @@ impl<'a> ProductHour<'a> {
                     _ => {}
                 }
             }
-            let next = match (&*state, visibility) {
+            let next = match (&previous, visibility) {
                 (Some((Some(old), intel)), Some(next)) => self
                     .content
                     .intel_cells
@@ -513,7 +572,7 @@ impl<'a> ProductHour<'a> {
                     None => textures::clear_intel_map(&self.content.map)?,
                 },
             };
-            let intel = if let Some((_, previous)) = &*state {
+            let intel = if let Some((_, previous)) = &previous {
                 if previous.fog == next.fog
                     && previous.fogged_texels == next.fogged_texels
                     && previous.texels.ptr_eq(&next.texels)
@@ -525,15 +584,17 @@ impl<'a> ProductHour<'a> {
             } else {
                 Arc::new(next)
             };
-            *state = Some((visibility.cloned(), Arc::clone(&intel)));
+            memos.keep_intel(choice, visibility.cloned(), &intel);
             Ok(intel)
         })?;
         let limitations = spans.measure("fog.limitations", |_| {
             self.limitations_with(choice, Some(&intel))
         })?;
-        let music = spans.measure("fog.music", |_| {
-            self.music_chances_cached(vision.ours(), &memos.music)
-        });
+        let (music, kept) = spans
+            .measure("fog.music", |_| {
+                self.music_chances_kept(vision.ours(), &memos.music)
+            })
+            .unzip();
         let battles = spans.measure("fog.battles", |_| self.battle_sounds());
         let product = map_display_data::Fog {
             intel,
@@ -548,7 +609,10 @@ impl<'a> ProductHour<'a> {
             music,
             battles,
         };
-        FogProduct::from_display(product).map(Arc::new)
+        FogProduct::from_display(product).map(|mut fog| {
+            fog.music_inputs = kept;
+            Arc::new(fog)
+        })
     }
 }
 

@@ -526,6 +526,8 @@ pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::container::Repl
 /// hour that shares one with the hour on screen uploads nothing for it.
 #[derive(Clone, Default)]
 struct Uploaded {
+    /// The shared products of the hour on screen, which another view of that hour takes.
+    products: Vec<hours::Held>,
     political: Option<u64>,
     borders: Option<u64>,
     rails: Option<u64>,
@@ -1255,7 +1257,8 @@ pub struct Viewer {
 /// seconds for the first hour and the UI thread idles on the spinner
 /// meanwhile; paying the ~500 ms of pipeline and static-texture creation here
 /// leaves the frames data uploads only. Hour data still uploads per hour
-/// through the matching `set_*` as before, so pixels cannot change.
+/// through the matching `set_*` as before, so pixels cannot change. Scenes of one content on
+/// one device draw one upload of its game textures.
 pub(crate) fn load_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1273,11 +1276,15 @@ fn load_scene_scoped(
     document: &Document,
     graphics: dashboard::protocol::MapGraphics,
 ) -> std::io::Result<Scene> {
-    let mut scene = Scene::new(
+    let textures =
+        document
+            .scene_textures
+            .warm(device, queue, &document.assets, &document.icons.images)?;
+    let mut scene = Scene::with_textures(
         device,
         queue,
+        textures,
         &document.assets,
-        &document.icons.images,
         &document.icons.lazy,
         graphics,
     )?;
@@ -1838,7 +1845,8 @@ impl Viewer {
         }
     }
 
-    pub(crate) fn retire_map<T: Send + 'static>(&mut self, frame: &eframe::Frame, permit: T) {
+    /// Frees the registration of the scene's output, so the next frame registers it afresh.
+    fn free_scene_target(&mut self, frame: &eframe::Frame) {
         if let Some(texture) = self.scene_target.take()
             && let Some(state) = frame.wgpu_render_state()
         {
@@ -1847,6 +1855,24 @@ impl Viewer {
                 None => state.renderer.write().free_texture(&texture),
             }
         }
+    }
+
+    /// Lets go of what is sized to this hidden view; its scene stays, and the next frame shown
+    /// makes its targets again.
+    pub(crate) fn release_viewport(&mut self, frame: &eframe::Frame) {
+        let Some(scene) = &mut self.scene else {
+            return;
+        };
+        if scene.view().is_none() {
+            return;
+        }
+        scene.release_viewport();
+        self.free_scene_target(frame);
+        self.rendered = None;
+    }
+
+    pub(crate) fn retire_map<T: Send + 'static>(&mut self, frame: &eframe::Frame, permit: T) {
+        self.free_scene_target(frame);
         let retired = (
             self.document.take(),
             self.scene.take(),

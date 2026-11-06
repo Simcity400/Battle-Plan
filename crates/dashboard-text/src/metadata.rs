@@ -529,10 +529,20 @@ pub fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32
 /// it. Recorded tables name countries by raw link id; every product resolves
 /// them through this.
 pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
+    link_slot_in(&replay_frame::frame::Rowset::Decoded(links), raw)
+}
+
+/// [`link_slot`] of any frame's links, a walk's views among them; a link that cannot be
+/// built is one the hour does not hold.
+pub fn link_slot_in(
+    links: &replay_frame::frame::Rowset<'_, CountryLinkRow>,
+    raw: u32,
+) -> Option<u32> {
     let slot = links
-        .binary_search_by_key(&raw, |link| link.id)
+        .get(u128::from(raw))
         .ok()
-        .map(|index| links[index].canonical_slot);
+        .flatten()
+        .map(|link| link.canonical_slot);
     if slot.is_none() && raw != 0 {
         crate::triggers::Failure::input(
             TableId::CountryLinks,
@@ -651,6 +661,40 @@ impl LinkTags {
         from.countries = Some(views.0.identity());
         from.links = Some(views.1.identity());
         Ok(rebuilt)
+    }
+
+    /// [`Self::update`] of any frame's tables, a walk's views among them: the countries' and
+    /// links' identity fields read, then compared with those the tags were built from.
+    pub fn update_tables<F: replay_frame::frame::Tables + ?Sized>(
+        &mut self,
+        frame: &F,
+    ) -> io::Result<bool> {
+        let read = || -> io::Result<(CountryKeys, HashMap<u32, u32>)> {
+            let countries = frame.complete_rows::<tables::Countries>(replay_data::rows::mask::<
+                CountryRow,
+            >(&["canonical_slot", "tag"]))?;
+            let links = frame.complete_rows::<tables::CountryLinks>(
+                replay_data::rows::mask::<CountryLinkRow>(&["canonical_slot"]),
+            )?;
+            let mut keys = Vec::with_capacity(countries.len());
+            for row in countries.iter() {
+                let row = row?;
+                keys.push((row.id, row.canonical_slot, row.tag.clone()));
+            }
+            let mut slots = Vec::with_capacity(links.len());
+            for row in links.iter() {
+                let row = row?;
+                slots.push((row.id, row.canonical_slot));
+            }
+            Ok((CountryKeys::from_keys(keys), link_slots_of(slots)))
+        };
+        match read() {
+            Ok((countries, links)) => self.update_projected(Some(&countries), Some(&links)),
+            Err(error) => {
+                self.from = None;
+                Err(error)
+            }
+        }
     }
 
     /// Rebind the same country/link join from runtime current operands. Incomplete
@@ -772,6 +816,16 @@ impl CountryKeys {
         )
     }
 
+    /// [`Self::read`] of any frame's rows, each holding at least its slot and tag.
+    pub fn read_in(countries: replay_frame::frame::Rowset<'_, CountryRow>) -> io::Result<Self> {
+        let mut keys = Vec::with_capacity(countries.len());
+        for row in countries.iter() {
+            let row = row?;
+            keys.push((row.id, row.canonical_slot, row.tag.clone()));
+        }
+        Ok(Self::from_keys(keys))
+    }
+
     /// Each country's id, slot and tag already read, in native table order.
     pub fn from_keys(keys: Vec<(u32, u32, Vec<u8>)>) -> Self {
         Self(
@@ -807,6 +861,19 @@ impl CountryKeys {
                 *id == row.id && *slot == row.canonical_slot && *tag == row.tag
             })
     }
+    /// [`Self::same`] of any frame's rows, each holding at least its slot and tag; a row that
+    /// cannot be built differs.
+    pub fn same_in(&self, countries: replay_frame::frame::Rowset<'_, CountryRow>) -> bool {
+        self.0.len() == countries.len()
+            && self.0.iter().zip(countries.iter()).all(|((id, slot, tag), row)| {
+                #[cfg(any(test, feature = "test-support"))]
+                self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                row.is_ok_and(|row| {
+                    *id == row.id && *slot == row.canonical_slot && *tag == row.tag
+                })
+            })
+    }
+
     /// Whether the previous hour's key projection still holds after these
     /// recorded row changes. Snapshots and identity edits compare normally.
     pub fn same_changes(
@@ -860,14 +927,31 @@ impl CountryKeys {
 /// One raw link's canonical slot only when every row agrees. True aliases
 /// remain valid; a contradictory raw link cannot name any country safely.
 pub fn link_slots(links: &[CountryLinkRow]) -> HashMap<u32, u32> {
+    link_slots_of(links.iter().map(|link| (link.id, link.canonical_slot)))
+}
+
+/// [`link_slots`] of any frame's links, each holding at least its slot.
+pub fn link_slots_in(
+    links: replay_frame::frame::Rowset<'_, CountryLinkRow>,
+) -> io::Result<HashMap<u32, u32>> {
+    let mut pairs = Vec::with_capacity(links.len());
+    for link in links.iter() {
+        let link = link?;
+        pairs.push((link.id, link.canonical_slot));
+    }
+    Ok(link_slots_of(pairs))
+}
+
+/// [`link_slots`] of each link's raw id and canonical slot.
+pub fn link_slots_of(links: impl IntoIterator<Item = (u32, u32)>) -> HashMap<u32, u32> {
     let mut slots = HashMap::new();
     let mut ambiguous = std::collections::HashSet::new();
-    for link in links {
+    for (id, canonical_slot) in links {
         if slots
-            .insert(link.id, link.canonical_slot)
-            .is_some_and(|slot| slot != link.canonical_slot)
+            .insert(id, canonical_slot)
+            .is_some_and(|slot| slot != canonical_slot)
         {
-            ambiguous.insert(link.id);
+            ambiguous.insert(id);
         }
     }
     for raw in ambiguous {
@@ -1487,6 +1571,28 @@ pub fn recorded_rows<T: replay_data::rows::TableSchema>(
         TableView::NotRecorded { mode } => {
             Err(crate::invalid(not_recorded(frame.hour(), T::ID, mode)))
         }
+    }
+}
+
+/// [`recorded_rows`] of any frame's tables, each walked row holding the fields `mask` names.
+pub fn recorded_rows_in<T: replay_data::rows::TableSchema>(
+    frame: replay_frame::frame::HourFrame<'_>,
+    mask: u64,
+) -> io::Result<replay_frame::frame::Rowset<'_, T::Row>> {
+    use replay_frame::frame::{OperandStatus, Rowset};
+    match frame.status(T::ID) {
+        OperandStatus::WrongLayout | OperandStatus::TruncatedWrongLayout(_) => {
+            Err(crate::invalid(format!(
+                "hour {} {:?} contains another table's rows",
+                frame.hour(),
+                T::ID
+            )))
+        }
+        OperandStatus::Unavailable(_) => Ok(Rowset::Decoded(&[])),
+        OperandStatus::NotRecorded(mode) => {
+            Err(crate::invalid(not_recorded(frame.hour(), T::ID, mode)))
+        }
+        OperandStatus::Complete | OperandStatus::Truncated(_) => Ok(frame.held::<T>(mask)),
     }
 }
 

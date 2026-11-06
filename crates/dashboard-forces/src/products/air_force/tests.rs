@@ -770,7 +770,7 @@ fn air_force_owner_diagnostics_follow_setting_and_count_changed_hours() {
 }
 
 #[test]
-fn air_force_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
+fn air_force_cache_keeps_one_scan_per_branch() {
     let branches: Vec<_> = (1..=3)
         .map(|branch| {
             let mut frame = frame(22, &[], &[], 2);
@@ -811,10 +811,10 @@ fn air_force_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
             .lock()
             .unwrap()
             .entries
-            .iter()
-            .map(|(branch, _)| *branch)
+            .keys()
+            .copied()
             .collect::<Vec<_>>(),
-        [2, 3]
+        [1, 2, 3]
     );
     visit_plane_runs(
         &source,
@@ -824,7 +824,7 @@ fn air_force_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
         |_, _, _, _, _| Ok(()),
     )
     .unwrap();
-    assert_eq!(state.lock().unwrap().runs, 4);
+    assert_eq!(state.lock().unwrap().runs, 3);
 }
 
 #[test]

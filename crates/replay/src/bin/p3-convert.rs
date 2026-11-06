@@ -7,7 +7,7 @@
 //! and sample hour each hour, in its manifest and as its writer holds them, against the
 //! recording's view.
 //!
-//! Output: a version 3 `H4COLUMN` recording (`replay_columnar::envelope`), a run per
+//! Output: a version 4 `H4COLUMN` recording (`replay_columnar::envelope`), a run per
 //! continuous span of one branch, and with `--run-units`, a run per that many units of a
 //! span, for measuring walks over many runs; `--restart-units` restarts at another cadence
 //! than the recorder's. A complete table the recording stores as a delta is compared with the

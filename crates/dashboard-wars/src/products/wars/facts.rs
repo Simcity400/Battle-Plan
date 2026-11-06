@@ -1,11 +1,11 @@
 //! Wars facts, projected hour by hour from a columnar walk ([`replay::segments`]): the input
-//! tables that changed in a field the wars compare ([`inputs::same_inputs`]) and their packed
-//! views; every input table's view at a segment's first hour, which the ordered emit
-//! ([`super::emit`]) compares with what came before; the next captured capitulation's date where
-//! it is read again; what the hour changed of the prepared layers ([`super::layers`]); the war
-//! relations' lifetimes and casualty counters, whole where the relations are joined again and
-//! else only those that changed; and the participation tables' changed rows. An hour that
-//! changes none of it carries nothing but its hour.
+//! tables that changed in a field the wars compare ([`inputs::same_inputs`]), whose packed
+//! views the segment's end hands on once; every input table's view at a segment's first hour,
+//! which the ordered emit ([`super::emit`]) compares with what came before; the next captured
+//! capitulation's date where it is read again; what the hour changed of the prepared layers
+//! ([`super::layers`]); the war relations' lifetimes and casualty counters, whole where the
+//! relations are joined again and else only those that changed; and the participation
+//! tables' changed rows. An hour that changes none of it carries nothing but its hour.
 //!
 //! Tables whose readers read a few of their fields are held by those fields alone, so an hour
 //! changing only others is not read. The relations are joined again only where a table the join
@@ -123,10 +123,8 @@ pub enum Relations {
 pub struct Facts {
     /// Every input table's view, at a segment's first hour.
     pub whole: Option<Vec<(TableId, SharedView)>>,
-    /// The input tables that changed since the hour before, one bit by [`INPUTS`] place, and
-    /// their packed views ([`inputs::pack`]).
+    /// The input tables that changed since the hour before, one bit by [`INPUTS`] place.
     pub changed: u32,
-    pub packet: Option<Vec<u8>>,
     /// The first captured capitulation date after the hour, where the hour read the
     /// capitulations again or reached the date read before.
     pub next: Option<Option<i32>>,
@@ -137,7 +135,7 @@ pub struct Facts {
     pub layers: Option<Box<Layered>>,
 }
 
-/// One hour of a segment.
+/// One hour of a segment, or its end.
 #[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
@@ -146,6 +144,9 @@ pub struct Hour {
     /// after an hour not walked do not.
     pub follows: bool,
     pub facts: Option<Box<Facts>>,
+    /// The segment's end, after its last hour `hour`: the input tables that changed since its
+    /// first hour, by [`INPUTS`] place, and their last views packed ([`inputs::pack`]).
+    pub ended: Option<(u32, Vec<u8>)>,
 }
 
 /// A relation the projector last joined: its lifetime, whether its row's endpoints are reversed
@@ -189,7 +190,11 @@ pub struct Projector {
     fields: [usize; 4],
     /// Capitulation's [`INPUTS`] place.
     capitulation: usize,
+    /// The input tables changed since the segment's first hour, by [`INPUTS`] place.
+    pending: u32,
     cold: bool,
+    /// The branch last walked.
+    branch: u64,
     last: Option<i32>,
     /// Each input table's view as last compared, by [`INPUTS`] place; WarRelations' without
     /// its counters.
@@ -205,6 +210,9 @@ pub struct Projector {
     /// The frame the walk's views are asked into, kept from hour to hour, and the hour's asks
     /// of the input, join and participation tables.
     frame: DecodedFrame,
+    /// The input tables as last compared, in a frame of their own the layers read, kept from
+    /// hour to hour.
+    layered: DecodedFrame,
     asks: Vec<(TableId, Hold)>,
     join: Vec<(TableId, Hold)>,
     wholes: Vec<(TableId, Hold)>,
@@ -304,7 +312,9 @@ impl Projector {
             ],
             capitulation: inputs::input(TableId::Capitulation)
                 .ok_or_else(|| invalid("Capitulation is not a wars input"))?,
+            pending: 0,
             cold: true,
+            branch: 0,
             last: None,
             held: vec![None; INPUTS.len()],
             next: None,
@@ -312,6 +322,12 @@ impl Projector {
             places: Default::default(),
             chain: 0,
             frame: DecodedFrame {
+                branch: 0,
+                hour: 0,
+                metrics: Default::default(),
+                tables: std::array::from_fn(|_| not_selected()),
+            },
+            layered: DecodedFrame {
                 branch: 0,
                 hour: 0,
                 metrics: Default::default(),
@@ -430,7 +446,7 @@ impl Projector {
             diffs[at] = Some((upserts, &changes.deleted_keys[..]));
         }
         if !self.wholes.is_empty() {
-            world.frame_held_into(state, &self.wholes, &mut self.frame)?;
+            world.copy_into(state, &self.wholes, &mut self.frame)?;
         }
         let mut parts: [Option<PartRef<'_>>; 2] = [None, None];
         for ((part, diff), &table) in parts.iter_mut().zip(&diffs).zip(&PARTICIPATION) {
@@ -503,7 +519,7 @@ impl Operator<Shared> for Projector {
             }
         }
         if !self.asks.is_empty() {
-            world.frame_held_into(state, &self.asks, &mut self.frame)?;
+            world.copy_into(state, &self.asks, &mut self.frame)?;
         }
         let mut whole_views = None;
         let mut changed = 0_u32;
@@ -529,28 +545,18 @@ impl Operator<Shared> for Projector {
                 }
             }
         }
-        let packet = if changed == 0 {
-            None
-        } else {
-            let views = inputs::places(changed).map(|place| {
-                let view = self.held[place].as_ref().expect("a changed table is held");
-                (INPUTS[place], view)
-            });
-            Some(inputs::pack(views, &mut self.scratch)?)
-        };
+        // The emit compares a first hour's views itself; what changes after waits for the end.
+        self.pending = if whole { 0 } else { self.pending | changed };
         let layers = if !follows || changed != 0 {
-            let mut tables = DecodedFrame {
-                branch: hour.branch,
-                hour: at,
-                metrics: Default::default(),
-                tables: std::array::from_fn(|_| not_selected()),
-            };
+            let tables = &mut self.layered;
+            tables.branch = hour.branch;
+            tables.hour = at;
             for (view, &table) in self.held.iter().zip(INPUTS) {
-                if let Some(view) = view {
-                    tables.tables[table.index()] = view.clone();
-                }
+                tables.tables[table.index()] = view.clone().unwrap_or_else(not_selected);
             }
-            self.layers.hour(&tables, !follows, changed).map(Box::new)
+            self.layers
+                .hour(&self.layered, !follows, changed)
+                .map(Box::new)
         } else {
             None
         };
@@ -579,7 +585,7 @@ impl Operator<Shared> for Projector {
             }
         }
         if rejoin {
-            world.frame_held_into(state, &self.join, &mut self.frame)?;
+            world.copy_into(state, &self.join, &mut self.frame)?;
             let (whole, joined, places) = join(&self.frame);
             relations = Some(whole);
             self.joined = joined;
@@ -596,6 +602,7 @@ impl Operator<Shared> for Projector {
             && relations.is_none()
             && parts.is_none()
             && layers.is_none();
+        self.branch = hour.branch;
         out.push(Hour {
             branch: hour.branch,
             hour: at,
@@ -604,13 +611,36 @@ impl Operator<Shared> for Projector {
                 Box::new(Facts {
                     whole: whole_views,
                     changed,
-                    packet,
                     next,
                     relations,
                     parts,
                     layers,
                 })
             }),
+            ended: None,
+        })
+    }
+
+    /// Hands on the views of the tables changed since the segment's first hour, once: the emit
+    /// reads its held tables only at a segment's first hour and as it saves, both past here.
+    fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        let (pending, Some(last)) = (std::mem::take(&mut self.pending), self.last) else {
+            return Ok(());
+        };
+        if pending == 0 {
+            return Ok(());
+        }
+        let views = inputs::places(pending).map(|place| {
+            let view = self.held[place].as_ref().expect("a changed table is held");
+            (INPUTS[place], view)
+        });
+        let packet = inputs::pack(views, &mut self.scratch)?;
+        out.push(Hour {
+            branch: self.branch,
+            hour: last,
+            follows: false,
+            facts: None,
+            ended: Some((pending, packet)),
         })
     }
 

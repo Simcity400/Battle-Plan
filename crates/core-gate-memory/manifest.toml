@@ -5020,13 +5020,13 @@ previous = false
 name = "Campaign"
 fields = []
 spool = "none"
-source = "crates/dashboard-base/src/prepared_production/columnar.rs:31"
+source = "crates/dashboard-base/src/prepared_production/columnar.rs:40"
 
 [[families.readset]]
 name = "Countries"
 fields = ["canonical_slot", "tag"]
 spool = "stream"
-source = "crates/dashboard-base/src/prepared_production/columnar.rs:504; crates/dashboard-base/src/products/equipment/columnar.rs:608"
+source = "crates/dashboard-base/src/prepared_production/columnar.rs:636; crates/dashboard-base/src/products/equipment/columnar.rs:608"
 
 [[families.readset]]
 name = "CountryAppearance"
@@ -5039,7 +5039,7 @@ reason = "Naming rebuilds the canonical name-tag roster and detects ambiguous al
 name = "CountryLinks"
 fields = ["canonical_slot"]
 spool = "stream"
-source = "crates/dashboard-base/src/prepared_production/columnar.rs:504; crates/dashboard-base/src/products/equipment/columnar.rs:608"
+source = "crates/dashboard-base/src/prepared_production/columnar.rs:636; crates/dashboard-base/src/products/equipment/columnar.rs:608"
 
 [[families.readset]]
 name = "LexicalTokens"
@@ -5052,21 +5052,21 @@ name = "ProductionLineOutput"
 fields = ["country", "variant", "units", "since_hour", "ended", "exact", "spent_raw", "purpose"]
 spool = "stream"
 read_rule = "supplied"
-source = "crates/dashboard-base/src/prepared_production/columnar.rs:519"
+source = "crates/dashboard-base/src/prepared_production/columnar.rs:419"
 
 [[families.readset]]
 name = "ProductionLines"
 fields = ["country"]
 spool = "stream"
-source = "crates/dashboard-base/src/prepared_production/columnar.rs:217"
+source = "crates/dashboard-base/src/prepared_production/columnar.rs:342"
 
 [[families.readset]]
 name = "RocketProductionOutput"
 fields = "all"
 spool = "stream"
 read_rule = "supplied"
-source = "crates/dashboard-base/src/prepared_production/columnar.rs:519"
-reason = "output materializes complete rocket output rows for the production observer, including every recorded output and exactness operand (prepared_production/columnar.rs:519)."
+source = "crates/dashboard-base/src/prepared_production/columnar.rs:659"
+reason = "output materializes complete rocket output rows for the production observer, including every recorded output and exactness operand (prepared_production/columnar.rs:659)."
 
 [[families.readset]]
 name = "VariantChanges"

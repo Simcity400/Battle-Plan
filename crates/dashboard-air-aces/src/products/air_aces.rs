@@ -30,7 +30,7 @@ use installed_content_localisation::localisation::Argument;
 use facts::{Read, Roster};
 use replay::container::Replay;
 use replay_data::{rows::AirAceRow, rows::RowCodec, rows::TableId, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, Rowset, Tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
@@ -43,10 +43,7 @@ use std::{
 };
 use ts_rs::TS;
 #[cfg(test)]
-use {
-    dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder,
-    std::collections::VecDeque,
-};
+use {dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder};
 
 pub struct AirAces;
 pub struct AirAcePortraits;
@@ -264,46 +261,54 @@ impl Joined<'_> {
 }
 
 /// Whether a roster read holds an ace twice, which makes it a gap.
-pub(crate) fn duplicated(rows: &[AirAceRow]) -> bool {
+/// Whether a read holds an ace twice. Aces are keyed by id; a duplicate is a corrupt read.
+pub(crate) fn duplicated(rows: Rowset<'_, AirAceRow>) -> bool {
     let mut ids = HashSet::with_capacity(rows.len());
-    rows.iter().any(|row| !ids.insert(row.id))
+    rows.keys().any(|key| !ids.insert(key))
 }
 
 /// Each ace of a roster read, in roster order, with what the read joins to it: its owner's and
 /// killer's tags, its wing's variants by ordinal and the wing's stored name.
-pub(crate) fn join(
-    frame: &DecodedFrame,
-    rows: &[AirAceRow],
-    tags: &mut LinkTags,
+/// The ace roster's fields read to name a run's wing.
+const ASSIGNED: u64 = replay_data::rows::mask::<AirAceRow>(&["assigned_wing"]);
+
+/// `rows`, an ace roster read of `frame`, each with what the read joins to it, `tags_known`
+/// whether the tags were brought to the hour's countries.
+pub(crate) fn join<F: Tables + ?Sized>(
+    frame: &F,
+    rows: Rowset<'_, AirAceRow>,
+    (tags, tags_known): (&LinkTags, bool),
     refusals: &mut Refusals,
     wing_refusals: &mut Refusals,
     mut each: impl FnMut(Joined<'_>),
-) {
-    let tags_known = tags.update(frame).is_ok();
-    let assigned: HashSet<u64> = rows
-        .iter()
-        .map(|row| row.assigned_wing)
-        .filter(|wing| *wing != 0)
-        .collect();
-    let equipment = frame.complete::<tables::WingEquipment>().ok();
-    let wings: HashSet<u64> = frame
-        .complete::<tables::AirWings>()
-        .ok()
-        .into_iter()
-        .flatten()
-        .map(|row| row.id)
-        .filter(|id| assigned.contains(id))
-        .collect();
+) -> io::Result<()> {
+    let mut assigned = HashSet::new();
+    for row in rows.with_mask(ASSIGNED).iter() {
+        let wing = row?.assigned_wing;
+        if wing != 0 {
+            assigned.insert(wing);
+        }
+    }
+    let variant = replay_data::rows::mask::<replay_data::rows::WingEquipmentRow>(&["variant"]);
+    let equipment = frame.complete_rows::<tables::WingEquipment>(variant).ok();
+    let wings: HashSet<u64> = match frame.complete_rows::<tables::AirWings>(0) {
+        Ok(held) => assigned
+            .iter()
+            .copied()
+            .filter(|&id| held.contains(u128::from(id)))
+            .collect(),
+        Err(_) => HashSet::new(),
+    };
     let mut by_wing: HashMap<u64, Vec<(u32, u64)>> = HashMap::new();
-    for row in equipment
-        .into_iter()
-        .flatten()
-        .filter(|row| assigned.contains(&row.wing))
-    {
-        by_wing
-            .entry(row.wing)
-            .or_default()
-            .push((row.ordinal, row.variant));
+    if let Some(equipment) = &equipment {
+        // An equipment row's wing is its key's high bits.
+        for row in equipment.keyed(|key| assigned.contains(&((key >> 32) as u64))) {
+            let row = row?;
+            by_wing
+                .entry(row.wing)
+                .or_default()
+                .push((row.ordinal, row.variant));
+        }
     }
     let by_wing: HashMap<u64, Vec<u64>> = by_wing
         .into_iter()
@@ -313,8 +318,9 @@ pub(crate) fn join(
         })
         .collect();
     let names = dashboard_text::air_wing_names::recorded_names(frame, &assigned, wing_refusals);
-    let tags = &*tags;
-    for row in rows {
+    for row in rows.iter() {
+        let row = row?;
+        let row = &*row;
         let tag = tags_known.then(|| tags.get(row.country)).flatten();
         if tag.is_none() {
             refusals.note(
@@ -346,6 +352,7 @@ pub(crate) fn join(
             killer_tag,
         });
     }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -497,18 +504,19 @@ impl Scan {
         let roster = match frame.complete::<tables::AirAces>() {
             Err(_) => Roster::Unknown,
             Ok(rows) if slot_read(self.format, &frame.metrics, TableId::AirAces, frame.hour) => {
-                if duplicated(rows) {
+                if duplicated(Rowset::Decoded(rows)) {
                     Roster::Duplicate
                 } else {
                     let mut seen = Vec::with_capacity(rows.len());
+                    let known = self.tags.update(frame).is_ok();
                     join(
                         frame,
-                        rows,
-                        &mut self.tags,
+                        Rowset::Decoded(rows),
+                        (&self.tags, known),
                         &mut self.refusals,
                         &mut self.wing_refusals,
                         |ace| seen.push(ace.owned()),
-                    );
+                    )?;
                     Roster::Read(Box::new(Read {
                         whole: true,
                         seen,
@@ -780,24 +788,21 @@ fn scan(replay: &Replay, branch_id: u64, flag: &AtomicBool) -> io::Result<Scan> 
     Ok(result)
 }
 
+/// One scan per branch of the source revision.
 #[cfg(test)]
 #[derive(Default)]
 struct Cache {
-    branches: VecDeque<(u64, Arc<Scan>)>,
+    branches: BTreeMap<u64, Arc<Scan>>,
 }
 #[cfg(test)]
 fn cached(source: &Source, branch: u64, flag: &AtomicBool) -> io::Result<Arc<Scan>> {
     let state = source.state::<Cache>();
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, result)) = state.branches.iter().find(|(id, _)| *id == branch) {
+    if let Some(result) = state.branches.get(&branch) {
         return Ok(Arc::clone(result));
     }
     let result = Arc::new(scan(&source.replay(), branch, flag)?);
-    state.branches.push_back((branch, Arc::clone(&result)));
-    // Retention only: evicted branches remain fully queryable by rescanning.
-    while state.branches.len() > 2 {
-        state.branches.pop_front();
-    }
+    state.branches.insert(branch, Arc::clone(&result));
     Ok(result)
 }
 

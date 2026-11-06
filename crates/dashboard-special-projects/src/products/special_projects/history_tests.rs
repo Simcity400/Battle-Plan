@@ -613,8 +613,8 @@ fn scientist_name_refusals_stay_local_through_person_and_reply_caches() {
             .lock()
             .unwrap()
             .replies
-            .iter()
-            .any(|((_, tag, _), _)| tag == &params(1).tag)
+            .values()
+            .any(|((tag, _), _)| tag == &params(1).tag)
     );
     for (id, expected) in expected {
         let reply = SpecialProjects::load(&source, &params(id), &context, &cancelled).unwrap();

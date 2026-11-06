@@ -1,7 +1,7 @@
 use super::facts::{Captures, CensusRow, Cost, Dating, Hour, Power};
 use super::*;
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -111,6 +111,7 @@ fn decision(country: u32, sequence: u64, hour: i32, charge: i64) -> Power {
             category: Some(Arc::from("decisions")),
         },
         resolved: None,
+        shape: None,
     }
 }
 
@@ -136,6 +137,7 @@ fn daily_gain(country: u32, sequence: u64, day: i32, gain: i64) -> Power {
             category: None,
         },
         resolved: None,
+        shape: None,
     }
 }
 
@@ -176,6 +178,7 @@ fn upkeep_cost(country: u32, day: i32, sequence: u64, cost: i64) -> Cost {
             category: Some(Arc::from("dailyCosts")),
         },
         item: None,
+        shape: None,
     }
 }
 
@@ -186,8 +189,8 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<Hour>, cuts: &[i32], resumes: &[i32], budget: &Budget) -> Built {
-    build_with(&NONE, hours, cuts, resumes, budget)
+fn build(hours: Vec<Hour>, cuts: &[i32], resumes: &[i32]) -> Built {
+    build_with(&NONE, hours, cuts, resumes)
 }
 
 /// [`build`] under `content`.
@@ -196,12 +199,10 @@ fn build_with(
     hours: Vec<Hour>,
     cuts: &[i32],
     resumes: &[i32],
-    budget: &Budget,
 ) -> Built {
-    let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = emit::Emit::new(content);
     let mut root = 0;
     let mut generation = 0;
@@ -215,7 +216,6 @@ fn build_with(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -229,8 +229,8 @@ fn build_with(
         if resumes.contains(&cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
             emit = emit::Emit::load(content, &directory, &saved).unwrap();
         }
@@ -239,15 +239,14 @@ fn build_with(
     Built { pages, root }
 }
 
-fn ask(built: &Built, budget: &Budget, params: serde_json::Value) -> io::Result<serde_json::Value> {
-    let cache = Cache::new(budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity())?;
+fn ask(built: &Built, params: serde_json::Value) -> io::Result<serde_json::Value> {
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity())?;
     let directory = Directory::read(&mut snapshot, emit::SCHEMA)?;
     query::query(&params, &mut snapshot, &directory, &AtomicBool::new(false))
 }
 
-fn reply(built: &Built, budget: &Budget, params: serde_json::Value) -> PoliticsLedgerReply {
-    serde_json::from_value(ask(built, budget, params).unwrap()).unwrap()
+fn reply(built: &Built, params: serde_json::Value) -> PoliticsLedgerReply {
+    serde_json::from_value(ask(built, params).unwrap()).unwrap()
 }
 
 /// GER is captured from 100. A decision is read at 101, the day's gain, its daily row and
@@ -277,11 +276,9 @@ fn campaign() -> Vec<Hour> {
 /// lines, the gain as a balance line only, the cost as a recurring day; governments ask none.
 #[test]
 fn payments_come_back_as_their_reads_recorded_them() {
-    let budget = Budget::new(64 << 20);
-    let built = build(campaign(), &[110, 130], &[], &budget);
+    let built = build(campaign(), &[110, 130], &[]);
     let raw = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "GER", "view": "balance", "hour": 130 }),
     );
     assert_eq!(
@@ -320,7 +317,6 @@ fn payments_come_back_as_their_reads_recorded_them() {
 
     let early = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "GER", "view": "spending", "hour": 110 }),
     );
     assert_eq!(early.spending.len(), 1);
@@ -329,7 +325,6 @@ fn payments_come_back_as_their_reads_recorded_them() {
 
     let governments = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "GER", "view": "governments", "hour": 130 }),
     );
     assert!(governments.governments.is_empty());
@@ -338,7 +333,6 @@ fn payments_come_back_as_their_reads_recorded_them() {
     // A tag the branch never named answers empty, not refused.
     let absent = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "FRA", "view": "balance", "hour": 130 }),
     );
     assert!(absent.balance_changes.is_empty() && absent.spending.is_empty());
@@ -348,13 +342,11 @@ fn payments_come_back_as_their_reads_recorded_them() {
 /// keeps every payment its reads recorded.
 #[test]
 fn a_content_refusal_warns_once_and_keeps_the_payments() {
-    let budget = Budget::new(64 << 20);
     let reason = "NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU is missing".to_owned();
     let refused: PreparedContent = Err(reason.clone());
-    let built = build_with(&refused, campaign(), &[110, 130], &[110], &budget);
+    let built = build_with(&refused, campaign(), &[110, 130], &[110]);
     let raw = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "GER", "view": "balance", "hour": 130 }),
     );
     assert_eq!(raw.balance_changes.len(), 3);
@@ -371,8 +363,7 @@ fn a_content_refusal_warns_once_and_keeps_the_payments() {
 /// stopped, whatever the next segment's first hour hands whole.
 #[test]
 fn accounting_goes_on_across_a_cut_and_resume() {
-    let budget = Budget::new(64 << 20);
-    let straight = build(campaign(), &[110, 130], &[], &budget);
+    let straight = build(campaign(), &[110, 130], &[]);
     let mut hours = campaign();
     // The next segment's first hour hands every capture and table whole.
     let countries = [(1, "GER"), (2, "ITA")];
@@ -390,13 +381,13 @@ fn accounting_goes_on_across_a_cut_and_resume() {
         whole: true,
         ..steady(111, &countries)
     };
-    let resumed = build(hours, &[110, 130], &[110], &budget);
+    let resumed = build(hours, &[110, 130], &[110]);
     for view in ["spending", "balance", "governments"] {
         for hour in [105, 120, 130] {
             let params = json!({ "branchId": "1", "tag": "GER", "view": view, "hour": hour });
             assert_eq!(
-                ask(&straight, &budget, params.clone()).unwrap(),
-                ask(&resumed, &budget, params).unwrap(),
+                ask(&straight, params.clone()).unwrap(),
+                ask(&resumed, params).unwrap(),
                 "{view} at {hour}"
             );
         }
@@ -406,7 +397,6 @@ fn accounting_goes_on_across_a_cut_and_resume() {
 /// A reply past the response budget is refused whole: nothing is truncated.
 #[test]
 fn a_reply_past_the_budget_is_refused_not_truncated() {
-    let budget = Budget::new(512 << 20);
     let countries = [(1, "GER")];
     let mut hours = vec![opening(0, &countries)];
     let mut sequence = 0;
@@ -424,10 +414,9 @@ fn a_reply_past_the_budget_is_refused_not_truncated() {
         }
         hours.push(hour);
     }
-    let built = build(hours, &[1000], &[], &budget);
+    let built = build(hours, &[1000], &[]);
     let error = ask(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "GER", "view": "balance", "hour": 1000 }),
     )
     .unwrap_err();
@@ -438,7 +427,6 @@ fn a_reply_past_the_budget_is_refused_not_truncated() {
     // A window inside the budget is answered.
     let window = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "GER", "view": "spending", "from": 1, "hour": 3 }),
     );
     assert_eq!(window.spending.len(), 300);
@@ -448,7 +436,6 @@ fn a_reply_past_the_budget_is_refused_not_truncated() {
 /// emit writes each country's coverage once, and every country's payments read back.
 #[test]
 fn fifteen_hundred_countries_append_only_what_changes() {
-    let budget = Budget::new(1 << 30);
     let tags: Vec<String> = (0..1500).map(|index| format!("C{index:03X}")).collect();
     let countries: Vec<(u32, &str)> = tags
         .iter()
@@ -466,16 +453,14 @@ fn fifteen_hundred_countries_append_only_what_changes() {
         }
         hours.push(hour);
     }
-    let built = build(hours, &[23, 47, 71, 95, 119], &[71], &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let built = build(hours, &[23, 47, 71, 95, 119], &[71]);
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     // One actor per country and the branch's.
     assert_eq!(directory.actors.len(), 1501);
     for (id, tag) in countries.iter().step_by(137) {
         let reply = reply(
             &built,
-            &budget,
             json!({ "branchId": "1", "tag": tag, "view": "spending", "hour": 119 }),
         );
         let paid = (1..120)
@@ -494,7 +479,6 @@ fn fifteen_hundred_countries_append_only_what_changes() {
 /// counted or totalled over them.
 #[test]
 fn a_hole_reads_unknown_never_zero() {
-    let budget = Budget::new(64 << 20);
     let countries = [(1, "GER")];
     let mut hours = vec![opening(100, &countries)];
     for at in 101..=105 {
@@ -506,10 +490,9 @@ fn a_hole_reads_unknown_never_zero() {
     for at in 111..=115 {
         hours.push(steady(at, &countries));
     }
-    let built = build(hours, &[105, 115], &[], &budget);
+    let built = build(hours, &[105, 115], &[]);
     let raw = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "GER", "view": "balance", "hour": 115 }),
     );
     let gap = raw
@@ -528,7 +511,6 @@ fn a_hole_reads_unknown_never_zero() {
 /// none of its spending is recorded because it spends none.
 #[test]
 fn a_tag_listed_later_reads_absent_before_its_listing() {
-    let budget = Budget::new(64 << 20);
     let (first, both) = ([(1, "GER")], [(1, "GER"), (2, "ITA")]);
     let mut hours = vec![opening(100, &first)];
     for at in 101..=109 {
@@ -538,10 +520,9 @@ fn a_tag_listed_later_reads_absent_before_its_listing() {
     for at in 111..=120 {
         hours.push(steady(at, &both));
     }
-    let built = build(hours, &[105, 120], &[105], &budget);
+    let built = build(hours, &[105, 120], &[105]);
     let raw = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "ITA", "view": "spending", "hour": 120 }),
     );
     let before = &raw.spending_coverage[0];
@@ -740,12 +721,11 @@ fn ability_upkeep(country: u32, sequence: u64, hour: i32, charge: i64) -> Power 
 /// `params`' totals, read with rollups when `rolled`, and the rollups read.
 fn totals_reply(
     built: &Built,
-    budget: &Budget,
     params: serde_json::Value,
     rolled: bool,
 ) -> (serde_json::Value, usize) {
     query::ROLLUPS.with(|cell| cell.set((rolled, 0)));
-    let reply = ask(built, budget, params).unwrap();
+    let reply = ask(built, params).unwrap();
     let read = query::ROLLUPS.with(|cell| cell.replace((true, 0)).1);
     (reply, read)
 }
@@ -755,11 +735,10 @@ fn totals_reply(
 /// cut and a resume.
 #[test]
 fn totals_from_rollups_are_the_totals_of_their_rows() {
-    let budget = Budget::new(256 << 20);
     let cuts: Vec<i32> = (110..170).step_by(10).map(|at| day(at) - 1).collect();
     let mut cuts = cuts;
     cuts.push(day(170) - 1);
-    let built = build(long_campaign(), &cuts, &[day(150) - 1], &budget);
+    let built = build(long_campaign(), &cuts, &[day(150) - 1]);
     let mut used = 0;
     for hour in [day(150), day(165), day(170) - 1] {
         for within in [
@@ -776,8 +755,8 @@ fn totals_from_rollups_are_the_totals_of_their_rows() {
             if let Some(within) = within {
                 params["within"] = within;
             }
-            let (rolled, read) = totals_reply(&built, &budget, params.clone(), true);
-            let (rows, none) = totals_reply(&built, &budget, params, false);
+            let (rolled, read) = totals_reply(&built, params.clone(), true);
+            let (rows, none) = totals_reply(&built, params, false);
             assert_eq!(none, 0);
             assert_eq!(rolled, rows, "totals through {hour}");
             used += read;
@@ -788,7 +767,6 @@ fn totals_from_rollups_are_the_totals_of_their_rows() {
     let reply: PoliticsLedgerReply = serde_json::from_value(
         totals_reply(
             &built,
-            &budget,
             json!({
                 "branchId": "1", "tag": "GER", "view": "spending", "totals": true,
                 "hour": day(170) - 1,
@@ -835,7 +813,6 @@ fn totals_from_rollups_are_the_totals_of_their_rows() {
 /// payments at later hours counts its cost once in its parts, however many hours change.
 #[test]
 fn a_days_cost_counts_once_in_its_parts() {
-    let budget = Budget::new(64 << 20);
     let countries = [(1, "GER"), (2, "ITA")];
     let mut hours = vec![opening(day(100), &countries)];
     for at in day(100) + 1..day(102) + 12 {
@@ -853,10 +830,9 @@ fn a_days_cost_counts_once_in_its_parts() {
         hours.push(hour);
     }
     let last = day(102) + 11;
-    let built = build(hours, &[day(101) + 6, last], &[], &budget);
+    let built = build(hours, &[day(101) + 6, last], &[]);
     let reply = reply(
         &built,
-        &budget,
         json!({
             "branchId": "1",
             "tag": "GER",
@@ -891,7 +867,6 @@ fn a_days_cost_counts_once_in_its_parts() {
 /// refused rather than shown as one series.
 #[test]
 fn part_summaries_join_their_pieces_exactly() {
-    let budget = Budget::new(64 << 20);
     let countries = [(1, "GER"), (2, "ITA")];
     let mut hours = vec![opening(100, &countries)];
     for at in 101..=140 {
@@ -902,11 +877,10 @@ fn part_summaries_join_their_pieces_exactly() {
         }
         hours.push(hour);
     }
-    let built = build(hours, &[140], &[], &budget);
+    let built = build(hours, &[140], &[]);
     let summary = |bindings: serde_json::Value| {
         ask(
             &built,
-            &budget,
             json!({
                 "branchId": "1",
                 "tag": "GER",
@@ -963,7 +937,6 @@ fn government(country: u32, sequence: u64, hour: i32) -> facts::Government {
 /// Government marks and pages hold the governments read by the asked hour, in read order.
 #[test]
 fn government_marks_and_pages_show_what_was_read_by_the_hour() {
-    let budget = Budget::new(64 << 20);
     let countries = [(1, "GER"), (2, "ITA")];
     let mut hours = vec![opening(100, &countries)];
     for at in 101..=130 {
@@ -973,11 +946,10 @@ fn government_marks_and_pages_show_what_was_read_by_the_hour() {
         }
         hours.push(hour);
     }
-    let built = build(hours, &[112, 130], &[], &budget);
+    let built = build(hours, &[112, 130], &[]);
     let marks = |to: i32| -> u64 {
         let reply = reply(
             &built,
-            &budget,
             json!({
                 "branchId": "1",
                 "tag": "GER",
@@ -999,7 +971,6 @@ fn government_marks_and_pages_show_what_was_read_by_the_hour() {
     let page = |cursor: &str| {
         ask(
             &built,
-            &budget,
             json!({
                 "branchId": "1",
                 "tag": "GER",
@@ -1021,12 +992,10 @@ fn government_marks_and_pages_show_what_was_read_by_the_hour() {
 /// An item keeps the id of its first payment in every window, even one not holding it.
 #[test]
 fn an_item_is_named_by_its_first_payment_in_every_window() {
-    let budget = Budget::new(64 << 20);
-    let built = build(campaign(), &[110, 130], &[], &budget);
+    let built = build(campaign(), &[110, 130], &[]);
     for (from, hour) in [(100, 110), (120, 130)] {
         let reply = reply(
             &built,
-            &budget,
             json!({ "branchId": "1", "tag": "GER", "view": "spending", "from": from, "hour": hour }),
         );
         let decision = reply
@@ -1107,7 +1076,6 @@ fn an_item_is_named_through_the_recorded_mod_stack() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for its runtime tables");
     let stack = Stack::new();
     let content = stack.content();
-    let budget = Budget::new(64 << 20);
     let countries = [(1, "GER"), (2, "ITA")];
     let mut hours = vec![opening(100, &countries)];
     for at in 101..=120 {
@@ -1123,10 +1091,9 @@ fn an_item_is_named_through_the_recorded_mod_stack() {
         hours.push(hour);
     }
     // The emit names each item once, at its first payment, through the content it prepares with.
-    let built = build_with(&Ok(Some(content)), hours, &[120], &[], &budget);
+    let built = build_with(&Ok(Some(content)), hours, &[120], &[]);
     let reply = reply(
         &built,
-        &budget,
         json!({ "branchId": "1", "tag": "GER", "view": "spending", "hour": 120 }),
     );
     assert_eq!(reply.spending.len(), 2);

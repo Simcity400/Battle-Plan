@@ -1,17 +1,18 @@
 use crate::{
-    cache::Cache,
     codec::{Binary, Decode},
-    format::{BLOCK, Block, Definition, Directory, Entry, List, Node, NodeRef, Root, Table},
+    format::{
+        BLOCK, Block, Definition, Detail, Directory, Entry, Held, List, Node, NodeRef, Origin,
+        Root, Table,
+    },
     invalid,
     layout::{Fence, per_page},
-    pages::{Kind, PAGE_BYTES, Page, PageRead},
+    pages::{self, Kind, PAGE_BYTES, Page, PageRead},
     query::EventView,
     types::*,
 };
 use std::{collections::HashMap, io, sync::Arc};
 
 const IDS: u64 = (PAGE_BYTES / 8) as u64;
-const MEMO: usize = 4096;
 
 #[cfg(test)]
 thread_local! {
@@ -31,21 +32,65 @@ pub(crate) struct Fragment {
     pub continues: bool,
 }
 
-/// Reads one publication's hierarchy through the shared page cache.
-pub(crate) struct Reader<'a> {
-    cache: &'a Cache<'a>,
+/// The part of a pinned publication every query of it walks: its root and interior nodes.
+pub(crate) struct Upper {
     root: Root,
     id: PageId,
     nodes: HashMap<PageId, Arc<Node>>,
 }
 
-impl<'a> Reader<'a> {
-    pub fn open(io: &mut impl PageRead, cache: &'a Cache<'a>, id: PageId) -> io::Result<Self> {
-        let page = cache.page(io, id, Kind::Root)?;
+/// Reads one publication's hierarchy. It holds every node and page it visits until it is
+/// dropped, so a query decodes each once; pages are shared with every reader holding them.
+pub(crate) struct Reader {
+    root: Root,
+    id: PageId,
+    upper: Option<Arc<Upper>>,
+    nodes: HashMap<PageId, Arc<Node>>,
+    pages: HashMap<PageId, Arc<Page>>,
+}
+
+impl Reader {
+    pub fn open(io: &mut impl PageRead, id: PageId) -> io::Result<Self> {
+        let page = pages::shared(io, id, Kind::Root)?;
         let root = Root::decode(page.bytes())?;
-        Self::with(cache, root, id)
+        Self::with(root, id)
     }
-    pub fn with(cache: &'a Cache<'a>, root: Root, id: PageId) -> io::Result<Self> {
+    /// A reader starting from `upper`, which it shares.
+    pub fn upper(upper: Arc<Upper>) -> Self {
+        Self {
+            root: upper.root.clone(),
+            id: upper.id,
+            upper: Some(upper),
+            nodes: HashMap::new(),
+            pages: HashMap::new(),
+        }
+    }
+    /// Its root and every interior node under it, read once.
+    pub fn pin(&mut self, io: &mut impl PageRead) -> io::Result<Upper> {
+        let mut nodes = HashMap::new();
+        let mut stack = engine_allocation::vec(self.root.nodes.len())?;
+        stack.extend(self.root.nodes.iter().filter(|node| node.level > 0).copied());
+        while let Some(reference) = stack.pop() {
+            let node = self.child(io, reference)?;
+            engine_allocation::reserve(&mut stack, node.children.len())?;
+            stack.extend(node.children.iter().filter(|child| child.level > 0).copied());
+            engine_allocation::reserve_map(&mut nodes, 1)?;
+            nodes.insert(reference.page, node);
+        }
+        Ok(Upper {
+            root: self.root.clone(),
+            id: self.id,
+            nodes,
+        })
+    }
+    /// The reader of `root`, a prefix of its publication, keeping what it visited.
+    pub fn rebase(&mut self, root: Root, id: PageId) -> io::Result<()> {
+        let rebased = Self::with(root, id)?;
+        self.root = rebased.root;
+        self.id = rebased.id;
+        Ok(())
+    }
+    pub fn with(root: Root, id: PageId) -> io::Result<Self> {
         let mut segment = 0_u64;
         let mut hour = i64::from(root.state.publication.accepted.first);
         for node in &root.nodes {
@@ -59,16 +104,16 @@ impl<'a> Reader<'a> {
             return Err(invalid("series hierarchy does not reach the accepted hour"));
         }
         Ok(Self {
-            cache,
             root,
             id,
+            upper: None,
             nodes: HashMap::new(),
+            pages: HashMap::new(),
         })
     }
     /// A reader of nodes alone, for merging them before any root names them.
-    pub fn detached(cache: &'a Cache<'a>) -> Self {
+    pub fn detached() -> Self {
         Self {
-            cache,
             root: Root {
                 identity: Identity {
                     source: [0; 32],
@@ -92,8 +137,23 @@ impl<'a> Reader<'a> {
                 nodes: Vec::new(),
             },
             id: NONE,
+            upper: None,
             nodes: HashMap::new(),
+            pages: HashMap::new(),
         }
+    }
+    /// A reader of the hierarchy `nodes` before any root names it, for what its merges continue.
+    pub fn frontier(nodes: &[NodeRef]) -> io::Result<Self> {
+        let mut reader = Self::detached();
+        let (Some(first), Some(last)) = (nodes.first(), nodes.last()) else {
+            return Ok(reader);
+        };
+        let state = &mut reader.root.state;
+        state.publication.accepted = Span::new(first.hours.first, last.hours.last)?;
+        state.publication.reached = last.hours.last;
+        state.next_key = NONE;
+        reader.root.nodes = engine_allocation::copy_vec(nodes)?;
+        Self::with(reader.root, NONE)
     }
     pub fn root(&self) -> &Root {
         &self.root
@@ -101,21 +161,31 @@ impl<'a> Reader<'a> {
     pub fn id(&self) -> PageId {
         self.id
     }
-    pub fn cache(&self) -> &'a Cache<'a> {
-        self.cache
-    }
-
     pub fn node(&mut self, io: &mut impl PageRead, page: PageId) -> io::Result<Arc<Node>> {
         if let Some(node) = self.nodes.get(&page) {
             return Ok(Arc::clone(node));
         }
-        let bytes = self.cache.page(io, page, Kind::Node)?;
-        let node = Arc::new(Node::decode(bytes.bytes())?);
-        if self.nodes.len() >= MEMO {
-            self.nodes.clear();
+        if let Some(node) = self.upper.as_ref().and_then(|upper| upper.nodes.get(&page)) {
+            return Ok(Arc::clone(node));
         }
+        let bytes = pages::shared(io, page, Kind::Node)?;
+        let node = Arc::new(Node::decode(bytes.bytes())?);
+        engine_allocation::reserve_map(&mut self.nodes, 1)?;
         self.nodes.insert(page, Arc::clone(&node));
         Ok(node)
+    }
+    /// Page `id`, held from its first visit until the reader is dropped.
+    fn visit(&mut self, io: &mut impl PageRead, id: PageId, kind: Kind) -> io::Result<Arc<Page>> {
+        if let Some(page) = self.pages.get(&id) {
+            if page.kind() != kind {
+                return Err(invalid("series page kind"));
+            }
+            return Ok(Arc::clone(page));
+        }
+        let page = pages::shared(io, id, kind)?;
+        engine_allocation::reserve_map(&mut self.pages, 1)?;
+        self.pages.insert(id, Arc::clone(&page));
+        Ok(page)
     }
     pub fn child(&mut self, io: &mut impl PageRead, reference: NodeRef) -> io::Result<Arc<Node>> {
         let node = self.node(io, reference.page)?;
@@ -148,7 +218,7 @@ impl<'a> Reader<'a> {
         let mut page = list.root;
         let mut left = ordinal;
         for _ in 0..list.levels {
-            let index = self.cache.page(io, page, Kind::List)?;
+            let index = self.visit(io, page, Kind::List)?;
             let at = usize::try_from(left / span)
                 .ok()
                 .and_then(|at| at.checked_mul(8))
@@ -167,7 +237,7 @@ impl<'a> Reader<'a> {
         kind: Kind,
     ) -> io::Result<Arc<Page>> {
         let id = self.list_page(io, list, ordinal)?;
-        self.cache.page(io, id, kind)
+        self.visit(io, id, kind)
     }
     pub fn record<T: Binary>(
         &mut self,
@@ -440,7 +510,117 @@ impl<'a> Reader<'a> {
         Ok(Some(definition))
     }
 
-    /// Each frontier node's entries, oldest node first, then the last segment's.
+    /// The run and evidence a held entry of `key` continues, as the segments that began them
+    /// carried them out of their last hours.
+    pub fn continued(
+        &mut self,
+        io: &mut impl PageRead,
+        key: u64,
+        held: Held,
+    ) -> io::Result<(Option<Run>, Option<Evidence>)> {
+        let mut origin = None;
+        let run = if held.runs {
+            let entry = self.began(io, key, held.origin, &mut origin)?;
+            Some(
+                entry
+                    .detail
+                    .and_then(|detail| detail.tail)
+                    .filter(|run| run.span.first == held.origin)
+                    .ok_or_else(|| invalid("series held run its origin did not carry"))?,
+            )
+        } else {
+            None
+        };
+        let evidence = if held.evidence {
+            let entry = self.began(io, key, held.evidence_origin, &mut origin)?;
+            Some(
+                entry
+                    .detail
+                    .and_then(|detail| detail.evidence_tail)
+                    .filter(|evidence| evidence.span.first == held.evidence_origin)
+                    .ok_or_else(|| invalid("series held evidence its origin did not carry"))?,
+            )
+        } else {
+            None
+        };
+        Ok((run, evidence))
+    }
+
+    /// The entry of `key` in the segment holding `hour`, which began rows a later one holds.
+    fn began(
+        &mut self,
+        io: &mut impl PageRead,
+        key: u64,
+        hour: i32,
+        last: &mut Option<(Span, Entry)>,
+    ) -> io::Result<Entry> {
+        if let Some((_, entry)) = last.filter(|(hours, _)| hours.contains(hour)) {
+            return Ok(entry);
+        }
+        let segment = self
+            .segment_at(io, hour)?
+            .ok_or_else(|| invalid("series held row without the segment that began it"))?;
+        let entry = self
+            .entry(io, segment.entries, key)?
+            .filter(|entry| entry.held.is_none())
+            .ok_or_else(|| invalid("series held row without the rows that began it"))?;
+        *last = Some((segment.hours, entry));
+        Ok(entry)
+    }
+
+    /// A held entry of `node` as the rows it continues read: its tracks over the node and, in a
+    /// segment, its detail. Its summary is the caller's, which knows the key's scale.
+    pub fn held(
+        &mut self,
+        io: &mut impl PageRead,
+        node: &Node,
+        entry: Entry,
+    ) -> io::Result<(Entry, Option<Run>)> {
+        let held = entry
+            .held
+            .ok_or_else(|| invalid("series entry holds rows of its own"))?;
+        let (run, evidence) = self.continued(io, entry.key, held)?;
+        if run.is_some_and(|run| crate::add(run.canonical, 1).ok() != Some(entry.canonical_start)) {
+            return Err(invalid("series held run names another canonical run"));
+        }
+        let mut entry = entry.shaped(node.hours, node.segments);
+        if node.level == 0 {
+            let last = node.hours.last;
+            entry.detail = Some(Detail {
+                blocks: [
+                    (0, u64::from(held.runs)),
+                    (0, u64::from(held.evidence)),
+                    (0, u64::from(held.coverage)),
+                    (0, 0),
+                ],
+                origin: run.map_or(Origin::default(), |run| Origin {
+                    first: run.span.first,
+                    break_before: run.break_before,
+                    supplying_boundary: run.supplying_boundary,
+                    sequence: run.sequence,
+                }),
+                evidence_origin: evidence.map_or(0, |evidence| evidence.span.first),
+                tail: run.map(|run| Run {
+                    span: Span {
+                        first: run.span.first,
+                        last,
+                    },
+                    ..run
+                }),
+                evidence_tail: evidence.map(|evidence| Evidence {
+                    span: Span {
+                        first: evidence.span.first,
+                        last,
+                    },
+                    ..evidence
+                }),
+            });
+        }
+        Ok((entry, run))
+    }
+
+    /// Each frontier node's entries, oldest node first, then the last segment's, held ones read
+    /// as the rows they continue.
     pub fn latest_entries(
         &mut self,
         io: &mut impl PageRead,
@@ -450,11 +630,25 @@ impl<'a> Reader<'a> {
         for reference in self.root.nodes.clone() {
             let node = self.child(io, reference)?;
             let dir = if domain { node.domains } else { node.entries };
-            self.each_entry(io, dir, &mut |entry| visit(entry, false))?;
+            self.each_entry(io, dir, &mut |entry| {
+                visit(entry.shaped(node.hours, node.segments), false)
+            })?;
         }
         if let Some(node) = self.last_segment(io)? {
             let dir = if domain { node.domains } else { node.entries };
-            self.each_entry(io, dir, &mut |entry| visit(entry, true))?;
+            for ordinal in 0..dir.list.pages {
+                let page = self.page(io, dir.list, ordinal, Kind::Records)?;
+                let count = entry_count(page.bytes())?;
+                for at in 0..count {
+                    let entry = entry_in(page.bytes(), count, at)?;
+                    let entry = if entry.held.is_some() {
+                        self.held(io, &node, entry)?.0
+                    } else {
+                        entry
+                    };
+                    visit(entry, true)?;
+                }
+            }
         }
         Ok(())
     }

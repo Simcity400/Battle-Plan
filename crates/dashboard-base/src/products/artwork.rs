@@ -25,8 +25,6 @@ const UNKNOWN_FOCUS_ICON: &str = installed_content_focus::focus::UNKNOWN_ICON;
 /// Longest side of returned product artwork previews.
 pub const ICON_EDGE: u32 = 96;
 
-pub use crate::catalogue::MAX_RETAINED_ARTWORK_BYTES;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// The focuses of one database, every lookup by id made in it alone.
@@ -311,12 +309,11 @@ pub struct Context {
     technology_names: Arc<TechnologyNames>,
     /// The source's shared localisation and sprites for these folders.
     catalogue: Arc<Catalogue>,
+    /// Each token's artwork, drawn once for this content.
     artwork_cache: BTreeMap<String, catalogue::Drawn<(Artwork, Vec<String>)>>,
-    artwork_bytes: usize,
     /// Each icon by the catalogue it was drawn through, the artwork mode it was drawn in and its
-    /// sprite ([`IconKey`]), with the bytes they keep.
+    /// sprite ([`IconKey`]).
     icon_cache: std::cell::RefCell<BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>>,
-    icon_bytes: std::cell::Cell<usize>,
     definitions: Arc<installed_content_focus::focus::Focuses>,
     focus_text_needs_frame: OnceLock<bool>,
     point_days: Option<f64>,
@@ -357,19 +354,35 @@ pub fn ensure_in(
 }
 
 /// A focus country's canonical slot at `frame`'s hour, None when absent.
-fn focus_slot(frame: &replay_frame::frame::DecodedFrame, tag: &str) -> Result<Option<u32>, String> {
+fn focus_slot(frame: replay_frame::frame::HourFrame<'_>, tag: &str) -> Result<Option<u32>, String> {
+    use replay_data::rows::{CountryLinkRow, CountryRow, column, mask, tables};
+    const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
+    const TAG: usize = column::<CountryRow>("tag");
+    const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
     let countries = frame
-        .complete::<replay_data::rows::tables::Countries>()
+        .complete::<tables::Countries>(SLOT)
         .map_err(|error| error.to_string())?;
     let links = frame
-        .complete::<replay_data::rows::tables::CountryLinks>()
+        .complete::<tables::CountryLinks>(LINK)
         .map_err(|error| error.to_string())?;
-    match crate::metadata::tagged_country(countries, links, tag) {
-        crate::metadata::TaggedCountry::Found(_, slot) => Ok(Some(slot)),
-        crate::metadata::TaggedCountry::Absent => Ok(None),
-        crate::metadata::TaggedCountry::Unresolved => {
-            Err("focus country identity is unresolved".into())
+    // The first country of the tag whose link names its own slot, as tagged_country finds it.
+    let mut named = false;
+    for pair in countries.with_text(|row| &row.tag, TAG) {
+        let (country, text) = pair.map_err(|error| error.to_string())?;
+        if text != tag.as_bytes() {
+            continue;
         }
+        named = true;
+        if let Some(slot) = crate::metadata::link_slot_in(&links, country.id)
+            && slot == country.canonical_slot
+        {
+            return Ok(Some(slot));
+        }
+    }
+    if named {
+        Err("focus country identity is unresolved".into())
+    } else {
+        Ok(None)
     }
 }
 
@@ -449,8 +462,10 @@ pub enum FocusProjection {
 /// Immutable scoped inputs for one accepted hour. Each expansion still owns
 /// its fresh caller scopes, random counters and variable session.
 pub struct FocusFrame<'a> {
-    pub frame: &'a replay_frame::frame::DecodedFrame,
+    pub frame: replay_frame::frame::HourFrame<'a>,
     catalogue: &'a Catalogue,
+    /// The walk's lexer folds, given to the text context built.
+    lexicon: Option<&'a dashboard_world::Lexicon>,
     /// The hour's text context, with what building it noted.
     text: OnceLock<(
         Result<crate::scripted_text::ScriptedText<'a>, String>,
@@ -465,15 +480,26 @@ pub struct FocusFrame<'a> {
 }
 
 impl<'a> FocusFrame<'a> {
-    pub fn new(frame: &'a replay_frame::frame::DecodedFrame, catalogue: &'a Catalogue) -> Self {
+    pub fn new(
+        frame: impl Into<replay_frame::frame::HourFrame<'a>>,
+        catalogue: &'a Catalogue,
+    ) -> Self {
         Self {
-            frame,
+            frame: frame.into(),
             catalogue,
+            lexicon: None,
             text: OnceLock::new(),
             rereads: Default::default(),
             #[cfg(any(test, feature = "test-support"))]
             text_builds: std::cell::Cell::new(0),
         }
+    }
+
+    /// These inputs on a walk's frame, finding tokens by the walk's lexer folds
+    /// ([`crate::scripted_text::ScriptedText::with_lexicon`]).
+    pub fn with_lexicon(mut self, lexicon: Option<&'a dashboard_world::Lexicon>) -> Self {
+        self.lexicon = lexicon;
+        self
     }
 
     /// The digest a recorded query reads this hour ([`crate::triggers::inputs`]).
@@ -498,6 +524,7 @@ impl<'a> FocusFrame<'a> {
     fn text(&self) -> Result<&crate::scripted_text::ScriptedText<'a>, String> {
         let shown = self.catalogue;
         let frame = self.frame;
+        let lexicon = self.lexicon;
         let mut built = false;
         let (text, noted) = self.text.get_or_init(|| {
             built = true;
@@ -506,12 +533,13 @@ impl<'a> FocusFrame<'a> {
             catalogue::capture(|| {
                 shown.scripted_content().map(|content| {
                     crate::triggers::inputs::unrecorded(|| {
-                        crate::scripted_text::ScriptedText::new(
+                        crate::scripted_text::ScriptedText::new_in(
                             frame,
                             &shown.localisation,
                             content,
                             0,
                         )
+                        .with_lexicon(lexicon)
                     })
                 })
             })
@@ -611,9 +639,7 @@ impl Context {
             technology_names,
             catalogue,
             artwork_cache: BTreeMap::new(),
-            artwork_bytes: 0,
             icon_cache: Default::default(),
-            icon_bytes: Default::default(),
             definitions,
             focus_text_needs_frame: OnceLock::new(),
             point_days,
@@ -1345,14 +1371,15 @@ impl Context {
 
     /// [`Self::focuses_at`] without drawing: each icon's sprite chosen at the hour, drawn when a
     /// reply shows it ([`Self::event_focus_icons`]); the caller admitting each lazy item.
-    pub fn event_focus_choices_at<T>(
+    pub fn event_focus_choices_at<'f, T>(
         &mut self,
         requests: &[(&str, &str)],
-        frame: &replay_frame::frame::DecodedFrame,
+        frame: replay_frame::frame::HourFrame<'f>,
+        lexicon: Option<&'f dashboard_world::Lexicon>,
         collect: impl FnOnce(&mut dyn Iterator<Item = ChosenArt>) -> T,
     ) -> T {
         let catalogue = Arc::clone(&self.catalogue);
-        let inputs = FocusFrame::new(frame, &catalogue);
+        let inputs = FocusFrame::new(frame, &catalogue).with_lexicon(lexicon);
         self.focus_items(requests, &inputs, false, FocusProjection::Full, false, |items| {
             let mut chosen = items.map(FocusItem::chosen);
             collect(&mut chosen)
@@ -1654,7 +1681,7 @@ impl Context {
                 // Focus names and descriptions seed a fresh scope with Clock seed
                 // plus the byte-exact focus ID's FNV-1a hash, then the shared hash lanes.
                 // The seed is an input only when the text draws from it.
-                let seed = crate::triggers::inputs::unrecorded(|| crate::scripted_text::clock_seed(frame));
+                let seed = crate::triggers::inputs::unrecorded(|| crate::scripted_text::clock_seed_in(frame));
                 scope.clock_seed = Some(seed);
                 let scopes = match seed {
                     Some(seed) => {
@@ -1740,17 +1767,6 @@ impl Context {
             declared_icon_png(drawing, name).map_err(|error| error.to_string())
         });
         let result = drawn.get().clone();
-        let size = name.len()
-            + result.as_ref().map_or_else(
-                |error| error.len(),
-                |icon| icon.as_ref().map_or(0, String::len),
-            );
-        // Icons share the context's budget with its artwork; past it they start over.
-        if self.artwork_bytes + self.icon_bytes.get() + size > MAX_RETAINED_ARTWORK_BYTES {
-            self.icon_cache.borrow_mut().clear();
-            self.icon_bytes.set(0);
-        }
-        self.icon_bytes.set(self.icon_bytes.get() + size);
         self.icon_cache.borrow_mut().insert(key, drawn);
         result.map_err(invalid)
     }
@@ -1861,7 +1877,6 @@ impl Context {
         }
         let mut warnings = self.warnings.clone();
         let mut artwork = Vec::new();
-        let mut bytes = 0;
         for (token, recorded) in tokens {
             if cancelled.load(Ordering::Acquire) {
                 return Err(invalid("Widget request cancelled"));
@@ -1875,18 +1890,6 @@ impl Context {
                         .collect();
                     (art, messages)
                 });
-                let (art, messages) = drawn.get();
-                let size =
-                    artwork_bytes(art) + messages.iter().map(|s| s.len() + 32).sum::<usize>();
-                // Retain a multi-country dashboard's working set of compressed
-                // icons so switching countries does not repeatedly decode them.
-                if self.artwork_bytes + self.icon_bytes.get() + size > MAX_RETAINED_ARTWORK_BYTES {
-                    self.artwork_cache.clear();
-                    self.icon_cache.get_mut().clear();
-                    self.artwork_bytes = 0;
-                    self.icon_bytes.set(0);
-                }
-                self.artwork_bytes += size;
                 self.artwork_cache.insert(token.into(), drawn);
             }
             let (art, messages) = self.artwork_cache[token].get();
@@ -1896,10 +1899,6 @@ impl Context {
                 description,
                 ..art.clone()
             };
-            bytes += artwork_bytes(&art);
-            if bytes > 8 * 1024 * 1024 {
-                return Err(invalid("Widget artwork exceeds output budget"));
-            }
             warnings.extend(messages.iter().cloned());
             warnings.extend(
                 findings
@@ -2009,13 +2008,6 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
         frame,
         ICON_EDGE,
     )
-}
-
-pub(crate) fn artwork_bytes(art: &Artwork) -> usize {
-    128 + art.token.len()
-        + art.name.as_ref().map_or(0, String::len)
-        + art.description.as_ref().map_or(0, String::len)
-        + art.icon.as_ref().map_or(0, String::len)
 }
 
 #[cfg(test)]

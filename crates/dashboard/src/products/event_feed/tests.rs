@@ -625,7 +625,7 @@ fn event_feed_excludes_recorded_technology_completions_but_keeps_other_milestone
             .all(|entry| !entry.kind.starts_with("technology"))
     );
     let cached = source.state::<Cache>();
-    let feed = Arc::clone(&cached.lock().unwrap().branches[0].1.feed);
+    let feed = Arc::clone(&cached.lock().unwrap().branches.values().next().unwrap().feed);
     let reply = load(&source, Some(100), Some(102));
     assert_eq!(
         reply
@@ -647,7 +647,7 @@ fn event_feed_excludes_recorded_technology_completions_but_keeps_other_milestone
     );
     assert!(Arc::ptr_eq(
         &feed,
-        &cached.lock().unwrap().branches[0].1.feed
+        &cached.lock().unwrap().branches.values().next().unwrap().feed
     ));
 }
 
@@ -1285,24 +1285,6 @@ fn event_feed_windows_keep_all_rows_under_small_budget_and_refuse_oversized_hour
             .unwrap_err()
             .to_string()
             .contains("large_mod_icon")
-    );
-}
-
-#[test]
-fn event_feed_cache_eviction_uses_last_access_not_branch_order() {
-    let mut cache = Cache::default();
-    let seed = CachedBranch {
-        catalogue: None,
-        feed: Arc::new(Builder::new(0, 1).finish().unwrap()),
-    };
-    for branch in 1..=4 {
-        cache.put(branch, seed.clone());
-    }
-    cache.get(1, &None).unwrap();
-    cache.put(5, seed);
-    assert_eq!(
-        cache.branches.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-        [3, 4, 1, 5]
     );
 }
 

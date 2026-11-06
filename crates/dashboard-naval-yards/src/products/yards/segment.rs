@@ -6,6 +6,7 @@ use super::{project::Projector, *};
 use dashboard_base::prepared::{frame_changes::FrameChanges, prepass::HeldBytes};
 use dashboard_keyed::segment::{Reader, Segmented, Touched};
 use replay_data::cadence::{Cadence, cadence_in};
+use replay_frame::frame::ColumnFrame;
 use std::marker::PhantomData;
 
 /// A yard view: repairs or refits.
@@ -89,13 +90,13 @@ struct Yards<V> {
 impl<V: View> Reader<V> for Yards<V> {
     fn read(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         _: &FrameChanges,
         touched: &Touched,
     ) -> io::Result<(Read, usize)> {
         let sources = Sources::read(self.format, frame, V::SOURCES);
         let rows = match &mut self.projector {
-            Some(projector) => projector.hour(frame, touched),
+            Some(projector) => projector.hour(frame, touched)?,
             None => Projector::build(frame, V::REFITS)?.map(|(projector, rows)| {
                 self.projector = Some(projector);
                 rows

@@ -18,15 +18,13 @@ use replay::container::Replay;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, FrameDecoder};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
-
-const CACHED_REQUESTS: usize = 4;
 
 /// An exchange's seller and buyer links, its resource and its terms.
 type Operand = (u32, u32, u32, Terms);
@@ -413,12 +411,10 @@ impl Scan {
     }
 }
 
-/// A scan's branch and countries (none for the whole world).
-type ScanKey = (u64, Option<Vec<String>>);
-
+/// Each branch's latest scan, by the countries it was scanned for (none for the whole world).
 #[derive(Default)]
 struct Cache {
-    entries: VecDeque<(ScanKey, Arc<ScannedFlows>)>,
+    latest: BTreeMap<u64, (Option<Vec<String>>, Arc<ScannedFlows>)>,
 }
 
 /// The whole-recording reply, from the row frames.
@@ -428,16 +424,15 @@ pub(super) fn load(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<TradeFlowsReply> {
-    let key = (params.branch(), params.countries());
+    let (branch, countries) = (params.branch(), params.countries());
     let state = source.state::<Cache>();
-    let cached = {
-        let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-        cache
-            .entries
-            .iter()
-            .find(|(cached, _)| *cached == key)
-            .map(|(_, scanned)| Arc::clone(scanned))
-    };
+    let cached = state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .latest
+        .get(&branch)
+        .filter(|(cached, _)| *cached == countries)
+        .map(|(_, scanned)| Arc::clone(scanned));
     let scanned = match cached {
         Some(scanned) => scanned,
         None => {
@@ -445,17 +440,13 @@ pub(super) fn load(
                 country_history::branch_histories(source, params.branch(), false, &[], cancelled)?;
             let scanned = Arc::new(scan_with_history(
                 &source.replay(),
-                params.branch(),
-                key.1.as_deref(),
+                branch,
+                countries.as_deref(),
                 &history,
                 cancelled,
             )?);
             let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache.entries.retain(|(cached, _)| *cached != key);
-            cache.entries.push_back((key, Arc::clone(&scanned)));
-            while cache.entries.len() > CACHED_REQUESTS {
-                cache.entries.pop_front();
-            }
+            cache.latest.insert(branch, (countries, Arc::clone(&scanned)));
             scanned
         }
     };

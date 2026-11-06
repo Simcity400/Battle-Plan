@@ -689,6 +689,10 @@ impl launch::RaidPaths for Timed<'_> {
     fn hour(&self) -> Option<&paths::HourPaths<'_>> {
         Some(&self.paths)
     }
+
+    fn take_held(&self) -> Box<[paths::Held]> {
+        self.paths.take_held()
+    }
 }
 
 fn ms(duration: Duration) -> f64 {

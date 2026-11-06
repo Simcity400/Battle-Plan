@@ -228,7 +228,7 @@ impl Emit {
     }
 
     /// The key of `field`, interned at `hour` when new.
-    fn key(&mut self, writer: &mut Writer<'_>, field: Field, hour: i32) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, field: Field, hour: i32) -> io::Result<KeyHandle> {
         if let Some(&key) = self.keys.get(&field) {
             return Ok(key);
         }
@@ -294,7 +294,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("market.emit", None);
         let at = hour.hour;
         let adjacent = match self.last {
@@ -350,7 +350,7 @@ impl Emit {
     /// the row preparation observed too where `woke`.
     fn observe(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         anew: bool,
         woke: bool,
@@ -432,7 +432,7 @@ impl Emit {
     }
 
     /// A flag key's value from `at`: 1 while `shown`, none else.
-    fn flag(&mut self, writer: &mut Writer<'_>, field: Field, at: i32, shown: bool) -> io::Result<()> {
+    fn flag(&mut self, writer: &mut Writer, field: Field, at: i32, shown: bool) -> io::Result<()> {
         if let Some(&key) = self.keys.get(&field) {
             self.carry
                 .value(writer, key, at, shown.then_some(1), false)?;
@@ -477,7 +477,7 @@ impl Emit {
     /// The hour's rows of table `index`: each replaces what it showed before.
     fn rows(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         index: usize,
         rows: Vec<(u128, Option<Row>)>,
@@ -528,7 +528,7 @@ impl Emit {
     /// Whether every new one's parties had identities at its own hour.
     fn events(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         events: Option<Events>,
     ) -> io::Result<bool> {
@@ -559,7 +559,7 @@ impl Emit {
     /// One new occurrence; whether its parties had identities at its own hour.
     fn occurrence(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         Occurrence { row, seller, buyer }: Occurrence,
     ) -> io::Result<bool> {
@@ -619,7 +619,7 @@ impl Emit {
     /// the entry's position in the chain, none where the chain outgrew its keys.
     fn append(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         chained: Chained,
         at: i32,
         kind: u64,
@@ -661,7 +661,7 @@ impl Emit {
     }
 
     /// The walked hours since `first`, through `last`, as known.
-    fn domain(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn domain(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         if let Some(first) = self.first.take() {
             writer.domain(
                 DOMAIN,
@@ -678,7 +678,7 @@ impl Emit {
     }
 
     /// Ends every value after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.unproved = false;
         self.carry.close(writer, last)?;
         self.domain(writer, last)
@@ -686,7 +686,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.domain(writer, last)?;
         let refusals = Scalar::List(

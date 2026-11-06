@@ -194,7 +194,7 @@ impl Columnar<'_> {
             .transpose()
     }
 }
-fn cell<T: Copy>(values: &[T], slot: u32) -> Result<T, Unavailable> {
+fn cell<T: Copy>(values: &replay::columns::Paged<T>, slot: u32) -> Result<T, Unavailable> {
     values.get(slot as usize).copied().ok_or(Unavailable)
 }
 impl Operands for Columnar<'_> {
@@ -583,14 +583,14 @@ impl Operator<World> for Projector {
                 .iter()
                 .any(|&(table, _)| world.touched(table, u64::MAX) || world.restated(table));
         if reread {
-            let frame = world.frame_held(state, RELATIONS)?;
+            let frame = world.columns(state);
             let links = roster
                 .links()
                 .iter()
                 .map(|link| (link.id, link.canonical_slot))
                 .collect();
-            self.relations = Relations::read(&frame, &links);
-            self.access = AccessLinks::read(&frame, &links);
+            self.relations = Relations::read_tables(&frame, &links);
+            self.access = AccessLinks::read_tables(&frame, &links);
             self.relations_heap = 0;
             for &(table, _) in RELATIONS {
                 if columns::complete(state, table) {

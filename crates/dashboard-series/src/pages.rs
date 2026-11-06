@@ -1,18 +1,19 @@
 use crate::{
     codec::{Decode, Encode},
     invalid,
+    shared::Shared,
     types::{NONE, PageId},
 };
 use std::{
     io::{self, Read, Seek, SeekFrom},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use zstd::bulk::{Compressor, Decompressor};
 
 pub const PAGE_BYTES: usize = 256 * 1024;
 const HEADER: usize = 56;
 const MAGIC: &[u8; 8] = b"H4SERIES";
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
@@ -99,15 +100,27 @@ pub(crate) struct Page {
     raw: Vec<u8>,
 }
 impl Page {
+    pub fn new(kind: Kind, raw: Vec<u8>) -> Self {
+        Self { kind, raw }
+    }
     pub fn bytes(&self) -> &[u8] {
         &self.raw
     }
     pub fn kind(&self) -> Kind {
         self.kind
     }
-    pub(crate) fn held(&self) -> usize {
-        self.raw.capacity() + std::mem::size_of::<Self>()
+}
+
+/// Decoded pages by identity, shared by every reader of the process while one holds them.
+static PAGES: Shared<[u64; 3], Page> = Shared::new();
+
+/// Page `id` of `io`, decoded once while any reader holds it.
+pub(crate) fn shared(io: &mut impl PageRead, id: PageId, kind: Kind) -> io::Result<Arc<Page>> {
+    let page = PAGES.get_or_make(io.identity(id)?, || open(io, id, kind))?;
+    if page.kind() != kind {
+        return Err(invalid("series page kind"));
     }
+    Ok(page)
 }
 
 struct Encoder {

@@ -62,7 +62,7 @@ fn observe(
                 let progress = std::mem::take(&mut facts.progress);
                 let presented = facts::presentation_row(&facts, row.program_reference, link.id);
                 let look = naming.look(
-                    frame,
+                    frame.into(),
                     tag,
                     slot,
                     &presented,
@@ -209,7 +209,7 @@ pub fn feed(
                         && let Some(content) = content.as_mut()
                     {
                         names.observe(
-                            frame,
+                            dashboard_world::Viewed::decoded(frame),
                             &history::Actors::read(frame),
                             read,
                             content,

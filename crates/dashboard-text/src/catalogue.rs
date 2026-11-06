@@ -24,9 +24,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Bytes product content caches retain of drawn artwork: its URLs and refusals.
-pub const MAX_RETAINED_ARTWORK_BYTES: usize = 64 * 1024 * 1024;
-
 pub const CONTENT_DIAGNOSTICS_FORMAT: u32 = 1;
 
 /// A fixed-content error retains its native kind and message on cache hits.
@@ -1538,7 +1535,8 @@ fn image_frame_png(
 /// the content's resolved Up program, including overrides of the default effect.
 /// It is drawn from the presentation of `layers`, or, when the visual mods cannot
 /// supply its texture or effect, from the recording, named
-/// (`ResolvedLayers::artwork`); the presentation stack keeps the image.
+/// (`ResolvedLayers::artwork`); the presentation stack keeps the image of a frame of the
+/// strip (`strip_frame`). A frame past the strip is drawn as the game draws it, every time.
 pub fn sprite_frame_png(
     layers: &ResolvedLayers,
     sprite: &installed_content_gfx::gfx::SpriteType,
@@ -1546,12 +1544,28 @@ pub fn sprite_frame_png(
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    let cache = layers.presentation().derived::<SpriteImages>();
-    cache.get(sprite_image_key(sprite, decode, frame, max_edge), || {
+    let render = || {
         sprite_artwork(layers, sprite, |stack, sprite| {
             render_sprite_frame_png(stack, sprite, decode, frame, max_edge)
         })
-    })
+    };
+    if !strip_frame(sprite, frame) {
+        return SpriteImages::unkept(render);
+    }
+    let cache = layers.presentation().derived::<SpriteImages>();
+    cache.get(sprite_image_key(sprite, decode, frame, max_edge), render)
+}
+
+/// Whether `frame` is one of the frames `sprite`'s strip declares, the only frames its images
+/// are kept for. Kinds drawn without a strip refuse every frame alike, so only frame 0 is kept.
+fn strip_frame(sprite: &installed_content_gfx::gfx::SpriteType, frame: u32) -> bool {
+    use installed_content_core::gui::native::sprites::SpriteKind;
+    match &sprite.facts.kind {
+        SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => {
+            frame < plain.frames.max(0) as u32
+        }
+        _ => frame == 0,
+    }
 }
 
 /// What `render` draws of `sprite` (a sprite of the presentation of `layers`) from that
@@ -1614,8 +1628,8 @@ pub fn authored_frame(frame: i32) -> u32 {
 
 /// Render requested (sprite, frame) draws together from the presentation of
 /// `layers` into its sprite images. A draw those images already hold under the
-/// current artwork mode, or a repeat, is not drawn again; fewer than two left are
-/// left to [`sprite_frame_png`]. Callers retry a refused or oversized batch
+/// current artwork mode, a repeat, or a frame past the strip (`strip_frame`) is not drawn;
+/// fewer than two left are left to [`sprite_frame_png`]. Callers retry a refused batch
 /// through [`sprite_frame_png`], preserving each draw's refusal and drawing what
 /// the visual mods cannot supply from the recording.
 pub fn sprite_frames_png(
@@ -1631,6 +1645,9 @@ pub fn sprite_frames_png(
     let requests: Vec<_> = requests
         .iter()
         .filter_map(|&(sprite, frame)| {
+            if !strip_frame(sprite, frame) {
+                return None;
+            }
             let key = sprite_image_key(sprite, decode, frame, max_edge);
             (!cache.contains(&key) && keys.insert(key.clone())).then_some((sprite, frame, key))
         })
@@ -1640,7 +1657,6 @@ pub fn sprite_frames_png(
     }
     let mut draws = Vec::new();
     let mut reads = Vec::new();
-    let mut transient_bytes = 0_u64;
     for &(sprite, frame, _) in &requests {
         let (plain, animated) = match &sprite.facts.kind {
             SpriteKind::Plain(plain) => (plain, None),
@@ -1654,20 +1670,7 @@ pub fn sprite_frames_png(
         let (draw, read) = diagnostics::capture(|| {
             sprite::draw(layers, plain, animated, decode, frame, max_edge)
         });
-        let draw = draw?;
-        transient_bytes += u64::from(draw.size[0]) * u64::from(draw.size[1]) * 4;
-        transient_bytes += draw
-            .textures
-            .iter()
-            .filter_map(|(_, texture)| texture.as_ref())
-            .flat_map(|texture| texture.mips.iter().flatten())
-            .map(|mip| mip.data.len() as u64)
-            .sum::<u64>();
-        // Bound temporary batching work; individual draws retain their normal limits.
-        if transient_bytes > 8 * 1024 * 1024 {
-            return Err(invalid("sprite batch exceeds its temporary byte budget"));
-        }
-        draws.push(draw);
+        draws.push(draw?);
         reads.push(read);
     }
     let images = shader_pipeline::artwork::render_batch(layers, draws, decode)
@@ -1689,23 +1692,14 @@ pub fn sprite_frames_png(
     Ok(())
 }
 
-#[derive(Default)]
-struct ImageEntry {
-    /// The image, and what its render drew from the recording instead of the visual mods,
-    /// credited to every later user.
-    result: Once<(Result<String, String>, BTreeSet<String>)>,
-    charged: std::sync::atomic::AtomicBool,
-}
+/// The image, and what its render drew from the recording instead of the visual mods,
+/// credited to every later user.
+type ImageEntry = Once<(Result<String, String>, BTreeSet<String>)>;
 
-#[derive(Default)]
-struct SpriteImageEntries {
-    entries: BTreeMap<String, Arc<ImageEntry>>,
-    bytes: usize,
-}
-
+/// The presentation stack's drawn artwork: each strip frame shown, drawn once per content binding.
 #[derive(Default)]
 pub struct SpriteImages {
-    entries: Mutex<SpriteImageEntries>,
+    entries: Mutex<BTreeMap<String, Arc<ImageEntry>>>,
 }
 
 impl SpriteImages {
@@ -1713,49 +1707,30 @@ impl SpriteImages {
         self.entries
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .entries
             .contains_key(key)
     }
 
     fn get(&self, key: String, render: impl FnOnce() -> io::Result<String>) -> io::Result<String> {
-        let slot = {
-            let mut entries = self
-                .entries
+        let slot = Arc::clone(
+            self.entries
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            Arc::clone(entries.entries.entry(key.clone()).or_default())
-        };
-        let (result, fallbacks) = slot.result.get_or_init(|| {
+                .unwrap_or_else(|error| error.into_inner())
+                .entry(key)
+                .or_default(),
+        );
+        let (result, fallbacks) = slot.get_or_init(|| {
             let (result, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
             (result.map_err(|error| error.to_string()), fallbacks)
         });
         installed_content_core::content::credit_overlay_refusals(fallbacks);
-        let result = result.clone();
-        let mut entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if entries
-            .entries
-            .get(&key)
-            .is_some_and(|entry| Arc::ptr_eq(entry, &slot))
-            && !slot
-                .charged
-                .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
-            entries.bytes += key.len()
-                + match &result {
-                    Ok(image) => image.len(),
-                    Err(reason) => reason.len(),
-                };
-        }
-        if entries.bytes > MAX_RETAINED_ARTWORK_BYTES {
-            entries
-                .entries
-                .retain(|_, entry| entry.result.peek().is_none());
-            entries.bytes = 0;
-        }
-        result.map_err(invalid)
+        result.clone().map_err(invalid)
+    }
+
+    /// An image drawn as [`SpriteImages::get`] draws it, credited alike, and not kept.
+    fn unkept(render: impl FnOnce() -> io::Result<String>) -> io::Result<String> {
+        let (result, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
+        installed_content_core::content::credit_overlay_refusals(&fallbacks);
+        result.map_err(|error| invalid(error.to_string()))
     }
 }
 

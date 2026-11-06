@@ -268,12 +268,8 @@ fn air_aces_product_caches_branch_and_serves_all_campaign_reads() {
     for branch in 2..=6 {
         cached(&source, branch, &flag).unwrap();
     }
-    let second = cached(&source, 1, &flag).unwrap();
-    assert!(
-        !Arc::ptr_eq(&first, &second),
-        "evicted branches rescan instead of becoming unavailable"
-    );
-    assert_eq!(source.state::<Cache>().lock().unwrap().branches.len(), 2);
+    assert!(Arc::ptr_eq(&first, &cached(&source, 1, &flag).unwrap()));
+    assert_eq!(source.state::<Cache>().lock().unwrap().branches.len(), 6);
     let result = manifest_result(
         AirAces::load(
             &source,

@@ -165,6 +165,8 @@ fn fixture() -> sinkings::Scanned {
         last_hour: first + 2000,
         first_ship_read: Some(first),
         first_convoy_read: Some(first),
+        stretch_ship_read: Some(first),
+        stretch_convoy_read: Some(first),
         country_candidates: BTreeMap::from([
             (1, BTreeSet::from([(1, 1)])),
             (2, BTreeSet::from([(2, 2)])),
@@ -336,6 +338,7 @@ fn naval_losses_signed_corrections_keep_running_and_month_totals_exact() {
     let mut scanned = fixture();
     let first = scanned.first_hour;
     scanned.first_convoy_read = Some(first + 12);
+    scanned.stretch_convoy_read = Some(first + 12);
     let mut monthly = params();
     monthly.period = NavalPeriod::Month;
     let reply = reply(&scanned, &monthly, &AtomicBool::new(false)).unwrap();
@@ -344,6 +347,7 @@ fn naval_losses_signed_corrections_keep_running_and_month_totals_exact() {
         (Some(0), Some(0))
     );
     scanned.first_convoy_read = Some(first);
+    scanned.stretch_convoy_read = Some(first);
     scanned.convoys = vec![
         convoy(first, 5, true),
         convoy(first + 24, 2, false),
@@ -506,7 +510,9 @@ fn naval_losses_follow_native_identity_through_tag_switch_and_tag_reuse() {
 fn naval_losses_absent_data_cancellation_and_calendar_boundaries() {
     let mut scanned = fixture();
     scanned.first_ship_read = None;
+    scanned.stretch_ship_read = None;
     scanned.first_convoy_read = None;
+    scanned.stretch_convoy_read = None;
     assert!(
         !reply(&scanned, &params(), &AtomicBool::new(false))
             .unwrap()
@@ -527,6 +533,7 @@ fn naval_losses_both_uses_one_baseline_and_month_values_wait_for_their_read() {
     let mut scanned = fixture();
     let first = scanned.first_hour;
     scanned.first_convoy_read = Some(first + 10);
+    scanned.stretch_convoy_read = Some(first + 10);
     scanned.ships = vec![ship(first + 5, 0, 0), ship(first + 11, 0, 0)];
     let built = reply(&scanned, &params(), &AtomicBool::new(false)).unwrap();
     assert_eq!(built.first_read, Some(first + 10));
@@ -547,6 +554,7 @@ fn naval_losses_both_uses_one_baseline_and_month_values_wait_for_their_read() {
         (Some(2), Some(0))
     );
     scanned.first_convoy_read = Some(first);
+    scanned.stretch_convoy_read = Some(first);
     let next = month_start(1940 * 12 + 1).unwrap();
     let mut late = convoy(next + 1, 3, false);
     late.month -= 1;
@@ -583,6 +591,7 @@ fn naval_losses_convoy_delta_crossing_a_later_ship_baseline_is_unknown() {
     let mut scanned = fixture();
     let first = scanned.first_hour;
     scanned.first_ship_read = Some(first + 10);
+    scanned.stretch_ship_read = Some(first + 10);
     scanned.convoys = vec![
         convoy(first, 100, true),
         convoy(first + 24, 5, false),
@@ -877,6 +886,7 @@ fn naval_losses_convoy_read_at_the_both_baseline_is_excluded_without_taint() {
     let mut scanned = fixture();
     let first = scanned.first_hour;
     scanned.first_ship_read = Some(first + 10);
+    scanned.stretch_ship_read = Some(first + 10);
     scanned.convoys = vec![convoy(first + 10, 5, false), convoy(first + 24, 3, false)];
     scanned.convoys[0].previous_read = Some(first);
     scanned.convoys[1].previous_read = Some(first + 10);
@@ -899,7 +909,9 @@ fn naval_losses_first_retained_month_includes_ships_before_the_first_read() {
     let first = start + 120;
     scanned.first_hour = first;
     scanned.first_ship_read = Some(first);
+    scanned.stretch_ship_read = Some(first);
     scanned.first_convoy_read = Some(first);
+    scanned.stretch_convoy_read = Some(first);
     for spans in scanned.segments.values_mut() {
         spans[0].first_hour = first;
     }

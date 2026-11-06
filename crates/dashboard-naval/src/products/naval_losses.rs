@@ -99,6 +99,11 @@ pub struct NavalLossesReply {
     pub convoy_reads: Vec<i32>,
     pub series: Vec<NavalLossSeries>,
     pub warnings: Vec<String>,
+    /// The first hour of each stretch after hours the recording lost: every tally restarts
+    /// there, counting only what is read after them. Absent without any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<i32>>")]
+    pub restarts: Vec<i32>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -121,11 +126,11 @@ struct Events {
 
 fn baseline(scanned: &sinkings::Scanned, kind: NavalKind) -> Option<i32> {
     match kind {
-        NavalKind::Ships => scanned.first_ship_read,
-        NavalKind::Convoys => scanned.first_convoy_read,
+        NavalKind::Ships => scanned.stretch_ship_read,
+        NavalKind::Convoys => scanned.stretch_convoy_read,
         NavalKind::Both => scanned
-            .first_ship_read
-            .zip(scanned.first_convoy_read)
+            .stretch_ship_read
+            .zip(scanned.stretch_convoy_read)
             .map(|(s, c)| s.max(c)),
     }
 }
@@ -192,7 +197,7 @@ fn value(
         if params.period == NavalPeriod::Running {
             first
         } else {
-            scanned.first_ship_read
+            scanned.stretch_ship_read
         },
         &scanned.ship_unread,
         loss.0,
@@ -213,7 +218,7 @@ fn value(
         if params.period == NavalPeriod::Running {
             first
         } else {
-            scanned.first_convoy_read
+            scanned.stretch_convoy_read
         },
         &scanned.convoy_unread,
         loss.1,
@@ -342,7 +347,7 @@ fn collect_parts<'a>(
             continue;
         }
         let Some(first) = (if params.period == NavalPeriod::Month {
-            scanned.first_ship_read
+            scanned.stretch_ship_read
         } else {
             first_read
         }) else {
@@ -414,7 +419,7 @@ fn collect_parts<'a>(
             continue;
         }
         let convoy_baseline = if params.period == NavalPeriod::Month {
-            scanned.first_convoy_read
+            scanned.stretch_convoy_read
         } else {
             first_read
         };
@@ -798,6 +803,7 @@ fn project_reply(
         ship_reads: Vec::new(),
         convoy_reads: Vec::new(),
         series: Vec::new(),
+        restarts: Vec::new(),
         warnings,
     };
     let budget_error = || io::Error::other("Naval losses reply exceeds the transport budget");

@@ -580,6 +580,12 @@ fn bound<'p, N: Native + 'p>(
     Ok(Box::new(Bound::new(id, native, stage, taken)))
 }
 
+impl Projected for unit_leaders::columnar::Pushed {
+    fn hour(&self) -> i32 {
+        unit_leaders::columnar::Pushed::hour(self)
+    }
+}
+
 macro_rules! projected {
     ($($hour:ty),* $(,)?) => {
         $(impl Projected for $hour {
@@ -595,7 +601,6 @@ projected!(
     country_fuel::facts::Hour,
     diplomacy_state::facts::Hour,
     equipment_losses::columnar::Hour,
-    unit_leaders::columnar::Hour,
     event_feed::Hour,
     supply_health::facts::Hour,
     stability::facts::Hour,
@@ -1098,6 +1103,16 @@ impl Native for Losses<'_> {
         }
         state.flush(stage.pages()?, branch, cancelled)
     }
+
+    fn resumes(&self) -> bool {
+        true
+    }
+
+    // Its leaves are its own sums of the losses it read: each restarts after the lost hours.
+    fn gap(&self, state: &mut Self::Branch, _: i32, last: i32) -> io::Result<()> {
+        state.lost(last)
+    }
+
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
         saved(&**state)
     }
@@ -1139,7 +1154,7 @@ fn leaders<'p>(
 
 impl Native for Leaders<'_> {
     type Operator = unit_leaders::columnar::Projector;
-    type Branch = Box<unit_leaders::prepared::Prepared>;
+    type Branch = unit_leaders::prepared::Leading;
 
     fn tables(&self) -> &'static [TableId] {
         unit_leaders::block::tables()
@@ -1165,11 +1180,11 @@ impl Native for Leaders<'_> {
                 "The recording holds no hour of the branch",
             )
         })?;
-        Ok(Box::new(unit_leaders::prepared::Prepared::starting(
+        Ok(unit_leaders::prepared::Leading::starting(
             self.replay.format,
             branch,
             start,
-        )))
+        ))
     }
 
     fn observe(
@@ -1177,9 +1192,9 @@ impl Native for Leaders<'_> {
         state: &mut Self::Branch,
         _: &mut Stage<'_, '_>,
         _: u64,
-        hour: unit_leaders::columnar::Hour,
+        hour: unit_leaders::columnar::Pushed,
     ) -> io::Result<()> {
-        state.observe_projected(hour)
+        state.observe(hour)
     }
 
     fn flush(
@@ -1199,7 +1214,7 @@ impl Native for Leaders<'_> {
         )
     }
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
-        state.saved_catalogue().map(Some)
+        state.saved_catalogue()
     }
 
     // The continuation its flush writes, with the catalogue it saved.
@@ -1214,7 +1229,7 @@ impl Native for Leaders<'_> {
         let range = stage.pages()?.read_at(&section, 0)?.ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "Its continuation is missing")
         })?;
-        unit_leaders::prepared::Prepared::resumed(range, saved).map(Box::new)
+        unit_leaders::prepared::Leading::resumed(range, saved)
     }
 }
 
@@ -1951,6 +1966,16 @@ impl Native for AirStatistics {
         state.flush(stage, branch)
     }
 
+    fn resumes(&self) -> bool {
+        true
+    }
+
+    // What it shows are the game's own values, read anew after the lost hours: nothing to
+    // restart, and its emit closes what it held at the first hour after them.
+    fn gap(&self, _: &mut Self::Branch, _: i32, _: i32) -> io::Result<()> {
+        Ok(())
+    }
+
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
         state.save()
     }
@@ -2355,6 +2380,16 @@ impl<'p> Native for Naval<'p> {
             Some(_) => state.finish(self.source.replay_ref(), stage.pages()?, cancelled),
             None => Ok(()),
         }
+    }
+
+    fn resumes(&self) -> bool {
+        true
+    }
+
+    // Its naval losses are its own tallies of the sinkings it read: pending ones are dropped,
+    // and each tally counts only what is read after the lost hours.
+    fn gap(&self, state: &mut Self::Branch, _: i32, _: i32) -> io::Result<()> {
+        state.lost()
     }
 
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
@@ -3556,12 +3591,12 @@ impl Native for Land<'_> {
         let kept = AtomicBool::new(false);
         let at = hour.hour;
         if state.due(at) {
-            state.publish(stage.pages()?, self.replay, at, &kept)?;
+            state.publish(stage.pages()?, at, &kept)?;
         }
         state.observe(hour)?;
         let after = at.saturating_add(1);
         if state.due(after) {
-            state.publish(stage.pages()?, self.replay, after, &kept)?;
+            state.publish(stage.pages()?, after, &kept)?;
         }
         Ok(())
     }
@@ -3576,7 +3611,7 @@ impl Native for Land<'_> {
     ) -> io::Result<()> {
         // Every block left is published once the branch ends.
         if through.is_some() {
-            state.publish(stage.pages()?, self.replay, i32::MAX, cancelled)?;
+            state.publish(stage.pages()?, i32::MAX, cancelled)?;
         }
         Ok(())
     }
@@ -3773,9 +3808,8 @@ impl Native for Experience {
 
 struct FactionStates<'p> {
     format: FormatVersion,
-    mode: replay_data::scope::CaptureMode,
-    source: &'p crate::Source,
     catalogue: &'p Option<Arc<Catalogue>>,
+    capture: Arc<faction_state::columnar::Capture>,
 }
 
 fn faction_states<'p>(
@@ -3787,9 +3821,12 @@ fn faction_states<'p>(
     let replay = content.source.replay_ref();
     let native = FactionStates {
         format: replay.format,
-        mode: replay.capture_mode,
-        source: content.source,
         catalogue: content.factions()?,
+        capture: Arc::new(faction_state::columnar::Capture::new(
+            &content.recording,
+            replay.format,
+            replay.capture_mode,
+        )?),
     };
     bound(id, native, stage, taken)
 }
@@ -3808,9 +3845,9 @@ impl<'p> Native for FactionStates<'p> {
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
         faction_state::columnar::Projector::new(
-            (self.format, self.mode),
-            self.source,
+            self.format,
             self.catalogue.clone(),
+            self.capture.clone(),
         )
     }
 
@@ -5102,6 +5139,16 @@ impl Native for Aces<'_> {
         )
     }
 
+    fn resumes(&self) -> bool {
+        true
+    }
+
+    // What it shows are the game's own values, read anew after the lost hours: nothing to
+    // restart, and its emit closes what it held at the first hour after them.
+    fn gap(&self, _: &mut Self::Branch, _: i32, _: i32) -> io::Result<()> {
+        Ok(())
+    }
+
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
         state.save().map(Some)
     }
@@ -5256,6 +5303,16 @@ impl Native for Casualties<'_> {
         state.flush(stage.pages()?, through, cancelled)
     }
 
+    fn resumes(&self) -> bool {
+        true
+    }
+
+    // What it shows are the game's own values, read anew after the lost hours: nothing to
+    // restart, and its emit closes what it held at the first hour after them.
+    fn gap(&self, _: &mut Self::Branch, _: i32, _: i32) -> io::Result<()> {
+        Ok(())
+    }
+
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
         state.save().map(Some)
     }
@@ -5344,6 +5401,15 @@ impl Native for Divisions<'_> {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         state.flush(self.source, stage.pages()?, through, cancelled)
+    }
+
+    fn resumes(&self) -> bool {
+        true
+    }
+
+    // Its counters are its own tallies: each restarts after the lost hours.
+    fn gap(&self, state: &mut Self::Branch, first: i32, _: i32) -> io::Result<()> {
+        state.lost(first)
     }
 
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {

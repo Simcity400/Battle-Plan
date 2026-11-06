@@ -7,7 +7,6 @@
 //! counted by cause ([`Rebuilds`]).
 
 use crate::flag_choices::{self, Chain};
-use crate::metadata::recorded_rows;
 use crate::products::country_flags::FlagFolders;
 use dashboard_world::{Flags, Hold, Needs, Roster, Tag, World};
 use installed_content_country_names::country_names::{CountryNames, Operands};
@@ -16,8 +15,10 @@ use replay::{
     columns,
     segments::{self, Operator, Sink, State},
 };
-use replay_data::rows::{Recorded, TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::{
+    CountryAppearanceRow, Recorded, ReservedCountryNamingRow, TableId, column, mask,
+};
+use replay_frame::frame::{ColumnFrame, ColumnView, Columns, DecodedFrame, Metrics, not_selected};
 use std::{
     collections::HashMap,
     io,
@@ -89,7 +90,7 @@ const FIELDS: [(TableId, &[&str]); 7] = [
     ),
 ];
 
-fn mask(table: TableId, names: &[&str]) -> io::Result<u64> {
+fn table_mask(table: TableId, names: &[&str]) -> io::Result<u64> {
     names.iter().try_fold(0, |mask, name| {
         Ok(mask | 1_u64 << columns::field(table, name)?)
     })
@@ -99,7 +100,7 @@ fn mask(table: TableId, names: &[&str]) -> io::Result<u64> {
 pub(crate) fn asks() -> io::Result<Vec<(TableId, Hold)>> {
     FIELDS
         .iter()
-        .map(|&(table, names)| Ok((table, Hold::Fields(mask(table, names)?).of(table))))
+        .map(|&(table, names)| Ok((table, Hold::Fields(table_mask(table, names)?).of(table))))
         .collect()
 }
 
@@ -302,10 +303,29 @@ fn edited(state: &State, table: TableId, mask: u64) -> io::Result<Vec<u128>> {
 }
 
 /// Which of slot zero's names its reserved row has built, as names read it.
-fn built(frame: &DecodedFrame) -> Option<u8> {
-    match frame.complete::<tables::ReservedCountryNaming>() {
-        Ok([row]) => Some(row.built),
+fn built(frame: &ColumnFrame<'_>) -> io::Result<Option<u8>> {
+    const BUILT: usize = column::<ReservedCountryNamingRow>("built");
+    Ok(match frame.view(TableId::ReservedCountryNaming) {
+        ColumnView::Complete(rows) if rows.len() == 1 => {
+            let slot = rows.slots()[0];
+            Some(rows.value::<u8>(slot, BUILT)?)
+        }
         _ => None,
+    })
+}
+
+/// The fields a country object's map colour is read from.
+const COLOUR: u64 = mask::<CountryAppearanceRow>(&["red", "green", "blue"]);
+
+/// The rows of CountryAppearance the hour reads, as names read them: none while unavailable,
+/// refused while not recorded.
+fn appearances<'a>(frame: &ColumnFrame<'a>) -> io::Result<Option<Columns<'a>>> {
+    match frame.view(TableId::CountryAppearance) {
+        ColumnView::NotRecorded { mode } => Err(crate::invalid(format!(
+            "hour {} CountryAppearance is not recorded in a {mode} recording",
+            frame.hour
+        ))),
+        view => Ok(view.rows()),
     }
 }
 
@@ -314,15 +334,15 @@ impl Projector {
         rebuilds: Arc<Rebuilds>,
         flags: Option<Arc<FlagFolders>>,
     ) -> io::Result<Self> {
-        let appearance = |names: &[&str]| mask(TableId::CountryAppearance, names);
+        let appearance = |names: &[&str]| table_mask(TableId::CountryAppearance, names);
         Ok(Self {
             fields: Fields {
                 colour: appearance(&["red", "green", "blue"])?,
                 naming: appearance(&["cosmetic_tag", "name_tag", "leader_ideology", "overlord"])?,
-                ruling: mask(TableId::Politics, &["ruling_party"])?,
-                token: mask(TableId::PoliticalParties, &["token"])?,
-                autonomy: mask(TableId::Autonomy, &["state"])?,
-                reserved: mask(TableId::ReservedCountryNaming, FIELDS[6].1)?,
+                ruling: table_mask(TableId::Politics, &["ruling_party"])?,
+                token: table_mask(TableId::PoliticalParties, &["token"])?,
+                autonomy: table_mask(TableId::Autonomy, &["state"])?,
+                reserved: table_mask(TableId::ReservedCountryNaming, FIELDS[6].1)?,
             },
             asks: asks()?,
             numbers: HashMap::new(),
@@ -341,6 +361,19 @@ impl Projector {
             rebuilds,
             flags,
         })
+    }
+
+    /// A frame of the tables names are read from, copied from the walk's views in the fields
+    /// they read: the naming operands' reader reads decoded rows.
+    fn copied(&self, world: &World, state: &State) -> io::Result<DecodedFrame> {
+        let mut frame = DecodedFrame {
+            branch: 0,
+            hour: 0,
+            tables: std::array::from_fn(|_| not_selected()),
+            metrics: Metrics::default(),
+        };
+        world.copy_into(state, &self.asks, &mut frame)?;
+        Ok(frame)
     }
 
     /// The index of `tag`, named in `named` when new; None for a tag that is not UTF-8, which
@@ -407,8 +440,7 @@ impl Projector {
         roster: &Roster,
         named: &mut Vec<(u32, Arc<str>)>,
     ) -> io::Result<Vec<u32>> {
-        let frame = world.frame_held(state, &self.asks)?;
-        let (operands, built) = CountryNames::recorded_operands(&frame);
+        let (operands, built) = CountryNames::recorded_operands(&self.copied(world, state)?);
         self.operands.clear();
         self.subjects.clear();
         for (slot, operands) in operands {
@@ -416,9 +448,12 @@ impl Projector {
         }
         self.built = built;
         self.colours.clear();
-        for row in recorded_rows::<tables::CountryAppearance>(&frame)? {
-            engine_allocation::reserve_map(&mut self.colours, 1)?;
-            self.colours.insert(row.country, row.map_color());
+        if let Some(rows) = appearances(&world.columns(state))? {
+            for &slot in rows.slots() {
+                let row = rows.row::<CountryAppearanceRow>(slot, COLOUR)?;
+                engine_allocation::reserve_map(&mut self.colours, 1)?;
+                self.colours.insert(row.country, row.map_color());
+            }
         }
         self.slots.clear();
         for country in roster.iter() {
@@ -489,9 +524,10 @@ impl Projector {
         dirty.dedup();
         let mut changed = Vec::new();
         if !dirty.is_empty() || !colour.is_empty() {
-            let frame = world.frame_held(state, &self.asks)?;
+            let frame = world.columns(state);
             if !dirty.is_empty() {
-                let names = CountryNames::read_selected(&frame, &UNNAMED, dirty.iter().copied());
+                let copied = self.copied(world, state)?;
+                let names = CountryNames::read_selected(&copied, &UNNAMED, dirty.iter().copied());
                 for &slot in &dirty {
                     if self.set_operands(slot, names.operands(slot).cloned()) {
                         changed.push(slot);
@@ -499,18 +535,20 @@ impl Projector {
                 }
             }
             if reserved {
-                let built = built(&frame);
+                let built = built(&frame)?;
                 if built != self.built {
                     self.built = built;
                     changed.push(0);
                 }
             }
-            let rows = recorded_rows::<tables::CountryAppearance>(&frame)?;
+            let rows = appearances(&frame)?;
             for id in colour.into_iter().map(|key| key as u32) {
-                let next = rows
-                    .binary_search_by_key(&id, |row| row.country)
-                    .ok()
-                    .map(|at| rows[at].map_color());
+                let next = match rows.and_then(|rows| Some((rows, rows.find(u128::from(id))?))) {
+                    Some((rows, slot)) => {
+                        Some(rows.row::<CountryAppearanceRow>(slot, COLOUR)?.map_color())
+                    }
+                    None => None,
+                };
                 let previous = match next {
                     Some(next) => self.colours.insert(id, next),
                     None => self.colours.remove(&id),

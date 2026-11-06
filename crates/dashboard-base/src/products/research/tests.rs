@@ -1,8 +1,5 @@
 use super::test_fixtures::{research_frame, sliced_research_frame};
-use super::{
-    Country, Inventory, MAX_BYTES, Scan, base_cost, check_budget, country_bytes, history_bytes,
-    remaining,
-};
+use super::{Country, Inventory, base_cost, remaining};
 use crate::ResearchOutcome;
 use crate::test_fixtures::{CAMPAIGN, fixture_research_inputs, records};
 use replay::container::Replay;
@@ -245,74 +242,6 @@ fn a_new_level_in_another_slot_does_not_hide_the_previous_level_completion() {
         ResearchOutcome::Active
     );
     assert_eq!(country.history.slots[1].entries[0].level, 2);
-}
-
-#[test]
-fn incremental_history_budget_matches_full_accounting_over_a_campaign() {
-    let mut country = Country::default();
-    // Cross two slot-growth, assignment-switch and missing-hour boundaries.
-    for hour in 0..2_100 {
-        if hour % 997 == 996 {
-            continue;
-        }
-        let count = 2 + (hour / 720) as u32;
-        let rows: Vec<_> = (0..count)
-            .map(|index| ResearchInputRow {
-                index,
-                banked_days_raw: i64::from(hour % 31) * 100_000,
-                ..input(
-                    1 + index + (hour / 720) as u32 * 4,
-                    i64::from(hour % 720) * 10_000,
-                )
-            })
-            .collect();
-        country.observe_inputs(
-            (7, 7),
-            hour,
-            &rows.iter().collect::<Vec<_>>(),
-            None,
-            Some(&[]),
-            None,
-        );
-        if hour % 257 == 0 {
-            assert_eq!(
-                country.retained_bytes + 128,
-                history_bytes(&country.history)
-            );
-        }
-    }
-    assert_eq!(
-        country.retained_bytes + 128,
-        history_bytes(&country.history)
-    );
-    let mut countries = BTreeMap::from([("ENG".into(), country)]);
-    let mut scan = super::Scan {
-        countries,
-        ..Default::default()
-    };
-    scan.begin_hour(2_100);
-    let saved = serde_json::to_vec(&scan).unwrap();
-    let mut restored: super::Scan = serde_json::from_slice(&saved).unwrap();
-    assert_eq!(restored.bytes, 0, "allocation charges are process-local");
-    restored.begin_hour(2_101);
-    for country in restored.countries.values() {
-        assert_eq!(
-            country.retained_bytes + 128,
-            history_bytes(&country.history)
-        );
-        assert_eq!(country.budget_bytes, super::country_bytes(country));
-    }
-    assert_eq!(
-        restored.bytes,
-        restored
-            .countries
-            .values()
-            .map(super::country_bytes)
-            .sum::<usize>()
-    );
-    countries = restored.countries;
-    countries.get_mut("ENG").unwrap().retained_bytes = MAX_BYTES;
-    assert!(check_budget(&countries).is_err());
 }
 
 #[test]
@@ -1282,39 +1211,6 @@ fn completed_same_name_occurrence_cannot_supply_former_assignment_progress() {
             .unwrap()
             .entry_first_observed_hour,
         Some(0)
-    );
-}
-
-#[test]
-fn restored_scan_recounts_allocation_budgets_without_persisting_capacity() {
-    let mut country = Country {
-        entry_occurrences: Vec::with_capacity(97),
-        ..Default::default()
-    };
-    country.entry_occurrences.push(Some(3));
-    country.charge(&mut 0);
-    let mut scan = Scan::default();
-    scan.countries.insert("SYN".into(), country);
-    let encoded = serde_json::to_value(&scan).unwrap();
-    assert!(encoded.get("bytes").is_none());
-    assert!(encoded["countries"]["SYN"].get("budget_bytes").is_none());
-    assert!(encoded["countries"]["SYN"].get("retained_bytes").is_none());
-    let mut restored: Scan = serde_json::from_value(encoded.clone()).unwrap();
-    restored.begin_hour(100);
-    let country = &restored.countries["SYN"];
-    assert_eq!(
-        country.retained_bytes, 0,
-        "an empty history has no heap allocations or second fixed header"
-    );
-    assert_eq!(
-        restored.bytes,
-        128 + country.entry_occurrences.capacity() * size_of::<Option<u32>>(),
-        "the country's fixed allocation is charged exactly once after restoration"
-    );
-    assert_eq!(restored.bytes, country_bytes(country));
-    assert_eq!(
-        serde_json::to_value(restored).unwrap()["countries"],
-        encoded["countries"]
     );
 }
 

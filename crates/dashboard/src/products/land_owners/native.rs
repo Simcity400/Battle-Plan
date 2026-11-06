@@ -12,7 +12,7 @@ use dashboard_base::prepared::{
     roots::{Frontier, Held},
     series::{compress, decompress},
 };
-use dashboard_world::{Hold, Needs, Roster, Tag, World};
+use dashboard_world::{Needs, Roster, Tag, World};
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::Localisation;
 use replay::{
@@ -71,7 +71,7 @@ pub(crate) fn readiness(
     }
     Readiness::Done {
         incomplete: frontier.end.as_ref().is_some_and(|end| end.held == Held::Lost)
-            || frontier.first_hole.is_some(),
+            || !frontier.holes.is_empty(),
     }
 }
 
@@ -144,7 +144,6 @@ pub(crate) struct Hour {
 pub(crate) struct Projector {
     format: FormatVersion,
     names: Option<Arc<Localisation>>,
-    asks: Vec<(TableId, Hold)>,
     owner: usize,
     cold: bool,
     /// The hour before read a truncated States: the next reads every owner again.
@@ -158,7 +157,6 @@ impl Projector {
     pub(crate) fn new(format: FormatVersion, names: Option<Arc<Localisation>>) -> io::Result<Self> {
         Ok(Self {
             format,
-            asks: needs(names.is_some())?.frame,
             names,
             owner: columns::field(TableId::States, "owner")?,
             cold: true,
@@ -270,13 +268,9 @@ impl Projector {
         found: Vec<(u32, Tag)>,
     ) -> io::Result<Vec<Found>> {
         let roster = world.countries()?;
-        let frame = match &self.names {
-            Some(_) if !found.is_empty() => Some(world.frame_held(state, &self.asks)?),
-            _ => None,
-        };
-        let names = match (&self.names, &frame) {
-            (Some(localisation), Some(frame)) => Some(CountryNames::read_selected(
-                frame,
+        let names = match &self.names {
+            Some(localisation) if !found.is_empty() => Some(CountryNames::read_selected_tables(
+                &world.columns(state),
                 localisation,
                 found.iter().map(|&(slot, _)| slot),
             )),

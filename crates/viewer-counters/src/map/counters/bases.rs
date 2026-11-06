@@ -86,7 +86,6 @@ impl Default for TokenMemo {
     fn default() -> Self {
         Self(Arc::new(viewer_foundation::map::memo::Keyed::new(
             TOKEN_TABLES,
-            4,
         )))
     }
 }

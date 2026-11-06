@@ -12,6 +12,7 @@
 //! - Scalars: the manifest's laws and warnings ([`MANIFEST`]), the trend's warnings
 //!   ([`TREND`]) and every text the values name, by id ([`TEXTS`]).
 use super::*;
+use crate::products::occupation_trend::OccupationTrendRun;
 use dashboard_series::{
     Cell, Event, Evidence, KeyHandle, Knownness, RunMode, Span, Writer,
     carry::Carry,
@@ -90,8 +91,6 @@ struct Track {
     actor: Option<u64>,
     current: Option<TrendRun>,
     last: Option<(Identity, i32)>,
-    /// The fact of the run its read started this hour, encoded by the projection.
-    fact: Option<Fact>,
     /// The last hour an occupier held a run under the tag.
     seen: Option<i32>,
     queued: bool,
@@ -128,7 +127,7 @@ pub struct Emit {
     /// The States rows as the projections handed them on.
     rows: HashMap<u32, Shipped>,
     /// Each state's name and what it was read from, as last read.
-    names: HashMap<u32, ([u8; 32], (Option<u32>, Option<u32>))>,
+    names: HashMap<u32, (u32, (Option<u32>, Option<u32>))>,
     laws: BTreeSet<u32>,
     /// The last hour walked, and the last valid one.
     last: Option<i32>,
@@ -160,6 +159,11 @@ pub struct Emit {
     first: Option<i32>,
     /// The manifest and trend warnings last published.
     written: [Option<String>; 2],
+    /// What the projection under way handed on last of each state's values, occupier's means
+    /// and pair's progress.
+    held_values: HashMap<u32, StateValue>,
+    held_samples: BTreeMap<Identity, Sample>,
+    held_progress: HashMap<Pair, i64>,
 }
 
 fn unnamed(seen: &mut HashSet<Identity>, refused: &mut Refusals, occupied: Identity) {
@@ -205,7 +209,7 @@ fn collaboration(
     entries.into()
 }
 
-/// `run`'s fact, as the projection encodes it.
+/// `run`'s fact, as [`OccupationTrendRun`] JSON.
 fn fact(run: &TrendRun, texts: &[Arc<str>]) -> io::Result<Vec<u8>> {
     Ok(serde_json::to_vec(&OccupationTrendRun {
         first_hour: run.first_hour,
@@ -272,17 +276,20 @@ impl Emit {
             positions: Default::default(),
             first: None,
             written: [None, None],
+            held_values: HashMap::new(),
+            held_samples: BTreeMap::new(),
+            held_progress: HashMap::new(),
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place, decimals: u8) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place, decimals: u8) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, decimals), Some(DOMAIN))
     }
 
     fn family_key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         measure: u64,
         dimension: Option<u64>,
     ) -> io::Result<KeyHandle> {
@@ -295,7 +302,7 @@ impl Emit {
     }
 
     /// The published id of projection text `id`.
-    fn text(&mut self, writer: &mut Writer<'_>, id: u32) -> io::Result<u64> {
+    fn text(&mut self, writer: &mut Writer, id: u32) -> io::Result<u64> {
         let at = id as usize;
         if let Some(&held) = self.ids.get(at)
             && held != u64::MAX
@@ -321,7 +328,7 @@ impl Emit {
         Ok(published)
     }
 
-    fn text_cell(&mut self, writer: &mut Writer<'_>, id: Option<u32>) -> io::Result<Cell> {
+    fn text_cell(&mut self, writer: &mut Writer, id: Option<u32>) -> io::Result<Cell> {
         Ok(match id {
             Some(id) => Cell::Unsigned(self.text(writer, id)?),
             None => Cell::Null,
@@ -329,7 +336,7 @@ impl Emit {
     }
 
     /// The cells of a [`kind::VALUE`] event holding `value`.
-    fn value_cells(&mut self, writer: &mut Writer<'_>, value: &StateValue) -> io::Result<Vec<Cell>> {
+    fn value_cells(&mut self, writer: &mut Writer, value: &StateValue) -> io::Result<Vec<Cell>> {
         let integer = |value: Option<i64>| value.map_or(Cell::Null, |value| Cell::Integer(i128::from(value)));
         Ok(vec![
             self.text_cell(writer, value.name)?,
@@ -356,7 +363,7 @@ impl Emit {
     /// `id`'s values from `at` on: a change starts a version, with its values as an event.
     fn set(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         id: u32,
         at: i32,
         value: StateValue,
@@ -384,7 +391,7 @@ impl Emit {
     }
 
     /// `id` is no longer occupied from `at` on.
-    fn remove(&mut self, writer: &mut Writer<'_>, id: u32, at: i32) -> io::Result<()> {
+    fn remove(&mut self, writer: &mut Writer, id: u32, at: i32) -> io::Result<()> {
         if self.active.remove(&id).is_some() {
             let key = self.family_key(writer, STATES, Some(u64::from(id)))?;
             self.carry.value(writer, key, at, None, false)?;
@@ -393,10 +400,11 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("occupation emit", None);
         let Hour {
             hour: at,
+            first,
             valid,
             naming,
             whole,
@@ -405,6 +413,11 @@ impl Emit {
             collaboration,
             ..
         } = hour;
+        if first {
+            self.held_values.clear();
+            self.held_samples.clear();
+            self.held_progress.clear();
+        }
         match self.last {
             Some(last) if at <= last => {
                 return Err(dashboard_core::invalid(
@@ -449,12 +462,30 @@ impl Emit {
         self.naming = naming;
         match collaboration {
             Some(Collaboration::Unavailable) => {
+                self.held_progress.clear();
                 self.dirty |= !self.progress.is_empty();
                 self.progress = Arc::default();
             }
-            Some(Collaboration::Read(progress, refused)) => {
+            Some(Collaboration::Read {
+                set,
+                gone,
+                pairs,
+                refused,
+            }) => {
+                for pair in gone {
+                    self.held_progress.remove(&pair).ok_or_else(invalid)?;
+                }
+                self.held_progress.extend(set);
+                if self.held_progress.len() != pairs as usize {
+                    return Err(invalid());
+                }
                 self.dirty = true;
-                self.progress = progress;
+                self.progress = Arc::new(
+                    self.held_progress
+                        .iter()
+                        .map(|(&pair, &read)| (pair, (read, at)))
+                        .collect(),
+                );
                 self.collaboration_refused.merge(&refused);
             }
             None => {}
@@ -478,13 +509,47 @@ impl Emit {
         self.publish(writer, at)
     }
 
-    fn read(&mut self, writer: &mut Writer<'_>, read: Read, at: i32) -> io::Result<()> {
+    fn read(&mut self, writer: &mut Writer, read: Read, at: i32) -> io::Result<()> {
+        let mut id = 0_u32;
+        let mut values = Vec::with_capacity(read.values.len());
+        for (step, change) in read.values {
+            id = id.checked_add(step).ok_or_else(invalid)?;
+            let value = match change {
+                Change::Gone => {
+                    self.held_values.remove(&id);
+                    None
+                }
+                Change::Moved { held, mask, by } => {
+                    let base = match (held, self.held_values.get(&id)) {
+                        (true, Some(base)) => *base,
+                        (false, None) => StateValue::NONE,
+                        _ => return Err(invalid()),
+                    };
+                    let value = Change::applied(&base, mask, &by);
+                    self.held_values.insert(id, value);
+                    Some(value)
+                }
+            };
+            values.push((id, value));
+        }
+        for occupier in read.samples {
+            match occupier {
+                Occupier::Gone(identity) => {
+                    self.held_samples.remove(&identity).ok_or_else(invalid)?;
+                }
+                Occupier::Set(sample) => {
+                    self.held_samples.insert(sample.identity, sample);
+                }
+            }
+        }
+        if self.held_samples.len() != read.occupiers as usize {
+            return Err(invalid());
+        }
         self.own.merge(&read.own);
         catalogue::credit(&read.own);
         self.refused.merge(&read.refused);
         if read.reset {
-            let present: HashSet<_> = read
-                .values
+            let present: HashSet<_> = values
                 .iter()
                 .filter(|(_, value)| value.is_some())
                 .map(|&(id, _)| id)
@@ -499,7 +564,7 @@ impl Emit {
                 self.remove(writer, id, at)?;
             }
         }
-        for (id, value) in read.values {
+        for (id, value) in values {
             let Some(value) = value else {
                 self.remove(writer, id, at)?;
                 continue;
@@ -514,7 +579,7 @@ impl Emit {
         self.complete = read.complete;
         self.read_hour = Some(at);
         self.read_naming = Arc::clone(&self.naming);
-        self.samples = read.samples;
+        self.samples = self.held_samples.values().cloned().collect();
         self.dirty = true;
         self.trend_refused.merge(&read.trend_refused);
         self.collaboration_refused
@@ -524,7 +589,7 @@ impl Emit {
 
     /// The owner and name of each of `ids` the read holds, as the hour's
     /// States rows give them.
-    fn project_states(&mut self, writer: &mut Writer<'_>, ids: Vec<u32>, at: i32) -> io::Result<()> {
+    fn project_states(&mut self, writer: &mut Writer, ids: Vec<u32>, at: i32) -> io::Result<()> {
         for id in ids {
             let Some(&held) = self.active.get(&id) else {
                 continue;
@@ -595,7 +660,7 @@ impl Emit {
         let fresh = read == at;
         let mut texts = None;
         let mut active = Vec::with_capacity(self.samples.len());
-        for sample in &mut self.samples {
+        for sample in &self.samples {
             let collaboration = match &sample.collaboration {
                 Some(entries) if fresh => {
                     for entry in entries.iter().filter(|entry| entry.tag.is_none()) {
@@ -657,7 +722,6 @@ impl Emit {
                 collaboration,
             });
             track.last = Some((sample.identity, at));
-            track.fact = if fresh { sample.fact.take() } else { None };
             if !track.queued {
                 track.queued = true;
                 self.changed.push(index);
@@ -671,16 +735,11 @@ impl Emit {
             }
         }
         self.active_tracks = active;
-        if fresh {
-            for sample in &mut self.samples {
-                sample.fact = None;
-            }
-        }
     }
 
     /// The hours before `at` end every run: it follows an hour not walked, or an hour that
     /// could not be read, or cannot be read itself.
-    fn gap(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn gap(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         if let Some(hour) = self.last_hour {
             for &index in &self.active_tracks {
                 let track = &mut self.tracks[index];
@@ -721,7 +780,7 @@ impl Emit {
     }
 
     /// The actor of `tag`, with its keys, catalogued at `hour` when new.
-    fn occupier(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn occupier(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         let actor = self.actors.actor(writer, tag.as_bytes(), hour)?;
         let index = actor as usize;
         if self.keys.len() <= index {
@@ -749,7 +808,7 @@ impl Emit {
         Ok(actor)
     }
 
-    fn publish(&mut self, writer: &mut Writer<'_>, hour: i32) -> io::Result<()> {
+    fn publish(&mut self, writer: &mut Writer, hour: i32) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("occupation emit publish", None);
         if self.changed.is_empty() {
             return Ok(());
@@ -781,10 +840,7 @@ impl Emit {
                 .filter(|run| run.last_hour == hour)
                 .cloned();
             let encoded = match &current {
-                Some(run) if run.first_hour == hour => Some(match track.fact.take() {
-                    Some(encoded) => encoded.finish(run.starts_segment),
-                    None => fact(run, &texts)?,
-                }),
+                Some(run) if run.first_hour == hour => Some(fact(run, &texts)?),
                 _ => None,
             };
             track.open = current.is_some();
@@ -831,7 +887,7 @@ impl Emit {
 
     /// Each mean's ranking of the occupiers holding a run at `hour`, highest first, ties by
     /// tag: the positions and ranks that moved go on from `hour`.
-    fn rank(&mut self, writer: &mut Writer<'_>, hour: i32, texts: &[Arc<str>]) -> io::Result<()> {
+    fn rank(&mut self, writer: &mut Writer, hour: i32, texts: &[Arc<str>]) -> io::Result<()> {
         for column in 0..2 {
             let mut order: Vec<(i64, &str, u64)> = self
                 .tracks
@@ -918,7 +974,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("occupation emit cut", None);
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
@@ -952,7 +1008,8 @@ impl Emit {
     }
 
     /// What the emit goes on with after a cut, its texts spelled out. A restart goes on at a
-    /// segment's first hour, whose projection hands on every States row and the naming anew.
+    /// segment's first hour, whose projection hands on every States row and the naming anew,
+    /// and everything it had handed on before.
     pub fn save(&self, out: &mut Vec<u8>) -> io::Result<()> {
         let texts = self.shared.all();
         let text = |id: u32| texts[id as usize].to_string();
@@ -1199,7 +1256,6 @@ impl Emit {
                 collaboration: sample
                     .collaboration
                     .map(|entries| collab(entries, &mut named)),
-                fact: None,
             })
             .collect();
         emit.progress = Arc::new(saved.progress.into_iter().collect());
@@ -1230,7 +1286,6 @@ fn track_index(tracks: &mut Vec<Track>, track_of: &mut Vec<usize>, tag: u32) -> 
             actor: None,
             current: None,
             last: None,
-            fact: None,
             seen: None,
             queued: false,
             open: false,

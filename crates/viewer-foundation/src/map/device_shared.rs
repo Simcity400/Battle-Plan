@@ -1,0 +1,37 @@
+//! GPU objects a pass makes the same way on every view: pipelines, layouts and samplers. Each
+//! device keeps one of each while any view holds it, so another map view compiles nothing.
+
+use eframe::wgpu;
+use std::any::Any;
+use std::sync::{Arc, Mutex, Weak};
+
+type Entry = (
+    wgpu::Device,
+    Box<dyn Any + Send>,
+    Weak<dyn Any + Send + Sync>,
+);
+
+static SHARED: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+
+/// The `T` made for `key` on `device` that a view still holds, else the one `make` builds.
+/// Held through `make`, so views built at once make it once.
+pub fn shared<K, T>(device: &wgpu::Device, key: K, make: impl FnOnce() -> T) -> Arc<T>
+where
+    K: PartialEq + Send + 'static,
+    T: Send + Sync + 'static,
+{
+    let mut entries = SHARED.lock().unwrap_or_else(|error| error.into_inner());
+    entries.retain(|(_, _, held)| held.strong_count() != 0);
+    if let Some(found) = entries.iter().find_map(|(owner, cached, held)| {
+        (owner == device && cached.downcast_ref::<K>() == Some(&key))
+            .then(|| held.upgrade())
+            .flatten()
+            .and_then(|held| held.downcast::<T>().ok())
+    }) {
+        return found;
+    }
+    let made = Arc::new(make());
+    let held: Arc<dyn Any + Send + Sync> = made.clone();
+    entries.push((device.clone(), Box::new(key), Arc::downgrade(&held)));
+    made
+}

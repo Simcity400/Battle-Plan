@@ -50,7 +50,7 @@ use replay_data::{rows::TableId, rows::tables};
 use replay_frame::{frame::FrameDecoder, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 pub use dashboard_text::party_names::{PartyNaming, party_key};
 use std::{
@@ -71,10 +71,6 @@ pub const NAME: &str = "parties";
 
 /// Decimal places of recorded popularity (a percentage).
 pub const POPULARITY_DECIMALS: u8 = 5;
-#[cfg(any(test, feature = "test-support"))]
-pub const CACHED_BRANCHES: usize = 2;
-#[cfg(test)]
-const CACHED_COUNTRIES: usize = 8;
 
 #[cfg(any(test, feature = "test-support"))]
 fn party_popularity(row: &replay_data::rows::PoliticalPartyRow) -> Option<(&str, i128)> {
@@ -1501,10 +1497,11 @@ pub fn scan_selected(
     Ok(result)
 }
 
+/// One scan per branch of the source revision.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct BranchCache {
-    entries: VecDeque<(u64, Arc<ScannedPartyBranch>)>,
+    entries: BTreeMap<u64, Arc<ScannedPartyBranch>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1514,30 +1511,22 @@ pub fn scanned_branch(
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<ScannedPartyBranch>> {
     let state = source.state::<BranchCache>();
-    {
-        let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(index) = cache.entries.iter().position(|(key, _)| *key == branch) {
-            let entry = cache.entries.remove(index).expect("cached branch exists");
-            let scanned = Arc::clone(&entry.1);
-            cache.entries.push_back(entry);
-            return Ok(scanned);
-        }
+    let cached = state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entries
+        .get(&branch)
+        .map(Arc::clone);
+    if let Some(scanned) = cached {
+        return Ok(scanned);
     }
     let scanned = Arc::new(scan_all(&source.replay(), branch, cancelled)?);
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    cache.entries.retain(|(key, _)| *key != branch);
-    cache.entries.push_back((branch, Arc::clone(&scanned)));
-    while cache.entries.len() > CACHED_BRANCHES {
-        cache.entries.pop_front();
-    }
-    Ok(scanned)
+    Ok(Arc::clone(cache.entries.entry(branch).or_insert(scanned)))
 }
 
 #[cfg(test)]
-#[derive(Default)]
-struct Cache {
-    entries: VecDeque<((u64, String), Arc<ScannedParties>)>,
-}
+type Cache = dashboard_base::latest::BranchLatest<String, ScannedParties>;
 
 impl Product for PartyHistory {
     const KEY: &'static str = "party-history";
@@ -1570,21 +1559,11 @@ impl Product for PartyHistory {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let key = (params.branch(), params.tag.clone());
         let state = source.state::<Cache>();
-        let cached = {
-            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache
-                .entries
-                .iter()
-                .position(|(cached, _)| *cached == key)
-                .map(|index| {
-                    let entry = cache.entries.remove(index).expect("cached country exists");
-                    let scanned = Arc::clone(&entry.1);
-                    cache.entries.push_back(entry);
-                    scanned
-                })
-        };
+        let cached = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(params.branch(), &params.tag);
         let scanned = match cached {
             Some(scanned) => scanned,
             None => {
@@ -1594,12 +1573,10 @@ impl Product for PartyHistory {
                     &params.tag,
                     cancelled,
                 )?);
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache.entries.retain(|(cached, _)| *cached != key);
-                cache.entries.push_back((key, Arc::clone(&scanned)));
-                while cache.entries.len() > CACHED_COUNTRIES {
-                    cache.entries.pop_front();
-                }
+                state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .put(params.branch(), params.tag.clone(), &scanned);
                 scanned
             }
         };

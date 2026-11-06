@@ -527,7 +527,6 @@ fn a_shared_catalogue_is_parsed_once_for_its_pages_and_again_when_they_change() 
             &fixture.key,
             "shared",
             1,
-            |(keys, note)| series::catalogue_key_bytes(keys) + note.capacity(),
         )
         .unwrap()
         .unwrap()

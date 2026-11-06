@@ -21,12 +21,21 @@ pub struct Prepared {
     tag_keys: HashMap<String, [u64; 2]>,
     first: Option<i32>,
     last: Option<i32>,
+    /// The tags the countries resolve, each observed through the last hour: a tag no hour
+    /// changed goes on as it was, and is told only where something of it changes.
     active: BTreeMap<String, Identity>,
+    /// Each active tag by the slot it holds.
+    #[serde(skip)]
+    holders: HashMap<u32, Vec<String>>,
     membership_dirty: bool,
-    unresolved_per_hour: usize,
-    untext_per_hour: usize,
-    unresolved_per_read: usize,
-    unsupported_per_read: BTreeMap<u8, usize>,
+    /// A roster held may not go on to the next membership read: that read counts every tag.
+    roster_reset: bool,
+    /// Whether the memberships were complete at the last hour.
+    #[serde(skip)]
+    memberships: Option<bool>,
+    /// Every tag has been observed since this state was made or read back.
+    #[serde(skip)]
+    bound: bool,
     #[cfg(test)]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
@@ -56,41 +65,62 @@ impl Prepared {
         self.test_countries = countries;
         result
     }
+
+    /// Carries every active tag's track through `hour`.
     fn materialize(&mut self, hour: i32) {
+        let tags: Vec<String> = self.active.keys().cloned().collect();
+        for tag in &tags {
+            self.materialize_tag(tag, hour);
+        }
+    }
+
+    /// Carries active `tag`'s track, and the roster its country holds, through `hour`: each
+    /// went on unchanged from its last observation.
+    fn materialize_tag(&mut self, tag: &str, hour: i32) {
+        let Some(&identity) = self.active.get(tag) else {
+            return;
+        };
+        #[cfg(test)]
+        super::super::intelligence_prepared::work(|work| work.history_visits += 1);
         let read = self.scan.operative_read_hours.last().copied();
-        for (tag, &identity) in &self.active {
-            #[cfg(test)]
-            super::super::intelligence_prepared::work(|work| work.history_visits += 1);
-            let track = self
-                .scan
-                .tracks
-                .get_mut(tag)
-                .expect("current agency holder");
-            track.last_identity.advance(hour);
-            if let Some(segment) = track.segments.last_mut() {
-                segment.last_hour = hour;
+        let track = self
+            .scan
+            .tracks
+            .get_mut(tag)
+            .expect("current agency holder");
+        track.last_identity.advance(hour);
+        if let Some(segment) = track.segments.last_mut() {
+            segment.last_hour = hour;
+        }
+        if let Some((_, at)) = track.last_value.as_mut() {
+            *at = hour;
+            if let Some(entry) = track.entries.last_mut() {
+                entry.last_hour = hour;
             }
-            if let Some((_, at)) = track.last_value.as_mut() {
-                *at = hour;
-                if let Some(entry) = track.entries.last_mut() {
-                    entry.last_hour = hour;
-                }
+        }
+        if let Some((_, at, _)) = track.roster.as_mut() {
+            *at = hour;
+            if let Some(roster) = track.rosters.last_mut() {
+                roster.last_hour = hour;
             }
-            if let Some((_, at, _)) = track.roster.as_mut() {
-                *at = hour;
-                if let Some(roster) = track.rosters.last_mut() {
-                    roster.last_hour = hour;
-                }
-            }
-            if let Some(held) = self.scan.held_rosters.get_mut(&identity) {
-                held.hour = hour;
-                if let Some(read) = read {
-                    held.read_hour = read;
-                }
+        }
+        if let Some(held) = self.scan.held_rosters.get_mut(&identity) {
+            held.hour = hour;
+            if let Some(read) = read {
+                held.read_hour = read;
             }
         }
     }
-    /// Observes `frame` of the row path, its tables read by the scan's reader.
+
+    fn index_holders(&mut self) {
+        self.holders.clear();
+        for (tag, &(slot, _)) in &self.active {
+            self.holders.entry(slot).or_default().push(tag.clone());
+        }
+    }
+
+    /// Observes `frame` of the row path, its tables read by the scan's reader at each hour that
+    /// changed what it reads, every tag gone through there.
     pub fn observe_changes(
         &mut self,
         source: &Source,
@@ -98,24 +128,30 @@ impl Prepared {
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
     ) -> io::Result<()> {
-        self.observe_with(
-            frame.hour,
-            changes,
-            countries,
-            Census::of(frame),
-            |scan, active| {
-                scan.observe_frame_countries(
-                    frame,
-                    source.replay_ref(),
-                    countries,
-                    Some(changes),
-                    active,
-                )
-            },
-        )
+        let census = Census::of(frame);
+        let changed = !self.bound || self.changed(frame.hour, changes, countries, census);
+        let mut reader = std::mem::take(&mut self.scan.reader);
+        let result = (|| {
+            let read = match countries.complete() {
+                Some(_) if changed => Some(reader.read(frame, countries, Some(changes))?),
+                Some(_) => Some(reader.current()),
+                None => None,
+            };
+            let touched = AgencyTouched {
+                all: changed,
+                slots: BTreeSet::new(),
+            };
+            self.observe_with(
+                source, frame.hour, changes, countries, census, read, &touched,
+            )
+        })();
+        self.scan.reader = reader;
+        result
     }
 
-    /// Observes `hour`, whose change facts are `changes`, from the agency scan's `read` of it.
+    /// Observes `hour`, whose change facts are `changes`, from the agency scan's `read` of it,
+    /// `touched` naming what that read changed.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe_read(
         &mut self,
         source: &Source,
@@ -124,36 +160,24 @@ impl Prepared {
         countries: &super::super::operative_rows::CountryInputs,
         census: Census,
         read: &AgencyRead,
+        touched: &AgencyTouched,
     ) -> io::Result<()> {
-        self.observe_with(hour, changes, countries, census, |scan, active| {
-            scan.observe_read(
-                hour,
-                source.replay_ref(),
-                countries,
-                census,
-                Some(read),
-                active,
-            )
-        })
+        let read = countries.complete().map(|_| read);
+        self.observe_with(source, hour, changes, countries, census, read, touched)
     }
 
-    /// Observes `hour`, the scan observing the hour where it changed what it reads.
-    #[allow(clippy::type_complexity)]
-    fn observe_with(
-        &mut self,
+    /// Whether `hour` changed what the scan reads, as the agencies' observed coverage is told.
+    fn changed(
+        &self,
         hour: i32,
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
         census: Census,
-        scan: impl FnOnce(
-            &mut ScannedAgencies,
-            (&mut BTreeMap<String, Identity>, bool),
-        ) -> io::Result<(usize, BTreeMap<u8, usize>)>,
-    ) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:agencies");
-        let previous = self.last;
-        let changed = countries.changed
-            || previous.is_none_or(|last| last.checked_add(1) != Some(hour))
+    ) -> bool {
+        countries.changed
+            || self
+                .last
+                .is_none_or(|last| last.checked_add(1) != Some(hour))
             || [
                 TableId::IntelligenceAgencies,
                 TableId::AgencyUpgradeLevels,
@@ -161,56 +185,96 @@ impl Prepared {
                 TableId::OperativeMemberships,
             ]
             .iter()
-            .any(|table| changes.rows_changed[table.index()]);
-        let read = census.read && census.complete;
+            .any(|table| changes.rows_changed[table.index()])
+            || (census.read
+                && census.complete
+                && (self.membership_dirty
+                    || countries.changed
+                    || changes.rows_changed[TableId::OperativeMemberships.index()]))
+    }
+
+    /// Observes `hour`: every tag where the countries, the hours or what the scan holds of
+    /// them may not go on, else the tags of the slots `touched` names; the others go on as
+    /// they were.
+    #[allow(clippy::too_many_arguments)]
+    fn observe_with(
+        &mut self,
+        source: &Source,
+        hour: i32,
+        changes: &FrameChanges,
+        countries: &super::super::operative_rows::CountryInputs,
+        census: Census,
+        read: Option<&AgencyRead>,
+        touched: &AgencyTouched,
+    ) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:agencies");
+        let previous = self.last;
+        let gap = previous.is_none_or(|last| last.checked_add(1) != Some(hour));
+        let changed = self.changed(hour, changes, countries, census);
+        let membership_read = census.read && census.complete;
         self.membership_dirty |=
             countries.changed || changes.rows_changed[TableId::OperativeMemberships.index()];
-        let changed = changed || (read && self.membership_dirty);
+        if membership_read {
+            self.membership_dirty = false;
+        }
+        // The countries resolve the tags they resolved at the last observation, which every
+        // hour that changed them observes.
+        let fresh = countries.changed || self.first.is_none();
+        // Counts no longer known stop every holder's roster: the read counting them again
+        // starts each one.
+        let unknown_counts = read
+            .and_then(|read| read.roster.as_ref())
+            .is_none_or(|(_, unresolved, _)| *unresolved != 0);
+        let all = fresh
+            || gap
+            || !self.bound
+            || touched.all
+            || self.memberships != Some(census.complete)
+            || (membership_read && (self.roster_reset || unknown_counts));
+        self.bound = true;
+        self.memberships = Some(census.complete);
         self.values.advance(hour)?;
-        let active = if changed {
+        let tags = if all {
             if let Some(previous) = previous {
                 self.materialize(previous);
             }
-            let unresolved = self.scan.unresolved_rows;
-            let untext = self.scan.untext_tags;
-            // The countries resolve the tags they resolved at the last observation, which every
-            // hour that changed them observes.
-            let fresh = countries.changed || self.first.is_none();
-            let mut active = if fresh {
-                BTreeMap::new()
-            } else {
-                std::mem::take(&mut self.active)
-            };
-            let (per_read, unsupported) = scan(&mut self.scan, (&mut active, fresh))?;
-            self.unresolved_per_hour = self.scan.unresolved_rows - unresolved - per_read;
-            self.untext_per_hour = self.scan.untext_tags - untext;
-            if read {
-                self.unresolved_per_read = per_read;
-                self.unsupported_per_read = unsupported;
-            }
-            Some((active, fresh))
+            None
         } else {
-            self.scan.unresolved_rows += self.unresolved_per_hour;
-            self.scan.untext_tags += self.untext_per_hour;
-            if read {
-                self.scan.note_roster_read(hour);
-                self.scan.unresolved_rows += self.unresolved_per_read;
-                for (kind, count) in &self.unsupported_per_read {
-                    *self.scan.unsupported_rosters.entry(*kind).or_default() += count;
+            let mut tags = BTreeSet::new();
+            for slot in &touched.slots {
+                if let Some(holders) = self.holders.get(slot) {
+                    tags.extend(holders.iter().cloned());
                 }
             }
-            if let Some(span) = self
-                .scan
-                .observed
-                .last_mut()
-                .filter(|span| Some(span.last_hour) == previous)
-            {
-                span.last_hour = hour;
+            if let Some(previous) = previous {
+                for tag in &tags {
+                    self.materialize_tag(tag, previous);
+                }
             }
-            None
+            Some(tags.into_iter().collect::<Vec<_>>())
         };
-        if read {
-            self.membership_dirty = false;
+        let mut active = if fresh {
+            BTreeMap::new()
+        } else {
+            std::mem::take(&mut self.active)
+        };
+        let scanned = self.scan.observe_read(
+            hour,
+            source.replay_ref(),
+            countries,
+            census,
+            read,
+            tags.as_deref(),
+            (&mut active, fresh),
+        );
+        if let Err(error) = scanned {
+            self.active = active;
+            return Err(error);
+        }
+        if membership_read {
+            self.roster_reset = unknown_counts;
+        } else if all || !census.complete {
+            self.roster_reset = true;
         }
         self.first.get_or_insert(hour);
         self.last = Some(hour);
@@ -235,103 +299,25 @@ impl Prepared {
         if read == Some(hour) {
             self.values.event(OPERATIVE_READ, hour, &hour)?;
         }
-        if let Some((active, fresh)) = active {
-            for tag in self
-                .active
-                .keys()
-                .filter(|tag| fresh && !active.contains_key(*tag))
-            {
+        if fresh {
+            for tag in self.active.keys().filter(|tag| !active.contains_key(*tag)) {
                 for field in ["agency", "roster"] {
                     if let Some(&key) = self.keys.get(&series::field_key(tag, field)) {
                         self.values.observe(key, hour, None, false);
                     }
                 }
             }
-            for tag in active.keys() {
-                let track = self
-                    .scan
-                    .tracks
-                    .get_mut(tag)
-                    .expect("observed agency track");
-                let [key, roster_key] = match self.tag_keys.get(tag.as_str()) {
-                    Some(&keys) => keys,
-                    None => {
-                        let mut keys = [0; 2];
-                        for (key, field) in keys.iter_mut().zip(["agency", "roster"]) {
-                            let next = u64::try_from(self.keys.len())
-                                .ok()
-                                .and_then(|len| len.checked_add(2))
-                                .ok_or_else(|| io::Error::other("Too many agency series"))?;
-                            *key = *self
-                                .keys
-                                .entry(series::field_key(tag, field))
-                                .or_insert(next);
-                        }
-                        self.tag_keys.insert(tag.clone(), keys);
-                        keys
-                    }
-                };
-                let entry = track
-                    .entries
-                    .last()
-                    .filter(|entry| entry.last_hour == hour);
-                let value = entry.map(|entry| i128::from(entry.first_hour));
-                if entry.is_some_and(|entry| entry.first_hour == hour)
-                    || self
-                        .values
-                        .state(key)
-                        .and_then(|state| state.last)
-                        .map(|run| run.value)
-                        != value
-                    || value.is_none()
-                {
-                    self.values.observe(
-                        key,
-                        hour,
-                        value,
-                        entry.is_some_and(|entry| entry.first_hour == hour),
-                    );
-                }
-                if let Some(entry) = entry.filter(|entry| entry.first_hour == hour) {
-                    #[cfg(test)]
-                    super::super::intelligence_prepared::work(|work| work.emitted += 1);
-                    self.values.event(key, hour, entry)?;
-                }
-                let key = roster_key;
-                let roster = track
-                    .rosters
-                    .last()
-                    .filter(|roster| roster.last_hour == hour);
-                let value = roster.map(|roster| i128::from(roster.first_hour));
-                if roster.is_some_and(|roster| roster.first_hour == hour)
-                    || self
-                        .values
-                        .state(key)
-                        .and_then(|state| state.last)
-                        .map(|run| run.value)
-                        != value
-                    || value.is_none()
-                {
-                    self.values.observe(
-                        key,
-                        hour,
-                        value,
-                        roster.is_some_and(|roster| roster.first_hour == hour),
-                    );
-                }
-                if let Some(roster) = roster.filter(|roster| roster.first_hour == hour) {
-                    #[cfg(test)]
-                    super::super::intelligence_prepared::work(|work| work.emitted += 1);
-                    self.values.event(key, hour, roster)?;
-                }
-                if track.entries.len() > 1 {
-                    track.entries.drain(..track.entries.len() - 1);
-                }
-                if track.rosters.len() > 1 {
-                    track.rosters.drain(..track.rosters.len() - 1);
-                }
-            }
-            self.active = active;
+        }
+        self.active = active;
+        if fresh || self.holders.is_empty() {
+            self.index_holders();
+        }
+        let observed: Vec<String> = match tags {
+            Some(tags) => tags,
+            None => self.active.keys().cloned().collect(),
+        };
+        for tag in &observed {
+            self.publish(tag, hour)?;
         }
         if self.scan.observed.len() > 1 {
             self.scan.observed.drain(..self.scan.observed.len() - 1);
@@ -340,6 +326,87 @@ impl Prepared {
             self.scan
                 .operative_read_hours
                 .drain(..self.scan.operative_read_hours.len() - 1);
+        }
+        Ok(())
+    }
+
+    /// Tells the series what observing `tag` at `hour` changed of its agency and roster.
+    fn publish(&mut self, tag: &str, hour: i32) -> io::Result<()> {
+        let Some(track) = self.scan.tracks.get_mut(tag) else {
+            return Ok(());
+        };
+        let [key, roster_key] = match self.tag_keys.get(tag) {
+            Some(&keys) => keys,
+            None => {
+                let mut keys = [0; 2];
+                for (key, field) in keys.iter_mut().zip(["agency", "roster"]) {
+                    let next = u64::try_from(self.keys.len())
+                        .ok()
+                        .and_then(|len| len.checked_add(2))
+                        .ok_or_else(|| io::Error::other("Too many agency series"))?;
+                    *key = *self
+                        .keys
+                        .entry(series::field_key(tag, field))
+                        .or_insert(next);
+                }
+                self.tag_keys.insert(tag.to_owned(), keys);
+                keys
+            }
+        };
+        let entry = track.entries.last().filter(|entry| entry.last_hour == hour);
+        let value = entry.map(|entry| i128::from(entry.first_hour));
+        if entry.is_some_and(|entry| entry.first_hour == hour)
+            || self
+                .values
+                .state(key)
+                .and_then(|state| state.last)
+                .map(|run| run.value)
+                != value
+            || value.is_none()
+        {
+            self.values.observe(
+                key,
+                hour,
+                value,
+                entry.is_some_and(|entry| entry.first_hour == hour),
+            );
+        }
+        if let Some(entry) = entry.filter(|entry| entry.first_hour == hour) {
+            #[cfg(test)]
+            super::super::intelligence_prepared::work(|work| work.emitted += 1);
+            self.values.event(key, hour, entry)?;
+        }
+        let roster = track
+            .rosters
+            .last()
+            .filter(|roster| roster.last_hour == hour);
+        let value = roster.map(|roster| i128::from(roster.first_hour));
+        if roster.is_some_and(|roster| roster.first_hour == hour)
+            || self
+                .values
+                .state(roster_key)
+                .and_then(|state| state.last)
+                .map(|run| run.value)
+                != value
+            || value.is_none()
+        {
+            self.values.observe(
+                roster_key,
+                hour,
+                value,
+                roster.is_some_and(|roster| roster.first_hour == hour),
+            );
+        }
+        if let Some(roster) = roster.filter(|roster| roster.first_hour == hour) {
+            #[cfg(test)]
+            super::super::intelligence_prepared::work(|work| work.emitted += 1);
+            self.values.event(roster_key, hour, roster)?;
+        }
+        if track.entries.len() > 1 {
+            track.entries.drain(..track.entries.len() - 1);
+        }
+        if track.rosters.len() > 1 {
+            track.rosters.drain(..track.rosters.len() - 1);
         }
         Ok(())
     }

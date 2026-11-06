@@ -359,17 +359,22 @@ pub fn raid_unit_speed(
 
 /// A naval base measures the naval path and a building the land path, both
 /// through the session memo. Other sources use wrapped centroid distance
-/// over three to the resolved target province. A missing distance is 100000.
+/// over three to the resolved target province. A missing distance is 100000. `held` takes
+/// the content searches read, for the raid's display to keep.
 pub fn target_distance(
     assets: &RaidAssets,
     frame: &dyn DecodedSource,
     raid: &RaidRow,
     target: &RaidTargetRow,
+    held: &mut Vec<super::paths::Held>,
 ) -> Result<i64, String> {
     let kind = raid.source.kind.unwrap_or(u32::MAX);
     let from = raid.source.province;
     let found = if kind == SOURCE_NAVAL_BASE || kind == SOURCE_BUILDING {
-        super::paths::Distances::new(assets, frame).distance(kind as u8, from, &target.scope)?
+        let distances = super::paths::Distances::new(assets, frame);
+        let found = distances.distance(kind as u8, from, &target.scope);
+        held.extend(distances.take_held());
+        found?
     } else {
         assets.province(&target.scope).and_then(|to| {
             assets

@@ -9,7 +9,7 @@ use super::{
     query::{Held, walked},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Identity, Publication, Snapshot, Span, Writer,
+    Blob, Identity, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -287,11 +287,9 @@ fn identity() -> Identity {
 /// The publication of `hours`, cut after each of `cuts`; at each of `resume`'s the emit is saved
 /// and goes on from the publication.
 fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: &[i32]) -> (Memory, u64) {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -307,12 +305,12 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: &[i32]) -> (Memory, u64)
             reached: cut,
             refusal: None,
         };
-        root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+        root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
         if resume.contains(&cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::resume(&directory, &saved).unwrap();
         }
@@ -354,9 +352,7 @@ fn every_name_input_at_every_hour_is_the_frame_reader_s_however_the_walk_is_cut(
         (BTreeSet::from([1, 26, 28]), vec![100, 111, 127, last], vec![100, 111, 127]),
     ] {
         let (pages, root) = build(project(&inputs, &restarts), &cuts, &resume);
-        let budget = Budget::new(1 << 30);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         for frame in &inputs {
             let hour = frame.hour;

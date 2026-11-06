@@ -8,6 +8,7 @@ import { usNumber } from '../../charts/numberFormat.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { CountryPickerRead } from '../../components/CountryPicker';
 import { formatDateTime } from '../../dashboard/calendar.ts';
+import { sinceLabel, stretchSince } from '../../dashboard/stretch.ts';
 import { countryIdentityIndex, validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { readAt } from '../../dashboard/reads.ts';
@@ -30,6 +31,7 @@ export function validateNavalLossesReply(data: unknown, window = false): NavalLo
       : reply.shipReads[0] === (reply.shipFirstRead ?? undefined) && reply.shipReads.at(-1) === (reply.shipLastRead ?? undefined)
         && reply.convoyReads[0] === (reply.convoyFirstRead ?? undefined) && reply.convoyReads.at(-1) === (reply.convoyLastRead ?? undefined))
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
+    && (reply.restarts === undefined || reads(reply.restarts))
     && Array.isArray(reply.series) && new Set(reply.series.map(series => series?.tag)).size === reply.series.length
     && reply.series.every(series => object(series) && typeof series.tag === 'string' && isOrderedSpans(series.segments)
       && (series.membership === null || isOrderedSpans(series.membership)) && validCountryIdentityRuns(series.identities) && Array.isArray(series.runs)
@@ -121,8 +123,17 @@ export function navalLines(model: NavalModel, tags: readonly string[], kind: Nav
   });
 }
 
-export function navalPeriodLabel(reply: NavalLossesReply, period: NavalPeriod): string {
-  return period === 'month' ? 'Per month' : reply.firstRead === null ? 'Running total' : `Since ${formatDateTime(reply.firstRead)}`;
+/** What the totals shown at `hour` count from: a running total from its stretch's first read,
+ * and either after hours the recording lost, from where its stretch starts. */
+export function navalPeriodLabel(reply: NavalLossesReply, period: NavalPeriod, kind: NavalKind = 'both', hour?: number): string {
+  const restarts = reply.restarts ?? [];
+  const since = hour === undefined ? restarts.at(-1) ?? null : stretchSince(restarts, hour);
+  if (period === 'month') return since === null ? 'Per month' : `Per month, counted ${sinceLabel(since)}`;
+  // The reply's first read begins its latest stretch; the branch's own reads begin its first.
+  const branchFirst = kind === 'ships' ? reply.shipFirstRead : kind === 'convoys' ? reply.convoyFirstRead
+    : reply.shipFirstRead !== null && reply.convoyFirstRead !== null ? Math.max(reply.shipFirstRead, reply.convoyFirstRead) : null;
+  const from = !restarts.length || since === restarts.at(-1) ? reply.firstRead : since ?? branchFirst;
+  return from === null ? 'Running total' : `Since ${formatDateTime(from)}`;
 }
 
 function navalNote(attribution: NavalAttribution): string | undefined {

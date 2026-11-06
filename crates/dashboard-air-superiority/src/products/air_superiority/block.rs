@@ -211,7 +211,9 @@ impl ScoreTracker {
         let identity_changed =
             restoring || country_changed || changes.rows_changed[TableId::CountryLinks.index()];
         if identity_changed {
-            self.identity = Some(Arc::new(scan::score_countries(frame)?));
+            self.identity = Some(Arc::new(scan::score_countries(
+                replay_frame::frame::HourFrame::from(frame),
+            )?));
             self.keys = Some(CountryKeys::read(countries));
         }
         if !identity_changed && !changes.rows_changed[TableId::RaidAirScores.index()] {

@@ -6,11 +6,13 @@
 
 use crate::{state_resources::Links, triggers::Failure};
 use installed_content_core::{leader_traits::LeaderTraits, unit_leader::Traits};
-use replay_data::rows::TableSchema;
 use replay_data::{
     rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
-    rows::CountryCharacterRow, rows::UnitLeaderTraitRow, rows::tables,
+    rows::CountryCharacterRow, rows::TableSchema, rows::UnitLeaderRow, rows::UnitLeaderTraitRow,
+    rows::mask, rows::tables,
 };
+use replay_frame::frame::{HourFrame, Rowset};
+use std::{borrow::Cow, collections::BTreeMap, sync::OnceLock};
 
 type Evaluation<T> = Result<T, Failure>;
 
@@ -48,28 +50,52 @@ pub const FIELDS: [(replay_data::rows::TableId, &[&str]); 6] = {
     ]
 };
 
+/// The fields each table's rows are built with: [`FIELDS`], and for readers of the leader it
+/// hands on, a direct leader's [`replay_frame::frame::Leader`] fields and a referenced one's
+/// reference, name and codename.
+const CHARACTER: u64 = mask::<CharacterRow>(&["country", "name_token_id"]);
+const LEADER_OF: u64 = mask::<UnitLeaderRow>(&["character_id"]);
+const LEADER: u64 = mask::<UnitLeaderRow>(replay_frame::frame::Leader::FIELDS);
+const ASSIGNED: u64 = mask::<UnitLeaderTraitRow>(&["definition_ordinal"]);
+const ROLE_TRAITS: u64 = mask::<CharacterRoleTraitRow>(&["tokens", "definitions"]);
+const OPERATIVE: u64 = mask::<CharacterOperativeRow>(&[
+    "resolved",
+    "category",
+    "owner",
+    "skill_level",
+    "trait_definitions",
+    "reference",
+    "name",
+    "codename",
+]);
+const RETIRED: u64 = mask::<CountryCharacterRow>(&["character"]);
+
 /// The recorded character tables a character scope's `has_trait`, `skill`
 /// and `tag` read.
 pub struct Tables<'a> {
-    characters: Result<replay_frame::frame::Rows<'a, CharacterRow>, Failure>,
-    unit_leaders: Result<&'a dyn replay_frame::frame::DecodedSource, Failure>,
-    unit_leader_traits: Result<&'a [UnitLeaderTraitRow], Failure>,
-    role_traits: Result<&'a [CharacterRoleTraitRow], Failure>,
-    operatives: Result<&'a [CharacterOperativeRow], Failure>,
-    retired: Result<&'a [CountryCharacterRow], Failure>,
+    characters: Result<Rowset<'a, CharacterRow>, Failure>,
+    unit_leaders: Result<Rowset<'a, UnitLeaderRow>, Failure>,
+    /// Each character's first UnitLeaders key, and whether another row names it, built on
+    /// first use.
+    leaders_of: OnceLock<Result<BTreeMap<u32, (u128, bool)>, Failure>>,
+    unit_leader_traits: Result<Rowset<'a, UnitLeaderTraitRow>, Failure>,
+    role_traits: Result<Rowset<'a, CharacterRoleTraitRow>, Failure>,
+    operatives: Result<Rowset<'a, CharacterOperativeRow>, Failure>,
+    retired: Result<Rowset<'a, CountryCharacterRow>, Failure>,
 }
 
 /// A character's direct unit leader (UnitLeaders), else its resolved
 /// referenced leader (CharacterOperatives).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum UnitLeader<'a> {
-    Direct(replay_frame::frame::Leader<'a>),
-    Referenced(&'a CharacterOperativeRow),
+    /// The UnitLeaders row, holding the fields a [`replay_frame::frame::Leader`] holds.
+    Direct(Cow<'a, UnitLeaderRow>),
+    Referenced(Cow<'a, CharacterOperativeRow>),
 }
 
 impl UnitLeader<'_> {
     /// The leader category; 3 is an operative.
-    pub fn category(self) -> i32 {
+    pub fn category(&self) -> i32 {
         match self {
             Self::Direct(row) => row.category,
             Self::Referenced(row) => row.category,
@@ -77,7 +103,7 @@ impl UnitLeader<'_> {
     }
 
     /// The raw country reference.
-    pub fn owner(self) -> u32 {
+    pub fn owner(&self) -> u32 {
         match self {
             Self::Direct(row) => row.owner,
             Self::Referenced(row) => row.owner,
@@ -85,7 +111,7 @@ impl UnitLeader<'_> {
     }
 
     /// The skill level, which requires a recorded skill object.
-    pub fn skill(self) -> Evaluation<i32> {
+    pub fn skill(&self) -> Evaluation<i32> {
         match self {
             Self::Direct(row) if row.skill_status == 0 => Err(format!(
                 "unit leader {} has no skill object (UnitLeaders skill_status 0), which the skill read requires",
@@ -100,6 +126,18 @@ impl UnitLeader<'_> {
     }
 }
 
+/// `rows`' failure to build a row of `T`, refused where it is reached.
+fn walked<T: TableSchema>(why: std::io::Error) -> Failure {
+    crate::triggers::refusal::input_error(T::ID, why)
+}
+
+/// `table`, or why it is not read, reached.
+fn held<T: Clone>(table: &Result<T, Failure>) -> Evaluation<T> {
+    table.clone().map_err(|failure| {
+        failure.reached();
+        failure
+    })
+}
 /// The name sources for a character's `has_trait`: unit-leader traits,
 /// country-leader traits and the lexer for a scientist trait.
 pub struct TraitNames<'a> {
@@ -122,6 +160,7 @@ impl Default for Tables<'_> {
         Self {
             characters: none(replay_data::rows::TableId::Characters),
             unit_leaders: none(replay_data::rows::TableId::UnitLeaders),
+            leaders_of: OnceLock::new(),
             unit_leader_traits: none(replay_data::rows::TableId::UnitLeaderTraits),
             role_traits: none(replay_data::rows::TableId::CharacterRoleTraits),
             operatives: none(replay_data::rows::TableId::CharacterOperatives),
@@ -134,11 +173,17 @@ impl<'a> Tables<'a> {
     /// The hour's tables, each hourly (replay_data::cadence): their writers run at
     /// any hour.
     pub fn read(frame: &'a dyn replay_frame::frame::DecodedSource) -> Self {
-        fn table<'f, T: replay_data::rows::TableSchema>(
-            frame: &'f dyn replay_frame::frame::DecodedSource,
+        Self::read_in(HourFrame::Decoded(frame))
+    }
+
+    /// [`Self::read`] of any frame's tables, a walk's views among them.
+    pub fn read_in(frame: HourFrame<'a>) -> Self {
+        fn table<'f, T: TableSchema>(
+            frame: HourFrame<'f>,
+            mask: u64,
             name: &str,
-        ) -> Result<&'f [T::Row], Failure> {
-            frame.complete::<T>().map_err(|error| {
+        ) -> Result<Rowset<'f, T::Row>, Failure> {
+            frame.complete::<T>(mask).map_err(|error| {
                 Failure::input(
                     T::ID,
                     "",
@@ -148,42 +193,37 @@ impl<'a> Tables<'a> {
             })
         }
         Self {
-            characters: frame.characters().map_err(|error| {
-                Failure::input(
-                    tables::Characters::ID,
-                    "",
-                    None,
-                    format!("Characters is not complete this hour: {error}"),
-                )
-            }),
-            unit_leaders: frame
-                .leader_status()
-                .complete(frame.hour(), tables::UnitLeaders::ID)
-                .map(|()| frame)
-                .map_err(|error| {
-                    Failure::input(
-                        tables::UnitLeaders::ID,
-                        "",
-                        None,
-                        format!("UnitLeaders is not complete this hour: {error}"),
-                    )
-                }),
-            unit_leader_traits: table::<tables::UnitLeaderTraits>(frame, "UnitLeaderTraits"),
-            role_traits: table::<tables::CharacterRoleTraits>(frame, "CharacterRoleTraits"),
-            operatives: table::<tables::CharacterOperatives>(frame, "CharacterOperatives"),
-            retired: table::<tables::CountryRetiredCharacters>(frame, "CountryRetiredCharacters"),
+            characters: table::<tables::Characters>(frame, CHARACTER, "Characters"),
+            unit_leaders: table::<tables::UnitLeaders>(frame, LEADER, "UnitLeaders"),
+            leaders_of: OnceLock::new(),
+            unit_leader_traits: table::<tables::UnitLeaderTraits>(
+                frame,
+                ASSIGNED,
+                "UnitLeaderTraits",
+            ),
+            role_traits: table::<tables::CharacterRoleTraits>(
+                frame,
+                ROLE_TRAITS,
+                "CharacterRoleTraits",
+            ),
+            operatives: table::<tables::CharacterOperatives>(
+                frame,
+                OPERATIVE,
+                "CharacterOperatives",
+            ),
+            retired: table::<tables::CountryRetiredCharacters>(
+                frame,
+                RETIRED,
+                "CountryRetiredCharacters",
+            ),
         }
     }
 
-    fn character(&self, character: u32) -> Evaluation<&'a CharacterRow> {
-        self.characters
-            .as_ref()
-            .map_err(|failure| {
-                failure.reached();
-                failure.clone()
-            })?
-            .iter()
-            .find(|row| row.id == character)
+    fn character(&self, character: u32) -> Evaluation<Cow<'a, CharacterRow>> {
+        // Keyed by the character's id.
+        held(&self.characters)?
+            .get(u128::from(character))
+            .map_err(walked::<tables::Characters>)?
             .ok_or_else(|| {
                 Failure::input(
                     replay_data::rows::TableId::Characters,
@@ -198,29 +238,42 @@ impl<'a> Tables<'a> {
     /// the referenced leader recorded by CharacterOperatives when resolved;
     /// `None` for neither.
     pub fn unit_leader(&self, character: u32) -> Evaluation<Option<UnitLeader<'a>>> {
-        let leaders = *self.unit_leaders.as_ref().map_err(|failure| {
-            failure.reached();
-            failure.clone()
-        })?;
-        let rows = crate::triggers::inputs::unrecorded(|| leaders.leader_rows());
-        let mut found = rows.iter().filter(|row| row.character_id == character);
-        if let Some(leader) = found.next() {
-            if found.next().is_some() {
-                return Err(format!(
-                    "character {character} has more than one UnitLeaders row, and a character holds one direct unit leader"
-                ).into());
-            }
-            return Ok(Some(UnitLeader::Direct(leader)));
-        }
-        Ok(self
-            .operatives
+        let leaders = held(&self.unit_leaders)?;
+        let index = self
+            .leaders_of
+            .get_or_init(|| {
+                let mut index = BTreeMap::new();
+                for (key, row) in leaders.keys().zip(leaders.with_mask(LEADER_OF).iter()) {
+                    let row = row.map_err(walked::<tables::UnitLeaders>)?;
+                    index
+                        .entry(row.character_id)
+                        .and_modify(|(_, more): &mut (u128, bool)| *more = true)
+                        .or_insert((key, false));
+                }
+                Ok(index)
+            })
             .as_ref()
             .map_err(|failure| {
                 failure.reached();
                 failure.clone()
-            })?
-            .iter()
-            .find(|row| row.character == character && row.resolved)
+            })?;
+        if let Some(&(key, more)) = index.get(&character) {
+            if more {
+                return Err(format!(
+                    "character {character} has more than one UnitLeaders row, and a character holds one direct unit leader"
+                ).into());
+            }
+            let leader = leaders
+                .get(key)
+                .map_err(walked::<tables::UnitLeaders>)?
+                .ok_or_else(|| walked::<tables::UnitLeaders>(std::io::Error::other("an indexed key holds no row")))?;
+            return Ok(Some(UnitLeader::Direct(leader)));
+        }
+        // CharacterOperatives is keyed by the character.
+        Ok(held(&self.operatives)?
+            .get(u128::from(character))
+            .map_err(walked::<tables::CharacterOperatives>)?
+            .filter(|row| row.resolved)
             .map(UnitLeader::Referenced))
     }
 
@@ -244,7 +297,7 @@ impl<'a> Tables<'a> {
     /// leader's skill level, or zero without a unit leader.
     pub fn skill(&self, character: u32) -> Evaluation<i32> {
         self.unit_leader(character)?
-            .map_or(Ok(0), UnitLeader::skill)
+            .map_or(Ok(0), |leader| leader.skill())
     }
 
     /// Retired when Characters.country is signed-nonpositive, or when
@@ -260,15 +313,8 @@ impl<'a> Tables<'a> {
             return Ok(true);
         }
         let country = canonical(own.country)?;
-        for row in self
-            .retired
-            .as_ref()
-            .map_err(|failure| {
-                failure.reached();
-                failure.clone()
-            })?
-            .iter()
-        {
+        for row in held(&self.retired)?.iter() {
+            let row = row.map_err(walked::<tables::CountryRetiredCharacters>)?;
             if canonical(row.country)? != country {
                 continue;
             }
@@ -293,7 +339,7 @@ impl<'a> Tables<'a> {
         canonical: impl Fn(u32) -> Evaluation<u32>,
     ) -> Evaluation<bool> {
         let leader = self.unit_leader(character)?;
-        let operative = leader.is_some_and(|leader| leader.category() == 3);
+        let operative = leader.as_ref().is_some_and(|leader| leader.category() == 3);
         if !operative && self.retired(character, canonical)? {
             return Ok(false);
         }
@@ -303,16 +349,17 @@ impl<'a> Tables<'a> {
             };
             Ok(Some(match leader {
                 UnitLeader::Direct(leader) => {
-                    let assigned = self.unit_leader_traits.as_ref().map_err(|failure| {
-                        failure.reached();
-                        failure.clone()
-                    })?;
+                    let assigned = held(&self.unit_leader_traits)?;
+                    // Keyed by (leader reference, ordinal): a leader's rows are one key range.
                     let reference = (u64::from(leader.id) << 32) | u64::from(leader.reference_type);
+                    let low = u128::from(reference) << 32;
                     assigned
-                        .iter()
-                        .filter(|row| row.leader_reference == reference)
-                        .map(|row| row.definition_ordinal)
-                        .collect()
+                        .range(low..=low | 0xffff_ffff)
+                        .map(|row| {
+                            row.map(|row| row.definition_ordinal)
+                                .map_err(walked::<tables::UnitLeaderTraits>)
+                        })
+                        .collect::<Evaluation<Vec<i32>>>()?
                 }
                 UnitLeader::Referenced(leader) => leader
                     .trait_definitions
@@ -347,11 +394,13 @@ impl<'a> Tables<'a> {
             why.clone()
                 .context(|why| format!("the country-leader traits are unavailable: {why}"))
         })?;
-        let rows = self.role_traits.as_ref().map_err(|failure| {
-            failure.reached();
-            failure.clone()
-        })?;
-        let own = || rows.iter().filter(move |row| row.character == character);
+        // Keyed by (character, kind, role): a character's rows are one key range.
+        let low = u128::from(character) << 40;
+        let own = held(&self.role_traits)?
+            .range(low..=low | 0xff_ffff_ffff)
+            .map(|row| row.map_err(walked::<tables::CharacterRoleTraits>))
+            .collect::<Evaluation<Vec<_>>>()?;
+        let own = || own.iter().map(|row| &**row);
         let name = std::str::from_utf8(operand)
             .map_err(|_| format!("trait {shown} is not UTF-8, as a trait name is"))?;
         match country_leaders.first_ordinal(name) {

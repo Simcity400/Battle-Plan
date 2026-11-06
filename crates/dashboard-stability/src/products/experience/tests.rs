@@ -12,7 +12,7 @@ use dashboard_base::products::country_experience::{
     test_fixtures::{renamed_frame, slot_base},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -185,11 +185,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -203,7 +202,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -217,8 +215,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::resume(&directory, &saved).unwrap();
         }
@@ -229,9 +227,7 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
 
 /// `product`'s reply to `params` from `built`.
 fn ask(built: &Built, product: &str, params: Value) -> Value {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     query(
         product,
@@ -277,7 +273,6 @@ fn renamed() -> Vec<Tables> {
 /// change at every hour, and the read supplying it, as the row scan reads them.
 #[test]
 fn replies_hold_the_row_scans_reads_across_segments_gaps_cuts_and_a_resume() {
-    let budget = Budget::new(256 << 20);
     let base = slot_base();
     let hours = renamed();
     let at = |offsets: &[i32]| {
@@ -305,7 +300,7 @@ fn replies_hold_the_row_scans_reads_across_segments_gaps_cuts_and_a_resume() {
         let label = format!("starts {starts:?}");
         let (projected, frames) = projected(&hours, &starts);
         let expected = oracle(&frames);
-        let built = build(projected, &cuts, resume, &budget);
+        let built = build(projected, &cuts, resume);
         for tag in ["opaque!tag", "renamed", "third"] {
             for offset in 0..=96 {
                 let hour = base + offset;
@@ -413,7 +408,6 @@ fn replies_hold_the_row_scans_reads_across_segments_gaps_cuts_and_a_resume() {
 #[test]
 fn equal_reads_keep_their_boundaries_and_wide_gains_sum_exactly() {
     const COUNTRIES: u32 = 3;
-    let budget = Budget::new(256 << 20);
     let base = slot_base();
     let countries: Vec<_> = (1..=COUNTRIES)
         .map(|id| CountryRow {
@@ -464,7 +458,6 @@ fn equal_reads_keep_their_boundaries_and_wide_gains_sum_exactly() {
         projected,
         &[base + 32, base + 65, base + 99],
         Some(base + 65),
-        &budget,
     );
     let key =
         serde_json::to_string(&(format!("country / {COUNTRIES}"), COUNTRIES, COUNTRIES)).unwrap();

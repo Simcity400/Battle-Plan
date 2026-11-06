@@ -18,231 +18,13 @@
 use crate::{
     invalid,
     leaf::{Int, Reader, Writer, varint_len},
-    state::{Bits, Cell, Column, Kind, Table},
+    state::{Bits, Bools, Cell, Column, Kind, Lists, Paged, PagedBits, Table},
 };
-use engine_allocation::credit::{Credit, MemoryBudget};
-use std::{
-    io,
-    sync::{
-        Arc, Mutex, PoisonError,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::io;
 
-/// The bytes a share asks its budget for at once, so most writes admit nothing.
-const GRAIN: usize = 64 << 10;
-
-/// What a cursor's shares draw on: its budget and what a move waited for, drawn first; and
-/// what the shares hold, with the most they held or asked for at once since the move began.
-#[derive(Debug)]
-pub(super) struct Ledger {
-    pub(super) budget: MemoryBudget,
-    pub(super) spare: Mutex<Option<Credit>>,
-    held: AtomicUsize,
-    peak: AtomicUsize,
-}
-
-impl Ledger {
-    pub(super) fn new(budget: MemoryBudget) -> Self {
-        Self {
-            budget,
-            spare: Mutex::new(None),
-            held: AtomicUsize::new(0),
-            peak: AtomicUsize::new(0),
-        }
-    }
-
-    /// A move begins: its most is what the shares hold.
-    pub(super) fn begin(&self) {
-        self.peak
-            .store(self.held.load(Ordering::Acquire), Ordering::Release);
-    }
-
-    /// The most the shares held, or held and asked for, at once since the move began: kept as
-    /// workers give back what they held, so a retry waits for all the move needed at once.
-    pub(super) fn peak(&self) -> usize {
-        self.peak.load(Ordering::Acquire)
-    }
-
-    fn holds(&self, bytes: usize) {
-        let now = self
-            .held
-            .fetch_add(bytes, Ordering::AcqRel)
-            .saturating_add(bytes);
-        self.peak.fetch_max(now, Ordering::AcqRel);
-    }
-
-    fn asks(&self, bytes: usize) {
-        let now = self.held.load(Ordering::Acquire).saturating_add(bytes);
-        self.peak.fetch_max(now, Ordering::AcqRel);
-    }
-
-    fn drops(&self, bytes: usize) {
-        self.held.fetch_sub(bytes, Ordering::AcqRel);
-    }
-}
-
-/// Some of a cursor's memory, held exactly and admitted before it is allocated: none for a
-/// lookup, which holds what it reads only while it answers.
-#[derive(Debug, Default)]
-pub(super) struct Share {
-    ledger: Option<Arc<Ledger>>,
-    credit: Option<Credit>,
-    held: usize,
-}
-
-/// A share's budget had no more for it.
-#[derive(Debug)]
-struct Short;
-
-impl std::fmt::Display for Short {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("A change-run index's cursor is short of memory")
-    }
-}
-
-impl std::error::Error for Short {}
-
-/// Whether `error` is a share's budget having no more for it.
-pub(super) fn short_of(error: &io::Error) -> bool {
-    error.get_ref().is_some_and(|error| error.is::<Short>())
-}
-
-impl Share {
-    pub(super) fn of(ledger: &Arc<Ledger>) -> io::Result<Self> {
-        Ok(Self {
-            credit: Some(ledger.budget.admit(0)?),
-            ledger: Some(Arc::clone(ledger)),
-            held: 0,
-        })
-    }
-
-    /// Admits `bytes` more before they are allocated: from the ledger's spare first, then from
-    /// its budget in grains, else exactly. A budget with no more refuses ([`short_of`]).
-    pub(super) fn take(&mut self, bytes: usize) -> io::Result<()> {
-        let Some(need) = self.held.checked_add(bytes) else {
-            if let Some(ledger) = &self.ledger {
-                ledger.asks(usize::MAX);
-            }
-            return Err(io::Error::new(io::ErrorKind::WouldBlock, Short));
-        };
-        let (Some(credit), Some(ledger)) = (&mut self.credit, &self.ledger) else {
-            self.held = need;
-            return Ok(());
-        };
-        if need <= credit.bytes() {
-            self.held = need;
-            ledger.holds(bytes);
-            return Ok(());
-        }
-        // Credit moves only under the spare's lock, counted before it moves: a refusal sees
-        // every byte another share holds or is taking.
-        let mut spare = ledger.spare.lock().unwrap_or_else(PoisonError::into_inner);
-        ledger.holds(bytes);
-        let retried = spare.is_some();
-        if let Some(spare) = spare.as_mut() {
-            let part = spare.bytes().min(need - credit.bytes());
-            credit.absorb(spare.split_off(part));
-        }
-        // In a retry it takes exactly what it holds, so its credit is never more.
-        let grain = if retried {
-            need
-        } else {
-            need.checked_next_multiple_of(GRAIN).unwrap_or(need)
-        };
-        if need > credit.bytes() && credit.resize(grain).is_err() && credit.resize(need).is_err() {
-            ledger.drops(bytes);
-            return Err(io::Error::new(io::ErrorKind::WouldBlock, Short));
-        }
-        self.held = need;
-        Ok(())
-    }
-
-    /// `bytes` it held are dropped.
-    pub(super) fn give(&mut self, bytes: usize) {
-        let dropped = bytes.min(self.held);
-        self.held -= dropped;
-        self.surplus(dropped, GRAIN);
-    }
-
-    /// Counts `dropped` bytes out of the ledger and gives back what its credit holds past what
-    /// it holds: in a move retried on what it waited for, all of it to the move's spare in the
-    /// same step, so no byte leaves demand before it is back in what the move waited for;
-    /// otherwise what passes `slack` over the grain above what it holds, to its budget.
-    fn surplus(&mut self, dropped: usize, slack: usize) {
-        let (Some(credit), Some(ledger)) = (&mut self.credit, &self.ledger) else {
-            return;
-        };
-        if credit.bytes() <= self.held {
-            ledger.drops(dropped);
-            return;
-        }
-        let mut spare = ledger.spare.lock().unwrap_or_else(PoisonError::into_inner);
-        ledger.drops(dropped);
-        if let Some(spare) = spare.as_mut() {
-            spare.absorb(credit.split_off(credit.bytes() - self.held));
-            return;
-        }
-        drop(spare);
-        let keep = self
-            .held
-            .checked_next_multiple_of(GRAIN)
-            .unwrap_or(self.held);
-        if credit.bytes() > keep.saturating_add(slack) {
-            let _ = credit.resize(keep);
-        }
-    }
-
-    /// Holds `bytes`: more admitted, or less given back.
-    pub(super) fn set(&mut self, bytes: usize) -> io::Result<()> {
-        if bytes > self.held {
-            self.take(bytes - self.held)
-        } else {
-            self.give(self.held - bytes);
-            Ok(())
-        }
-    }
-
-    /// Gives back what it holds past the grain above what it holds.
-    pub(super) fn settle(&mut self) {
-        self.surplus(0, 0);
-    }
-
-    /// Holds nothing: all it held was dropped.
-    pub(super) fn clear(&mut self) {
-        if let Some(ledger) = &self.ledger {
-            ledger.drops(self.held);
-        }
-        self.held = 0;
-        if let Some(credit) = &mut self.credit {
-            let _ = credit.resize(0);
-        }
-    }
-}
-
-impl Drop for Share {
-    /// What it still holds leaves its ledger's count with it.
-    fn drop(&mut self) {
-        if let Some(ledger) = &self.ledger {
-            ledger.drops(self.held);
-        }
-    }
-}
-
-/// The bytes `cell`'s items take held.
-pub(super) fn items_bytes(cell: Cell<'_>) -> usize {
-    match cell {
-        Cell::U32List(items) => size_of_val(items),
-        Cell::U64List(items) => size_of_val(items),
-        Cell::Opaque(bytes) => bytes.len(),
-        _ => 0,
-    }
-}
-
-/// Makes room in `into` for `count` items, admitted to `share` before it grows.
-fn scratch<T>(into: &mut Vec<T>, count: usize, share: &mut Share) -> io::Result<()> {
+/// Makes room in `into` for `count` items.
+fn scratch<T>(into: &mut Vec<T>, count: usize) -> io::Result<()> {
     if count > into.capacity() {
-        share.take((count - into.capacity()) * size_of::<T>())?;
         into.clear();
         engine_allocation::reserve_exact(into, count)?;
     }
@@ -438,8 +220,70 @@ fn put_middle(writer: &mut Writer, cell: Cell<'_>, front: usize, back: usize) ->
     }
 }
 
+/// A list or bytes column's items, every offset's end to end: where each offset's lie, and
+/// the items no offset holds any longer, which a cell grown elsewhere left behind.
+#[derive(Default)]
+struct Spans<T> {
+    spans: Vec<(u32, u32)>,
+    items: Vec<T>,
+    dropped: usize,
+}
+
+impl<T: Copy + PartialEq> Spans<T> {
+    fn resize(&mut self, slots: usize) -> io::Result<()> {
+        engine_allocation::resize(&mut self.spans, slots, (0, 0))
+    }
+
+    fn get(&self, at: usize) -> &[T] {
+        let (start, count) = self.spans[at];
+        &self.items[start as usize..][..count as usize]
+    }
+
+    fn set(&mut self, at: usize, new: &[T]) -> io::Result<()> {
+        if self.get(at) == new {
+            return Ok(());
+        }
+        let wide = || invalid("A strip's cells pass 2^32 items");
+        let (start, count) = self.spans[at];
+        let length = u32::try_from(new.len()).map_err(|_| wide())?;
+        if length <= count {
+            self.items[start as usize..][..new.len()].copy_from_slice(new);
+            self.dropped += (count - length) as usize;
+            self.spans[at].1 = length;
+            return Ok(());
+        }
+        self.dropped += count as usize;
+        self.spans[at] = (0, 0);
+        if self.dropped > self.items.len() / 2 {
+            self.compact()?;
+        }
+        let start = u32::try_from(self.items.len())
+            .ok()
+            .filter(|start| start.checked_add(length).is_some())
+            .ok_or_else(wide)?;
+        engine_allocation::reserve(&mut self.items, new.len())?;
+        self.items.extend_from_slice(new);
+        self.spans[at] = (start, length);
+        Ok(())
+    }
+
+    /// Lets go of the items no offset holds.
+    fn compact(&mut self) -> io::Result<()> {
+        let mut items = engine_allocation::vec(self.items.len() - self.dropped)?;
+        for span in &mut self.spans {
+            let (start, count) = *span;
+            let at = items.len() as u32;
+            items.extend_from_slice(&self.items[start as usize..][..count as usize]);
+            *span = (at, count);
+        }
+        self.items = items;
+        self.dropped = 0;
+        Ok(())
+    }
+}
+
 /// A column's cells at its own width, signed ones widened back as [`scalar`] takes them, or
-/// a list's or bytes' items as they are.
+/// a list's or bytes' items.
 #[derive(Default)]
 enum Lane {
     #[default]
@@ -448,9 +292,9 @@ enum Lane {
     W16(Vec<u16>, bool),
     W32(Vec<u32>, bool),
     W64(Vec<u64>),
-    U32s(Vec<Box<[u32]>>),
-    U64s(Vec<Box<[u64]>>),
-    Bytes(Vec<Box<[u8]>>),
+    U32s(Spans<u32>),
+    U64s(Spans<u64>),
+    Bytes(Spans<u8>),
 }
 
 impl Lane {
@@ -464,9 +308,9 @@ impl Lane {
             Cell::U64(_) | Cell::I64(_) | Cell::OptionalU64(_) | Cell::OptionalI64(_) => {
                 Self::W64(Vec::new())
             }
-            Cell::U32List(_) => Self::U32s(Vec::new()),
-            Cell::U64List(_) => Self::U64s(Vec::new()),
-            Cell::Opaque(_) => Self::Bytes(Vec::new()),
+            Cell::U32List(_) => Self::U32s(Spans::default()),
+            Cell::U64List(_) => Self::U64s(Spans::default()),
+            Cell::Opaque(_) => Self::Bytes(Spans::default()),
         }
     }
 
@@ -477,9 +321,9 @@ impl Lane {
             Self::W16(values, _) => engine_allocation::resize(values, slots, 0),
             Self::W32(values, _) => engine_allocation::resize(values, slots, 0),
             Self::W64(values) => engine_allocation::resize(values, slots, 0),
-            Self::U32s(items) => engine_allocation::resize_default(items, slots),
-            Self::U64s(items) => engine_allocation::resize_default(items, slots),
-            Self::Bytes(items) => engine_allocation::resize_default(items, slots),
+            Self::U32s(items) => items.resize(slots),
+            Self::U64s(items) => items.resize(slots),
+            Self::Bytes(items) => items.resize(slots),
         }
     }
 
@@ -499,21 +343,9 @@ impl Lane {
     /// Keeps `cell` at `at`: nothing for a missing optional, whose bits are never read.
     fn set(&mut self, at: usize, cell: Cell<'_>) -> io::Result<()> {
         match (self, cell) {
-            (Self::U32s(held), Cell::U32List(items)) => {
-                if *held[at] != *items {
-                    held[at] = engine_allocation::copy_vec(items)?.into_boxed_slice();
-                }
-            }
-            (Self::U64s(held), Cell::U64List(items)) => {
-                if *held[at] != *items {
-                    held[at] = engine_allocation::copy_vec(items)?.into_boxed_slice();
-                }
-            }
-            (Self::Bytes(held), Cell::Opaque(bytes)) => {
-                if *held[at] != *bytes {
-                    held[at] = engine_allocation::copy_vec(bytes)?.into_boxed_slice();
-                }
-            }
+            (Self::U32s(held), Cell::U32List(items)) => held.set(at, items),
+            (Self::U64s(held), Cell::U64List(items)) => held.set(at, items),
+            (Self::Bytes(held), Cell::Opaque(bytes)) => held.set(at, bytes),
             (lane, cell) => {
                 let Some(bits) = scalar(cell) else {
                     return Ok(());
@@ -525,17 +357,17 @@ impl Lane {
                     Self::W64(values) => values[at] = bits,
                     _ => return Err(invalid("A strip cell differs from its column's kind")),
                 }
+                Ok(())
             }
         }
-        Ok(())
     }
 
     /// Whether the list or bytes at `at` hold `cell`'s items; none for a scalar.
     fn holds_items(&self, at: usize, cell: Cell<'_>) -> Option<bool> {
         Some(match (self, cell) {
-            (Self::U32s(held), Cell::U32List(items)) => *held[at] == *items,
-            (Self::U64s(held), Cell::U64List(items)) => *held[at] == *items,
-            (Self::Bytes(held), Cell::Opaque(bytes)) => *held[at] == *bytes,
+            (Self::U32s(held), Cell::U32List(items)) => held.get(at) == items,
+            (Self::U64s(held), Cell::U64List(items)) => held.get(at) == items,
+            (Self::Bytes(held), Cell::Opaque(bytes)) => held.get(at) == bytes,
             (_, Cell::U32List(items)) => items.is_empty(),
             (_, Cell::U64List(items)) => items.is_empty(),
             (_, Cell::Opaque(bytes)) => bytes.is_empty(),
@@ -548,16 +380,19 @@ impl Lane {
         into.clear();
         match self {
             Self::U32s(held) => {
-                engine_allocation::reserve(into, held[at].len())?;
-                into.extend(held[at].iter().map(|&item| u64::from(item)));
+                let held = held.get(at);
+                engine_allocation::reserve(into, held.len())?;
+                into.extend(held.iter().map(|&item| u64::from(item)));
             }
             Self::U64s(held) => {
-                engine_allocation::reserve(into, held[at].len())?;
-                into.extend_from_slice(&held[at]);
+                let held = held.get(at);
+                engine_allocation::reserve(into, held.len())?;
+                into.extend_from_slice(held);
             }
             Self::Bytes(held) => {
-                engine_allocation::reserve(into, held[at].len())?;
-                into.extend(held[at].iter().map(|&byte| u64::from(byte)));
+                let held = held.get(at);
+                engine_allocation::reserve(into, held.len())?;
+                into.extend(held.iter().map(|&byte| u64::from(byte)));
             }
             _ => {}
         }
@@ -578,6 +413,9 @@ fn put_bit(words: &mut [u64], at: usize, set: bool) {
     }
 }
 
+/// A last difference past 32 bits, held apart.
+const WIDE: i32 = i32::MIN;
+
 /// The cells a column's open page last set, as its next changes are taken against: at each
 /// offset whether a present value is known and recorded, a bit each, the cell at its column's
 /// width, and an integer's last difference once one is taken.
@@ -587,10 +425,10 @@ pub(super) struct Held {
     known: Vec<u64>,
     recorded: Vec<u64>,
     lane: Lane,
-    /// Empty while every last difference is zero.
-    velocity: Vec<u64>,
-    scratch: Vec<u64>,
-    old: Vec<u64>,
+    /// Empty while every last difference is zero; one past 32 bits is [`WIDE`] here and in
+    /// `wide` by offset.
+    velocity: Vec<i32>,
+    wide: Vec<(u32, u64)>,
 }
 
 impl Held {
@@ -626,18 +464,50 @@ impl Held {
         (offset as usize) < self.slots && bit_of(&self.known, offset as usize)
     }
 
+    fn wide_at(&self, at: usize) -> Result<usize, usize> {
+        self.wide.binary_search_by_key(&(at as u32), |&(offset, _)| offset)
+    }
+
     fn velocity(&self, at: usize) -> u64 {
-        self.velocity.get(at).copied().unwrap_or(0)
+        match self.velocity.get(at) {
+            Some(&WIDE) => self.wide_at(at).map_or(0, |index| self.wide[index].1),
+            Some(&step) => step as i64 as u64,
+            None => 0,
+        }
     }
 
     fn set_velocity(&mut self, at: usize, step: u64) -> io::Result<()> {
-        if self.velocity.is_empty() {
-            if step == 0 {
-                return Ok(());
+        // A whole value clears the difference, at an offset past the held ones too.
+        if step == 0 && self.velocity.get(at).is_none_or(|&held| held == 0) {
+            return Ok(());
+        }
+        if at >= self.velocity.len() {
+            if at >= self.slots {
+                return Err(invalid("A difference is taken at an offset not held"));
             }
             engine_allocation::resize(&mut self.velocity, self.slots, 0)?;
         }
-        self.velocity[at] = step;
+        let was = std::mem::replace(&mut self.velocity[at], 0);
+        match i32::try_from(step as i64).ok().filter(|&narrow| narrow != WIDE) {
+            Some(narrow) => {
+                self.velocity[at] = narrow;
+                if was == WIDE
+                    && let Ok(index) = self.wide_at(at)
+                {
+                    self.wide.remove(index);
+                }
+            }
+            None => {
+                self.velocity[at] = WIDE;
+                match self.wide_at(at) {
+                    Ok(index) => self.wide[index].1 = step,
+                    Err(index) => {
+                        engine_allocation::reserve(&mut self.wide, 1)?;
+                        self.wide.insert(index, (at as u32, step));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -730,6 +600,9 @@ pub(super) struct Group {
     count: u64,
     fill: bool,
     previous: Option<u32>,
+    /// A list's or bytes' new and held items, widened.
+    scratch: Vec<u64>,
+    old: Vec<u64>,
 }
 
 impl Group {
@@ -822,9 +695,9 @@ impl Group {
             }
             _ => None,
         };
-        let patch = if known && step.is_none() && widen(cell, &mut held.scratch)? {
-            held.lane.widen_items(at, &mut held.old)?;
-            let (new, old) = (&held.scratch, &held.old);
+        let patch = if known && step.is_none() && widen(cell, &mut self.scratch)? {
+            held.lane.widen_items(at, &mut self.old)?;
+            let (new, old) = (&self.scratch, &self.old);
             let bytes = matches!(cell, Cell::Opaque(_));
             let (front, back) = kept(old, new);
             let size = varint_len(front as u64)
@@ -857,9 +730,7 @@ impl Group {
             }
             (None, None) => {
                 put_value(values, cell)?;
-                if let Some(velocity) = held.velocity.get_mut(at) {
-                    *velocity = 0;
-                }
+                held.set_velocity(at, 0)?;
             }
         }
         held.keep(offset, cell, recorded)
@@ -925,27 +796,18 @@ fn get_key(reader: &mut Reader<'_>) -> io::Result<u128> {
     Ok(u128::from(low) | u128::from(reader.varint()?) << 64)
 }
 
-/// Items a list cell is read into, admitted to `share` as they grow.
+/// Items a list cell is read into.
 #[derive(Default)]
 pub(super) struct Items {
     u32s: Vec<u32>,
     u64s: Vec<u64>,
     except: Vec<u32>,
-    pub(super) share: Share,
 }
 
 impl Items {
-    pub(super) fn with(share: Share) -> Self {
-        Self {
-            share,
-            ..Self::default()
-        }
-    }
-
     /// Holds no items: what it held was dropped.
     pub(super) fn clear(&mut self) {
         (self.u32s, self.u64s, self.except) = (Vec::new(), Vec::new(), Vec::new());
-        self.share.clear();
     }
 }
 
@@ -958,14 +820,13 @@ fn whole<T: Int>(reader: &mut Reader<'_>, present: bool) -> io::Result<Option<T>
 }
 
 /// A value of `kind` written whole, missing when not `present`, `left` bytes from the end of
-/// its reader's: a list's items, read into `u32s` or `u64s`, admitted to `share` first.
+/// its reader's: a list's items, read into `u32s` or `u64s`.
 fn get_value<'c, 'p: 'c>(
     reader: &mut Reader<'p>,
     left: usize,
     kind: Kind,
     present: bool,
     (u32s, u64s): (&'c mut Vec<u32>, &'c mut Vec<u64>),
-    share: &mut Share,
 ) -> io::Result<Cell<'c>> {
     if !present && !optional(kind) {
         return Err(invalid("A strip cell holds no value"));
@@ -992,13 +853,13 @@ fn get_value<'c, 'p: 'c>(
         // Every item is a byte or more of what is left.
         Kind::U32List => {
             let count = reader.count()?;
-            scratch(u32s, count.min(left), share)?;
+            scratch(u32s, count.min(left))?;
             reader.ints(count, u32s)?;
             Cell::U32List(&u32s[..])
         }
         Kind::U64List => {
             let count = reader.count()?;
-            scratch(u64s, count.min(left), share)?;
+            scratch(u64s, count.min(left))?;
             reader.ints(count, u64s)?;
             Cell::U64List(&u64s[..])
         }
@@ -1013,51 +874,68 @@ fn missing() -> io::Error {
     invalid("A strip names a slot past its table")
 }
 
-fn replace<T: PartialEq>(held: Option<&mut T>, value: T) -> io::Result<bool> {
-    let held = held.ok_or_else(missing)?;
-    if *held == value {
+fn replace<T: Copy + PartialEq>(values: &mut Paged<T>, at: usize, value: T) -> io::Result<bool> {
+    // A cell already holding the value leaves its page shared.
+    if *values.get(at).ok_or_else(missing)? == value {
         return Ok(false);
     }
-    *held = value;
+    *values.get_mut(at)?.ok_or_else(missing)? = value;
+    Ok(true)
+}
+
+fn replace_bool(values: &mut Bools, slot: u32, value: bool) -> io::Result<bool> {
+    if *values.get(slot as usize).ok_or_else(missing)? == value {
+        return Ok(false);
+    }
+    values.put(slot, value)?;
     Ok(true)
 }
 
 fn set_optional<T: Copy + PartialEq>(
-    values: &mut [T],
-    bits: &mut Bits,
+    values: &mut Paged<T>,
+    bits: &mut PagedBits,
     slot: u32,
     value: Option<T>,
 ) -> io::Result<bool> {
-    let held = values.get_mut(slot as usize).ok_or_else(missing)?;
+    let held = *values.get(slot as usize).ok_or_else(missing)?;
     Ok(match value {
         Some(value) => {
-            let changed = !bits.get(slot) || *held != value;
-            *held = value;
-            bits.set(slot)?;
-            changed
+            let present = bits.get(slot);
+            if held != value {
+                *values.get_mut(slot as usize)?.ok_or_else(missing)? = value;
+            }
+            if !present {
+                bits.put(slot, true)?;
+            }
+            !present || held != value
         }
         None => {
             let changed = bits.get(slot);
-            bits.clear(slot);
+            if changed {
+                bits.put(slot, false)?;
+            }
             changed
         }
     })
 }
 
-fn set_items<T: Copy + PartialEq>(
-    values: &mut [Box<[T]>],
+fn set_items<T: Copy + Default + PartialEq>(
+    values: &mut Lists<T>,
     slot: u32,
     items: &[T],
-    share: &mut Share,
 ) -> io::Result<bool> {
-    let held = values.get_mut(slot as usize).ok_or_else(missing)?;
-    if **held == *items {
+    if *values.get(slot as usize).ok_or_else(missing)? == *items {
         return Ok(false);
     }
-    share.take(size_of_val(items))?;
-    let old = size_of_val(&**held);
-    *held = engine_allocation::copy_vec(items)?.into_boxed_slice();
-    share.give(old);
+    values.rewrite(
+        &[slot],
+        |_| missing(),
+        |_, _, out| {
+            engine_allocation::reserve(out, items.len())?;
+            out.extend_from_slice(items);
+            Ok(())
+        },
+    )?;
     Ok(true)
 }
 
@@ -1074,28 +952,27 @@ fn set_recorded(unrecorded: &mut Bits, slot: u32, recorded: bool) -> io::Result<
     Ok(true)
 }
 
-/// Sets `slot`'s cell of `column` (its unrecorded slots `unrecorded`) to `cell`, its items
-/// admitted to `share`; whether it held another.
+/// Sets `slot`'s cell of `column` (its unrecorded slots `unrecorded`) to `cell`; whether it
+/// held another.
 pub(super) fn set(
     column: &mut Column,
     unrecorded: &mut Bits,
     slot: u32,
     cell: Cell<'_>,
     recorded: bool,
-    share: &mut Share,
 ) -> io::Result<bool> {
     let at = slot as usize;
     let changed = match (column, cell) {
-        (Column::U8(values), Cell::U8(value)) => replace(values.get_mut(at), value)?,
-        (Column::I8(values), Cell::I8(value)) => replace(values.get_mut(at), value)?,
-        (Column::U16(values), Cell::U16(value)) => replace(values.get_mut(at), value)?,
-        (Column::I16(values), Cell::I16(value)) => replace(values.get_mut(at), value)?,
-        (Column::U32(values), Cell::U32(value)) => replace(values.get_mut(at), value)?,
-        (Column::I32(values), Cell::I32(value)) => replace(values.get_mut(at), value)?,
-        (Column::U64(values), Cell::U64(value)) => replace(values.get_mut(at), value)?,
-        (Column::I64(values), Cell::I64(value)) => replace(values.get_mut(at), value)?,
-        (Column::Bool(values), Cell::Bool(value)) => replace(values.get_mut(at), value)?,
-        (Column::Bytes(values), Cell::Bytes(value)) => replace(values.get_mut(at), value)?,
+        (Column::U8(values), Cell::U8(value)) => replace(values, at, value)?,
+        (Column::I8(values), Cell::I8(value)) => replace(values, at, value)?,
+        (Column::U16(values), Cell::U16(value)) => replace(values, at, value)?,
+        (Column::I16(values), Cell::I16(value)) => replace(values, at, value)?,
+        (Column::U32(values), Cell::U32(value)) => replace(values, at, value)?,
+        (Column::I32(values), Cell::I32(value)) => replace(values, at, value)?,
+        (Column::U64(values), Cell::U64(value)) => replace(values, at, value)?,
+        (Column::I64(values), Cell::I64(value)) => replace(values, at, value)?,
+        (Column::Bool(values), Cell::Bool(value)) => replace_bool(values, slot, value)?,
+        (Column::Bytes(values), Cell::Bytes(value)) => replace(values, at, value)?,
         (Column::OptionalI32(values, bits), Cell::OptionalI32(value)) => {
             set_optional(values, bits, slot, value)?
         }
@@ -1108,23 +985,27 @@ pub(super) fn set(
         (Column::OptionalU64(values, bits), Cell::OptionalU64(value)) => {
             set_optional(values, bits, slot, value)?
         }
-        (Column::U32List(values), Cell::U32List(items)) => set_items(values, slot, items, share)?,
-        (Column::U64List(values), Cell::U64List(items)) => set_items(values, slot, items, share)?,
-        (Column::Opaque(values), Cell::Opaque(bytes)) => set_items(values, slot, bytes, share)?,
+        (Column::U32List(values), Cell::U32List(items)) => set_items(values, slot, items)?,
+        (Column::U64List(values), Cell::U64List(items)) => set_items(values, slot, items)?,
+        (Column::Opaque(values), Cell::Opaque(bytes)) => set_items(values, slot, bytes)?,
         _ => return Err(invalid("A strip cell differs from its column's kind")),
     };
     Ok(set_recorded(unrecorded, slot, recorded)? || changed)
 }
 
 fn shifted<T: Copy>(
-    values: &mut [T],
+    values: &mut Paged<T>,
     slot: u32,
     delta: u64,
     bits: (fn(T) -> u64, fn(u64) -> T),
 ) -> io::Result<bool> {
-    let held = values.get_mut(slot as usize).ok_or_else(missing)?;
+    if delta == 0 {
+        values.get(slot as usize).ok_or_else(missing)?;
+        return Ok(false);
+    }
+    let held = values.get_mut(slot as usize)?.ok_or_else(missing)?;
     *held = bits.1(bits.0(*held).wrapping_add(delta));
-    Ok(delta != 0)
+    Ok(true)
 }
 
 /// Moves `slot`'s present integer cell of `column` by `delta`, wrapping at its width; whether it
@@ -1136,7 +1017,7 @@ pub(super) fn shift(
     delta: u64,
     recorded: bool,
 ) -> io::Result<bool> {
-    let present = |bits: &Bits| {
+    let present = |bits: &PagedBits| {
         if bits.get(slot) {
             Ok(())
         } else {
@@ -1196,14 +1077,13 @@ pub(super) fn shift(
     Ok(set_recorded(unrecorded, slot, recorded)? || changed)
 }
 
-fn spliced<T: Copy + PartialEq>(
-    values: &mut [Box<[T]>],
+fn spliced<T: Copy + Default + PartialEq>(
+    values: &mut Lists<T>,
     slot: u32,
     (front, back): (usize, usize),
     middle: &[T],
-    share: &mut Share,
 ) -> io::Result<bool> {
-    let held = values.get_mut(slot as usize).ok_or_else(missing)?;
+    let held = values.get(slot as usize).ok_or_else(missing)?;
     let length = held.len();
     if front.checked_add(back).is_none_or(|kept| kept > length) {
         return Err(invalid("A strip keeps more of a cell than it holds"));
@@ -1211,20 +1091,22 @@ fn spliced<T: Copy + PartialEq>(
     if held[front..length - back] == *middle {
         return Ok(false);
     }
-    let count = front + middle.len() + back;
-    share.take(count * size_of::<T>())?;
-    let mut items = engine_allocation::vec(count)?;
-    items.extend_from_slice(&held[..front]);
-    items.extend_from_slice(middle);
-    items.extend_from_slice(&held[length - back..]);
-    let old = size_of_val(&**held);
-    *held = items.into_boxed_slice();
-    share.give(old);
+    values.rewrite(
+        &[slot],
+        |_| missing(),
+        |_, held, out| {
+            engine_allocation::reserve(out, front + middle.len() + back)?;
+            out.extend_from_slice(&held[..front]);
+            out.extend_from_slice(middle);
+            out.extend_from_slice(&held[length - back..]);
+            Ok(())
+        },
+    )?;
     Ok(true)
 }
 
 /// Sets `slot`'s list or bytes cell of `column` to its first `front` and last `back` items
-/// around `middle`'s, its items admitted to `share`; whether it held another.
+/// around `middle`'s; whether it held another.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn splice(
     column: &mut Column,
@@ -1233,16 +1115,15 @@ pub(super) fn splice(
     kept: (usize, usize),
     middle: Cell<'_>,
     recorded: bool,
-    share: &mut Share,
 ) -> io::Result<bool> {
     let changed = match (column, middle) {
         (Column::U32List(values), Cell::U32List(items)) => {
-            spliced(values, slot, kept, items, share)?
+            spliced(values, slot, kept, items)?
         }
         (Column::U64List(values), Cell::U64List(items)) => {
-            spliced(values, slot, kept, items, share)?
+            spliced(values, slot, kept, items)?
         }
-        (Column::Opaque(values), Cell::Opaque(bytes)) => spliced(values, slot, kept, bytes, share)?,
+        (Column::Opaque(values), Cell::Opaque(bytes)) => spliced(values, slot, kept, bytes)?,
         _ => return Err(invalid("A strip patches a cell that is not a list")),
     };
     Ok(set_recorded(unrecorded, slot, recorded)? || changed)
@@ -1399,10 +1280,8 @@ pub(super) fn base(
             for offset in 0..extent {
                 let present = presence.is_none_or(|bits| bit(bits, offset));
                 let left = bytes.len() - reader.at();
-                let Items {
-                    u32s, u64s, share, ..
-                } = &mut *items;
-                let cell = get_value(&mut reader, left, kind, present, (u32s, u64s), share)?;
+                let Items { u32s, u64s, .. } = &mut *items;
+                let cell = get_value(&mut reader, left, kind, present, (u32s, u64s))?;
                 write(Write::Cell {
                     offset,
                     cell,
@@ -1456,12 +1335,7 @@ pub(super) fn changes(
                 if group & 1 != 0 {
                     let fill = head.varint()?;
                     let count = usize::try_from(fill >> 1).map_err(|_| missing())?;
-                    let Items {
-                        u32s,
-                        u64s,
-                        except,
-                        share,
-                    } = &mut *items;
+                    let Items { u32s, u64s, except } = &mut *items;
                     except.clear();
                     engine_allocation::reserve(except, count.min(block as usize))?;
                     let mut at = None;
@@ -1469,8 +1343,7 @@ pub(super) fn changes(
                         except.push(step(&mut at, head.varint()?, block)?);
                     }
                     let left = rest.len() - values.at();
-                    let cell =
-                        get_value(&mut values, left, kind, fill & 1 == 0, (u32s, u64s), share)?;
+                    let cell = get_value(&mut values, left, kind, fill & 1 == 0, (u32s, u64s))?;
                     write(Write::Fill {
                         except: &except[..],
                         cell,
@@ -1485,12 +1358,9 @@ pub(super) fn changes(
                     let present = flags & MISSING == 0;
                     let at = offset as usize;
                     let left = rest.len() - values.at();
-                    let Items {
-                        u32s, u64s, share, ..
-                    } = &mut *items;
+                    let Items { u32s, u64s, .. } = &mut *items;
                     if flags & DELTA == 0 {
-                        let cell =
-                            get_value(&mut values, left, kind, present, (u32s, u64s), share)?;
+                        let cell = get_value(&mut values, left, kind, present, (u32s, u64s))?;
                         if let Some(velocity) = velocity.get_mut(at) {
                             *velocity = 0;
                         }
@@ -1505,7 +1375,7 @@ pub(super) fn changes(
                         let front = values.count()?;
                         let back = values.count()?;
                         let left = rest.len() - values.at();
-                        let middle = get_value(&mut values, left, kind, true, (u32s, u64s), share)?;
+                        let middle = get_value(&mut values, left, kind, true, (u32s, u64s))?;
                         write(Write::Patch {
                             offset,
                             front,
@@ -1538,4 +1408,21 @@ pub(super) fn changes(
         )?;
     }
     Ok(from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_whole_value_past_the_held_offsets_leaves_the_differences_held() {
+        let mut held = Held::default();
+        held.keep(0, Cell::U64(1), true).unwrap();
+        held.set_velocity(0, 5).unwrap();
+        held.set_velocity(1, 0).unwrap();
+        held.keep(1, Cell::U64(2), true).unwrap();
+        assert_eq!((held.velocity(0), held.velocity(1)), (5, 0));
+        held.set_velocity(0, 0).unwrap();
+        assert_eq!(held.velocity(0), 0);
+    }
 }

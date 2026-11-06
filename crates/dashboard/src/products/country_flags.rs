@@ -20,7 +20,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -75,9 +75,6 @@ const TOP_BAR: &str = "topbar";
 /// The flag button uses player_flag. Its sprite is content, read from the
 /// top bar's own declaration wherever it is.
 const PLAYER_FLAG: &str = "player_flag";
-/// Flag contexts kept per source, one per presentation, so requests under two selections do
-/// not evict each other.
-const RECENT: usize = 4;
 /// Longest side of any flag the product returns.
 const MAX_FLAG_EDGE: u32 = 128;
 /// Choices one request draws at most.
@@ -173,15 +170,11 @@ impl Product for CountryFlags {
         let presented = source.presented_for(content)?;
         let shared = source.state::<FlagState>();
         let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
-        match state
-            .contexts
-            .iter()
-            .position(|cached| cached.matches(&content.options, &presentation))
-        {
-            Some(0) => {}
-            Some(index) => {
-                let recent = state.contexts.remove(index);
-                state.contexts.insert(0, recent);
+        let held = state.held().find(|cached| cached.matches(&content.options, &presentation));
+        let context = match held {
+            Some(held) => {
+                state.make_current(&held);
+                held
             }
             None => {
                 // Flags are drawn through the source's visual mods; preparation chose their keys
@@ -189,8 +182,7 @@ impl Product for CountryFlags {
                 let resolved = Arc::clone(&presented.content);
                 // The cells and flag files are content facts, read again with new content.
                 let cells = state
-                    .contexts
-                    .iter()
+                    .held()
                     .find(|cached| Arc::ptr_eq(&cached.content, &resolved))
                     .map(|cached| {
                         (
@@ -224,12 +216,13 @@ impl Product for CountryFlags {
                 loaded.presentation = presented.presentation.clone();
                 loaded.cell_fallbacks = cell_fallbacks;
                 loaded.files = files;
+                let loaded = Arc::new(loaded);
                 state = shared.lock().unwrap_or_else(|error| error.into_inner());
-                state.contexts.insert(0, Arc::new(loaded));
-                state.contexts.truncate(RECENT);
+                state.make_current(&loaded);
+                loaded
             }
-        }
-        state.contexts[0].cell_fallbacks.credit();
+        };
+        context.cell_fallbacks.credit();
         let mut load_shield = || -> io::Result<Arc<ShieldStyle>> {
             // The catalogue and the flag context are both of the request's admitted presentation.
             let catalogue = crate::catalogue::catalogue(source, content)?;
@@ -241,7 +234,6 @@ impl Product for CountryFlags {
         )
         .then(|| load_shield().map_err(|error| error.to_string()));
         // Flag files are read and drawn outside the lock, so other requests run alongside.
-        let context = Arc::clone(&state.contexts[0]);
         drop(state);
         context.reply(
             params,
@@ -286,10 +278,38 @@ fn cached_shield(
 
 #[derive(Default)]
 struct FlagState {
-    /// Most recently used first.
-    contexts: Vec<Arc<FlagContext>>,
+    /// The context of the latest binding asked for; an earlier one lives only while a request
+    /// draws with it.
+    current: Option<Arc<FlagContext>>,
+    earlier: Vec<Weak<FlagContext>>,
     /// The shield read from the catalogue it belongs to; another catalogue rereads it.
     shield: Option<CachedShield>,
+}
+
+impl FlagState {
+    /// The contexts held: the current one first.
+    fn held(&self) -> impl Iterator<Item = Arc<FlagContext>> + '_ {
+        self.current
+            .iter()
+            .cloned()
+            .chain(self.earlier.iter().filter_map(Weak::upgrade))
+    }
+
+    fn make_current(&mut self, context: &Arc<FlagContext>) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, context))
+        {
+            return;
+        }
+        if let Some(earlier) = self.current.replace(Arc::clone(context)) {
+            self.earlier.push(Arc::downgrade(&earlier));
+        }
+        self.earlier.retain(|earlier| {
+            earlier.strong_count() > 0 && !std::ptr::eq(earlier.as_ptr(), Arc::as_ptr(context))
+        });
+    }
 }
 
 /// The shield as last loaded for (the catalogue's content, decode), a refusal included, so a

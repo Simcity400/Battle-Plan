@@ -61,24 +61,16 @@ pub(super) fn scan(
 }
 
 impl ScannedAgencies {
-    #[allow(clippy::type_complexity)]
     pub(super) fn observe_frame(
         &mut self,
         frame: &replay_frame::frame::DecodedFrame,
         replay: &Replay,
-    ) -> io::Result<(BTreeMap<String, Identity>, usize, BTreeMap<u8, usize>)> {
+    ) -> io::Result<()> {
         let mut countries = std::mem::take(&mut self.native_countries);
         countries.update(frame, None);
         let mut active = BTreeMap::new();
-        let result = self.observe_frame_countries(
-            frame,
-            replay,
-            &countries,
-            None,
-            (&mut active, true),
-        );
+        let result = self.observe_frame_countries(frame, replay, &countries, (&mut active, true));
         self.native_countries = countries;
-        let (unresolved, unsupported) = result?;
-        Ok((active, unresolved, unsupported))
+        result
     }
 }

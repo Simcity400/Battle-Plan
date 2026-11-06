@@ -392,7 +392,6 @@ gameSettingsError: string | null,
  * mods: a later one than a client has seen means widget artwork changed.
  */
 presentationGeneration: number, };
-export type HistoryCacheReply = { bytes: number, limit: number, };
 export type SourceReply = {
 /**
  * A client lease. Several leases may share one underlying source and cache.
@@ -433,7 +432,7 @@ coverage: PreparedCoverage,
  */
 pending: Array<HourSpan>, };
 export type PreparedUnavailable = "lost" | "refused";
-export type PreparedHole = { firstHour: number, lastHour: number, family: string, unavailable: PreparedUnavailable, reason: string, };
+export type PreparedHole = { firstHour: number, lastHour: number, family: string, unavailable: PreparedUnavailable, reason: string, gap: boolean, };
 export type PreparationPreferences = { backgroundEnabled: boolean, };
 export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };
 export type PreparedFocusPages = { first: string, count: string, rows: string, };
@@ -787,7 +786,12 @@ export type DivisionLogReply = { window: number, interval: BattleWindow, rows: A
 export type DivisionLogTemplate = { id: string, name: string | null, };
 export type DivisionLogManifestReply = { windows: Array<BattleWindow>, available: boolean, lossesAvailable: boolean, templates: Array<DivisionLogTemplate>, contentWarnings: Array<string>, };
 export type DivisionLogTotalsParams = { branchId: string, firstHour: number, lastHour: number, countries: LandBattleCountryFilter, templates: Array<string> | null, };
-export type DivisionLogTotalsReply = { created: number | null, lost: number | null, transferred: number | null, warnings: Array<string>, };
+export type DivisionLogTotalsReply = { created: number | null, lost: number | null, transferred: number | null, 
+/**
+ * The first hour these totals count from when hours the recording lost lie in the range:
+ * totals restart after them, so they count from there to its last hour.
+ */
+since: number | null, warnings: Array<string>, };
 export type LeaderSelection = { "kind": "all" } | { "kind": "countries", tags: Array<string>, } | { "kind": "leader", reference: string, };
 export type LeaderView = "leaderboard" | "career" | "choices";
 export type LeaderKinds = "all" | "land" | "navy";
@@ -867,6 +871,33 @@ export type UnitLeadersReply = { branchId: string, firstHour: number, leaders: A
 roles: Array<LeaderRole>, traits: Array<LeaderTraitInfo>, observed: Array<LeaderObservation>, withheld: Array<LeaderWithheld>, resultsMissing: string, navyCommandsMissing: string, selectionTags?: Array<string>, preparing?: Array<string>, warnings: Array<string>, };
 export type LeaderChoice = [string, string | null, string | null, number];
 export type LeaderChoicesReply = { branchId: string, choices: Array<LeaderChoice>, cursor: string | null, };
+export type UnitLeadersHourReply = { branchId: string, firstHour: number, hour: number,
+/**
+ * The index the rows' people, roles and traits are numbered by, which a later request names
+ * as `held`; none for a reply numbered on its own.
+ */
+index: string | null,
+/**
+ * The hour asked before that the rows are read against; none for every row.
+ */
+since: number | null,
+/**
+ * The rows at `hour`, each as a leaderboard at that hour shows it, of every leader whose row
+ * differs from `since`'s, in the order of the leaders.
+ */
+leaders: Array<LeaderCareer>,
+/**
+ * The leaders with a row at `since` and none at `hour`.
+ */
+ended: Array<string>,
+/**
+ * The people, roles and traits the rows name by number that the rows at `since` did not.
+ */
+people: Array<[number, LeaderPerson]>, roles: Array<[number, LeaderRole]>, traits: Array<[number, LeaderTraitInfo]>, observed: Array<LeaderObservation>, withheld: Array<LeaderWithheld>, resultsMissing: string, navyCommandsMissing: string,
+/**
+ * A countries selection's aliases, sent with every row; `since`'s stand otherwise.
+ */
+selectionTags?: Array<string>, preparing?: Array<string>, warnings: Array<string>, };
 export type UnitLeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type UnitLeaderPortrait = { reference: string, image: string | null, missing: string | null, };
 export type UnitLeaderPortraitsReply = { portraits: Array<UnitLeaderPortrait>, warnings: Array<string>, };
@@ -2297,12 +2328,26 @@ export type ScoreboardPreparedParams = { selection: ScoreboardParams, hour: numb
 /**
  * The index contains identities and the sorting column. Other cells are paged by tag.
  */
-index: boolean, bars: boolean, };
+index: boolean, bars: boolean,
+/**
+ * The hour of the complete index the asker holds: the reply's rows are then the countries'
+ * that differ from it there.
+ */
+since?: number, };
 export type ScoreboardPreparedReply = { hour: number, data: ScoreboardReply,
 /**
  * Exact positive maxima over the selected table, independent of its mounted rows.
  */
-maxima: { [key in ScoreboardColumnKey]?: string }, };
+maxima: { [key in ScoreboardColumnKey]?: string },
+/**
+ * The hour the rows are read against: a country's row there, at `hour`, stands unless a
+ * row of it is sent or it ended. None for every row.
+ */
+since?: number,
+/**
+ * The countries with a row at `since` and none at `hour`.
+ */
+ended?: Array<string>, };
 export type NukesParams = { branchId: string, tags: Array<string>, top: number | null,
 /**
  * A drill selects the native country holding its tag at this recorded hour.
@@ -5190,7 +5235,12 @@ destructionCountedFrom: number | null,
  * bounds the history a branch's first read can hold.
  */
 retainedMonths: number | null, warnings: Array<string>, };
-export type PreparedLossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, landCoverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionCountedFrom: number | null, retainedMonths: number | null, warnings: Array<string>, approximate: Array<HourSpan>, preparedReads: Array<number>, preparedHeadHour: number, preparedDetailHour: number, preparedFrom: number, preparedTo: number, preparedWidth: number,
+export type PreparedLossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, landCoverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionCountedFrom: number | null, retainedMonths: number | null, warnings: Array<string>, 
+/**
+ * The first hour of each stretch after hours the recording lost: every total restarts
+ * there, and a total at a later hour counts from the last of them before it.
+ */
+restarts: Array<number>, approximate: Array<HourSpan>, preparedReads: Array<number>, preparedHeadHour: number, preparedDetailHour: number, preparedFrom: number, preparedTo: number, preparedWidth: number,
 /**
  * The gate's accepted coverage the reply reads through. A product's
  * approximate spans identify accepted hours that later commits can revise.
@@ -5319,7 +5369,12 @@ export type NavalPeriod = "running" | "month";
 export type NavalLossesParams = { branchId: string, tags: Array<string>, top: number | null, kind: NavalKind, attribution: NavalAttribution, period: NavalPeriod, };
 export type NavalLossRun = { firstHour: number, lastHour: number, startsSegment: boolean, ships: number | null, convoys: number | null, };
 export type NavalLossSeries = { tag: string, runs: Array<NavalLossRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, identities?: Array<CountryIdentityRun>, };
-export type NavalLossesReply = { branchId: string, available: boolean, firstRead: number | null, shipFirstRead: number | null, convoyFirstRead: number | null, shipLastRead: number | null, convoyLastRead: number | null, shipReads: Array<number>, convoyReads: Array<number>, series: Array<NavalLossSeries>, warnings: Array<string>, };
+export type NavalLossesReply = { branchId: string, available: boolean, firstRead: number | null, shipFirstRead: number | null, convoyFirstRead: number | null, shipLastRead: number | null, convoyLastRead: number | null, shipReads: Array<number>, convoyReads: Array<number>, series: Array<NavalLossSeries>, warnings: Array<string>, 
+/**
+ * The first hour of each stretch after hours the recording lost: every tally restarts
+ * there, counting only what is read after them. Absent without any.
+ */
+restarts?: Array<number>, };
 export type SpentStep = { knownAt: number,
 /**
  * Fixed5 (`cost_scale` per point of output), as a decimal string.

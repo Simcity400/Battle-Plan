@@ -25,6 +25,9 @@ impl<'a, R> Rows<'a, R> {
     pub fn empty() -> Self {
         Self(&[])
     }
+    pub fn as_slice(self) -> &'a [R] {
+        self.0
+    }
     pub fn len(self) -> usize {
         self.0.len()
     }

@@ -450,6 +450,7 @@ impl BuildTarget for TestBuilder {
                                 cpu_ms: Some(0.0),
                             }],
                             part: Box::new(Part::failed(name)),
+                            held: None,
                         })
                         .unwrap();
                 }),
@@ -494,10 +495,11 @@ impl RealDriver {
                 usable_sent: BTreeSet::new(),
                 anchor: None,
                 slots: BTreeMap::new(),
-                memos: Arc::new(Memos::new()),
+                store: HourStore::private(),
                 reusable: BTreeMap::new(),
                 pool,
                 parallel: 2,
+                width: Width::new(2),
                 events,
                 outbox,
                 result_space: Default::default(),

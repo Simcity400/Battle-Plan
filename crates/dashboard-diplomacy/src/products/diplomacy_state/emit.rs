@@ -317,7 +317,7 @@ impl Emit {
 
     fn key(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         measure: u64,
         dimension: Option<u64>,
@@ -334,7 +334,7 @@ impl Emit {
         )
     }
 
-    fn family_keys(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 5]> {
+    fn family_keys(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 5]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -348,7 +348,7 @@ impl Emit {
 
     fn country(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         country: &DiplomacyCountry,
         hour: i32,
     ) -> io::Result<u64> {
@@ -370,7 +370,7 @@ impl Emit {
 
     fn value(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         key: KeyHandle,
         hour: i32,
         value: Option<i128>,
@@ -381,7 +381,7 @@ impl Emit {
 
     fn number(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: usize,
         hour: i32,
         value: Option<i128>,
@@ -392,7 +392,7 @@ impl Emit {
 
     fn identity(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         hour: i32,
         live: bool,
@@ -405,7 +405,7 @@ impl Emit {
 
     fn owner_read(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         hour: i32,
         read: Option<i32>,
@@ -418,7 +418,7 @@ impl Emit {
 
     fn tuple_read(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         hour: i32,
         read: Option<i32>,
@@ -428,7 +428,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("emit", Some("diplomacy_state.hour"));
         let at = hour.hour;
         self.family_keys(writer)?;
@@ -481,7 +481,7 @@ impl Emit {
     /// joining, or every one after a break, start their identity runs.
     fn name(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         ids: Arc<Ids>,
         at: i32,
         continuous: bool,
@@ -538,7 +538,7 @@ impl Emit {
         Ok(())
     }
 
-    fn refuse(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn refuse(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         self.close_owners(writer, at)?;
         self.end_pacts(None, true)?;
         self.suspend_queue()?;
@@ -567,7 +567,7 @@ impl Emit {
             .then_some(actor)
     }
 
-    fn close_owner(&mut self, writer: &mut Writer<'_>, actor: u64, at: i32) -> io::Result<()> {
+    fn close_owner(&mut self, writer: &mut Writer, actor: u64, at: i32) -> io::Result<()> {
         let Some(owner) = self.owners.remove(&actor) else {
             return Ok(());
         };
@@ -579,7 +579,7 @@ impl Emit {
         self.owner_read(writer, actor, at, owner.read, false)
     }
 
-    fn close_owners(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn close_owners(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         let mut held: Vec<u64> = self.owners.keys().copied().collect();
         held.sort_unstable();
         for actor in held {
@@ -592,7 +592,7 @@ impl Emit {
     /// Ends every pair toward one of `targets` (ascending), in one pass over the owners.
     fn close_targets(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         targets: &[u64],
         at: i32,
     ) -> io::Result<()> {
@@ -622,7 +622,7 @@ impl Emit {
 
     /// A departing identity's opinion read stays with it, off the carry, until it comes
     /// back or an unread hour ends it.
-    fn retire(&mut self, writer: &mut Writer<'_>, actor: u64, at: i32) -> io::Result<()> {
+    fn retire(&mut self, writer: &mut Writer, actor: u64, at: i32) -> io::Result<()> {
         let key = self.countries[actor as usize].keys[1];
         let Some(value) = self.carry.held(key) else {
             return Ok(());
@@ -634,7 +634,7 @@ impl Emit {
         Ok(())
     }
 
-    fn rejoin(&mut self, writer: &mut Writer<'_>, actor: u64, at: i32) -> io::Result<()> {
+    fn rejoin(&mut self, writer: &mut Writer, actor: u64, at: i32) -> io::Result<()> {
         let Some(value) = self.retained.remove(&actor) else {
             return Ok(());
         };
@@ -643,7 +643,7 @@ impl Emit {
         self.value(writer, key, at, Some(value), false)
     }
 
-    fn close_tuple_reads(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn close_tuple_reads(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         self.raw_reads.clear();
         let mut held: Vec<u64> = self.tuple_reads.drain().map(|(actor, _)| actor).collect();
         held.sort_unstable();
@@ -657,7 +657,7 @@ impl Emit {
 
     fn opinions(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         opinions: Option<Opinions>,
     ) -> io::Result<()> {
@@ -713,7 +713,7 @@ impl Emit {
 
     fn store_opinion(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         (index, read, values): Opinion,
     ) -> io::Result<()> {
@@ -753,7 +753,7 @@ impl Emit {
     /// Stores an owner's read whole, against what it held.
     fn store_owner(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         actor: u64,
         read: Option<i32>,
@@ -800,7 +800,7 @@ impl Emit {
 
     fn tuples(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         ids: &Ids,
         tuples: Option<Tuples>,
@@ -1197,7 +1197,7 @@ impl Emit {
         Ok(())
     }
 
-    fn queue(&mut self, writer: &mut Writer<'_>, at: i32, queue: QueueRead) -> io::Result<()> {
+    fn queue(&mut self, writer: &mut Writer, at: i32, queue: QueueRead) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("emit", Some("diplomacy_state.queue"));
         match queue {
             QueueRead::Unavailable => {
@@ -1212,7 +1212,7 @@ impl Emit {
         }
     }
 
-    fn observe_queue(&mut self, writer: &mut Writer<'_>, at: i32, queue: &Queue) -> io::Result<()> {
+    fn observe_queue(&mut self, writer: &mut Writer, at: i32, queue: &Queue) -> io::Result<()> {
         let duplicates = queue.duplicates;
         self.number(
             writer,
@@ -1318,7 +1318,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the records that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(
@@ -1627,7 +1627,7 @@ impl Emit {
 /// A pact's record: its first hour, first read, kind, ordinal, start, end, raw cancel and
 /// retired bytes, raw endpoints, resolved roles, state (0 present, 1 gone from a read, 2 ended
 /// bounded) and, once ended, its last read.
-fn pact_cell(writer: &mut Writer<'_>, pact: &Pact) -> io::Result<Cell> {
+fn pact_cell(writer: &mut Writer, pact: &Pact) -> io::Result<Cell> {
     let signature = &pact.signature;
     let mut cells = Vec::with_capacity(18);
     cells.extend([
@@ -1653,7 +1653,7 @@ fn pact_cell(writer: &mut Writer<'_>, pact: &Pact) -> io::Result<Cell> {
 /// A proposal's record: its first hour, handle, raw roles, resolved roles, stored hour, last
 /// command, first and last reads, the read it was gone by, whether that is only a bound,
 /// whether it is present, and the group whose read it is gone by ([`GONE`]).
-fn proposal_cell(writer: &mut Writer<'_>, proposal: &Proposal) -> io::Result<Cell> {
+fn proposal_cell(writer: &mut Writer, proposal: &Proposal) -> io::Result<Cell> {
     let signature = &proposal.signature;
     let mut cells = Vec::with_capacity(20);
     cells.extend([

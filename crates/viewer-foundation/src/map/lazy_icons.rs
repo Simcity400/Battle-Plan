@@ -650,16 +650,13 @@ pub enum Lookup {
     Failed,
 }
 
-/// Whole textures (portraits) decoded on first use and kept in a bounded
-/// least-recently-used set: past `capacity` resident textures, the least
-/// recently used are evicted, except that a texture drawn or asked for in the
-/// last [`PIN_FRAMES`] frames is pinned. With more than `capacity` on screen,
-/// the set grows to what is on screen instead of evicting it.
+/// Whole textures (portraits) decoded on first use and kept while shown: a
+/// texture drawn or asked for in the last [`PIN_FRAMES`] frames stays resident,
+/// and the next load lets go of the others.
 pub struct LazyImages {
     /// What the textures are, for warnings.
     what: &'static str,
     read: ImageReader,
-    capacity: usize,
     state: Mutex<ImageState>,
     loading: Mutex<()>,
     textures: Arc<LazyTextures>,
@@ -669,13 +666,11 @@ impl LazyImages {
     pub fn new(
         what: &'static str,
         read: ImageReader,
-        capacity: usize,
         textures: &Arc<LazyTextures>,
     ) -> Arc<Self> {
         let images = Arc::new(Self {
             what,
             read,
-            capacity: capacity.max(1),
             state: Mutex::default(),
             loading: Mutex::default(),
             textures: Arc::clone(textures),
@@ -794,7 +789,6 @@ impl PendingLoad for LazyImages {
                 )),
                 ImageSlot::Failed => None,
             }),
-            self.capacity,
             frame,
         );
         for path in evicted {
@@ -809,25 +803,12 @@ impl PendingLoad for LazyImages {
     }
 }
 
-/// The least recently used of `resident` (key, last frame drawn or asked
-/// for) to evict so at most `capacity` remain, never one used in the last
-/// [`PIN_FRAMES`] frames before `frame`.
-fn evictions(
-    resident: impl Iterator<Item = (String, u64)>,
-    capacity: usize,
-    frame: u64,
-) -> Vec<String> {
-    let mut resident: Vec<(u64, String)> = resident.map(|(key, used)| (used, key)).collect();
-    if resident.len() <= capacity {
-        return Vec::new();
-    }
-    resident.sort();
-    let excess = resident.len() - capacity;
+/// Which of `resident` (key, last frame drawn or asked for) are no longer
+/// shown: none used in the last [`PIN_FRAMES`] frames before `frame`.
+fn evictions(resident: impl Iterator<Item = (String, u64)>, frame: u64) -> Vec<String> {
     resident
-        .into_iter()
-        .take(excess)
-        .take_while(|(used, _)| used + PIN_FRAMES <= frame)
-        .map(|(_, key)| key)
+        .filter(|(_, used)| used + PIN_FRAMES <= frame)
+        .map(|(key, _)| key)
         .collect()
 }
 
@@ -1106,7 +1087,7 @@ mod tests {
         assert!(flags.get("T0002").is_some());
     }
 
-    fn image_set(textures: &Arc<LazyTextures>, capacity: usize) -> Arc<LazyImages> {
+    fn image_set(textures: &Arc<LazyTextures>) -> Arc<LazyImages> {
         let read: ImageReader = Arc::new(|path: &str| {
             if path.ends_with("broken.dds") {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "broken"));
@@ -1117,7 +1098,7 @@ mod tests {
                 pixels: vec![1; 4 * 8 * 4],
             }))
         });
-        LazyImages::new("test portrait", read, capacity, textures)
+        LazyImages::new("test portrait", read, textures)
     }
 
     /// Ends `frames` rendered frames that drew `ids`.
@@ -1135,9 +1116,9 @@ mod tests {
     }
 
     #[test]
-    fn portraits_stay_within_the_lru_bound_outside_the_working_set() {
+    fn portraits_stay_resident_only_while_shown() {
         let textures = foreground();
-        let images = image_set(&textures, 16);
+        let images = image_set(&textures);
         // 100 frames, each drawing 10 leaders of a 50,000-character roster.
         for frame in 0..100u32 {
             let drawn: Vec<String> = (0..10)
@@ -1149,18 +1130,18 @@ mod tests {
             textures.settle();
             let ids: Vec<usize> = drawn.iter().map(|path| loaded(&images, path)).collect();
             render(&textures, &ids, 1);
-            // The bound, plus what the pinned frames drew.
+            // What the pinned frames drew.
             assert!(
-                images.resident() <= 16 + PIN_FRAMES as usize * 10,
+                images.resident() <= (PIN_FRAMES as usize + 1) * 10,
                 "frame {frame}"
             );
             assert_eq!(textures.snapshot().len(), images.resident());
         }
-        // Once the older frames unpin, a load trims the set to its bound.
+        // Once the older frames unpin, a load lets go of them.
         render(&textures, &[], PIN_FRAMES);
         images.get("gfx/leaders/next.dds");
         textures.settle();
-        assert_eq!(images.resident(), 16);
+        assert_eq!(images.resident(), 1);
         // A broken file is decided once, never retried, and still moves the
         // version so the frame lays its fallback out at once.
         assert_eq!(images.get("gfx/leaders/broken.dds"), Lookup::Pending);
@@ -1172,10 +1153,9 @@ mod tests {
     }
 
     #[test]
-    fn portraits_on_screen_never_thrash_past_the_bound() {
+    fn portraits_on_screen_are_never_evicted() {
         let textures = foreground();
-        let images = image_set(&textures, 4);
-        // Ten portraits on screen, more than the bound, laid out once.
+        let images = image_set(&textures);
         let visible: Vec<String> = (0..10).map(|i| format!("gfx/leaders/v{i}.dds")).collect();
         for path in &visible {
             images.get(path);
@@ -1191,18 +1171,18 @@ mod tests {
             let now: Vec<usize> = visible.iter().map(|path| loaded(&images, path)).collect();
             assert_eq!(now, ids, "frame {frame}: an on-screen portrait was evicted");
         }
-        // The set grew to what is on screen, plus the pinned newcomers.
+        // What is on screen, plus the pinned newcomers.
         assert!(images.resident() <= 10 + PIN_FRAMES as usize + 1);
     }
 
     #[test]
-    fn eviction_takes_the_least_recent_outside_the_pinned_frames() {
+    fn eviction_takes_what_the_pinned_frames_did_not_show() {
         let resident =
             [("a", 1), ("b", 5), ("c", 2), ("d", 20)].map(|(key, used)| (key.to_owned(), used));
-        assert_eq!(evictions(resident.clone().into_iter(), 2, 20), ["a", "c"]);
+        assert_eq!(evictions(resident.clone().into_iter(), 20), ["a", "b", "c"]);
         // `b` was used within the last PIN_FRAMES frames of 12: pinned.
-        assert_eq!(evictions(resident.clone().into_iter(), 1, 12), ["a", "c"]);
-        assert!(evictions(resident.into_iter(), 4, 100).is_empty());
+        assert_eq!(evictions(resident.clone().into_iter(), 12), ["a", "c"]);
+        assert!(evictions(resident.into_iter(), 2).is_empty());
     }
 
     #[test]
@@ -1219,7 +1199,7 @@ mod tests {
     #[test]
     fn an_evicted_id_is_never_reused() {
         let textures = foreground();
-        let images = image_set(&textures, 1);
+        let images = image_set(&textures);
         let Lookup::Pending = images.get("a") else {
             panic!("queued")
         };

@@ -4,11 +4,12 @@
 use super::*;
 use dashboard_base::prepared::frame_changes::field_mask;
 use dashboard_base::products::faction_details::ViewerText;
+use dashboard_world::{Mark, Viewed};
 use replay_data::rows::{DeltaRow, FactionAccountRow, TABLE_COUNT};
-use replay_frame::frame::ViewIdentity;
+use replay_frame::frame::{HourFrame, OperandStatus, Rowset};
 #[cfg(test)]
 use std::cell::RefCell;
-use std::{cell::OnceCell, mem::size_of, sync::LazyLock};
+use std::{borrow::Cow, cell::OnceCell, mem::size_of, sync::LazyLock};
 
 /// What an hour changed since the hour before, as the projection reads it.
 pub(in crate::products::faction_state) trait Edits {
@@ -41,13 +42,15 @@ impl Edits for FrameChanges {
 /// The hour's frames: the family's own tables, the tables a dynamic text reads, and the
 /// programmes' supplying read.
 pub(in crate::products::faction_state) trait Frames {
-    fn own(&self) -> &DecodedFrame;
+    /// The family's own tables, and how they tell a table unchanged since an hour that held it.
+    fn own(&self) -> Viewed<'_>;
     /// The own tables and every table a dynamic text may read.
-    fn whole(&self) -> io::Result<&DecodedFrame>;
+    fn whole(&self) -> io::Result<HourFrame<'_>>;
     /// The own tables and `tables`, at least: what a held text's reads are read again on. The
     /// hour's first ask decides it.
-    fn reading(&self, tables: &[TableId]) -> io::Result<&DecodedFrame>;
-    /// The hour of the programmes' supplying read, as [`progressive::walked_read_hour`] finds it.
+    fn reading(&self, tables: &[TableId]) -> io::Result<HourFrame<'_>>;
+    /// The hour of the programmes' supplying read: the latest hour that read them within a
+    /// stagger period, their table complete at every hour since.
     fn read_hour(&self, cancelled: &AtomicBool) -> io::Result<Option<i32>>;
     /// The supplying read at `hour`: the programme tables, with every scripted-text table
     /// when `wide`.
@@ -56,12 +59,17 @@ pub(in crate::products::faction_state) trait Frames {
         hour: i32,
         wide: bool,
         cancelled: &AtomicBool,
-    ) -> io::Result<Option<Arc<DecodedFrame>>>;
+    ) -> io::Result<Option<Supply>>;
     /// Tests: the recording each supplying read is sought in alone.
     #[cfg(test)]
     fn source(&self) -> Option<&Source> {
         None
     }
+}
+
+/// The walk's lexer folds, which its frames' own, whole and reading tables share.
+fn lexicon<'f>(frames: &'f dyn Frames) -> Option<&'f dashboard_world::Lexicon> {
+    frames.own().lexicon
 }
 
 /// A frame holding every table the hour reads, its supplying reads walked in the recording.
@@ -81,27 +89,41 @@ impl<'f, 's, 'a> Whole<'f, 's, 'a> {
     }
 }
 
+/// A programmes' supplying read: the hour's own tables, which hold every table it reads, or a
+/// frame read for it.
+#[derive(Clone)]
+pub(in crate::products::faction_state) enum Supply {
+    Own,
+    Read(Arc<DecodedFrame>),
+}
+
 #[cfg(test)]
 impl Frames for Whole<'_, '_, '_> {
-    fn own(&self) -> &DecodedFrame {
-        self.frame
+    fn own(&self) -> Viewed<'_> {
+        Viewed::decoded(self.frame)
     }
-    fn whole(&self) -> io::Result<&DecodedFrame> {
-        Ok(self.frame)
+    fn whole(&self) -> io::Result<HourFrame<'_>> {
+        Ok(HourFrame::from(self.frame))
     }
-    fn reading(&self, _: &[TableId]) -> io::Result<&DecodedFrame> {
-        Ok(self.frame)
+    fn reading(&self, _: &[TableId]) -> io::Result<HourFrame<'_>> {
+        Ok(HourFrame::from(self.frame))
     }
     fn read_hour(&self, cancelled: &AtomicBool) -> io::Result<Option<i32>> {
-        self.walks.borrow_mut().read_hour(self.frame, cancelled)
+        self.walks
+            .borrow_mut()
+            .read_hour((self.frame.branch, self.frame.hour), cancelled)
     }
     fn supplying(
         &self,
         hour: i32,
         wide: bool,
         cancelled: &AtomicBool,
-    ) -> io::Result<Option<Arc<DecodedFrame>>> {
-        self.walks.borrow_mut().frame(hour, wide, cancelled)
+    ) -> io::Result<Option<Supply>> {
+        Ok(self
+            .walks
+            .borrow_mut()
+            .frame(hour, wide, cancelled)?
+            .map(Supply::Read))
     }
     #[cfg(test)]
     fn source(&self) -> Option<&Source> {
@@ -141,11 +163,19 @@ pub(in crate::products::faction_state) fn timeless(text: String) -> String {
     out
 }
 
-/// `T`'s rows, or why the hour lacks them, without its hour.
-fn complete<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], String> {
+/// `T`'s rows, each of the fields `mask` names, or why the hour lacks them, without its hour.
+fn complete<T: TableSchema>(
+    frame: HourFrame<'_>,
+    mask: u64,
+) -> Result<Rowset<'_, T::Row>, String> {
     frame
-        .complete::<T>()
+        .complete::<T>(mask)
         .map_err(|why| timeless(why.to_string()))
+}
+
+/// Whether the hour holds every row of `table`.
+fn is_complete(frame: HourFrame<'_>, table: TableId) -> bool {
+    matches!(frame.status(table), OperandStatus::Complete)
 }
 
 fn timeless_label(mut label: GoalLabel) -> GoalLabel {
@@ -177,23 +207,37 @@ selection_tables!(
     FactionDoctrine => Doctrine,
     FactionManpower => Manpower,
 );
-struct Selected<'a, T: SelectionTable> {
-    rows: &'a [T::Row],
+struct Selected<'a, T: SelectionTable>
+where
+    T::Row: Clone,
+{
+    rows: Vec<Cow<'a, T::Row>>,
     invalid: BTreeSet<usize>,
     failure: Option<String>,
 }
-impl<T: SelectionTable> Selected<'_, T> {
+impl<T: SelectionTable> Selected<'_, T>
+where
+    T::Row: Clone,
+{
     fn available(&self) -> bool {
         self.failure.is_none() && self.invalid.is_empty()
     }
 }
-/// A witnessed faction's rows of `T`.
-fn selected<T: SelectionTable>(frame: &DecodedFrame, faction: u64) -> Selected<'_, T> {
-    let rows = complete::<T>(frame);
+/// A witnessed faction's rows of `T`, every field built: the selection tables are small. A
+/// row that cannot be built refuses them all.
+fn selected<T: SelectionTable>(frame: HourFrame<'_>, faction: u64) -> Selected<'_, T>
+where
+    T::Row: Clone,
+{
+    let (low, high) = selectors::owned(faction);
+    let rows = complete::<T>(frame, u64::MAX).and_then(|rows| {
+        rows.span(low, high)
+            .iter()
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|why| timeless(why.to_string()))
+    });
     let failure = rows.as_ref().err().cloned();
-    let rows = rows
-        .map(|rows| selectors::selected(rows, faction, T::owner))
-        .unwrap_or_default();
+    let rows = rows.unwrap_or_default();
     let invalid = rows
         .iter()
         .enumerate()
@@ -206,8 +250,8 @@ fn selected<T: SelectionTable>(frame: &DecodedFrame, faction: u64) -> Selected<'
     }
 }
 /// Why a faction with no rows of `T` has no selections.
-fn unowned<T: SelectionTable>(frame: &DecodedFrame) -> String {
-    complete::<T>(frame)
+fn unowned<T: SelectionTable>(frame: HourFrame<'_>) -> String {
+    complete::<T>(frame, 0)
         .err()
         .unwrap_or_else(|| format!("Faction {} owner is unavailable", T::KIND.selection_name()))
 }
@@ -225,10 +269,12 @@ struct Previous {
     tables: [SharedView; DIFF_TABLES.len()],
 }
 impl Previous {
-    fn read(frame: &DecodedFrame) -> Self {
-        Self {
+    /// A decoded frame's diffed tables; a walk, whose changes are exact, keeps none.
+    fn read(frame: HourFrame<'_>) -> Option<Self> {
+        let frame = frame.decoded()?.decoded_frame();
+        Some(Self {
             tables: DIFF_TABLES.map(|table| frame.tables[table.index()].clone()),
-        }
+        })
     }
     fn complete<T: TableSchema>(&self) -> Option<&[T::Row]> {
         let index = DIFF_TABLES.iter().position(|table| *table == T::ID)?;
@@ -291,6 +337,8 @@ pub(in crate::products::faction_state) static ACCOUNT_FIELDS: LazyLock<u64> = La
 });
 static ACCOUNT_COUNTRY: LazyLock<u64> =
     LazyLock::new(|| field_mask(TableId::FactionAccounts, &["country"]));
+static MANPOWER_COUNTRY: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::FactionManpower, &["country"]));
 struct Changed {
     accounts: Option<BTreeSet<u128>>,
     owners: BTreeMap<Kind, Option<BTreeSet<u64>>>,
@@ -319,7 +367,7 @@ struct Joins {
 fn narrow_accounts(
     keys: &mut Option<BTreeSet<u128>>,
     previous: Option<&Previous>,
-    frame: &DecodedFrame,
+    frame: HourFrame<'_>,
     edits: &dyn Edits,
 ) {
     let Some(keys) = keys else {
@@ -336,8 +384,10 @@ fn narrow_accounts(
         });
         return;
     }
+    // Only a decoded frame keeps the hour before's rows.
     if let Some(before) = previous.and_then(Previous::complete::<tables::FactionAccounts>)
-        && let Ok(now) = frame.complete::<tables::FactionAccounts>()
+        && let Some(decoded) = frame.decoded()
+        && let Ok(now) = decoded.decoded_frame().complete::<tables::FactionAccounts>()
     {
         keys.retain(|key| {
             if (*key >> 32) as u32 != 0 {
@@ -364,7 +414,7 @@ fn narrow_accounts(
         });
     }
 }
-fn group_choice(frame: &DecodedFrame, group: u32, cat: Option<&catalogue::Catalogue>) -> Choice {
+fn group_choice(frame: HourFrame<'_>, group: u32, cat: Option<&catalogue::Catalogue>) -> Choice {
     match selectors::group_name(frame, group, cat) {
         Ok(name) => Choice {
             name,
@@ -374,10 +424,11 @@ fn group_choice(frame: &DecodedFrame, group: u32, cat: Option<&catalogue::Catalo
     }
 }
 /// The hour's complete faction roster does not list `faction`.
-fn goal_absent(frame: &DecodedFrame, faction: u64) -> bool {
+fn goal_absent(frame: HourFrame<'_>, faction: u64) -> bool {
+    // A faction's row is keyed by its id.
     frame
-        .complete::<tables::Factions>()
-        .is_ok_and(|rows| !rows.iter().any(|row| row.id == faction))
+        .complete::<tables::Factions>(0)
+        .is_ok_and(|rows| !rows.contains(u128::from(faction)))
 }
 
 /// One hour's projection, for the ordered emit.
@@ -517,14 +568,14 @@ pub(in crate::products::faction_state) struct Ghost {
     pub(in crate::products::faction_state) manpower: String,
     pub(in crate::products::faction_state) goals: GoalList,
 }
-fn ghost(frame: &DecodedFrame) -> Ghost {
-    let goals = if frame.complete::<tables::Factions>().is_ok() {
+fn ghost(frame: HourFrame<'_>) -> Ghost {
+    let goals = if is_complete(frame, TableId::Factions) {
         GoalList::absent()
     } else {
         // Its goal header is absent, as faction details find it.
         let reason = match (
-            frame.complete::<tables::FactionGoalStatus>(),
-            frame.complete::<tables::FactionGoalEntries>(),
+            frame.complete::<tables::FactionGoalStatus>(0),
+            frame.complete::<tables::FactionGoalEntries>(0),
         ) {
             (Err(why), _) | (_, Err(why)) => timeless(why.to_string()),
             _ => "Faction goal status is absent".to_owned(),
@@ -541,7 +592,7 @@ fn ghost(frame: &DecodedFrame) -> Ghost {
             unowned::<tables::FactionMinimumUpgrades>(frame),
             unowned::<tables::FactionDoctrine>(frame),
         ],
-        manpower: complete::<tables::FactionManpower>(frame)
+        manpower: complete::<tables::FactionManpower>(frame, 0)
             .err()
             .unwrap_or_else(|| {
                 "Faction manpower owner is unavailable; empty pool is not certified".to_owned()
@@ -756,7 +807,7 @@ pub(in crate::products::faction_state) struct Runtime {
     /// Labels of goals whose texts read only the goal tables, for `goal_dictionary`.
     goal_labels: BTreeMap<Option<u32>, GoalLabel>,
     goal_expands: BTreeMap<u32, bool>,
-    goal_dictionary: Option<ViewIdentity>,
+    goal_dictionary: Option<Mark>,
     /// Each scripted goal label, by faction and token.
     goal_texts: BTreeMap<(u64, Option<u32>), Held<GoalLabel>>,
     /// The hour the held texts were last checked at.
@@ -887,10 +938,10 @@ impl Runtime {
         tables.sort_unstable();
         tables.dedup();
         let frame = frames.reading(&tables)?;
-        let text = ViewerText::new(frame, cat);
+        let text = ViewerText::new_in(frame, cat).with_lexicon(lexicon(frames));
         let mut confirm = |inputs: &mut reuse::Inputs| {
             inputs.declared().is_some()
-                && inputs.confirm_since(frame, Some(since), |key| text.reread(key))
+                && inputs.confirm_since_in(frame, Some(since), |key| text.reread(key))
         };
         for held in self.labels.values_mut().filter(|held| held.stale) {
             held.stale = !confirm(&mut held.inputs);
@@ -924,6 +975,11 @@ impl Runtime {
         self.ready && self.last.and_then(|last| last.checked_add(1)) == Some(hour)
     }
 
+    /// Lets go of the last supplying read, which a later hour asks for again.
+    pub(in crate::products::faction_state) fn forget_supplying(&mut self) {
+        self.supplying = None;
+    }
+
     /// The hour's projection: what may have changed since the hour before, evaluated.
     pub(in crate::products::faction_state) fn project(
         &mut self,
@@ -932,10 +988,12 @@ impl Runtime {
         cat: Option<&catalogue::Catalogue>,
         cancelled: &AtomicBool,
     ) -> io::Result<Projected> {
-        let frame = frames.own();
+        let viewed = frames.own();
+        let frame = viewed.frame;
+        let hour = frame.hour();
         let changes = edits.changes();
-        let continues = self.last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
-        let joins = self.refresh_joins(frame, edits, continues);
+        let continues = self.last.and_then(|last| last.checked_add(1)) == Some(hour);
+        let joins = self.refresh_joins(viewed, edits, continues);
         let recomputed = self.witness(frame, edits, continues);
         let witnessed_changed = recomputed
             .as_ref()
@@ -954,7 +1012,7 @@ impl Runtime {
             self.goals.retain(|faction, _| now.contains(faction));
         }
         let owners = Arc::clone(&self.witnessed);
-        self.goal_dictionary(frame);
+        self.goal_dictionary(viewed);
         // A refresh observes every lane again, as a block start or a break must.
         if dirty.refresh {
             self.goal_labels.clear();
@@ -968,7 +1026,7 @@ impl Runtime {
         }
         let mut projected = Projected {
             joined: joins.joined,
-            roster: frame.complete::<tables::Factions>().is_ok(),
+            roster: is_complete(frame, TableId::Factions),
             witnessed: (witnessed_changed || !self.ready).then(|| Arc::clone(&owners)),
             reads: CHANNELS.map(|(_, table)| changes.slot_read[table.index()]),
             ..Default::default()
@@ -997,9 +1055,9 @@ impl Runtime {
         self.goal_texts
             .retain(|&(faction, _), _| owners.contains(&faction));
         self.reads_moved |= self.labels.len() + self.goal_texts.len() != count;
-        let since = reuse::Since::hour_before(frame, edits.tables());
-        if self.checked != Some(frame.hour) {
-            self.check_held(since.as_ref(), frame.hour);
+        let since = reuse::Since::hour_before_in(frame, edits.tables());
+        if self.checked != Some(hour) {
+            self.check_held(since.as_ref(), hour);
         }
         if viewer_changed {
             for held in self.labels.values_mut() {
@@ -1031,8 +1089,7 @@ impl Runtime {
         let reserved = changes.rows_changed[TableId::ReservedCountryNaming.index()];
         let known = KnownInputs {
             accounts: joins.joined && joins.accounts_joined,
-            complete: KNOWN_TABLES
-                .map(|table| matches!(*frame.tables[table.index()], TableView::Complete(_))),
+            complete: KNOWN_TABLES.map(|table| is_complete(frame, table)),
         };
         // A faction no change names keeps every lane and known flag it held.
         let every = dirty.refresh
@@ -1051,17 +1108,19 @@ impl Runtime {
             }
             visit.extend(&stale);
             visit.extend(&stale_goals);
+            // A programme's or manpower entry's faction is its key's above the ordinal.
             if dirty.programme_operands
-                && let Ok(rows) = frame.complete::<tables::FactionPrograms>()
+                && let Ok(rows) = frame.complete::<tables::FactionPrograms>(0)
             {
-                visit.extend(rows.iter().map(|row| row.faction));
+                visit.extend(rows.keys().map(|key| (key >> 32) as u64));
             }
-            if reserved && let Ok(rows) = frame.complete::<tables::FactionManpower>() {
-                visit.extend(
-                    rows.iter()
+            if reserved && let Ok(rows) = frame.complete::<tables::FactionManpower>(*MANPOWER_COUNTRY)
+            {
+                visit.extend(rows.iter().filter_map(|row| {
+                    row.ok()
                         .filter(|row| row.country == 0)
-                        .map(|row| row.faction),
-                );
+                        .map(|row| row.faction)
+                }));
             }
             visit.retain(|faction| owners.contains(faction));
             visit.into_iter().collect()
@@ -1083,7 +1142,7 @@ impl Runtime {
                 accounts_known,
                 doctrines.available(),
                 manpower.available(),
-                !goals_absent && faction_details::held_goals(frame, faction).is_ok(),
+                !goals_absent && faction_details::held_goals_in(frame, faction).is_ok(),
             ];
             let mut ops = FactionOps {
                 faction,
@@ -1117,7 +1176,11 @@ impl Runtime {
                 if supplying.is_none() {
                     supplying = Some(self.supplying(&dirty, frames, cat, cancelled)?);
                 }
-                let read = supplying.as_ref().and_then(Option::as_deref);
+                let read = match supplying.as_ref().and_then(Option::as_ref) {
+                    Some(Supply::Own) => Some(frames.whole()?),
+                    Some(Supply::Read(read)) => Some(HourFrame::from(&**read)),
+                    None => None,
+                };
                 self.channel(&programmes, &mut ops.channels, |_, row, _| {
                     Ok((
                         row.ordinal,
@@ -1158,7 +1221,7 @@ impl Runtime {
                 if reread {
                     self.manpower.remove(&faction);
                 }
-                if let Some(op) = self.manpower(frame, faction) {
+                if let Some(op) = self.manpower(frame, faction, &manpower) {
                     ops.channels.push(op);
                 }
             }
@@ -1171,16 +1234,16 @@ impl Runtime {
                 projected.factions.push(ops);
             }
         }
-        self.previous = (!self.exact).then(|| Previous::read(frame));
+        self.previous = if self.exact { None } else { Previous::read(frame) };
         self.ready = true;
-        self.last = Some(frame.hour);
+        self.last = Some(hour);
         Ok(projected)
     }
 
     /// The hour's witnessed owners, read again unless its changed rows prove them unchanged.
     fn witness(
         &self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         edits: &dyn Edits,
         continues: bool,
     ) -> Option<BTreeSet<u64>> {
@@ -1203,7 +1266,7 @@ impl Runtime {
 
     fn dynamic_name(
         &mut self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         token: u32,
         cat: Option<&catalogue::Catalogue>,
     ) -> bool {
@@ -1214,7 +1277,7 @@ impl Runtime {
             return dynamic;
         }
         let Ok(Some(spelling)) =
-            dashboard_base::faction_names::template_spelling(frame, Some(token))
+            dashboard_base::faction_names::template_spelling_in(&frame, Some(token))
         else {
             return false;
         };
@@ -1235,9 +1298,9 @@ impl Runtime {
         (faction, ordinal): (u64, u32),
         token: u32,
         cat: Option<&'f catalogue::Catalogue>,
-        name: impl FnOnce(&DecodedFrame, Option<&ViewerText<'_>>) -> FactionRuleDetail,
+        name: impl FnOnce(HourFrame<'f>, Option<&ViewerText<'_>>) -> FactionRuleDetail,
     ) -> io::Result<FactionRuleDetail> {
-        let frame = frames.own();
+        let frame = frames.own().frame;
         let at = (faction, kind, ordinal);
         if !self.dynamic_name(frame, token, cat) {
             self.reads_moved |= self.labels.remove(&at).is_some();
@@ -1254,8 +1317,9 @@ impl Runtime {
             return Ok(name(frame, None));
         };
         let whole = frames.whole()?;
-        let text = shared.get_or_init(|| ViewerText::new(whole, cat));
-        let (detail, inputs) = reuse::capture(whole, || name(whole, Some(text)));
+        let text = shared
+            .get_or_init(|| ViewerText::new_in(whole, cat).with_lexicon(lexicon(frames)));
+        let (detail, inputs) = reuse::capture_in(whole, || name(whole, Some(text)));
         self.labels
             .insert(at, Held::new((token, detail.clone()), inputs));
         self.reads_moved = true;
@@ -1273,25 +1337,25 @@ impl Runtime {
     }
 
     /// Goal label caches hold for one dictionary read; another read clears them.
-    fn goal_dictionary(&mut self, frame: &DecodedFrame) {
-        let table = &frame.tables[TableId::LexicalTokens.index()];
+    fn goal_dictionary(&mut self, viewed: Viewed<'_>) {
+        let table = TableId::LexicalTokens;
         if !self
             .goal_dictionary
             .as_ref()
-            .is_some_and(|held| held.is(table))
+            .is_some_and(|held| viewed.is(table, held))
         {
             self.goal_expands.clear();
             self.goal_labels.clear();
             self.goals.clear();
             self.reads_moved |= !self.goal_texts.is_empty();
             self.goal_texts.clear();
-            self.goal_dictionary = Some(table.identity());
+            self.goal_dictionary = Some(viewed.mark(table));
         }
     }
 
     fn goal_expands(
         &mut self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         token: u32,
         cat: &catalogue::Catalogue,
     ) -> bool {
@@ -1305,15 +1369,17 @@ impl Runtime {
         }
     }
 
-    /// The programmes' supplying read, kept while later hours read the same one.
+    /// The programmes' supplying read, kept while later hours read the same one: a read of
+    /// the hour's own tables is the hour's alone.
     fn supplying(
         &mut self,
         dirty: &Changed,
         frames: &dyn Frames,
         cat: Option<&catalogue::Catalogue>,
         cancelled: &AtomicBool,
-    ) -> io::Result<Option<Arc<DecodedFrame>>> {
-        let frame = frames.own();
+    ) -> io::Result<Option<Supply>> {
+        let frame = frames.own().frame;
+        let branch = frame.branch();
         let changed = dirty.programme_operands
             || !dirty.rewitnessed.is_empty()
             || dirty.owners[&Kind::Programme]
@@ -1321,14 +1387,16 @@ impl Runtime {
                 .is_none_or(|keys| !keys.is_empty());
         if !changed
             || !frame
-                .complete::<tables::FactionPrograms>()
+                .complete::<tables::FactionPrograms>(0)
                 .is_ok_and(|rows| !rows.is_empty())
         {
             return Ok(None);
         }
         // A scripted project name reads its supplying hour's world, as the faction details do.
         let scripted = |read: &DecodedFrame| {
-            cat.is_some_and(|cat| selectors::programmes_need_environment(frame, read, cat))
+            cat.is_some_and(|cat| {
+                selectors::programmes_need_environment(frame, HourFrame::from(read), cat)
+            })
         };
         #[cfg(test)]
         if self.point_seeks
@@ -1337,8 +1405,8 @@ impl Runtime {
             self.supplying_reads += 1;
             let Some(read) = progressive::latest_read(
                 source,
-                frame.branch,
-                frame.hour,
+                branch,
+                frame.hour(),
                 TableId::ProjectPrograms,
                 replay_data::cadence::STAGGER_PERIOD,
                 selectors::PROGRAMME_TABLES,
@@ -1348,12 +1416,12 @@ impl Runtime {
                 return Ok(None);
             };
             if !scripted(&*read) {
-                return Ok(Some(Arc::from(read)));
+                return Ok(Some(Supply::Read(Arc::from(read))));
             }
             let tables = selectors::programme_text_tables();
             return Ok(
-                progressive::frame_at(source, frame.branch, read.hour, &tables, cancelled)?
-                    .map(Arc::from),
+                progressive::frame_at(source, branch, read.hour, &tables, cancelled)?
+                    .map(|read| Supply::Read(Arc::from(read))),
             );
         }
         let Some(hour) = frames.read_hour(cancelled)? else {
@@ -1361,12 +1429,12 @@ impl Runtime {
         };
         let mut wide = false;
         // A read of another hour is let go first: a walk patches the views it shared.
-        if let Some((branch, at, held_wide, held)) = self.supplying.take()
-            && (branch, at) == (frame.branch, hour)
+        if let Some((held_branch, at, held_wide, held)) = self.supplying.take()
+            && (held_branch, at) == (branch, hour)
         {
             if held_wide || !scripted(&held) {
-                self.supplying = Some((branch, at, held_wide, Arc::clone(&held)));
-                return Ok(Some(held));
+                self.supplying = Some((held_branch, at, held_wide, Arc::clone(&held)));
+                return Ok(Some(Supply::Read(held)));
             }
             wide = true;
         }
@@ -1377,20 +1445,23 @@ impl Runtime {
         let mut read = None;
         if !wide {
             read = frames.supplying(hour, false, cancelled)?;
-            wide = read.as_deref().is_some_and(scripted);
+            // The hour's own tables hold every table a scripted name reads.
+            wide = matches!(&read, Some(Supply::Read(read)) if scripted(read));
         }
         if wide {
             read = frames.supplying(hour, true, cancelled)?;
         }
-        self.supplying = read
-            .as_ref()
-            .map(|read| (frame.branch, hour, wide, Arc::clone(read)));
+        self.supplying = match &read {
+            Some(Supply::Read(held)) => Some((branch, hour, wide, Arc::clone(held))),
+            _ => None,
+        };
         Ok(read)
     }
 
-    fn refresh_joins(&mut self, frame: &DecodedFrame, edits: &dyn Edits, continues: bool) -> Joins {
+    fn refresh_joins(&mut self, viewed: Viewed<'_>, edits: &dyn Edits, continues: bool) -> Joins {
+        let frame = viewed.frame;
         let changes = edits.changes();
-        let identity = self.countries.refresh(frame, changes, continues);
+        let identity = self.countries.refresh(viewed, changes, continues);
         let identities_changed = identity.as_ref().is_ok_and(|changed| *changed);
         let membership_changed = identities_changed
             || !self.ready
@@ -1408,11 +1479,12 @@ impl Runtime {
         let members = match self.members_joined {
             Some(joined) if !membership_changed => joined,
             _ => {
+                // A member's row is keyed by its country.
                 let joined = frame
-                    .complete::<tables::FactionMembers>()
+                    .complete::<tables::FactionMembers>(0)
                     .is_ok_and(|rows| {
-                        rows.iter()
-                            .all(|row| self.countries.get(row.country).is_some())
+                        rows.keys()
+                            .all(|key| self.countries.get(key as u32).is_some())
                     });
                 self.members_joined = Some(joined);
                 joined
@@ -1438,11 +1510,13 @@ impl Runtime {
             }
             _ => {
                 let joined = frame
-                    .complete::<tables::FactionAccounts>()
+                    .complete::<tables::FactionAccounts>(*ACCOUNT_COUNTRY)
                     .is_ok_and(|rows| {
-                        rows.iter()
-                            .filter(|row| row.kind == 0)
-                            .all(|row| self.countries.get(row.country).is_some())
+                        rows.iter().all(|row| {
+                            row.is_ok_and(|row| {
+                                row.kind != 0 || self.countries.get(row.country).is_some()
+                            })
+                        })
                     });
                 self.accounts_joined = Some(joined);
                 joined
@@ -1460,7 +1534,7 @@ impl Runtime {
 
     fn changed(
         &self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         edits: &dyn Edits,
         continues: bool,
         rewitnessed: BTreeSet<u64>,
@@ -1507,7 +1581,7 @@ impl Runtime {
 
     fn dirty<T: TableSchema>(
         &self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         edits: &dyn Edits,
         table: TableId,
         continues: bool,
@@ -1524,8 +1598,9 @@ impl Runtime {
                     .collect(),
             );
         }
+        // Only a decoded frame keeps the hour before's rows to compare.
         let before = self.previous.as_ref()?.complete::<T>()?;
-        let now = frame.complete::<T>().ok()?;
+        let now = frame.decoded()?.decoded_frame().complete::<T>().ok()?;
         Some(dashboard_base::prepared::frame_changes::differing_keys(
             before, now,
         ))
@@ -1534,7 +1609,7 @@ impl Runtime {
     /// Factions whose goal lists may differ from the hour before; None for all.
     fn goal_owners(
         &self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         edits: &dyn Edits,
         continues: bool,
     ) -> Option<BTreeSet<u64>> {
@@ -1567,10 +1642,13 @@ impl Runtime {
         selected: &Selected<'_, T>,
         ops: &mut Vec<ChannelOp>,
         mut map: impl FnMut(&mut Self, &T::Row, &mut Vec<ChannelOp>) -> io::Result<(u32, u32, Choice)>,
-    ) -> io::Result<()> {
+    ) -> io::Result<()>
+    where
+        T::Row: Clone,
+    {
         let mut values = Vec::with_capacity(selected.rows.len());
         for (ordinal, row) in selected.rows.iter().enumerate() {
-            let (slot, group, mut choice) = map(self, row, ops)?;
+            let (slot, group, mut choice) = map(self, &**row, ops)?;
             if selected.invalid.contains(&ordinal) {
                 choice.reason = Some(format!(
                     "Faction {} ordinals are not contiguous",
@@ -1591,7 +1669,7 @@ impl Runtime {
     /// hour holds, which the emit joins with every account its catalogue holds.
     fn accounts(
         &mut self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         dirty: &Changed,
         joins: &Joins,
         cat: Option<&catalogue::Catalogue>,
@@ -1600,19 +1678,21 @@ impl Runtime {
             dirty.refresh || joins.identities_changed || !joins.identity_known || !joins.joined;
         // Any row may have changed: every account is read, those the catalogue holds too.
         let whole = full || dirty.accounts.is_none();
-        let rows = frame.complete::<tables::FactionAccounts>();
+        let rows = frame.complete::<tables::FactionAccounts>(*ACCOUNT_FIELDS);
+        // An account's rows are keyed by account, kind and ordinal; its own are of kind zero.
+        let own = |key: u128| (key >> 32) as u32 == 0;
         let mut accounts: BTreeSet<u32> = if !whole && let Some(changed) = &dirty.accounts {
             changed
                 .iter()
                 .copied()
-                .filter(|key| (*key >> 32) as u32 == 0)
+                .filter(|key| own(*key))
                 .map(|key| (key >> 64) as u32)
                 .collect()
         } else {
             rows.iter()
-                .flat_map(|rows| rows.iter())
-                .filter(|row| row.kind == 0)
-                .map(|row| row.account)
+                .flat_map(|rows| rows.keys())
+                .filter(|key| own(*key))
+                .map(|key| (key >> 64) as u32)
                 .collect()
         };
         if joins.membership_changed && !full {
@@ -1624,17 +1704,15 @@ impl Runtime {
                 .copied()
                 .collect();
             if let Ok(rows) = &rows {
-                accounts.extend(
-                    rows.iter()
-                        .filter(|row| {
-                            row.kind == 0
-                                && self
-                                    .countries
-                                    .get(row.country)
-                                    .is_some_and(|country| changed_slots.contains(&country.slot))
-                        })
-                        .map(|row| row.account),
-                );
+                accounts.extend(rows.iter().filter_map(|row| {
+                    let row = row.ok()?;
+                    (row.kind == 0
+                        && self
+                            .countries
+                            .get(row.country)
+                            .is_some_and(|country| changed_slots.contains(&country.slot)))
+                    .then_some(row.account)
+                }));
             }
         }
         if whole {
@@ -1646,12 +1724,13 @@ impl Runtime {
             {
                 self.account_projections += 1;
             }
-            let row = rows.as_ref().ok().and_then(|rows| {
-                rows.binary_search_by_key(&((account as u128) << 64), RowCodec::key)
-                    .ok()
-                    .map(|index| &rows[index])
-            });
-            if let Some(op) = self.account(frame, account, row, joins.joined, whole, cat) {
+            // A row that cannot be built is one the hour does not hold.
+            let row = rows
+                .as_ref()
+                .ok()
+                .and_then(|rows| rows.get((account as u128) << 64).ok().flatten());
+            if let Some(op) = self.account(frame, account, row.as_deref(), joins.joined, whole, cat)
+            {
                 ops.push(op);
             }
         }
@@ -1664,7 +1743,7 @@ impl Runtime {
 
     fn account(
         &mut self,
-        frame: &DecodedFrame,
+        frame: HourFrame<'_>,
         account: u32,
         row: Option<&FactionAccountRow>,
         joined: bool,
@@ -1747,22 +1826,25 @@ impl Runtime {
         Some(op)
     }
 
-    /// A witnessed faction's manpower: whole, only its changed values, or None when nothing
-    /// changed.
-    fn manpower(&mut self, frame: &DecodedFrame, faction: u64) -> Option<ChannelOp> {
-        let rows = match complete::<tables::FactionManpower>(frame) {
-            Ok(rows) => selectors::selected(rows, faction, |row| row.faction),
-            Err(why) => {
-                self.manpower.remove(&faction);
-                return Some(ChannelOp::Manpower(ManpowerOp {
-                    total: NULL,
-                    entries: Vec::new(),
-                    failure: Some(why),
-                }));
-            }
-        };
+    /// A witnessed faction's manpower, of its rows `selected`: whole, only its changed values,
+    /// or None when nothing changed.
+    fn manpower(
+        &mut self,
+        frame: HourFrame<'_>,
+        faction: u64,
+        selected: &Selected<'_, tables::FactionManpower>,
+    ) -> Option<ChannelOp> {
+        if let Some(why) = &selected.failure {
+            self.manpower.remove(&faction);
+            return Some(ChannelOp::Manpower(ManpowerOp {
+                total: NULL,
+                entries: Vec::new(),
+                failure: Some(why.clone()),
+            }));
+        }
+        let rows = &selected.rows;
         let mut failure = None;
-        let total = match selectors::manpower_total(rows) {
+        let total = match selectors::manpower_total_of(rows.iter().map(|row| &**row)) {
             Ok(total) => i128::from(total),
             Err(why) => {
                 failure = Some(why);
@@ -1843,7 +1925,7 @@ impl Runtime {
         cat: Option<&'f catalogue::Catalogue>,
         tokens: &[Option<u32>],
     ) -> io::Result<Vec<GoalLabel>> {
-        let frame = frames.own();
+        let frame = frames.own().frame;
         let mut expands = Vec::with_capacity(tokens.len());
         for token in tokens {
             expands.push(match (cat, token) {
@@ -1867,7 +1949,8 @@ impl Runtime {
             .map(|(token, _)| *token)
             .collect();
         if !missing.is_empty() {
-            let labels = faction_details::goal_labels(frame, faction, cat, missing.iter().copied());
+            let labels =
+                faction_details::goal_labels_in(frame, faction, cat, missing.iter().copied());
             self.goal_labels.extend(
                 missing
                     .into_iter()
@@ -1888,8 +1971,9 @@ impl Runtime {
                 continue;
             }
             let whole = frames.whole()?;
-            let text = shared.get_or_init(|| ViewerText::new(whole, cat));
-            let (label, inputs) = reuse::capture(whole, || {
+            let text = shared
+                .get_or_init(|| ViewerText::new_in(whole, cat).with_lexicon(lexicon(frames)));
+            let (label, inputs) = reuse::capture_in(whole, || {
                 faction_details::goal_label_in(whole, faction, Some(cat), token, text)
             });
             let label = timeless_label(label);
@@ -1910,11 +1994,11 @@ impl Runtime {
         absent: bool,
         cat: Option<&'f catalogue::Catalogue>,
     ) -> io::Result<Option<ChannelOp>> {
-        let frame = frames.own();
+        let frame = frames.own().frame;
         let held = if absent {
             Err(None)
         } else {
-            faction_details::held_goals(frame, faction)
+            faction_details::held_goals_in(frame, faction)
                 .map_err(|why| Some(timeless(why.to_string())))
         };
         let held = match held {
@@ -1931,7 +2015,12 @@ impl Runtime {
                 })));
             }
         };
-        let rows: Vec<_> = held.entries.iter().filter(|row| row.kind <= 2).collect();
+        let rows: Vec<_> = held
+            .entries
+            .iter()
+            .map(|row| &**row)
+            .filter(|row| row.kind <= 2)
+            .collect();
         if let Some(memo) = self.goals.get_mut(&faction)
             && memo.len() == rows.len()
             && memo.iter().zip(&rows).all(|(held, row)| {

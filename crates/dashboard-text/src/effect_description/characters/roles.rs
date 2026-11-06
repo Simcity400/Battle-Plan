@@ -5,7 +5,23 @@ use installed_content_core::{characters::Authored, modifiers::Modifiers};
 use installed_content_core::{
     gui::native::BoundLocalization, gui::native::BoundValue, gui::native::FormattedLocalization,
 };
-use replay_data::{rows::CharacterRoleTraitRow, rows::CountryLeaderRoleRow, rows::PartyLeaderRow};
+use replay_data::rows::{
+    AdvisorRoleRow, CharacterRoleTraitRow, CountryLeaderRoleRow, FactionMemberRow, FactionRow,
+    PartyLeaderRow, PoliticalPartyRow,
+};
+
+/// The fields of each table the role descriptions read.
+const LEADER_ROLE: u64 = tables::CountryLeaderRoles::ID.full_mask();
+const PARTY_PICK: u64 = mask::<PoliticalPartyRow>(&["token", "is_ruling"]);
+const PARTY_LEADER: u64 = tables::PartyLeaders::ID.full_mask();
+const ROLE_TOKENS: u64 = mask::<CharacterRoleTraitRow>(&["tokens"]);
+const ROLE_TRAITS: u64 = mask::<CharacterRoleTraitRow>(&["definitions"]);
+const ADVISOR: u64 = mask::<AdvisorRoleRow>(&["idea", "modifier_cache", "tooltip_keys"]);
+const MEMBER: u64 = mask::<FactionMemberRow>(&["faction", "ordinal"]);
+const FACTION_NAME: u64 = mask::<FactionRow>(&["name", "template_token"]);
+const ROLE_TOKENS_COLUMN: usize = replay_data::rows::column::<CharacterRoleTraitRow>("tokens");
+const ROLE_DEFINITIONS_COLUMN: usize =
+    replay_data::rows::column::<CharacterRoleTraitRow>("definitions");
 
 #[cfg(test)]
 mod tests;
@@ -131,10 +147,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     fn char_token_text(&self, token: u32) -> Result<&'f [u8], String> {
-        self.character_lexical()?
-            .iter()
-            .find(|row| row.token == token)
-            .map(|row| row.literal.as_slice())
+        crate::scripted_text::spelled(&self.character_lexical()?, token)?
             .ok_or_else(|| format!("LexicalTokens lacks token {token}"))
     }
     // Search the signed ideology-token map; an empty selector chooses its
@@ -144,11 +157,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         &self,
         character: &CharacterRow,
         ideology: Option<&[u8]>,
-    ) -> Result<Option<&'f CountryLeaderRoleRow>, String> {
-        let roles = self.character_table::<tables::CountryLeaderRoles>()?;
-        let mut found = roles.iter().filter(|role| role.character == character.id);
+    ) -> Result<Option<Cow<'f, CountryLeaderRoleRow>>, String> {
+        let roles = self.character_table::<tables::CountryLeaderRoles>(LEADER_ROLE)?;
+        // The character is the key's high word, the ideology its low word.
+        let low = u128::from(character.id) << 32;
+        let mut found = each(roles.span(low, low | u128::from(u32::MAX)));
         let Some(ideology) = ideology.filter(|ideology| !ideology.is_empty()) else {
-            let first = found.next();
+            let first = found.next().transpose()?;
             return Ok(if found.next().is_none() { first } else { None });
         };
         let literal = String::from_utf8_lossy(ideology).to_ascii_lowercase();
@@ -168,14 +183,20 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         else {
             return Ok(None);
         };
-        Ok(found.find(|role| role.ideology as u32 == token))
+        for role in found {
+            let role = role?;
+            if role.ideology as u32 == token {
+                return Ok(Some(role));
+            }
+        }
+        Ok(None)
     }
 
     // Select the first entry of the political status's party vector.
     pub(super) fn char_ruling_leader(
         &self,
         country: u32,
-    ) -> Result<Option<&'f CharacterRow>, String> {
+    ) -> Result<Option<Cow<'f, CharacterRow>>, String> {
         self.char_party_leader(country, None)
     }
 
@@ -183,16 +204,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         &self,
         country: u32,
         ideology: Option<&[u8]>,
-    ) -> Result<Option<&'f CharacterRow>, String> {
+    ) -> Result<Option<Cow<'f, CharacterRow>>, String> {
         let Some(leader) = self.char_party_leader_row(country, ideology)? else {
             return Ok(None);
         };
         let Some(character) = leader.character else {
             return Ok(None);
         };
-        self.character_rows()?
-            .iter()
-            .find(|row| row.id == character)
+        self.character_row(character)?
             .map(Some)
             .ok_or_else(|| format!("PartyLeaders references missing character {character}"))
     }
@@ -201,36 +220,41 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         &self,
         country: u32,
         ideology: Option<&[u8]>,
-    ) -> Result<Option<&'f PartyLeaderRow>, String> {
+    ) -> Result<Option<Cow<'f, PartyLeaderRow>>, String> {
         let world = self.context.world()?;
-        let parties = self.character_table::<tables::PoliticalParties>()?;
-        let mut selected = parties.iter().filter(|party| {
-            world.slot(party.country) == Some(country)
-                && match ideology {
-                    Some(token) => party.token.eq_ignore_ascii_case(token),
-                    None => party.is_ruling != 0,
+        let parties = self.character_table::<tables::PoliticalParties>(PARTY_PICK)?;
+        // PoliticalParties' key is country then party id; PartyLeaders' is country, party and
+        // ordinal.
+        let mut selected = None;
+        for party in parties.keyed(|key| world.slot((key >> 32) as u32) == Some(country)) {
+            let party = party.map_err(built)?;
+            if match ideology {
+                Some(token) => party.token.eq_ignore_ascii_case(token),
+                None => party.is_ruling != 0,
+            } {
+                if selected.is_some() {
+                    return Err("country has multiple selected political parties".into());
                 }
-        });
-        let Some(party) = selected.next() else {
+                selected = Some(party.id);
+            }
+        }
+        let Some(party) = selected else {
             return Ok(None);
         };
-        if selected.next().is_some() {
-            return Err("country has multiple selected political parties".into());
-        }
-        let leaders = self.character_table::<tables::PartyLeaders>()?;
-        let Some(leader) = leaders
-            .iter()
-            .filter(|leader| {
-                world.slot(leader.country) == Some(country) && leader.party == party.id
+        let leaders = self.character_table::<tables::PartyLeaders>(0)?;
+        let Some(key) = leaders
+            .keys()
+            .filter(|&key| {
+                world.slot((key >> 64) as u32) == Some(country) && (key >> 32) as u32 == party
             })
-            .min_by_key(|leader| leader.ordinal)
+            .min_by_key(|&key| key as u32)
         else {
             return Ok(None);
         };
-        if leader.ordinal != 0 {
+        if key as u32 != 0 {
             return Err("PartyLeaders lacks first native vector entry".into());
         }
-        Ok(Some(leader))
+        keyed(&leaders.with_mask(PARTY_LEADER), key)
     }
 
     // Use the stored name, otherwise localise the original name string.
@@ -242,7 +266,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if character.name.is_empty() {
             self.localised(&character.token, &[], scopes, false)
         } else {
-            self.effect_character_name(character)
+            self.effect_character_name(&character)
         }
     }
 
@@ -344,24 +368,27 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             {
                 let world = self.context.world()?;
                 let characters = self.character_rows()?;
-                let character = self
-                    .character_table::<tables::CountryCharacters>()?
-                    .iter()
-                    .filter(|row| world.slot(row.country) == Some(country))
-                    .filter_map(|row| {
-                        row.character.and_then(|id| {
-                            characters
-                                .iter()
-                                .find(|character| {
-                                    character.id == id && character.name_token_id as u32 == token
-                                })
-                                .map(|character| (row.ordinal, character))
-                        })
-                    })
-                    .min_by_key(|(ordinal, _)| *ordinal)
-                    .map(|(_, character)| character);
+                let mut character: Option<(u32, Cow<'f, CharacterRow>)> = None;
+                for row in self
+                    .character_table::<tables::CountryCharacters>(ROSTER)?
+                    .keyed(|key| world.slot((key >> 32) as u32) == Some(country))
+                {
+                    let row = row.map_err(built)?;
+                    let Some(id) = row.character else { continue };
+                    let Some(found) = keyed(&characters, u128::from(id))? else {
+                        continue;
+                    };
+                    if found.name_token_id as u32 == token
+                        && character
+                            .as_ref()
+                            .is_none_or(|(ordinal, _)| row.ordinal < *ordinal)
+                    {
+                        character = Some((row.ordinal, found));
+                    }
+                }
+                let character = character.map(|(_, character)| character);
                 if let Some(character) = character {
-                    name = self.effect_character_name(character)?;
+                    name = self.effect_character_name(&character)?;
                 }
             }
         }
@@ -394,7 +421,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .map(children)
                 .unwrap_or_default(),
         )?;
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         self.char_role_header(
             if boolean(item, "promote_leader") {
                 b"EFFECT_ADD_COUNTRY_LEADER_ROLE_PROMOTE"
@@ -436,22 +463,20 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
         .filter(|value| !value.is_empty());
         if let Some(character) = self.effect_character_target(selector, scopes)? {
-            let Some(role) = self.char_country_leader_scope(character, ideology)? else {
+            let Some(role) = self.char_country_leader_scope(&character, ideology)? else {
                 return Ok(String::new());
             };
             let ideology = match ideology {
                 Some(value) => value.to_vec(),
                 None => self.char_token_text(role.ideology as u32)?.to_vec(),
             };
+            let role_key = u128::from(character.id) << 40
+                | u128::from(CharacterRoleTraitRow::COUNTRY_LEADER) << 32
+                | u128::from(role.ideology as u32);
             let traits = self
-                .character_table::<tables::CharacterRoleTraits>()?
-                .iter()
-                .find(|row| {
-                    row.character == character.id
-                        && row.kind == CharacterRoleTraitRow::COUNTRY_LEADER
-                        && row.role == role.ideology as u32
-                })
-                .map(|row| row.tokens.as_slice())
+                .character_table::<tables::CharacterRoleTraits>(ROLE_TOKENS)?
+                .u32s(role_key, |row| &row.tokens, ROLE_TOKENS_COLUMN)
+                .map_err(built)?
                 .unwrap_or_default()
                 .iter()
                 .map(|token| {
@@ -461,7 +486,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .collect::<Result<Vec<_>, _>>()?;
             return self.char_role_header(
                 b"EFFECT_ADD_COUNTRY_LEADER_ROLE_PROMOTE",
-                &self.effect_character_name(character)?,
+                &self.effect_character_name(&character)?,
                 &ideology,
                 &traits,
                 scopes,
@@ -528,7 +553,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character_target(item.value.scalar(), scopes)? else {
             return Ok(String::new());
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         let country = if character.country as i32 > 0 {
             self.country_name(
                 self.context
@@ -569,11 +594,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let name = match leader.character {
             Some(id) => {
                 let character = self
-                    .character_rows()?
-                    .iter()
-                    .find(|row| row.id == id)
+                    .character_row(id)?
                     .ok_or_else(|| format!("PartyLeaders references missing character {id}"))?;
-                self.char_country_leader_display_name(character, scopes)?
+                self.char_country_leader_display_name(&character, scopes)?
             }
             None => String::new(),
         };
@@ -607,7 +630,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         };
         let ideology = self.localised(group.token.as_bytes(), &[], scopes, false)?;
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         self.char_native_text(
             b"EFFECT_REMOVE_COUNTRY_LEADER_ROLE",
             &[
@@ -629,7 +652,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         else {
             return Ok(String::new());
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         let slot = self.localised(operand(item, "slot").unwrap_or_default(), &[], scopes, true)?;
         self.char_native_text(
             b"EFFECT_REMOVE_ADVISOR_ROLE",
@@ -659,7 +682,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .map(children)
                 .unwrap_or_default(),
         )?;
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         let slot = self.localised(role.slot.as_bytes(), &[], scopes, true)?;
         let traits = self.char_country_traits()?;
         let mut modifiers = Modifiers::default();
@@ -745,21 +768,24 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         // A unique exact match at that same ordinal is safe for the primary path.
         // Other exact matches lose role identity in the character-only result;
         // do not rescan the roster.
-        let matching: Vec<_> = self
-            .character_table::<tables::AdvisorRoles>()?
-            .iter()
-            .filter(|role| {
-                role.character == character_id && role.idea.eq_ignore_ascii_case(idea.as_bytes())
-            })
-            .collect();
+        // The character is the key's high word, the role's ordinal its low word.
+        let low = u128::from(character_id) << 32;
+        let mut matching = Vec::new();
+        for role in each(
+            self.character_table::<tables::AdvisorRoles>(ADVISOR)?
+                .span(low, low | u128::from(u32::MAX)),
+        ) {
+            let role = role?;
+            if role.idea.eq_ignore_ascii_case(idea.as_bytes()) {
+                matching.push(role);
+            }
+        }
         let advisor = matching
             .iter()
-            .copied()
             .min_by_key(|role| role.ordinal)
             .ok_or_else(|| format!("AdvisorRoles lacks character {character_id} idea {idea}"))?;
         let mut exact = matching
             .iter()
-            .copied()
             .filter(|role| role.idea == idea.as_bytes());
         let first_exact = exact.next();
         if exact.next().is_some() || first_exact.is_some_and(|role| role.ordinal != advisor.ordinal)
@@ -789,7 +815,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .map_err(Clone::clone)?;
             let idea_token = std::str::from_utf8(&advisor.idea)
                 .map_err(|_| "advisor idea token is not UTF-8")?;
-            let built = crate::identity::built_template(character, self.character_lexical().ok());
+            let built = crate::identity::built_template_in(&character, self.character_lexical().ok());
             let role = catalogue
                 .held_advisor(idea_token, built.as_ref().map_err(String::as_str))?
                 .ok_or_else(|| format!("advisor role {idea_token} is absent from content"))?;
@@ -814,17 +840,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             // need the unrecorded order. Reuse the catalogue's set.
             let mut modifiers = Modifiers::default();
             let mut tooltip_key: Option<String> = None;
-            for row in self
-                .character_table::<tables::CharacterRoleTraits>()?
-                .iter()
-                .filter(|row| {
-                    row.character == advisor.character
-                        && row.kind == CharacterRoleTraitRow::ADVISOR
-                        && row.role == advisor.ordinal
-                })
+            let role_key = u128::from(advisor.character) << 40
+                | u128::from(CharacterRoleTraitRow::ADVISOR) << 32
+                | u128::from(advisor.ordinal);
+            if let Some(definitions) = self
+                .character_table::<tables::CharacterRoleTraits>(ROLE_TRAITS)?
+                .u32s(role_key, |row| &row.definitions, ROLE_DEFINITIONS_COLUMN)
+                .map_err(crate::effect_description::built)?
             {
                 let traits = self.char_country_traits()?;
-                for &definition in &row.definitions {
+                for &definition in definitions {
                     let trait_ = traits.by_ordinal(definition).ok_or_else(|| {
                         format!("advisor trait definition {definition} is absent from content")
                     })?;
@@ -874,7 +899,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         } else {
             self.advisor_cache_description(advisor)?
         };
-        let name = self.effect_character_name(character)?;
+        let name = self.effect_character_name(&character)?;
         self.char_native_text(
             if item.keyword_is("deactivate_advisor") {
                 b"EFFECT_DEACTIVATE_ADVISOR"
@@ -903,7 +928,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             && let Some(character) =
                 self.effect_character_target(operand(item, "character"), scopes)?
         {
-            name = self.effect_character_name(character)?;
+            name = self.effect_character_name(&character)?;
             name.push(' ');
         }
         let slot = match operand(item, "slot").filter(|value| !value.is_empty()) {
@@ -940,21 +965,24 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         else {
             return Ok(String::new());
         };
-        let mut matching = self
-            .character_rows()?
-            .iter()
-            .filter(|row| row.name_token_id as u32 == token);
-        let Some(character) = matching.next() else {
+        let mut character = None;
+        for row in each(self.character_rows()?) {
+            let row = row?;
+            if row.name_token_id as u32 == token {
+                if character.is_some() {
+                    return Err("character registry token resolves multiple recorded rows".into());
+                }
+                character = Some(row);
+            }
+        }
+        let Some(character) = character else {
             return Ok(String::new());
         };
-        if matching.next().is_some() {
-            return Err("character registry token resolves multiple recorded rows".into());
-        }
         self.char_native_line(
             b"EFFECT_RECRUIT_CHARACTER",
             &[(
                 "NAME",
-                Argument::Text(&self.effect_character_name(character)?),
+                Argument::Text(&self.effect_character_name(&character)?),
             )],
             scopes,
             true,
@@ -995,18 +1023,25 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         let world = self.context.world()?;
-        let members = self.character_table::<tables::FactionMembers>()?;
+        let members = self.character_table::<tables::FactionMembers>(MEMBER)?;
         let Some(member) = members
-            .iter()
-            .find(|member| world.slot(member.country) == Some(country))
+            .keyed(|key| world.slot(key as u32) == Some(country))
+            .next()
+            .transpose()
+            .map_err(built)?
         else {
             return Ok(String::new());
         };
-        let Some(first) = members
-            .iter()
-            .filter(|other| other.faction == member.faction)
-            .min_by_key(|member| member.ordinal)
-        else {
+        let mut first: Option<Cow<'f, FactionMemberRow>> = None;
+        for other in each(members) {
+            let other = other?;
+            if other.faction == member.faction
+                && first.as_ref().is_none_or(|first| other.ordinal < first.ordinal)
+            {
+                first = Some(other);
+            }
+        }
+        let Some(first) = first else {
             return Ok(String::new());
         };
         if first.ordinal != 0 {
@@ -1015,11 +1050,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if world.slot(first.country) == Some(country) {
             return Ok(String::new());
         }
-        let faction = self
-            .character_table::<tables::Factions>()?
-            .iter()
-            .find(|row| row.id == member.faction)
-            .ok_or("Factions lacks member's faction")?;
+        let faction = keyed(
+            &self.character_table::<tables::Factions>(FACTION_NAME)?,
+            u128::from(member.faction),
+        )?
+        .ok_or("Factions lacks member's faction")?;
         let name = if !faction.name.is_empty() {
             crate::scripted_text::stored_text(
                 self.context.localisation,

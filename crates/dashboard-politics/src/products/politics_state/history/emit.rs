@@ -159,7 +159,7 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         match self.actors.held(place) {
             Some(key) => Ok(key),
             None => self
@@ -169,7 +169,7 @@ impl Emit {
     }
 
     /// The id of `token`, catalogued when new.
-    fn token(&mut self, writer: &mut Writer<'_>, token: &str) -> io::Result<u64> {
+    fn token(&mut self, writer: &mut Writer, token: &str) -> io::Result<u64> {
         if let Some(&id) = self.tokens.get(token) {
             return Ok(id);
         }
@@ -182,7 +182,7 @@ impl Emit {
     }
 
     /// The id of `reason`, catalogued when new.
-    fn reason(&mut self, writer: &mut Writer<'_>, reason: &str) -> io::Result<u64> {
+    fn reason(&mut self, writer: &mut Writer, reason: &str) -> io::Result<u64> {
         if let Some(&id) = self.reasons.get(reason) {
             return Ok(id);
         }
@@ -194,7 +194,7 @@ impl Emit {
         Ok(id)
     }
 
-    fn holder(&mut self, writer: &mut Writer<'_>, slot: u32, hour: i32) -> io::Result<u64> {
+    fn holder(&mut self, writer: &mut Writer, slot: u32, hour: i32) -> io::Result<u64> {
         let name = holder_name(slot);
         self.actors.actor(writer, name.as_bytes(), hour)
     }
@@ -202,7 +202,7 @@ impl Emit {
     /// The key `field` of `slot` is held in.
     fn place(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         (slot, field): &(u32, Field),
         hour: i32,
     ) -> io::Result<KeyHandle> {
@@ -256,7 +256,7 @@ impl Emit {
         )
     }
 
-    fn value(&mut self, writer: &mut Writer<'_>, value: &Val) -> io::Result<i128> {
+    fn value(&mut self, writer: &mut Writer, value: &Val) -> io::Result<i128> {
         Ok(match value {
             Val::Int(value) => *value,
             Val::Token(token) => i128::from(self.token(writer, token)?),
@@ -264,7 +264,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         if let Some(last) = self.last
             && last.checked_add(1) != Some(at)
@@ -331,7 +331,7 @@ impl Emit {
     }
 
     /// A part's values from `at`; whether it listed a holder never listed before.
-    fn part(&mut self, writer: &mut Writer<'_>, at: i32, sent: Sent) -> io::Result<bool> {
+    fn part(&mut self, writer: &mut Writer, at: i32, sent: Sent) -> io::Result<bool> {
         let index = sent.part as usize;
         let mut listed = false;
         let mut now = HashSet::new();
@@ -368,7 +368,7 @@ impl Emit {
     }
 
     /// Whether each holder ever listed exists from `at`: none where the hour cannot say.
-    fn exist(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn exist(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         let Some(existence) = &self.existence else {
             let ended: Vec<KeyHandle> = self.exists.drain().collect();
             for key in ended {
@@ -397,7 +397,7 @@ impl Emit {
     }
 
     /// Each refusal holding from `at`, with its count.
-    fn refuse(&mut self, writer: &mut Writer<'_>, at: i32) -> io::Result<()> {
+    fn refuse(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
         let mut now = self.refusals.clone();
         if let Some(existence) = &self.existence
             && self.listed.iter().any(|slot| !existence.contains_key(slot))
@@ -429,14 +429,14 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.known(writer, last)
     }
 
     /// Writes the hours handed since the domain's evidence was last written, through `last`, as
     /// known: a run must lie within its key's evidence.
-    fn known(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn known(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         let Some(first) = self.first.take() else {
             return Ok(());
         };

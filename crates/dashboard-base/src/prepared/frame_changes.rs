@@ -2,7 +2,8 @@
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{BranchId, Hour, format::FormatVersion, rows::DeltaRow, rows::TableId};
 use replay_frame::{
-    frame::DecodedFrame, frame::IntoRecordedFrame, frame::RecordedFrame, frame::TableUpdate,
+    frame::DecodedFrame, frame::IntoRecordedFrame, frame::Metrics, frame::RecordedFrame,
+    frame::TableUpdate,
     frame::TableView, frame::ViewIdentity,
 };
 use std::sync::Arc;
@@ -115,10 +116,15 @@ impl FrameChanges {
     }
 
     fn alone_inner(frame: &DecodedFrame, format: FormatVersion) -> Self {
+        Self::alone_at(&frame.metrics, frame.hour, format)
+    }
+
+    /// [`Self::alone`] of an hour read through views: its metrics and hour.
+    pub fn alone_at(metrics: &Metrics, hour: i32, format: FormatVersion) -> Self {
         Self {
             rows_changed: [true; TABLE_COUNT],
-            table_read: std::array::from_fn(|index| frame.metrics.table_ns[index] != 0),
-            slot_read: crate::metadata::slot_reads(format, &frame.metrics, frame.hour),
+            table_read: std::array::from_fn(|index| metrics.table_ns[index] != 0),
+            slot_read: crate::metadata::slot_reads(format, metrics, hour),
             updates: None,
         }
     }
@@ -136,8 +142,19 @@ impl FrameChanges {
         continues: bool,
         rebuilt: impl Fn(TableId) -> bool,
     ) -> Self {
+        Self::rebuilt_at(&frame.metrics, frame.hour, format, continues, rebuilt)
+    }
+
+    /// [`Self::rebuilt`] of an hour read through views: its metrics and hour.
+    pub fn rebuilt_at(
+        metrics: &Metrics,
+        hour: i32,
+        format: FormatVersion,
+        continues: bool,
+        rebuilt: impl Fn(TableId) -> bool,
+    ) -> Self {
         let _cpu = ::replay_frame::cpu::scope("frame changes", None);
-        let mut changes = Self::alone_inner(frame, format);
+        let mut changes = Self::alone_at(metrics, hour, format);
         if continues {
             changes.rows_changed = TableId::ALL.map(rebuilt);
         }

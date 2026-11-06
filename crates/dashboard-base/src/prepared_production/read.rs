@@ -11,74 +11,9 @@ use crate::products::equipment::production::{
 use crate::products::equipment::{self, Domain, RawVariant, StockVariantName};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, Read, Seek};
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
-
-/// Bytes of decoded endpoint states an index keeps for the next request,
-/// charged whole to the observation cache.
-const STATE_BYTES: usize = 32 << 20;
-/// Bytes of holders' coverage histories an index keeps, charged whole.
-const COVERAGE_BYTES: usize = 4 << 20;
+use std::sync::{Arc, Mutex, Weak, atomic::AtomicBool};
 
 type CoverageRuns = Vec<(u64, Option<Option<ProductionSpendingUnknown>>)>;
-
-/// Values kept within a byte budget, the least recently used dropped first.
-struct Kept<K, V> {
-    entries: Vec<(K, Arc<V>, usize)>,
-    bytes: usize,
-    budget: usize,
-}
-
-impl<K: PartialEq, V> Kept<K, V> {
-    fn new(budget: usize) -> Self {
-        Self {
-            entries: Vec::new(),
-            bytes: 0,
-            budget,
-        }
-    }
-
-    fn get(&mut self, key: &K) -> Option<Arc<V>> {
-        let at = self.entries.iter().position(|(held, _, _)| held == key)?;
-        let entry = self.entries.remove(at);
-        let value = Arc::clone(&entry.1);
-        self.entries.push(entry);
-        Some(value)
-    }
-
-    /// What keeping a value of `heap` bytes costs: also its `Arc` and entry.
-    fn charge(heap: usize) -> usize {
-        heap + std::mem::size_of::<V>()
-            + 2 * std::mem::size_of::<usize>()
-            + std::mem::size_of::<(K, Arc<V>, usize)>()
-    }
-
-    /// Keeps `value` unless it alone exceeds the budget.
-    fn put(&mut self, key: K, value: &Arc<V>, bytes: usize) {
-        if bytes > self.budget {
-            return;
-        }
-        while self.bytes + bytes > self.budget && !self.entries.is_empty() {
-            self.bytes -= self.entries.remove(0).2;
-        }
-        self.bytes += bytes;
-        self.entries.push((key, Arc::clone(value), bytes));
-    }
-}
-
-impl State {
-    fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.holders.capacity() * std::mem::size_of::<Option<Holder>>()
-            + self
-                .holders
-                .iter()
-                .flatten()
-                .flat_map(|holder| [&holder.equipment, &holder.rocket])
-                .flatten()
-                .map(|source| source.leaves.capacity() * std::mem::size_of::<facts::Leaf>())
-                .sum::<usize>()
-    }
-}
 
 /// What spending readers count of the branch's reads, holders by id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -434,8 +369,10 @@ pub(crate) struct Index {
     revocations: HashMap<(u32, u32, u32, Option<i32>, i32), i32>,
     pub keys: Vec<Vec<SeriesKey>>,
     pub diagnostics: Diagnostics,
-    states: Mutex<Kept<u64, State>>,
-    coverage: Mutex<Kept<u32, CoverageRuns>>,
+    /// Endpoint states decoded, each kept while a reader holds it.
+    states: Mutex<BTreeMap<u64, Weak<State>>>,
+    /// Each holder's coverage runs, decoded once per publication.
+    coverage: Mutex<HashMap<u32, Arc<CoverageRuns>>>,
     #[cfg(any(test, feature = "test-support"))]
     pub work: Mutex<Work>,
 }
@@ -486,8 +423,8 @@ impl Index {
             revocations: HashMap::new(),
             keys: Vec::new(),
             diagnostics: Diagnostics::default(),
-            states: Mutex::new(Kept::new(STATE_BYTES)),
-            coverage: Mutex::new(Kept::new(COVERAGE_BYTES)),
+            states: Mutex::new(BTreeMap::new()),
+            coverage: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "test-support"))]
             work: Mutex::new(Work::default()),
         }
@@ -554,8 +491,8 @@ impl Index {
             revocations: self.revocations.clone(),
             keys: self.keys.clone(),
             diagnostics: self.diagnostics.clone(),
-            states: Mutex::new(Kept::new(STATE_BYTES)),
-            coverage: Mutex::new(Kept::new(COVERAGE_BYTES)),
+            states: Mutex::new(BTreeMap::new()),
+            coverage: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "test-support"))]
             work: Mutex::new(Work::default()),
         }
@@ -745,39 +682,6 @@ impl Index {
         Ok(())
     }
 
-    /// Bytes it keeps, for the observation cache's budget.
-    fn bytes(&self) -> usize {
-        use std::mem::size_of;
-        size_of::<Self>()
-            + self.holders.iter().map(|tag| 2 * tag.len() + 64).sum::<usize>()
-            + self.variants.capacity() * 8
-            + self.variant_ids.capacity() * 24
-            + self.tokens.iter().map(|token| token.len() + 24).sum::<usize>()
-            + self.raws.len() * 256
-            + self.endpoints.capacity() * size_of::<Endpoint>()
-            + self.endpoint_ranges.capacity() * 4
-            + self
-                .groups
-                .iter()
-                .map(|groups| groups.capacity() * size_of::<GroupAt>() + 24)
-                .sum::<usize>()
-            + self
-                .naming
-                .iter()
-                .flatten()
-                .map(|(_, codes)| 40 + codes.len() * size_of::<NameCode>())
-                .sum::<usize>()
-            + self.finals.len() * (size_of::<Option<Final>>() + 16)
-            + self.revocations.len() * 64
-            + self
-                .keys
-                .iter()
-                .map(|keys| keys.capacity() * size_of::<SeriesKey>() + 24)
-                .sum::<usize>()
-            + STATE_BYTES
-            + COVERAGE_BYTES
-    }
-
     /// The publication it was read from: its range count and last range.
     pub(crate) fn publication(&self) -> (usize, Option<[u64; 3]>) {
         (self.ranges.len(), self.ranges.last().and_then(|range| range.id))
@@ -851,15 +755,13 @@ impl Index {
                 .ok_or_else(|| facts::invalid("no ranking keyframe"))?;
         }
         let start = {
-            let mut kept = self.states.lock().unwrap_or_else(|error| error.into_inner());
-            if let Some(state) = kept.get(&ordinal) {
+            let held = self.states.lock().unwrap_or_else(|error| error.into_inner());
+            if let Some(state) = held.get(&ordinal).and_then(Weak::upgrade) {
                 return Ok(state);
             }
-            kept.entries
-                .iter()
-                .filter(|(held, _, _)| (keyframe as u64..ordinal).contains(held))
-                .max_by_key(|(held, _, _)| *held)
-                .map(|(held, state, _)| (*held, Arc::clone(state)))
+            held.range(keyframe as u64..ordinal)
+                .rev()
+                .find_map(|(at, state)| Some((*at, state.upgrade()?)))
         };
         let (mut state, from) = match start {
             Some((held, state)) => ((*state).clone(), held as usize + 1),
@@ -895,12 +797,10 @@ impl Index {
                 work.bytes += block.len();
             }
         }
-        let bytes = Kept::<u64, State>::charge(state.bytes());
         let state = Arc::new(state);
-        self.states
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .put(ordinal, &state, bytes);
+        let mut held = self.states.lock().unwrap_or_else(|error| error.into_inner());
+        held.retain(|_, state| state.strong_count() > 0);
+        held.insert(ordinal, Arc::downgrade(&state));
         Ok(state)
     }
 
@@ -987,7 +887,7 @@ impl Index {
             .unwrap_or_else(|error| error.into_inner())
             .get(&holder)
         {
-            return Ok(runs);
+            return Ok(Arc::clone(runs));
         }
         let mut runs: CoverageRuns = Vec::new();
         for group in self.groups.get(holder as usize).into_iter().flatten() {
@@ -1002,14 +902,11 @@ impl Index {
                 true
             })?;
         }
-        let bytes = Kept::<u32, CoverageRuns>::charge(
-            runs.capacity() * std::mem::size_of::<(u64, Option<Option<ProductionSpendingUnknown>>)>(),
-        );
         let runs = Arc::new(runs);
         self.coverage
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .put(holder, &runs, bytes);
+            .insert(holder, Arc::clone(&runs));
         Ok(runs)
     }
 
@@ -1147,15 +1044,6 @@ impl Classes {
         sorted.sort_unstable_by_key(|&variant| index.variants[variant as usize]);
         sorted
     }
-
-    fn bytes(&self) -> usize {
-        self.of.len() * (std::mem::size_of::<Option<Class>>() + 52)
-            + self
-                .raw_names
-                .iter()
-                .map(|name| 24 + name.as_ref().map_or(0, String::len))
-                .sum::<usize>()
-    }
 }
 
 /// A variant's classification as a spending reply reads it.
@@ -1210,7 +1098,6 @@ pub(crate) fn index(
             &published,
             &"production-index",
             cancelled,
-            Index::bytes,
             |previous| Index::read(store, key, branch, published.0, previous.as_deref(), cancelled),
         )?;
     let mut warnings = Vec::new();
@@ -1236,11 +1123,6 @@ pub(crate) fn index(
         &content_of,
         &published,
         cancelled,
-        |(_, _, classes): &(
-            Option<std::sync::Weak<crate::catalogue::Catalogue>>,
-            Option<std::sync::Weak<installed_content_core::equipment::Database>>,
-            Arc<Classes>,
-        )| classes.bytes(),
         || {
             let named = Named {
                 units: units.as_deref(),

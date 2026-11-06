@@ -16,6 +16,89 @@ impl SideLossInputs {
             equipment.capacity() * size_of::<(u64, i64)>()
         })
     }
+
+    /// What moved from these counters to `now`.
+    pub(super) fn moved(&self, now: &Self) -> SideMove {
+        let manpower = match (self.manpower, now.manpower) {
+            (before, after) if before == after => Manpower::Same,
+            (Some(before), Some(after)) => Manpower::By(after.wrapping_sub(before)),
+            (_, after) => Manpower::Set(after),
+        };
+        let equipment = match (&self.equipment, &now.equipment) {
+            (before, after) if before == after => Equipment::Same,
+            (Some(before), Some(after))
+                if before.len() == after.len()
+                    && before.iter().zip(after).all(|(then, now)| then.0 == now.0) =>
+            {
+                Equipment::By(
+                    before
+                        .iter()
+                        .zip(after)
+                        .enumerate()
+                        .filter(|(_, (then, now))| then.1 != now.1)
+                        .map(|(at, (then, now))| (at, now.1.wrapping_sub(then.1)))
+                        .collect(),
+                )
+            }
+            (_, after) => Equipment::Set(after.clone()),
+        };
+        SideMove {
+            manpower,
+            equipment,
+        }
+    }
+
+    /// These counters moved as `moved` says.
+    pub(super) fn apply(&mut self, moved: SideMove) -> io::Result<()> {
+        let unheld = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "A land loss moved counters its emit never held",
+            )
+        };
+        match moved.manpower {
+            Manpower::Same => {}
+            Manpower::By(by) => {
+                let held = self.manpower.as_mut().ok_or_else(unheld)?;
+                *held = held.wrapping_add(by);
+            }
+            Manpower::Set(manpower) => self.manpower = manpower,
+        }
+        match moved.equipment {
+            Equipment::Same => {}
+            Equipment::By(moves) => {
+                let held = self.equipment.as_mut().ok_or_else(unheld)?;
+                for (at, by) in moves {
+                    let amount = &mut held.get_mut(at).ok_or_else(unheld)?.1;
+                    *amount = amount.wrapping_add(by);
+                }
+            }
+            Equipment::Set(equipment) => self.equipment = equipment,
+        }
+        Ok(())
+    }
+}
+
+/// What moved of one side's counters since the row its emit holds.
+#[derive(Debug, replay_spool::Spooled)]
+pub struct SideMove {
+    manpower: Manpower,
+    equipment: Equipment,
+}
+
+#[derive(Debug, replay_spool::Spooled)]
+enum Manpower {
+    Same,
+    By(i32),
+    Set(Option<i32>),
+}
+
+#[derive(Debug, replay_spool::Spooled)]
+enum Equipment {
+    Same,
+    /// The designs as held; the amounts at these positions moved by these.
+    By(Vec<(usize, i64)>),
+    Set(Option<Vec<(u64, i64)>>),
 }
 /// Each side's hourly counters as LandCombatProgress records them, attacker then defender.
 pub(super) fn progress_inputs(
@@ -80,13 +163,13 @@ impl Designs {
     }
 }
 /// One side's counters as read; variants pair a branch design with the signed fixed5 amount.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, replay_spool::Spooled)]
 pub(super) struct SideRead {
     pub(super) manpower: Option<i32>,
     pub(super) equipment: Option<Vec<(usize, i64)>>,
 }
 /// Recorded cumulative observer counters, with explicit unknown reads at gaps.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, replay_spool::Spooled)]
 pub(super) struct LossRead {
     pub(super) hour: i32,
     /// True only for the post-flush FinalizeCombat read, never inferred from absence.
@@ -311,36 +394,36 @@ impl Census {
                 })
                 .count();
         }
-        self.read_losses(frame.hour, open, |combat| {
+        self.read_losses(frame.hour, &open, |combat| {
             progress.and_then(|progress| {
                 progress
                     .binary_search_by_key(&combat, |row| row.combat)
                     .ok()
-                    .map(|at| progress_inputs(&progress[at]))
+                    .map(|at| std::borrow::Cow::Owned(progress_inputs(&progress[at])))
             })
         });
     }
     /// The hourly counters `progress` reads at `hour` for each of `open`'s battles, by its
     /// combat: none where they were not read.
-    pub(super) fn read_losses(
+    pub(super) fn read_losses<'p>(
         &mut self,
         hour: i32,
-        open: Vec<(u64, usize)>,
-        progress: impl Fn(u64) -> Option<[SideLossInputs; 2]>,
+        open: &[(u64, usize)],
+        progress: impl Fn(u64) -> Option<std::borrow::Cow<'p, [SideLossInputs; 2]>>,
     ) {
-        for (combat, at) in open {
+        for &(combat, at) in open {
             #[cfg(test)]
             {
                 self.work.history_visits += 1;
             }
             if let Some(losses) = progress(combat) {
                 // Repeated confirmations need no repeated values in the reply.
-                if self.episodes[&at].loss_inputs.as_ref() == Some(&losses) {
+                if self.episodes[&at].loss_inputs.as_ref() == Some(&*losses) {
                     continue;
                 }
                 let sides = self.side_reads(hour, &losses);
                 let episode = held(&mut self.episodes, at);
-                episode.loss_inputs = Some(losses);
+                episode.loss_inputs = Some(losses.into_owned());
                 episode.losses.push(LossRead {
                     hour,
                     terminal: false,
@@ -467,6 +550,7 @@ impl Census {
                         result: None,
                         prior_peaks: [None, None, None],
                         history: None,
+                        carried: None,
                         runs: vec![LandBattleRun {
                             first_hour: result.end_hour,
                             last_hour: result.end_hour,

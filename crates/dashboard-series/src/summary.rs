@@ -95,6 +95,21 @@ impl Summary {
             has_break: false,
         }
     }
+    /// A run continued unchanged through `hours`, as its piece there sums.
+    pub(crate) fn held(value: i128, hours: Span, decimals: u8) -> Self {
+        Self::run(
+            Run {
+                span: hours,
+                value,
+                break_before: false,
+                supplying_boundary: false,
+                canonical: 0,
+                sequence: 0,
+            },
+            hours,
+            decimals,
+        )
+    }
     pub fn merge(self, b: Self) -> io::Result<Self> {
         let adjacent = i64::from(self.last_hour) + 1 == i64::from(b.first_hour);
         Ok(Self {

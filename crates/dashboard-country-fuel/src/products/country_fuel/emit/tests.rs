@@ -15,7 +15,7 @@ use super::super::{
 use super::*;
 use dashboard_base::{prepared::engine, products::country_groups::HourSpan};
 use dashboard_series::{
-    Budget, Cache, Identity, Publication, Snapshot,
+    Identity, Publication, Snapshot,
     memory::{Memory, publish},
 };
 use replay::{
@@ -211,11 +211,9 @@ fn identity() -> Identity {
 /// The publication of `hours` cut after each of `cuts`' hours, with each cut's root; at each of
 /// `resume`'s, the emit is saved and goes on from the publication.
 fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: &[i32]) -> (Memory, Vec<(i32, u64)>) {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(FormatVersion::CURRENT);
     let mut roots = Vec::new();
     let mut hours = hours.into_iter().peekable();
@@ -231,13 +229,13 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: &[i32]) -> (Memory, Vec<
             reached: cut,
             refusal: None,
         };
-        let root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+        let root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
         roots.push((cut, root));
         if resume.contains(&cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(FormatVersion::CURRENT, &directory, &saved).unwrap();
         }
@@ -462,10 +460,8 @@ fn value_at(snapshot: &mut Snapshot<'_, Memory>, key: Option<u64>, hour: i32) ->
 
 /// What the publication at `root` shows at `hours`.
 fn shown(pages: &Memory, root: u64, hours: &[i32]) -> Shown {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let cancelled = AtomicBool::new(false);
-    let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let last = snapshot.publication().accepted.last;
     let mut states = BTreeMap::new();
@@ -1129,8 +1125,7 @@ fn a_tag_no_longer_read_leaves_its_pack_out_of_the_saved_emit() {
         })
         .collect();
     let (_, projected) = walk(&runs_of(inputs), &BTreeSet::new());
-    let budget = Budget::new(1 << 30);
-    let mut writer = Writer::new(&budget, identity(), start).unwrap();
+    let mut writer = Writer::new(identity(), start).unwrap();
     let mut emit = Emit::new(FormatVersion::CURRENT);
     let mut saved = BTreeMap::new();
     for hour in projected {
@@ -1157,10 +1152,8 @@ fn a_tag_no_longer_read_leaves_its_pack_out_of_the_saved_emit() {
 }
 
 fn plain(runs: &[(u64, Vec<(i32, i32, i128, bool)>)], first: i32, last: i32) -> (Memory, u64) {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut actors = Actors::new(SCHEMA);
     for (key, pieces) in runs {
         let actor = actors
@@ -1199,7 +1192,7 @@ fn plain(runs: &[(u64, Vec<(i32, i32, i128, bool)>)], first: i32, last: i32) -> 
         reached: last,
         refusal: None,
     };
-    let root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+    let root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
     (pages, root)
 }
 
@@ -1232,8 +1225,6 @@ fn day_charts_are_the_charts_of_the_kept_days_on_their_hours() {
     let first = walked[0];
     let cuts: Vec<i32> = ends.iter().map(|&at| walked[at]).collect();
     let (pages, roots) = build(projected, &cuts, &cuts);
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let cancelled = AtomicBool::new(false);
     for &(cut, root) in &roots {
         let through: Vec<DecodedFrame> = normalized
@@ -1248,7 +1239,7 @@ fn day_charts_are_the_charts_of_the_kept_days_on_their_hours() {
                 .unwrap();
         }
         let scanned = scan.finish(FormatVersion::CURRENT);
-        let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         for (tag, country) in &scanned.countries {
             let actor = directory.actor(tag.as_bytes());
@@ -1268,7 +1259,7 @@ fn day_charts_are_the_charts_of_the_kept_days_on_their_hours() {
                 }
                 let (reference, reference_root) = plain(&[(0, pieces)], first, cut);
                 let mut referenced =
-                    Snapshot::open(reference, &cache, reference_root, identity()).unwrap();
+                    Snapshot::open(reference, reference_root, identity()).unwrap();
                 let reference_directory = Directory::read(&mut referenced, SCHEMA).unwrap();
                 let key = reference_directory
                     .actor(b"K0")
@@ -1361,8 +1352,7 @@ fn fifteen_hundred_countries_write_reads_only_where_they_are_read() {
             .collect::<Vec<_>>(),
         [1500, 0, 0, 1, 0]
     );
-    let budget = Budget::new(1 << 30);
-    let mut writer = Writer::new(&budget, identity(), start).unwrap();
+    let mut writer = Writer::new(identity(), start).unwrap();
     let mut emit = Emit::new(FormatVersion::CURRENT);
     let mut held = Vec::new();
     for hour in projected {
@@ -1387,12 +1377,10 @@ fn a_damaged_saved_emit_is_refused() {
         .collect();
     let (_, projected) = walk(&runs_of(inputs), &BTreeSet::new());
     let (pages, roots) = build(projected, &[start + 3], &[]);
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages, &cache, roots[0].1, identity()).unwrap();
+    let mut snapshot = Snapshot::open(pages, roots[0].1, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let mut emit = Emit::new(FormatVersion::CURRENT);
-    let mut writer = Writer::new(&budget, identity(), start).unwrap();
+    let mut writer = Writer::new(identity(), start).unwrap();
     let inputs: Vec<Hourly> = (start..=start + 3)
         .map(|hour| (frame(hour), hour == start))
         .collect();

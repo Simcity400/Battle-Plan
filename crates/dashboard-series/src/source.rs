@@ -12,7 +12,6 @@ use crate::{
 };
 use std::{collections::HashMap, io, sync::Arc};
 
-const MEMO: usize = 65536;
 const NO_EVIDENCE: Evidence = Evidence {
     span: Span { first: 0, last: 0 },
     known: Knownness::Known,
@@ -156,32 +155,63 @@ pub(crate) fn partition_point(
     Ok(base + u64::from(before(base)?))
 }
 
-pub(crate) struct Source<'s, 'a, P> {
-    pub r: &'s mut Reader<'a>,
+pub(crate) struct Source<'s, P> {
+    pub r: &'s mut Reader,
     pub io: &'s mut P,
     pub defs: &'s mut HashMap<u64, Option<Definition>>,
     pub accepted: Span,
 }
 
-impl<P: PageRead> Source<'_, '_, P> {
+impl<P: PageRead> Source<'_, P> {
     pub fn def(&mut self, key: u64) -> io::Result<Option<Definition>> {
         if let Some(definition) = self.defs.get(&key) {
             return Ok(*definition);
         }
         let definition = self.r.definition(self.io, key)?;
-        if self.defs.len() >= MEMO {
-            self.defs.clear();
-        }
         self.defs.insert(key, definition);
         Ok(definition)
     }
+    /// The entry of `key` in `node` for its events: a held one holds none.
+    pub fn event_entry(&mut self, node: &Node, key: u64) -> io::Result<Option<Entry>> {
+        Ok(self
+            .r
+            .entry(self.io, node.entries, key)?
+            .filter(|entry| entry.held.is_none()))
+    }
+    /// The entry of `subject` in `node`; a held one as the rows it continues.
     pub fn entry(&mut self, node: &Node, subject: Subject) -> io::Result<Option<Entry>> {
+        match self.shaped(node, subject)? {
+            Some(entry) => self.resolved(node, subject, entry).map(Some),
+            None => Ok(None),
+        }
+    }
+    /// The entry of `subject` in `node` with a held one's tracks and counters alone: what a seek
+    /// or chase tests.
+    fn shaped(&mut self, node: &Node, subject: Subject) -> io::Result<Option<Entry>> {
         let dir = if subject.domain {
             node.domains
         } else {
             node.entries
         };
-        self.r.entry(self.io, dir, subject.id)
+        Ok(self
+            .r
+            .entry(self.io, dir, subject.id)?
+            .map(|entry| entry.shaped(node.hours, node.segments)))
+    }
+    /// A shaped entry of `node`, a held one read as the rows it continues.
+    fn resolved(&mut self, node: &Node, subject: Subject, entry: Entry) -> io::Result<Entry> {
+        if entry.held.is_none() {
+            return Ok(entry);
+        }
+        let (mut entry, run) = self.r.held(self.io, node, entry)?;
+        if let Some(run) = run {
+            let decimals = self
+                .def(subject.id)?
+                .ok_or_else(|| invalid("series held run of an undefined key"))?
+                .decimals;
+            entry.summary = Some(Summary::held(run.value, node.hours, decimals));
+        }
+        Ok(entry)
     }
     pub fn segment(&mut self, hour: i32) -> io::Result<Option<Arc<Node>>> {
         if !self.accepted.contains(hour) {
@@ -210,7 +240,8 @@ impl<P: PageRead> Source<'_, '_, P> {
         let Some(segment) = self.r.segment_at(self.io, from)? else {
             return Ok(None);
         };
-        if let Some(entry) = self.entry(&segment, subject)?.filter(|e| has(e)) {
+        if let Some(entry) = self.shaped(&segment, subject)?.filter(|e| has(e)) {
+            let entry = self.resolved(&segment, subject, entry)?;
             return Ok(Some((segment, entry)));
         }
         let mut edge = if forward {
@@ -243,10 +274,11 @@ impl<P: PageRead> Source<'_, '_, P> {
         forward: bool,
         has: &dyn Fn(&Entry) -> bool,
     ) -> io::Result<Option<(Arc<Node>, Entry)>> {
-        let Some(entry) = self.entry(node, subject)?.filter(|e| has(e)) else {
+        let Some(entry) = self.shaped(node, subject)?.filter(|e| has(e)) else {
             return Ok(None);
         };
         if node.level == 0 {
+            let entry = self.resolved(node, subject, entry)?;
             return Ok(Some((Arc::clone(node), entry)));
         }
         let count = node.children.len();
@@ -276,7 +308,7 @@ impl<P: PageRead> Source<'_, '_, P> {
             let Some(node) = self.r.node_at(self.io, next)? else {
                 return Ok(end);
             };
-            let Some(entry) = self.entry(&node, subject)? else {
+            let Some(entry) = self.shaped(&node, subject)? else {
                 return Ok(end);
             };
             let track = rows.track(&entry);
@@ -308,7 +340,7 @@ impl<P: PageRead> Source<'_, '_, P> {
         if held.block != block {
             held.block = NONE;
             let found = self.run_block(segment, entry, block)?.block;
-            held.count = self.fragments(segment, found, &mut held.rows)?;
+            held.count = self.fragments(segment, entry, found, &mut held.rows)?;
             held.block = block;
         }
         held.rows[..held.count]
@@ -328,6 +360,14 @@ impl<P: PageRead> Source<'_, '_, P> {
         if index >= count {
             return Err(invalid("series run block outside its key"));
         }
+        if entry.held.is_some() {
+            return Ok(RunBlock {
+                block: held_block(segment),
+                summary: entry
+                    .summary
+                    .ok_or_else(|| invalid("series held run without its summary"))?,
+            });
+        }
         let table = segment
             .segment
             .ok_or_else(|| invalid("series blocks outside a segment"))?
@@ -345,6 +385,9 @@ impl<P: PageRead> Source<'_, '_, P> {
         let (first, count) = self.blocks(entry, rows)?;
         if index >= count {
             return Err(invalid("series block outside its subject"));
+        }
+        if entry.held.is_some() {
+            return Ok(held_block(segment));
         }
         let table = segment
             .segment
@@ -373,30 +416,66 @@ impl<P: PageRead> Source<'_, '_, P> {
         self.r
             .record::<EventBlock>(self.io, table, crate::add(first, index)?)
     }
+    /// A block of `entry`'s run rows; a held entry's one row continues its run through `segment`.
     pub fn fragments(
         &mut self,
         segment: &Node,
+        entry: &Entry,
         block: Block,
         out: &mut [Fragment; BLOCK],
     ) -> io::Result<usize> {
+        if entry.held.is_some() {
+            let tail = entry
+                .detail
+                .and_then(|detail| detail.tail)
+                .ok_or_else(|| invalid("series held run without its run"))?;
+            out[0] = Fragment {
+                span: segment.hours,
+                value: tail.value,
+                break_before: false,
+                supplying_boundary: false,
+                continues: true,
+            };
+            return Ok(1);
+        }
         let (page, at) = self.r.block(self.io, segment, block)?;
         read::runs(page.bytes(), at, block, out)
     }
     pub fn evidence_rows(
         &mut self,
         segment: &Node,
+        entry: &Entry,
         block: Block,
         out: &mut [(Evidence, bool); BLOCK],
     ) -> io::Result<usize> {
+        if entry.held.is_some() {
+            let tail = entry
+                .detail
+                .and_then(|detail| detail.evidence_tail)
+                .ok_or_else(|| invalid("series held evidence without its evidence"))?;
+            out[0] = (
+                Evidence {
+                    span: segment.hours,
+                    ..tail
+                },
+                true,
+            );
+            return Ok(1);
+        }
         let (page, at) = self.r.block(self.io, segment, block)?;
         read::evidence(page.bytes(), at, block, out)
     }
     pub fn coverage_rows(
         &mut self,
         segment: &Node,
+        entry: &Entry,
         block: Block,
         out: &mut [Span; BLOCK],
     ) -> io::Result<usize> {
+        if entry.held.is_some() {
+            out[0] = segment.hours;
+            return Ok(1);
+        }
         let (page, at) = self.r.block(self.io, segment, block)?;
         read::coverage(page.bytes(), at, block, out)
     }
@@ -504,7 +583,7 @@ impl<P: PageRead> Source<'_, '_, P> {
                 return Ok(None);
             };
             let block = self.run_block(&segment, &entry, index)?.block;
-            let n = self.fragments(&segment, block, &mut rows)?;
+            let n = self.fragments(&segment, &entry, block, &mut rows)?;
             match rows[..n].iter().position(|row| row.span.contains(hour)) {
                 Some(at) => Some((row_ordinal(index, at)?, rows[at])),
                 None => None,
@@ -556,7 +635,7 @@ impl<P: PageRead> Source<'_, '_, P> {
         let mut rows = [Fragment::default(); BLOCK];
         for index in low..count {
             let block = self.run_block(&segment, &entry, index)?.block;
-            let n = self.fragments(&segment, block, &mut rows)?;
+            let n = self.fragments(&segment, &entry, block, &mut rows)?;
             if let Some(at) = rows[..n].iter().position(|row| row.span.last >= hour) {
                 return self
                     .canonical(key, &segment, &entry, row_ordinal(index, at)?, rows[at])
@@ -589,7 +668,7 @@ impl<P: PageRead> Source<'_, '_, P> {
             .ok_or_else(|| invalid("series run extent does not match its rows"))?;
         let block = self.run_block(&segment, &entry, index)?.block;
         let mut rows = [Fragment::default(); BLOCK];
-        let n = self.fragments(&segment, block, &mut rows)?;
+        let n = self.fragments(&segment, &entry, block, &mut rows)?;
         let at = rows[..n]
             .iter()
             .rposition(|row| row.span.first <= hour)
@@ -619,7 +698,7 @@ impl<P: PageRead> Source<'_, '_, P> {
         let mut rows = [Fragment::default(); BLOCK];
         for index in 0..count {
             let block = self.run_block(segment, entry, index)?.block;
-            let n = self.fragments(segment, block, &mut rows)?;
+            let n = self.fragments(segment, entry, block, &mut rows)?;
             for (at, row) in rows[..n].iter().enumerate() {
                 let ordinal = row_ordinal(index, at)?;
                 let head = ordinal == 0 && row.continues;
@@ -758,7 +837,7 @@ impl<P: PageRead> Source<'_, '_, P> {
             {
                 continue;
             }
-            let n = self.fragments(node, block.block, &mut rows)?;
+            let n = self.fragments(node, &entry, block.block, &mut rows)?;
             for row in &rows[..n] {
                 if let Some(part) = row.span.intersect(span) {
                     visit(Piece {
@@ -797,7 +876,7 @@ impl<P: PageRead> Source<'_, '_, P> {
         let mut rows = [(NO_EVIDENCE, false); BLOCK];
         for index in low..count {
             let block = self.plain_block(&segment, &entry, Rows::Evidence, index)?;
-            let n = self.evidence_rows(&segment, block, &mut rows)?;
+            let n = self.evidence_rows(&segment, &entry, block, &mut rows)?;
             if let Some(at) = rows[..n].iter().position(|(row, _)| row.span.last >= hour) {
                 let (mut row, continues) = rows[at];
                 if continues && index == 0 && at == 0 {
@@ -841,7 +920,7 @@ impl<P: PageRead> Source<'_, '_, P> {
             .ok_or_else(|| invalid("series evidence extent does not match its rows"))?;
         let block = self.plain_block(&segment, &entry, Rows::Evidence, index)?;
         let mut rows = [(NO_EVIDENCE, false); BLOCK];
-        let n = self.evidence_rows(&segment, block, &mut rows)?;
+        let n = self.evidence_rows(&segment, &entry, block, &mut rows)?;
         let at = rows[..n]
             .iter()
             .rposition(|(row, _)| row.span.first <= hour)
@@ -889,7 +968,7 @@ impl<P: PageRead> Source<'_, '_, P> {
         let mut rows = [Span::default(); BLOCK];
         for index in low..count {
             let block = self.plain_block(&segment, &entry, Rows::Coverage, index)?;
-            let n = self.coverage_rows(&segment, block, &mut rows)?;
+            let n = self.coverage_rows(&segment, &entry, block, &mut rows)?;
             if let Some(at) = rows[..n].iter().position(|row| row.last >= hour) {
                 let mut row = rows[at];
                 if row.last == segment.hours.last {
@@ -921,7 +1000,7 @@ impl<P: PageRead> Source<'_, '_, P> {
         }
         for reference in frontier {
             let node = self.r.child(self.io, reference)?;
-            let Some(entry) = self.entry(&node, Subject::key(key))? else {
+            let Some(entry) = self.event_entry(&node, key)? else {
                 continue;
             };
             if entry.late.count == 0 || entry.late.first > span.last || entry.late.last < span.first
@@ -993,7 +1072,7 @@ impl<P: PageRead> Source<'_, '_, P> {
         visible: Visibility,
         whole: &mut dyn FnMut(&mut Self, Item) -> io::Result<bool>,
     ) -> io::Result<()> {
-        let Some(entry) = self.entry(node, Subject::key(key))? else {
+        let Some(entry) = self.event_entry(node, key)? else {
             return Ok(());
         };
         let stats = entry.events;
@@ -1114,6 +1193,17 @@ pub(crate) fn intersects(selection: Selection<'_>, span: Span) -> bool {
             .get(members.partition_point(|s| s.last < span.first))
             .is_some_and(|s| s.first <= span.last)
     })
+}
+
+/// The one block of a held entry's table: its row spans the segment.
+fn held_block(segment: &Node) -> Block {
+    Block {
+        page: NONE,
+        offset: 0,
+        rows: 1,
+        first: segment.hours.first,
+        last: segment.hours.last,
+    }
 }
 
 /// The ordinal of row `at` of block `index`.

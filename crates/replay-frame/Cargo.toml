@@ -15,6 +15,7 @@ test-support = []
 [dependencies]
 job-priority.workspace = true
 engine-allocation.workspace = true
+replay-columnar.workspace = true
 replay-data.workspace = true
 crc32fast = "1"
 replay-spool.workspace = true

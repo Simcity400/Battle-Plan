@@ -1,11 +1,12 @@
 use crate::{
+    Grow,
     codec::{Binary, Decode, Encode, Sink},
     format::{Directory, Entry, List, Table},
     invalid,
-    pages::{self, Kind, PAGE_BYTES, PageWrite},
+    pages::{self, Kind, PAGE_BYTES, Page, PageWrite},
     types::PageId,
 };
-use std::{io, marker::PhantomData};
+use std::{io, marker::PhantomData, sync::Arc};
 
 const IDS: usize = PAGE_BYTES / 8;
 
@@ -103,11 +104,23 @@ impl Pages {
     }
 }
 
+/// The raw bytes of each page written, kept when the writer merges what it wrote later.
+fn keep(kept: &mut Option<Vec<Arc<Page>>>, raw: &[u8]) -> io::Result<()> {
+    if let Some(kept) = kept {
+        kept.try_push(Arc::new(Page::new(
+            Kind::Records,
+            engine_allocation::copy_vec(raw)?,
+        )))?;
+    }
+    Ok(())
+}
+
 /// Fixed-width records written page by page.
 pub(crate) struct Records<T> {
     page: Sink,
     pages: Pages,
     count: u64,
+    kept: Option<Vec<Arc<Page>>>,
     _record: PhantomData<T>,
 }
 impl<T: Binary> Records<T> {
@@ -116,7 +129,15 @@ impl<T: Binary> Records<T> {
             page: Sink::default(),
             pages: Pages::new(),
             count: 0,
+            kept: None,
             _record: PhantomData,
+        }
+    }
+    /// Records whose pages [`Self::finish_kept`] also returns.
+    pub fn keeping() -> Self {
+        Self {
+            kept: Some(Vec::new()),
+            ..Self::new()
         }
     }
     pub fn count(&self) -> u64 {
@@ -132,18 +153,24 @@ impl<T: Binary> Records<T> {
     }
     fn flush(&mut self, io: &mut impl PageWrite) -> io::Result<()> {
         if self.page.len() != 0 {
+            keep(&mut self.kept, self.page.as_slice())?;
             let page = pages::seal(io, Kind::Records, self.page.as_slice())?;
             self.pages.push(io, page)?;
             self.page.clear();
         }
         Ok(())
     }
-    pub fn finish(mut self, io: &mut impl PageWrite) -> io::Result<Table> {
+    pub fn finish(self, io: &mut impl PageWrite) -> io::Result<Table> {
+        self.finish_kept(io).map(|(table, _)| table)
+    }
+    /// The table and, from [`Self::keeping`], its pages in order.
+    pub fn finish_kept(mut self, io: &mut impl PageWrite) -> io::Result<(Table, Vec<Arc<Page>>)> {
         self.flush(io)?;
-        Ok(Table {
+        let table = Table {
             list: self.pages.finish(io)?,
             count: self.count,
-        })
+        };
+        Ok((table, self.kept.unwrap_or_default()))
     }
 }
 
@@ -157,6 +184,7 @@ pub(crate) struct Entries {
     pages: Pages,
     fences: Records<Fence>,
     count: u64,
+    kept: Option<Vec<Arc<Page>>>,
 }
 impl Entries {
     pub fn new() -> Self {
@@ -169,6 +197,14 @@ impl Entries {
             pages: Pages::new(),
             fences: Records::new(),
             count: 0,
+            kept: None,
+        }
+    }
+    /// Entries whose pages [`Self::finish_kept`] also returns.
+    pub fn keeping() -> Self {
+        Self {
+            kept: Some(Vec::new()),
+            ..Self::new()
         }
     }
     fn size(&self, extra: usize) -> usize {
@@ -209,6 +245,7 @@ impl Entries {
         self.page.put(&(self.body.len() as u32).to_le_bytes())?;
         self.page.put(self.body.as_slice())?;
         self.fences.push(io, &Fence(self.keys[0]))?;
+        keep(&mut self.kept, self.page.as_slice())?;
         let page = pages::seal(io, Kind::Records, self.page.as_slice())?;
         self.pages.push(io, page)?;
         self.keys.clear();
@@ -216,15 +253,23 @@ impl Entries {
         self.body.clear();
         Ok(())
     }
-    pub fn finish(mut self, io: &mut impl PageWrite) -> io::Result<Directory> {
+    pub fn finish(self, io: &mut impl PageWrite) -> io::Result<Directory> {
+        self.finish_kept(io).map(|(directory, _)| directory)
+    }
+    /// The directory and, from [`Self::keeping`], its entry pages in order.
+    pub fn finish_kept(
+        mut self,
+        io: &mut impl PageWrite,
+    ) -> io::Result<(Directory, Vec<Arc<Page>>)> {
         self.flush(io)?;
         let count = self.count;
         let list = self.pages.finish(io)?;
-        Ok(Directory {
+        let directory = Directory {
             list,
             fences: self.fences.finish(io)?,
             count,
-        })
+        };
+        Ok((directory, self.kept.unwrap_or_default()))
     }
 }
 

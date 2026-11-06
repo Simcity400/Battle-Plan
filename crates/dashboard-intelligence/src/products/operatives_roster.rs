@@ -834,6 +834,13 @@ pub(crate) struct Members {
     pub(crate) by_slot: HashMap<u32, Vec<Member>>,
 }
 
+/// What an hour's census changed: the roster slots whose members changed, or everything.
+#[derive(Default)]
+pub(crate) struct MembersTouched {
+    pub(crate) all: bool,
+    pub(crate) slots: Vec<u32>,
+}
+
 /// A membership row as the census reads it.
 #[derive(Clone, Debug, PartialEq)]
 #[derive(replay_spool::Spooled)]

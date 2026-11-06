@@ -69,8 +69,7 @@ pub type NameIndex = Result<BTreeMap<Vec<u8>, Option<u32>>, Refusal>;
 pub type NameIndexCache = Keyed<NameIndex>;
 
 pub fn name_index_cache() -> NameIndexCache {
-    // One static pair per branch in practice; two cover a branch switch.
-    Keyed::new(NAME_INDEX_TABLES, 2)
+    Keyed::new(NAME_INDEX_TABLES)
 }
 
 /// Indexes the definitions by script name through the lexical dictionary.

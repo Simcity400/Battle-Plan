@@ -718,7 +718,7 @@ fn frameless(
     component: Option<PowerDailyCostKind>,
     content: Option<&PoliticsContent>,
 ) -> Dated {
-    let mut facts = items::event_facts(None, identity, cause, component);
+    let mut facts = items::event_facts::<replay_frame::frame::DecodedFrame>(None, identity, cause, component);
     if let Some(content) = content {
         let texts = items::FrameTexts::default();
         facts.text = items::item_text(
@@ -785,12 +785,10 @@ fn tooltip(
     }
 }
 
-/// Item `ordinal` of `tag`, first paid by `first` (`row`, of `cause` and `component`), as every
-/// reply shows it: named from `dated`, the facts its hour recorded, under `content`.
-#[allow(clippy::too_many_arguments)]
+/// The item first paid by `first` (`row`, of `cause` and `component`), as every reply shows it:
+/// named from `dated`, the facts its hour recorded, under `content`. Its tooltip's token is
+/// keyed as a reply reads it ([`super::records::ItemRecord::keyed`]).
 pub(super) fn show(
-    tag: &str,
-    ordinal: u32,
     first: String,
     row: &PaidRow,
     identity: &PowerIdentity,
@@ -808,7 +806,7 @@ pub(super) fn show(
             &unread
         }
     };
-    let (mut item, mut info, category) = resolve(
+    let (item, info, category) = resolve(
         facts,
         row,
         cause,
@@ -816,14 +814,6 @@ pub(super) fn show(
         first,
         component_name.as_deref(),
     );
-    // The item's ordinal keys its tooltip in every reply.
-    if item.tooltip_token.is_some() {
-        let token = format!("idea:{tag}:{ordinal}");
-        item.tooltip_token = Some(token.clone());
-        if let Some(info) = &mut info {
-            info.token = token;
-        }
-    }
     let mut formats = BTreeSet::new();
     let ideas = info.map(|info| tooltip(&item, info, dated, content, &mut formats));
     let daily = (component.is_some() && cause == PowerCause::DailyGain).then(|| match component {

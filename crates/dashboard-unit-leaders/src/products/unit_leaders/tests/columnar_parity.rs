@@ -9,7 +9,8 @@ use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
     container::Replay,
 };
-use replay_data::rows::{RowCodec, RowsVisit};
+use replay_data::rows::{RowCodec, RowsVisit, TableRows};
+use replay_frame::frame::TableView;
 use std::sync::atomic::AtomicBool;
 
 struct Write<'a> {
@@ -157,7 +158,7 @@ fn restarted(
     let files = [Fixture::new(), Fixture::new()];
     let mut row = Prepared::new(&replay, 1);
     let mut projected = Prepared::new(&replay, 1);
-    let mut hours: Vec<Hour> = Vec::new();
+    let mut hours: Vec<Pushed> = Vec::new();
     let mut walk = Synthetic::new(block::tables(), 1, blocks[0][0].hour).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
     for (at, inputs) in blocks.iter().enumerate() {
@@ -217,10 +218,7 @@ fn restarted(
                 .is_none_or(|next| restarts.contains(&next.hour))
             {
                 segment.end(&mut hours).unwrap();
-                assert_eq!(hours.len(), 1);
-                for hour in std::mem::take(&mut hours) {
-                    projected.observe_projected(hour).unwrap();
-                }
+                keep(&mut projected, std::mem::take(&mut hours));
             }
         }
         row_reference(&replay, at, &mut row, content.as_deref());
@@ -253,10 +251,10 @@ fn restarted_everywhere(
 }
 
 /// One segment's projection of `frames`, handed on.
-fn segment(frames: &[DecodedFrame], content: Option<Arc<Content>>) -> Hour {
+fn segment(frames: &[DecodedFrame], content: Option<Arc<Content>>) -> Vec<Pushed> {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
     let mut operator = Projector::new(&replay, content.clone(), content.is_some());
-    let mut hours: Vec<Hour> = Vec::new();
+    let mut hours: Vec<Pushed> = Vec::new();
     let mut walk = Synthetic::new(block::tables(), 1, frames[0].hour).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
     for (ordinal, input) in frames.iter().enumerate() {
@@ -294,7 +292,32 @@ fn segment(frames: &[DecodedFrame], content: Option<Arc<Content>>) -> Hour {
         .unwrap();
     }
     operator.end(&mut hours).unwrap();
-    hours.pop().unwrap()
+    hours
+}
+
+/// A segment's pushed runs, and its end.
+fn ended(mut pushed: Vec<Pushed>) -> (Vec<Began>, Hour) {
+    let Some(Pushed::Ended(hour)) = pushed.pop() else {
+        panic!("a segment ends last");
+    };
+    let began = pushed
+        .into_iter()
+        .map(|pushed| match pushed {
+            Pushed::Began(began) => began,
+            Pushed::Ended(_) => panic!("a segment ends once"),
+        })
+        .collect();
+    (began, *hour)
+}
+
+/// A segment's pushes kept in `state`, as the emit keeps them.
+fn keep(state: &mut Prepared, pushed: Vec<Pushed>) {
+    let (runs, hour) = ended(pushed);
+    let mut begins = Begins::default();
+    for began in runs {
+        begins.keep(began).unwrap();
+    }
+    state.observe_projected(hour, &mut begins).unwrap();
 }
 
 /// A leader's runs as their first and last hours.
@@ -354,7 +377,7 @@ fn parity_with_content(runs: &[Vec<DecodedFrame>], content: Option<Arc<Content>>
                 walk = Synthetic::new(block::tables(), 1, inputs[0].hour).unwrap();
             }
             let mut operator = Projector::new(&replay, owned.clone(), owned.is_some());
-            let mut hours: Vec<Hour> = Vec::new();
+            let mut hours: Vec<Pushed> = Vec::new();
             let start = if later_run {
                 Start::Run { continues: at > 0 }
             } else {
@@ -397,10 +420,7 @@ fn parity_with_content(runs: &[Vec<DecodedFrame>], content: Option<Arc<Content>>
                 .unwrap();
             }
             operator.end(&mut hours).unwrap();
-            assert_eq!(hours.len(), 1);
-            for hour in hours {
-                projected.observe_projected(hour).unwrap();
-            }
+            keep(&mut projected, hours);
             let selection = block::bound(content.is_some());
             let mut extract = (selection.start)(replay.format);
             let mut tracker = FrameChangeTracker::new();
@@ -787,7 +807,7 @@ fn projected_with_content(
         let mut walk = Synthetic::new(block::tables(), 1, block[0].hour).unwrap();
         let mut world_held: Option<dashboard_world::World> = None;
         let mut operator = Projector::new(&replay, content.clone(), content.is_some());
-        let mut hours: Vec<Hour> = Vec::new();
+        let mut hours: Vec<Pushed> = Vec::new();
         operator
             .start(Start::Run { continues: true }, 1, block[0].hour)
             .unwrap();
@@ -826,9 +846,7 @@ fn projected_with_content(
             .unwrap();
         }
         operator.end(&mut hours).unwrap();
-        for hour in hours {
-            prepared.observe_projected(hour).unwrap();
-        }
+        keep(&mut prepared, hours);
         flush(&mut prepared, &files, content.as_deref());
     }
     (prepared, files)
@@ -1223,9 +1241,7 @@ fn assert_withheld_rename_parity(frames: &[DecodedFrame]) {
                 let mut tracker = FrameChangeTracker::new();
                 for (at, inputs) in [&frames[..split], &frames[split..]].into_iter().enumerate() {
                     if projected {
-                        state
-                            .observe_projected(segment(inputs, Some(content.clone())))
-                            .unwrap();
+                        keep(&mut state, segment(inputs, Some(content.clone())));
                     } else {
                         for input in inputs {
                             let changes = tracker.observe(input, replay.format);
@@ -1353,10 +1369,12 @@ fn a_1500_country_hour_resolves_only_the_changed_leader_and_extends_other_runs()
                 }
             }
         }
-        let hour = segment(&frames, None);
+        let (began, hour) = ended(segment(&frames, None));
         assert_eq!(hour.counts.walks, [1, 1]);
         assert_eq!(hour.work.resolved, 1501);
-        assert_eq!(hour.scan.stored_runs.len(), 1501);
+        assert_eq!(began.len(), 1501);
+        assert_eq!(began.last().unwrap().ended, Some(100));
+        assert_eq!(hour.scan.stored_runs.len(), 1500);
         assert_eq!(hour.scan.stored_runs[0].run.last_hour, 101);
         assert_eq!(hour.scan.leaders[0].visible_hour, Some(101));
         assert_eq!(
@@ -1653,7 +1671,7 @@ fn war_hours_read_only_the_fields_leaders_hold() {
     let frames: Vec<_> = (100..=110).map(|hour| war_frame(1, hour, 6)).collect();
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
     let mut operator = Projector::new(&replay, None, false);
-    let mut hours: Vec<Hour> = Vec::new();
+    let mut hours: Vec<Pushed> = Vec::new();
     let mut walk = Synthetic::new(block::tables(), 1, 100).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
     let watched = asks(&holds(false));
@@ -1709,20 +1727,12 @@ fn war_hours_read_only_the_fields_leaders_hold() {
         .unwrap();
     }
     operator.end(&mut hours).unwrap();
-    let hour = hours.pop().unwrap();
-    let local_decoded = |table: TableId| hour.counts.decoded[table.index()];
+    let (_, hour) = ended(hours);
     assert_eq!(hour.counts.hours, 11);
     assert_eq!(hour.counts.walks, [1, 0]);
     assert_eq!(hour.counts.resolved, 6);
     assert_eq!(hour.counts.quiet, 10);
     assert_eq!(hour.counts.fallbacks, 0);
-    assert_eq!(local_decoded(TableId::Characters), 6);
-    assert_eq!(local_decoded(TableId::CharacterPortraits), 6);
-    for &table in block::tables() {
-        if ![TableId::Characters, TableId::CharacterPortraits].contains(&table) {
-            assert_eq!(local_decoded(table), 0, "{table:?}");
-        }
-    }
 }
 
 /// Two leaders whose template visibility reads a flag: the flag cleared at 103 and set again
@@ -1865,7 +1875,7 @@ fn flag_visibility_and_inputs_changed_in_earlier_segments_match_at_every_restart
         assert_eq!(career(&result, 1).partial_from, Some(106));
         // One segment reads both leaders at its first hour, then only the trained leader and
         // the leaders whose verdict a flag changed.
-        let hour = segment(&frames, Some(content.clone()));
+        let (_, hour) = ended(segment(&frames, Some(content.clone())));
         assert_eq!(hour.counts.walks[0], 1);
         assert_eq!(hour.counts.walks[1], 9);
         assert!(hour.counts.fallbacks <= 2);
@@ -1924,7 +1934,7 @@ fn daily_experience_reads_only_its_changed_leader_at_every_restart() {
     );
     assert_eq!(spans(career(&result, 1)), vec![(100, 150)]);
     assert_eq!(spans(career(&result, 2)), vec![(100, 139), (140, 150)]);
-    let hour = segment(&frames, None);
+    let (_, hour) = ended(segment(&frames, None));
     assert_eq!(hour.counts.walks, [1, 3]);
     assert_eq!(hour.counts.quiet, 47);
     assert_eq!(hour.counts.resolved, 6);
@@ -2070,7 +2080,7 @@ fn fleet_missions_before_fleets_recorded_their_leader_bind_as_the_row_path() {
     for (at, input) in frames.iter().enumerate() {
         oracle
             .observe_rows(
-                input,
+                input.into(),
                 format,
                 &params,
                 None,
@@ -2089,12 +2099,11 @@ fn fleet_missions_before_fleets_recorded_their_leader_bind_as_the_row_path() {
         let facts = FrameChanges::rebuilt(input, format, at > 0, |table| {
             !matches!(tables.table(table), TableChange::Same)
         });
-        match plan(&mut scan, input, format, None, &facts, &tables, None).unwrap() {
+        match plan(&mut scan, input.into(), format, None, &facts, &tables, None).unwrap() {
             Step::Quiet => scan.advance(input.hour),
-            Step::Battles => {
-                let (land, navy) = battle_tables(format, input);
-                scan.observe_battles(input, format, land, navy, &tables);
-            }
+            Step::Battles => scan
+                .observe_battles(input.into(), format, &tables)
+                .unwrap(),
             Step::Read {
                 rows,
                 leaders,
@@ -2106,7 +2115,7 @@ fn fleet_missions_before_fleets_recorded_their_leader_bind_as_the_row_path() {
                 let since = Since::hour_before(input, &tables);
                 assert!(
                     scan.observe_rows(
-                        input,
+                        input.into(),
                         format,
                         &params,
                         None,
@@ -2118,9 +2127,14 @@ fn fleet_missions_before_fleets_recorded_their_leader_bind_as_the_row_path() {
                     )
                     .unwrap()
                 );
-                index(&mut scan, input, rows.is_none());
+                index(&mut scan, input.into(), rows.is_none()).unwrap();
             }
         }
+    }
+    let mut begins = Begins::default();
+    let work = scan.projection.as_mut().unwrap();
+    for began in work.take_began(100) {
+        begins.keep(began).unwrap();
     }
     let hour = hand(scan, 100, Counts::default(), Default::default(), Vec::new()).unwrap();
     assert_eq!(
@@ -2128,7 +2142,7 @@ fn fleet_missions_before_fleets_recorded_their_leader_bind_as_the_row_path() {
         "only the hours missions change read"
     );
     let mut stitched = Scan::at(format, 1, 100);
-    hour.stitch(&mut stitched, &BTreeMap::new(), &BTreeMap::new())
+    hour.stitch(&mut begins, &mut stitched, &BTreeMap::new(), &BTreeMap::new())
         .unwrap();
     assert_eq!(stitched.reply.observed, oracle.reply.observed);
     assert_eq!(

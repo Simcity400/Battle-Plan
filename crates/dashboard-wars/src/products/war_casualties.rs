@@ -58,7 +58,7 @@ use replay_data::{cadence, cadence::Cadence, rows::TableId, rows::tables};
 use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::{
         Arc, Condvar, Mutex,
@@ -1161,9 +1161,10 @@ impl InFlight {
         }
     }
 }
+/// One scan per branch of the source revision, and the scans under way.
 #[derive(Default)]
 struct Scans {
-    entries: VecDeque<(u64, Arc<ScannedCasualties>)>,
+    entries: BTreeMap<u64, Arc<ScannedCasualties>>,
     in_flight: HashMap<u64, Arc<InFlight>>,
 }
 /// Get the same branch scan used by the Casualties product.
@@ -1180,15 +1181,8 @@ pub fn scanned_branch(
     let state = source.state::<Scans>();
     let (flight, owner) = {
         let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(index) = scans
-            .entries
-            .iter()
-            .position(|(cached, _)| *cached == branch)
-        {
-            let entry = scans.entries.remove(index).unwrap();
-            let scanned = Arc::clone(&entry.1);
-            scans.entries.push_back(entry);
-            return Ok(scanned);
+        if let Some(scanned) = scans.entries.get(&branch) {
+            return Ok(Arc::clone(scanned));
         }
         if let Some(flight) = scans.in_flight.get(&branch) {
             (Arc::clone(flight), false)
@@ -1218,10 +1212,7 @@ pub fn scanned_branch(
     {
         let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
         if let Ok(scanned) = &result {
-            scans.entries.push_back((branch, Arc::clone(scanned)));
-            while scans.entries.len() > 2 {
-                scans.entries.pop_front();
-            }
+            scans.entries.insert(branch, Arc::clone(scanned));
         }
         *flight
             .result
@@ -1645,14 +1636,11 @@ fn country_label(
             "Country name unavailable".to_owned()
         })
 }
+/// Each branch's labels under the catalogue they were named with; another catalogue replaces them.
 #[derive(Default)]
 #[cfg(any(test, feature = "test-support"))]
 struct LabelScans {
-    entries: VecDeque<(
-        u64,
-        Arc<dashboard_text::catalogue::Catalogue>,
-        Arc<CampaignLabels>,
-    )>,
+    entries: BTreeMap<u64, (Arc<dashboard_text::catalogue::Catalogue>, Arc<CampaignLabels>)>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1668,14 +1656,12 @@ fn branch_labels(
     let mut cached = state.lock().unwrap_or_else(|error| error.into_inner());
     cached
         .entries
-        .retain(|(_, content, _)| Arc::ptr_eq(content, catalogue));
-    let mut labels = if let Some(index) = cached.entries.iter().position(|(at, _, _)| *at == branch)
-    {
-        let (_, _, labels) = cached.entries.remove(index).unwrap();
+        .retain(|_, (content, _)| Arc::ptr_eq(content, catalogue));
+    let mut labels = if let Some((_, labels)) = cached.entries.remove(&branch) {
         if tags.iter().all(|tag| labels.contains_key(tag)) {
             cached
                 .entries
-                .push_back((branch, Arc::clone(catalogue), Arc::clone(&labels)));
+                .insert(branch, (Arc::clone(catalogue), Arc::clone(&labels)));
             return Ok(labels);
         }
         Arc::try_unwrap(labels).unwrap_or_else(|labels| (*labels).clone())
@@ -1706,10 +1692,7 @@ fn branch_labels(
     let labels = Arc::new(labels);
     cached
         .entries
-        .push_back((branch, Arc::clone(catalogue), Arc::clone(&labels)));
-    while cached.entries.len() > 2 {
-        cached.entries.pop_front();
-    }
+        .insert(branch, (Arc::clone(catalogue), Arc::clone(&labels)));
     Ok(labels)
 }
 

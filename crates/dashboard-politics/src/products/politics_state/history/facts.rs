@@ -113,7 +113,6 @@ struct Watch {
 /// One segment's projection: every segment starts cold.
 pub struct Projector {
     watches: [Watch; 4],
-    asks: Vec<(TableId, Hold)>,
     /// The identities' fields, which every part reads.
     identity: [(TableId, u64); 2],
     /// SliceReads' sample hour.
@@ -162,7 +161,6 @@ impl Projector {
         });
         Ok(Self {
             watches,
-            asks: holds(),
             identity,
             sample: mask(TableId::SliceReads, &["sample_hour"])?,
             cold: true,
@@ -365,7 +363,7 @@ impl Operator<World> for Projector {
                 facts: None,
             });
         }
-        let frame = hour.world.frame_held(hour.state, &self.asks)?;
+        let frame = hour.world.columns(hour.state);
         let tags = Tags::new(&frame);
         let mut facts = Facts::default();
         self.unnamed = tags

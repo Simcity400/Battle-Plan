@@ -32,12 +32,12 @@ use replay_data::{
     format::FormatVersion,
     rows::{
         CountryRow, IndustrialOrganisationDetailsRow, IndustrialOrganisationPoliciesRow,
-        IndustrialOrganisationRow, LexicalTokenRow, TABLE_COUNT, TableId, VariantDefinitionRow,
-        tables,
+        IndustrialOrganisationRow, LexicalTokenRow, ProductionLicenseRecordRow, TABLE_COUNT,
+        TableId, VariantDefinitionRow, mask, tables,
     },
     scope::CaptureMode,
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{ColumnFrame, Rowset, Tables};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -188,11 +188,20 @@ struct Organisation {
 
 /// The tables an hour's organisations read.
 struct Read<'f> {
-    roster: &'f [IndustrialOrganisationRow],
-    details: Option<&'f [IndustrialOrganisationDetailsRow]>,
-    policies: Option<&'f [IndustrialOrganisationPoliciesRow]>,
+    roster: Rowset<'f, IndustrialOrganisationRow>,
+    details: Option<Rowset<'f, IndustrialOrganisationDetailsRow>>,
+    policies: Option<Rowset<'f, IndustrialOrganisationPoliciesRow>>,
     tokens: bool,
 }
+
+/// The fields of a licence record the census reads.
+const LICENCE_FIELDS: u64 = mask::<ProductionLicenseRecordRow>(&[
+    "giver",
+    "lended_cic",
+    "required_cic",
+    "start_date",
+    "equipment",
+]);
 
 /// What [`Projector::save`] writes: nothing but that it restarts, since everything it holds is
 /// read again from the walk's tables, as at a segment's first hour.
@@ -202,8 +211,6 @@ const SAVED: &[u8] = b"production catalogue projector: cold";
 pub struct Projector {
     format: FormatVersion,
     mode: CaptureMode,
-    licence_asks: Vec<(TableId, Hold)>,
-    organisation_asks: Vec<(TableId, Hold)>,
     /// VariantDefinitions' creator_link and obsolete.
     creator: usize,
     obsolete: usize,
@@ -244,8 +251,6 @@ impl Projector {
         Ok(Self {
             format,
             mode,
-            licence_asks: asks(&LICENCES),
-            organisation_asks: asks(&ORGANISATIONS),
             creator: columns::field(table, "creator_link")?,
             obsolete: columns::field(table, "obsolete")?,
             cold: true,
@@ -313,7 +318,7 @@ impl Projector {
     /// raw id of its holder.
     fn licences(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         state: &State,
         roster: &Roster,
         whole: bool,
@@ -323,7 +328,11 @@ impl Projector {
         let mut values = Vec::new();
         let table = LICENCES[0];
         let rows = columns::complete(state, table)
-            .then(|| frame.complete::<tables::ProductionLicenseRecords>().ok())
+            .then(|| {
+                frame
+                    .complete_rows::<tables::ProductionLicenseRecords>(LICENCE_FIELDS)
+                    .ok()
+            })
             .flatten();
         let Some(rows) = rows else {
             self.tables[0].push(format!("licences unavailable: {}", unread(state, table, self.mode)));
@@ -346,24 +355,20 @@ impl Projector {
                 values,
             });
         };
+        // A record's key is its licensee's raw id and its ordinal.
         let key = |owner: u32, at: u32| u128::from(owner) << 32 | u128::from(at);
-        let record = |wanted: u128| {
-            rows.binary_search_by_key(&wanted, |row| key(row.owner, row.ordinal))
-                .ok()
-                .map(|index| &rows[index])
-        };
         let whole = whole || !self.licences_read;
         let records: Vec<u128> = if whole {
             self.licences.clear();
             self.licence_records.clear();
             self.licence_rows.clear();
-            rows.iter().map(|row| key(row.owner, row.ordinal)).collect()
+            rows.keys().collect()
         } else {
             written(state, table)?
         };
         let mut positions = BTreeSet::new();
         for &at in &records {
-            let row = record(at);
+            let row = rows.get(at)?;
             let reason = match row {
                 None => None,
                 Some(row) => match roster.slot_of(row.owner) {
@@ -394,7 +399,7 @@ impl Projector {
         for (owner, at) in positions {
             let mut fields: BTreeMap<Field, i128> = BTreeMap::new();
             for &raw in roster.aliases(owner) {
-                let Some(row) = record(key(raw, at)) else {
+                let Some(row) = rows.get(key(raw, at))? else {
                     continue;
                 };
                 parties.insert(owner);
@@ -458,7 +463,7 @@ impl Projector {
     #[allow(clippy::too_many_arguments)]
     fn organisations(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &ColumnFrame<'_>,
         state: &State,
         (roster, names): (&Roster, &Names),
         at: i32,
@@ -469,8 +474,13 @@ impl Projector {
         self.tables[1].clear();
         let mut values = Vec::new();
         let complete = |table| columns::complete(state, table);
+        let all = |table: TableId| table.full_mask();
         let list = complete(ORGANISATIONS[0])
-            .then(|| frame.complete::<tables::IndustrialOrganisations>().ok())
+            .then(|| {
+                frame
+                    .complete_rows::<tables::IndustrialOrganisations>(all(ORGANISATIONS[0]))
+                    .ok()
+            })
             .flatten();
         let Some(list) = list else {
             self.tables[1].push(format!(
@@ -502,7 +512,11 @@ impl Projector {
             ));
         }
         let details = complete(ORGANISATIONS[1])
-            .then(|| frame.complete::<tables::IndustrialOrganisationDetails>().ok())
+            .then(|| {
+                frame
+                    .complete_rows::<tables::IndustrialOrganisationDetails>(all(ORGANISATIONS[1]))
+                    .ok()
+            })
             .flatten();
         if details.is_none() {
             self.tables[1].push(format!(
@@ -511,7 +525,11 @@ impl Projector {
             ));
         }
         let policies = complete(ORGANISATIONS[2])
-            .then(|| frame.complete::<tables::IndustrialOrganisationPolicies>().ok())
+            .then(|| {
+                frame
+                    .complete_rows::<tables::IndustrialOrganisationPolicies>(all(ORGANISATIONS[2]))
+                    .ok()
+            })
             .flatten();
         if policies.is_none() {
             self.tables[1].push(format!(
@@ -533,7 +551,7 @@ impl Projector {
             self.by_country.clear();
             self.by_token.clear();
             self.organisation_rows.clear();
-            changed.extend(list.iter().map(|row| (row.organisation, true)));
+            changed.extend(list.keys().map(|key| (key as u64, true)));
         } else {
             for key in written(state, ORGANISATIONS[0])? {
                 changed.insert(key as u64, true);
@@ -582,18 +600,14 @@ impl Projector {
         named: &mut Vec<(u64, RawOrganisation)>,
         values: &mut Vec<(Field, Option<Val>)>,
     ) -> io::Result<()> {
-        let row = read
-            .roster
-            .binary_search_by_key(&id, |row| row.organisation)
-            .ok()
-            .map(|index| &read.roster[index]);
+        let row = read.roster.get(u128::from(id))?;
         let mut now = Organisation::default();
         if let Some(row) = row {
             match roster.slot_of(row.country) {
                 None => now.reasons.push(ORGANISATION_COUNTRY),
                 Some(holder) => {
                     parties.insert(holder);
-                    read_organisation(state, (roster, names), read, row, holder, renamed, at, named, &mut now)?;
+                    read_organisation(state, (roster, names), read, &row, holder, renamed, at, named, &mut now)?;
                 }
             }
         }
@@ -671,13 +685,13 @@ fn read_organisation(
 ) -> io::Result<()> {
     let id = row.organisation;
     now.values.push((Field::MioHolder(id), Val::Int(i128::from(holder))));
-    let detail = read.details.and_then(|details| {
-        details
-            .binary_search_by_key(&id, |detail| detail.organisation)
-            .ok()
-            .map(|index| &details[index])
-            .filter(|detail| detail.country == row.country)
-    });
+    let detail = match read.details {
+        Some(details) => details
+            .get(u128::from(id))?
+            .filter(|detail| detail.country == row.country),
+        None => None,
+    };
+    let detail = detail.as_deref();
     // The spellings it reads, as the row census's dictionary holds them.
     let mut wanted = vec![row.token];
     wanted.extend(detail.map(|detail| detail.state.policy));
@@ -748,15 +762,14 @@ fn read_organisation(
     }
     // The country's stored policy name joins by the raw token, spelled or not.
     if read_state.policy_token.is_some() {
-        let name = read.policies.and_then(|rows| {
-            rows.binary_search_by_key(&detail.country, |row| row.country)
-                .ok()
-                .and_then(|index| {
-                    rows[index]
-                        .policies
-                        .iter()
-                        .find(|policy| policy.token == detail.state.policy)
-                })
+        let policies = match read.policies {
+            Some(rows) => rows.get(u128::from(detail.country))?,
+            None => None,
+        };
+        let name = policies.as_deref().and_then(|row| {
+            row.policies
+                .iter()
+                .find(|policy| policy.token == detail.state.policy)
                 .map(|policy| String::from_utf8_lossy(&policy.name))
         });
         if let Some(name) = name.filter(|name| !name.is_empty()) {
@@ -1107,14 +1120,7 @@ impl Operator<World> for Projector {
             let whole_domains = whole || self.unidentified.take().is_some();
             let mut parties = BTreeSet::new();
             if licences || organisations || whole_domains {
-                let mut asks = Vec::new();
-                if licences || whole_domains {
-                    asks.extend_from_slice(&self.licence_asks);
-                }
-                if organisations || whole_domains {
-                    asks.extend_from_slice(&self.organisation_asks);
-                }
-                let frame = world.frame_held(state, &asks)?;
+                let frame = world.columns(state);
                 if licences || whole_domains {
                     let whole = whole_domains || identity || shaped[LICENCES[0].index()];
                     let sent = self.licences(&frame, state, roster, whole, &mut parties)?;

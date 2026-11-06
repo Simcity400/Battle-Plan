@@ -162,6 +162,14 @@ test('naval requests keep opaque tags and use the server ranking for top countri
     { branchId: 'branch', tags: ['tag with space', 'a,b'], top: null, kind: 'ships', attribution: 'sunkBy', period: 'month' });
   assert.deepEqual(navalRequest('branch', { tags: ['ignored'], top: 10 }, 'both', 'lost', 'running').tags, []);
   assert.equal(navalPeriodLabel(fixture(), 'running'), `Since ${formatDateTime(100)}`);
+  // After hours the recording lost, each stretch's totals count from its own start.
+  const restarted = { ...fixture(), firstRead: 106, restarts: [104] };
+  assert.equal(navalPeriodLabel(restarted, 'running', 'both', 107), `Since ${formatDateTime(106)}`);
+  assert.equal(navalPeriodLabel(restarted, 'running', 'both', 102), `Since ${formatDateTime(100)}`);
+  assert.match(navalPeriodLabel(restarted, 'month', 'both', 107), /^Per month, counted since /);
+  assert.equal(navalPeriodLabel(restarted, 'month', 'both', 102), 'Per month');
+  assert.equal(validateNavalLossesReply(restarted).restarts?.[0], 104);
+  assert.throws(() => validateNavalLossesReply({ ...fixture(), restarts: [104, 104] }), /malformed/);
   assert.match(navalTooltip(navalModel(fixture()), 'mod tag', 109, 'Country', 'both', 'sunkBy').note!, /Non-hostile.*assisted kills/);
   assert.equal(navalTooltip(navalModel(fixture()), 'mod tag', 109, 'Country', 'both', 'lost').note, undefined);
   assert.equal(navalTooltip(navalModel(fixture()), 'mod tag', 109, 'Country', 'convoys', 'lost').note, undefined);

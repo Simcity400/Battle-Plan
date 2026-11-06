@@ -14,6 +14,7 @@ doctest = false
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+engine-allocation.workspace = true
 replay.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true

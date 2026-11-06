@@ -11,7 +11,7 @@ use super::{
     *,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -100,6 +100,7 @@ fn projected(
         write_hour(walk, frame);
         let cold = starts.contains(&frame.hour);
         if cold {
+            projector.end(&mut out).unwrap();
             projector = Projector::new(FormatVersion::CURRENT, cat.cloned()).unwrap();
         }
         walk.end(|state, manifest, _, first| {
@@ -133,6 +134,7 @@ fn projected(
         .unwrap();
         last = Some(frame.hour);
     }
+    projector.end(&mut out).unwrap();
     // As its emit is handed them: written to the spool and read back.
     replay_spool::respool(out).unwrap()
 }
@@ -152,12 +154,10 @@ fn build(
     hours: Vec<facts::Hour>,
     cuts: &[i32],
     resume: Option<i32>,
-    budget: &Budget,
 ) -> (Memory, u64) {
-    let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut generation = 0;
@@ -171,7 +171,6 @@ fn build(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -185,8 +184,8 @@ fn build(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -223,10 +222,8 @@ fn assert_placed(
     let mut cuts = cuts.to_vec();
     cuts.retain(|&cut| cut < last);
     cuts.push(last);
-    let budget = Budget::new(64 << 20);
-    let (pages, root) = build(projected(&frames, starts, cat), &cuts, resume, &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let (pages, root) = build(projected(&frames, starts, cat), &cuts, resume);
+    let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let start = replay.branches.iter().find(|start| start.id == 1).unwrap();
     let bounds = branch_bounds(replay, start);
@@ -287,8 +284,7 @@ pub(super) fn assert_native_parity(
 
 #[test]
 fn a_cut_past_the_last_walked_hour_is_refused_without_advancing_the_emit() {
-    let budget = Budget::new(64 << 20);
-    let mut writer = Writer::new(&budget, identity(), 100).unwrap();
+    let mut writer = Writer::new(identity(), 100).unwrap();
     let mut emit = Emit::new();
     assert!(emit.cut(&mut writer, 100).is_err());
     for hour in projected(&[recorded(100)], &[], None) {
@@ -420,11 +416,9 @@ fn counter_only_hours_and_segment_starts_publish_only_changed_inputs() {
             frame
         })
         .collect();
-    let budget = Budget::new(64 << 20);
     for starts in [&[][..], &[104, 108][..]] {
-        let (pages, root) = build(projected(&frames, starts, None), &[111], None, &budget);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+        let (pages, root) = build(projected(&frames, starts, None), &[111], None);
+        let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         let coverage = directory
             .key(super::emit::FAMILY, super::emit::COVERAGE, None)
@@ -488,10 +482,16 @@ fn overview_scores_alone_publish_without_joining_the_relations_again() {
         .collect();
     let hours = projected(&frames, &[], None);
     let place = super::inputs::input(TableId::WarOverviewCountries).unwrap();
+    let (end, hours) = hours.split_last().unwrap();
+    assert_eq!(
+        end.ended.as_ref().map(|(places, _)| *places),
+        Some(1 << place),
+        "the segment's end hands the scores on once"
+    );
     for hour in &hours[1..] {
         let facts = hour.facts.as_ref().expect("the scores moved");
         assert_eq!(facts.changed, 1 << place, "at {}", hour.hour);
-        assert!(facts.packet.is_some(), "at {}", hour.hour);
+        assert!(hour.ended.is_none(), "at {}", hour.hour);
         assert!(
             !matches!(facts.relations, Some(facts::Relations::Whole(_))),
             "at {}: joined again",

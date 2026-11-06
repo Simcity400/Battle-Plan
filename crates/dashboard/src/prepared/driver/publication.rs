@@ -911,7 +911,7 @@ struct Job {
 struct Sealing {
     branch: u64,
     cut: roots::Cut,
-    pending: dashboard_series::Pending<'static>,
+    pending: dashboard_series::Pending,
     tree: Option<dashboard_series::Tree>,
 }
 
@@ -921,7 +921,7 @@ enum Work {
     /// sealed at once, so its rows leave memory, and named by the batch's root.
     Segment {
         branch: u64,
-        pending: dashboard_series::Pending<'static>,
+        pending: dashboard_series::Pending,
         tree: Option<dashboard_series::Tree>,
     },
     /// The batch's end: sealed, staged and committed.
@@ -992,9 +992,10 @@ impl Drop for Sealers<'_, '_> {
 }
 
 impl<'s> Publisher<'s> {
-    /// Runs `work` beside `sealers` threads that do what lanes hand off ([`Stage::seal`],
-    /// [`Stage::send`]), each lane's in order: a lane goes on appending while its segments seal
-    /// and its last batch commits. What no sealer took when its lane needs it, the lane does.
+    /// Runs `work` beside `sealers` threads, at its priority, that do what lanes hand off
+    /// ([`Stage::seal`], [`Stage::send`]), each lane's in order: a lane goes on appending while
+    /// its segments seal and its last batch commits. What no sealer took when its lane needs it,
+    /// the lane does.
     pub(crate) fn sealing<R>(&self, sealers: usize, work: impl FnOnce() -> R) -> R {
         self.lock().sealing = true;
         std::thread::scope(|scope| {
@@ -1003,6 +1004,8 @@ impl<'s> Publisher<'s> {
             for _ in 0..sealers {
                 let caller = caller.clone();
                 job_priority::spawn_in(scope, move || {
+                    // A lane waiting on a sealer frees its core to the walks, never the sealer,
+                    // when the sealer runs below them: sealers run at the lanes' priority.
                     caller.enter();
                     let _memory = labels::enter(labels::Owner::RUN, Kind::Publish);
                     self.serve();
@@ -1171,7 +1174,7 @@ impl<'s> Publisher<'s> {
         family: Family,
         kept: &mut Kept,
         branch: u64,
-        pending: &dashboard_series::Pending<'static>,
+        pending: &dashboard_series::Pending,
         tree: Option<dashboard_series::Tree>,
     ) -> io::Result<()> {
         if let Some(tree) = tree {
@@ -1276,6 +1279,7 @@ impl<'s> Publisher<'s> {
             segments,
             prepared,
         };
+        let mut completed = Vec::new();
         for sealing in sealings {
             let Sealing {
                 branch,
@@ -1294,7 +1298,7 @@ impl<'s> Publisher<'s> {
                 .get(&branch)
                 .copied()
                 .unwrap_or(cut.publication.generation);
-            let ended = cut.frontier.end.is_some();
+            let (ended, complete) = (cut.frontier.end.is_some(), cut.frontier.complete);
             let identity = self.binding.identity(branch, family.stamp);
             let published = roots::write(writer, name, branch, identity, cut, &pending, tree)?;
             drop(pending);
@@ -1302,6 +1306,9 @@ impl<'s> Publisher<'s> {
             if ended {
                 // Nothing goes on from a branch that ended.
                 kept.trees.remove(&branch);
+            } else if complete {
+                engine_allocation::reserve(&mut completed, 1)?;
+                completed.push(branch);
             }
             sealed.firsts.insert(branch, first);
             sealed.published.push((branch, published));
@@ -1314,7 +1321,15 @@ impl<'s> Publisher<'s> {
             staged,
             sealed,
         })?;
-        self.wait(ticket)
+        self.wait(ticket)?;
+        // A branch that processed its recording's last segment goes on only if the recording
+        // grows: once committed, its hierarchy reads its nodes back if it ever merges them.
+        for branch in completed {
+            if let Some(tree) = kept.trees.get_mut(&branch) {
+                tree.release_built();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1536,7 +1551,7 @@ impl Stage<'_, '_> {
             prepared: 0,
             proof: [0; 32],
             ledger_pages: 0,
-            first_hole: None,
+            holes: Vec::new(),
             state: None,
             carry: None,
             end: None,

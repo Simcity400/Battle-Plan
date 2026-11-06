@@ -185,11 +185,10 @@ struct Cache {
 }
 
 /// Each picture by the catalogue it was drawn through (the recording's own or the shown one),
-/// the artwork mode it was drawn in and its icon, with their retained bytes.
+/// the artwork mode it was drawn in and its icon.
 #[derive(Default)]
 struct Images {
     drawn: BTreeMap<(bool, ArtworkMode, Icon), catalogue::Drawn<Result<String, String>>>,
-    bytes: usize,
 }
 
 impl Images {
@@ -204,20 +203,7 @@ impl Images {
                 .map_err(|why| why.to_string())
         });
         let image = drawn.get().clone();
-        let bytes = match &image {
-            Ok(text) | Err(text) => text.len(),
-        } + match icon {
-            Icon::Path(key) | Icon::Sprite(key) => key.len(),
-        };
-        let budget = dashboard_base::products::artwork::MAX_RETAINED_ARTWORK_BYTES;
-        if bytes <= budget {
-            if self.bytes > budget - bytes {
-                self.drawn.clear();
-                self.bytes = 0;
-            }
-            self.bytes += bytes;
-            self.drawn.insert(key, drawn);
-        }
+        self.drawn.insert(key, drawn);
         image
     }
 }

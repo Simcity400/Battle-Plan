@@ -242,7 +242,7 @@ pub struct Emit {
 
 /// One event of `kind` at `at` on `key`, its fields `value` as JSON.
 fn event(
-    writer: &mut Writer<'_>,
+    writer: &mut Writer,
     key: KeyHandle,
     at: i32,
     kind: u64,
@@ -291,12 +291,12 @@ impl Emit {
         }
     }
 
-    fn key(&mut self, writer: &mut Writer<'_>, place: Place) -> io::Result<KeyHandle> {
+    fn key(&mut self, writer: &mut Writer, place: Place) -> io::Result<KeyHandle> {
         self.actors
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 3]> {
+    fn family(&mut self, writer: &mut Writer) -> io::Result<[KeyHandle; 3]> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
@@ -316,7 +316,7 @@ impl Emit {
     }
 
     /// The tag actor named `tag`, with its keys.
-    fn country(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<usize> {
+    fn country(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<usize> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor as usize);
         }
@@ -344,7 +344,7 @@ impl Emit {
     }
 
     /// `actor`'s HOLD key of `token`.
-    fn hold(&mut self, writer: &mut Writer<'_>, actor: usize, token: &Arc<str>) -> io::Result<KeyHandle> {
+    fn hold(&mut self, writer: &mut Writer, actor: usize, token: &Arc<str>) -> io::Result<KeyHandle> {
         let id = match self.tokens.get(token) {
             Some(&id) => id,
             None => {
@@ -374,7 +374,7 @@ impl Emit {
     }
 
     /// The value a holding by `role` runs with: its appointment's id, 0 for none.
-    fn role(&mut self, writer: &mut Writer<'_>, role: &Option<Arc<Role>>) -> io::Result<i128> {
+    fn role(&mut self, writer: &mut Writer, role: &Option<Arc<Role>>) -> io::Result<i128> {
         let Some(role) = role else {
             return Ok(0);
         };
@@ -401,7 +401,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("ideas.emit", None);
         let at = hour.hour;
         let adjacent = match self.last {
@@ -471,7 +471,7 @@ impl Emit {
     /// The definitions recorded at `at`, published where they changed.
     fn define(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         definitions: Arc<Definitions>,
     ) -> io::Result<()> {
@@ -493,7 +493,7 @@ impl Emit {
     }
 
     /// Ends `actor`'s holdings before `at`.
-    fn end(&mut self, writer: &mut Writer<'_>, actor: usize, at: i32) -> io::Result<()> {
+    fn end(&mut self, writer: &mut Writer, actor: usize, at: i32) -> io::Result<()> {
         let country = &mut self.countries[actor];
         if !std::mem::take(&mut country.active) {
             return Ok(());
@@ -510,7 +510,7 @@ impl Emit {
     }
 
     /// Ends `actor`'s unresolved stretch before `at`.
-    fn resolve(&mut self, writer: &mut Writer<'_>, actor: usize, at: i32) -> io::Result<()> {
+    fn resolve(&mut self, writer: &mut Writer, actor: usize, at: i32) -> io::Result<()> {
         let country = &mut self.countries[actor];
         let Some(first) = country.unresolved.take() else {
             return Ok(());
@@ -522,7 +522,7 @@ impl Emit {
 
     /// Stops dating `actor`'s waiting templates: they keep `before`, the last hour the inputs
     /// were complete.
-    fn undate(&mut self, writer: &mut Writer<'_>, actor: usize, at: i32, before: Option<i32>) -> io::Result<()> {
+    fn undate(&mut self, writer: &mut Writer, actor: usize, at: i32, before: Option<i32>) -> io::Result<()> {
         let country = &mut self.countries[actor];
         if country.dated.is_empty() {
             return Ok(());
@@ -535,14 +535,14 @@ impl Emit {
         self.templates(writer, actor, at)
     }
 
-    fn templates(&mut self, writer: &mut Writer<'_>, actor: usize, at: i32) -> io::Result<()> {
+    fn templates(&mut self, writer: &mut Writer, actor: usize, at: i32) -> io::Result<()> {
         let country = &self.countries[actor];
         let listed: Vec<(u32, &Kept)> = country.templates.iter().map(|(&id, kept)| (id, kept)).collect();
         event(writer, country.keys[2], at, kind::TEMPLATES, &listed)
     }
 
     /// The inputs stop being complete at `at`: every holding and stretch ends before it.
-    fn unknown(&mut self, writer: &mut Writer<'_>, at: i32, before: Option<i32>) -> io::Result<()> {
+    fn unknown(&mut self, writer: &mut Writer, at: i32, before: Option<i32>) -> io::Result<()> {
         for actor in 0..self.countries.len() {
             if !self.countries[actor].listed {
                 continue;
@@ -557,7 +557,7 @@ impl Emit {
     /// The countries read whole at `at`: tags gone or unresolved end their holdings.
     fn roster(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         before: Option<i32>,
         roster: &[(Arc<str>, Option<(u32, u32)>)],
@@ -596,7 +596,7 @@ impl Emit {
     /// Observes `read` at `at`.
     fn observe(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         at: i32,
         adjacent: bool,
         before: Option<i32>,
@@ -748,7 +748,7 @@ impl Emit {
     }
 
     /// Ends every holding and stretch after `last`, the hour before one not walked.
-    fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    fn close(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.close(writer, last)?;
         for country in &mut self.countries {
             if std::mem::take(&mut country.active) {
@@ -766,7 +766,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the scalars that changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

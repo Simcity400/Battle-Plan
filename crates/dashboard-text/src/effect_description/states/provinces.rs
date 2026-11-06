@@ -2,7 +2,6 @@ use super::*;
 use crate::triggers::scope_selector;
 use installed_content_core::{crt::Scanned, crt::scan_i32};
 use replay_data::rows::TableId;
-use replay_frame::frame::TableView;
 
 impl Renderer<'_, '_, '_> {
     // int effect: selectors leave the integer
@@ -36,14 +35,15 @@ impl Renderer<'_, '_, '_> {
         &self,
         id: u32,
     ) -> Result<Option<replay_frame::frame::Province>, String> {
-        Ok(self
-            .context
-            .text
-            .frame()
-            .provinces()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| row.id == id))
+        const PROVINCE: u64 = mask::<replay_data::rows::ProvinceRow>(&[
+            "state",
+            "owner",
+            "controller",
+            "victory_points",
+            "controller_area",
+        ]);
+        Ok(keyed(&self.complete::<tables::Provinces>(PROVINCE)?, u128::from(id))?
+            .map(|row| replay_frame::frame::Province::from(&*row)))
     }
 
     pub(in crate::effect_description) fn go_to_state(
@@ -111,34 +111,35 @@ impl Renderer<'_, '_, '_> {
         if label.is_empty() {
             // Both VP descriptions copy the raw override after an empty display.
             // province_display_name already checked this sparse table's coverage.
-            let raw = match self
-                .context
-                .text
-                .frame()
-                .view(TableId::ProvinceNames.index())
-            {
-                TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows
-                    .rows::<tables::ProvinceNames>()
-                    .and_then(|rows| rows.iter().find(|row| row.province == id)),
-                TableView::Unavailable { reason } => {
+            let frame = self.tables();
+            let raw = match frame.status(TableId::ProvinceNames) {
+                replay_frame::frame::OperandStatus::Unavailable(reason) => {
                     return Err(format!(
                         "victory-point raw-name fallback: ProvinceNames unavailable: {reason}"
                     ));
                 }
-                TableView::NotRecorded { mode } => {
+                replay_frame::frame::OperandStatus::NotRecorded(mode) => {
                     return Err(format!(
                         "victory-point raw-name fallback: ProvinceNames is not recorded in a {mode} recording"
                     ));
                 }
+                _ => frame
+                    .held::<tables::ProvinceNames>(0)
+                    .text(
+                        u128::from(id),
+                        |row| &row.name,
+                        replay_data::rows::column::<replay_data::rows::ProvinceNameRow>("name"),
+                    )
+                    .map_err(built)?,
             };
-            if let Some(row) = raw {
-                if row.name.contains(&0) {
+            if let Some(name) = raw {
+                if name.contains(&0) {
                     return Err(
                         "victory-point raw-name fallback with embedded NUL is not reproduced"
                             .into(),
                     );
                 }
-                label = std::str::from_utf8(&row.name)
+                label = std::str::from_utf8(name)
                     .map_err(|_| "victory-point raw-name fallback is not UTF-8")?
                     .to_owned();
             }

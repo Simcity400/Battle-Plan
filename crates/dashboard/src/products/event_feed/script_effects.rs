@@ -260,7 +260,7 @@ const OBJECTS: [&str; 9] = [
 pub(super) fn scoped_text(
     catalogue: &Catalogue,
     inputs: &Inputs,
-    frame: &dyn replay_frame::frame::DecodedSource,
+    frame: replay_frame::frame::HourFrame<'_>,
     key: &str,
 ) -> Result<String, String> {
     let (scopes, names) = inputs.title_graph()?;
@@ -269,7 +269,7 @@ pub(super) fn scoped_text(
         .localisation
         .localise(key.as_bytes())
         .map_err(|why| why.to_string())?;
-    let expander = ScriptedText::new(
+    let expander = ScriptedText::new_in(
         frame,
         &catalogue.localisation,
         scripted,
@@ -282,7 +282,7 @@ pub(super) fn scoped_text(
 pub(super) fn decision_name(
     catalogue: &Catalogue,
     inputs: &Inputs,
-    frame: &dyn replay_frame::frame::DecodedSource,
+    frame: replay_frame::frame::HourFrame<'_>,
     token: &str,
 ) -> Result<(String, String, bool), String> {
     let content = catalogue.scripted_content()?;
@@ -300,7 +300,7 @@ pub(super) fn decision_name(
     let owner = inputs
         .actor_slot
         .ok_or("decision owner has no exact occurrence-hour canonical slot")?;
-    let text = ScriptedText::new(frame, &catalogue.localisation, content, owner);
+    let text = ScriptedText::new_in(frame, &catalogue.localisation, content, owner);
     let key = crate::effect_description::decision_name_key_at(
         frame,
         text.recorded(),
@@ -321,7 +321,7 @@ pub(super) fn decision_name(
 pub(super) fn decision_title_text(
     catalogue: &Catalogue,
     inputs: &Inputs,
-    frame: &dyn replay_frame::frame::DecodedSource,
+    frame: replay_frame::frame::HourFrame<'_>,
     key: &str,
 ) -> Result<String, String> {
     let mut scopes = inputs.graph(true)?;
@@ -337,7 +337,7 @@ pub(super) fn decision_title_text(
         .localise(key.as_bytes())
         .map_err(|why| why.to_string())?;
     let owner = inputs.actor_slot.unwrap_or(0);
-    let expander = ScriptedText::new(
+    let expander = ScriptedText::new_in(
         frame,
         &catalogue.localisation,
         catalogue.scripted_content()?,

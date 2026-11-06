@@ -16,7 +16,7 @@ use dashboard_base::{
     test_fixtures::{CAMPAIGN, records},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -134,11 +134,10 @@ struct Built {
     root: u64,
 }
 
-fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Built {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>) -> Built {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(first);
     let mut root = 0;
     let mut generation = 0;
@@ -152,7 +151,6 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -166,8 +164,8 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(&directory, &saved).unwrap();
         }
@@ -192,9 +190,7 @@ fn source_of(frames: &[DecodedFrame], name: &str) -> Source {
 
 /// The reply and the event feed's view the publication `built` gives.
 fn published(built: &Built, source: &Source, context: &LoadContext) -> (SubjectReply, Feed) {
-    let budget = Budget::new(64 << 20);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let mut snapshot = Snapshot::open(built.pages.clone(), built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let reply = query::reply(
         &mut snapshot,
@@ -214,7 +210,6 @@ fn published(built: &Built, source: &Source, context: &LoadContext) -> (SubjectR
 /// Every placement of segment starts, cuts and a resume over `frames` publishes the reply and
 /// the feed the row scan reads of them.
 fn holds_to_the_row_scan(frames: &[DecodedFrame], label: &str) {
-    let budget = Budget::new(256 << 20);
     let source = source_of(frames, label);
     let context = LoadContext { content: None };
     let cancelled = AtomicBool::new(false);
@@ -239,7 +234,7 @@ fn holds_to_the_row_scan(frames: &[DecodedFrame], label: &str) {
             starts.push(next);
         }
         let placement = format!("{label}: starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
-        let built = build(projected(frames, &starts), &cuts, resume, &budget);
+        let built = build(projected(frames, &starts), &cuts, resume);
         let (reply, published) = published(&built, &source, &context);
         assert_eq!(
             serde_json::to_value(reply).unwrap(),
@@ -489,8 +484,7 @@ fn replies_name_levels_as_the_row_reply_with_and_without_content() {
     ];
     let source = source_of(&frames, "subjects-content");
     source.set_test_content(options.options.clone(), catalogue.content.clone());
-    let budget = Budget::new(64 << 20);
-    let built = build(projected(&frames, &[]), &[101], None, &budget);
+    let built = build(projected(&frames, &[]), &[101], None);
     for content in [None, Some(options)] {
         let context = LoadContext { content };
         let (actual, _) = published(&built, &source, &context);

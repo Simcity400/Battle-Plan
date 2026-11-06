@@ -68,7 +68,7 @@ function fixture(tag: string, hour: number): Fixture {
       rows: [{ id: '1', kind: 'ceasedToExist', category: 'warsPeace', hour: hour + 1, readHour: 159, nameHour: hour,
         exact: false, tags: [tag], item: null, amount: null }] },
     'division-log-manifest': { windows: [interval], available: true, lossesAvailable: true, templates: [], contentWarnings: [] },
-    'division-log-totals': { created: 0, lost: 1, transferred: 0, warnings: [] },
+    'division-log-totals': { created: 0, lost: 1, transferred: 0, since: null, warnings: [] },
   }, windows: {
     synthetic: { observed: [[90, 159]], warnings: [], contentWarnings: [] },
     'construction-log': { window: 0, interval, outputReads: [], outputUnavailable: [], projects: [project], outputs: [], warnings: [] },

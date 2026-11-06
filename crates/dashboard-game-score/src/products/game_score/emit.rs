@@ -206,7 +206,7 @@ impl Emit {
     /// The keys of `actor`, interned when new.
     fn interned(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
     ) -> io::Result<[KeyHandle; 7]> {
         let mut keys = [0; 7];
@@ -228,7 +228,7 @@ impl Emit {
     }
 
     /// The country actor named `tag`, with its keys.
-    fn actor(&mut self, writer: &mut Writer<'_>, tag: &str, hour: i32) -> io::Result<u64> {
+    fn actor(&mut self, writer: &mut Writer, tag: &str, hour: i32) -> io::Result<u64> {
         if let Some(actor) = self.actors.find(tag.as_bytes()) {
             return Ok(actor);
         }
@@ -242,7 +242,7 @@ impl Emit {
         Ok(actor)
     }
 
-    fn keys(&mut self, writer: &mut Writer<'_>, actor: u64) -> io::Result<[KeyHandle; 7]> {
+    fn keys(&mut self, writer: &mut Writer, actor: u64) -> io::Result<[KeyHandle; 7]> {
         if actor != FAMILY {
             return self
                 .keys
@@ -259,7 +259,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("game_score.emit", None);
         let at = hour.hour;
         let continuous = match self.state.frontier {
@@ -321,7 +321,7 @@ impl Emit {
     /// Every country, as at a gap, a new country set or a whole read.
     fn observe_all(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         multipliers: &GameScoreValues,
         continuous: bool,
@@ -338,7 +338,7 @@ impl Emit {
 
     fn observe_current(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         multipliers: &GameScoreValues,
         previous: Option<i32>,
@@ -401,7 +401,7 @@ impl Emit {
     /// observed hour's.
     fn observe_countries(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         tags: &[String],
     ) -> io::Result<()> {
@@ -417,7 +417,7 @@ impl Emit {
 
     fn observe_holders(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         hour: i32,
         tags: &[String],
         holders: &mut Holders,
@@ -520,7 +520,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn observe_country(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         hour: i32,
         values: &GameScoreValues,
@@ -652,7 +652,7 @@ impl Emit {
     #[allow(clippy::too_many_arguments)]
     fn values(
         &mut self,
-        writer: &mut Writer<'_>,
+        writer: &mut Writer,
         actor: u64,
         hour: i32,
         values: &GameScoreValues,
@@ -706,7 +706,7 @@ impl Emit {
 
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, the hours since the last cut as known, and the metadata where it changed.
-    pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+    pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
         self.add_counted();
         self.normalize();
         self.carry.cut(writer, last)?;

@@ -20,8 +20,8 @@ use dashboard_base::{
 };
 use dashboard_text::metadata::branch_bounds;
 use replay::container::Replay;
-use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::{LexicalTokenRow, tables};
+use replay_frame::frame::{DecodedFrame, Tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -444,28 +444,30 @@ struct CountryTags {
 }
 
 impl CountryTags {
-    fn resolve(countries: &[CountryRow], links: &[CountryLinkRow]) -> Option<Self> {
+    /// The tags of `countries`, each its id, canonical slot and tag, and of `links`, each its
+    /// raw id and canonical slot.
+    fn resolve(countries: &[(u32, u32, Vec<u8>)], links: &[(u32, u32)]) -> Option<Self> {
         let mut slots = HashMap::with_capacity(countries.len());
         let mut tags = HashMap::with_capacity(links.len());
         let mut identities = HashMap::with_capacity(countries.len());
-        for row in countries {
-            let tag = Tag::from(std::str::from_utf8(&row.tag).ok()?);
+        for (id, canonical_slot, tag) in countries {
+            let tag = Tag::from(std::str::from_utf8(tag).ok()?);
             if tag.is_empty()
                 || identities
-                    .insert(tag.clone(), (row.canonical_slot, row.id))
+                    .insert(tag.clone(), (*canonical_slot, *id))
                     .is_some()
-                || slots.insert(row.canonical_slot, tag.clone()).is_some()
+                || slots.insert(*canonical_slot, tag.clone()).is_some()
             {
                 return None;
             }
-            tags.insert(row.id, tag);
+            tags.insert(*id, tag);
         }
-        for row in links {
-            if let Some(tag) = slots.get(&row.canonical_slot) {
-                if tags.get(&row.id).is_some_and(|prior| prior != tag) {
+        for (id, canonical_slot) in links {
+            if let Some(tag) = slots.get(canonical_slot) {
+                if tags.get(id).is_some_and(|prior| prior != tag) {
                     return None;
                 }
-                tags.insert(row.id, tag.clone());
+                tags.insert(*id, tag.clone());
             }
         }
         Some(Self { tags, identities })
@@ -778,20 +780,24 @@ fn takes_states(spelling: &str) -> bool {
 /// The state-action keyword selects the semantic binding; the recording
 /// supplies its spelling, and content supplies its display name.
 /// See engine_peace::peace_conference.
-fn state_action_key(frame: &DecodedFrame) -> Result<String, String> {
+fn state_action_key(frame: &impl Tables) -> Result<String, String> {
+    const LITERAL: usize = replay_data::rows::column::<LexicalTokenRow>("literal");
     let rows = frame
-        .complete::<tables::LexicalTokens>()
+        .complete_rows::<tables::LexicalTokens>(0)
         .map_err(|error| format!("LexicalTokens: {error}"))?;
-    let mut found = rows
-        .iter()
-        .filter(|row| std::str::from_utf8(&row.literal).is_ok_and(takes_states));
-    let row = found
-        .next()
-        .ok_or("LexicalTokens does not record the native state-taking keyword")?;
-    if found.next().is_some() {
-        return Err("LexicalTokens records conflicting state-taking keywords".into());
+    let mut found = None;
+    for literal in rows.texts(|row| &row.literal, LITERAL) {
+        let literal = literal.map_err(|error| format!("LexicalTokens: {error}"))?;
+        if std::str::from_utf8(literal).is_ok_and(takes_states) {
+            if found.is_some() {
+                return Err("LexicalTokens records conflicting state-taking keywords".into());
+            }
+            found = Some(literal);
+        }
     }
-    std::str::from_utf8(&row.literal)
+    let literal =
+        found.ok_or("LexicalTokens does not record the native state-taking keyword")?;
+    std::str::from_utf8(literal)
         .map(str::to_owned)
         .map_err(|error| format!("State-taking keyword is not UTF-8: {error}"))
 }
@@ -1084,7 +1090,7 @@ impl Scan {
             TableId::PeaceConferences,
             frame.hour,
         );
-        let reads = self.reader.read(frame, &[true; replay_data::rows::TABLE_COUNT]);
+        let reads = self.reader.read(frame, &[true; replay_data::rows::TABLE_COUNT])?;
         self.observe_changed(frame.hour, reads, read)
     }
     /// `hour` observed, the reads it changed `reads`; `read` is whether the hour read the

@@ -406,7 +406,7 @@ pub fn walks(
         };
         let ids = &tables[table_set];
         let _permit = admission.union()?;
-        let mut recording = Recording::open_path(columnar, gate::limits())?;
+        let mut recording = Recording::open_path(columnar)?;
         recording.select(ids);
         let selected = recording
             .segments()

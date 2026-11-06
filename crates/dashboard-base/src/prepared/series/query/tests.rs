@@ -8,7 +8,6 @@ fn projected_values_reuse_only_matching_pages_types_and_parameters() {
         reuse_value(
             vec![[page, 2, 3]],
             &through,
-            |value: &Vec<u8>| std::mem::size_of::<Vec<u8>>() + value.capacity(),
             || {
                 calls.set(calls.get() + 1);
                 Ok(vec![page as u8; through])
@@ -27,7 +26,6 @@ fn projected_values_reuse_only_matching_pages_types_and_parameters() {
     assert_eq!(calls.get(), 3);
     let current = scope.finish();
     assert_eq!(current.values.len(), 3);
-    assert!(current.bytes() >= held.bytes());
     let scope = cache_scope(Some(&current));
     assert!(Arc::ptr_eq(&first, &read(1, 8)));
     assert_eq!(
@@ -104,7 +102,6 @@ fn moving_prefixes_fold_only_new_buckets_and_membership_stays_independent() {
         1,
         "only the current request's folds survive"
     );
-    assert!(held.bytes() > 0);
 }
 
 #[test]
@@ -343,10 +340,10 @@ fn a_summary_read_holds_the_summaries_it_decodes_in_its_own_scope() {
         runs.summaries.is_empty(),
         "a runs read decodes no summaries"
     );
-    let charged = runs.bytes();
+    let held = runs.held();
     // Reusing those blobs, a summary read keeps what it decodes with its own reply.
     let scope = cache_scope(Some(&runs));
     summary(&fixture, (0.0, 127.0, 4), &[], None);
     assert!(!scope.finish().summaries.is_empty());
-    assert_eq!(runs.bytes(), charged);
+    assert_eq!(runs.held(), held);
 }

@@ -7,7 +7,7 @@
 
 use super::{Change, Edits, GameScoreIdentity, GameScoreMissingKind, GameScoreValues, SCORE_TABLES};
 use super::{ScoreContent, ScoreObserver};
-use dashboard_world::{Hold, Needs, World};
+use dashboard_world::{Epochs, Hold, Needs, Viewed, World};
 use replay::{
     columns,
     segments::{self, Operator, Sink, State},
@@ -156,10 +156,12 @@ pub struct Hour {
 pub struct Projector<'c> {
     content: &'c ScoreContent,
     format: FormatVersion,
-    asks: Vec<(TableId, Hold)>,
     /// Each table read and the fields a change to which is read.
     fields: Vec<(TableId, u64)>,
     observer: ScoreObserver<'c>,
+    /// Each score table's epoch, moved on at an hour that may have changed it in its hold's
+    /// fields: the observer tells an unchanged table by it, reading the walk's views.
+    epochs: Epochs,
     edits: Edits,
     /// Nothing is held: the next hour is read whole, as a segment's first.
     cold: bool,
@@ -173,11 +175,13 @@ const SAVED: &[u8] = b"game score projector: cold";
 impl<'c> Projector<'c> {
     pub fn new(content: &'c ScoreContent, format: FormatVersion) -> io::Result<Self> {
         let asks = asks()?;
+        let holds: Vec<(TableId, Hold)> =
+            asks.iter().map(|&(table, hold, _)| (table, hold)).collect();
         Ok(Self {
             content,
             format,
             fields: asks.iter().map(|&(table, _, fields)| (table, fields)).collect(),
-            asks: asks.into_iter().map(|(table, hold, _)| (table, hold)).collect(),
+            epochs: Epochs::new(&holds)?,
             observer: content.observer(),
             edits: Edits::new(),
             cold: true,
@@ -236,6 +240,7 @@ impl Operator<World> for Projector<'_> {
 
     fn start(&mut self, _: segments::Start<'_>, _: u64, _: i32) -> io::Result<()> {
         self.cold = true;
+        self.epochs.restart();
         Ok(())
     }
 
@@ -255,6 +260,8 @@ impl Operator<World> for Projector<'_> {
         }
         self.cold = false;
         self.last = Some(at);
+        // Every hour, so no epoch misses an hour that changed its table.
+        self.epochs.hour(world);
         // Names reaching slot zero name their hour: any change to a score table reads it whole.
         let hourly = self.observer.names_hourly();
         let moved = opens
@@ -275,20 +282,17 @@ impl Operator<World> for Projector<'_> {
             });
         }
         self.edits(state, world, opens)?;
-        let frame = {
-            let _cpu = replay_frame::cpu::scope("game_score.columnar.frame", None);
-            world.frame_held(state, &self.asks)?
-        };
+        let frame = Viewed::walked(world, state, &self.epochs);
         let content = self.content;
         let multipliers = &content.multipliers;
         let (facts, change) = if hourly && !opens {
             let facts =
                 self.observer
-                    .observe_whole(&frame, self.format, &mut || multipliers.clone())?;
+                    .observe_whole(frame, self.format, &mut || multipliers.clone())?;
             (facts, Change::All)
         } else {
             self.observer.observe_changed(
-                &frame,
+                frame,
                 self.format,
                 &mut || multipliers.clone(),
                 Some(&self.edits),
@@ -332,8 +336,6 @@ impl Operator<World> for Projector<'_> {
                 }))
             }
         };
-        // The walk's views go back before the hour ends; the observer keeps its own.
-        drop(frame);
         out.push(Hour {
             branch: hour.branch,
             hour: at,
@@ -344,6 +346,7 @@ impl Operator<World> for Projector<'_> {
     // What it held is dropped at the segment's end: the next starts cold.
     fn end(&mut self, _: &mut dyn Sink<Hour>) -> io::Result<()> {
         self.observer = self.content.observer();
+        self.epochs.restart();
         self.cold = true;
         self.last = None;
         Ok(())
@@ -368,6 +371,7 @@ impl Operator<World> for Projector<'_> {
         self.cold = true;
         self.last = None;
         self.observer = self.content.observer();
+        self.epochs.restart();
         Ok(())
     }
 }

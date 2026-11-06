@@ -3,7 +3,7 @@ use dashboard_text::triggers::{Evaluator, Scope, Scopes, World, inputs};
 use installed_content_core::parser::Item;
 use replay_frame::frame::DecodedFrame;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
@@ -51,24 +51,25 @@ struct Entry {
     songs: Vec<Option<Arc<Evaluation>>>,
 }
 
-// Each pipeline owns one immutable full content context; serves rejects another allocation.
+/// A country's song evaluations, kept by the hour they were made for: the memo finds them while
+/// that hour is held.
+#[derive(Clone)]
+pub struct Kept(Arc<Entry>);
+
+/// Each country's latest evaluations while an hour holding them ([`Kept`]) lives, and no others.
+#[derive(Default)]
 pub struct Memo {
-    entries: Mutex<VecDeque<Arc<Entry>>>,
-    capacity: usize,
+    entries: Mutex<Vec<std::sync::Weak<Entry>>>,
     #[cfg(test)]
     evaluations: std::sync::atomic::AtomicUsize,
 }
 
 impl Memo {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            entries: Mutex::new(VecDeque::new()),
-            capacity: capacity.max(1),
-            #[cfg(test)]
-            evaluations: std::sync::atomic::AtomicUsize::new(0),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
+    /// The chances alone; nothing keeps their evaluations for the next hour.
     pub fn chances(
         &self,
         frame: &DecodedFrame,
@@ -76,16 +77,27 @@ impl Memo {
         country: u32,
         world: &World<'_>,
     ) -> viewer_audio::Chances {
+        self.chances_kept(frame, content, country, world).0
+    }
+
+    pub fn chances_kept(
+        &self,
+        frame: &DecodedFrame,
+        content: &Arc<viewer_audio::Content>,
+        country: u32,
+        world: &World<'_>,
+    ) -> (viewer_audio::Chances, Kept) {
+        let same = |entry: &Entry| {
+            entry.branch == frame.branch
+                && entry.country == country
+                && Arc::ptr_eq(&entry.content, content)
+        };
         let previous = self.entries.try_lock().ok().and_then(|entries| {
             entries
                 .iter()
                 .rev()
-                .find(|entry| {
-                    entry.branch == frame.branch
-                        && entry.country == country
-                        && Arc::ptr_eq(&entry.content, content)
-                })
-                .cloned()
+                .filter_map(std::sync::Weak::upgrade)
+                .find(|entry| same(entry))
         });
         // Reread answers belong to this call only, never another hour.
         let mut rereads = HashMap::new();
@@ -173,19 +185,9 @@ impl Memo {
             songs,
         });
         if let Ok(mut entries) = self.entries.try_lock() {
-            let replaced = entries
-                .iter()
-                .position(|last| {
-                    last.branch == frame.branch
-                        && last.country == country
-                        && Arc::ptr_eq(&last.content, content)
-                })
-                .and_then(|at| entries.remove(at));
-            let evicted = (entries.len() >= self.capacity).then(|| entries.pop_front());
-            entries.push_back(entry);
-            drop(entries);
-            drop((replaced, evicted));
+            entries.retain(|last| last.upgrade().is_some_and(|last| !same(&last)));
+            entries.push(Arc::downgrade(&entry));
         }
-        output
+        (output, Kept(entry))
     }
 }

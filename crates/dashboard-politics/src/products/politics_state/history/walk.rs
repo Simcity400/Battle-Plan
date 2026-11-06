@@ -8,7 +8,7 @@ use super::{
     facts::{self, Projector, TABLES},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Identity, Publication, Snapshot, Span, Writer,
+    Blob, Identity, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -143,11 +143,9 @@ fn identity() -> Identity {
 /// The publication of `hours`, cut after each of `cuts`, the emit saved and resumed from the
 /// publication at each but the last.
 fn build(hours: Vec<facts::Hour>, cuts: &[i32]) -> (Memory, u64) {
-    let budget = Budget::new(1 << 30);
-    let cache = Cache::new(&budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -163,12 +161,12 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32]) -> (Memory, u64) {
             reached: cut,
             refusal: None,
         };
-        root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+        root = publish(&mut writer, &mut pages, publication, Blob::EMPTY).unwrap();
         if Some(&cut) != cuts.last() {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::resume(&directory, &saved).unwrap();
         }
@@ -188,9 +186,7 @@ impl Published {
         &self,
         read: impl FnOnce(&mut Snapshot<'_, Memory>, &Directory) -> T,
     ) -> T {
-        let budget = Budget::new(1 << 30);
-        let cache = Cache::new(&budget);
-        let mut snapshot = Snapshot::open(self.pages.clone(), &cache, self.root, identity()).unwrap();
+        let mut snapshot = Snapshot::open(self.pages.clone(), self.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
         read(&mut snapshot, &directory)
     }

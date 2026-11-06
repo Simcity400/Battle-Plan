@@ -1,11 +1,11 @@
 //! The place-names family's hours from a columnar walk ([`replay::segments`]): each province's
 //! state and rename, each state's names and its owner's original-or-own tag, and how the name
-//! tables hold them, as [`FrameInputs`] reads them from the walk's frame of those tables. Only
+//! tables hold them, as [`ColumnInputs`] reads them from the walk's views of those tables. Only
 //! the provinces and states an hour's rows may have changed are read again, and only those
 //! that changed since the segment last sent them leave the projection. A segment's first hour,
 //! an hour after a skipped one and an hour a name table's status changed read every one.
 
-use dashboard_base::products::place_names::{FrameInputs, Inputs, StateInputs};
+use dashboard_base::products::place_names::{ColumnInputs, Inputs, StateInputs};
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
@@ -293,8 +293,7 @@ impl Operator<World> for Projector {
                 return Ok(());
             }
         }
-        let frame = hour.world.frame_held(state, &self.asks)?;
-        let inputs = FrameInputs::new(&frame);
+        let inputs = ColumnInputs::new(hour.world.columns(state));
         let tables = Tables::of(&inputs);
         let tables = (whole || self.tables.as_ref() != Some(&tables)).then(|| {
             self.tables = Some(tables.clone());
@@ -303,7 +302,7 @@ impl Operator<World> for Projector {
         if whole {
             self.provinces.clear();
             self.states.clear();
-            provinces.extend(inputs.provinces().keys().copied());
+            provinces.extend(inputs.province_ids());
             states.extend(inputs.state_ids());
         } else if retag {
             states.extend(inputs.state_ids());
@@ -337,6 +336,9 @@ impl Operator<World> for Projector {
                 None => self.states.remove(&id),
             };
             changes.push(Change::State(id, now));
+        }
+        if let Some(error) = inputs.failure() {
+            return Err(error);
         }
         out.push(Hour {
             branch: hour.branch,

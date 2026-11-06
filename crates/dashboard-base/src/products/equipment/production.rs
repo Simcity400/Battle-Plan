@@ -3,7 +3,7 @@
 
 #[path = "production/rocket.rs"]
 mod rocket;
-pub(crate) use rocket::{RocketProduced, RocketRead};
+pub(crate) use rocket::{RocketFold, RocketProduced, RocketRead, RocketTotals};
 
 use super::{self as equipment, Domain, Texts, VariantCatalogue};
 use crate::products::LoadContext;
@@ -16,7 +16,7 @@ use replay_data::{rows::Recorded, rows::TableId, rows::tables};
 use replay_frame::{frame::FrameDecoder, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::{
         Arc,
@@ -25,7 +25,6 @@ use std::{
 };
 use ts_rs::TS;
 
-const CACHED_BRANCHES: usize = 2;
 
 /// A country identity within one observation: its canonical slot, native id and
 /// the observation (a restart begins another, whose totals start again).
@@ -145,6 +144,7 @@ impl<R> ExactSizeIterator for RowsIter<'_, R> {}
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, TS,
 )]
+#[derive(replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "ProductionPurpose")]
 pub enum Purpose {
@@ -242,29 +242,6 @@ pub struct TagHistory {
     pub(crate) taken: Option<(Identity, u64)>,
     /// The identity and hour the last sample was extended to.
     pub(crate) last: Option<(Identity, i32)>,
-    /// The entries of `current` and `cost_current` changed since each of preparation's readers
-    /// last took them.
-    #[serde(skip)]
-    pub(crate) edits: Edits,
-}
-
-/// Calls `extend` on the track of each of `tags`, which are ascending, walking both in order.
-pub(crate) fn each_track<'a>(
-    tracks: &mut BTreeMap<String, TagHistory>,
-    tags: impl IntoIterator<Item = &'a str>,
-    mut extend: impl FnMut(&mut TagHistory),
-) {
-    let mut tracks = tracks.iter_mut().peekable();
-    for tag in tags {
-        while tracks.peek().is_some_and(|(held, _)| held.as_str() < tag) {
-            tracks.next();
-        }
-        if let Some((held, track)) = tracks.peek_mut()
-            && held.as_str() == tag
-        {
-            extend(&mut **track);
-        }
-    }
 }
 
 /// Preparation's readers of a track's inventories, each taking its changes in turn.
@@ -958,11 +935,11 @@ pub(crate) fn variant_type(
 /// How often a request waiting for another's scan of its branch checks whether it was cancelled.
 const SCAN_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Scanned branches, and the branches a request is scanning now. The lock is
-/// never held while scanning; a request missing a branch another is scanning
+/// Each branch's scan for this revision, and the branches a request is scanning now. The
+/// lock is never held while scanning; a request missing a branch another is scanning
 /// waits for that scan instead of starting its own.
 struct Cache<T> {
-    entries: VecDeque<(u64, Arc<T>)>,
+    entries: BTreeMap<u64, Arc<T>>,
     scanning: BTreeSet<u64>,
     finished: Arc<std::sync::Condvar>,
     #[cfg(test)]
@@ -972,7 +949,7 @@ struct Cache<T> {
 impl<T> Default for Cache<T> {
     fn default() -> Self {
         Self {
-            entries: VecDeque::new(),
+            entries: BTreeMap::new(),
             scanning: BTreeSet::new(),
             finished: Arc::default(),
             #[cfg(test)]
@@ -1003,7 +980,7 @@ fn shared_scan<T>(
 ) -> io::Result<Arc<T>> {
     let mut held = cache.lock().unwrap_or_else(|error| error.into_inner());
     loop {
-        if let Some((_, scanned)) = held.entries.iter().find(|(cached, _)| *cached == branch) {
+        if let Some(scanned) = held.entries.get(&branch) {
             return Ok(Arc::clone(scanned));
         }
         if held.scanning.insert(branch) {
@@ -1033,10 +1010,7 @@ fn shared_scan<T>(
     let scanning = Scanning { cache, branch };
     let scanned = Arc::new(scan()?);
     let mut held = cache.lock().unwrap_or_else(|error| error.into_inner());
-    held.entries.push_back((branch, Arc::clone(&scanned)));
-    while held.entries.len() > CACHED_BRANCHES {
-        held.entries.pop_front();
-    }
+    held.entries.insert(branch, Arc::clone(&scanned));
     drop(held);
     drop(scanning);
     Ok(scanned)

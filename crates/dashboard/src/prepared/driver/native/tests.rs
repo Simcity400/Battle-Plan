@@ -21,7 +21,7 @@ use dashboard_base::prepared::{
 };
 use dashboard_world::{Needs, World};
 use replay::{
-    columnar_frames::{Limits, Recording, Segment, fixtures, schema},
+    columnar_frames::{Recording, Segment, fixtures, schema},
     segments::{self, Hour, Manifest, Operator, Settings, Sink, Start, State},
 };
 use replay_data::{format::FormatVersion, rows::TableId, scope::CaptureMode};
@@ -121,7 +121,7 @@ fn opened(runs: &[(u64, i32, u32)]) -> (Recording, Vec<u8>) {
 /// [`opened`], a restart ending every `restart_units`th unit.
 fn opened_every(runs: &[(u64, i32, u32)], restart_units: u32) -> (Recording, Vec<u8>) {
     let (bytes, _) = fixtures::churned(runs, restart_units);
-    let recording = Recording::open(bytes.clone(), Limits::default()).unwrap();
+    let recording = Recording::open(bytes.clone()).unwrap();
     (recording, bytes)
 }
 
@@ -184,7 +184,7 @@ impl Projected for Fact {
 /// Every hour of `bytes` as one walk of the whole recording, decoding what a run of families
 /// reading [`TABLES`] decodes, sees it, run after run.
 fn reference(bytes: Vec<u8>) -> Vec<Fact> {
-    let mut recording = Recording::open(bytes, Limits::default()).unwrap();
+    let mut recording = Recording::open(bytes).unwrap();
     recording.select(&decoded(TABLES.iter().copied()));
     let mut state = schema().and_then(State::new).unwrap();
     let mut seen = Vec::new();
@@ -371,6 +371,7 @@ fn run(
     let walk = Walk {
         shape,
         members,
+        index: None,
         world: (FormatVersion::CURRENT, CaptureMode::Full),
         settings: &Settings::new(threads),
         spool: &spool,
@@ -1154,7 +1155,7 @@ fn a_job_with_a_native_backend_is_prepared_among_the_families() {
         prepared: 1,
         proof: [0; 32],
         ledger_pages: 0,
-        first_hole: None,
+        holes: Vec::new(),
         state: None,
         carry: None,
         end: None,
@@ -1596,6 +1597,7 @@ fn a_family_prepared_ahead_serves_the_last_hour_before_the_union_run() {
             let walk = Walk {
                 shape: &shape,
                 members: &mut members,
+                index: None,
                 world: (FormatVersion::CURRENT, CaptureMode::Full),
                 settings: &settings,
                 spool: &spool,

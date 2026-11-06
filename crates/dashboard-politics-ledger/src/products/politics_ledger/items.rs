@@ -6,14 +6,16 @@
 
 use super::*;
 use dashboard_base::products::{
-    character_portraits::{RecordedPortrait, recorded_portrait},
+    character_portraits::{RecordedPortrait, recorded_portrait_in},
     idea_history,
     politics_content::PoliticsContent,
     production_lines::RawOrganisation,
 };
 use dashboard_text::catalogue::{View, plain_text};
-use dashboard_text::identity::{Look, NamingCountry, character_script_token};
+use dashboard_text::identity::{Look, NamingCountry};
 use installed_content_country_names::country_names::CountryNames;
+use replay_frame::frame::{ColumnFrame, HourFrame, Rowset, Tables};
+use std::borrow::Cow;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct CharacterFact {
@@ -135,15 +137,120 @@ pub(super) struct Dated {
     pub modifiers: Option<Vec<(String, RecordedModifier)>>,
 }
 
-pub(super) fn lexical_token(frame: &DecodedFrame, token: u32) -> Option<String> {
-    let rows = frame.complete::<tables::LexicalTokens>().ok()?;
-    let index = rows.binary_search_by_key(&token, |row| row.token).ok()?;
-    std::str::from_utf8(&rows[index].literal)
-        .ok()
-        .map(str::to_owned)
+/// The fields an item's dating reads of each table it reads by row.
+pub(super) const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
+const LEADER: u64 = mask::<UnitLeaderRow>(&["character_id", "category"]);
+const ROLE: u64 = mask::<AdvisorRoleRow>(&["idea", "slot"]);
+const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["owner", "token", "name", "icon"]);
+const PORTRAIT: u64 = mask::<CharacterPortraitRow>(&["portraits"]);
+pub(super) const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
+pub(super) const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
+const CHARACTER: u64 = dashboard_text::identity::CHARACTER_IDENTITY;
+const COST_MODIFIER: u64 = mask::<ModifierDefinitionRow>(&["name_key", "argument"]);
+const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
+
+/// The tables an hour's scripted text and trigger conditions read: the kit's decoded rows for
+/// scripted text and the scripted content's trigger world, which read them alone, and the
+/// hour's [`HourFrame`] for the trigger world that reads [`Tables`]. The one seam to move as
+/// those readers move.
+pub(super) enum TextFrame<'h> {
+    /// The walk's own hour: its frame asked only once an item reaches scripted text, and given
+    /// back with the hour.
+    Walked {
+        world: &'h dashboard_world::World,
+        state: &'h replay::segments::State,
+        views: ColumnFrame<'h>,
+        frame: std::cell::OnceCell<io::Result<DecodedFrame>>,
+    },
+    /// The hour before, as the copies carried from it hold it.
+    Carried(&'h DecodedFrame),
 }
 
-pub(super) fn token_identity(frame: &DecodedFrame, identity: &PowerIdentity) -> Option<String> {
+impl<'h> TextFrame<'h> {
+    pub(super) fn walked(
+        world: &'h dashboard_world::World,
+        state: &'h replay::segments::State,
+    ) -> Self {
+        Self::Walked {
+            world,
+            state,
+            views: world.columns(state),
+            frame: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The hour's tables for the readers behind the seam that read [`Tables`]: the walk's
+    /// views, or the copies.
+    fn tables(&self) -> HourFrame<'_> {
+        match self {
+            Self::Walked { views, .. } => HourFrame::Walked(*views),
+            Self::Carried(frame) => HourFrame::from(*frame),
+        }
+    }
+
+    /// The frame, asked of the walk at the first call; none where the ask failed.
+    fn frame(&self) -> Option<&DecodedFrame> {
+        match self {
+            Self::Walked {
+                world,
+                state,
+                frame,
+                ..
+            } => frame
+                .get_or_init(|| world.frame(state, super::facts::kit()))
+                .as_ref()
+                .ok(),
+            Self::Carried(frame) => Some(*frame),
+        }
+    }
+
+    /// The ask's failure, where it was made and failed.
+    pub(super) fn finish(self) -> io::Result<()> {
+        match self {
+            Self::Walked { frame, .. } => match frame.into_inner() {
+                Some(Err(error)) => Err(error),
+                _ => Ok(()),
+            },
+            Self::Carried(_) => Ok(()),
+        }
+    }
+}
+
+/// The decoded frame `text` gives, asked only here.
+fn decoded<'a>(text: Option<&'a TextFrame<'a>>) -> Option<&'a DecodedFrame> {
+    text.and_then(TextFrame::frame)
+}
+
+/// `table` of `frame` when complete, each row holding the fields `mask` names.
+fn complete<'f, F: Tables + ?Sized, T: TableSchema>(
+    frame: &'f F,
+    mask: u64,
+) -> Option<Rowset<'f, T::Row>> {
+    frame.complete_rows::<T>(mask).ok()
+}
+
+/// The row keyed `key`; none where it is not held or cannot be built.
+fn row<'f, R: RowCodec>(rows: Option<Rowset<'f, R>>, key: u128) -> Option<Cow<'f, R>> {
+    rows?.get(key).ok().flatten()
+}
+
+pub(super) fn lexical_token<F: Tables + ?Sized>(frame: &F, token: u32) -> Option<String> {
+    let rows = complete::<F, tables::LexicalTokens>(frame, LITERAL)?;
+    spelling(rows, token)
+}
+
+fn spelling(rows: Rowset<'_, LexicalTokenRow>, token: u32) -> Option<String> {
+    let literal = rows
+        .text(u128::from(token), |row| &row.literal, LITERAL_COLUMN)
+        .ok()
+        .flatten()?;
+    std::str::from_utf8(literal).ok().map(str::to_owned)
+}
+
+pub(super) fn token_identity<F: Tables + ?Sized>(
+    frame: &F,
+    identity: &PowerIdentity,
+) -> Option<String> {
     if !identity.item_key.is_empty() {
         return std::str::from_utf8(&identity.item_key)
             .ok()
@@ -154,59 +261,58 @@ pub(super) fn token_identity(frame: &DecodedFrame, identity: &PowerIdentity) -> 
 
 /// The character an item records, directly or through the unit leader it references.
 struct RecordedCharacter<'f> {
-    row: &'f CharacterRow,
-    leader: Option<&'f UnitLeaderRow>,
+    row: Cow<'f, CharacterRow>,
+    leader: Option<Cow<'f, UnitLeaderRow>>,
     script_token: Option<&'f str>,
-    saved_name: &'f str,
 }
 
-fn recorded_character<'f>(
-    frame: &'f DecodedFrame,
+fn recorded_character<'f, F: Tables + ?Sized>(
+    frame: &'f F,
     identity: &PowerIdentity,
 ) -> Option<RecordedCharacter<'f>> {
     let leader = (identity.object_kind == PowerObjectKind::Leader)
         .then(|| {
             let reference = identity.object_reference?;
-            let leaders = frame.complete::<tables::UnitLeaders>().ok()?;
-            let index = leaders
-                .binary_search_by_key(&reference, |row| {
-                    (u64::from(row.id) << 32) | u64::from(row.reference_type)
-                })
-                .ok()?;
-            Some(&leaders[index])
+            row(
+                complete::<F, tables::UnitLeaders>(frame, LEADER),
+                u128::from(reference),
+            )
         })
         .flatten();
     let id = identity
         .character
-        .or_else(|| leader.map(|row| row.character_id))?;
-    let rows = frame.complete::<tables::Characters>().ok()?;
-    let row = &rows[rows.binary_search_by_key(&id, |row| row.id).ok()?];
-    let lexical = frame.complete::<tables::LexicalTokens>().ok();
+        .or_else(|| leader.as_ref().map(|row| row.character_id))?;
+    let row = row(
+        complete::<F, tables::Characters>(frame, CHARACTER),
+        u128::from(id),
+    )?;
+    let lexical = complete::<F, tables::LexicalTokens>(frame, LITERAL);
     Some(RecordedCharacter {
+        script_token: lexical.and_then(|lexical| {
+            dashboard_text::identity::character_script_token_in(&row, lexical)
+        }),
         row,
         leader,
-        script_token: lexical.and_then(|lexical| character_script_token(row, lexical)),
-        saved_name: std::str::from_utf8(&row.token).ok()?,
     })
 }
 
-fn character_fact(
-    frame: &DecodedFrame,
+fn character_fact<F: Tables + ?Sized>(
+    frame: &F,
     identity: &PowerIdentity,
     cause: PowerCause,
 ) -> Option<CharacterFact> {
     let recorded = recorded_character(frame, identity)?;
     let id = recorded.row.id;
-    let category = recorded
-        .leader
-        .or_else(|| {
-            frame
-                .complete::<tables::UnitLeaders>()
-                .ok()?
+    let category = match &recorded.leader {
+        Some(leader) => Some(leader.category),
+        None => complete::<F, tables::UnitLeaders>(frame, LEADER).and_then(|leaders| {
+            leaders
                 .iter()
+                .filter_map(Result::ok)
                 .find(|leader| leader.character_id == id)
-        })
-        .map(|leader| leader.category);
+                .map(|leader| leader.category)
+        }),
+    };
     // Role creation reads the category mask; upgrades request small army/navy portraits.
     let (role, size) = match cause {
         PowerCause::Advisor | PowerCause::AdvisorRemoval | PowerCause::Idea => (
@@ -231,17 +337,17 @@ fn character_fact(
     Some(CharacterFact {
         id,
         script_token: recorded.script_token.map(str::to_owned),
-        saved_name: recorded.saved_name.to_owned(),
-        template: dashboard_text::identity::built_template(
-            recorded.row,
-            frame.complete::<tables::LexicalTokens>().ok(),
+        saved_name: std::str::from_utf8(&recorded.row.token).ok()?.to_owned(),
+        template: dashboard_text::identity::built_template_in(
+            &recorded.row,
+            complete::<F, tables::LexicalTokens>(frame, LITERAL),
         ),
         leader_category: category,
         portrait: if role == u32::MAX {
             RecordedPortrait::Unrecorded
         } else {
-            recorded_portrait(
-                frame.complete::<tables::CharacterPortraits>().ok(),
+            recorded_portrait_in(
+                complete::<F, tables::CharacterPortraits>(frame, PORTRAIT),
                 id,
                 role,
                 size,
@@ -250,9 +356,18 @@ fn character_fact(
     })
 }
 
+/// The first Countries row at canonical `slot`, in key order.
+fn first_at<F: Tables + ?Sized>(frame: &F, slot: u32) -> Option<CountryRow> {
+    complete::<F, tables::Countries>(frame, COUNTRY)?
+        .iter()
+        .filter_map(Result::ok)
+        .find(|country| country.canonical_slot == slot)
+        .map(Cow::into_owned)
+}
+
 /// The operands `identity`, a row of `cause` dated at `frame`'s hour, names there.
-pub(super) fn event_facts(
-    frame: Option<&DecodedFrame>,
+pub(super) fn event_facts<F: Tables + ?Sized>(
+    frame: Option<&F>,
     identity: &PowerIdentity,
     cause: PowerCause,
     component: Option<PowerDailyCostKind>,
@@ -269,17 +384,18 @@ pub(super) fn event_facts(
         token = (|| {
             let frame = frame?;
             let id = character.as_ref()?.id;
-            frame
-                .complete::<tables::AdvisorRoles>()
-                .ok()?
-                .iter()
-                .find(|role| {
-                    role.character == id
-                        && (identity.slot_key.is_empty() || role.slot == identity.slot_key)
+            // A character's roles are keyed by it, then by ordinal.
+            let first = u128::from(id) << 32;
+            complete::<F, tables::AdvisorRoles>(frame, ROLE)?
+                .range(first..=first | u128::from(u32::MAX))
+                .filter_map(Result::ok)
+                .find(|role| identity.slot_key.is_empty() || role.slot == identity.slot_key)
+                .and_then(|role| {
+                    std::str::from_utf8(&role.idea)
+                        .ok()
+                        .filter(|idea| !idea.is_empty())
+                        .map(str::to_owned)
                 })
-                .and_then(|role| std::str::from_utf8(&role.idea).ok())
-                .filter(|idea| !idea.is_empty())
-                .map(str::to_owned)
         })();
     }
     let mut organisation_token_known = false;
@@ -289,26 +405,19 @@ pub(super) fn event_facts(
             return None;
         }
         let reference = identity.object_reference?;
-        let rows = frame.complete::<tables::IndustrialOrganisations>().ok()?;
-        let index = rows
-            .binary_search_by_key(&reference, |row| row.organisation)
-            .ok()?;
-        let organisation = &rows[index];
+        let organisation = row(
+            complete::<F, tables::IndustrialOrganisations>(frame, ORGANISATION),
+            u128::from(reference),
+        )?;
         let token = lexical_token(frame, organisation.token);
         organisation_token_known = token.is_some();
-        let links = frame.complete::<tables::CountryLinks>().ok();
-        let countries = frame.complete::<tables::Countries>().ok();
+        let links = complete::<F, tables::CountryLinks>(frame, LINK);
         let owner_tag = links
-            .and_then(|links| dashboard_text::metadata::link_slot(links, organisation.owner))
-            .and_then(|slot| {
-                countries?
-                    .iter()
-                    .find(|country| country.canonical_slot == slot)
-            })
-            .and_then(|country| std::str::from_utf8(&country.tag).ok())
-            .map(str::to_owned);
+            .and_then(|links| dashboard_text::metadata::link_slot_in(&links, organisation.owner))
+            .and_then(|slot| first_at(frame, slot))
+            .and_then(|country| String::from_utf8(country.tag).ok());
         Some(RawOrganisation {
-            first_hour: frame.hour,
+            first_hour: frame.at_hour(),
             // The witness above guards every token-dependent selector; this placeholder is
             // never used to select a fallback icon.
             token: token.unwrap_or_default(),
@@ -322,15 +431,14 @@ pub(super) fn event_facts(
     // The daily getter reads modifier index 0x26.
     let modifier = (component == Some(PowerDailyCostKind::PoliticalPowerCostModifier))
         .then(|| {
-            frame?
-                .complete::<tables::ModifierDefinitions>()
-                .ok()?
-                .iter()
-                .find(|row| row.index == 0x26)
-                .map(|row| CostModifier {
-                    name_key: row.name_key.clone(),
-                    argument: row.argument.clone(),
-                })
+            let row = row(
+                complete::<F, tables::ModifierDefinitions>(frame?, COST_MODIFIER),
+                0x26,
+            )?;
+            Some(CostModifier {
+                name_key: row.name_key.clone(),
+                argument: row.argument.clone(),
+            })
         })
         .flatten();
     EventFacts {
@@ -345,10 +453,10 @@ pub(super) fn event_facts(
 
 /// The names at `frame`'s hour of the countries `slots` finds, raw country to census row: each
 /// valid tag's, with its look and ruling group.
-pub(super) fn named_countries(
-    frame: &DecodedFrame,
+pub(super) fn named_countries<F: Tables + ?Sized>(
+    frame: &F,
     content: Option<&PoliticsContent>,
-    slots: &[(u32, &CountryRow)],
+    slots: &[(u32, CountryRow)],
 ) -> Vec<(u32, NamedCountry)> {
     let names = content.map(|content| {
         CountryNames::read_selected(
@@ -358,7 +466,7 @@ pub(super) fn named_countries(
         )
     });
     let mut named = Vec::with_capacity(slots.len());
-    for &(raw, country) in slots {
+    for (raw, country) in slots {
         let Ok(tag) = std::str::from_utf8(&country.tag) else {
             continue;
         };
@@ -372,7 +480,7 @@ pub(super) fn named_countries(
             look
         });
         named.push((
-            raw,
+            *raw,
             NamedCountry {
                 tag: tag.to_owned(),
                 name: names
@@ -445,7 +553,7 @@ pub(super) fn item_text<'a>(
     row: &Item<'_>,
     facts: &EventFacts,
     content: &'a PoliticsContent,
-    frame: Option<&'a DecodedFrame>,
+    frame: Option<&'a TextFrame<'a>>,
     texts: &FrameTexts<'a>,
 ) -> Option<ItemText> {
     let mut text = event_text(own, row, facts, content, frame, texts)?;
@@ -462,7 +570,7 @@ pub(super) struct Item<'r> {
 fn localise_at<'a>(
     content: &'a PoliticsContent,
     key: &str,
-    frame: Option<&'a DecodedFrame>,
+    frame: Option<&'a TextFrame<'a>>,
     texts: &FrameTexts<'a>,
     slot: Option<u32>,
     decision: Option<(&Item<'_>, bool)>,
@@ -484,8 +592,8 @@ fn localise_at<'a>(
     let slot = slot.ok_or_else(|| {
         format!("localisation {key}: country identity is unavailable at action hour")
     })?;
-    let frame =
-        frame.ok_or_else(|| format!("localisation {key}: its event-hour frame is unavailable"))?;
+    let frame = decoded(frame)
+        .ok_or_else(|| format!("localisation {key}: its event-hour frame is unavailable"))?;
     let scripted = texts.scripted(content, frame, slot)?;
     if let Some((decision, selects_state)) = decision {
         use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link};
@@ -572,17 +680,25 @@ fn localise_at<'a>(
     Ok(content.catalogue.localise_in(key, &scripted))
 }
 
+/// The hour's trigger world: the scripted content's, which reads decoded rows, else the
+/// content's own triggers on the hour's tables.
 fn event_world<'a>(
     content: &'a PoliticsContent,
-    frame: &'a DecodedFrame,
+    text: &'a TextFrame<'a>,
 ) -> Result<dashboard_text::triggers::World<'a>, String> {
-    match content
-        .catalogue
-        .scripted_content()
-        .and_then(|scripted| scripted.recorded_world(frame))
-    {
+    match content.catalogue.scripted_content().and_then(|scripted| {
+        let frame = text
+            .frame()
+            .ok_or_else(|| "its event-hour frame is unavailable".to_owned())?;
+        scripted.recorded_world(frame)
+    }) {
         Ok(world) => Ok(world),
         Err(_) => {
+            // Decoded until the trigger kit's remaining readers read views: a walked world
+            // lends them nothing.
+            let frame = text
+                .frame()
+                .ok_or_else(|| "its event-hour frame is unavailable".to_owned())?;
             let power = content.power_content()?;
             Ok(dashboard_text::triggers::World::read(
                 frame,
@@ -616,7 +732,7 @@ fn event_text<'a>(
     row: &Item<'_>,
     facts: &EventFacts,
     content: &'a PoliticsContent,
-    frame: Option<&'a DecodedFrame>,
+    frame: Option<&'a TextFrame<'a>>,
     texts: &FrameTexts<'a>,
 ) -> Option<ItemText> {
     let mut found = ItemText::default();
@@ -627,7 +743,7 @@ fn event_text<'a>(
             let reference = row.identity.object_reference.ok_or_else(|| {
                 "daily organisation cost: recorded reference is unavailable".to_owned()
             })?;
-            let frame = frame.ok_or_else(|| {
+            let frame = decoded(frame).ok_or_else(|| {
                 format!("organisation {reference:#x}: its action-hour frame is unavailable")
             })?;
             let root = own.map_or(0, |own| own.naming.slot);
@@ -694,12 +810,12 @@ fn event_text<'a>(
                     |key| content.defines(key),
                 )?;
                 let selects_state = decision.name_selects_state(|body| {
-                    let frame = frame.ok_or_else(|| {
+                    let text = frame.ok_or_else(|| {
                         format!("decision {token} name selector: event-hour frame is unavailable")
                     })?;
                     texts
                         .world
-                        .get_or_init(|| event_world(content, frame))
+                        .get_or_init(|| event_world(content, text))
                         .as_ref()
                         .map_err(Clone::clone)?
                         .has_children(body)
@@ -725,7 +841,7 @@ fn event_text<'a>(
                 if body.is_empty() {
                     return Ok(true);
                 }
-                let frame = frame.ok_or_else(|| {
+                let text = frame.ok_or_else(|| {
                     format!("decision {token} icon: event-hour frame is unavailable")
                 })?;
                 let own = own.ok_or_else(|| {
@@ -733,7 +849,7 @@ fn event_text<'a>(
                 })?;
                 let world = texts
                     .world
-                    .get_or_init(|| event_world(content, frame))
+                    .get_or_init(|| event_world(content, text))
                     .as_ref()
                     .map_err(Clone::clone)?;
                 let owner = dashboard_text::triggers::Scope::Country(own.naming.slot);
@@ -820,12 +936,12 @@ fn event_text<'a>(
                         if body.is_empty() {
                             return Ok(true);
                         }
-                        let frame = frame.ok_or_else(|| {
+                        let text = frame.ok_or_else(|| {
                             format!("focus {token} art: event-hour frame is unavailable")
                         })?;
                         let world = texts
                             .world
-                            .get_or_init(|| event_world(content, frame))
+                            .get_or_init(|| event_world(content, text))
                             .as_ref()
                             .map_err(Clone::clone)?;
                         let owner = dashboard_text::triggers::Scope::Country(own.naming.slot);

@@ -9,7 +9,7 @@ use super::{
     facts::{self, Hour, Projected, Projector},
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Identity, Publication, Snapshot, Span, Writer,
+    Blob, Identity, Publication, Snapshot, Span, Writer,
     family::{Directory, Scalar},
     memory::{Memory, publish},
 };
@@ -474,8 +474,8 @@ struct Published {
     root: u64,
 }
 
-fn published(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Published {
-    published_with(hours, cuts, resume, budget, None)
+fn published(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>) -> Published {
+    published_with(hours, cuts, resume, None)
 }
 
 /// [`published`] reading content `cat`.
@@ -483,13 +483,11 @@ fn published_with(
     hours: Vec<Hour>,
     cuts: &[i32],
     resume: Option<i32>,
-    budget: &Budget,
     cat: Option<Arc<Catalogue>>,
 ) -> Published {
-    let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new(cat.clone());
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -501,7 +499,6 @@ fn published_with(
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -515,8 +512,8 @@ fn published_with(
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
             emit = Emit::load(cat.clone(), &directory, &saved).unwrap();
         }
@@ -546,10 +543,9 @@ fn runs_of(snapshot: &mut Snapshot<'_, Memory>, key: u64) -> Runs {
 /// What a publication holds: every value's runs by country, attribution, measure and
 /// named dimension, each operand read out of the catalogue (a design without the hour of
 /// the read that first named it), so two numberings of one history read alike.
-fn read(published: &Published, budget: &Budget) -> BTreeMap<String, Runs> {
-    let cache = Cache::new(budget);
+fn read(published: &Published) -> BTreeMap<String, Runs> {
     let mut snapshot =
-        Snapshot::open(published.pages.clone(), &cache, published.root, identity()).unwrap();
+        Snapshot::open(published.pages.clone(), published.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
     let text = |scalar: Option<&Scalar>| match scalar {
         Some(Scalar::Text(text)) => String::from_utf8(text.to_vec()).unwrap(),
@@ -778,7 +774,6 @@ fn compared(
 /// divisions' parts, which segments placing every division anew at their restarts agree with.
 #[test]
 fn a_division_placed_again_moves_its_parts_difference_alone() {
-    let budget = Budget::new(256 << 20);
     let (cat, _folder) = content();
     let mut seed = 13;
     let hours = models(6, 8, 120, &mut seed);
@@ -787,18 +782,14 @@ fn a_division_placed_again_moves_its_parts_difference_alone() {
             project_with(&hours, &[], Some(Arc::clone(&cat))),
             &[119],
             None,
-            &budget,
         ),
-        &budget,
     );
     let stitched = read(
         &published(
             project_with(&hours, &[30, 60, 90], Some(cat)),
             &[119],
             None,
-            &budget,
         ),
-        &budget,
     );
     assert_eq!(stitched, whole);
     let (mut short, mut full) = (false, false);
@@ -847,7 +838,6 @@ fn a_division_placed_again_moves_its_parts_difference_alone() {
 /// and loaded with the engine it leads with go on as the one walk.
 #[test]
 fn a_design_is_named_as_the_designs_read_standing_defines_it() {
-    let budget = Budget::new(256 << 20);
     let (cat, _folder) = content();
     let mut seed = 17;
     let mut hours = models(5, 6, 110, &mut seed);
@@ -858,8 +848,7 @@ fn a_design_is_named_as_the_designs_read_standing_defines_it() {
     let publish = |starts: &[i32], cuts: &[i32], resume| {
         let items = project(starts);
         read(
-            &published_with(items, cuts, resume, &budget, Some(Arc::clone(&cat))),
-            &budget,
+            &published_with(items, cuts, resume, Some(Arc::clone(&cat))),
         )
     };
     let whole = publish(&[], &[109], None);
@@ -900,14 +889,12 @@ fn a_design_is_named_as_the_designs_read_standing_defines_it() {
 /// deleted divisions, and holes in a lead and in a segment's own hours.
 #[test]
 fn segments_stitched_by_the_emit_are_one_walk() {
-    let budget = Budget::new(256 << 20);
     let mut seed = 5;
     let mut hours = models(6, 8, 120, &mut seed);
     hours[50].hole = true;
     hours[85].hole = true;
     let whole = read(
-        &published(project(&hours, &[]), &[119], None, &budget),
-        &budget,
+        &published(project(&hours, &[]), &[119], None),
     );
     let items = project(&hours, &[30, 60, 90]);
     let led = leads(&items);
@@ -919,7 +906,7 @@ fn segments_stitched_by_the_emit_are_one_walk() {
         assert!(start + leading <= end, "{start} answers its own hours");
         assert!((start + leading..=end).all(|hour| !led.contains(&hour)));
     }
-    let stitched = read(&published(items, &[119], None, &budget), &budget);
+    let stitched = read(&published(items, &[119], None));
     assert_eq!(stitched, whole);
     for hour in [3, 29, 30, 31, 46, 49, 51, 56, 60, 76, 86, 100, 119] {
         for country in 1..=6 {
@@ -932,12 +919,10 @@ fn segments_stitched_by_the_emit_are_one_walk() {
 /// lead steps, and loaded on the publication goes on as the emit that was never saved.
 #[test]
 fn a_cut_and_resume_go_on_as_one_publication() {
-    let budget = Budget::new(256 << 20);
     let mut seed = 9;
     let hours = models(5, 6, 110, &mut seed);
     let whole = read(
-        &published(project(&hours, &[60]), &[109], None, &budget),
-        &budget,
+        &published(project(&hours, &[60]), &[109], None),
     );
     for (cuts, resume) in [
         (&[59, 109][..], 59),
@@ -945,8 +930,7 @@ fn a_cut_and_resume_go_on_as_one_publication() {
         (&[40, 59, 80, 109][..], 80),
     ] {
         let resumed = read(
-            &published(project(&hours, &[60]), cuts, Some(resume), &budget),
-            &budget,
+            &published(project(&hours, &[60]), cuts, Some(resume)),
         );
         assert_eq!(resumed, whole, "resumed at {resume}");
     }
@@ -962,14 +946,12 @@ fn a_cut_and_resume_go_on_as_one_publication() {
 /// rows did not change gives no value.
 #[test]
 fn fifteen_hundred_countries_stitch_as_one_walk_and_quiet_hours_give_nothing() {
-    let budget = Budget::new(1 << 30);
     let mut seed = 21;
     let mut hours = models(1_500, 5, 64, &mut seed);
     // Hour 40 holds hour 39's rows and reads no daily table.
     hours[40] = hours[39].clone();
     let whole = read(
-        &published(project(&hours, &[]), &[63], None, &budget),
-        &budget,
+        &published(project(&hours, &[]), &[63], None),
     );
     let items = project(&hours, &[20, 41]);
     let quiet = items.iter().find(|item| item.hour == 40).expect("hour 40");
@@ -977,7 +959,7 @@ fn fifteen_hundred_countries_stitch_as_one_walk_and_quiet_hours_give_nothing() {
         panic!("hour 40 is answered by its own segment");
     };
     assert!(output.changes.is_empty(), "a quiet hour gives nothing");
-    let stitched = read(&published(items, &[63], None, &budget), &budget);
+    let stitched = read(&published(items, &[63], None));
     assert_eq!(stitched, whole);
     for hour in [20, 40, 63] {
         for country in [1, 750, 1_500] {
@@ -990,7 +972,6 @@ fn fifteen_hundred_countries_stitch_as_one_walk_and_quiet_hours_give_nothing() {
 /// pools unread, so the holdings they sum are absent until the next read, never zero.
 #[test]
 fn a_hole_and_a_refused_pool_read_show_nothing_never_zero() {
-    let budget = Budget::new(256 << 20);
     let mut seed = 3;
     let mut hours = models(3, 4, 110, &mut seed);
     hours[50].hole = true;
@@ -1000,8 +981,7 @@ fn a_hole_and_a_refused_pool_read_show_nothing_never_zero() {
         .expect("a pool read past 60");
     hours[refused].refused = true;
     let held = read(
-        &published(project(&hours, &[60]), &[109], None, &budget),
-        &budget,
+        &published(project(&hours, &[60]), &[109], None),
     );
     for (name, runs) in &held {
         assert!(

@@ -4,7 +4,7 @@ use super::{
     query,
 };
 use dashboard_series::{
-    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    Blob, Publication, Snapshot, Span, Writer,
     family::Directory,
     memory::{Memory, publish},
 };
@@ -44,11 +44,10 @@ fn country(index: u32, holder: (u32, u32), read: i32, values: [Option<i64>; 3]) 
 
 /// Builds the publication of `hours`, cut after each of `cuts`; at `resume` the emit is
 /// saved and taken up again from the publication, as a restarted preparation goes on.
-fn build(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> (Memory, u64) {
-    let cache = Cache::new(budget);
+fn build(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>) -> (Memory, u64) {
     let mut pages = Memory::default();
     let first = hours[0].hour;
-    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut writer = Writer::new(identity(), first).unwrap();
     let mut emit = Emit::new();
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
@@ -60,7 +59,6 @@ fn build(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -
         root = publish(
             &mut writer,
             &mut pages,
-            &cache,
             Publication {
                 generation,
                 segment: generation - 1,
@@ -74,8 +72,8 @@ fn build(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -
         if resume == Some(cut) {
             let mut saved = Vec::new();
             emit.save(&mut saved).unwrap();
-            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
-            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            writer = Writer::resume(&mut pages, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
             emit = Emit::resume(&directory, &saved).unwrap();
         }
@@ -151,10 +149,8 @@ fn states_follow_reads_holders_unknowns_removals_cuts_and_gaps() {
         }
         hours.push(entry);
     }
-    let budget = Budget::new(64 << 20);
-    let (pages, root) = build(hours, &[24, 49, 55], Some(24), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let (pages, root) = build(hours, &[24, 49, 55], Some(24));
+    let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     let family = |measure| json!({ "kind": "country-stability", "measure": measure });
     let reads: Vec<Value> = [10, 19, 20, 29, 30, 44, 45, 47, 49, 50, 51, 55]
@@ -332,11 +328,9 @@ fn fifteen_hundred_countries_keep_their_runs() {
             countries,
         });
     }
-    let budget = Budget::new(512 << 20);
     let cuts: Vec<i32> = (23..120).step_by(24).collect();
-    let (pages, root) = build(hours, &cuts, Some(47), &budget);
-    let cache = Cache::new(&budget);
-    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    let (pages, root) = build(hours, &cuts, Some(47));
+    let mut snapshot = Snapshot::open(pages, root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     assert_eq!(directory.actors.len(), count as usize);
     for index in (0..count).step_by(97) {
