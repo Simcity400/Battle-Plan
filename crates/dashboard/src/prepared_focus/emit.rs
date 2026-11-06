@@ -5,9 +5,11 @@
 //!
 //! A tag is present while one country holds it at consecutive hours; another country, an hour
 //! unobserved or an hour not walked ends it. Its order is dated where it extends the order
-//! observed the hour before; a reset, or an order first read after an hour unobserved, publishes
-//! its focuses undated. Progress runs from each change of the raw progress; its daily gain is
-//! the rise since the hour before the run while the same focus is active.
+//! observed the hour before in the same tree; any other change (a removal, a reorder, another
+//! tree), which a reset can hide behind, or an order first read after an hour unobserved or for
+//! another country, publishes its focuses undated. Progress runs from each change of the raw
+//! progress; its daily gain is the rise since the hour before the run while the same focus is
+//! active.
 
 use super::{
     RESET, TableRefusal, UNDATED,
@@ -521,8 +523,8 @@ impl Emit {
     }
 
     /// The order `observed` read at `at`: its new completions dated where it extends the order
-    /// read the hour before, its chain restarted undated where it does not, and its event where
-    /// what it publishes changed.
+    /// read before in the same tree, its chain restarted undated where it does not, and its event
+    /// where what it publishes changed.
     #[allow(clippy::too_many_arguments)]
     fn order(
         &mut self,
@@ -543,7 +545,8 @@ impl Emit {
         let tokens = &order.completed;
         let before = track.order.take();
         let extends = before.as_ref().is_some_and(|before| {
-            before.completed.len() <= tokens.len()
+            before.tree == order.tree
+                && before.completed.len() <= tokens.len()
                 && before.completed.iter().zip(tokens.iter()).all(|(a, b)| a == b)
         });
         let unchanged = extends
@@ -714,6 +717,7 @@ impl Emit {
                     live: track.live,
                     last: track.last,
                     order: track.order.as_deref().map(|order| SavedOrder {
+                        tree: order.tree.as_deref().map(<[u8]>::to_vec),
                         completed: order.completed.iter().map(|token| token.to_vec()).collect(),
                         current: order.current.as_deref().map(<[u8]>::to_vec),
                         continuous: order.continuous.as_deref().map(<[u8]>::to_vec),
@@ -793,6 +797,7 @@ impl Emit {
             track.last = saved.last;
             track.order = saved.order.map(|order| {
                 Arc::new(facts::Order {
+                    tree: bytes(order.tree),
                     completed: order.completed.into_iter().map(Arc::from).collect(),
                     current: bytes(order.current),
                     continuous: bytes(order.continuous),
@@ -821,6 +826,7 @@ impl Emit {
 
 #[derive(Serialize, Deserialize)]
 struct SavedOrder {
+    tree: Option<Vec<u8>>,
     completed: Vec<Vec<u8>>,
     current: Option<Vec<u8>>,
     continuous: Option<Vec<u8>>,

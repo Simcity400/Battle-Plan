@@ -53,8 +53,10 @@ pub(crate) const INCOMPLETE_ORDER: &str = "Focus completion observation: complet
 pub(crate) const INCOMPLETE_TABLES: &str =
     "Focus completion observation: required tables incomplete (counted per hour)";
 pub(crate) const UNDATED: &str = "Focus completion observation: completions first seen after the country was not observed have no event dates";
-pub(crate) const RESET: &str =
-    "Focus completion observation: reset or reordered completion list has no event dates";
+
+/// A completed list that changed other than by completions appended in the same tree: a reset
+/// (another tree, or a clear) can hide behind any such change, so none of its dates is known.
+pub(crate) const RESET: &str = "Focus completion observation: a completed list that changed other than by completions in the same tree has no event dates";
 
 /// One table's refusal at an hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

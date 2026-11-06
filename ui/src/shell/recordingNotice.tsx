@@ -26,13 +26,14 @@ export function RecordingNotice({ partial, damaged, path }: NoticeProps & { path
   </div> : null;
 }
 
-/** The game build warning: the first in full, any further ones (parts withheld) on hover. */
+/** The game build warnings as one pill in the header row, every one in full on hover and in
+ * Map diagnostics: they change nothing on the dashboard, so they take none of its height. */
 export function BuildNotice({ warnings }: { warnings?: string[] }) {
   if (!warnings?.length) return null;
-  const [first, ...rest] = warnings;
-  return <div className="notice warning shell-build-notice" role="status" data-tooltip={rest.length ? rest.join('\n') : undefined}>
-    <span>{first}{rest.length > 0 && ` · ${rest.length} more ${rest.length === 1 ? 'note' : 'notes'}`}</span>
-  </div>;
+  const text = warnings.join('\n');
+  return <span className="pill warning shell-build-notice" role="status" tabIndex={0} aria-label={text} data-tooltip={text}>
+    {warnings.length > 1 ? `Game build · ${warnings.length} notes` : 'Game build'}
+  </span>;
 }
 
 export function PartialRecordingBadge({ partial, damaged }: NoticeProps) {

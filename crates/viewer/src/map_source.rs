@@ -129,6 +129,7 @@ impl MapSource {
                         "session {session} is still being recorded: the map holds its hours \
                          once its native recording lands"
                     ),
+                    awaiting_index: false,
                 },
                 None => gap(crate::playback::gap_reason(&self.replay, branch, hour)),
             });

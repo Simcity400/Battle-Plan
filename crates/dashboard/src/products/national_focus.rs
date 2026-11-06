@@ -303,6 +303,8 @@ fn focus_branch_observing(
         progress_stopped: None,
     };
     let mut identities = BTreeMap::new();
+    // Each tag's focus tree as its last segment read it: another tree is a reset.
+    let mut trees: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
     let mut held_read = HeldFocusRead::default();
     let mut segment_count = 0;
     let mut progress_bytes = 0_usize;
@@ -398,6 +400,8 @@ fn focus_branch_observing(
                         held_read.accept(tag);
                         let identity = (slot, country.id);
                         let same_identity = identities.get(tag) == Some(&identity);
+                        let tree = focus.tree.as_deref().filter(|s| !s.is_empty());
+                        let same_tree = trees.get(tag).is_some_and(|held| held.as_deref() == tree);
                         let history = result.countries.entry(tag.to_owned()).or_default();
                         let current = focus.current.as_deref().filter(|s| !s.is_empty());
                         let continuous = focus.continuous.as_deref().filter(|s| !s.is_empty());
@@ -436,6 +440,7 @@ fn focus_branch_observing(
                             let order = &previous.order;
                             // Compare borrowed rows first: unchanged hours allocate no focus strings.
                             if same_identity
+                                && same_tree
                                 && previous.last_hour.checked_add(1) == Some(frame.hour)
                                 && order.current.as_ref().map(|s| s.as_bytes()) == current
                                 && order.continuous.as_ref().map(|s| s.as_bytes()) == continuous
@@ -464,7 +469,10 @@ fn focus_branch_observing(
                             continuous: continuous.map(|s| String::from_utf8_lossy(s).into_owned()),
                             paused: focus.paused != 0,
                         };
-                        if same_identity && let Some(previous) = history.segments.last() {
+                        if same_identity
+                            && same_tree
+                            && let Some(previous) = history.segments.last()
+                        {
                             date_completions(&mut order, &previous.order, frame.hour);
                         }
                         result.retained_bytes += 256
@@ -488,6 +496,7 @@ fn focus_branch_observing(
                             order,
                         });
                         identities.insert(tag.to_owned(), identity);
+                        trees.insert(tag.to_owned(), tree.map(<[u8]>::to_vec));
                         new_selected_segment = selected_tag.is_some();
                     }
                     if new_selected_segment {
@@ -511,9 +520,10 @@ fn focus_branch_observing(
     Ok(result)
 }
 
+/// `order`'s dates after `previous`, read in the same tree: an order extending it keeps its
+/// dates and dates the rest by `hour`; any other change, which a reset can hide behind, stays
+/// undated.
 pub(crate) fn date_completions(order: &mut FocusOrder, previous: &FocusOrder, hour: i32) {
-    // Only an unchanged prefix establishes the identity of existing ordinals.
-    // A reset/reorder starts another undated list rather than reusing old dates.
     if order.completed.len() < previous.completed.len()
         || !order
             .completed

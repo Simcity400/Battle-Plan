@@ -261,7 +261,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         ],
         // 2: orders, progress and completions on the segment driver, published as a series root.
         // 3: each completion keeps its event text and icon choice, made at its hour.
-        version: 3,
+        // 4: focus dates carry only across appends in the same tree.
+        version: 4,
         ..family("focus")
     },
     Descriptor {
@@ -672,7 +673,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         sections: &["unit-leaders"],
         // 2: replies and saved scans hold per-leader withheld refusals.
         // 3: unit leader visibility: is_country_leader is now evaluated.
-        version: 3,
+        // 4: a leader of raw owner 0 (a retired character's) is in no roster, not withheld.
+        version: 4,
         ..family("leaders")
     },
     Descriptor {

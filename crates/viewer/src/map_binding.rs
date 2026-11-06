@@ -91,4 +91,61 @@ impl MapBinding {
         }
         Ok(columnar)
     }
+
+    /// What the map's hours are read from, as far as a read could see it change: the bound index
+    /// (never changes), else the index file in the store by its length and last write, and
+    /// whether preparation refused it. A read made under one stamp is stale under another.
+    pub fn source_stamp(&self) -> SourceStamp {
+        if self.columnar.is_some() {
+            return SourceStamp::default();
+        }
+        let Some(path) = &self.index else {
+            return SourceStamp::default();
+        };
+        let identity = std::fs::metadata(path)
+            .ok()
+            .map(|metadata| (metadata.len(), metadata.modified().ok()));
+        let refused = path
+            .parent()
+            .is_some_and(|folder| folder.join("refused.txt").exists());
+        SourceStamp { identity, refused }
+    }
+
+    /// Where the index stands while the map has none open: being prepared, or why there is
+    /// none to wait for.
+    pub fn index_state(&self) -> IndexState {
+        let Some(path) = self.index.as_ref().filter(|_| self.columnar.is_none()) else {
+            return IndexState::Unplaced;
+        };
+        match std::fs::metadata(path) {
+            Ok(_) => return IndexState::Written,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return IndexState::Refused(error.to_string()),
+        }
+        // Preparation writes why it refused the native recordings beside the index.
+        match path.parent().map(|folder| std::fs::read(folder.join("refused.txt"))) {
+            Some(Ok(reason)) => IndexState::Refused(String::from_utf8_lossy(&reason).into_owned()),
+            _ => IndexState::Preparing,
+        }
+    }
+}
+
+/// [`MapBinding::source_stamp`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceStamp {
+    identity: Option<(u64, Option<SystemTime>)>,
+    refused: bool,
+}
+
+/// [`MapBinding::index_state`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IndexState {
+    /// No index is placed in a store: none is bound, or the replay has no store.
+    Unplaced,
+    /// Preparation has not written it yet.
+    Preparing,
+    /// The file is there.
+    Written,
+    /// Preparation refused the native recordings, or the index cannot be looked for: why.
+    Refused(String),
 }

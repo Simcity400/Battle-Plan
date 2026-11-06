@@ -19,12 +19,14 @@ pub enum Current {
         hour: Hour,
         reason: String,
     },
-    /// The recording holds the hour, but its session is still being recorded:
-    /// the map holds its hours once the session's native recording lands.
+    /// The recording holds the hour, but its map is not indexed yet: its session is still
+    /// being recorded, or (`awaiting_index`) preparation has not written the change-run index
+    /// its native capture is read through.
     Pending {
         branch: BranchId,
         hour: Hour,
         reason: String,
+        awaiting_index: bool,
     },
     /// The hour's map cannot be shown: the change-run index serving the recording cannot be
     /// read, or the map needs more memory than its reader may ever hold. Refused by name,
@@ -82,6 +84,9 @@ pub struct Playback {
     /// the map until it is bound again.
     map: Option<crate::map_source::MapSource>,
     map_failure: Option<String>,
+    /// The replay's row frames leave the map tables to its native capture, as a decoded
+    /// frame showed: only a change-run index holds its map, so no block is read for it.
+    native_map: bool,
     map_workers: usize,
     source_path: Option<bool>,
     #[cfg(test)]
@@ -123,6 +128,7 @@ impl Playback {
             map_binding: None,
             map: None,
             map_failure: None,
+            native_map: false,
             map_workers: 1,
             source_path: None,
             #[cfg(test)]
@@ -170,6 +176,64 @@ impl Playback {
         // The binding's change-run index, if any, opens again on the next read.
         self.map = None;
         self.map_failure = None;
+        // A frame read before the binding may hold no map: say so in the binding's terms.
+        let held = match &self.current {
+            Current::Frame(frame) if leaves_map_to_native(frame, self.replay.capture_mode) => {
+                Some((frame.branch, frame.hour))
+            }
+            _ => None,
+        };
+        if let Some((branch, hour)) = held {
+            self.native_map = true;
+            self.current = self.unindexed(branch, hour);
+        }
+    }
+
+    /// The hour of a replay whose map only a change-run index holds, while none is open:
+    /// pending while preparation writes it, else refused with why there is none.
+    fn unindexed(&self, branch: BranchId, hour: Hour) -> Current {
+        use crate::map_binding::IndexState;
+        let state = self
+            .map_binding
+            .as_ref()
+            .map_or(IndexState::Unplaced, |binding| binding.index_state());
+        let refused = |reason: String| Current::Refused {
+            branch,
+            hour,
+            reason,
+        };
+        let pending = || Current::Pending {
+            branch,
+            hour,
+            reason: "this recording's map is read from the change-run index preparation writes \
+                     from its native capture, which is not written yet"
+                .into(),
+            awaiting_index: true,
+        };
+        match state {
+            IndexState::Preparing => pending(),
+            // Written since this read looked: the next read opens it.
+            IndexState::Written => match self.map_binding.as_ref().map(|binding| binding.columnar()) {
+                Some(Ok(Some(_))) => pending(),
+                Some(Err(error)) => refused(format!(
+                    "the change-run index serving this recording cannot be read: {error}"
+                )),
+                _ => refused(
+                    "the change-run index in this recording's store does not serve it, and its \
+                     map is held only in its native capture"
+                        .into(),
+                ),
+            },
+            IndexState::Refused(why) => refused(format!(
+                "this recording's map is held only in its native capture, which preparation \
+                 refused: {why}"
+            )),
+            IndexState::Unplaced => refused(
+                "this recording's map is held only in its native capture, which is read through \
+                 a change-run index, and none is bound"
+                    .into(),
+            ),
+        }
     }
 
     pub fn map_binding(&self) -> Option<Arc<MapBinding>> {
@@ -361,7 +425,7 @@ impl Playback {
         if let Some(map) = &self.map {
             return map.walk_start(branch, hour);
         }
-        if self.map_failure.is_some() {
+        if self.map_failure.is_some() || self.native_map {
             return Some(i64::from(hour));
         }
         let index = self.replay.index.iter().position(|index| {
@@ -457,6 +521,37 @@ impl Playback {
         materialize: bool,
         cancelled: &dyn Fn() -> bool,
     ) -> io::Result<()> {
+        let mode = self.replay.capture_mode;
+        let mut native = false;
+        let passed = |frame: &Arc<DecodedFrame>| {
+            if leaves_map_to_native(frame, mode) {
+                native = true;
+            } else {
+                passed(frame);
+            }
+        };
+        self.seek_source(branch, hour, passed, materialize, cancelled)?;
+        let held = native
+            || matches!(&self.current, Current::Frame(frame) if leaves_map_to_native(frame, mode));
+        if held && self.map.is_none() {
+            self.native_map = true;
+            self.current = self.unindexed(branch, hour);
+            let released = self.cache.take();
+            if let Some(reader) = &self.reader {
+                reader.drop_later(released);
+            }
+        }
+        Ok(())
+    }
+
+    fn seek_source(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        mut passed: impl FnMut(&Arc<DecodedFrame>),
+        materialize: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
         if cancelled() {
             return Err(io::Error::from(io::ErrorKind::Interrupted));
         }
@@ -491,6 +586,12 @@ impl Playback {
                 reason,
             };
             self.cache = None;
+            return Ok(());
+        }
+        if self.native_map {
+            self.branch = branch;
+            self.hour = hour;
+            self.current = self.unindexed(branch, hour);
             return Ok(());
         }
         self.note_source(branch, hour, false);
@@ -633,6 +734,15 @@ impl Playback {
     fn gap_reason(&self, branch: BranchId, hour: Hour) -> String {
         gap_reason(&self.replay, branch, hour)
     }
+}
+
+/// Whether `frame`, a row frame of a recording in `mode`, leaves a map table its mode records
+/// to the native capture: it holds no map of its hour, though the recording does.
+fn leaves_map_to_native(frame: &DecodedFrame, mode: replay_data::scope::CaptureMode) -> bool {
+    dashboard_base::map_tables::selected_tables().iter().any(|table| {
+        replay_data::scope::records(mode, *table)
+            && matches!(&*frame.tables[table.index()], TableView::NotRecorded { mode: marked } if *marked == mode)
+    })
 }
 
 /// Why `replay` holds no frame of `hour` of `branch`: every gap holding it, in the replay's

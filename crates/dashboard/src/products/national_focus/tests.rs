@@ -601,6 +601,49 @@ fn selected_focus_history_uses_raw_owner_alias_without_changing_identity() {
     );
 }
 
+/// Only completions appended in the same tree keep the dates before them: a removal alone, or
+/// another tree with the list unchanged or grown, can hide a reset, so the dates are unknown.
+#[test]
+fn dates_carry_only_across_appended_completions_in_the_same_tree() {
+    let tree = |mut frame: DecodedFrame, tree: &[u8]| {
+        if let TableView::Complete(TableRows::Focus(rows)) =
+            &mut *frame.tables[TableId::Focus.index()]
+        {
+            for row in rows.iter_mut() {
+                row.tree = Some(tree.to_vec());
+            }
+        }
+        frame
+    };
+    let frames = vec![
+        tree(focus_countries_frame(1, 100, (9001, 7, &["a"]), &[]), b"one"),
+        tree(focus_countries_frame(1, 101, (9001, 7, &["a", "b"]), &[]), b"one"),
+        tree(focus_countries_frame(1, 102, (9001, 7, &["a", "b", "c"]), &[]), b"one"),
+        // An uncompletion alone.
+        tree(focus_countries_frame(1, 103, (9001, 7, &["a", "c"]), &[]), b"one"),
+        tree(focus_countries_frame(1, 104, (9001, 7, &["a", "c", "d"]), &[]), b"one"),
+        // Another tree, the list unchanged, then grown in the new tree.
+        tree(focus_countries_frame(1, 105, (9001, 7, &["a", "c", "d"]), &[]), b"two"),
+        tree(focus_countries_frame(1, 106, (9001, 7, &["a", "c", "d", "e"]), &[]), b"two"),
+    ];
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let history = crate::focus_history(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    let dates = |hour: i32| {
+        history
+            .at(hour)
+            .unwrap()
+            .completed
+            .iter()
+            .map(|entry| entry.completed_by_hour)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(dates(102), [None, Some(101), Some(102)]);
+    assert_eq!(dates(103), [None, None]);
+    assert_eq!(dates(104), [None, None, Some(104)]);
+    assert_eq!(dates(105), [None, None, None]);
+    assert_eq!(dates(106), [None, None, None, Some(106)]);
+}
+
 #[test]
 fn selected_segment_observer_preserves_history_through_gaps_resets_and_identity_changes() {
     let mut missing = focus_countries_frame(1, 102, (9001, 7, &["old"]), &[]);

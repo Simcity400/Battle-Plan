@@ -32,7 +32,9 @@ const REFUSAL: &str = "Synthetic focus read unavailable";
 /// their focus at `hour`:
 /// - A completes `a0`, `a1`, ... every ten hours from 100; its progress rises every five hours
 ///   and holds while paused from 160 to 175 (longer than a block); at 145 and 146 its count
-///   names one completion more than its rows hold.
+///   names one completion more than its rows hold; from 185 `a1` is uncompleted, a removal a
+///   reset can hide behind, so its dates are unknown from then on; at 165 its tree is
+///   replaced with its list unchanged, a certain reset.
 /// - B completes `b0`, `b1`, ...; its list resets to `b_reset` at 140 (a shrink and a prefix
 ///   break) and grows again; from 185 its active focus alternates between two byte strings
 ///   that render alike.
@@ -83,7 +85,10 @@ fn focus_frame(branch: u64, hour: i32) -> DecodedFrame {
                     let done = (step / 10) as usize;
                     let held = if paused { 155 } else { hour };
                     (
-                        (0..done).map(|n| format!("a{n}")).collect(),
+                        (0..done)
+                            .filter(|&n| hour < 185 || n != 1)
+                            .map(|n| format!("a{n}"))
+                            .collect(),
                         Some(format!("a{done}").into_bytes()),
                         i64::from((held - 100) % 10 / 5) * 3,
                         paused,
@@ -114,7 +119,7 @@ fn focus_frame(branch: u64, hour: i32) -> DecodedFrame {
         let extra = i32::from(index == 0 && (145..=146).contains(&hour));
         focus.push(FocusRow {
             country,
-            tree: Some(format!("tree{}", hour % 3).into_bytes()),
+            tree: Some(if index == 0 && hour >= 165 { b"tree_b".to_vec() } else { b"tree_a".to_vec() }),
             current,
             progress,
             paused: u8::from(paused),

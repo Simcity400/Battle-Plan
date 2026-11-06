@@ -34,7 +34,7 @@ pub(crate) fn fields() -> io::Result<Vec<TableFields>> {
         TableFields::named(TableId::CountryLinks, &["canonical_slot"])?,
         TableFields::named(
             TableId::Focus,
-            &["current", "continuous", "progress", "paused", "completed_count"],
+            &["tree", "current", "continuous", "progress", "paused", "completed_count"],
         )?,
         TableFields::named(TableId::CompletedFocuses, &["token"])?,
     ])
@@ -145,10 +145,11 @@ impl<'de> Deserialize<'de> for Recorded {
 
 /// The recorded bytes of an order's texts that replies show by replacement
 /// text: its completed focuses that are not UTF-8 (by position), and its
-/// active and continuous focus.
+/// active and continuous focus; and its tree, as read.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct RawOrder {
     invalid: BTreeMap<usize, Recorded>,
+    tree: Option<Recorded>,
     current: Option<Recorded>,
     continuous: Option<Recorded>,
 }
@@ -276,6 +277,7 @@ impl Completed {
 /// bytes.
 #[derive(Clone)]
 struct OrderObs {
+    tree: Option<Recorded>,
     completed: Completed,
     current: Option<Recorded>,
     continuous: Option<Recorded>,
@@ -285,6 +287,7 @@ struct OrderObs {
 impl OrderObs {
     fn same(&self, other: &Self) -> bool {
         self.paused == other.paused
+            && self.tree == other.tree
             && self.current == other.current
             && self.continuous == other.continuous
             && self.completed.same(&other.completed)
@@ -390,6 +393,10 @@ fn read_hour(
             country_id: country.id,
             progress: focus.progress,
             order: OrderObs {
+                tree: Recorded::interned(
+                    focus.tree.as_deref(),
+                    held.and_then(|held| held.order.tree.as_ref()),
+                ),
                 completed: list,
                 current: Recorded::interned(
                     focus.current.as_deref(),
@@ -1053,9 +1060,11 @@ impl FocusIndex {
             // Compared by the recorded bytes, shown by their text.
             let current = observed.current();
             let continuous = observed.continuous.clone();
+            // Another tree is a reset, whatever the list holds.
             let extends =
                 order.as_ref().is_some_and(|before| {
-                    before.completed.len() <= tokens.len()
+                    raw.tree == observed.tree
+                        && before.completed.len() <= tokens.len()
                         && before.completed.iter().zip(&tokens).enumerate().all(
                             |(position, (entry, row))| raw.token(position, entry) == &row.0[..],
                         )
@@ -1126,6 +1135,7 @@ impl FocusIndex {
             next.paused = observed.paused;
             raw.current = current;
             raw.continuous = continuous;
+            raw.tree.clone_from(&observed.tree);
             if !(continuing && unchanged) {
                 order_first_hour = hour;
             }

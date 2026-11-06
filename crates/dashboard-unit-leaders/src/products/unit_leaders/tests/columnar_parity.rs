@@ -1303,9 +1303,9 @@ fn owner_refusal_steps_and_raw_values_match_scan_projection_and_restarts() {
     let (_, files) = projected(&[frames.clone()]);
     let projected = reply(&files);
     assert_eq!(projected.withheld, scanned.withheld);
-    assert_eq!(projected.withheld.len(), 5);
+    // Raw owner 0 (hour 100) is no country: a retired character's leader, in no roster.
+    assert_eq!(projected.withheld.len(), 4);
     let details = [
-        "raw owner 0".to_owned(),
         "raw owner 100001 has no CountryLinks row".to_owned(),
         format!("raw owner 100001 links to slot {slot}, which has no Countries row"),
         format!("raw owner 100001 links to slot {slot}, whose Countries row has no tag"),
@@ -1327,8 +1327,8 @@ fn owner_refusal_steps_and_raw_values_match_scan_projection_and_restarts() {
         assert_eq!(
             row.spans,
             vec![HourSpan {
-                first_hour: 100 + at as i32,
-                last_hour: if at == 4 { 105 } else { 100 + at as i32 },
+                first_hour: 101 + at as i32,
+                last_hour: if at == 3 { 105 } else { 101 + at as i32 },
             }]
         );
     }

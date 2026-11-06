@@ -7,7 +7,7 @@ import { formatDateTime } from '../dashboard/calendar.ts';
 
 // Node strips TypeScript but needs the UI toolchain to compile JSX.
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null } });
-const { RecordingNotice, PartialRecordingBadge, partialRecordingText } =
+const { BuildNotice, RecordingNotice, PartialRecordingBadge, partialRecordingText } =
   await vite.ssrLoadModule('/ui/src/shell/recordingNotice.tsx').finally(() => vite.close()) as typeof import('./recordingNotice.tsx');
 
 test('partial recording has a persistent warning notice naming the failure and known hour', () => {
@@ -69,4 +69,14 @@ test('the recording notice names the recording by its file name', () => {
   assert.match(markup, /<strong[^>]*>Germany 1936–1941<\/strong>/);
   assert.match(markup, /data-tooltip="Germany 1936–1941.battleplan"/);
   assert.match(markup, /Partial recording · The game closed\./);
+});
+
+test('game build warnings take one header pill, every warning in full on hover', () => {
+  const warnings = ['Unrecognised game build: synthetic', 'Synthetic table withheld'];
+  const html = renderToStaticMarkup(createElement(BuildNotice, { warnings }));
+  assert.match(html, /^<span class="pill warning shell-build-notice"/);
+  assert.match(html, />Game build · 2 notes<\/span>/);
+  assert.ok(html.includes('data-tooltip="Unrecognised game build: synthetic\nSynthetic table withheld"'));
+  assert.match(renderToStaticMarkup(createElement(BuildNotice, { warnings: warnings.slice(0, 1) })), />Game build<\/span>/);
+  assert.equal(renderToStaticMarkup(createElement(BuildNotice, { warnings: [] })), '');
 });

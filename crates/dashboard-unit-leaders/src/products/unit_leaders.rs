@@ -1626,9 +1626,6 @@ fn withheld_name<'a>(
 }
 
 fn owner_refusal_detail(raw: u32, slot: Option<u32>, country: Option<&CountryRow>) -> String {
-    if raw == 0 {
-        return "raw owner 0".into();
-    }
     let Some(slot) = slot else {
         return format!("raw owner {raw} has no CountryLinks row");
     };
@@ -3418,7 +3415,7 @@ impl Scan {
             } else {
                 owner_tags.get(row.owner).is_some()
             };
-            if !owner_known {
+            if !owner_known && row.owner != 0 {
                 refusals.note(
                     "Leader owner has no resolved recorded country tag",
                     reference.to_string(),
@@ -3499,11 +3496,18 @@ impl Scan {
                     state.last_read.as_ref().map(|read| read.row.kind),
                 ));
             }
-            if let Err(Some(reason)) = &decided {
+            // Raw owner 0 is no country: retiring a character un-assigns its leader from
+            // every nation, so like the game no roster lists it, and nothing is withheld.
+            let ownerless = row.owner == 0;
+            if let Err(Some(reason)) = &decided
+                && !ownerless
+            {
                 refusals.note(reason.clone(), reference.to_string());
             }
             let owner = owner_tags.get(row.owner);
-            let reason = if owner.is_none() {
+            let reason = if ownerless {
+                None
+            } else if owner.is_none() {
                 Some("Leader owner has no resolved recorded country tag".to_owned())
             } else if let Err(reason) = &decided {
                 reason.clone().or_else(|| {
@@ -3529,7 +3533,7 @@ impl Scan {
                     owner_refusal_detail(
                         row.owner,
                         owner_slot,
-                        owner_slot.filter(|_| row.owner != 0).and_then(|slot| {
+                        owner_slot.and_then(|slot| {
                             owner_countries
                                 .get_or_init(|| {
                                     countries
@@ -3574,7 +3578,7 @@ impl Scan {
                 withheld_active.insert(reference, index);
                 continue;
             }
-            if !matches!(decided, Ok(true)) {
+            if ownerless || !matches!(decided, Ok(true)) {
                 continue;
             }
             state.visible_hour = Some(hour);

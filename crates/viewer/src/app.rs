@@ -369,8 +369,10 @@ struct ShownHour {
     /// Why the hour draws nothing: a recorded gap or a failed builder part.
     error: Option<String>,
     /// Why the hour draws nothing yet, no failure: its session is still being recorded, and
-    /// the map holds its hours once the session's native recording lands.
+    /// the map holds its hours once the session's native recording lands; or preparation has
+    /// not written the change-run index its map is read from (`awaiting_index`).
     pending: Option<String>,
+    awaiting_index: bool,
     political_warnings: Vec<String>,
     /// The battle plan's refusals and missing inputs ([`viewer_foundation::map::ribbon_content::OrderReport::warnings`]).
     plan_warnings: Vec<String>,
@@ -3680,6 +3682,18 @@ impl Viewer {
             return Ok(());
         }
         if let Some(pending) = self.shown_pending() {
+            // Built before preparation wrote the map's index: build it again once it has.
+            if self.shown.as_ref().is_some_and(|shown| shown.awaiting_index) {
+                let waiting = document.playback.map_binding().is_some_and(|binding| {
+                    binding.index_state() == crate::map_binding::IndexState::Preparing
+                });
+                if waiting {
+                    ui.ctx().request_repaint_after(Duration::from_secs(1));
+                } else if let Some(hours) = &mut self.hours {
+                    hours.seek();
+                    ui.ctx().request_repaint();
+                }
+            }
             self.rendered = None;
             ui.centered_and_justified(|ui| {
                 ui.label(format!("Not indexed yet: {pending}"));
@@ -7354,6 +7368,7 @@ pub(crate) mod tests {
             hour: 10,
             error: None,
             pending: None,
+            awaiting_index: false,
             political_warnings: Vec::new(),
             plan_warnings: Vec::new(),
             building_warnings: Vec::new(),

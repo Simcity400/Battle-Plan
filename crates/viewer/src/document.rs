@@ -3035,6 +3035,7 @@ impl Document {
                 branch,
                 hour,
                 reason,
+                ..
             } => Err(invalid(format!(
                 "branch {branch}, hour {hour} is not indexed yet: {reason}"
             ))),

@@ -427,6 +427,13 @@ impl Viewer {
             Err(error) => {
                 // An hour not indexed yet draws nothing, and is no failure.
                 let pending = matches!(raid_frame, crate::playback::Current::Pending { .. });
+                let awaiting_index = matches!(
+                    raid_frame,
+                    crate::playback::Current::Pending {
+                        awaiting_index: true,
+                        ..
+                    }
+                );
                 if let Some(scene) = self.scene.as_mut() {
                     let what = if pending {
                         "is not indexed yet"
@@ -467,6 +474,7 @@ impl Viewer {
                     hour,
                     error,
                     pending,
+                    awaiting_index,
                     political_warnings: Vec::new(),
                     plan_warnings: Vec::new(),
                     building_warnings: Vec::new(),
@@ -870,6 +878,7 @@ impl Viewer {
             hour,
             error: None,
             pending: None,
+            awaiting_index: false,
             political_warnings: political.layers.warnings().to_vec(),
             plan_warnings,
             building_warnings,

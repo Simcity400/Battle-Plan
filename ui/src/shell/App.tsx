@@ -405,8 +405,8 @@ export default function App() {
       <header className="shell-header">
         <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
-        {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} damaged={metadata?.damaged} path={metadata?.path} />}
         {tab !== 'settings' && <BuildNotice warnings={metadata?.buildWarnings} />}
+        {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} damaged={metadata?.damaged} path={metadata?.path} />}
         {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status">{pageStorageWarning}</div>}
         {switchFailure && <div className="notice warning shell-switch-failure" role="alert"><Icon name="alert" />
           <span>{`${TAB_NAMES[switchFailure.tab]} could not be shown: ${switchFailure.message}`}</span>

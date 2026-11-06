@@ -67,11 +67,13 @@ pub fn needs(art: bool) -> Needs {
 /// The reasons a country has no observation, by index.
 const REASONS: [&str; 4] = [UNRESOLVED, NO_FOCUS_ROW, NO_TAG, INCOMPLETE_ORDER];
 
-/// A country's focus order as recorded: its completed focuses' tokens in order, its active and
-/// continuous focus (none when empty), and whether it is paused. Compared by recorded bytes.
+/// A country's focus order as recorded: its tree, its completed focuses' tokens in order, its
+/// active and continuous focus (none when empty), and whether it is paused. Compared by recorded
+/// bytes.
 #[derive(Debug, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct Order {
+    pub tree: Option<Arc<[u8]>>,
     pub completed: Arc<[Arc<[u8]>]>,
     pub current: Option<Arc<[u8]>>,
     pub continuous: Option<Arc<[u8]>>,
@@ -195,6 +197,7 @@ struct Focus {
     holder: Option<u32>,
     progress: i64,
     count: i32,
+    tree: Option<Arc<[u8]>>,
     current: Option<Arc<[u8]>>,
     continuous: Option<Arc<[u8]>>,
     paused: bool,
@@ -260,6 +263,7 @@ impl Owned {
 
 /// The columns the observation reads.
 struct Fields {
+    tree: usize,
     current: usize,
     continuous: usize,
     progress: usize,
@@ -345,6 +349,7 @@ impl Projector {
             format,
             mode,
             fields: Fields {
+                tree: columns::field(TableId::Focus, "tree")?,
                 current: columns::field(TableId::Focus, "current")?,
                 continuous: columns::field(TableId::Focus, "continuous")?,
                 progress: columns::field(TableId::Focus, "progress")?,
@@ -401,6 +406,7 @@ impl Projector {
             holder: roster.slot_of(row.country),
             progress: row.progress,
             count: row.completed_count,
+            tree: bytes(row.tree),
             current: bytes(row.current),
             continuous: bytes(row.continuous),
             paused: row.paused != 0,
@@ -418,7 +424,9 @@ impl Projector {
         mask: u64,
     ) -> io::Result<()> {
         let (progress, paused, count) = (self.fields.progress, self.fields.paused, self.fields.count);
-        let texts = Fields::bit(self.fields.current) | Fields::bit(self.fields.continuous);
+        let texts = Fields::bit(self.fields.tree)
+            | Fields::bit(self.fields.current)
+            | Fields::bit(self.fields.continuous);
         let plain = Fields::bit(progress) | Fields::bit(paused) | Fields::bit(count);
         if mask & (texts | plain) == 0 {
             return Ok(());
@@ -437,7 +445,8 @@ impl Projector {
             let Some(focus) = self.focus.get_mut(slot as usize).and_then(Option::as_mut) else {
                 return Err(io::Error::other("A changed Focus slot holds no indexed row"));
             };
-            let unchanged = focus.current == row.current
+            let unchanged = focus.tree == row.tree
+                && focus.current == row.current
                 && focus.continuous == row.continuous
                 && focus.paused == row.paused;
             if unchanged {
@@ -682,6 +691,7 @@ impl Projector {
                 };
                 let focus = self.focus[at as usize].as_mut().expect("an indexed winner");
                 let order = Arc::new(Order {
+                    tree: focus.tree.clone(),
                     completed,
                     current: focus.current.clone(),
                     continuous: focus.continuous.clone(),
