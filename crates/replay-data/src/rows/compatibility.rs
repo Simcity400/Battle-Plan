@@ -770,10 +770,12 @@ pub enum RecordKind {
     EventFeedEvent,
     EventLoss,
     PlayerCommands,
+    /// AirRegionCombat's nested retained air-combat record.
+    AirCombatRecord,
 }
 
 impl RecordKind {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::ReplayHeader,
         Self::ReplayBlock,
         Self::ReplayTrailer,
@@ -794,6 +796,7 @@ impl RecordKind {
         Self::EventFeedEvent,
         Self::EventLoss,
         Self::PlayerCommands,
+        Self::AirCombatRecord,
     ];
 }
 
@@ -817,6 +820,9 @@ pub struct LastChange {
     pub commit: &'static str,
     pub kind: ChangeKind,
     pub appended: &'static [AppendedField],
+    /// For an entry whose fields were appended after an earlier layout change: the format of
+    /// that change, before which every format is refused; 0 for none.
+    pub layout_since: u16,
 }
 
 /// Audited changes retain enough framing to skip incompatible rows.
@@ -889,6 +895,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         commit: "0e632a9b16",
         kind: ChangeKind::Unchanged,
         appended: &[],
+        layout_since: 0,
     };
     let mut history = [baseline; TableId::ALL.len() + RecordKind::ALL.len()];
     history[TableId::CountryWargoals.index()] = table(TableId::CountryWargoals, 104, "wargoals");
@@ -1235,6 +1242,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             RecordKind::EventFeedEvent => (SCRIPT_EVENT_FORMAT, "pol/capture-events-decisions"),
             RecordKind::EventLoss => (EVENT_LOSS_FORMAT, "record/reattach-loss"),
             RecordKind::PlayerCommands => (PLAYER_COMMANDS_FORMAT, "record/player-commands"),
+            RecordKind::AirCombatRecord => (AIR_COMBAT_MENU_FORMAT, "air combat copied equipment"),
             _ => (1, "5d3b4dd945"),
         };
         history[i + r] = LastChange {
@@ -1249,6 +1257,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 ChangeKind::Unchanged
             },
             appended: &[],
+            layout_since: 0,
         };
         r += 1;
     }
@@ -1381,8 +1390,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     // MOVEMENT_TERMS_FORMAT grew `combat` by its army speed and attack speed entries.
     history[TableId::WeatherRegions.index()] = appended_at(
         TableId::WeatherRegions,
-        AIR_MAP_FORMAT,
-        "pending political runtime inputs, perf/attack-preview inputs, pol/finish-eta combat speed entries",
+        AIR_COMBAT_MENU_FORMAT,
+        "pending political runtime inputs, perf/attack-preview inputs, pol/finish-eta combat speed entries, air combat efficiency breakdown",
         &[
             AppendedField {
                 index: 7,
@@ -1419,6 +1428,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "air_defence",
                 introduced: AIR_MAP_FORMAT,
             },
+            AppendedField {
+                index: 14,
+                name: "air_efficiency",
+                introduced: AIR_COMBAT_MENU_FORMAT,
+            },
         ],
     );
     history[TableId::WeatherProvinces.index()] = table(
@@ -1447,8 +1461,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::States.index()] = appended_at(
         TableId::States,
-        SCRIPTED_MAP_FORMAT,
-        "pending political runtime inputs, pol/mapmode-capture population, pol/mapmode-infrastructure category, pol/mapmode-scripted cached choices",
+        MAP_MODE_PARITY_FORMAT,
+        "pending political runtime inputs, pol/mapmode-capture population, pol/mapmode-infrastructure category, pol/mapmode-scripted cached choices, nonpolitical map mode operands",
         &[
             AppendedField {
                 index: 6,
@@ -1484,6 +1498,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 index: 12,
                 name: "single_controller",
                 introduced: SCRIPTED_MAP_FORMAT,
+            },
+            AppendedField {
+                index: 13,
+                name: "infrastructure",
+                introduced: MAP_MODE_PARITY_FORMAT,
             },
         ],
     );
@@ -4009,12 +4028,19 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         participation += 1;
     }
     apply_catalog_passes(&mut history);
+    // Format 135 appended the menu; the layout before format 104 stays refused.
     history[TableId::RaidAirScores.index()] = LastChange {
         introduced: history[TableId::RaidAirScores.index()].introduced,
-        ..table(
+        layout_since: AIR_MAP_FORMAT,
+        ..appended_at(
             TableId::RaidAirScores,
             AIR_COMBAT_MENU_FORMAT,
             "air combat power contributions",
+            &[AppendedField {
+                index: 6,
+                name: "menu",
+                introduced: AIR_COMBAT_MENU_FORMAT,
+            }],
         )
     };
     history[TableId::AirNavalPatrolHistories.index()] = LastChange {
@@ -4025,13 +4051,17 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "native air history slots",
         )
     };
-    history[TableId::AirRegionCombat.index()] = LastChange {
+    // Format 135 appended AirCombatRecord.equipment within AirRegionCombat's records.
+    history[TableId::ALL.len() + RecordKind::AirCombatRecord as usize] = LastChange {
+        subject: Subject::Record(RecordKind::AirCombatRecord),
         introduced: AIR_REGION_COMBAT_FORMAT,
-        ..table(
-            TableId::AirRegionCombat,
-            AIR_COMBAT_MENU_FORMAT,
-            "air combat copied equipment",
-        )
+        kind: ChangeKind::AppendedOnly,
+        appended: &[AppendedField {
+            index: 10,
+            name: "AirCombatRecord.equipment",
+            introduced: AIR_COMBAT_MENU_FORMAT,
+        }],
+        ..history[TableId::ALL.len() + RecordKind::AirCombatRecord as usize]
     };
     history[TableId::AirMissionInputs.index()] = LastChange {
         introduced: AIR_MAP_FORMAT,
@@ -4041,20 +4071,17 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "air combat category flags",
         )
     };
-    history[TableId::WeatherRegions.index()] = LastChange {
-        introduced: history[TableId::WeatherRegions.index()].introduced,
-        ..table(
-            TableId::WeatherRegions,
-            AIR_COMBAT_MENU_FORMAT,
-            "air combat efficiency breakdown",
-        )
-    };
     history[TableId::Cryptology.index()] = LastChange {
         introduced: history[TableId::Cryptology.index()].introduced,
-        ..table(
+        ..appended_at(
             TableId::Cryptology,
             AIR_COMBAT_MENU_FORMAT,
             "air combat cipher order",
+            &[AppendedField {
+                index: 4,
+                name: "ordinal",
+                introduced: AIR_COMBAT_MENU_FORMAT,
+            }],
         )
     };
     history[TableId::NavalCombatShips.index()] = table(
@@ -4152,21 +4179,38 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         ],
     );
 
-    let changed = [
-        TableId::States,
-        TableId::Players,
-        TableId::OperativeMissions,
-        TableId::AgencyOperationBuffers,
-        TableId::RaidIntelInputs,
-        TableId::StrategicOperatives,
-        TableId::AirGroundCrews,
+    // Format 137 only appended fields; each table's earlier columns keep their layout.
+    // States' field 13 is declared with its earlier appended fields.
+    const PARITY: u16 = MAP_MODE_PARITY_FORMAT;
+    const fn parity(index: usize, name: &'static str) -> AppendedField {
+        AppendedField {
+            index,
+            name,
+            introduced: PARITY,
+        }
+    }
+    const PARITY_FIELDS: [(TableId, &[AppendedField]); 6] = [
+        (TableId::Players, &[parity(4, "ordinal")]),
+        (
+            TableId::OperativeMissions,
+            &[
+                parity(18, "map_selected"),
+                parity(19, "map_warning"),
+                parity(20, "active_effect"),
+                parity(21, "pending_effect"),
+            ],
+        ),
+        (TableId::AgencyOperationBuffers, &[parity(4, "offers")]),
+        (TableId::RaidIntelInputs, &[parity(4, "defense_tree")]),
+        (TableId::StrategicOperatives, &[parity(5, "mission_rosters")]),
+        (TableId::AirGroundCrews, &[parity(1, "supply")]),
     ];
     let mut index = 0;
-    while index < changed.len() {
-        let id = changed[index];
+    while index < PARITY_FIELDS.len() {
+        let (id, fields) = PARITY_FIELDS[index];
         history[id.index()] = LastChange {
             introduced: history[id.index()].introduced,
-            ..table(id, MAP_MODE_PARITY_FORMAT, "nonpolitical map mode operands")
+            ..appended_at(id, PARITY, "nonpolitical map mode operands", fields)
         };
         index += 1;
     }
@@ -4352,8 +4396,27 @@ const fn table(id: TableId, format: u16, commit: &'static str) -> LastChange {
         commit,
         kind: ChangeKind::Layout,
         appended: &[],
+        layout_since: 0,
     }
 }
+
+/// The fields a table held before a later layout change replaced them, until the format of
+/// that change: what frames an older recording's table whose layout this build reads otherwise.
+pub struct EarlierLayout {
+    pub table: TableId,
+    pub until: u16,
+    pub fields: usize,
+}
+
+/// Every earlier layout of a table since native captures began whose field count the table's
+/// latest change no longer tells; a native reader checks them against the recording's schema.
+pub static EARLIER_LAYOUTS: [EarlierLayout; 1] = [
+    EarlierLayout {
+        table: TableId::AirNavalPatrolHistories,
+        until: AIR_HISTORY_SLOTS_FORMAT,
+        fields: 3,
+    },
+];
 
 impl LastChange {
     pub const fn present(&self, format: u16) -> bool {
@@ -4379,6 +4442,8 @@ impl LastChange {
             GapCause::Retired(retired)
         } else if format < self.format && self.kind != ChangeKind::AppendedOnly {
             GapCause::Changed(self.format)
+        } else if format < self.layout_since {
+            GapCause::Changed(self.layout_since)
         } else {
             return None;
         };
@@ -4394,6 +4459,16 @@ impl LastChange {
             .iter()
             .find(|field| format < field.introduced)
             .map_or(table.field_count(), |field| field.index)
+    }
+
+    /// The fields `table` held at `format`, whether or not this build reads that layout: the
+    /// earlier layout's ([`EARLIER_LAYOUTS`]) before a layout change, else [`Self::fields`].
+    pub fn framed_fields(&self, table: TableId, format: u16) -> usize {
+        EARLIER_LAYOUTS
+            .iter()
+            .filter(|earlier| earlier.table == table && format < earlier.until)
+            .min_by_key(|earlier| earlier.until)
+            .map_or_else(|| self.fields(table, format), |earlier| earlier.fields)
     }
 }
 
@@ -4412,6 +4487,108 @@ impl RecordKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Format 135 appended fields alone: earlier Cryptology, RaidAirScores, WeatherRegions and
+    /// AirRegionCombat records read, RaidAirScores' layout before format 104 still refused.
+    #[test]
+    fn air_combat_menu_appends_leave_earlier_layouts_readable() {
+        let before = EXACT_NAVAL_CONDITION_FORMAT;
+        for (table, fields) in [
+            (TableId::Cryptology, 4),
+            (TableId::RaidAirScores, 6),
+            (TableId::WeatherRegions, 14),
+        ] {
+            let history = table.last_change();
+            assert_eq!(history.kind, ChangeKind::AppendedOnly, "{table:?}");
+            assert!(history.gap(table, before).is_none(), "{table:?}");
+            assert_eq!(history.fields(table, before), fields, "{table:?}");
+        }
+        let raid = TableId::RaidAirScores.last_change();
+        assert!(raid.gap(TableId::RaidAirScores, AIR_MAP_FORMAT - 1).is_some());
+        assert!(raid.gap(TableId::RaidAirScores, AIR_MAP_FORMAT).is_none());
+        let combat = TableId::AirRegionCombat.last_change();
+        assert!(combat.gap(TableId::AirRegionCombat, before).is_none());
+        let record = RecordKind::AirCombatRecord.last_change();
+        assert_eq!(record.kind, ChangeKind::AppendedOnly);
+        assert_eq!(
+            (record.appended[0].name, record.appended[0].introduced),
+            ("AirCombatRecord.equipment", AIR_COMBAT_MENU_FORMAT)
+        );
+    }
+
+    /// Native captures of format 126 to 136 framed these tables with fewer fields than today;
+    /// counts from each format's row declarations.
+    #[test]
+    fn earlier_native_formats_frame_their_tables_as_written() {
+        let fewer = |format: u16| -> Vec<(TableId, usize)> {
+            let mut fewer = vec![
+                (TableId::States, 13),
+                (TableId::Players, 4),
+                (TableId::RaidIntelInputs, 4),
+                (TableId::OperativeMissions, 18),
+                (TableId::StrategicOperatives, 5),
+                (TableId::AgencyOperationBuffers, 4),
+                (TableId::AirGroundCrews, 1),
+            ];
+            if format < AIR_COMBAT_MENU_FORMAT {
+                fewer.extend([
+                    (TableId::Cryptology, 4),
+                    (TableId::WeatherRegions, 14),
+                    (TableId::RaidAirScores, 6),
+                ]);
+            }
+            if format < AIR_HISTORY_SLOTS_FORMAT {
+                fewer.push((TableId::AirNavalPatrolHistories, 3));
+            }
+            if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
+                fewer.push((TableId::ConstructionLineOutput, 15));
+            }
+            fewer
+        };
+        for format in [
+            MARKET_AUTOMATION_FORMAT,
+            EXACT_COMBAT_FORMAT,
+            PLAYER_COMMANDS_FORMAT,
+            PROVINCE_WITNESS_FORMAT,
+            CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+            EXACT_NAVAL_CONDITION_FORMAT,
+            AIR_HISTORY_SLOTS_FORMAT,
+        ] {
+            let fewer = fewer(format);
+            for table in TableId::ALL {
+                let expected = fewer
+                    .iter()
+                    .find(|&&(held, _)| held == table)
+                    .map_or(table.field_count(), |&(_, fields)| fields);
+                assert_eq!(
+                    table.last_change().framed_fields(table, format),
+                    expected,
+                    "{table:?} at {format}"
+                );
+            }
+        }
+    }
+
+    /// Format 137 only appended fields: an older recording keeps every earlier column.
+    #[test]
+    fn map_mode_parity_fields_leave_earlier_columns_readable() {
+        for (table, fields) in [
+            (TableId::States, 13),
+            (TableId::Players, 4),
+            (TableId::OperativeMissions, 18),
+            (TableId::AgencyOperationBuffers, 4),
+            (TableId::RaidIntelInputs, 4),
+            (TableId::StrategicOperatives, 5),
+            (TableId::AirGroundCrews, 1),
+        ] {
+            let history = table.last_change();
+            assert_eq!(history.format, MAP_MODE_PARITY_FORMAT, "{table:?}");
+            assert_eq!(history.kind, ChangeKind::AppendedOnly, "{table:?}");
+            assert!(history.gap(table, AIR_HISTORY_SLOTS_FORMAT).is_none(), "{table:?}");
+            assert_eq!(history.fields(table, AIR_HISTORY_SLOTS_FORMAT), fields);
+            assert_eq!(history.fields(table, MAP_MODE_PARITY_FORMAT), table.field_count());
+        }
+    }
 
     /// An older recording's DivisionRetreatBans are each owner's daily read,
     /// not the hour's bans, and its StockpileArchetypes every archetype's raw
@@ -4880,15 +5057,20 @@ mod tests {
 
     #[test]
     fn scripted_map_catalog_records_cached_fields_and_expanded_event_layout() {
-        for (table, fields) in [
+        for (table, latest, fields) in [
             (
                 TableId::States,
+                MAP_MODE_PARITY_FORMAT,
                 &[(11, "best_vp_index"), (12, "single_controller")][..],
             ),
-            (TableId::SimulationFeatures, &[(6, "state_array_len")][..]),
+            (
+                TableId::SimulationFeatures,
+                SCRIPTED_MAP_FORMAT,
+                &[(6, "state_array_len")][..],
+            ),
         ] {
             let history = table.last_change();
-            assert_eq!(history.format, SCRIPTED_MAP_FORMAT);
+            assert_eq!(history.format, latest);
             assert_eq!(history.kind, ChangeKind::AppendedOnly);
             for &(index, name) in fields {
                 let field = history
@@ -5057,6 +5239,9 @@ mod tests {
                 }
                 RecordKind::LandBorderWarInputs => {
                     Some(<super::super::LandBorderWarInputs as crate::value::Value>::STRUCT_FIELDS)
+                }
+                RecordKind::AirCombatRecord => {
+                    Some(<super::super::AirCombatRecord as crate::value::Value>::STRUCT_FIELDS)
                 }
                 RecordKind::EventFeedEvent => {
                     assert_eq!(entry.kind, ChangeKind::Layout);

@@ -155,9 +155,13 @@ pub(super) fn bind(
     let share = fraction(friendly, total);
     bar.progress = Some((share.wrapping_mul(100).wrapping_add(50_000) / 100_000) as i32);
     let hover = (|| {
-        let menu = score
-            .and_then(|score| score.menu.as_ref())
-            .ok_or("air superiority breakdown was unreadable")?;
+        let menu = match score.map(|score| &score.menu) {
+            Some(replay_data::rows::Recorded::Value(Some(menu))) => menu,
+            Some(replay_data::rows::Recorded::NotRecorded) => {
+                return Err(String::from("air superiority breakdown was not recorded"));
+            }
+            _ => return Err(String::from("air superiority breakdown was unreadable")),
+        };
         let percent = format!(
             "\u{11}{}{}\u{11}!",
             if share < 33_000 {

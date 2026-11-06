@@ -1,7 +1,7 @@
 use super::{Content, DecodedFrame, Vision, bind_hover, loc, text};
 use crate::binding::Bindings;
 use installed_content_localisation::localisation::Argument;
-use replay_data::rows::{AirCountryRelationRow, tables};
+use replay_data::rows::{AirCountryRelationRow, Recorded, tables};
 use std::{
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
@@ -323,7 +323,13 @@ fn cipher(
         .iter()
         .filter(|row| links.get(&row.owner_country) == Some(&ours))
         .collect();
-    rows.sort_unstable_by_key(|row| row.ordinal);
+    if rows.len() > 1 && rows.iter().any(|row| matches!(row.ordinal, Recorded::NotRecorded)) {
+        return Err("the cipher order was not recorded".to_owned());
+    }
+    rows.sort_unstable_by_key(|row| match row.ordinal {
+        Recorded::Value(ordinal) => Some(ordinal),
+        Recorded::NotRecorded => None,
+    });
     let mut strength = BTreeMap::new();
     if rows.iter().any(|row| row.bonus_active == 0) {
         for row in frame

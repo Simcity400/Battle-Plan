@@ -285,7 +285,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                         friendly_missions: 0,
                         enemy_missions: 0,
                         air_spotting_scale: Some(0),
-                        menu: None,
+                        menu: replay_data::rows::Recorded::Value(None),
                     });
                 }
             }
@@ -298,7 +298,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
-                menu: None,
+                menu: replay_data::rows::Recorded::Value(None),
             });
         }
         for index in 0..neutral_count {
@@ -311,7 +311,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
-                menu: None,
+                menu: replay_data::rows::Recorded::Value(None),
             });
         }
         rows.sort_by_key(|row| (row.country, row.region));

@@ -28,3 +28,17 @@ test('one canvas decoder distinguishes a pending URL, a decoded image and settle
     assert.equal(created.length, 2);
   } finally { globalThis.Image = before; }
 });
+
+test('a working set of 1,500 flags drawn in one pass is decoded once, pending or settled', () => {
+  const before = globalThis.Image;
+  let created = 0;
+  globalThis.Image = class {
+    complete = false; naturalWidth = 0; src = ''; onload?: () => void; onerror?: () => void;
+    constructor() { created++; }
+  } as unknown as typeof Image;
+  try {
+    const urls = Array.from({ length: 1500 }, (_, index) => `synthetic-working-set-${index}`);
+    for (let pass = 0; pass < 3; pass++) for (const url of urls) canvasImageRead(url, () => {});
+    assert.equal(created, urls.length);
+  } finally { globalThis.Image = before; }
+});

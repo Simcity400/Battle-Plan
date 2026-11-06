@@ -2039,6 +2039,7 @@ impl coordinator::BuildTarget for Coordinator {
         self.slots.insert((branch, hour), slots.clone());
         // Only overlay and movers share these immutable inputs within this ticket.
         let worker_etas = Arc::new(viewer_foundation::movement_timing::WorkerEtas::default());
+        let air_rosters = self.playback.air_rosters();
         let mut jobs = VecDeque::new();
         let mut submit = |name: &'static str, work: PartWork| {
             let content = Arc::clone(&self.content);
@@ -2060,6 +2061,7 @@ impl coordinator::BuildTarget for Coordinator {
                 events,
                 trace: trace.clone(),
                 worker_etas,
+                air_rosters: (name == "overlay").then(|| Arc::clone(&air_rosters)),
                 vision: Arc::clone(&vision),
                 vision_choice: want.perspective.clone(),
                 work,
@@ -2308,6 +2310,7 @@ struct PartJob {
     events: Sender<Event>,
     trace: trace::TargetTrace,
     worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
+    air_rosters: Option<Arc<crate::playback::AirRosters>>,
     vision: Arc<perspective::Vision>,
     vision_choice: perspective::Choice,
     work: PartWork,
@@ -2355,7 +2358,8 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
                     replay_frame::frame::HourInput::new(&job.frame),
                     0.0,
                 )
-                .with_worker_etas(job.worker_etas.clone());
+                .with_worker_etas(job.worker_etas.clone())
+                .with_air_rosters(job.air_rosters.clone());
                 view.seed_vision(&job.vision_choice, Arc::clone(&job.vision));
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     (job.work)(&view, &mut children)

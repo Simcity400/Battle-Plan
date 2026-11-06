@@ -2176,7 +2176,7 @@ impl Captured {
                     bonus_days: r.bonus_days,
                     bonus_active: r.bonus_active,
                     decrypting: r.decrypting,
-                    ordinal: r.ordinal,
+                    ordinal: rows::Recorded::Value(r.ordinal),
                 },
             )),
             sample(table::<tables::IntelNetworks, _>(
@@ -2424,18 +2424,20 @@ impl Captured {
                 .take(outcome.len())
                 .enumerate(),
             |(index, r)| rows::OperativeMissionRow {
-                active_effect: self
-                    .operative_effects
-                    .get(index)
-                    .and_then(|effects| effects[0].as_ref())
-                    .cloned(),
-                pending_effect: self
-                    .operative_effects
-                    .get(index)
-                    .and_then(|effects| effects[1].as_ref())
-                    .cloned(),
-                map_selected: r.map_selected,
-                map_warning: r.map_warning,
+                active_effect: rows::Recorded::Value(
+                    self.operative_effects
+                        .get(index)
+                        .and_then(|effects| effects[0].as_ref())
+                        .cloned(),
+                ),
+                pending_effect: rows::Recorded::Value(
+                    self.operative_effects
+                        .get(index)
+                        .and_then(|effects| effects[1].as_ref())
+                        .cloned(),
+                ),
+                map_selected: rows::Recorded::Value(r.map_selected),
+                map_warning: rows::Recorded::Value(r.map_warning),
                 roster_country: r.roster_country,
                 id: r.id,
                 ordinal: r.ordinal,
@@ -2502,7 +2504,7 @@ impl Captured {
                     running,
                     ready,
                     unready,
-                    offers,
+                    offers: rows::Recorded::Value(offers),
                 }
             },
         )
@@ -2528,12 +2530,12 @@ impl Captured {
         let view = table::<tables::StrategicOperatives, _>(outcome, &self.strategic_operatives.rows, |r| {
             let trade_end = r.entries_start + r.trade_len;
             rows::StrategicOperativeRow {
-                mission_rosters: Some(held_rosters(
+                mission_rosters: rows::Recorded::Value(Some(held_rosters(
                     &mut held.borrow_mut(),
                     r.country,
                     &entries[trade_end + r.pressure_len..],
                     r.mission_counts,
-                )),
+                ))),
                 country: r.country,
                 slot: r.slot,
                 mission_activity: r.mission_activity,
@@ -6415,10 +6417,10 @@ mod tests {
         assert_eq!(
             complete::<tables::OperativeMissions>(&views[18]),
             [rows::OperativeMissionRow {
-                active_effect: None,
-                pending_effect: None,
-                map_selected: None,
-                map_warning: None,
+                active_effect: rows::Recorded::Value(None),
+                pending_effect: rows::Recorded::Value(None),
+                map_selected: rows::Recorded::Value(None),
+                map_warning: rows::Recorded::Value(None),
                 roster_country: u32::MAX,
                 id: u64::MAX,
                 ordinal: 2,
@@ -6510,13 +6512,13 @@ mod tests {
             complete::<tables::StrategicOperatives>(&views[19]),
             [
                 rows::StrategicOperativeRow {
-                    mission_rosters: Some(Default::default()),
+                    mission_rosters: rows::Recorded::Value(Some(Default::default())),
                     country: 2,
                     slot: 2,
                     ..Default::default()
                 },
                 rows::StrategicOperativeRow {
-                    mission_rosters: Some(Default::default()),
+                    mission_rosters: rows::Recorded::Value(Some(Default::default())),
                     country: u32::MAX,
                     slot: 7,
                     mission_activity: i64::MIN,

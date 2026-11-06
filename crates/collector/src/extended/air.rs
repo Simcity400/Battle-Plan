@@ -1255,7 +1255,7 @@ impl Captured {
                     friendly_missions: r.friendly_missions,
                     enemy_missions: r.enemy_missions,
                     air_spotting_scale: r.air_spotting_scale,
-                    menu: r.menu.clone(),
+                    menu: rows::Recorded::Value(r.menu.clone()),
                 }
             }),
             table::<tables::AirGroundCrews, _>(outcomes[14], &self.ground_crews.rows, Clone::clone),
@@ -1417,7 +1417,7 @@ fn merge_supply(
         });
         match rows.next_if(|row| (row.country, row.region) == key) {
             Some(mut row) => {
-                row.supply = summary;
+                row.supply = rows::Recorded::Value(summary);
                 merged.push(row);
             }
             None => merged.push(rows::AirGroundCrewRow {
@@ -1428,7 +1428,7 @@ fn merge_supply(
                 } else {
                     flag(sample.country_pointer, sample.region_pointer).map(u32::from)
                 },
-                supply: summary,
+                supply: rows::Recorded::Value(summary),
             }),
         }
     }

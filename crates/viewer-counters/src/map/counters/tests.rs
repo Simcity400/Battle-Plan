@@ -1639,6 +1639,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         region_names: Default::default(),
         volunteer_air_defines: Err("unused in fixture".into()),
         ground_crew_defines: Err("unused in fixture".into()),
+        air_log_timeout: Err("unused in fixture".into()),
         missing_standstill: Vec::new(),
         map: MapSize::TEST,
         aggression: Arc::new(Vec::new()),

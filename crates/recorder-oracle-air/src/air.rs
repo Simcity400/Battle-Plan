@@ -753,7 +753,7 @@ mod tests {
                 cause: 4,
                 amount: 200_000,
             }],
-            equipment: None,
+            equipment: replay_data::rows::Recorded::Value(None),
         };
         let stale = AirCombatRecord {
             date: 43_800_010,

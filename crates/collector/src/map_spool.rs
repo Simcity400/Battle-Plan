@@ -114,14 +114,14 @@ fn players(
         |row| u128::from(row.id as u32),
         |row, previous| {
             row.id == previous.id
-                && row.ordinal == previous.ordinal
+                && replay_data::rows::Recorded::Value(row.ordinal) == previous.ordinal
                 && row.country == previous.country
                 && row.flags == previous.flags
                 && names[row.user_start..row.user_start + row.user_len] == previous.user
                 && names[row.name_start..row.name_start + row.name_len] == previous.name
         },
         |row| PlayerRow {
-            ordinal: row.ordinal,
+            ordinal: row.ordinal.into(),
             id: row.id,
             country: row.country,
             flags: row.flags,
@@ -962,7 +962,7 @@ mod tests {
     fn all_map_tables_preserve_native_extremes_and_ordered_arena_values() {
         let expected = [
             TableRows::Players(vec![PlayerRow {
-                ordinal: 0,
+                ordinal: 0.into(),
                 id: i32::MIN,
                 country: u32::MAX,
                 flags: 0xa5,

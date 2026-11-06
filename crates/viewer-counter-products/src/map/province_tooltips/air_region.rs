@@ -259,6 +259,50 @@ impl RosterSamples for Samples {
     }
 }
 
+/// The recording's daily air rosters read on the asking thread, for an hour builder that
+/// answers within the hour it builds. Samples read once are kept.
+pub struct RosterHistory(Samples);
+
+impl RosterHistory {
+    pub fn new(replay: Arc<Replay>, columnar: Option<(Arc<IndexFile>, MemoryBudget)>) -> Self {
+        Self(Samples {
+            replay,
+            columnar,
+            snapshots: OnceLock::new(),
+            hours: Mutex::default(),
+            distinct: Mutex::default(),
+            blocks: AtomicUsize::new(0),
+            superseded: Box::new(|| false),
+        })
+    }
+
+    pub fn replay(&self) -> &Arc<Replay> {
+        &self.0.replay
+    }
+
+    pub fn columnar(&self) -> Option<&Arc<IndexFile>> {
+        self.0.columnar.as_ref().map(|(file, _)| file)
+    }
+
+    /// Whether the daily pass at `pass` visited the country in `slot`
+    /// ([`derive::pass_visited`]). A pass at or before the branch's first sample counts as not
+    /// visiting: every row read since already holds it ([`derive::visiting_pass`]).
+    pub fn visited(&self, branch: BranchId, pass: Hour, slot: u32) -> Result<bool, String> {
+        let first = self
+            .0
+            .first_hour(branch)
+            .ok_or_else(|| format!("branch {branch} is not recorded"))?;
+        if pass <= first {
+            return Ok(false);
+        }
+        derive::pass_visited(
+            pass,
+            self.0.eligible(branch, pass - 1, slot)?,
+            self.0.eligible(branch, pass, slot)?,
+        )
+    }
+}
+
 type Key = (BranchId, Hour, u32);
 type Answer = Result<Option<Hour>, String>;
 

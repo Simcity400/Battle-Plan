@@ -152,7 +152,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     : live ? source && headerRead ? { sourceId: source.id, revision: source.revision, branchId: headerRead.branchId, hour: headerRead.hour } : null : flagContext,
     [choiceReads !== undefined, source?.id, source?.revision, headerRead?.branchId, headerRead?.hour, live, flagAt?.branchId, flagAt?.hour, flagContext]); // eslint-disable-line react-hooks/exhaustive-deps
   const headerIdentity = choiceReads !== undefined ? JSON.stringify([sourceKey, displayHeaderTag, headerTag, headerSize, headerContext?.branchId, headerContext?.hour])
-    : `${sourceKey}:${headerTag}:${headerSize}`;
+    : JSON.stringify([sourceKey, headerTag, headerSize, choiceTrack?.branch.id]);
   // Whose flag the header shows: another branch is another country history.
   const flagOwner = `${headerIdentity}:${headerContext?.branchId}`;
   // The top bar names its country at the playback day its flag shows; the shown name

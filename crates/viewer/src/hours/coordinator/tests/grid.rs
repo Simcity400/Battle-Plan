@@ -116,7 +116,6 @@ fn an_old_epochs_anchor_flight_is_never_sent_and_never_acknowledges_a_new_seeks_
     let sent: Vec<_> = f
         .results
         .try_iter()
-        .map(output_hour)
         .map(|built| (built.epoch, built.hour))
         .collect();
     assert_eq!(sent, [(1, 101)], "only the new epoch's anchor is sent");
@@ -145,7 +144,6 @@ fn an_accepted_target_newer_than_the_hour_installed_drains_to_the_window() {
         let sent: Vec<_> = f
             .results
             .try_iter()
-            .map(output_hour)
             .map(|built| built.hour)
             .collect();
         let expected = if installed.is_none() {
@@ -175,7 +173,6 @@ fn a_ready_result_nothing_accepted_waits_out_a_full_output_and_is_delivered() {
         let sent: Vec<_> = f
             .results
             .try_iter()
-            .map(output_hour)
             .map(|built| built.hour)
             .collect();
         let expected = if installed.is_none() {
@@ -263,7 +260,6 @@ fn an_immediate_off_grid_capture_is_requested_and_delivered_after_the_anchor_com
     let captured = f
         .results
         .try_recv()
-        .map(output_hour)
         .expect("the exact capture cannot wait on another Want");
     assert_eq!(
         (captured.epoch, captured.branch, captured.hour),

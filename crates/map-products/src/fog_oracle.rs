@@ -218,7 +218,12 @@ impl Vision {
     }
 
     pub fn sees_land(&self, unit: u64, owner: u32, province: u32) -> Sight {
-        if self.in_full(owner) || self.visibility_gap.is_some() {
+        if self.in_full(owner)
+            || self.visibility_gap.is_some()
+            || (!self.shares.contains(&owner)
+                && !self.levels.contains_key(&unit)
+                && self.truncated.contains(&"UnitIntel"))
+        {
             return Sight::Full;
         }
         let ladder = match self.detection(unit, owner) {

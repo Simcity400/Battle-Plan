@@ -60,8 +60,30 @@ pub fn digest(bytes: &[u8]) -> [u8; 16] {
 
 /// The digest of a schema: each table's column kinds, in table order.
 pub fn schema_digest(schema: &[Vec<crate::state::Kind>]) -> [u8; 32] {
+    tables_digest(schema.iter().map(Vec::as_slice))
+}
+
+/// The digest of `schema` were each table only its first `columns[table]` columns; none when
+/// `columns` names other tables or more columns.
+pub fn schema_digest_prefix(
+    schema: &[Vec<crate::state::Kind>],
+    columns: &[usize],
+) -> Option<[u8; 32]> {
+    let held = schema.len() == columns.len()
+        && schema.iter().zip(columns).all(|(kinds, &held)| held <= kinds.len());
+    held.then(|| {
+        tables_digest(
+            schema
+                .iter()
+                .zip(columns)
+                .map(|(kinds, &held)| &kinds[..held]),
+        )
+    })
+}
+
+fn tables_digest<'k>(tables: impl Iterator<Item = &'k [crate::state::Kind]>) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    for table in schema {
+    for table in tables {
         hasher.update(&(table.len() as u64).to_le_bytes());
         for &kind in table {
             hasher.update(&[kind as u8]);

@@ -320,7 +320,8 @@ pub struct FactionMemberRow {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct PlayerRow {
-    pub ordinal: u32,
+    /// Native roster position; formats before 137 did not record it.
+    pub ordinal: Recorded<u32>,
     /// Native signed session id; its raw u32 bits form the row key.
     pub id: i32,
     pub country: u32,
@@ -4770,7 +4771,7 @@ mod tests {
         round_trip(
             TableId::Players,
             PlayerRow {
-                ordinal: 0,
+                ordinal: 0.into(),
                 id: i32::MIN,
                 country: u32::MAX,
                 flags: u8::MAX,

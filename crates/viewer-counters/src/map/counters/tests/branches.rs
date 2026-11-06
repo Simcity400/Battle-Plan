@@ -29,6 +29,7 @@ fn synthetic_hour(inputs: &CounterInputs<'_>, frame: &DecodedFrame) -> HourTable
         &Default::default(),
         None,
         None,
+        None,
         &type_tint::Memo::new(type_tint::TABLES, 1),
         &MissionMemo::new(1),
         moves.movement_reads(),

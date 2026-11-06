@@ -352,6 +352,15 @@ struct Playhead {
     fraction: f64,
 }
 
+/// The running clock as a rebuild of the same map left it ([`Viewer::reload_campaign_map`]).
+#[derive(Clone, Copy, Debug)]
+struct HeldClock {
+    playhead: Option<Playhead>,
+    playing: bool,
+    anchor: Option<(Playhead, bool, f64)>,
+    at: Instant,
+}
+
 /// What the frame path keeps of the hour on screen once its layers are uploaded.
 struct ShownHour {
     epoch: u64,
@@ -1016,6 +1025,12 @@ pub struct Viewer {
     map_error: Option<String>,
     camera: Option<Placement>,
     camera_manual: bool,
+    /// The recording a rebuild in place opens again: its next open keeps the camera, orbit,
+    /// walk, flight and chosen start instead of starting over.
+    held_view: Option<(PathBuf, HeldClock)>,
+    /// The host clock a rebuild in place resumes once its load is installed: the host sends no
+    /// anchor for it, so without this the map would stay paused while the host plays.
+    held_clock: Option<HeldClock>,
     /// The game's zoom: its target camera and the wheel's part notch.
     zoom: Motion,
     /// How the full map's camera moves, as the host's control sets it.
@@ -1539,6 +1554,8 @@ impl Viewer {
             awaiting_folders: config.resolve_options().is_err(),
             camera: options.camera,
             camera_manual: options.camera.is_some(),
+            held_view: None,
+            held_clock: None,
             zoom: Motion::default(),
             // A window dump's placed walk starts walking, and its `--fly` flies.
             camera_mode: if options.walk.is_some() {
@@ -2298,6 +2315,12 @@ impl Viewer {
             self.failed_load("WGPU renderer is unavailable".to_owned(), ctx);
             return;
         };
+        let held_clock = self
+            .held_view
+            .take()
+            .filter(|(held, _)| *held == path)
+            .map(|(_, clock)| clock);
+        let held = held_clock.is_some();
         self.options.replay = Some(path.clone());
         let options = self.options.clone();
         let verify_revision = self.embedded.is_some();
@@ -2535,20 +2558,26 @@ impl Viewer {
         }
         self.map_error = None;
         self.playing = false;
-        self.camera = self.options.camera;
-        self.camera_manual = self.options.camera.is_some();
-        self.zoom.reset();
-        self.orbit.reset();
-        self.walk.reset();
-        self.flight = None;
-        // A start chosen on the last map is chosen again on this one, with the pointer given back:
-        // the new map's first frame shows the cursor again.
-        if self.start_pick.at().is_some() {
-            self.start_pick = drop::Pick::Choosing;
-            self.input.release();
+        self.held_clock = held_clock;
+        if held {
+            // The same map rebuilt: only the walk's figure comes from the content again.
+            self.walk.forget_figure();
+        } else {
+            self.camera = self.options.camera;
+            self.camera_manual = self.options.camera.is_some();
+            self.zoom.reset();
+            self.orbit.reset();
+            self.walk.reset();
+            self.flight = None;
+            // A start chosen on the last map is chosen again on this one, with the pointer given
+            // back: the new map's first frame shows the cursor again.
+            if self.start_pick.at().is_some() {
+                self.start_pick = drop::Pick::Choosing;
+                self.input.release();
+            }
+            self.fly_clock = None;
+            self.fly_footprints = Default::default();
         }
-        self.fly_clock = None;
-        self.fly_footprints = Default::default();
         // names
         self.placements = None;
         self.placements_at = None;
@@ -2652,6 +2681,24 @@ impl Viewer {
                     fraction: f64::from(document.hour_fraction),
                 });
                 self.clock_anchor = None;
+                // A rebuild in place carries on with the host's clock as it ran meanwhile.
+                if let Some(held) = self.held_clock.take()
+                    && let Some(head) = held.playhead
+                    && let Some((_, last)) = document.playback.range(head.branch)
+                {
+                    let now = Instant::now();
+                    let mut head = head;
+                    self.playing = held.playing
+                        && tick_clock(
+                            &mut head,
+                            self.speed,
+                            now.duration_since(held.at).as_secs_f64(),
+                            last,
+                        );
+                    self.playhead = Some(head);
+                    self.clock_anchor = held.anchor;
+                    self.last_step = now;
+                }
                 self.counter_view =
                     CounterView::new(self.options.counter_settings(document.game_counters));
                 if self.embedded.is_none() {

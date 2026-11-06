@@ -93,7 +93,8 @@ export const EXILE_VALUES: Readonly<Record<'legitimacy' | 'manpower' | 'leaders'
 
 type Label = { nameFailure?: Error; nameDetail?: string; name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
 /** The row's facts in the exile cards' wording. `air` is undefined while the hour detail loads. */
-export function exileTooltip(row: ExileRow, hour: number, exile: Label, host: Label | null, air: number | null | undefined): TooltipContent {
+/** `airHour` is the hour `air` was read at, when an older read is still shown. */
+export function exileTooltip(row: ExileRow, hour: number, exile: Label, host: Label | null, air: number | null | undefined, airHour = hour): TooltipContent {
   const notRecorded = 'Not recorded';
   const number = (value: number | null) => value === null ? notRecorded : usNumber.format(value);
   const note = readNote(row, hour);
@@ -103,7 +104,7 @@ export function exileTooltip(row: ExileRow, hour: number, exile: Label, host: La
     { label: 'Legitimacy', value: row.legitimacy === null ? notRecorded : legitimacyText(row.legitimacy) },
     { label: 'Exile manpower', value: number(row.manpower) },
     { label: 'Exile manpower cap', value: number(row.cap) },
-    ...air === undefined ? [] : [{ label: 'Deployed air crews', value: number(air) }],
+    ...air === undefined ? [] : [{ label: 'Deployed air crews', value: airHour === hour ? number(air) : `${number(air)} (${dayLabel(airHour)})` }],
     { label: 'Army leaders recruited', value: number(row.leaders) },
   ], ...note ? { note } : {} };
 }

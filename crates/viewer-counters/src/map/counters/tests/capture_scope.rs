@@ -101,6 +101,7 @@ fn map_counters_markers_and_selections_read_only_recorded_tables() {
                     &Default::default(),
                     None,
                     None,
+                    None,
                     &type_tint::Memo::new(type_tint::TABLES, 1),
                     &MissionMemo::new(1),
                     moves.movement_reads(),

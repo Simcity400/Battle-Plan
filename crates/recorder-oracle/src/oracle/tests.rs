@@ -3190,7 +3190,7 @@ fn player_oracle_compares_refreshed_fields_and_reports_header_limits() {
     let (mut frame, mut saved, membership, equipment) = fixture();
     *frame.tables[TableId::Players.index()] =
         TableView::Complete(TableRows::Players(vec![replay_data::rows::PlayerRow {
-            ordinal: 0,
+            ordinal: 0.into(),
             id: i32::MIN,
             country: 102,
             flags: 0x81,

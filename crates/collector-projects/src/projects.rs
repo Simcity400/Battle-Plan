@@ -1177,8 +1177,8 @@ impl Captured {
             table_iter::<tables::RaidIntelInputs, _>(outcomes[17], self.raid_intel.rows.iter().take(outcomes[17].len()).enumerate(), |(index, r)| {
                 rows::RaidIntelInputRow {
                     country: r.country,
-                    defense_tree: self.agency_defense.get(index)
-                        .and_then(Clone::clone),
+                    defense_tree: rows::Recorded::Value(self.agency_defense.get(index)
+                        .and_then(Clone::clone)),
                     strategic_present: u8::from(r.strategic_present),
                     country_defense: r.country_defense,
                     crypto_strength: r.crypto_strength,

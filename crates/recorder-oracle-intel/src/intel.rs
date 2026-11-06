@@ -6181,6 +6181,7 @@ mod tests {
                     acceptance: 32_768,
                     tension: -16_384,
                 }],
+                ..Default::default()
             },
             replay_data::rows::StrategicOperativeRow {
                 country: 102,
@@ -7243,7 +7244,7 @@ mod tests {
                 bonus_days: -1,
                 bonus_active: 0,
                 decrypting: 1,
-                ordinal: 0,
+                ordinal: 0.into(),
             },
             replay_data::rows::CryptologyRow {
                 owner_country: 102,
@@ -7252,7 +7253,7 @@ mod tests {
                 bonus_days: -1,
                 bonus_active: 0,
                 decrypting: 0,
-                ordinal: 0,
+                ordinal: 0.into(),
             },
         ]
     }

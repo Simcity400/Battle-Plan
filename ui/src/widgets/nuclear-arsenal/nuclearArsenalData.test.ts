@@ -54,7 +54,7 @@ test('nuclear full drill keeps missing types unknown, exact signed wrapping diff
   assert.deepEqual(nuclearDrillAt(model, 'AAA', 10), { total: 5, values: [2, null], remainder: 3 });
   assert.deepEqual(nuclearDrillAt(model, 'AAA', 12), { total: null, values: [null, 3], remainder: null });
   const bands = nuclearDrillBands(model, 'AAA', null, { firstHour: 10, lastHour: 14 });
-  assert.deepEqual(bands.map(runs => runAt(runs, 10)?.value), [2, 0, 3]);
+  assert.deepEqual(bands.map(runs => runAt(runs, 10)?.value), [2, undefined, 3]);
   assert.ok(bands.every(runs => runAt(runs, 12) == null && runAt(runs, 13) == null));
   assert.ok(bands.every(runs => runAt(runs, 14)?.breakBefore));
   assert.equal(nuclearDrillAt(model, 'ABSENT', 10), null);

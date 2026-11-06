@@ -42,7 +42,8 @@ pub fn candidate(
     let coverage = CoveragePolicy::recorded(identity.coverage_policy)?;
     let game_dir = fs::canonicalize(&options.game_dir)?;
     let user_dir = fs::canonicalize(&options.user_dir).ok();
-    fs::create_dir_all(&options.cache_dir)?;
+    // The cache is disposable: a folder that cannot be made only leaves it unsaved.
+    let _ = fs::create_dir_all(&options.cache_dir);
     let cache_path = options.cache_dir.join(HASH_CACHE);
     let mut cache: HashCache = fs::read(&cache_path)
         .ok()

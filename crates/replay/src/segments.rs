@@ -2133,7 +2133,10 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     }
                     // The tables lost so far stay lost to their readers once the walker forgets.
                     let tables = walker.take_lost();
-                    intact &= tables.is_empty();
+                    // A table the recording withholds is lost to every walk alike.
+                    intact &= tables
+                        .iter()
+                        .all(|(table, _)| self.recording.withheld().iter().any(|(held, _)| held == table));
                     self.lose_tables(&mut walking, tables);
                     // What unwound with the panic is not used again: the walker starts afresh
                     // with the share it holds, and the tables are begun again.
@@ -2158,7 +2161,10 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             }
         };
         let tables = walker.take_lost();
-        intact &= tables.is_empty();
+        // A table the recording withholds is lost to every walk alike.
+        intact &= tables
+            .iter()
+            .all(|(table, _)| self.recording.withheld().iter().any(|(held, _)| held == table));
         match walked {
             Ok(_) if stopped.load(Ordering::SeqCst) => return Ok(None),
             Ok(_) => {}

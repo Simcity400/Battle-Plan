@@ -27,13 +27,16 @@ const NO_WARNINGS: string[] = [];
 export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
+  const { track, tag, data, answered, error, retry } = useIdeaHistory(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
-  const playhead = window && following ? window.lastHour : null;
+  const live = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
-  const at = Math.floor(playhead ?? last);
+  // A retained reply is drawn at the hour it answers, never at a later moment it has not read.
+  const behind = data && answered !== undefined && answered !== Math.floor(live ?? last) ? answered : undefined;
+  const playhead = behind !== undefined && live != null ? behind : live;
+  const at = Math.floor(behind ?? playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const list = useMemo(() => data ? spirits(data) : [], [data]);
   // Sampled hours have approximate geometry; unsampled hours stay pending.

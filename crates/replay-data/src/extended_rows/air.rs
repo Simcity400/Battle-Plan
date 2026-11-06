@@ -23,7 +23,7 @@ typed_codec!(AirTransferInputRow, 64, |row| row.wing as u128,
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct AirGroundCrewRow {
-    pub supply: Option<AirSupplySummary>,
+    pub supply: Recorded<Option<AirSupplySummary>>,
     pub country: u32,
     pub region: u32,
     pub enabled: Option<u32>,
@@ -679,7 +679,8 @@ pub struct AirCombatRecord {
     pub attributed_country: u32,
     pub first_damage: Vec<AirCombatDamage>,
     pub second_damage: Vec<AirCombatDamage>,
-    pub equipment: Option<Vec<AirCombatEquipment>>,
+    /// Formats before 135 did not record it.
+    pub equipment: Recorded<Option<Vec<AirCombatEquipment>>>,
 }
 value_struct!(AirCombatRecord {
     wing_id: u32,
@@ -691,8 +692,9 @@ value_struct!(AirCombatRecord {
     copied: u8,
     attributed_country: u32,
     first_damage: Vec<AirCombatDamage>,
-    second_damage: Vec<AirCombatDamage>,
-    equipment: Option<Vec<AirCombatEquipment>>
+    second_damage: Vec<AirCombatDamage>
+} appended AirCombatRecord {
+    equipment: Recorded<Option<Vec<AirCombatEquipment>>>
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

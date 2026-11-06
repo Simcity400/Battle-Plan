@@ -108,7 +108,7 @@ fn write(walk: &mut Synthetic, hour: i32) {
         bonus_days: -1,
         bonus_active: 0,
         decrypting: u8::from(hour >= 50),
-        ordinal: 0,
+        ordinal: 0.into(),
     }];
     if hour >= 30 {
         ciphers.push(CryptologyRow {
@@ -118,7 +118,7 @@ fn write(walk: &mut Synthetic, hour: i32) {
             bonus_days: -1,
             bonus_active: 0,
             decrypting: 0,
-            ordinal: 0,
+            ordinal: 0.into(),
         });
     }
     put(walk, TableId::Cryptology, &ciphers, false);

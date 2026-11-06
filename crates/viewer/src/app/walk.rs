@@ -55,6 +55,11 @@ impl Walk {
         self.clock = None;
     }
 
+    /// Keeps the walker where it stands; its figure is chosen again from rebuilt content.
+    pub(super) fn forget_figure(&mut self) {
+        self.figure = None;
+    }
+
     /// Whether the figure has to be chosen again for `key`.
     pub(super) fn stale(&self, key: &FigureKey) -> bool {
         self.figure.as_ref().is_none_or(|(chosen, _)| chosen != key)

@@ -1,4 +1,4 @@
-import { failureDetails, type Failure, asFailure } from '../../dashboard/queryError.ts';
+import { failureDetails, type Failure } from '../../dashboard/queryError.ts';
 import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -17,8 +17,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
-import { loadTransientProduct } from '../../dashboard/products';
-import { useContentRevision } from '../../dashboard/contentRevision';
+import { useFollowedProduct } from '../../dashboard/products';
 import * as requests from '../../dashboard/batch5Requests';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useCountryNamesAt, nameKey } from '../../dashboard/countryNamesAt';
@@ -33,6 +32,7 @@ import './airMissions.css';
 const rowKey = (row: MissionRow) => row.key;
 const wingKey = (row: AirWing) => row.id;
 const NO_ROWS: readonly MissionRow[] = [];
+const MOVING_HOUR = ['hour'] as const;
 
 /** Where a country's air wings are assigned at the hour shown: planes per mission in each
  * strategic region, wings counted once per region. */
@@ -115,31 +115,21 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
     {pill}
     <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
     <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
-      title={region?.name ?? 'Wings'} day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow
+      title={region?.name ?? 'Wings'} day={(wings.hour ?? drillAt) === null ? '' : dayLabel(wings.hour ?? drillAt!)} following={drill.follow} canFollow
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       <WingTable reply={wings.data} error={wings.error} missions={data.missions} hoursPerSecond={hoursPerSecond} />
     </DrillHost>
   </div>;
 }
 
-/** One region's wings at the drill's hour, read on demand. */
+/** One region's wings at the drill's hour, read on demand. While the drill follows playback,
+ * the last landed hour stays shown, with its own date, while the newest is read. */
 function useWings(runtime: WidgetProps['runtime'], track: ReturnType<typeof useAirMissions>['track'], tag: string | null, region: string | null, hour: number | null, active: boolean) {
-  const content = useContentRevision(runtime.client);
-  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: AirWingsReply; error?: Failure }>();
   const params = track && tag && region !== null && hour !== null ? requests.airMissionsWings(track.branch.id, tag, region, hour) : null;
   const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-missions', params } : null;
-  const key = JSON.stringify([request, content]);
-  useEffect(() => {
-    if (!active || !request || !track) return;
-    const controller = new AbortController();
-    void loadTransientProduct<unknown>(runtime.client, request, controller.signal, track.source).then(reply => {
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, data: validateAirWings(reply) });
-    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) }); });
-    return () => controller.abort();
-    // The request's identity is its key, with the content binding it was read under.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runtime.client, key, active]);
-  return state?.client === runtime.client && state.key === key ? state : { key, data: undefined, error: undefined };
+  const read = useFollowedProduct<AirWingsReply>(runtime.client, request, MOVING_HOUR, active, validateAirWings, track?.source);
+  const answered = read.data === undefined || read.moment === undefined ? undefined : (JSON.parse(read.moment) as [number])[0];
+  return { data: read.data, error: read.error, hour: answered };
 }
 
 function WingTable({ reply, error, missions, hoursPerSecond }: { reply?: AirWingsReply; error?: Failure; missions: readonly { id: string; name: string }[]; hoursPerSecond: number | undefined }) {

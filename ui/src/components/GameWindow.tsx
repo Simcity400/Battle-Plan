@@ -1,9 +1,10 @@
-import { asFailure, type Failure } from '../dashboard/queryError.ts';
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, ReactNode, RefObject } from 'react';
 import { validateProductReply } from '../dashboard/client';
 import type { DashboardClient, ProductRequest } from '../dashboard/client';
 import { useContentRevision } from '../dashboard/contentRevision';
+import { useViewRead } from '../dashboard/viewRead';
+import { windowReadNote, type ShownWindow } from '../dashboard/gameWindows';
 import WidgetState from './WidgetState';
 import { WHEEL_LINE_PIXELS, acknowledgeScroll, described, fitZoom, keyedOffset, listAt, listKey, revealedOffset, scrolledOffset, settledScroll, wheelPixels } from './gameWindowScene';
 import type { ScrolledList } from './gameWindowScene';
@@ -36,13 +37,15 @@ export interface GameWindowProps {
   onTitle?: (title: string | null) => void;
   /** False while hidden (a closed popover): nothing is asked for, and what was asking stops. */
   active?: boolean;
+  /** The hour the drawn window answers and the hour its facts were read at; null while none is drawn. */
+  onShown?: (shown: ShownWindow | null) => void;
 }
 
 /** One game window, laid out and painted by the service as the game draws it at the hour shown.
  * Its image is fitted whole into the space it has by zoom, never laid out again here: scrolling
  * a list asks the service for the window at the new offset. That the window is read-only is
  * described to assistive technology only; nothing is drawn over or beside the game's image. */
-export default function GameWindow({ client, source, branchId, hour, target, onDiagnostics, onTitle, active = true }: GameWindowProps) {
+export default function GameWindow({ client, source, branchId, hour, target, onDiagnostics, onTitle, active = true, onShown }: GameWindowProps) {
   const { sourceId, revision } = source;
   // The window belongs to its client, the content folders it was read with, its recording and
   // its target: a change of any asks for it afresh and hides what was drawn meanwhile.
@@ -50,45 +53,43 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   const identity = JSON.stringify([clientNumber(client), content, sourceId, revision, branchId, target]);
   const [scroll, setScroll] = useState<{ identity: string; lists: ListScroll[] }>({ identity, lists: NO_SCROLL });
   const lists = scroll.identity === identity ? scroll.lists : NO_SCROLL;
-  const key = JSON.stringify([identity, hour, lists]);
-  const [shown, setShown] = useState<{ identity: string; key: string; reply: GameWindowReply } | null>(null);
-  const [failure, setFailure] = useState<{ key: string; error: Failure } | null>(null);
-  const [attempt, retry] = useReducer((count: number) => count + 1, 0);
-  const shownKey = useRef<string | null>(null);
-  shownKey.current = shown?.key ?? null;
+  const key = JSON.stringify([hour, lists]);
   // The offsets the wheel has reached that no drawn scene shows yet.
   const pending = useRef<{ identity: string; offsets: Map<string, ListScroll> }>({ identity, offsets: new Map() });
   if (pending.current.identity !== identity) pending.current = { identity, offsets: new Map() };
 
-  useEffect(() => {
-    // Reopened on the window already drawn: nothing to ask.
-    if (!active || shownKey.current === key) return;
-    const controller = new AbortController();
-    const params: GameWindowParams = { branchId, hour, window: target, ...(lists.length ? { scroll: lists } : {}) };
-    const request: ProductRequest<GameWindowParams> = { sourceId, revision, product: 'game-window', params };
-    client.product<GameWindowReply>(request, controller.signal).then(async reply => {
-      if (controller.signal.aborted) return;
-      const data = validateProductReply(reply, request).data;
+  // One read at a time while the hour or scroll moves (`useViewRead`): following playback, the
+  // running read lands and is drawn, then the newest is asked; a window already drawn asks nothing.
+  const drawnKey = useRef<string | null>(null);
+  const read = useViewRead<{ hour: number; lists: ListScroll[] }, { hour: number; lists: ListScroll[]; reply: GameWindowReply }>(identity, { hour, lists }, key,
+    active && drawnKey.current !== JSON.stringify([identity, key]), async (at, signal) => {
+      const params: GameWindowParams = { branchId, hour: at.hour, window: target, ...(at.lists.length ? { scroll: at.lists } : {}) };
+      const request: ProductRequest<GameWindowParams> = { sourceId, revision, product: 'game-window', params };
+      const data = validateProductReply(await client.product<GameWindowReply>(request, signal), request).data;
       // The new drawing is decoded before it replaces the old, so hover areas never sit over
       // the previous window's image.
       if (data.scene) await decoded(data.scene.image);
-      if (controller.signal.aborted) return;
-      setShown({ identity, key, reply: data });
-      setFailure(null);
-      if (pending.current.identity === identity) acknowledgeScroll(pending.current.offsets, lists);
-    }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setFailure({ key, error: asFailure(error) });
-    });
-    return () => controller.abort();
-  // The target and lists are read through `identity` and `key`.
-  }, [client, sourceId, revision, branchId, hour, identity, key, active, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
+      return { hour: at.hour, lists: at.lists, reply: data };
+    }, client);
+  drawnKey.current = read.data ? JSON.stringify([identity, read.viewKey]) : null;
+  const landed = read.data;
+  useEffect(() => {
+    if (landed && pending.current.identity === identity) acknowledgeScroll(pending.current.offsets, landed.lists);
+  }, [landed, identity]);
 
   // A reply of another window or recording is never shown; one of an earlier hour or scroll is, until its successor
   // arrives or fails.
-  const drawn = shown?.identity === identity ? shown.reply : null;
-  const failed = failure?.key === key ? failure.error : null;
+  const drawn = landed?.reply ?? null;
+  const failed = read.error ?? null;
   const reply = failed ? null : drawn;
   const scene = reply?.scene ?? null;
+  const retry = read.retry;
+  // A sampled window's facts may predate the hour it answers: that date is shown and described.
+  const shownHour = reply ? landed!.hour : null;
+  const readHour = reply?.readHour ?? null;
+  useEffect(() => { onShown?.(shownHour === null ? null : { hour: shownHour, readHour }); }, [onShown, shownHour, readHour]);
+  useEffect(() => () => onShown?.(null), [onShown]);
+  const readNote = shownHour === null ? null : windowReadNote({ hour: shownHour, readHour });
 
   const title = drawn?.title ?? null;
   useEffect(() => { onTitle?.(title); }, [onTitle, title]);
@@ -121,7 +122,7 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   if (!reply) return frame(failed ? <WidgetState kind="error" what="this window" failure={failed} onRetry={retry} />
     : <WidgetState kind="loading" label="Loading window…" />);
   if (!scene) return frame(<WidgetState kind="unavailable" message={reply.refused.length ? reply.refused.join(' ') : undefined} />);
-  return frame(<SceneView scene={scene} title={title} zoom={fitZoom(scene.size, available)} offsetOf={offsetOf} onScroll={onScroll} />, scene.size);
+  return frame(<SceneView scene={scene} title={title} zoom={fitZoom(scene.size, available)} offsetOf={offsetOf} onScroll={onScroll} note={readNote} />, scene.size);
 }
 
 /** Resolves once `url` is decoded and ready to draw. */
@@ -172,9 +173,11 @@ function hoverRuns(hovers: readonly SceneHover[]) {
 
 /** A window's image as the game draws it, with its hover areas on top; that it is read-only is
  * a description for assistive technology, never drawn. */
-export const SceneView = memo(function SceneView({ scene, title, zoom, offsetOf, onScroll }: {
+export const SceneView = memo(function SceneView({ scene, title, zoom, offsetOf, onScroll, note }: {
   scene: Scene; title: string | null; zoom: number;
   offsetOf: (list: ScrolledList, drawn: number) => number; onScroll: (list: ScrolledList, offset: number) => void;
+  /** When its facts were read, if not at the hour it answers. */
+  note?: string | null;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const hovers = useMemo(() => hoverRuns(scene.hovers), [scene]);
@@ -251,7 +254,7 @@ export const SceneView = memo(function SceneView({ scene, title, zoom, offsetOf,
       </Clipped>)}
       </div>
     </div>
-    <span id={description} className="sr-only">{READ_ONLY}</span>
+    <span id={description} className="sr-only">{note ? `${READ_ONLY} ${note}.` : READ_ONLY}</span>
   </div>;
 });
 

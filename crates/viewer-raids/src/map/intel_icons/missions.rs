@@ -6,7 +6,7 @@ use super::{
 use installed_content_localisation::localisation::Argument as Arg;
 use replay_data::{
     fixed_point::{fixed5_to_q15, q15_to_fixed5},
-    rows::{IntelNetworkAuxiliaryRow, OperativeEffect},
+    rows::{IntelNetworkAuxiliaryRow, OperativeEffect, Recorded},
 };
 use viewer_foundation::{
     map::native_text::FLAG,
@@ -135,7 +135,7 @@ impl<'a> Mission<'a> {
                 row.pending_country,
                 row.pending_state,
                 row.pending_ideology.as_slice(),
-                row.pending_effect.as_deref(),
+                &row.pending_effect,
             )
         } else {
             (
@@ -143,7 +143,7 @@ impl<'a> Mission<'a> {
                 row.target_country,
                 row.target_state,
                 row.ideology.as_slice(),
-                row.active_effect.as_deref(),
+                &row.active_effect,
             )
         };
         Ok(Self {
@@ -152,7 +152,10 @@ impl<'a> Mission<'a> {
             target: target.ok_or("operative mission target unavailable")?,
             state: state.unwrap_or(0),
             ideology,
-            effect,
+            effect: match effect {
+                Recorded::Value(effect) => effect.as_deref(),
+                Recorded::NotRecorded => None,
+            },
         })
     }
 
@@ -464,10 +467,15 @@ fn stacked<'f>(
                 DIPLOMATIC_PRESSURE => 4,
                 _ => return Err("mission roster variant unsupported".into()),
             };
-            let rosters = row
-                .mission_rosters
-                .as_ref()
-                .ok_or("target's retained mission rosters unavailable")?;
+            let rosters = match &row.mission_rosters {
+                Recorded::Value(Some(rosters)) => rosters,
+                Recorded::Value(None) => {
+                    return Err("target's retained mission rosters unavailable".into());
+                }
+                Recorded::NotRecorded => {
+                    return Err("target's retained mission rosters were not recorded".into());
+                }
+            };
             for id in &rosters[index] {
                 if *id == 0 {
                     continue;

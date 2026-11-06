@@ -22,11 +22,14 @@ use viewer_foundation::map::{
 const AIR_SUPPLY: usize = 10;
 
 const SUPPLY_REFUSAL: &str = "regional Air supply totals were not captured";
+const SUPPLY_UNRECORDED: &str = "regional Air supply totals were not recorded";
 
 #[derive(Default)]
 pub(super) struct Prepared {
     supply: BTreeMap<u32, replay_data::rows::AirSupplySummary>,
     supply_complete: bool,
+    /// The recording holds no Ground Crews supply column.
+    supply_unrecorded: bool,
     supply_hovers: BTreeMap<u32, Arc<viewer_foundation::tooltip_text::Tooltip>>,
     regions: BTreeMap<u32, [i32; MISSIONS]>,
     alerts: BTreeSet<(u32, usize)>,
@@ -92,10 +95,61 @@ fn interception_alert(
     unknown.map_or(Ok(false), Err)
 }
 
+/// Whether the daily air pass at `pass` visited the country in canonical `slot`, from the
+/// recording's hourly AirDailyRoster ([`replay_derive::air_region_derive::pass_visited`]). A
+/// pass at or before the branch's first sample counts as not visiting: every row read since
+/// already holds it.
+pub trait AirPasses: Sync {
+    fn visited(
+        &self,
+        branch: replay_data::BranchId,
+        pass: replay_data::Hour,
+        slot: u32,
+    ) -> Result<bool, String>;
+}
+
+const PASS_UNKNOWN: &str =
+    "whether the latest daily air pass pruned the regional combat records is unrecorded";
+const TIMEOUT_UNKNOWN: &str = "NGame.AIR_LOG_TIMEOUT_HOURS is unavailable";
+
+/// Whether the holder's interception aggregate over the last day alerts. Only the latest daily
+/// pass can have pruned a record the window reaches: an earlier one removed only records dated
+/// before its own hour, at least a day ago, where the newest-first scan stops anyway. So the
+/// row decides unless pruning it by that pass changes the answer; then the roster does.
+fn interception_received(
+    holder: &replay_data::rows::AirRegionCombatRow,
+    hour: replay_data::Hour,
+    filter: replay_derive::air_region_derive::Filter,
+    pass_visited: impl FnOnce(replay_data::Hour) -> Option<Result<bool, String>>,
+    timeout: Result<i32, &'static str>,
+) -> Result<bool, &'static str> {
+    use replay_derive::air_region_derive::{self as derive, Retained};
+    let alerts = |retained| {
+        derive::received(retained, hour, false, filter)
+            .map(|sum| sum.amounts[9] > 0)
+            .map_err(|_| "the regional interception aggregate cannot be derived")
+    };
+    let raw = alerts(Retained { own: &holder.own, foreign: &holder.foreign })?;
+    let Some(pass) = derive::last_pass(hour) else {
+        return Ok(raw);
+    };
+    let pruned = alerts(derive::retained_through(holder, Some(pass), timeout?))?;
+    if pruned == raw {
+        return Ok(raw);
+    }
+    match pass_visited(pass) {
+        Some(Ok(true)) => Ok(pruned),
+        Some(Ok(false)) => Ok(raw),
+        _ => Err(PASS_UNKNOWN),
+    }
+}
+
 pub(super) struct HourInputs<'a> {
     pub(super) content: &'a CounterContent,
     pub(super) assets: &'a CounterAssets,
     pub(super) localisation: &'a installed_content_localisation::localisation::Localisation,
+    /// The recording's daily air rosters, when the caller can read them.
+    pub(super) passes: Option<&'a dyn AirPasses>,
 }
 
 impl Prepared {
@@ -179,12 +233,13 @@ impl Prepared {
                             let received = *damage[classification as usize].get_or_insert_with(|| {
                                 if combat.is_err() { return Err("the regional combat census is incomplete"); }
                                 let Some(holder) = holder else { return Ok(false); };
-                                replay_derive::air_region_derive::received(
-                                    replay_derive::air_region_derive::Retained { own: &holder.own, foreign: &holder.foreign },
-                                    frame.hour, false,
+                                interception_received(
+                                    holder,
+                                    frame.hour,
                                     replay_derive::air_region_derive::Filter { missions: 1 << kind, window: 24, classification },
-                                ).map(|sum| sum.amounts[9] > 0)
-                                    .map_err(|_| "the regional interception aggregate cannot be derived")
+                                    |pass| inputs.passes.map(|passes| passes.visited(frame.branch, pass, vision.ours())),
+                                    inputs.content.air_log_timeout.as_ref().map(|&timeout| timeout).map_err(|_| TIMEOUT_UNKNOWN),
+                                )
                             });
                             (gate, received)
                         }));
@@ -195,7 +250,7 @@ impl Prepared {
                         let reason = reason.or((kind == AIR_SUPPLY
                             && count == 0
                             && !prepared.supply_complete)
-                            .then_some(SUPPLY_REFUSAL));
+                            .then_some(prepared.supply_refusal()));
                         if let Some(reason) = reason {
                             prepared.uncertain.insert((region, kind), reason);
                             *prepared
@@ -251,6 +306,14 @@ const EMPTY_SUPPLY: replay_data::rows::AirSupplySummary = replay_data::rows::Air
 };
 
 impl Prepared {
+    fn supply_refusal(&self) -> &'static str {
+        if self.supply_unrecorded {
+            SUPPLY_UNRECORDED
+        } else {
+            SUPPLY_REFUSAL
+        }
+    }
+
     fn supply(&self, region: u32) -> Option<replay_data::rows::AirSupplySummary> {
         self.supply_complete
             .then(|| self.supply.get(&region).copied().unwrap_or(EMPTY_SUPPLY))
@@ -261,9 +324,16 @@ impl Prepared {
         let Ok(rows) = frame.complete::<tables::AirGroundCrews>() else {
             return;
         };
+        self.supply_unrecorded = rows
+            .iter()
+            .any(|row| matches!(row.supply, replay_data::rows::Recorded::NotRecorded));
         self.supply_complete = rows
             .iter()
-            .any(|row| row.country == viewer && row.region == u32::MAX && row.supply.is_some());
+            .any(|row| {
+                row.country == viewer
+                    && row.region == u32::MAX
+                    && matches!(row.supply, replay_data::rows::Recorded::Value(Some(_)))
+            });
         if !self.supply_complete {
             return;
         }
@@ -271,7 +341,7 @@ impl Prepared {
             .iter()
             .filter(|row| row.country == viewer && row.region != u32::MAX)
         {
-            let Some(supply) = row.supply else {
+            let replay_data::rows::Recorded::Value(Some(supply)) = row.supply else {
                 continue;
             };
             self.supply.insert(row.region, supply);
@@ -921,7 +991,8 @@ impl Prepared {
                 *report
                     .icon_gui_notes
                     .entry(format!(
-                        "{WINDOW} regional Air supply withheld: {SUPPLY_REFUSAL}"
+                        "{WINDOW} regional Air supply withheld: {}",
+                        self.supply_refusal()
                     ))
                     .or_default() += 1;
             }
@@ -973,6 +1044,46 @@ mod tests {
         );
         assert_eq!(interception_alert([(Some(true), Ok(true))]), Ok(true));
         assert_eq!(interception_alert([(Some(true), Ok(false))]), Ok(false));
+    }
+
+    #[test]
+    fn interception_reads_the_latest_pass_only_where_its_pruning_changes_the_answer() {
+        use replay_data::rows::{AirCombatDamage, AirCombatRecord, AirRegionCombatRow};
+        use replay_derive::air_region_derive::Filter;
+        let pass = 43_800_000 + 24 * 30;
+        let hour = pass + 3;
+        // Within the last day, but older than a mod's six-hour log timeout at the pass.
+        let holder = AirRegionCombatRow {
+            own: Arc::new(vec![AirCombatRecord {
+                date: pass - 10,
+                planes: 1,
+                mission_mask: 1,
+                second_damage: vec![AirCombatDamage { cause: 9, amount: 5 }],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let filter = Filter {
+            missions: 1,
+            window: 24,
+            classification: 0,
+        };
+        let unasked = |_| -> Option<Result<bool, String>> { panic!("the roster decides nothing here") };
+        assert_eq!(interception_received(&holder, hour, filter, unasked, Ok(24)), Ok(true));
+        let visited = |answer: Option<Result<bool, String>>| {
+            interception_received(&holder, hour, filter, |at| {
+                assert_eq!(at, pass);
+                answer
+            }, Ok(6))
+        };
+        assert_eq!(visited(Some(Ok(true))), Ok(false));
+        assert_eq!(visited(Some(Ok(false))), Ok(true));
+        assert_eq!(visited(None), Err(PASS_UNKNOWN));
+        assert_eq!(visited(Some(Err("unreadable".into()))), Err(PASS_UNKNOWN));
+        assert_eq!(
+            interception_received(&holder, hour, filter, unasked, Err(TIMEOUT_UNKNOWN)),
+            Err(TIMEOUT_UNKNOWN)
+        );
     }
 
     #[test]

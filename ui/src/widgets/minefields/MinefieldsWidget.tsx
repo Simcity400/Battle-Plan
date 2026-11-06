@@ -1,4 +1,4 @@
-import { failureDetails, type Failure, asFailure } from '../../dashboard/queryError.ts';
+import { failureDetails, type Failure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -29,8 +29,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
-import { loadTransientProduct } from '../../dashboard/products';
-import { useContentRevision } from '../../dashboard/contentRevision';
+import { useFollowedProduct } from '../../dashboard/products';
 import * as requests from '../../dashboard/batch5Requests';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { minesAt, minesText, orderRegions, ownerSeries, regionHolders, regionRuns, regionTotalText, validateReports } from './minefieldsData';
@@ -40,6 +39,7 @@ import '../air-superiority-region/airSuperiorityRegion.css';
 import './minefields.css';
 
 const reportKey = (report: MineReport) => `${report.kind}:${report.ordinal}`;
+const MOVING_HOUR = ['hour'] as const;
 
 /** Who has mined which seas at the hour shown: per sea region, each owner's current mines as
  * segments on one shared scale, with the region's standing reports on demand. */
@@ -124,7 +124,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
     {pill}
     <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
     <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
-      title={picked?.name ?? 'Region'} day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow
+      title={picked?.name ?? 'Region'} day={(reports.hour ?? drillAt) === null ? '' : dayLabel(reports.hour ?? drillAt!)} following={drill.follow} canFollow
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {picked && <div className="minefields-drill">
         <div className="minefields-history"><RunLines label={`Mines in ${picked.name} by owner`} extent={[track.branch.firstHour, track.branch.lastHour]}
@@ -152,24 +152,14 @@ function regionTooltip(region: RegionMines, name: (tag: string) => string, colou
   };
 }
 
-/** One region's standing reports at the drill's hour, read on demand. */
+/** One region's standing reports at the drill's hour, read on demand. While the drill follows
+ * playback, the last landed hour stays shown, with its own date, while the newest is read. */
 function useReports(runtime: WidgetProps['runtime'], track: ReturnType<typeof useMinefields>['track'], region: string | null, hour: number | null, active: boolean) {
-  const content = useContentRevision(runtime.client);
-  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: ReportsReply; error?: Failure }>();
   const params = track && region !== null && hour !== null ? requests.minefieldReports(track.branch.id, region, hour) : null;
   const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefields', params } : null;
-  const key = JSON.stringify([request, content]);
-  useEffect(() => {
-    if (!active || !request || !track) return;
-    const controller = new AbortController();
-    void loadTransientProduct<unknown>(runtime.client, request, controller.signal, track.source).then(reply => {
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, data: validateReports(reply) });
-    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) }); });
-    return () => controller.abort();
-    // The request's identity is its key, with the content binding it was read under.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runtime.client, key, active]);
-  return state?.client === runtime.client && state.key === key ? state : { key, data: undefined, error: undefined };
+  const read = useFollowedProduct<ReportsReply>(runtime.client, request, MOVING_HOUR, active, validateReports, track?.source);
+  const answered = read.data === undefined || read.moment === undefined ? undefined : (JSON.parse(read.moment) as [number])[0];
+  return { data: read.data, error: read.error, hour: answered };
 }
 
 function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: ReportsReply; error?: Failure; name: (tag: string) => ReturnType<typeof nameReadMetadata>; hoursPerSecond: number | undefined }) {

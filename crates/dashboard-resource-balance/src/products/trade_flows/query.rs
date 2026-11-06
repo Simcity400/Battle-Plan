@@ -499,6 +499,36 @@ impl Runs {
         Ok(sum)
     }
 
+    /// The hours of `first..=last` within `within` the flow holds a run, ascending, each piece
+    /// with its run's delivered amount an hour: the only hours its integrals change.
+    fn pieces<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        first: i32,
+        last: i32,
+        within: Option<&[HourSpan]>,
+    ) -> io::Result<Vec<(i32, i32, i128)>> {
+        let mut pieces = Vec::new();
+        for clipped in engine::runs(snapshot, self.fact, first, last)? {
+            let run = run_at(snapshot, self.fact, clipped.span.first)?
+                .ok_or_else(|| invalid("Trade fact coverage is missing"))?;
+            let held = self.held(snapshot, run.span.first)?;
+            let (from, to) = (clipped.span.first, clipped.span.last.min(held.last));
+            let rate = i128::from(held.terms.delivered);
+            match within {
+                None if from <= to => pieces.push((from, to, rate)),
+                None => {}
+                Some(spans) => {
+                    let skip = spans.partition_point(|span| span.last_hour < from);
+                    for span in spans[skip..].iter().take_while(|span| span.first_hour <= to) {
+                        pieces.push((from.max(span.first_hour), to.min(span.last_hour), rate));
+                    }
+                }
+            }
+        }
+        Ok(pieces)
+    }
+
     /// The first and last hours of `basis..=hour` within `within` the flow holds a run.
     fn bounds<P: PageRead>(
         &mut self,
@@ -536,6 +566,116 @@ impl Runs {
             }
         }
         Ok(result)
+    }
+}
+
+/// A flow's delivered amount and run hours since the basis, walked forward over its
+/// [`Runs::pieces`]. Both rise linearly within a piece and hold between pieces, so a running
+/// total or average moves monotonically within each and turns only at piece ends.
+struct Walk {
+    pieces: Vec<(i32, i32, i128)>,
+    /// The first piece not wholly summed, and the first a bucket may still sample.
+    next: usize,
+    scan: usize,
+    /// The hour the sums hold through.
+    through: i64,
+    sums: [i128; 2],
+}
+
+impl Walk {
+    /// A walk whose sums hold `sums` through the hour before `first`.
+    fn new(pieces: Vec<(i32, i32, i128)>, first: i32, sums: [i128; 2]) -> Self {
+        Self {
+            pieces,
+            next: 0,
+            scan: 0,
+            through: i64::from(first) - 1,
+            sums,
+        }
+    }
+
+    /// The sums through `hour`, at or after the last asked.
+    fn through(&mut self, hour: i32) -> io::Result<[i128; 2]> {
+        let hour = i64::from(hour);
+        while let Some(&(first, last, rate)) = self.pieces.get(self.next) {
+            if i64::from(first) > hour {
+                break;
+            }
+            let from = i64::from(first).max(self.through + 1);
+            let to = i64::from(last).min(hour);
+            if from <= to {
+                let hours = i128::from(to - from + 1);
+                self.sums[0] = rate
+                    .checked_mul(hours)
+                    .and_then(|delta| self.sums[0].checked_add(delta))
+                    .ok_or_else(exceeded)?;
+                self.sums[1] = self.sums[1].checked_add(hours).ok_or_else(exceeded)?;
+            }
+            if i64::from(last) > hour {
+                break;
+            }
+            self.next += 1;
+        }
+        self.through = self.through.max(hour);
+        Ok(self.sums)
+    }
+
+    /// The sums at every hour of `first..=last` a running measure can turn at, ascending: the
+    /// bucket's ends, each piece's ends, and the basis, where the counted hours start. Hours past
+    /// `held` hold its sums. Buckets come in ascending order.
+    fn samples(
+        &mut self,
+        (first, last): (i32, i32),
+        held: i32,
+        basis: i32,
+    ) -> io::Result<Vec<(i32, [i128; 2])>> {
+        let mut hours = vec![first, last];
+        hours.extend(
+            [basis.checked_sub(1), Some(basis)]
+                .into_iter()
+                .flatten()
+                .filter(|hour| (first..=last).contains(hour)),
+        );
+        while self.pieces.get(self.scan).is_some_and(|piece| piece.1 < first) {
+            self.scan += 1;
+        }
+        for &(from, to, _) in self.pieces[self.scan..]
+            .iter()
+            .take_while(|piece| piece.0 <= last)
+        {
+            hours.extend([from.max(first), to.min(last)]);
+        }
+        hours.sort_unstable();
+        hours.dedup();
+        let mut samples = Vec::with_capacity(hours.len());
+        for hour in hours {
+            samples.push((hour, self.through(hour.min(held))?));
+        }
+        Ok(samples)
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::Walk;
+
+    #[test]
+    fn a_running_average_turns_only_where_it_does() {
+        // 99 hours at 1, then one at 100: the average peaks at 1.99, never 100.
+        let mut walk = Walk::new(vec![(0, 98, 1), (99, 99, 100)], 0, [0, 0]);
+        let samples = walk.samples((0, 99), 99, 0).unwrap();
+        let averages: Vec<_> = samples
+            .iter()
+            .map(|&(hour, [amount, hours])| (hour, amount as f64 / hours as f64))
+            .collect();
+        assert_eq!(averages, [(0, 1.0), (98, 1.0), (99, 1.99)]);
+        // A piece reaching into the next bucket is sampled there too; a gap holds the sums.
+        let mut walk = Walk::new(vec![(2, 5, 3), (8, 8, -1)], 0, [10, 1]);
+        assert_eq!(walk.samples((0, 3), 9, -5).unwrap(), [(0, [10, 1]), (2, [13, 2]), (3, [16, 3])]);
+        assert_eq!(
+            walk.samples((4, 9), 7, -5).unwrap(),
+            [(4, [19, 4]), (5, [22, 5]), (8, [22, 5]), (9, [22, 5])]
+        );
     }
 }
 
@@ -1232,74 +1372,69 @@ impl Read<'_> {
                         self.integral_summary(snapshot, &mut reader, delivered, (first, last), view)?
                     };
                     if measure != "current" {
-                        // A running average is bounded by its opening value and the daily amounts in
-                        // the bucket. Cumulative-amount extrema alone can miss a ratio peak followed
-                        // by low-volume trading.
-                        let daily = (measure == "average")
-                            .then(|| {
-                                engine::summary(
-                                    snapshot,
-                                    delivered,
-                                    (first, last),
-                                    view,
-                                    RESOURCE_DECIMALS,
-                                    within.as_deref(),
-                                )
-                            })
-                            .transpose()?;
                         let baseline = match basis.checked_sub(1) {
                             Some(hour) => reader.prefix(snapshot, hour, within.as_deref(), last_hour)?,
                             None => [0; 6],
                         };
-                        for (column, bucket) in summary.buckets.iter_mut().enumerate() {
-                            let Some(bucket) = bucket else {
-                                continue;
+                        let spans: Vec<_> = summary
+                            .buckets
+                            .iter()
+                            .flatten()
+                            .map(|bucket| (bucket.first_hour, bucket.last_hour))
+                            .collect();
+                        if let (Some(&(low, _)), Some(&(_, high))) = (spans.first(), spans.last()) {
+                            let start = match low.checked_sub(1) {
+                                Some(hour) => reader.prefix(snapshot, hour, within.as_deref(), last_hour)?,
+                                None => [0; 6],
                             };
-                            let hours = [
-                                bucket.first_hour,
-                                bucket.last_hour,
-                                bucket.min_hour,
-                                bucket.max_hour,
-                            ];
-                            let mut samples = Vec::new();
-                            for hour in hours {
-                                let own = reader.prefix(snapshot, hour, within.as_deref(), last_hour)?;
-                                let amount = own[0] - baseline[0];
-                                let duration = own[5] - baseline[5];
-                                let raw = if measure == "total" {
+                            let since = |at: usize| {
+                                start[at].checked_sub(baseline[at]).ok_or_else(exceeded)
+                            };
+                            let high = high.min(last_hour).min(reader.last);
+                            let pieces = if low <= high {
+                                reader.pieces(snapshot, low, high, within.as_deref())?
+                            } else {
+                                Vec::new()
+                            };
+                            let mut walk = Walk::new(pieces, low, [since(0)?, since(5)?]);
+                            let ratio = measure == "average";
+                            let value = |[amount, duration]: [i128; 2]| {
+                                let raw = if !ratio {
                                     amount as f64 / 24.0
                                 } else if duration > 0 {
                                     amount as f64 / duration as f64
                                 } else {
                                     0.0
                                 };
-                                samples.push((hour, raw / 10f64.powi(i32::from(RESOURCE_DECIMALS))));
-                            }
-                            bucket.first_value = samples[0].1;
-                            bucket.last_value = samples[1].1;
-                            let min = samples
-                                .iter()
-                                .min_by(|a, b| a.1.total_cmp(&b.1))
-                                .expect("four samples");
-                            let max = samples
-                                .iter()
-                                .max_by(|a, b| a.1.total_cmp(&b.1))
-                                .expect("four samples");
-                            bucket.min_hour = min.0;
-                            bucket.min_value = min.1;
-                            bucket.max_hour = max.0;
-                            bucket.max_value = max.1;
-                            bucket.last_value_hour = bucket.last_hour;
-                            if let Some(daily) = daily.as_ref().and_then(|daily| daily.buckets[column])
-                            {
-                                if daily.min_value < bucket.min_value {
-                                    bucket.min_value = daily.min_value;
-                                    bucket.min_hour = daily.min_hour;
+                                raw / 10f64.powi(i32::from(RESOURCE_DECIMALS))
+                            };
+                            for bucket in summary.buckets.iter_mut().flatten() {
+                                let samples = walk.samples(
+                                    (bucket.first_hour, bucket.last_hour),
+                                    last_hour,
+                                    basis,
+                                )?;
+                                let shown: Vec<_> =
+                                    samples.iter().map(|&(hour, sums)| (hour, value(sums))).collect();
+                                let (Some(&opening), Some(&closing)) = (shown.first(), shown.last())
+                                else {
+                                    continue;
+                                };
+                                bucket.first_value = opening.1;
+                                bucket.last_value = closing.1;
+                                // Ties keep the earliest hour, as a stored series' fold does.
+                                let (mut min, mut max) = (opening, opening);
+                                for &(hour, at) in &shown[1..] {
+                                    if at < min.1 {
+                                        min = (hour, at);
+                                    }
+                                    if at > max.1 {
+                                        max = (hour, at);
+                                    }
                                 }
-                                if daily.max_value > bucket.max_value {
-                                    bucket.max_value = daily.max_value;
-                                    bucket.max_hour = daily.max_hour;
-                                }
+                                (bucket.min_hour, bucket.min_value) = min;
+                                (bucket.max_hour, bucket.max_value) = max;
+                                bucket.last_value_hour = bucket.last_hour;
                             }
                         }
                         summary.runs = None;

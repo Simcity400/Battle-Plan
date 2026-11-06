@@ -1,8 +1,9 @@
-import { type Failure, asFailure } from '../../dashboard/queryError.ts';
-import { useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
 import type { PartsRaceDetailProps } from '../../charts/race/PartsRaceView';
+import { dayLabel } from '../../charts/draw';
 import { useContentRevision } from '../../dashboard/contentRevision';
-import { loadTransientProduct } from '../../dashboard/products';
+import { loadProduct } from '../../dashboard/products';
+import { useViewRead } from '../../dashboard/viewRead';
 import type { NavalManagementReply } from '../../generated/dashboard';
 import { validateNavalManagement } from './navalManagementData';
 import WidgetState from '../../components/WidgetState';
@@ -10,32 +11,27 @@ import './navyManagement.css';
 
 export default function NavyManagement({ client, track, tag, hour, active }: PartsRaceDetailProps) {
   const [open, setOpen] = useState(false);
-  const [attempt, setAttempt] = useState(0);
   const revision = useContentRevision(client);
-  const owner = useMemo(() => ({ client, source: track.source.id, revision: track.source.revision,
-    branch: track.branch.id, hour, tag, content: revision }), [client, track.source.id, track.source.revision, track.branch.id, hour, tag, revision]);
-  const [state, setState] = useState<{ owner: typeof owner; data?: NavalManagementReply; error?: Failure }>();
-  useEffect(() => {
-    if (!active || !open) return;
-    const controller = new AbortController();
-    loadTransientProduct<unknown>(client, { sourceId: owner.source, revision: owner.revision,
-      product: 'naval-management', params: { branchId: owner.branch, hour, tag } }, controller.signal, track.source)
-      .then(validateNavalManagement).then(data => {
-        if (!controller.signal.aborted) {
-          if (data.branchId !== owner.branch || data.hour !== hour) throw Error('Naval management belongs to another date.');
-          setState({ owner, data });
-        }
-      }).catch(error => { if (!controller.signal.aborted) setState({ owner, error: asFailure(error) }); });
-    return () => controller.abort();
-  }, [owner, active, open, attempt]); // source and request fields are bound by owner
-  const current = state?.owner === owner ? state : undefined;
+  // Hour follows playback (`useViewRead`): the last landed date stays shown while the newest is read.
+  const lane = open ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, revision]) : null;
+  const read = useViewRead<number, NavalManagementReply>(lane, hour, String(hour), active, (asked, signal, publish, restart) => {
+    const branchId = track.branch.id;
+    const validate = (value: unknown) => {
+      const data = validateNavalManagement(value);
+      if (data.branchId !== branchId || data.hour !== asked) throw Error('Naval management belongs to another date.');
+      return data;
+    };
+    return loadProduct(client, { sourceId: track.source.id, revision: track.source.revision, product: 'naval-management', params: { branchId, hour: asked, tag } },
+      signal, validate, track.source, restart, publish, undefined, true);
+  }, client);
+  const data = read.data;
   return <details className="navy-management" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Repairs, refits and reinforcement</summary>
-    {open && <div className="navy-management-content">{current?.error ? <WidgetState kind="error" failure={current.error} onRetry={() => setAttempt(value => value + 1)} />
-      : !current?.data ? <WidgetState kind="loading" label="Loading naval orders..." />
-      : <><p>Standing orders for fleets held by this country.</p>{current.data.warnings.length > 0 && <p role="status">Some naval details are unavailable. {current.data.warnings.join(' ')}</p>}
-        {current.data.sections.map(section => <section key={section.key}><h4>{section.title}</h4>
+    {open && <div className="navy-management-content">{read.error ? <WidgetState kind="error" failure={read.error} onRetry={read.retry} />
+      : !data ? <WidgetState kind="loading" label="Loading naval orders..." />
+      : <><p>Standing orders for fleets held by this country on {dayLabel(data.hour)}.</p>{data.warnings.length > 0 && <p role="status">Some naval details are unavailable. {data.warnings.join(' ')}</p>}
+        {data.sections.map(section => <section key={section.key}><h4>{section.title}</h4>
           <ul>{section.lines.map((line, index) => <li key={index}>{line}</li>)}</ul></section>)}
-        {!current.data.sections.length && <p>No naval management entries at this date.</p>}</>}</div>}
+        {!data.sections.length && <p>No naval management entries at this date.</p>}</>}</div>}
   </details>;
 }

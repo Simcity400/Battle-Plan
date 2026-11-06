@@ -911,6 +911,11 @@ impl Cursor {
         &self.state
     }
 
+    /// Tells readers of its state they cannot read `table`, and why; none clears it.
+    pub fn withhold(&mut self, table: usize, reason: Option<&str>) -> io::Result<()> {
+        self.state.withhold(table, reason)
+    }
+
     /// The run and ordinal the cursor stands at; none before its first move or after a
     /// failed one.
     pub fn at(&self) -> Option<(u32, u32)> {

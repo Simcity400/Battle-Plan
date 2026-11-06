@@ -114,7 +114,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     const saved: { game_dir?: string; user_dir?: string } = JSON.parse(bytes);
     gameDir = saved.game_dir || gameDir;
     userDir = saved.user_dir || userDir;
-  })();
+  })().catch(error => { contentConfig = null; throw error; });
   // Each server keeps its imports under its process id; a later server removes those whose server has gone.
   const importsRoot = path.join(tmpdir(), 'battle-plan-imports');
   const importsOwned = path.join(importsRoot, `${process.pid}-${randomUUID()}`);
@@ -172,7 +172,9 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     });
     return process;
   };
-  const send = (command: Record<string, unknown>, signal: AbortSignal) => new Promise<unknown>((resolve, reject) => {
+  // The child takes its folders as arguments, so it starts only once the saved folders are known.
+  const send = async (command: Record<string, unknown>, signal: AbortSignal) => { await loadContentConfig(); return sendLoaded(command, signal); };
+  const sendLoaded = (command: Record<string, unknown>, signal: AbortSignal) => new Promise<unknown>((resolve, reject) => {
     if (signal.aborted) { reject(new Error('Request cancelled')); return; }
     // Match the desktop service and native loader admission budget. A saved
     // dashboard can have more concurrent consumers than the old browser limit.
@@ -304,7 +306,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             const ended = pages.open(String(input.path), pageId(input.page));
             let sourceId: string | undefined;
             try {
-              await loadContentConfig();
               const location = await withinRoot(String(input.path));
               if (!(/\.(?:battleplan|hoi4replay)$/i.test(location.target)) || !(await stat(location.target)).isFile()) throw new Error('Choose a .battleplan recording');
               const source = await send({ type: 'open', path: location.target, revision: '' }, controller.signal);
@@ -341,7 +342,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           }
           if (input.type === 'setContentFolders') {
             if ([input.game, input.user].some(value => typeof value !== 'string' || !value.trim() || value.length > 32000 || value.includes('\0'))) throw new Error('Choose the game and user folders.');
-            await loadContentConfig();
             const value = await send({ type: 'setContentFolders', game: input.game, user: input.user }, controller.signal);
             gameDir = input.game; userDir = input.user;
             response.end(JSON.stringify(value)); return;
@@ -353,7 +353,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             response.end(JSON.stringify(await recordingSummaries(library, controller.signal))); return;
           }
           let command: Record<string, unknown>;
-          await loadContentConfig();
           if (input.type === 'mapSettings') {
             await requireBridge('crates/dashboard-core/src/map_settings.rs', 'Map settings are unavailable in this server version. The local data bridge needs updating.');
             command = mapSettingsCommand(input);

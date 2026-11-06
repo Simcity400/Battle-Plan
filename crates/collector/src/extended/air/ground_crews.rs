@@ -51,7 +51,7 @@ pub(super) fn capture(
         *output
             .get_mut(len)
             .ok_or("Ground Crews output storage incomplete")? = rows::AirGroundCrewRow {
-            supply: None,
+            supply: rows::Recorded::Value(None),
             country: key.slot,
             region: key.id,
             enabled,
@@ -84,7 +84,7 @@ mod tests {
         let mut demand = [Demand::default(); 4];
         let mut output = [const {
             rows::AirGroundCrewRow {
-                supply: None,
+                supply: rows::Recorded::Value(None),
                 country: 0,
                 region: 0,
                 enabled: None,

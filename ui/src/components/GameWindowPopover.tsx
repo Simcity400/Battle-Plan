@@ -6,6 +6,7 @@ import { loadable } from './loadable';
 import { Popover, PopoverBody, usePopover } from './Popover';
 import WidgetState from './WidgetState';
 import type { GameWindowTarget } from '../generated/dashboard';
+import { windowDayLabel, type ShownWindow } from '../dashboard/gameWindows';
 import './GameWindowPopover.css';
 
 // The renderer loads only once a window is first opened.
@@ -39,6 +40,8 @@ export default function GameWindowPopover({ client, source, branchId, hour, targ
   const id = useId();
   const menu = usePopover('start');
   const [title, setTitle] = useState<string | null>(null);
+  // The day the drawn window answers, and when its sampled facts were read if earlier.
+  const [drawn, setDrawn] = useState<ShownWindow | null>(null);
   const shown = title ?? heading;
   return <>
     <button ref={menu.trigger} type="button" className={className} popoverTarget={id} aria-haspopup="dialog" aria-expanded={menu.open}
@@ -47,11 +50,11 @@ export default function GameWindowPopover({ client, source, branchId, hour, targ
       {/* Focus moves into the window as it opens, so the trigger's owners see it leave. */}
       <div className="game-window-popover-body" tabIndex={-1} data-popover-autofocus {...fence}>
         {/* The shared heading, keeping the in-game name's case in its close label. */}
-        <div className="ui-popover-heading"><strong>{shown}</strong><div className="ui-popover-actions">
+        <div className="ui-popover-heading"><strong>{shown}{drawn && <small className="game-window-day">{windowDayLabel(drawn)}</small>}</strong><div className="ui-popover-actions">
           <button type="button" className="icon-button ui-popover-action" aria-label={`Close ${shown}`} onClick={menu.close}><Icon name="close" /></button>
         </div></div>
         <PopoverBody open={menu.open}>{() => <GameWindow client={client} source={source} branchId={branchId} hour={hour} target={target} active={menu.open}
-          onTitle={setTitle} onDiagnostics={onDiagnostics} />}</PopoverBody>
+          onTitle={setTitle} onDiagnostics={onDiagnostics} onShown={setDrawn} />}</PopoverBody>
       </div>
     </Popover>
   </>;

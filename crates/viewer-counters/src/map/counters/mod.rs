@@ -145,6 +145,8 @@ mod naval_missions;
 mod naval_port_hovers;
 mod naval_regional;
 mod naval_repairs;
+pub use air_missions::AirPasses;
+
 pub type MissionMemo = Recent<(replay_data::BranchId, replay_data::Hour, u32), MissionIcons>;
 pub mod naval_windows;
 pub mod type_tint;
@@ -1262,6 +1264,9 @@ pub struct CounterContent {
     region_icons: BTreeMap<u32, [f32; 3]>,
     region_names: BTreeMap<u32, String>,
     ground_crew_defines: Result<(i64, i64), String>,
+    /// `NGame.AIR_LOG_TIMEOUT_HOURS`, the daily air pass's pruning window
+    /// ([`replay_derive::air_region_derive`]).
+    air_log_timeout: Result<i32, String>,
     volunteer_air_defines: Result<air_volunteers::Defines, String>,
     /// Provinces with no `Standstill` anchor, authored or default, stated
     /// once; filled by [`CounterContent::seed_default_anchors`].
@@ -1460,6 +1465,9 @@ impl CounterContent {
                 ))
             })()
             .map_err(|error: io::Error| error.to_string()),
+            air_log_timeout: defines
+                .int32("NGame", "AIR_LOG_TIMEOUT_HOURS")
+                .map_err(|error| error.to_string()),
             missing_standstill: Vec::new(),
             map: MapSize::of(map),
             aggression: Arc::new(defines.fixed5_array("NNavy", "AGGRESSION_SETTINGS_VALUES")?),
@@ -3112,6 +3120,7 @@ pub fn hour_tables(
     etas: &Etas,
     movement_content: Option<&MovementContent>,
     engaged: Option<&History>,
+    air_passes: Option<&dyn AirPasses>,
     type_tints: &type_tint::Memo,
     mission_memo: &MissionMemo,
     reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
@@ -3134,6 +3143,7 @@ pub fn hour_tables(
         etas,
         movement_content,
         engaged,
+        air_passes,
         type_tints,
         mission_memo,
         reads,
@@ -3155,6 +3165,7 @@ pub fn hour_tables_profiled(
     etas: &Etas,
     movement_content: Option<&MovementContent>,
     engaged: Option<&History>,
+    air_passes: Option<&dyn AirPasses>,
     type_tints: &type_tint::Memo,
     mission_memo: &MissionMemo,
     reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
@@ -3378,6 +3389,7 @@ pub fn hour_tables_profiled(
                             content,
                             assets,
                             localisation,
+                            passes: air_passes,
                         },
                         frame,
                         &vision,

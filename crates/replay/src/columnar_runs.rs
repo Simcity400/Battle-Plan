@@ -26,7 +26,7 @@ use crate::{
     container::{BlockIndex, Parallel, Replay},
     format::FormatVersion,
     frame::{DecodedFrame, Metrics, TableView},
-    identity::{IdentityCodec, SessionStart},
+    identity::{Identity, IdentityCodec, SessionStart},
     rows::TableId,
     scope::CaptureMode,
     segments::{
@@ -62,7 +62,7 @@ use zstd::bulk::{Compressor, Decompressor};
 #[cfg(test)]
 mod tests;
 
-const MAGIC: &[u8; 8] = b"H4RUNS06";
+const MAGIC: &[u8; 8] = b"H4RUNS07";
 /// The footer: the directory's offset, stored and raw lengths, the summary's offset and length,
 /// then the magic.
 const FOOTER: usize = 8 * 5 + MAGIC.len();
@@ -495,6 +495,15 @@ pub fn covers(index: &[BlockIndex], runs: &[(u64, i32, u32)]) -> bool {
     uncovered(index, runs).is_none()
 }
 
+/// The value `bytes` record in format `format`, when they hold exactly one.
+fn recorded<T: IdentityCodec>(bytes: &[u8], format: u16) -> Option<T> {
+    let mut decoder = crate::codec::Decoder::new(bytes);
+    decoder.format = format;
+    let value = T::decode(&mut decoder).ok()?;
+    decoder.finish().ok()?;
+    Some(value)
+}
+
 /// `value` in its recorded form.
 fn encoded(value: &impl IdentityCodec) -> Option<Vec<u8>> {
     let mut out = Vec::new();
@@ -587,8 +596,10 @@ impl<'r> Sessions<'r> {
 
     /// Whether `capture`, the capture of a recording of `runs` (branch, first hour, ordinals),
     /// is its: its campaign and capture mode, and for every run the session its branch belongs
-    /// to, with that session's content identity.
+    /// to, with that session's content identity. The capture holds them in the row recording's
+    /// format, so they are compared as read, not as this release would encode them.
     fn captured(self, capture: &Capture, runs: &[(u64, i32, u32)]) -> bool {
+        let content = recorded::<Identity>(&capture.content, capture.format);
         capture.campaign_id == self.campaign
             && capture.capture_mode == self.capture_mode
             && capture.run_sessions.len() == runs.len()
@@ -598,8 +609,13 @@ impl<'r> Sessions<'r> {
                 .all(|(&(branch, _, _), &session)| {
                     self.of_branch(branch).is_some_and(|at| {
                         let held = &self.sessions[at];
-                        capture.sessions.get(session as usize) == encoded(held).as_ref()
-                            && encoded(&held.identity).as_ref() == Some(&capture.content)
+                        capture
+                            .sessions
+                            .get(session as usize)
+                            .and_then(|start| recorded::<SessionStart>(start, capture.format))
+                            .as_ref()
+                            == Some(held)
+                            && content.as_ref() == Some(&held.identity)
                     })
                 })
     }
@@ -756,6 +772,15 @@ pub fn recorded_runs(recording: &Recording) -> io::Result<Option<Vec<(u64, i32, 
     Ok(Some(runs))
 }
 
+/// A copy of `withheld` ([`Recording::withheld`]).
+fn copy_withheld(withheld: &[(usize, String)]) -> io::Result<Vec<(usize, String)>> {
+    let mut copy = engine_allocation::vec(withheld.len())?;
+    for (table, reason) in withheld {
+        copy.push((*table, engine_allocation::string(reason)?));
+    }
+    Ok(copy)
+}
+
 /// The schema tables of `tables`, ascending, and each one's kinds.
 fn indexed(tables: &[TableId]) -> io::Result<(Vec<usize>, Vec<Vec<Kind>>)> {
     let schema = schema()?;
@@ -775,6 +800,8 @@ pub struct Preparation<W> {
     /// run among the index's.
     natives: Vec<Native>,
     firsts: Vec<u32>,
+    /// The tables each native recording's lane reads: those indexed it does not withhold.
+    reads: Vec<Vec<TableId>>,
     pending: Vec<Vec<u8>>,
     tables: Vec<usize>,
     kinds: Vec<Vec<Kind>>,
@@ -815,6 +842,7 @@ impl<W: Write + Send> Preparation<W> {
         let mut shapes = Vec::new();
         let mut natives = engine_allocation::vec(recordings.len())?;
         let mut firsts = engine_allocation::vec(recordings.len())?;
+        let mut reads = engine_allocation::vec(recordings.len())?;
         for recording in recordings {
             firsts.push(u32::try_from(shapes.len()).map_err(|_| invalid("Runs pass 2^32"))?);
             for run in 0..recording.run_count() {
@@ -829,7 +857,16 @@ impl<W: Write + Send> Preparation<W> {
                 identity: engine_allocation::copy_vec(recording.identity())?,
                 capture: recording.capture()?,
                 chains: Vec::new(),
+                withheld: copy_withheld(recording.withheld())?,
             });
+            let held = engine_allocation::collect_vec(
+                tables
+                    .iter()
+                    .filter(|&&table| recording.withheld().iter().all(|&(gone, _)| gone != table))
+                    .map(|&table| TableId::ALL[table]),
+            )?;
+            engine_allocation::reserve(&mut reads, 1)?;
+            reads.push(held);
         }
         let mut store = Appended { out, offset: 0 };
         store.out.write_all(MAGIC)?;
@@ -839,6 +876,7 @@ impl<W: Write + Send> Preparation<W> {
             campaign: engine_allocation::copy_vec(campaign)?,
             natives,
             firsts,
+            reads,
             pending: whole
                 .pending
                 .iter()
@@ -865,6 +903,7 @@ impl<W: Write + Send> Preparation<W> {
             index,
             tables,
             kinds,
+            reads,
             level,
             store,
             folder,
@@ -895,7 +934,7 @@ impl<W: Write + Send> Preparation<W> {
             }
             Ok(())
         };
-        Ok(Lane::new("change runs", make, emit))
+        Ok(Lane::new("change runs", make, emit).reads(&reads[native]))
     }
 
     /// The finished file, once a lane walked every segment of each of `recordings`.
@@ -1107,6 +1146,8 @@ pub struct Native {
     pub identity: Vec<u8>,
     pub capture: Option<Capture>,
     pub chains: Vec<[u8; 32]>,
+    /// The tables it withholds ([`Recording::withheld`]): its runs index none of their rows.
+    pub withheld: Vec<(usize, String)>,
 }
 
 /// What an index indexes, read without its directory: its campaign, its tables, its runs
@@ -1124,6 +1165,18 @@ pub struct Summary {
 }
 
 impl Summary {
+    /// The tables the native recording holding run `run` withholds, each with why.
+    pub fn withheld_in(&self, run: u32) -> &[(usize, String)] {
+        let mut first = 0_usize;
+        for native in &self.natives {
+            first += native.chains.len();
+            if (run as usize) < first {
+                return &native.withheld;
+            }
+        }
+        &[]
+    }
+
     fn write(&self) -> io::Result<Vec<u8>> {
         let mut writer = Writer::new();
         writer.varint(self.campaign.len() as u64)?;
@@ -1162,6 +1215,12 @@ impl Summary {
             writer.varint(native.chains.len() as u64)?;
             for chain in &native.chains {
                 writer.raw(chain)?;
+            }
+            writer.varint(native.withheld.len() as u64)?;
+            for (table, reason) in &native.withheld {
+                writer.varint(*table as u64)?;
+                writer.varint(reason.len() as u64)?;
+                writer.raw(reason.as_bytes())?;
             }
         }
         writer.varint(self.pending.len() as u64)?;
@@ -1208,10 +1267,19 @@ impl Summary {
                 chain.copy_from_slice(reader.raw(32)?);
                 chains.push(chain);
             }
+            let count = reader.count()?;
+            let mut withheld = engine_allocation::vec(count.min(bytes.len()))?;
+            for _ in 0..count {
+                let table = reader.count()?;
+                let reason = String::from_utf8(owned(&mut reader)?)
+                    .map_err(|_| invalid("A withheld table's reason is not text"))?;
+                withheld.push((table, reason));
+            }
             natives.push(Native {
                 identity,
                 capture,
                 chains,
+                withheld,
             });
         }
         let count = reader.count()?;
@@ -1258,6 +1326,7 @@ impl Summary {
             .all(|(recording, native)| {
                 recording.campaign() == self.campaign
                     && recording.identity() == native.identity
+                    && recording.withheld() == native.withheld.as_slice()
                     && recording
                         .capture()
                         .is_ok_and(|capture| capture == native.capture)
@@ -1636,6 +1705,11 @@ impl IndexFile {
         let Some((run, ordinal)) = self.index.find(branch, hour) else {
             return Ok(None);
         };
+        let withheld = self.summary.withheld_in(run);
+        if let Some((_, reason)) = withheld.iter().find(|&&(held, _)| held == table.index()) {
+            let reason = engine_allocation::string(reason)?;
+            return Ok(Some((TableView::Unavailable { reason }, None)));
+        }
         let keyed = runs::rows_at(&self.index, self, run, ordinal, table.index(), keys)?;
         let held = &self.index.runs[run as usize];
         let strings = || -> io::Result<Dictionary> {
@@ -1827,6 +1901,18 @@ impl Snapshots {
         {
             self.broken = true;
             return Err(error);
+        }
+        // A run of a native recording withholding a table reads as that recording does.
+        let withheld = file.summary.withheld_in(run);
+        for table in self.views.selected() {
+            let reason = withheld
+                .iter()
+                .find(|&&(held, _)| held == table.index())
+                .map(|(_, reason)| reason.as_str());
+            if let Err(error) = self.cursor.withhold(table.index(), reason) {
+                self.broken = true;
+                return Err(error);
+            }
         }
         let held = &file.index.runs[run as usize];
         let state = self.cursor.state();

@@ -697,9 +697,10 @@ impl Vision {
         }
     }
 
-    /// How much of one land unit the viewer is shown; `province` is where it stands.
+    /// How much of one land unit the viewer is shown; `province` is where it stands. A unit
+    /// whose detection the hour cannot establish is drawn as fog off draws it.
     pub fn sees_land(&self, unit: u64, owner: u32, province: u32) -> Sight {
-        if self.in_full(owner) || self.visibility_gap.is_some() {
+        if self.in_full(owner) || self.visibility_gap.is_some() || !self.detection_known(unit, owner) {
             return Sight::Full;
         }
         let ladder = match self.detection(unit, owner) {
@@ -723,9 +724,7 @@ impl Vision {
         if self.undecided.is_some()
             || self.visibility_gap.is_some()
             || (!self.shares.contains_key(&owner) && self.relations_gap.is_some())
-            || (!self.shares.contains_key(&owner)
-                && !self.levels.contains_key(&unit)
-                && self.truncated.contains(&"UnitIntel"))
+            || !self.detection_known(unit, owner)
         {
             return None;
         }
@@ -747,10 +746,10 @@ impl Vision {
         sight(self.navy_byte(unit, owner))
     }
 
-    /// Task-force intel is 255 with fog off or for our own force; otherwise apply the viewer modifier
-    /// to its detection-ladder base.
+    /// Task-force intel is 255 with fog off, for our own force or where the hour cannot establish
+    /// its detection; otherwise apply the viewer modifier to its detection-ladder base.
     pub fn navy_byte(&self, unit: u64, owner: u32) -> u16 {
-        if self.in_full(owner) {
+        if self.in_full(owner) || !self.detection_known(unit, owner) {
             return u16::from(u8::MAX);
         }
         let base = match self.detection(unit, owner) {
@@ -766,11 +765,7 @@ impl Vision {
     /// with no `UnitIntel` entry while that table is truncated, since the omitted entry could
     /// hold any level. A unit seen in full, shared vision and a recorded entry decide it.
     pub fn navy_byte_known(&self, unit: u64, owner: u32) -> Option<u16> {
-        let decided = self.in_full(owner)
-            || self.shares.contains_key(&owner)
-            || self.levels.contains_key(&unit)
-            || !self.truncated.contains(&"UnitIntel");
-        decided.then(|| self.navy_byte(unit, owner))
+        (self.in_full(owner) || self.detection_known(unit, owner)).then(|| self.navy_byte(unit, owner))
     }
 
     /// Port detail level from zero to four; `None` when defines or the intel census are unavailable.
@@ -844,6 +839,14 @@ impl Vision {
         }
         self.relations_gap
             .map_or(Ok(false), |input| Err(SharingUnknown::Relations(input)))
+    }
+
+    /// Whether [`Self::detection`] holds: shared vision, a recorded entry, or a census read whole.
+    /// A truncated census may have omitted the unit's entry, which could hold any level.
+    fn detection_known(&self, unit: u64, owner: u32) -> bool {
+        self.shares.contains_key(&owner)
+            || self.levels.contains_key(&unit)
+            || !self.truncated.contains(&"UnitIntel")
     }
 
     /// Shared vision is detection level 3 and still takes the modifier.

@@ -2198,6 +2198,7 @@ pub fn finalize_session_ahead(
                 &paths,
                 replay_dir,
                 unsaved,
+                true,
                 &mut process_context,
                 witness.as_ref(),
                 admitted,
@@ -2361,6 +2362,7 @@ pub fn save_campaign(
             &segment_paths(&campaign_dir)?,
             replay_dir,
             unsaved,
+            session_ended(session_dir),
             &mut None,
             witness.as_ref(),
             admitted.as_ref(),
@@ -3187,6 +3189,7 @@ fn finalize_campaign(
     paths: &[(u32, PathBuf)],
     replay_dir: &Path,
     unsaved: bool,
+    ended: bool,
     process_context: &mut Option<(SessionId, u32, u64, u64)>,
     witness: Option<&TerminalWitness>,
     admitted: Option<&BTreeSet<i64>>,
@@ -3198,7 +3201,7 @@ fn finalize_campaign(
 ) -> Result<CampaignOutcome> {
     // Before the recording that records their sessions' ends, so a reader finds them with it.
     if !unsaved {
-        publish_columnar(campaign_dir, replay_dir, admitted);
+        publish_columnar(campaign_dir, replay_dir, admitted, ended)?;
     }
     let mut hand = |recording: &Path, replay: &Replay, blocks: &[BlockIndex]| {
         if let Some(committed) = committed {
@@ -3269,33 +3272,65 @@ fn finalize_campaign(
 /// reported and left, and one its collector still writes holds back the rest. With `admitted`,
 /// the loads a Battle Plan Recorder session admitted, each holds only the branches of loads it did not
 /// refuse, as the save holds them ([`keep_admitted`]); one holding none is left unpublished. Any
-/// other failure is reported and stops there, so a session's captures publish in order.
+/// other failure stops there, so a session's captures publish in order, and fails the save: its
+/// recording would end sessions whose captures a reader cannot find. A retry resumes. With
+/// `ended`, no collector of the session writes any more, so one held open fails the save too.
 ///
 /// [`campaign_folder`]: replay::columnar_file::campaign_folder
-fn publish_columnar(campaign_dir: &Path, replay_dir: &Path, admitted: Option<&BTreeSet<i64>>) {
-    if let Err(error) = publish_captures(campaign_dir, replay_dir, admitted) {
-        eprintln!("Columnar recordings not published: {error}");
+fn publish_columnar(
+    campaign_dir: &Path,
+    replay_dir: &Path,
+    admitted: Option<&BTreeSet<i64>>,
+    ended: bool,
+) -> Result<()> {
+    let held = publish_captures(campaign_dir, replay_dir, admitted).map_err(|error| {
+        failure(
+            campaign_dir,
+            format!("columnar recordings not published: {error}; spool retained"),
+        )
+    })?;
+    match held {
+        Some(partial) if ended => Err(failure(
+            &partial,
+            "held open, so this ended session's save waits for it; spool retained",
+        )),
+        _ => Ok(()),
     }
+}
+
+/// Whether a campaign's spool still holds native captures its recording has not published.
+pub fn unpublished_captures(campaign_dir: &Path) -> Result<bool> {
+    let entries = match fs::read_dir(campaign_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        entries => entries.map_err(|error| failure(campaign_dir, error))?,
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| failure(campaign_dir, error))?;
+        if replay::columnar_file::capture_of(&entry.file_name()).is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn publish_captures(
     campaign_dir: &Path,
     replay_dir: &Path,
     admitted: Option<&BTreeSet<i64>>,
-) -> std::io::Result<()> {
+) -> std::io::Result<Option<PathBuf>> {
     use replay::columnar_file::{
         CAPTURE_NAME_BYTES, campaign_folder, capture_name, capture_of, published_name,
         same_recording,
     };
     let (Some(session_dir), Some(campaign)) = (campaign_dir.parent(), campaign_dir.file_name())
     else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(session) = session_dir.file_name() else {
-        return Ok(());
+        return Ok(None);
     };
     let entries = match fs::read_dir(campaign_dir) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         entries => entries?,
     };
     let mut captures = Vec::new();
@@ -3305,7 +3340,7 @@ fn publish_captures(
         }
     }
     if captures.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     captures.sort_unstable();
     let spooled = admitted
@@ -3321,7 +3356,7 @@ fn publish_captures(
             let partial = campaign_dir.join(capture_name(n, true, &mut name));
             match finish_unfinished_columnar(&partial, &finished) {
                 Ok(true) => {}
-                Ok(false) => break,
+                Ok(false) => return Ok(Some(partial)),
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                     eprintln!(
                         "Columnar recording {} not recovered: {error}",
@@ -3361,7 +3396,7 @@ fn publish_captures(
             .checked_add(1)
             .ok_or_else(|| std::io::Error::other("a session's captures pass 2^32"))?;
     }
-    Ok(())
+    Ok(None)
 }
 
 /// The captures of `session` that `folder` holds, and the number after every one.
@@ -8313,17 +8348,53 @@ mod tests {
         fs::write(&partial, b"still written").unwrap();
         fs::write(campaign.join("columnar.2.h4col"), b"third").unwrap();
         let written = fs::OpenOptions::new().write(true).open(&partial).unwrap();
-        publish_columnar(&campaign, &replays, None);
+        publish_columnar(&campaign, &replays, None, false).unwrap();
         assert_eq!(fs::read(folder.join("session-1.1.h4col")).unwrap(), b"first");
         assert!(campaign.join("columnar.2.h4col").exists());
         drop(written);
-        publish_columnar(&campaign, &replays, None);
+        publish_columnar(&campaign, &replays, None, false).unwrap();
         assert!(partial.exists());
         assert_eq!(fs::read(folder.join("session-1.2.h4col")).unwrap(), b"third");
         fs::write(campaign.join("columnar.3.h4col"), b"third").unwrap();
-        publish_columnar(&campaign, &replays, None);
+        publish_columnar(&campaign, &replays, None, false).unwrap();
         assert_eq!(fs::read_dir(&campaign).unwrap().count(), 1);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 4);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A capture that cannot be published fails its campaign's save and stays in the spool.
+    #[test]
+    fn unpublished_captures_fail_the_save() {
+        let root =
+            recorder_test_support::test_support::allocation_test_directory("native-unpublished");
+        let campaign = root.join("spool").join("session-1").join("Campaign-A");
+        let replays = root.join("replays");
+        fs::create_dir_all(&campaign).unwrap();
+        fs::create_dir_all(&replays).unwrap();
+        // A file where the campaign's capture folder belongs.
+        fs::write(replay::columnar_file::campaign_folder(&replays, b"campaign-a"), b"").unwrap();
+        fs::write(campaign.join("columnar.0.h4col"), b"first").unwrap();
+        let error = publish_columnar(&campaign, &replays, None, false).unwrap_err();
+        assert!(error.contains("columnar recordings not published"), "{error}");
+        assert_eq!(fs::read(campaign.join("columnar.0.h4col")).unwrap(), b"first");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A capture held open waits while its session records, and fails the save of one ended.
+    #[test]
+    fn held_captures_fail_an_ended_session_save() {
+        let root = recorder_test_support::test_support::allocation_test_directory("native-held");
+        let campaign = root.join("spool").join("session-1").join("Campaign-A");
+        let replays = root.join("replays");
+        fs::create_dir_all(&campaign).unwrap();
+        let partial = campaign.join("columnar.0.h4col.partial");
+        fs::write(&partial, b"still held").unwrap();
+        let held = fs::OpenOptions::new().write(true).open(&partial).unwrap();
+        publish_columnar(&campaign, &replays, None, false).unwrap();
+        let error = publish_columnar(&campaign, &replays, None, true).unwrap_err();
+        assert!(error.contains("held open"), "{error}");
+        drop(held);
+        assert_eq!(fs::read(&partial).unwrap(), b"still held");
         fs::remove_dir_all(root).unwrap();
     }
 

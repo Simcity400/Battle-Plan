@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContentRevision } from './contentRevision.ts';
 import { finalPreparedReply, preparationCoverage } from './preparedPrefix.ts';
 import { inFrame } from './frameUpdates.ts';
+import { useViewRead } from './viewRead.ts';
 
 export type PreparedSeriesKind = 'series-state' | 'series-summary' | 'series-next-change' | 'events-page' | 'events-clusters';
 
@@ -227,7 +228,7 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   const navigation = useRef(new Set<AbortController>());
   const [view, setView] = useState<{ owner: typeof owner; from: number; to: number; width: number; series: PreparedBinding[] }>();
   const [summaries, setSummaries] = useState<{ owner: typeof owner; geometryKey: string; seriesKey: string; data?: T; error?: Failure }>();
-  const [states, setStates] = useState<{ owner: typeof owner; data?: T; error?: Failure }>();
+  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: Failure }>();
   const [attempt, setAttempt] = useState(0);
   const viewport = view?.owner === owner ? view : { from: bounds[0], to: bounds[1], width: 1, series: [] };
   const seriesKey = JSON.stringify(viewport.series);
@@ -273,16 +274,11 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
       });
   }, [owner, geometryKey, seriesKey, active, attempt, landed]);
   useEffect(() => () => { if (flight.current?.owner === owner) { flight.current.controller.abort(); flight.current = null; } }, [owner, active]);
-  useEffect(() => {
-    if (!source || !active) return;
-    const controller = new AbortController();
-    const live = () => !controller.signal.aborted && current.current === owner;
-    const publish = (value: unknown) => { if (live()) { const data = validate(value); inFrame(() => live() && setStates({ owner, data })); } };
-    void preparedSeriesQuery(client,source,'series-state',{...params,family:{kind:family},reads:readHours.map(hour=>({hour}))},controller.signal,attempt>0,
-      undefined,undefined,publish).then(publish)
-      .catch(error=> {if(live()) inFrame(() => live() && setStates(previous => ({...(previous?.owner === owner ? previous : {}),owner,error: asFailure(error)})));});
-    return ()=>controller.abort();
-  }, [owner, readKey, active, attempt]);
+  // Exact reads at the reached hours follow playback one at a time (`useViewRead`): each names
+  // its hours, so a landed read stays drawn while the newest hours are read.
+  const states = useViewRead<readonly number[], T>(source ? key : null, readHours, readKey, active,
+    (at, signal, publish, restart) => preparedSeriesQuery(client, source!, 'series-state', { ...params, family: { kind: family }, reads: at.map(hour => ({ hour })) },
+      signal, restart, undefined, undefined, value => publish(validate(value))).then(validate), client);
   const onSummaryView = useCallback((next: { from: number; to: number; width: number }, series: PreparedBinding[] = []) => setView(previous => previous?.owner === owner
     && previous.from === next.from && previous.to === next.to && previous.width === next.width && JSON.stringify(previous.series) === JSON.stringify(series) ? previous : { owner, ...next, series }), [owner]);
   const change = useCallback(async (tag:string,action:'ArrowLeft'|'ArrowRight'|'Home'|'End',from:number|null,first:number,last:number,binding?:PreparedBinding) => {
@@ -303,14 +299,14 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
     const request = ++sequence.current;
     void change('global',action,from,Math.ceil(x[0]),Math.floor(Math.min(x[1],cutoff ?? x[1]))).then(hour => {
       if (request === sequence.current && currentPick.current === pickOwner) setKeyboard(previous => ({ owner: pickOwner,hour,revision: (previous?.revision ?? 0)+1 }));
-    }).catch(error=> {if(!(error instanceof DOMException && error.name==='AbortError') && request===sequence.current && currentPick.current===pickOwner)setStates(previous=>({...(previous?.owner === owner ? previous : {}),owner,error: asFailure(error)}));});
+    }).catch(error=> {if(!(error instanceof DOMException && error.name==='AbortError') && request===sequence.current && currentPick.current===pickOwner)setNavigationError({ owner, error: asFailure(error) });});
   },[change,pickOwner]);
   const geometry=summaries?.owner===owner ? summaries.data : undefined;
-  const exact=states?.owner===owner ? states.data : undefined;
+  const exact=states.data;
   const data=useMemo(()=>geometry && exact ? overlayReached(geometry,exact) : exact ?? geometry,[geometry,exact,overlayReached]);
-  return { data, error: (summaries?.owner === owner ? summaries.error : undefined) ?? (states?.owner===owner ? states.error : undefined),
+  return { data, error: (summaries?.owner === owner ? summaries.error : undefined) ?? states.error ?? (navigationError?.owner === owner ? navigationError.error : undefined),
     pickOwner,onNavigateHour,keyboardHour: keyboard?.owner === pickOwner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner===pickOwner ? keyboard.revision : undefined,
     // Drawn while the selected series are the same; the chart places it by hour (`summaryFits`).
     geometryReady: !!geometry && summaries!.seriesKey === seriesKey,
-    retry: () => setAttempt(value => value + 1), onSummaryView, navigate };
+    retry: () => { setNavigationError(undefined); states.retry(); setAttempt(value => value + 1); }, onSummaryView, navigate };
 }

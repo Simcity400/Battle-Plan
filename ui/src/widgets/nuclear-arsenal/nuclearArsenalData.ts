@@ -135,14 +135,16 @@ export function nuclearDrillAt(model: NuclearModel, tag: string, hour: number) {
 }
 
 /** Parts and their exact residual share the total's known hours. A missing total
- * breaks every band even when the read retained an individual type count. */
+ * breaks every band even when the read retained an individual type count; an
+ * unrecorded type count breaks only its own band. */
 export function nuclearDrillBands(model: NuclearModel, tag: string, membership: readonly Span[] | null, range: Span): Run[][] {
   const bands: Run[][] = Array.from({ length: model.reply.types.length + 1 }, () => []);
   for (const read of model.series.get(tag)?.runs ?? []) {
     const at = nuclearDrillAt(model, tag, read.firstHour);
     if (!at || at.total == null) continue;
     bands.forEach((runs, index) => {
-      const value = index < at.values.length ? at.values[index] ?? 0 : at.remainder!;
+      const value = index < at.values.length ? at.values[index] : at.remainder;
+      if (value == null) return;
       const previous = runs.at(-1);
       if (previous && !read.startsSegment && previous.lastHour + 1 === read.firstHour && previous.value === value) previous.lastHour = read.lastHour;
       else runs.push({ firstHour: read.firstHour, lastHour: read.lastHour, value, ...(read.startsSegment ? { breakBefore: true } : {}) });

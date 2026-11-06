@@ -1377,8 +1377,8 @@ pub fn keep_branches<W: Write + Seek>(
     if kept.is_empty() && !commands {
         return Ok(None);
     }
-    let columns =
-        engine_allocation::collect_vec(crate::columnar_frames::schema()?.iter().map(Vec::len))?;
+    // Its manifests are copied as written: of the columns its schema holds.
+    let columns = engine_allocation::copy_vec(recording.columns())?;
     let mut writer = FileWriter::create(out, recording.root_identity().clone(), columns, settings)?;
     for &run in &kept {
         let held = recording.run(run)?;

@@ -21,7 +21,7 @@ test('prepared windows retain exact data while loading geometry and reject old s
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'prepared-window-hooks', enforce: 'pre', transform(source, id) {
       const path = id.replaceAll('\\', '/');
-      if (path.endsWith('/dashboard/preparedSeries.ts')) return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__preparedWindow;');
+      if (path.endsWith('/dashboard/preparedSeries.ts') || path.endsWith('/dashboard/viewRead.ts')) return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__preparedWindow;');
       if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => globalThis.__preparedWindow.content();';
     } }] });
   const requests: { source: DashboardSource; product:string; params: unknown; signal: AbortSignal; resolve: (value: unknown) => void; reject: (error: Error) => void }[] = [];

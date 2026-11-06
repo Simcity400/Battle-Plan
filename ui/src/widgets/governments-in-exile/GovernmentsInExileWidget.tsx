@@ -1,5 +1,4 @@
 import { nameReadText } from '../../dashboard/nameReads.ts';
-import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -10,8 +9,8 @@ import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { usNumber } from '../../charts/numberFormat';
+import { dayLabel } from '../../charts/draw';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
@@ -23,7 +22,7 @@ import type { BoundTrack } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { preparedThroughHour, readAt } from '../../dashboard/politicsHistory';
-import { loadTransientProduct, useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { PoliticsHistoryReply, PoliticsStateReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition';
@@ -35,12 +34,13 @@ import './governmentsInExile.css';
 const NO_ROWS: readonly ExileRow[] = [];
 const NO_WARNINGS: string[] = [];
 const rowKey = (row: ExileRow) => row.key;
+const MOVING_HOUR = ['hour'] as const;
 const tieKey = (row: ExileRow) => row.tag;
 
 /** The table's columns: countries by `label` (sorted by `sortName`), deployed air crews
  * by `airOf`, the hiding columns' values in the row tooltip. */
 export function exileColumns(sortName: (tag: string) => string, label: CountryLabel, cellBars: boolean,
-  airOf: (row: ExileRow) => number | null | undefined): TableColumn<ExileRow>[] {
+  airOf: (row: ExileRow) => number | null | undefined, airDate: string | null = null): TableColumn<ExileRow>[] {
   return [
     { key: 'exile', header: 'Exile', label: 'Exile', width: 'minmax(var(--table-name-min), 2fr)',
       value: row => sortName(row.tag), text: row => label(row.tag).name, render: row => <CountryCell {...label(row.tag)} /> },
@@ -54,37 +54,27 @@ export function exileColumns(sortName: (tag: string) => string, label: CountryLa
     { key: 'manpower', header: 'Manpower', label: 'Manpower', numeric: true, width: 'max-content', priority: 3, inTooltip: true,
       value: EXILE_VALUES.manpower, render: manpowerText },
     { key: 'air', header: 'Air crews', label: 'Air crews', numeric: true, width: 'max-content', priority: 5, inTooltip: true,
-      value: row => airOf(row), render: row => usNumber.format(airOf(row)!) },
+      value: row => airOf(row), render: row => airDate ? `${usNumber.format(airOf(row)!)} (${airDate})` : usNumber.format(airOf(row)!) },
     { key: 'leaders', header: 'Army leaders', label: 'Army leaders', numeric: true, width: 'max-content', priority: 4, inTooltip: true,
       value: EXILE_VALUES.leaders, render: row => usNumber.format(row.leaders!) },
   ];
 }
 
-/** Deployed air crews at the shown hour: one uncached request per shown hour, only while exiles are shown. */
+/** Deployed air crews at the shown hour, only while exiles are shown. While playback moves,
+ * the last landed hour stays shown, named by `hour`, while the newest is read. */
 function useDeployedAir(runtime: WidgetProps['runtime'], track: BoundTrack | undefined, hour: number, enabled: boolean) {
-  const revision = useContentRevision(runtime.client);
   const request = track && enabled ? { sourceId: track.source.id, revision: track.source.revision, product: 'politics-state',
     params: { branchId: track.branch.id, hour, view: 'exiles' } } : null;
-  const key = JSON.stringify([request, revision]);
-  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: PoliticsStateReply; error?: Failure }>();
-  useEffect(() => {
-    if (!request) return;
-    const controller = new AbortController();
-    void loadTransientProduct<unknown>(runtime.client, request, controller.signal).then(reply => {
-      const data = validateExileDetails(reply, hour);
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, data });
-    }).catch(error => {
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) });
-    });
-    return () => controller.abort();
-    // Identity includes the hour, branch, source revision and content binding.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runtime.client, key]);
-  const current = state?.client === runtime.client && state.key === key ? state : undefined;
-  const air = useMemo(() => current?.data ? deployedAirByTag(current.data) : null, [current?.data]);
-  const warnings = useMemo(() => current?.error ? [`1 refused exile deployed air crews: ${current.error.message}`] : current?.data?.warnings ?? NO_WARNINGS,
-    [current?.data, current?.error]);
-  return { air, warnings };
+  const read = useFollowedProduct<PoliticsStateReply>(runtime.client, request, MOVING_HOUR, enabled,
+    value => validateExileDetails(value, (value as { hour?: unknown } | null)?.hour as number));
+  const answered = read.data === undefined || read.moment === undefined ? undefined : (JSON.parse(read.moment) as [number])[0];
+  // A reply must answer the hour it was asked for.
+  const data = read.data && read.data.hour === answered ? read.data : undefined;
+  const error = read.error ?? (read.data && !data ? new Error('The exile details reply answers another hour.') : undefined);
+  const air = useMemo(() => data ? deployedAirByTag(data) : null, [data]);
+  const warnings = useMemo(() => error ? [`1 refused exile deployed air crews: ${error.message}`] : data?.warnings ?? NO_WARNINGS,
+    [data, error]);
+  return { air, hour: data ? answered : undefined, warnings };
 }
 
 export default function GovernmentsInExileWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
@@ -124,10 +114,12 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const sortingNames = useMemo(() => sort.column === 'exile' ? rows.map(row => ({ hour, tag: row.tag }))
     : sort.column === 'host' ? rows.flatMap(row => row.host === null ? [] : [{ hour, tag: row.host }]) : [], [rows, sort.column, hour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  const columns = useMemo(() => exileColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), options.cellBars === true, airOf),
-    [names, labelAt, hour, options.cellBars, airOf]);
+  // Air crews still from an earlier read carry that read's date, never the shown hour's.
+  const airDate = details.hour !== undefined && details.hour !== hour ? dayLabel(details.hour) : null;
+  const columns = useMemo(() => exileColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), options.cellBars === true, airOf, airDate),
+    [names, labelAt, hour, options.cellBars, airOf, airDate]);
   const tooltip = useCallback((row: ExileRow) => fitTooltip([exileTooltip(row, hour, labelAt(hour)(row.tag),
-    row.host === null ? null : labelAt(hour)(row.host), airOf(row))], viewport), [labelAt, hour, viewport, airOf]);
+    row.host === null ? null : labelAt(hour)(row.host), airOf(row), details.hour)], viewport), [labelAt, hour, viewport, airOf, details.hour]);
   const warnings = useMemo(() => data ? exileWarnings(data, view, details.warnings) : NO_WARNINGS, [data, view, details.warnings]);
   useEffect(() => {
     onDiagnostics(warnings);

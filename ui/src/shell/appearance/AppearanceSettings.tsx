@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Popover, usePopover } from '../../components/Popover';
 import { Icon } from '../../components/Icons';
@@ -125,16 +125,24 @@ function useBackdropLibrary(onRemoved: (id: string) => void) {
 function BackdropLibrary({ library: { items, error, busy, add, remove }, selected, onSelect }: {
   library: ReturnType<typeof useBackdropLibrary>; selected: string | null; onSelect: (id: string) => void;
 }) {
+  // An import selects its image only if no other choice was made while it ran, even one back to the same image.
+  const choices = useRef(0);
+  useLayoutEffect(() => { choices.current += 1; }, [selected]);
+  const choose = (id: string) => { choices.current += 1; onSelect(id); };
+  const added = (file: File | undefined) => {
+    const before = choices.current;
+    void add(file, id => { if (choices.current === before) onSelect(id); });
+  };
   return <>
     <div className="backdrop-grid">
       {items?.map(item => <div key={item.id} className="backdrop-thumb" data-selected={item.id === selected || undefined}>
-        <button type="button" style={{ backgroundImage: `url("${item.thumbnail}")` }} aria-pressed={item.id === selected} aria-label={`Use ${item.name}`} onClick={() => onSelect(item.id)} />
+        <button type="button" style={{ backgroundImage: `url("${item.thumbnail}")` }} aria-pressed={item.id === selected} aria-label={`Use ${item.name}`} onClick={() => choose(item.id)} />
         {item.id === selected && <span className="backdrop-check"><Icon name="check" /></span>}
         <button type="button" className="icon-button small backdrop-remove" aria-label={`Remove ${item.name}`} data-tooltip="Remove"
           onClick={() => remove(item.id)}><Icon name="trash" /></button>
       </div>)}
       <label className={`backdrop-add${busy ? ' is-busy' : ''}`}>
-        <input type="file" accept="image/*" hidden disabled={busy} onChange={event => { void add(event.currentTarget.files?.[0], onSelect); event.currentTarget.value = ''; }} />
+        <input type="file" accept="image/*" hidden disabled={busy} onChange={event => { added(event.currentTarget.files?.[0]); event.currentTarget.value = ''; }} />
         {busy ? <span className="spinner" /> : <Icon name="image" />}<span>{busy ? 'Importing…' : 'Add image'}</span>
       </label>
     </div>

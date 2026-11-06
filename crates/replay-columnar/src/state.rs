@@ -1037,10 +1037,24 @@ impl Table {
     /// Whether the recording recorded `slot`'s cell in `column`; when it did not, the cell is
     /// unknown whatever the column holds there.
     pub fn recorded(&self, column: usize, slot: u32) -> bool {
-        !self
-            .unrecorded
+        self.unrecorded
             .get(column)
-            .is_some_and(|bits| bits.get(slot))
+            .is_some_and(|bits| !bits.get(slot))
+    }
+
+    /// Appends columns of `kinds` a recording of fewer columns did not hold: every live row's
+    /// cell in them is unrecorded, as is every row's inserted later ([`Self::unrecord`]).
+    pub fn widen(&mut self, kinds: &[Kind]) -> io::Result<()> {
+        engine_allocation::reserve(&mut self.columns, kinds.len())?;
+        engine_allocation::reserve(&mut self.unrecorded, kinds.len())?;
+        for &kind in kinds {
+            let mut column = Column::new(kind);
+            column.grow(self.slots)?;
+            let unrecorded = Bits::from_words(engine_allocation::copy_vec(self.live.words())?)?;
+            self.columns.push(column);
+            self.unrecorded.push(unrecorded);
+        }
+        Ok(())
     }
 
     /// The live `slots` whose cell in `column` the recording did not record.

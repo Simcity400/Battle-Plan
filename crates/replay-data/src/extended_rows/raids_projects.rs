@@ -622,7 +622,7 @@ pub struct RaidAirScoreRow {
     /// the score prefix and carried at the same native phase cadence.
     pub air_spotting_scale: Option<i64>,
     /// Shared with the capture's held table: an unchanged menu is never copied.
-    pub menu: Option<std::sync::Arc<AirPowerMenu>>,
+    pub menu: Recorded<Option<std::sync::Arc<AirPowerMenu>>>,
 }
 
 pub use engine_native::air_power_menu::{Contribution as AirPowerContribution, Menu as AirPowerMenu};
@@ -646,7 +646,7 @@ pub struct RaidIntelInputRow {
     pub country: u32,
     pub strategic_present: u8,
     pub country_defense: i64,
-    pub defense_tree: Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>,
+    pub defense_tree: Recorded<Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>>,
     pub crypto_strength: Option<i64>,
     pub operatives: Vec<RaidCounterOperative>,
 }

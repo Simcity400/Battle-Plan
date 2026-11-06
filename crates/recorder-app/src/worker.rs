@@ -20,7 +20,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -525,9 +525,14 @@ impl Recorder {
     /// Quit: while recording, the same choice as Stop first.
     pub fn quit(&self, app: &AppHandle) {
         let mut inner = self.lock();
-        if !inner.capturing {
+        if !inner.capturing && !inner.unloading {
             drop(inner);
             app.exit(0);
+        } else if !inner.capturing {
+            // The ended session's unload observation, and a discarded spool's removal, finish first.
+            inner.quit_when_idle = true;
+            drop(inner);
+            self.wake.notify_all();
         } else if inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping {
             inner.quit_after_stop = true;
             drop(inner);
@@ -602,11 +607,11 @@ impl Recorder {
         let mut rerouted = false;
         // The game and campaign a Record session hands over to its own folder.
         let mut handover: Option<(u64, String)> = None;
+        // Sessions a crashed or closed recorder left are ended at start and as each game exits;
+        // one left busy or failed is looked at again while idle, each time a little later.
+        let mut ended_abandoned = false;
+        let mut abandoned_retry = AbandonedRetry::default();
         loop {
-            if self.exit_requested() {
-                app.exit(0);
-                return;
-            }
             {
                 let inner = self.lock();
                 if inner.unloading {
@@ -616,6 +621,11 @@ impl Recorder {
                         .unwrap_or_else(|error| error.into_inner());
                     continue;
                 }
+            }
+            // Only once the ended session's unload work is done.
+            if self.exit_requested() {
+                app.exit(0);
+                return;
             }
             let settings = RecorderSettings::load().unwrap_or_else(|error| {
                 eprintln!("Recorder settings could not be read: {error}");
@@ -634,6 +644,10 @@ impl Recorder {
                     }),
                 ),
                 Ok(None) => {
+                    if !ended_abandoned || game.is_some() || abandoned_retry.due() {
+                        abandoned_retry.after(self.end_abandoned(app, &settings));
+                        ended_abandoned = true;
+                    }
                     held = None;
                     handover = None;
                     game = None;
@@ -643,6 +657,13 @@ impl Recorder {
                     // The process is going away; look again shortly.
                     Err(_) => {}
                     Ok(start) => {
+                        if !ended_abandoned
+                            || game.as_ref().is_some_and(|game| game.start != start)
+                            || abandoned_retry.due()
+                        {
+                            abandoned_retry.after(self.end_abandoned(app, &settings));
+                            ended_abandoned = true;
+                        }
                         if manual || held.as_ref().is_some_and(|held| held.start != start) {
                             held = None;
                         }
@@ -710,6 +731,23 @@ impl Recorder {
             }
             self.wait(Duration::from_secs(1));
         }
+    }
+
+    /// Ends the sessions a crashed or closed recorder left in any save folder, once their game has
+    /// exited: their hours then wait in Recordings.
+    /// Returns whether any session was left busy or failed, for a later pass.
+    fn end_abandoned(&self, app: &AppHandle, settings: &RecorderSettings) -> bool {
+        let mut retry = false;
+        for root in settings.session_roots() {
+            let root = root.canonicalize().unwrap_or(root);
+            let pass = controller::end_abandoned_sessions(&root);
+            for error in pass.errors {
+                eprintln!("An earlier session could not be ended: {error}");
+            }
+            retry |= pass.retry;
+        }
+        recordings_changed(app);
+        retry
     }
 
     /// The snapshot while nothing is being captured. `loaded` is the campaign
@@ -935,6 +973,8 @@ impl Recorder {
             }),
             Stage::SetAside { waiting, done } => self.set_aside_changed(app, waiting, done),
             Stage::Finished { result } => {
+                // Its unload observation always follows: pending before capturing ends, so Quit waits for it.
+                self.lock().unloading = true;
                 finished.replace(Some(self.finish(app, result, started.get())));
             }
             Stage::Unloading(observation) => self.observe_unload(app, observation),
@@ -990,8 +1030,9 @@ impl Recorder {
         recordings_changed(app);
     }
 
-    /// Fold one collector status publication into the snapshot. Before the
-    /// collector names a campaign, the game's loaded campaign stands in.
+    /// Fold one collector status publication into the snapshot. The game's
+    /// loaded campaign is the live one when it can be read: the collector names
+    /// a campaign only once it has written an hour of it.
     fn live(
         &self,
         app: &AppHandle,
@@ -1001,13 +1042,8 @@ impl Recorder {
         names: &BTreeMap<String, String>,
         probe: Option<&Probe>,
     ) {
-        let mut live = status.map(snapshot::read_live).unwrap_or_default();
-        if live.campaign.is_none()
-            && let Some(loaded) = probe.and_then(Probe::loaded)
-        {
-            live.campaign = Some(loaded.campaign);
-            live.hour = live.hour.or(Some(loaded.hour));
-        }
+        let live = status.map(snapshot::read_live).unwrap_or_default();
+        let mut live = loaded_live(live, probe.and_then(Probe::loaded));
         // Held unchanged until this session saves, so found once per campaign.
         let (recording, earlier) = match &live.campaign {
             Some(campaign) => {
@@ -1230,6 +1266,20 @@ fn accept_stop(inner: &mut Inner, control: &Control, discard: bool) -> bool {
     true
 }
 
+/// The collector's status as of the campaign the game has loaded: its date and viewed country
+/// count only when the collector last wrote an hour of that campaign, and a campaign loaded since
+/// (paused before its first hour, say) shows the game's own date.
+fn loaded_live(mut live: snapshot::Live, loaded: Option<LoadedCampaign>) -> snapshot::Live {
+    if let Some(loaded) = loaded
+        && live.campaign.as_deref() != Some(loaded.campaign.as_str())
+    {
+        live.campaign = Some(loaded.campaign);
+        live.hour = Some(loaded.hour);
+        live.flag_keys = None;
+    }
+    live
+}
+
 /// One collector status publication (or the game's loaded campaign standing in) into the
 /// snapshot, with the recording it continues, its size and the name its save gives it.
 fn fold_live(
@@ -1291,6 +1341,33 @@ fn unload_finished(inner: &mut Inner, result: Result<(), String>) {
         inner.snapshot.problem = Some(problem.clone());
         inner.sticky = Some(problem);
         inner.seen = false;
+    }
+}
+
+
+/// When the worker next looks again at abandoned sessions a pass left busy or failed.
+#[derive(Default)]
+struct AbandonedRetry {
+    at: Option<Instant>,
+    wait: Duration,
+}
+
+impl AbandonedRetry {
+    const FIRST: Duration = Duration::from_secs(5);
+    const LONGEST: Duration = Duration::from_secs(300);
+
+    fn due(&self) -> bool {
+        self.at.is_some_and(|at| Instant::now() >= at)
+    }
+
+    /// Schedules the next look after a pass, backing off while sessions stay busy or failing.
+    fn after(&mut self, retry: bool) {
+        if retry {
+            self.wait = (self.wait * 2).clamp(Self::FIRST, Self::LONGEST);
+            self.at = Some(Instant::now() + self.wait);
+        } else {
+            *self = Self::default();
+        }
     }
 }
 
@@ -1386,6 +1463,33 @@ mod tests {
         assert_eq!(inner.snapshot.spool_bytes, None);
         assert_eq!(inner.hours, 12);
         assert_eq!(inner.snapshot.phase, Phase::Recording);
+    }
+
+    #[test]
+    fn a_campaign_loaded_since_the_last_written_hour_is_the_live_one() {
+        const OTHER: &str = "00000000-0000-4000-8000-000000000001";
+        let status = serde_json::json!({
+            "campaign": CAMPAIGN, "hours": 12, "last_hour": 9, "spool_bytes": 4096,
+            "player": {"tag":"OWN","cosmetic":"","original":"OWN","group":"synthetic_group"},
+        });
+        // The game still holds the campaign last written: the status's date and country stand.
+        let same = loaded_live(snapshot::read_live(&status), Some(loaded(CAMPAIGN, 7)));
+        assert_eq!(
+            (same.campaign.as_deref(), same.hour),
+            (Some(CAMPAIGN), Some(9))
+        );
+        assert!(same.flag_keys.is_some());
+        // Another campaign loaded, paused before its first hour: it and its own date, no country.
+        let other = loaded_live(snapshot::read_live(&status), Some(loaded(OTHER, 8)));
+        assert_eq!(
+            (other.campaign.as_deref(), other.hour),
+            (Some(OTHER), Some(1))
+        );
+        assert_eq!(other.flag_keys, None);
+        assert_eq!((other.hours, other.spool_bytes), (Some(12), Some(4096)));
+        // The game's load unread: the status alone.
+        let unread = loaded_live(snapshot::read_live(&status), None);
+        assert_eq!(unread.campaign.as_deref(), Some(CAMPAIGN));
     }
 
     #[test]

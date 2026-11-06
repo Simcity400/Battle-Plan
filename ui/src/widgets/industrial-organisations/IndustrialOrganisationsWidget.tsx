@@ -20,8 +20,8 @@ import { useCountryNamesAt, nameKey } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { preparedAt } from '../../dashboard/economyHistory';
-import { gameWindow, withWindowDiagnostics } from '../../dashboard/gameWindows';
-import type { MioPolicySelection } from '../../dashboard/gameWindows';
+import { gameWindow, windowDayLabel, withWindowDiagnostics } from '../../dashboard/gameWindows';
+import type { MioPolicySelection, ShownWindow } from '../../dashboard/gameWindows';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -70,6 +70,8 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const [windowLines, setWindowLines] = useState<readonly string[]>(NO_WARNINGS);
   const onWindowDiagnostics = useCallback((lines: string[]) =>
     setWindowLines(previous => previous.length === lines.length && previous.every((line, index) => line === lines[index]) ? previous : lines), []);
+  // What the open policy window draws: the hour it answers and when its sampled facts were read.
+  const [windowShown, setWindowShown] = useState<ShownWindow | null>(null);
   const diagnostics = useMemo(() => withWindowDiagnostics(data?.warnings ?? NO_WARNINGS, windowOpen ? windowLines : NO_WARNINGS),
     [data?.warnings, windowLines, windowOpen]);
   useDiagnostics(onDiagnostics, diagnostics);
@@ -127,10 +129,10 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="industrial-organisations">
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={windowOpen} anchor={anchor}
-      title={POLICY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
+      title={POLICY.label} day={windowShown ? windowDayLabel(windowShown) : dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {picked && Chooser && <Chooser selection={{ ...picked, hour: drill.follow ? hour : at }} active={active} client={runtime.client}
-        onDiagnostics={onWindowDiagnostics} />}
+        onDiagnostics={onWindowDiagnostics} onShown={setWindowShown} />}
     </DrillHost>
   </div>;
 }

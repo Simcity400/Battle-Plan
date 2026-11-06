@@ -279,7 +279,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT
+            crate::rows::compatibility::MAP_MODE_PARITY_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -291,6 +291,13 @@ mod tests {
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
             if version < crate::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT {
                 expected.push(TableId::NavalCombatShips);
+            }
+            // Format 135 widened the mission flags it keeps; 136 rekeyed the air histories.
+            if version < crate::rows::compatibility::AIR_COMBAT_MENU_FORMAT && version >= 104 {
+                expected.push(TableId::AirMissionInputs);
+            }
+            if version < crate::rows::compatibility::AIR_HISTORY_SLOTS_FORMAT {
+                expected.push(TableId::AirNavalPatrolHistories);
             }
             if version < crate::rows::compatibility::RAID_DISPATCHERS_FORMAT {
                 expected.push(TableId::RaidPathDistances);
@@ -605,7 +612,6 @@ mod tests {
             }
             let format = FormatVersion::read(version).unwrap();
             for (table, fields, gaps) in [
-                (TableId::AirNavalPatrolHistories, 2, 1),
                 (TableId::NavalBases, 5, 1),
                 (
                     TableId::ConstructionLineOutput,

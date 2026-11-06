@@ -621,7 +621,7 @@ fresh_fallback!(
     crate::mission_changes::Hooks,
     |value| {
         TableRows::AirGroundCrews(vec![AirGroundCrewRow {
-            supply: None,
+            supply: Recorded::Value(None),
             country: value as u32,
             region: 7,
             enabled: None,

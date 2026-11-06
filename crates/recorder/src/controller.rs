@@ -13,8 +13,8 @@ use std::{
 
 pub use crate::recording::{
     CaptureOutcome, Control, Omission, Refusal, SavedWaiting, SetAside, Stage, UnloadObservation,
-    Waiting, WaitingCampaign, WaitingName, WaitingNames, discard_waiting, save_waiting,
-    session_folders, waiting_campaigns, waiting_folder,
+    Waiting, WaitingCampaign, WaitingName, WaitingNames, discard_waiting, end_abandoned_sessions,
+    save_waiting, session_folders, waiting_campaigns, waiting_folder,
 };
 
 /// What one capture records and where.

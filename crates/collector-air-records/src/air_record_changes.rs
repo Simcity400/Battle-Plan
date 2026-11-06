@@ -276,7 +276,7 @@ fn convert(holder: &native::Holder, record: &native::Record) -> AirCombatRecord 
         attributed_country: record.attributed_country,
         first_damage: damage(0),
         second_damage: damage(1),
-        equipment: equipment.ok().map(|entries| {
+        equipment: replay_data::rows::Recorded::Value(equipment.ok().map(|entries| {
             entries
                 .iter()
                 .map(|entry| replay_data::rows::AirCombatEquipment {
@@ -284,7 +284,7 @@ fn convert(holder: &native::Holder, record: &native::Record) -> AirCombatRecord 
                     amount_raw: entry.amount_raw,
                 })
                 .collect()
-        }),
+        })),
     }
 }
 

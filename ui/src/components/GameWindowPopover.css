@@ -5,3 +5,4 @@
   height: min(var(--game-window-height, 240px), calc(100dvh - 92px));
 }
 .game-window-popover-body:focus { outline: none; }
+.game-window-popover .game-window-day { display: block; color: var(--muted); font-size: var(--type-xs); font-weight: 400; }

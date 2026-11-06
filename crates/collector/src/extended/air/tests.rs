@@ -2238,7 +2238,7 @@ fn a_container_the_dense_list_lacks_is_missed_by_the_plan_alone() {
 fn supply_merges_into_sorted_ground_crews_and_adds_flagged_rows() {
     use engine_map_air::map_air_supply::Summary;
     let crew = |country, region, enabled| rows::AirGroundCrewRow {
-        supply: None,
+        supply: rows::Recorded::Value(None),
         country,
         region,
         enabled,
@@ -2281,7 +2281,11 @@ fn supply_merges_into_sorted_ground_crews_and_adds_flagged_rows() {
     );
     // Only the region without a Ground Crews row asks for its flag.
     assert_eq!(asked, [(0x100, 0x60)]);
-    assert_eq!(ground[0].supply.as_ref().map(|supply| supply.needed), Some(10));
-    assert!(ground[2].supply.is_none());
-    assert!(ground[5].supply.is_none());
+    let supply = |at: usize| match &ground[at].supply {
+        rows::Recorded::Value(supply) => supply.as_ref().map(|supply| supply.needed),
+        rows::Recorded::NotRecorded => panic!("a captured row records its supply"),
+    };
+    assert_eq!(supply(0), Some(10));
+    assert_eq!(supply(2), None);
+    assert_eq!(supply(5), None);
 }

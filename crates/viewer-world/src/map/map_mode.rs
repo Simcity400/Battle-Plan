@@ -752,23 +752,39 @@ pub fn player_labels(frame: &DecodedFrame) -> Result<GroupLabels, String> {
         groups: held
             .into_iter()
             .map(|(slot, players)| {
-                let first = players.iter().min_by_key(|player| player.ordinal).unwrap();
-                let name = if players
-                    .iter()
-                    .filter(|player| player.ordinal == first.ordinal)
-                    .count()
-                    != 1
-                {
-                    Err("its first player has a duplicate roster ordinal".to_owned())
-                } else {
+                let first = match players.as_slice() {
+                    [only] => Ok(*only),
+                    _ => first_player(&players),
+                };
+                let name = first.and_then(|first| {
                     String::from_utf8(first.name.clone())
                         .map_err(|_| "its player's name is not UTF-8".to_owned())
-                };
+                });
                 (slot, (u64::from(slot), name))
             })
             .collect(),
         others_named: false,
     })
+}
+
+/// The first of several players holding one country, by their roster ordinals.
+fn first_player<'r>(
+    players: &[&'r replay_data::rows::PlayerRow],
+) -> Result<&'r replay_data::rows::PlayerRow, String> {
+    let mut ordered = Vec::with_capacity(players.len());
+    for &player in players {
+        match player.ordinal {
+            replay_data::rows::Recorded::Value(ordinal) => ordered.push((ordinal, player)),
+            replay_data::rows::Recorded::NotRecorded => {
+                return Err("its players' roster order was not recorded".to_owned());
+            }
+        }
+    }
+    let (ordinal, first) = *ordered.iter().min_by_key(|(ordinal, _)| *ordinal).unwrap();
+    if ordered.iter().filter(|(held, _)| *held == ordinal).count() != 1 {
+        return Err("its first player has a duplicate roster ordinal".to_owned());
+    }
+    Ok(first)
 }
 
 /// The country tables of one frame, resolved to canonical slots.

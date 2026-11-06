@@ -37,6 +37,7 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
   const at = useMemo(() => data && tag ? yardsAt(data) : null, [data, tag]);
   const { rows, children } = useMemo(() => repairRows(at), [at]);
   const readDate = at?.readHour === undefined ? null : dayLabel(at.readHour);
+  const bars = options.cellBars !== false;
   const columns = useMemo<readonly TableColumn<RepairRow>[]>(() => !data || !at ? [] : [
     { key: 'name', header: 'Port or ship', label: 'Port or ship', width: 'minmax(var(--table-name-min), 2fr)', sortable: false,
       value: row => row.kind === 'port' ? portName(data, at, row.port) : shipName(data, at.groups.get(row.port)?.ships.get(row.ship!)),
@@ -50,7 +51,7 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
       render: row => {
         if (row.kind === 'port') return '';
         const share = hullShare(at.groups.get(row.port)?.ships.get(row.ship!));
-        return <CellBar value={share} maximum={1}>{percentText(share)}</CellBar>;
+        return <CellBar value={bars ? share : null} maximum={1}>{percentText(share)}</CellBar>;
       }, text: row => row.kind === 'ship' ? percentText(hullShare(at.groups.get(row.port)?.ships.get(row.ship!))) : null },
     { key: 'dockyards', header: 'Dockyards', label: 'Dockyards', numeric: true, width: 'max-content', priority: 2, sortable: false, renderMissing: true,
       value: row => row.kind === 'port' ? numberOf(at.groups.get(row.port)?.measures.get('dockyards')) : null,
@@ -58,7 +59,7 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
     { key: 'priority', header: 'Priority', label: 'Priority', numeric: true, width: 'max-content', priority: 1, sortable: false, renderMissing: true,
       value: row => row.kind === 'port' ? numberOf(at.groups.get(row.port)?.measures.get('priority')) : null,
       render: row => row.kind === 'port' ? (at.groups.get(row.port)?.measures.get('priority')?.toString() ?? '—') : '' },
-  ], [data, at]);
+  ], [data, at, bars]);
   const tooltip = useCallback((row: RepairRow): TooltipContent => data && at ? repairTooltip(data, at, row, readDate) : { title: '', rows: [] }, [data, at, readDate]);
   const menu = useCallback(() => track && at?.readHour !== undefined ? [jumpItem(runtime, track.id, at.readHour)] : [], [track, at, runtime]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
@@ -85,7 +86,7 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
         return row.kind === 'port' ? [portName(data, at, row.port), group?.measures.get('dockyards'), group?.measures.get('priority')]
           : [label.name, label.source, hullShare(ship)];
       }} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Repair queues by port" rows={rows} columns={columns}
-        rowKey={rowKey} sort={{ column: 'name', direction: 'ascending' }} unsorted tree={{ children }} cellBars={options.cellBars !== false}
+        rowKey={rowKey} sort={{ column: 'name', direction: 'ascending' }} unsorted tree={{ children }} cellBars={bars}
         density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu}
         hoursPerSecond={hoursPerSecond} parity={{ complete: true, item: row => row }} />}
   </div>;

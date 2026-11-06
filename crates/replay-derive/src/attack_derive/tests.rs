@@ -687,7 +687,7 @@ fn frame() -> DecodedFrame {
             friendly_missions: 0,
             enemy_missions: 0,
             air_spotting_scale: Some(0),
-            menu: None,
+            menu: replay_data::rows::Recorded::Value(None),
         }]),
     );
     frame

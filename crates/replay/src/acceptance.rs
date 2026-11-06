@@ -642,7 +642,7 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
         push_map::<tables::Players>(
             tables,
             PlayerRow {
-                ordinal: 0,
+                ordinal: 0.into(),
                 id: [0, i32::MAX, i32::MIN][ordinal],
                 country,
                 flags: RAW_FLAG_CASES[tick % RAW_FLAG_CASES.len()],

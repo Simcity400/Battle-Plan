@@ -15,9 +15,9 @@ const GameWindow = loadable(() => import('./GameWindow').then(module => module.d
 
 /** The renderer's view of a policy chooser selection: the organisation's policy
  * screen at the selection's hour. */
-export function mioPolicyWindow({ selection, active, client, onDiagnostics }: GameWindowProps<MioPolicySelection>): RendererProps {
+export function mioPolicyWindow({ selection, active, client, onDiagnostics, onShown }: GameWindowProps<MioPolicySelection>): RendererProps {
   return { client, source: { sourceId: selection.sourceId, revision: selection.revision }, branchId: selection.branchId,
-    hour: selection.hour, target: { kind: 'mioPolicies', organisation: selection.organisation }, active, onDiagnostics };
+    hour: selection.hour, target: { kind: 'mioPolicies', organisation: selection.organisation }, active, onDiagnostics, ...onShown ? { onShown } : {} };
 }
 
 /** An industrial organisation's policy chooser, as the game draws it. */

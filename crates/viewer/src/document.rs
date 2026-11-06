@@ -427,6 +427,7 @@ pub struct Hour<'a> {
     product_hour: map_products::ProductHour<'a>,
     pool_limits: viewer_world::map::equipment_graphics::LimitValues,
     worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
+    air_rosters: Option<Arc<crate::playback::AirRosters>>,
 }
 
 impl std::ops::Deref for Hour<'_> {
@@ -2883,7 +2884,8 @@ impl Document {
 
     /// The hour on screen, for everything built per hour.
     pub fn hour(&self) -> io::Result<Hour<'_>> {
-        Ok(Hour::new(&self.content, self.frame()?, self.hour_fraction))
+        Ok(Hour::new(&self.content, self.frame()?, self.hour_fraction)
+            .with_air_rosters(Some(self.playback.air_rosters())))
     }
 
     /// What this hour's counters can see, for the combat windows and the
@@ -3256,7 +3258,18 @@ impl<'a> Hour<'a> {
             ),
             pool_limits: Default::default(),
             worker_etas: None,
+            air_rosters: None,
         }
+    }
+
+    /// The recording's daily air rosters, for the interception alerts a mod's short air log
+    /// timeout can change; without them such an alert is withheld.
+    pub(crate) fn with_air_rosters(
+        mut self,
+        air_rosters: Option<Arc<crate::playback::AirRosters>>,
+    ) -> Self {
+        self.air_rosters = air_rosters;
+        self
     }
 
     pub(crate) fn with_worker_etas(
@@ -4201,6 +4214,9 @@ impl<'a> Hour<'a> {
                     &etas,
                     self.movement.as_deref(),
                     engaged.map(|index| index.shared.as_ref()),
+                    self.air_rosters
+                        .as_deref()
+                        .map(|rosters| rosters as &dyn counters::AirPasses),
                     &self.type_tint_memo,
                     &self.mission_memo,
                     self.icons.raids.movement_reads(),

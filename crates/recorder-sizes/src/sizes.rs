@@ -115,9 +115,14 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
                 source.display()
             ));
         }
+        // Before the recording that records their sessions' ends, as the recorder publishes them.
+        let copied = copy_native_captures(source, destination, &replay)?;
         encoded
             .write_atomic(destination)
             .map_err(|error| error.to_string())?;
+        if copied > 0 {
+            eprintln!("copied {copied} native captures beside the rewritten recording");
+        }
     }
     let mut report = report(&sizes);
     if blocks {
@@ -143,6 +148,118 @@ fn folder_of(destination: &Path) -> &Path {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
+}
+
+/// Copies the native captures of `replay`, the recording at `source`, to beside `destination`,
+/// where preparation looks for the rewritten recording's, returning how many it copied: those
+/// beside `source` that pair with one of its sessions ([`columnar_runs::captures`]). They must
+/// hold its ended sessions' hours whole ([`columnar_runs::whole`]), or the rewrite is refused
+/// before it writes anything; a rewrite in its own folder copies and checks nothing.
+///
+/// [`columnar_runs::captures`]: replay::columnar_runs::captures
+/// [`columnar_runs::whole`]: replay::columnar_runs::whole
+fn copy_native_captures(
+    source: &Path,
+    destination: &Path,
+    replay: &Replay,
+) -> Result<usize, String> {
+    use replay::columnar_file::{campaign_folder, published_of};
+    use replay::columnar_frames::{Limits, Recording};
+    use replay::columnar_runs::{captures, recorded_runs, whole};
+    let at = |path: &Path, error: io::Error| format!("{}: {error}", path.display());
+    let canonical = |folder: &Path| fs::canonicalize(folder).map_err(|error| at(folder, error));
+    if canonical(folder_of(source))? == canonical(folder_of(destination))? {
+        return Ok(0);
+    }
+    let from = campaign_folder(folder_of(source), &replay.campaign_id);
+    let mut found = Vec::new();
+    match fs::read_dir(&from) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(at(&from, error)),
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|error| at(&from, error))?;
+                let name = entry.file_name();
+                if let Some((session, capture)) = published_of(&name) {
+                    found.push((session.to_owned(), capture, entry.path()));
+                }
+            }
+        }
+    }
+    // In the order preparation reads them: a session's several are held in capture order.
+    found.sort_unstable();
+    let (mut paired, mut paths) = (Vec::new(), Vec::new());
+    for (_, _, path) in found {
+        // An unreadable one pairs with no session; any hours it held are refused as missing.
+        let recording = match Recording::open_path(&path, Limits::default()) {
+            Ok(recording) => recording,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => continue,
+            Err(error) => return Err(at(&path, error)),
+        };
+        let capture = match recording.capture() {
+            Ok(capture) => capture,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+            Err(error) => return Err(at(&path, error)),
+        };
+        let runs = recorded_runs(&recording).map_err(|error| at(&path, error))?;
+        if let (Some(capture), Some(runs)) = (capture, runs)
+            && recording.campaign() == replay.campaign_id.as_slice()
+            && captures(&capture, &runs, replay)
+        {
+            paired.push((path.display().to_string(), recording));
+            paths.push(path);
+        }
+    }
+    if let Err(reason) = whole(paired, replay).map_err(|error| at(&from, error))? {
+        return Err(format!(
+            "the native captures beside {} do not hold it: {reason}; nothing was written",
+            source.display()
+        ));
+    }
+    copy_captures(&paths, &campaign_folder(folder_of(destination), &replay.campaign_id))
+}
+
+/// Copies each of `captures` into `to` under its name, returning how many it copied. One already
+/// there as the same recording is kept; another recording under its name refuses them all before
+/// any is copied.
+fn copy_captures(captures: &[std::path::PathBuf], to: &Path) -> Result<usize, String> {
+    use replay::columnar_file::same_recording;
+    let mut pending = Vec::with_capacity(captures.len());
+    for path in captures {
+        let target = to.join(path.file_name().unwrap_or_default());
+        match same_recording(path, &target) {
+            Ok(true) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !target.exists() => {
+                pending.push((path, target));
+            }
+            Ok(false) => {
+                return Err(format!(
+                    "{} holds another recording's native capture; nothing was written",
+                    target.display()
+                ));
+            }
+            Err(error) => return Err(format!("{}: {error}", target.display())),
+        }
+    }
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    fs::create_dir_all(to).map_err(|error| format!("{}: {error}", to.display()))?;
+    for (path, target) in &pending {
+        let staged = replay::publication::temporary_beside(target, "copy");
+        let copied = fs::copy(path, &staged)
+            .and_then(|_| replay::publication::sync_file(&staged))
+            .and_then(|()| replay::publication::rename_new(&staged, target));
+        if let Err(error) = copied {
+            let _ = fs::remove_file(&staged);
+            return Err(format!(
+                "{} not copied to {}: {error}; the recording was not written",
+                path.display(),
+                target.display()
+            ));
+        }
+    }
+    Ok(pending.len())
 }
 
 fn finalization_lock(destination: &Path) -> Result<fs::File, String> {
@@ -911,5 +1028,29 @@ mod tests {
         for bad in ["", "0", "23", "x", "9,"] {
             assert!(parse_levels(Some(bad)).is_err(), "{bad}");
         }
+    }
+
+    /// Captures copy beside a rewrite under their names; repeated, nothing copies; another
+    /// recording's capture under a name there refuses them all.
+    #[test]
+    fn captures_copy_beside_a_rewrite_once() {
+        let root = crate::test_support::allocation_test_directory("sizes-native");
+        let from = root.join("a");
+        fs::create_dir_all(&from).unwrap();
+        let captures = [from.join("session-1.0.h4col"), from.join("session-1.1.h4col")];
+        fs::write(&captures[0], b"first").unwrap();
+        fs::write(&captures[1], b"second").unwrap();
+        let to = root.join("b").join("campaign");
+        assert_eq!(copy_captures(&captures, &to), Ok(2));
+        assert_eq!(fs::read(to.join("session-1.0.h4col")).unwrap(), b"first");
+        assert_eq!(fs::read(to.join("session-1.1.h4col")).unwrap(), b"second");
+        assert_eq!(copy_captures(&captures, &to), Ok(0));
+        let held = root.join("c");
+        fs::create_dir_all(&held).unwrap();
+        fs::write(held.join("session-1.1.h4col"), b"other").unwrap();
+        assert!(copy_captures(&captures, &held).is_err());
+        assert!(!held.join("session-1.0.h4col").exists());
+        assert_eq!(fs::read(held.join("session-1.1.h4col")).unwrap(), b"other");
+        fs::remove_dir_all(root).unwrap();
     }
 }

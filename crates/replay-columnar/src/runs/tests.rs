@@ -474,8 +474,27 @@ type Walk = (Piece, Vec<u8>);
 /// Run `run`'s pieces, a segment from each ordinal of `starts` through the hour before the
 /// next or `end`, walked from its run's start.
 fn pieces(layout: Layout, number: u32, run: &Run, starts: &[u32], end: Option<u32>) -> Vec<Walk> {
+    pieces_withholding(layout, number, run, starts, end, None)
+}
+
+/// [`pieces`] of a walk withholding table `withheld`, as a walk of a recording whose format
+/// holds it otherwise does: never applied, and named withheld.
+fn pieces_withholding(
+    layout: Layout,
+    number: u32,
+    run: &Run,
+    starts: &[u32],
+    end: Option<u32>,
+    withheld: Option<usize>,
+) -> Vec<Walk> {
     let columns: Vec<usize> = schema().iter().map(Vec::len).collect();
     let mut state = State::new(schema()).unwrap();
+    if let Some(table) = withheld {
+        let mut skipped = vec![false; columns.len()];
+        skipped[table] = true;
+        state.skip(&skipped).unwrap();
+        state.withhold(table, Some("withheld by its format")).unwrap();
+    }
     let mut builder: Option<(Builder, Walked)> = None;
     let mut pieces = Vec::new();
     let done = |(mut builder, mut disk): (Builder, Walked)| -> Walk {
@@ -671,6 +690,49 @@ fn seeks_hold_what_walking_held_at_every_hour() {
                 holds(&cursor, run, ordinal);
             }
         }
+    }
+}
+
+/// An index of walks withholding a table holds it at every ordinal as no rows, not recorded and
+/// sampled at no hour, and every other table as walking held it: each seek reads every series a
+/// withheld table writes, and a reason given to the cursor reaches its state.
+#[test]
+fn a_withheld_table_is_indexed_as_holding_nothing() {
+    const WITHHELD: usize = 1;
+    let runs = churned(&RUNS);
+    for layout in [NARROW, BROAD] {
+        let (index, memory) = stitched(layout, &runs, |number, run| {
+            let starts = segments(run.reads.len() as u32, SEGMENT);
+            pieces_withholding(layout, number, run, &starts, None, Some(WITHHELD))
+        });
+        let mut cursor =
+            Cursor::new(&index, schema(), &INDEXED, 1, STRINGS, tables_memory()).unwrap();
+        for (number, run) in (0..).zip(&runs) {
+            for ordinal in 0..run.reads.len() as u32 {
+                cursor
+                    .seek(&index, &memory, number, ordinal, &|| {}, &|| false)
+                    .unwrap();
+                cursor.withhold(WITHHELD, Some("withheld by its format")).unwrap();
+                let state = cursor.state();
+                assert_eq!(state.withheld(WITHHELD), Some("withheld by its format"));
+                let held = state.table(WITHHELD).unwrap();
+                assert_eq!((held.slots(), held.live().count()), (0, 0));
+                assert_eq!(state.status(WITHHELD), Some(Status::NotRecorded));
+                assert_eq!(state.sampled_at(WITHHELD), None);
+                assert_eq!(state.truncated_view(WITHHELD), None);
+                for (at, &table) in INDEXED.iter().enumerate() {
+                    if table == WITHHELD {
+                        continue;
+                    }
+                    let expected = &run.held[ordinal as usize][at];
+                    assert_eq!(state.table(table).unwrap(), &expected.table);
+                    assert_eq!(state.status(table), Some(expected.status));
+                    assert_eq!(state.sampled_at(table), expected.sampled);
+                }
+            }
+        }
+        cursor.withhold(WITHHELD, None).unwrap();
+        assert_eq!(cursor.state().withheld(WITHHELD), None);
     }
 }
 

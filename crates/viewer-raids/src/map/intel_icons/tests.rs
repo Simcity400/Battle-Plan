@@ -277,8 +277,8 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
     );
     let hour = frame.hour;
     let operative = |id: u64, ordinal, assignment| OperativeMissionRow {
-        map_selected: Some(0),
-        map_warning: Some(0),
+        map_selected: replay_data::rows::Recorded::Value(Some(0)),
+        map_warning: replay_data::rows::Recorded::Value(Some(0)),
         roster_country: 10,
         id: (id << 32) | 9,
         ordinal,

@@ -202,6 +202,8 @@ pub struct HashStats {
     pub bytes_read: u64,
     pub cache_hits: u64,
     pub elapsed_ms: u128,
+    /// Why the rebuilt hash cache could not be saved; the content itself is unaffected.
+    pub cache_unsaved: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -4911,7 +4913,8 @@ fn gather_selected(
             required(&read_document(&user_dir.join("settings.txt"))?, b"language")?,
         )
     };
-    fs::create_dir_all(&options.cache_dir)?;
+    // A folder that cannot be made only leaves the cache unsaved, reported below.
+    let _ = fs::create_dir_all(&options.cache_dir);
     let cache_path = options.cache_dir.join(HASH_CACHE);
     // An incomplete cache is disposable; the installed bytes remain the authority.
     let mut cache: HashCache = fs::read(&cache_path)
@@ -5244,14 +5247,23 @@ fn gather_selected(
     })();
     // Preserve successfully hashed files even when a later descriptor is bad.
     // A valid, unchanged cache needs no serialization or write. Missing or
-    // unreadable caches are rebuilt and remain disposable after interruptions.
-    if cache.dirty {
-        publish_hash_cache(&cache_path, cache)?;
-        // The JSON cache this file replaced is disposable.
-        let _ = fs::remove_file(options.cache_dir.join("content-hashes-v1.json"));
-    }
+    // unreadable caches are rebuilt and remain disposable after interruptions,
+    // so failing to save one never replaces the content result or its error.
+    let unsaved = if cache.dirty {
+        let published = publish_hash_cache(&cache_path, cache);
+        if published.is_ok() {
+            // The JSON cache this file replaced is disposable.
+            let _ = fs::remove_file(options.cache_dir.join("content-hashes-v1.json"));
+        }
+        published
+            .err()
+            .map(|error| format!("{}: {error}", cache_path.display()))
+    } else {
+        None
+    };
     result.map(|mut content: GatheredContent| {
         content.stats.elapsed_ms = started.elapsed().as_millis();
+        content.stats.cache_unsaved = unsaved;
         content
     })
 }

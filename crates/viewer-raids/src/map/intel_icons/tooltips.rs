@@ -6,7 +6,7 @@ use super::build::{Hour, Shared};
 use super::values::{self, ONE};
 use super::*;
 use installed_content_localisation::localisation::Argument as Arg;
-use replay_data::rows::CharacterOperativeRow;
+use replay_data::rows::{CharacterOperativeRow, Recorded};
 use viewer_foundation::tooltip_text::localise;
 
 /// The More entry's hover: only its click footer, which is left out.
@@ -97,10 +97,15 @@ fn defense_breakdown(
         )?);
         text.push('\n');
     }
-    let nodes = row
-        .defense_tree
-        .as_deref()
-        .ok_or("country counterintelligence modifier sources were not captured")?;
+    let nodes = match &row.defense_tree {
+        Recorded::Value(Some(nodes)) => &**nodes,
+        Recorded::Value(None) => {
+            return Err("country counterintelligence modifier sources were not captured".into());
+        }
+        Recorded::NotRecorded => {
+            return Err("country counterintelligence modifier sources were not recorded".into());
+        }
+    };
     if !nodes.is_empty() {
         text.push_str(&modifier_text::breakdown(
             nodes,

@@ -286,10 +286,10 @@ typed_codec!(OperativeMembershipRow, 104, |row| (row.id as u128) << 40 | (row.ro
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct OperativeMissionRow {
-    pub active_effect: Option<std::sync::Arc<OperativeEffect>>,
-    pub pending_effect: Option<std::sync::Arc<OperativeEffect>>,
-    pub map_selected: Option<u8>,
-    pub map_warning: Option<u8>,
+    pub active_effect: Recorded<Option<std::sync::Arc<OperativeEffect>>>,
+    pub pending_effect: Recorded<Option<std::sync::Arc<OperativeEffect>>>,
+    pub map_selected: Recorded<Option<u8>>,
+    pub map_warning: Recorded<Option<u8>>,
     pub roster_country: u32,
     pub id: u64,
     /// Native active-roster position.
@@ -364,7 +364,7 @@ value_struct!(OperativeEffectModifier { key: u32, value: i64, sources: Option<[s
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct StrategicOperativeRow {
-    pub mission_rosters: Option<std::sync::Arc<[Vec<u64>; 5]>>,
+    pub mission_rosters: Recorded<Option<std::sync::Arc<[Vec<u64>; 5]>>>,
     pub country: u32,
     pub slot: u32,
     pub mission_activity: i64,
@@ -465,7 +465,8 @@ pub struct CryptologyRow {
     pub bonus_days: i32,
     pub bonus_active: u8,
     pub decrypting: u8,
-    pub ordinal: u32,
+    /// The cipher list's order; formats before 135 did not record it.
+    pub ordinal: Recorded<u32>,
 }
 typed_codec!(CryptologyRow, 64, |row| (row.owner_country as u128) << 32 | row.target_country as u128, |key| Self { owner_country: (key >> 32) as u32, target_country: key as u32, ..Self::default() },
  { 0 => (amount_raw): I64, 1 => (bonus_days): I32, 2 => (bonus_active): U8, 3 => (decrypting): U8, 4 => (ordinal): U32 }, |_row| Ok(()));
@@ -1101,7 +1102,7 @@ pub struct AgencyOperationBuffersRow {
     pub running: Vec<AgencyBufferedOperation>,
     pub ready: Vec<AgencyBufferedOperation>,
     pub unready: Vec<AgencyBufferedOperation>,
-    pub offers: Vec<AgencyBufferedOffer>,
+    pub offers: Recorded<Vec<AgencyBufferedOffer>>,
 }
 typed_codec!(AgencyOperationBuffersRow, 8, |row| row.snapshot as u128, |key| Self { snapshot: key as u8, ..Default::default() },
  { 0 => (completed): Opaque, 1 => (running): Opaque, 2 => (ready): Opaque, 3 => (unready): Opaque, 4 => (offers): Opaque }, |_row| Ok(()));

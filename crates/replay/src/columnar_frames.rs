@@ -72,6 +72,35 @@ pub fn schema() -> io::Result<Vec<Vec<Column>>> {
     Ok(schema)
 }
 
+/// Each schema table's columns a recording of row format `format` holds: the fields that
+/// format wrote, schema fields being columns one for one, a table whose layout changed since
+/// as its earlier layout framed it.
+pub fn columns_at(format: u16) -> io::Result<Vec<usize>> {
+    engine_allocation::collect_vec(
+        TableId::ALL
+            .into_iter()
+            .map(|table| table.last_change().framed_fields(table, format)),
+    )
+}
+
+/// The tables of a recording of row format `format` this build reads otherwise, each with why
+/// by name: their layout or meaning changed since. Retired tables keep their framing and no
+/// reader reads them.
+pub fn withheld_at(format: u16) -> io::Result<Vec<(usize, String)>> {
+    let mut withheld = Vec::new();
+    for table in TableId::ALL {
+        let change = table.last_change();
+        if change.retired.is_some() {
+            continue;
+        }
+        if let Some(gap) = change.gap(table, format) {
+            engine_allocation::reserve(&mut withheld, 1)?;
+            withheld.push((table.index(), gap.to_string()));
+        }
+    }
+    Ok(withheld)
+}
+
 /// `slot`'s cell in `column` in the wire form a row's field codec reads: a text cell's
 /// dictionary bytes, an opaque cell as its payload encoded at `format`.
 pub(crate) fn wire<'a>(
@@ -504,6 +533,8 @@ enum Plan {
     Anew,
     /// A view of its status other than complete.
     Status,
+    /// Unavailable, as the walk withholds it ([`State::withheld`]).
+    Withheld,
 }
 
 /// `mask`'s fields of `id` and the fields a format of `recorded` fields leaves unrecorded, as
@@ -821,6 +852,9 @@ impl Views {
                 continue;
             }
             let index = id.index();
+            if state.withheld(index).is_some() {
+                continue;
+            }
             if state.skips(index) {
                 return Err(invalid(format!("{id:?} is not read by this walk")));
             }
@@ -987,6 +1021,10 @@ impl Views {
             let pending = &mut self.pending[at];
             let id = self.selected[at];
             let index = id.index();
+            if state.withheld(index).is_some() {
+                plans.push(Plan::Withheld);
+                continue;
+            }
             if state.skips(index) {
                 return Err(invalid(format!("{id:?} is not read by this walk")));
             }
@@ -1092,7 +1130,7 @@ impl Views {
                     Plan::Carry => &mut self.times.carried,
                     Plan::Patch { .. } => &mut self.times.patched,
                     Plan::Anew => &mut self.times.anew,
-                    Plan::Status => &mut self.times.status,
+                    Plan::Status | Plan::Withheld => &mut self.times.status,
                 };
                 tally.0 += 1;
                 tally.1 += took;
@@ -1194,6 +1232,25 @@ impl Views {
             .ok_or_else(|| invalid("The walker holds no such table"))?;
         let dictionary = state.dictionary();
         match plan {
+            Plan::Withheld => {
+                let reason = state
+                    .withheld(index)
+                    .ok_or_else(|| invalid("A withheld table has no reason"))?;
+                self.fact(|| {
+                    Ok(TableUpdate::Unavailable {
+                        reason: engine_allocation::string(reason)?,
+                    })
+                })?;
+                Ok(match previous {
+                    Some(view) if matches!(&*view, TableView::Unavailable { reason: held } if held == reason) => {
+                        view
+                    }
+                    _ => TableView::Unavailable {
+                        reason: engine_allocation::string(reason)?,
+                    }
+                    .into(),
+                })
+            }
             Plan::Carry => {
                 self.fact(|| Ok(TableUpdate::Unchanged { baseline }))?;
                 let previous = previous.ok_or_else(|| invalid("A carried table has no view"))?;

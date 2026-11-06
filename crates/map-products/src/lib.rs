@@ -304,9 +304,14 @@ impl<'a> ProductHour<'a> {
         for table in vision.truncated() {
             out.note_field(
                 &format!("{table} (perspective)"),
-                "the rows this hour did not reach are read as no relation and no detection at \
-                 all, so a stack among them carries the game's question mark where the game drew \
-                 it in full",
+                if *table == "UnitIntel" {
+                    "the rows this hour did not reach may hold any unit's detection, so a foreign \
+                     unit without a recorded row is drawn in full, as with fog of war off, \
+                     including where the game hid it or drew its question mark"
+                } else {
+                    "the rows this hour did not reach are not read as an absent value, so the \
+                     intel they would decide is withheld"
+                },
             );
         }
         let unreadable = labels::unreadable_overrides(frame)?;

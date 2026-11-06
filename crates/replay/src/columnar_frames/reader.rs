@@ -3,7 +3,7 @@
 //! selected units at once into one buffer it keeps.
 
 use super::{
-    Segment,
+    Segment, columns_at, withheld_at,
     input::{Budget, Decoder, Held, Limits, Permit, Source},
     invalid, schema,
 };
@@ -40,6 +40,8 @@ pub enum DamageScope {
     Dictionary { run: u32, chunk: u32 },
     /// One table's state at a run's restart after ordinal `after`.
     RestartTable { run: u32, after: u32, table: u32 },
+    /// A table the recording's format holds in a layout or meaning this build reads otherwise.
+    Withheld { table: u32 },
 }
 
 impl fmt::Display for DamageScope {
@@ -62,6 +64,7 @@ impl fmt::Display for DamageScope {
                     "Run {run}'s restart after ordinal {after}, table {table}"
                 )
             }
+            Self::Withheld { table } => write!(f, "Table {table} of the recording"),
         }
     }
 }
@@ -311,6 +314,40 @@ impl Chunks for Run {
 /// A walk nobody stops.
 static NEVER: AtomicBool = AtomicBool::new(false);
 
+/// What `root`'s recording holds of each schema table: its columns, and the tables this build
+/// reads otherwise, each with why. Of this build's schema, every column and none; else of the
+/// row format its `capture` names, when its identity names that format's schema as each table
+/// was framed then: the columns appended since hold no recorded cell, and the tables whose
+/// layout or meaning changed since are withheld by name.
+fn recorded_columns(
+    root: &Root,
+    capture: impl FnOnce() -> io::Result<Option<crate::columnar_file::Capture>>,
+) -> io::Result<(Vec<usize>, Vec<(usize, String)>)> {
+    let schema = schema()?;
+    if root.identity.schema == envelope::schema_digest(&schema) {
+        return Ok((
+            engine_allocation::collect_vec(schema.iter().map(Vec::len))?,
+            Vec::new(),
+        ));
+    }
+    let differs = |what: &str| invalid(format!("The recording's schema differs from {what}"));
+    let format = match capture() {
+        Ok(Some(capture)) => capture.format,
+        Ok(None) => return Err(differs("this build's, and it names no capture")),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            return Err(differs(&format!(
+                "this build's, and its capture cannot be read: {error}"
+            )));
+        }
+        Err(error) => return Err(error),
+    };
+    let columns = columns_at(format)?;
+    if envelope::schema_digest_prefix(&schema, &columns) != Some(root.identity.schema) {
+        return Err(differs(&format!("this build's and from its format {format}'s")));
+    }
+    Ok((columns, withheld_at(format)?))
+}
+
 /// A columnar recording (`H4COLUMN` version 3), read from its file or memory: its root, every
 /// run's directory and the restarts of every page, held from open. A run directory or page
 /// that cannot be read refuses only what it covers ([`Self::damage`]); the rest stays
@@ -324,6 +361,10 @@ pub struct Recording {
     controls: Box<[Extent]>,
     /// The campaign its identity names.
     campaign: Vec<u8>,
+    /// Each schema table's columns it holds: the first of this build's.
+    columns: Box<[usize]>,
+    /// The tables its format holds as this build reads them otherwise, each with why.
+    withheld: Box<[(usize, String)]>,
     runs: Box<[Option<Arc<Run>>]>,
     segments: Box<[Segment]>,
     damage: Box<[Damage]>,
@@ -355,9 +396,13 @@ impl Recording {
             .append(&source, &root, &mut raw)
             .map_err(unlocated)?;
         let root = Root::read(&raw).map_err(unlocated)?;
-        if root.identity.schema != envelope::schema_digest(&schema()?) {
-            return Err(invalid("The recording's schema differs from this build's"));
-        }
+        let (columns, withheld) = recorded_columns(&root, || {
+            crate::columnar_file::read_capture(&root.controls, |extent| {
+                let mut raw = Vec::new();
+                decoder.append(&source, extent, &mut raw)?;
+                Ok(raw)
+            })
+        })?;
         let mut damage = Vec::new();
         let mut runs = engine_allocation::vec(root.runs.len())?;
         for (index, extent) in (0..).zip(&root.runs) {
@@ -396,6 +441,8 @@ impl Recording {
             identity: root.identity.chain_bytes()?,
             controls: engine_allocation::boxed_slice(engine_allocation::copy_vec(&root.controls)?)?,
             campaign: root.identity.campaign.clone(),
+            columns: engine_allocation::boxed_slice(columns)?,
+            withheld: engine_allocation::boxed_slice(withheld)?,
             root_identity: root.identity,
             source,
             runs: engine_allocation::boxed_slice(runs)?,
@@ -419,7 +466,18 @@ impl Recording {
     }
 
     fn selects(&self, table: usize) -> bool {
-        self.selected.get(table).copied().unwrap_or(false)
+        self.selected.get(table).copied().unwrap_or(false) && !self.withholds(table)
+    }
+
+    fn withholds(&self, table: usize) -> bool {
+        self.withheld.iter().any(|&(held, _)| held == table)
+    }
+
+    /// The tables it holds in a layout or meaning this build reads otherwise, each with why:
+    /// walks never apply them, their states name them withheld ([`State::withheld`]) and
+    /// isolating walks begin with them lost.
+    pub fn withheld(&self) -> &[(usize, String)] {
+        &self.withheld
     }
 
     /// Whether walks decode `extent`, a page's unit: the manifests, the selected tables', or
@@ -502,8 +560,24 @@ impl Recording {
         &self.campaign
     }
 
-    /// Its identity block, every run's chain starts from: this build's schema, the campaign,
-    /// the content identity and the capture mode.
+    /// Each schema table's columns it holds, as its manifests are read with: the first of
+    /// this build's, the others unrecorded in every row it walks.
+    pub fn columns(&self) -> &[usize] {
+        &self.columns
+    }
+
+    /// Empty tables of this build's schema holding the columns it records, its withheld
+    /// tables named so.
+    pub fn state(&self) -> io::Result<State> {
+        let mut state = State::recorded(schema()?, engine_allocation::copy_vec(&self.columns)?)?;
+        for (table, reason) in &self.withheld {
+            state.withhold(*table, Some(reason))?;
+        }
+        Ok(state)
+    }
+
+    /// Its identity block, every run's chain starts from: its schema, the campaign, the
+    /// content identity and the capture mode.
     pub fn identity(&self) -> &[u8] {
         &self.identity
     }
@@ -642,7 +716,7 @@ impl Recording {
                 .append(&self.source, extent, unit)
                 .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))?;
         }
-        let columns = engine_allocation::collect_vec(schema()?.iter().map(Vec::len))?;
+        let columns = &self.columns;
         let (manifests, units) = units.split_first().expect("a manifest stream");
         let mut manifest_unit = Reader::new(manifests);
         let mut tables =
@@ -652,7 +726,7 @@ impl Recording {
             let bytes = framing::next_manifest(&mut manifest_unit, manifests.len())
                 .map_err(damaged)?
                 .ok_or_else(|| damaged(invalid("does not hold exactly its hours")))?;
-            let manifest = Manifest::read(bytes, &columns).map_err(damaged)?;
+            let manifest = Manifest::read(bytes, columns).map_err(damaged)?;
             if manifest.branch != held.branch
                 || i64::from(manifest.hour) != i64::from(held.first_hour) + i64::from(ordinal)
             {
@@ -974,6 +1048,21 @@ impl<'r> Walker<'r> {
         std::mem::take(&mut self.lost)
     }
 
+    /// Forgets the tables lost so far, but those the recording withholds: each lost from the
+    /// start, as damage naming the table and why.
+    fn lose_withheld(&mut self) -> io::Result<()> {
+        self.lost.clear();
+        engine_allocation::reserve(&mut self.lost, self.recording.withheld.len())?;
+        for (table, reason) in self.recording.withheld.iter() {
+            let scope = DamageScope::Withheld {
+                table: u32::try_from(*table).map_err(|_| invalid("A table passes 2^32"))?,
+            };
+            let error = Damage::wrap(scope, invalid(reason.as_str()));
+            self.lost.push((*table, error));
+        }
+        Ok(())
+    }
+
     /// Keeps `error`, met reading `extent`, as its table's loss when the walk isolates damage
     /// and the damage is that table's unit's alone; anything else refuses the walk.
     fn lose(&mut self, extent: &Extent, error: io::Error, isolate: bool) -> io::Result<()> {
@@ -1199,11 +1288,11 @@ impl<'r> Walker<'r> {
     /// empty tables at its run's start.
     pub fn begin(&mut self, segment: &Segment, state: &mut State) -> io::Result<()> {
         self.fit()?;
-        self.lost.clear();
+        self.lose_withheld()?;
         let Some(at) = segment.restart else {
             let recording = self.recording;
             let run = recording.shared(segment.run)?;
-            *state = State::new(schema()?)?;
+            *state = recording.state()?;
             state.allow(Arc::clone(&recording.tables))?;
             state.set_dictionary(Dictionary::run(run.clone(), recording.dictionary_bytes, 0));
             return recording.select_in(state);
@@ -1261,8 +1350,8 @@ impl<'r> Walker<'r> {
         };
         let (raw, stored) = recording.table_lengths(run, restart)?;
         self.admit(raw, stored)?;
-        self.lost.clear();
-        *state = State::new(schema()?)?;
+        self.lose_withheld()?;
+        *state = recording.state()?;
         state.allow(Arc::clone(&recording.tables))?;
         recording.select_in(state)?;
         state.set_dictionary(Dictionary::run(

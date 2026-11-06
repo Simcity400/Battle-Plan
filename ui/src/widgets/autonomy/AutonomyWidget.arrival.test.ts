@@ -66,6 +66,10 @@ test('autonomy keeps its census unfinished in both arrival orders through usePre
           "import { useCallback, useEffect, useMemo, useRef, useState } from 'react';",
           ['useCallback', 'useEffect', 'useMemo', 'useRef', 'useState'].map(name =>
             `const ${name} = (...args) => globalThis.__autonomyArrivalHooks.${name}(...args);`).join('\n'));
+        if (path.endsWith('/dashboard/viewRead.ts')) return source.replace(
+          "import { useEffect, useRef, useState } from 'react';",
+          ['useEffect', 'useRef', 'useState'].map(name =>
+            `const ${name} = (...args) => globalThis.__autonomyArrivalHooks.${name}(...args);`).join('\n'));
         return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
       },
     }] });

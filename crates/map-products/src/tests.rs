@@ -797,9 +797,14 @@ impl Original<'_> {
         for table in vision.truncated() {
             out.note_field(
                 &format!("{table} (perspective)"),
-                "the rows this hour did not reach are read as no relation and no detection at \
-                 all, so a stack among them carries the game's question mark where the game drew \
-                 it in full",
+                if *table == "UnitIntel" {
+                    "the rows this hour did not reach may hold any unit's detection, so a foreign \
+                     unit without a recorded row is drawn in full, as with fog of war off, \
+                     including where the game hid it or drew its question mark"
+                } else {
+                    "the rows this hour did not reach are not read as an absent value, so the \
+                     intel they would decide is withheld"
+                },
             );
         }
         let unreadable = labels::unreadable_overrides(frame)?;
@@ -2023,7 +2028,8 @@ fn frozen_fog_keeps_hidden_intel_distinct_from_missing_and_truncated_sources() {
             } else if table == TableId::UnitIntel && status == 0 {
                 assert_eq!(reference.land_byte_known(7, 3, 3), None);
                 assert_eq!(reference.land_byte_known(8, 3, 3), Some(150));
-                assert_eq!(reference.sees_land(7, 3, 3), perspective::Sight::None);
+                // The omitted row could reveal the unit: drawn as fog off draws it.
+                assert_eq!(reference.sees_land(7, 3, 3), perspective::Sight::Full);
                 assert_eq!(expected.intel, hidden.intel);
             } else {
                 assert_eq!(reference.land_byte_known(7, 3, 3), None);

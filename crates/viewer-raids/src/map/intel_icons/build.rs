@@ -5,7 +5,7 @@ use super::*;
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::Argument as Arg;
 use replay_data::{
-    rows::CharacterOperativeRow, rows::PORTRAIT_LARGE, rows::ProvinceRow,
+    rows::CharacterOperativeRow, rows::PORTRAIT_LARGE, rows::ProvinceRow, rows::Recorded,
     rows::StrategicOperativeRow, rows::portrait_entry,
 };
 use viewer_foundation::map::{color_inheritance::active_subject, directed_wars};
@@ -198,7 +198,14 @@ impl<'h, 'f> Hour<'h, 'f> {
                     named.extend(self.slot(row.target));
                     entry.items.push(Item::Operation(row));
                 }
-                for offer in &buffer.offers {
+                let offers = match &buffer.offers {
+                    Recorded::Value(offers) => offers.as_slice(),
+                    Recorded::NotRecorded => {
+                        report.note("offer entries are withheld: AgencyOperationBuffers did not record offers");
+                        &[]
+                    }
+                };
+                for offer in offers {
                     let Some(state) = offer.state.filter(|&state| state != 0) else { continue; };
                     let entry = gathered.entry(state).or_default();
                     if entry.operations >= i64::from(self.defines.max_stack) {
@@ -587,8 +594,13 @@ impl<'h, 'f> Hour<'h, 'f> {
             ("frame_warn_hl_icn", row.map_warning),
         ] {
             writes.push(match value {
-                Some(value) => Write::Shown(child, value != 0),
-                None => Write::Withheld(child, "its operative UI state was not captured".into()),
+                Recorded::Value(Some(value)) => Write::Shown(child, value != 0),
+                Recorded::Value(None) => {
+                    Write::Withheld(child, "its operative UI state was not captured".into())
+                }
+                Recorded::NotRecorded => {
+                    Write::Withheld(child, "its operative UI state was not recorded".into())
+                }
             });
         }
         let character = shared.tables.characters.clone().map(|rows| {

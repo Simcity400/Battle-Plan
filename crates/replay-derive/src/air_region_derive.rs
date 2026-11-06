@@ -10,10 +10,14 @@
 //! a signed integer without a clamp; each vector loses the leading run of records dated
 //! before it and keeps its order.
 //!
-//! Applying the latest pass's cutoff to a row is exact however old the row is: the pass
-//! removes the same leading run again, records the updater appended since are dated at or
-//! after the pass's hour, which no cutoff of that pass reaches, and a pass that already
-//! ran before the read left a first record its own cutoff keeps. The pass visits only the
+//! The updater dates a record with the clock that creates it, so a row read before a pass
+//! holds only records dated before the pass's hour, and one read after it starts with a
+//! record the pass kept or created since, dated at or after the pass's hour or its cutoff.
+//! Applying the latest pass's cutoff, capped at the pass's hour ([`pruning_cutoff`]), to a
+//! row is therefore exact however old the row is: it removes what the pass removed from a
+//! row read before it and nothing from one read after it. The cap matters for a negative
+//! timeout, whose cutoff lies after the pass and would reach records created since. The
+//! pass visits only the
 //! countries in the game's daily simulation roster (those owning a state); a country
 //! outside it keeps its records unpruned, which [`retained`] cannot know, so a caller that
 //! has not established the country was in the roster refuses such a container by name
@@ -25,7 +29,7 @@
 //! country, so the result is exact for any country, with or without an owned state.
 
 use crate::Hour;
-use crate::rows::{AirCombatRecord, AirRegionCombatRow};
+use crate::rows::{AirCombatRecord, AirRegionCombatRow, Recorded};
 
 /// Hours between daily passes.
 pub const DAY: Hour = 24;
@@ -46,6 +50,12 @@ pub fn last_pass(hour: Hour) -> Option<Hour> {
 /// 32-bit wrap.
 pub fn cutoff(pass: Hour, timeout: i32) -> i32 {
     pass.wrapping_sub(timeout)
+}
+
+/// The cutoff a row read at any time since `pass` can be pruned with to hold what the game
+/// holds after it ([`cutoff`] capped at the pass's hour).
+pub fn pruning_cutoff(pass: Hour, timeout: i32) -> i32 {
+    cutoff(pass, timeout).min(pass)
 }
 
 /// One pruned vector: the leading records dated before `cutoff` removed, the rest in
@@ -113,7 +123,7 @@ pub fn retained_through(
 ) -> Retained<'_> {
     match pass {
         Some(pass) => {
-            let cutoff = cutoff(pass, timeout);
+            let cutoff = pruning_cutoff(pass, timeout);
             Retained {
                 own: pruned(&row.own, cutoff),
                 foreign: pruned(&row.foreign, cutoff),
@@ -391,10 +401,11 @@ pub fn equipment(
             continue;
         }
         let selected = &records[prefixes[index]];
-        let equipment = selected
-            .equipment
-            .as_ref()
-            .ok_or("retained air-combat equipment pool was unreadable")?;
+        let equipment = match &selected.equipment {
+            Recorded::Value(Some(equipment)) => equipment,
+            Recorded::Value(None) => return Err("retained air-combat equipment pool was unreadable".into()),
+            Recorded::NotRecorded => return Err("air-combat equipment was not recorded".into()),
+        };
         let pool = usize::from(selected.selection != 0);
         for entry in equipment {
             let key = order(entry.variant)?;
@@ -482,6 +493,29 @@ mod tests {
         // A mod's longer timeout keeps more; the cutoff wraps as native i32.
         assert_eq!(retained(&row, HOUR, 48).own.len(), 5);
         assert_eq!(cutoff(i32::MIN, 1), i32::MAX);
+    }
+
+    #[test]
+    fn a_negative_timeout_keeps_records_created_since_the_pass() {
+        let pass = last_pass(HOUR).unwrap();
+        // The pass removed everything older; combat an hour later created a record the
+        // game keeps until the next pass, although the pass's own cutoff lies after it.
+        assert_eq!(cutoff(pass, -12), pass + 12);
+        let fresh = AirRegionCombatRow {
+            own: std::sync::Arc::new(vec![record(pass + 1, 1, 0, 1)]),
+            ..Default::default()
+        };
+        assert_eq!(retained(&fresh, pass + 2, -12).own.len(), 1);
+        // A row read before the pass loses every record to it.
+        let stale = AirRegionCombatRow {
+            own: std::sync::Arc::new(vec![record(pass - 3, 1, 0, 1), record(pass - 1, 1, 0, 1)]),
+            ..Default::default()
+        };
+        assert!(retained(&stale, pass + 2, -12).own.is_empty());
+        // The next pass removes the fresh record.
+        assert!(retained(&fresh, pass + DAY, -12).own.is_empty());
+        // A cutoff that wraps below the pass prunes as the game's does.
+        assert_eq!(pruning_cutoff(pass, i32::MIN), pass.wrapping_sub(i32::MIN));
     }
 
     #[test]

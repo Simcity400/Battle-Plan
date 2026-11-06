@@ -566,6 +566,7 @@ fn charge_to(
 /// Every schema table while a branch is walked.
 pub struct State {
     pub(crate) kinds: Vec<Vec<Kind>>,
+    /// Each table's columns the recording holds: the first of its schema's.
     columns: Vec<usize>,
     /// Each table's text columns.
     text: Vec<Vec<usize>>,
@@ -580,6 +581,8 @@ pub struct State {
     pub(crate) present: Vec<usize>,
     /// Tables whose sections are not applied: no reader of the walk reads them.
     skipped: Vec<bool>,
+    /// Tables a reader of the walk is told it cannot read, each with why.
+    withheld: Vec<Option<String>>,
     pub(crate) dictionary: Dictionary,
     /// The ids a dictionary trim keeps.
     named: Vec<u32>,
@@ -600,6 +603,18 @@ impl Drop for State {
 impl State {
     /// `schema` holds each table's column kinds, in the recording's table order.
     pub fn new(schema: Vec<Vec<Kind>>) -> io::Result<Self> {
+        let columns = engine_allocation::collect_vec(schema.iter().map(Vec::len))?;
+        Self::recorded(schema, columns)
+    }
+
+    /// The tables of `schema` read from a recording holding only the first `columns[table]` of
+    /// each table's columns: the others hold every row's cell unrecorded.
+    pub fn recorded(schema: Vec<Vec<Kind>>, columns: Vec<usize>) -> io::Result<Self> {
+        if columns.len() != schema.len()
+            || columns.iter().zip(&schema).any(|(&held, kinds)| held > kinds.len())
+        {
+            return Err(invalid("A recording's columns pass the schema's"));
+        }
         let count = schema.len();
         let mut tables = engine_allocation::vec(count)?;
         let mut text = engine_allocation::vec(count)?;
@@ -610,7 +625,7 @@ impl State {
             )?);
         }
         Ok(Self {
-            columns: engine_allocation::collect_vec(schema.iter().map(Vec::len))?,
+            columns,
             text,
             tables,
             changes: engine_allocation::collect_vec((0..count).map(|_| Changes::default()))?,
@@ -618,6 +633,7 @@ impl State {
             sampled: engine_allocation::filled(count, None)?,
             views: engine_allocation::collect_vec((0..count).map(|_| Vec::new()))?,
             skipped: engine_allocation::filled(count, false)?,
+            withheld: engine_allocation::collect_vec((0..count).map(|_| None))?,
             kinds: schema,
             present: Vec::new(),
             dictionary: Dictionary::default(),
@@ -679,7 +695,7 @@ impl State {
         )
     }
 
-    /// Each table's column count, as a manifest is read with.
+    /// Each table's column count the recording holds, as a manifest is read with.
     pub fn columns(&self) -> &[usize] {
         &self.columns
     }
@@ -697,6 +713,22 @@ impl State {
     /// Whether `table`'s sections are left unapplied.
     pub fn skips(&self, table: usize) -> bool {
         self.skipped.get(table).copied().unwrap_or(false)
+    }
+
+    /// Tells readers of the walk they cannot read `table`, and why; none clears it. What the
+    /// walk applies of the table is not changed: a walk withholding it also skips it.
+    pub fn withhold(&mut self, table: usize, reason: Option<&str>) -> io::Result<()> {
+        let held = self
+            .withheld
+            .get_mut(table)
+            .ok_or_else(|| invalid("A withheld table is past the schema"))?;
+        *held = reason.map(engine_allocation::string).transpose()?;
+        Ok(())
+    }
+
+    /// Why readers of the walk cannot read `table`; none when they can.
+    pub fn withheld(&self, table: usize) -> Option<&str> {
+        self.withheld.get(table)?.as_deref()
     }
 
     pub fn table(&self, table: usize) -> Option<&Table> {
@@ -864,7 +896,12 @@ impl State {
         self.tables[table] = Table::new(&self.kinds[table])?;
         self.charge(table, 0)?;
         self.charge(table, slots)?;
-        let restored = match restart::read(bytes, &self.kinds[table], &mut self.scratch) {
+        let (held, kinds) = self.kinds[table].split_at(self.columns[table]);
+        let restored = restart::read(bytes, held, &mut self.scratch).and_then(|mut restored| {
+            restored.table.widen(kinds)?;
+            Ok(restored)
+        });
+        let restored = match restored {
             Ok(restored) => restored,
             Err(error) => {
                 self.charge(table, 0)?;
@@ -967,11 +1004,12 @@ impl State {
             }
             let truncated = matches!(self.statuses[table], Status::Truncated { .. });
             let (allowance, kinds) = (self.allowance.as_deref(), &self.kinds[table]);
+            let recorded = self.columns[table];
             let charged = &mut self.charged;
             // The slots its inserts add are charged before they are made.
             let applied = section::apply_admitted(
                 bytes,
-                kinds,
+                &kinds[..recorded],
                 truncated,
                 &mut self.tables[table],
                 &mut self.scratch,
@@ -981,6 +1019,10 @@ impl State {
             let held = charge_to(allowance, charged, table, kinds, self.tables[table].slots());
             applied?;
             held?;
+            // The columns past the recording's hold no inserted row's cell.
+            for column in recorded..kinds.len() {
+                self.tables[table].unrecord(column, &self.changes[table].inserted)?;
+            }
             if truncated {
                 let changes = &self.changes[table];
                 let live = self.tables[table].live();

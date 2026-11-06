@@ -108,6 +108,8 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   const anchor = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<{ id: string; name: string } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<readonly string[]>([]);
+  // The hour the drill's provinces answer, which an older read still shown keeps.
+  const [drillShown, setDrillShown] = useState<number | null>(null);
   const drillAt = drillHour(drill, clockHour);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...data.temperature === 'available' ? [] : [data.temperature], ...drillWarnings] : null);
   if (!track) return <WidgetState kind="empty" icon="sun" message="Load a campaign to see weather." />;
@@ -137,9 +139,9 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   return <div ref={anchor} className="air-timeline weather">
     {caption}
     <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
-      title={picked?.name ?? 'Region'} day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow
+      title={picked?.name ?? 'Region'} day={(drillShown ?? drillAt) === null ? '' : dayLabel(drillShown ?? drillAt!)} following={drill.follow} canFollow
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={chart}>
-      {picked && drillAt !== null && <RegionProvinces runtime={runtime} track={track} region={picked.id} hour={drillAt} active={active} onWarnings={setDrillWarnings} />}
+      {picked && drillAt !== null && <RegionProvinces runtime={runtime} track={track} region={picked.id} hour={drillAt} active={active} onWarnings={setDrillWarnings} onHour={setDrillShown} />}
     </DrillHost>
     {menu.menu}
   </div>;

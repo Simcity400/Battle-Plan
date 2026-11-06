@@ -1,14 +1,13 @@
-import { type Failure, asFailure } from './queryError.ts';
 import { defaultCountryTag } from './countrySelection';
 import type { DashboardClient } from './client';
 import type { WidgetRuntime } from './definitions';
 import { resolveWindow, type BoundTrack, type WidgetSpec } from './model';
-import { useEffect, useState } from 'react';
 import { useContentRevision } from './contentRevision';
 import { preparedSeriesQuery } from './preparedSeries';
 import type { IdeaHistoryFirstView } from './ideaHistoryReply';
 import { validateIdeaHistoryReply } from './ideaHistoryReply';
 import { usePlaybackHour } from './playback.ts';
+import { useViewRead } from './viewRead.ts';
 
 /** Prepared holdings with visibly approximate keyframe lanes beyond coverage;
  * the icon grid instead requests an exact held set at its displayed hour. */
@@ -21,31 +20,16 @@ export function useIdeaHistory(widget: WidgetSpec, runtime: WidgetRuntime, activ
   return { track, tag, ...usePreparedIdeaHistory(runtime.client, track, tag, through, widget.kind === 'national-spirits', active) };
 }
 
-/** One country's prepared idea history through an hour: lanes, or the held set at that hour. */
+/** One country's prepared idea history through an hour: lanes, or the held set at that hour.
+ * The hour follows playback (`useViewRead`): the last landed history stays shown while the newest is read. */
 export function usePreparedIdeaHistory(client: DashboardClient, track: BoundTrack | undefined, tag: string | undefined, through: number | undefined, held: boolean, active: boolean) {
   const content = useContentRevision(client);
-  const key = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, through, held, content]) : '';
-  const [state, setState] = useState<{ client: typeof client; key: string; data?: IdeaHistoryFirstView; error?: Failure }>();
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    if (!active || !track || !tag) return;
-    const controller = new AbortController();
-    const publish = (value: unknown) => {
-      const data = validateIdeaHistoryReply(value);
-      if (!controller.signal.aborted) setState({ client, key, data });
-    };
-    void preparedSeriesQuery(client, track.source, 'idea-history', { branchId: track.branch.id, tag, through, preview: !held, hour: held ? through : undefined }, controller.signal, attempt > 0,
-      undefined, undefined, publish)
-      .then(validateIdeaHistoryReply).then(
-        data => { if (!controller.signal.aborted) setState({ client, key, data }); },
-        error => { if (!controller.signal.aborted) setState(previous => ({ client, key,
-          data: previous?.client === client && previous.key === key ? previous.data : undefined,
-          error: asFailure(error) })); },
-      );
-    return () => controller.abort();
-    // The structured key owns source, branch, country and content revision.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, client, key, attempt]);
-  const current = key && state?.client === client && state.key === key ? state : undefined;
-  return { data: current?.data, error: current?.error, retry: () => { setState(undefined); setAttempt(value => value + 1); } };
+  const lane = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, held, content]) : null;
+  const read = useViewRead<{ through: number | undefined }, IdeaHistoryFirstView>(lane, lane ? { through } : null, String(through), active,
+    (at, signal, publish, restart) => preparedSeriesQuery(client, track!.source, 'idea-history',
+      { branchId: track!.branch.id, tag: tag!, through: at.through, preview: !held, hour: held ? at.through : undefined }, signal, restart,
+      undefined, undefined, value => publish(validateIdeaHistoryReply(value))).then(validateIdeaHistoryReply), client);
+  // The hour the shown history was read through: a retained reply answers it, not the playhead.
+  const answered = read.data === undefined || read.viewKey === undefined || read.viewKey === 'undefined' ? undefined : Number(read.viewKey);
+  return { data: read.data, answered, error: read.error, retry: read.retry };
 }

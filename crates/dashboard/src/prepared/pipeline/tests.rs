@@ -1824,7 +1824,7 @@ fn air_superiority_unprepared_regional_spans_remain_pending_without_a_frame_samp
                     friendly_missions: 0,
                     enemy_missions: 0,
                     air_spotting_scale: Some(0),
-                    menu: None,
+                    menu: replay_data::rows::Recorded::Value(None),
                 },
             ]));
         frame

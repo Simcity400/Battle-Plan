@@ -54,9 +54,20 @@ impl CachedBlock {
     }
 }
 
+/// The recording's daily air rosters as the map counters ask them.
+pub struct AirRosters(viewer_counter_products::map::province_tooltips::air_region::RosterHistory);
+
+impl viewer_counters::map::counters::AirPasses for AirRosters {
+    fn visited(&self, branch: BranchId, pass: Hour, slot: u32) -> Result<bool, String> {
+        self.0.visited(branch, pass, slot)
+    }
+}
+
 pub struct Playback {
     /// Shared so a worker thread can walk the same file without a copy.
     replay: Arc<Replay>,
+    /// The daily air rosters of `replay` from the map source they were last asked through.
+    air_rosters: std::sync::Mutex<Option<Arc<AirRosters>>>,
     branch: BranchId,
     hour: Hour,
     current: Current,
@@ -102,6 +113,7 @@ impl Playback {
         let hour = first.first_hour;
         Ok(Self {
             replay,
+            air_rosters: std::sync::Mutex::new(None),
             branch,
             hour,
             current: gap(branch, hour, "hour has not been decoded".into()),
@@ -232,6 +244,28 @@ impl Playback {
         engine_allocation::credit::MemoryBudget,
     )> {
         self.map.as_ref().map(|map| map.roster_source())
+    }
+
+    /// The daily air rosters, read through the map's change-run index once it is open.
+    pub fn air_rosters(&self) -> Arc<AirRosters> {
+        let source = self.air_roster_source();
+        let mut held = self
+            .air_rosters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(rosters) = held.as_ref().filter(|rosters| {
+            rosters.0.columnar().map(Arc::as_ptr) == source.as_ref().map(|(file, _)| Arc::as_ptr(file))
+        }) {
+            return Arc::clone(rosters);
+        }
+        let rosters = Arc::new(AirRosters(
+            viewer_counter_products::map::province_tooltips::air_region::RosterHistory::new(
+                Arc::clone(&self.replay),
+                source,
+            ),
+        ));
+        *held = Some(Arc::clone(&rosters));
+        rosters
     }
 
     pub fn branch(&self) -> BranchId {
@@ -779,7 +813,7 @@ pub(crate) mod tests {
                         ordinal: 0,
                     }])),
                     TableView::Complete(TableRows::Players(vec![PlayerRow {
-                        ordinal: 0,
+                        ordinal: 0.into(),
                         id: i32::MIN,
                         country: 1,
                         flags: 0x81,

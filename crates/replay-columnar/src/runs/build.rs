@@ -8,7 +8,7 @@ use super::{Chunk, Disk, Layout, Location, Metrics, PAGE_BYTES, Pack, ROWS, Samp
 use crate::{
     invalid,
     leaf::{Reader, Writer, varint_len},
-    manifest::Manifest,
+    manifest::{Manifest, Status},
     section::Changes,
     state::{Kind, Table},
     walk::State,
@@ -426,12 +426,21 @@ impl Builder {
             streams,
         };
         for (at, &table) in tables.iter().enumerate() {
+            let missing = || invalid("The walker holds no such table");
+            let series = &mut piece.series[at];
+            // A withheld table holds no rows and no sample, but every series a cursor reads;
+            // its readers learn why from the index's summary.
+            if state.withheld(table).is_some() {
+                let _memory = labels::kind(Label::IndexPieces);
+                note(&mut series.statuses, ordinal, Status::NotRecorded)?;
+                note(&mut series.samples, ordinal, Sample::At(None))?;
+                note(&mut series.slots, ordinal, 0)?;
+                continue;
+            }
             if state.skips(table) {
                 return Err(invalid("A walk skips a table its run index holds"));
             }
-            let missing = || invalid("The walker holds no such table");
             let held = state.table(table).ok_or_else(missing)?;
-            let series = &mut piece.series[at];
             {
                 let _memory = labels::kind(Label::IndexPieces);
                 note(

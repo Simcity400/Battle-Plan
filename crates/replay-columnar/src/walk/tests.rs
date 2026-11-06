@@ -178,6 +178,54 @@ fn restarts_and_dictionary_chunks_restore_the_state() {
     );
 }
 
+/// A recording of fewer columns reads as the schema: its sections and restarts decode as it
+/// wrote them, and the columns past its own hold no recorded cell.
+#[test]
+fn a_recording_of_fewer_columns_leaves_the_later_columns_unrecorded() {
+    let older = vec![vec![Kind::U32], vec![Kind::I64]];
+    let inserted = write(
+        &older[0],
+        &TableHour {
+            read: None,
+            changed: &[],
+            deleted: &[],
+            inserted: &[0, 1],
+            keys: &[30, 31],
+            inserts: &[Values::U32(&[9, 8])],
+            runs: &[],
+            touched: &[],
+            unrecorded: &[],
+        },
+    )
+    .unwrap();
+    let hour = Manifest {
+        sections: vec![section_entry(0, &inserted, 0b1)],
+        ..quiet(5)
+    };
+    let mut wide = State::recorded(schema(), vec![1, 1]).unwrap();
+    assert_eq!(wide.columns(), [1, 1]);
+    wide.apply(&hour, |_| Ok(inserted.as_slice())).unwrap();
+    let table = wide.table(0).unwrap();
+    assert_eq!(table.kinds().collect::<Vec<_>>(), schema()[0]);
+    assert_eq!(table.column(0).unwrap().cell(1), Some(Cell::U32(8)));
+    assert!(table.recorded(0, 1));
+    assert!(!table.recorded(1, 0) && !table.recorded(1, 1));
+
+    let mut narrow = State::new(older).unwrap();
+    narrow.apply(&hour, |_| Ok(inserted.as_slice())).unwrap();
+    let restart = restart::write(
+        narrow.table(0).unwrap(),
+        Status::Complete,
+        &Acquisition::default(),
+        &[],
+    )
+    .unwrap();
+    let mut restored = State::recorded(schema(), vec![1, 1]).unwrap();
+    restored.restore(0, &restart).unwrap();
+    assert_eq!(restored.table(0), wide.table(0));
+    assert!(State::recorded(schema(), vec![3, 1]).is_err());
+}
+
 /// A restart naming more slots than its allowance leaves is refused before they are made, by
 /// every state sharing the allowance; a state holds its tables' charge while it holds them, a
 /// smaller table gives back the difference, and a section growing a table past it is refused.

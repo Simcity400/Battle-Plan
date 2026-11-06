@@ -262,6 +262,7 @@ fn synthetic_hour_with_history(
         &Default::default(),
         None,
         history,
+        None,
         &type_tint::Memo::new(type_tint::TABLES, 1),
         &MissionMemo::new(1),
         moves.movement_reads(),

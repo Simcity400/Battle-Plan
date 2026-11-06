@@ -1530,3 +1530,61 @@ fn a_walker_growing_its_share_gives_back_the_one_it_holds_first() {
     });
     assert_eq!(budget.walkers(), 0);
 }
+
+/// A format-136 recording held every column format 137 did not append: its schema is this
+/// build's but for those, and nothing since changed what its columns mean.
+#[test]
+fn format_136_columns_are_this_builds_but_the_appended() {
+    use replay_data::rows::compatibility::AIR_HISTORY_SLOTS_FORMAT;
+    let schema = schema().unwrap();
+    let columns = columns_at(AIR_HISTORY_SLOTS_FORMAT).unwrap();
+    let appended = [
+        (TableId::States, 13),
+        (TableId::Players, 4),
+        (TableId::OperativeMissions, 18),
+        (TableId::AgencyOperationBuffers, 4),
+        (TableId::RaidIntelInputs, 4),
+        (TableId::StrategicOperatives, 5),
+        (TableId::AirGroundCrews, 1),
+    ];
+    for table in TableId::ALL {
+        let expected = appended
+            .iter()
+            .find(|&&(held, _)| held == table)
+            .map_or(schema[table.index()].len(), |&(_, columns)| columns);
+        assert_eq!(columns[table.index()], expected, "{table:?}");
+    }
+    assert!(withheld_at(AIR_HISTORY_SLOTS_FORMAT).unwrap().is_empty());
+    // A format-134 capture frames its tables as written and withholds by name those whose
+    // layout changed since; every other table reads.
+    use replay_data::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT;
+    let withheld: Vec<usize> = withheld_at(EXACT_NAVAL_CONDITION_FORMAT)
+        .unwrap()
+        .into_iter()
+        .map(|(table, reason)| {
+            assert!(reason.contains(&format!("{:?}", TableId::ALL[table])), "{reason}");
+            table
+        })
+        .collect();
+    let mut expected = [TableId::AirNavalPatrolHistories, TableId::AirMissionInputs]
+        .map(TableId::index);
+    expected.sort_unstable();
+    assert_eq!(withheld, expected);
+    let earlier = columns_at(EXACT_NAVAL_CONDITION_FORMAT).unwrap();
+    assert_eq!(earlier[TableId::AirNavalPatrolHistories.index()], 3);
+    assert_eq!(earlier[TableId::Cryptology.index()], 4);
+    assert_eq!(earlier[TableId::RaidAirScores.index()], 6);
+    assert!(
+        replay_columnar::envelope::schema_digest_prefix(&schema, &earlier).is_some(),
+        "its columns are this build's first"
+    );
+    let current = columns_at(replay_data::FORMAT_VERSION).unwrap();
+    assert_eq!(
+        replay_columnar::envelope::schema_digest_prefix(&schema, &current),
+        Some(replay_columnar::envelope::schema_digest(&schema))
+    );
+    assert_ne!(
+        replay_columnar::envelope::schema_digest_prefix(&schema, &columns),
+        Some(replay_columnar::envelope::schema_digest(&schema))
+    );
+}

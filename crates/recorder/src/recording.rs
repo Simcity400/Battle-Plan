@@ -1917,6 +1917,9 @@ pub(crate) fn capture(
         content.stats.cache_hits,
         content.stats.elapsed_ms as f64 / 1000.0
     );
+    if let Some(unsaved) = &content.stats.cache_unsaved {
+        println!("Content hash cache was not saved: {unsaved}");
+    }
     if let Some(note) = &content.order_note {
         println!("Content order is unverified: {note}");
     }
@@ -1974,6 +1977,10 @@ pub(crate) fn capture(
         .map_err(|error| format!("scripted map capture demand: {error}"))?;
     create_failure_witness(&directory, session.id, session.process_start_time)?;
     let mut admission = Admission::new(&directory, target);
+    // Hours a crashed recorder left wait like any others, so this session continues them too.
+    for error in end_abandoned_sessions(output).errors {
+        eprintln!("An earlier session could not be ended: {error}");
+    }
     // Before the collector reads any history: this session continues every hour waiting.
     let refused = stage_waiting(output, target)?;
     // Once staged, so a recording those hours become later is noted as this session's own.
@@ -2422,7 +2429,7 @@ pub(crate) fn capture(
             .warnings
             .extend(replay_io::attach_published_facts(&directory, &[]).into_iter().map(|error| {
                 format!(
-                    "{error}; Battle Plan adds them from this game installation when it next                      opens the recording"
+                    "{error}; Battle Plan adds them from this game installation when it next opens the recording"
                 )
             }));
         return finish_capture(
@@ -2607,34 +2614,39 @@ pub(crate) fn capture(
         Some(packing) => packing.run(finalize),
         None => finalize(),
     });
-    let (mut finalized, omitted, unrenamed) = match finalized_result {
+    let (mut finalized, omitted, unrenamed, failed) = match finalized_result {
         Some(Ok(done)) => {
             outcome.issues.extend(
                 done.errors
                     .into_iter()
                     .map(|error| format!("replay finalization failed: {error}")),
             );
-            (done.replays, done.omitted, done.unrenamed)
+            (done.replays, done.omitted, done.unrenamed, done.failed_campaigns)
         }
         Some(Err(error)) => {
             outcome
                 .issues
                 .push(format!("replay finalization failed: {error}"));
-            (Vec::new(), Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new(), Default::default())
         }
-        None => (Vec::new(), Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new(), Default::default()),
     };
     finalized.extend(continued);
-    // A save that failed leaves its hours waiting, to be saved or discarded later.
+    // A save that failed leaves its hours waiting, to be saved or discarded later; a failed
+    // campaign waits even with every row saved, since its native captures may not be published.
     for campaign in spooled.iter().filter(|campaign| saving_now(campaign)) {
         let campaign_dir = directory.join(campaign);
-        if replay_io::unsaved_segments(&campaign_dir).is_ok_and(|segments| segments.is_empty()) {
+        if !failed.contains(campaign)
+            && replay_io::unsaved_segments(&campaign_dir).is_ok_and(|segments| segments.is_empty())
+        {
             continue;
         }
-        waiting.push((
-            campaign.clone(),
-            replay_io::unsaved(&directory, campaign).ok().flatten(),
-        ));
+        waiting.push((campaign.clone(), match replay_io::unsaved(&directory, campaign) {
+            Ok(Some(unsaved)) => Some(unsaved),
+            // Every hour saved: only its native captures wait.
+            Ok(None) => Some(replay_io::Unsaved::default()),
+            Err(_) => None,
+        }));
     }
     if !waiting.is_empty() {
         println!(
@@ -2786,7 +2798,8 @@ fn remove_active(active: &Path, directory: &Path) -> Result<(), String> {
 }
 
 /// Remove a discarded session's spool, copied collector and evidence, keeping
-/// only its completion record. Call only after collector absence or game exit.
+/// only its completion record, whose pending cleanup is cleared only once all
+/// is gone. Call only after collector absence or game exit.
 fn discard_session(directory: &Path) -> Result<(), String> {
     let completed = read_status(&directory.join("completed.json"))
         .ok_or("discarded session has no readable completion record")?;
@@ -2795,7 +2808,7 @@ fn discard_session(directory: &Path) -> Result<(), String> {
     }
     for entry in fs::read_dir(directory).map_err(|error| failure_text(directory, error))? {
         let entry = entry.map_err(|error| failure_text(directory, error))?;
-        if entry.file_name() == "completed.json" {
+        if entry.file_name() == "completed.json" || entry.file_name() == "completion.lock" {
             continue;
         }
         let path = entry.path();
@@ -2808,8 +2821,22 @@ fn discard_session(directory: &Path) -> Result<(), String> {
         } else {
             fs::remove_file(&path)
         };
-        removed.map_err(|error| format!("discard {}: {error}", path.display()))?;
+        match removed {
+            // Another pass ending the same session removed it first.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            removed => removed.map_err(|error| format!("discard {}: {error}", path.display()))?,
+        }
     }
+    {
+        let _lock = completion_lock(directory)?;
+        let path = directory.join("completed.json");
+        let mut completed =
+            read_status(&path).ok_or("discarded session has no readable completion record")?;
+        completed["cleanup_pending"] = json!(false);
+        write_json(&path, &completed)?;
+    }
+    // Held by another pass ending it, the lock stays for that pass to leave.
+    let _ = fs::remove_file(directory.join("completion.lock"));
     Ok(())
 }
 
@@ -3832,6 +3859,8 @@ fn capture_result(
 fn discarded_completion(terminal: &TerminalOutcome, requested_detach: bool) -> Value {
     json!({
         "replays":[],"discarded":true,"detach_requested":requested_detach,
+        // Until its spool and copied collector are removed, which a later pass retries.
+        "cleanup_pending":terminal.issues.is_empty(),
         "drain_complete":terminal.drain_complete,"capture_failed":terminal.capture_failed,
         "failure_code":terminal.witness.as_ref().map(|_| "allocation_failed"),
         "failed_hour":terminal.witness.as_ref().and_then(|witness| witness.failed_hour),
@@ -4009,7 +4038,8 @@ fn publish_completion(
 }
 
 /// Prove the original session's spool is final, independently of DLL unload.
-fn ensure_finalizable(directory: &Path) -> Result<(Option<Process>, SessionStart), String> {
+/// The collector configuration a session wrote before injecting, and the session start it names.
+fn collector_config(directory: &Path) -> Result<(Value, SessionStart), String> {
     let config: Value = serde_json::from_slice(
         &fs::read(directory.join("bin/collector.json")).map_err(|e| e.to_string())?,
     )
@@ -4019,6 +4049,11 @@ fn ensure_finalizable(directory: &Path) -> Result<(Option<Process>, SessionStart
     let mut decoder = replay_data::codec::Decoder::new(&bytes);
     let session = SessionStart::decode(&mut decoder).map_err(|e| e.to_string())?;
     decoder.finish().map_err(|e| e.to_string())?;
+    Ok((config, session))
+}
+
+fn ensure_finalizable(directory: &Path) -> Result<(Option<Process>, SessionStart), String> {
+    let (config, session) = collector_config(directory)?;
     if !windows::games()?.contains(&session.process_id) {
         HistoryRequest::retire_session(directory, false, true);
         return Ok((None, session));
@@ -4104,6 +4139,22 @@ fn completion_step(path: &Path, step: CompletionStep) {
     });
 }
 
+/// The lock at `path` if no one holds it now, without waiting.
+fn try_exclusive_file(path: &Path) -> Result<Option<File>, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    match fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(path)
+    {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.raw_os_error() == Some(32) => Ok(None),
+        Err(error) => Err(failure_text(path, error)),
+    }
+}
+
 fn exclusive_file(path: &Path) -> Result<File, String> {
     use std::os::windows::fs::OpenOptionsExt;
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -4161,6 +4212,253 @@ pub fn session_folders(output: &Path) -> Vec<PathBuf> {
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .map(|entry| entry.path())
         .collect()
+}
+
+/// Ends the sessions under `output` that no recorder will end, once their game has exited and no
+/// recorder holds them: one whose recorder closed or crashed while capturing lists the hours its
+/// spool committed as waiting, to save or discard; one whose recorder quit before the collector's
+/// unload was observed records that, removing a discarded session's spool. A session that could
+/// not be ended stays as it is for a later pass.
+pub fn end_abandoned_sessions(output: &Path) -> AbandonedPass {
+    let mut pass = AbandonedPass::default();
+    for session in session_folders(output) {
+        match end_abandoned(output, &session) {
+            Ok(Abandoned::Settled) => {}
+            Ok(Abandoned::Busy) => pass.retry = true,
+            // Left for `recorder finalize`: looking again would refuse it again.
+            Ok(Abandoned::Refused(why)) => pass.errors.push(failure_text(&session, why)),
+            Err(error) => {
+                pass.retry = true;
+                pass.errors.push(failure_text(&session, error));
+            }
+        }
+    }
+    pass
+}
+
+/// What one pass over abandoned sessions left undone.
+#[derive(Debug, Default)]
+pub struct AbandonedPass {
+    /// Why each session that failed could not be ended.
+    pub errors: Vec<String>,
+    /// A session failed or was busy with a save, so a later pass while idle should look again.
+    pub retry: bool,
+}
+
+/// Whether a session was dealt with, or left because a save in its folder was running.
+enum Abandoned {
+    /// Ended, nothing to end, or left to the recorder or game event that will end it.
+    Settled,
+    Busy,
+    /// Its end cannot be recovered here, for the reason given.
+    Refused(String),
+}
+
+fn end_abandoned(output: &Path, directory: &Path) -> Result<Abandoned, String> {
+    let completed = directory.join("completed.json");
+    // An unreadable completion record is left to whoever wrote it.
+    let record = completed
+        .is_file()
+        .then(|| read_status(&completed))
+        .flatten();
+    let flag = |key: &str| record.as_ref().is_some_and(|record| record[key] == true);
+    let (unload_pending, cleanup_pending) = (flag("unload_pending"), flag("cleanup_pending"));
+    if cleanup_pending
+        && !unload_pending
+        && record
+            .as_ref()
+            .is_some_and(|record| record["collector_loaded"] == false)
+    {
+        // The collector's absence was observed: its copy may already be partly removed.
+        return discard_session(directory).map(|()| Abandoned::Settled);
+    }
+    let recovering = recovery_listed(directory);
+    if !unload_pending && !cleanup_pending && !recovering && session_ended(directory) {
+        return Ok(Abandoned::Settled);
+    }
+    // Before its collector starts, a session has spooled nothing and its recorder may still be preparing it.
+    if !directory.join("bin/collector.json").is_file() {
+        return Ok(Abandoned::Settled);
+    }
+    let (config, session) = collector_config(directory)?;
+    // A capture holds its game's claim from before its session exists until it has ended it.
+    let Some(_claim) =
+        windows::Claim::take(&game_claim(session.process_id, session.process_start_time))?
+    else {
+        return Ok(Abandoned::Settled);
+    };
+    if game_alive(&session)? {
+        return Ok(Abandoned::Settled);
+    }
+    if unload_pending || cleanup_pending {
+        return UnloadObservation {
+            directory: directory.to_path_buf(),
+            dll: directory.join("bin/collector.dll"),
+            pid: session.process_id,
+            process_start: session.process_start_time,
+            process_exited: true,
+        }
+        .finish_with(CollectorPresence::exited())
+        .map(|()| Abandoned::Settled);
+    }
+    let target = PathBuf::from(
+        config["replay_dir"]
+            .as_str()
+            .ok_or("collector configuration has no recording folder")?,
+    );
+    fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
+    // A save or finalization in that folder now may be this session's own: a later pass looks again.
+    let Some(_lock) = try_exclusive_file(&target.join("finalize.lock"))? else {
+        return Ok(Abandoned::Busy);
+    };
+    let _completion = completion_lock(directory)?;
+    let recovering = recovery_listed(directory);
+    if !recovering && session_ended(directory) {
+        return Ok(Abandoned::Settled);
+    }
+    let terminal = terminal_outcome(
+        directory,
+        session.id,
+        session.process_start_time,
+        false,
+        true,
+        true,
+    );
+    if !terminal.recovery_allowed {
+        return Ok(Abandoned::Refused(format!(
+            "{}; recover it with recorder finalize",
+            terminal.issues.join("; ")
+        )));
+    }
+    if let Some(witness) = &terminal.witness {
+        publish_failure_status(directory, witness)?;
+    }
+    let spooled = replay_io::spooled_campaigns(directory)?;
+    let waiting = if recovering {
+        // Listed by an earlier pass, less any saved or discarded since.
+        read_status(&directory.join(WAITING_FILE))
+            .and_then(|listed| listed["waiting"].as_array().cloned())
+            .ok_or_else(|| failure_text(&directory.join(WAITING_FILE), "unreadable"))?
+    } else {
+        let admissions = replay_io::session_admissions(directory)?;
+        let mut waiting = Vec::new();
+        for campaign in spooled
+            .iter()
+            .filter(|campaign| publishes(admissions.as_ref(), campaign))
+        {
+            match replay_io::unsaved(directory, campaign) {
+                // Every hour saved, but a capture still waits to be published beside the recording.
+                Ok(None) => match replay_io::unpublished_captures(&directory.join(campaign)) {
+                    Ok(false) => {}
+                    Ok(true) => waiting.push(waiting_json(
+                        campaign,
+                        Some(&replay_io::Unsaved::default()),
+                    )),
+                    Err(error) => {
+                        eprintln!(
+                            "Campaign {campaign} waits to be saved; its captures could not be read: {error}"
+                        );
+                        waiting.push(waiting_json(campaign, None));
+                    }
+                },
+                Ok(Some(unsaved)) => waiting.push(waiting_json(campaign, Some(&unsaved))),
+                // Its hours wait unread rather than being dropped.
+                Err(error) => {
+                    eprintln!(
+                        "Campaign {campaign} waits to be saved; its hours could not be read: {error}"
+                    );
+                    waiting.push(waiting_json(campaign, None));
+                }
+            }
+        }
+        // Listed first, as a session's own end lists them, which also settles its checkpoints:
+        // Save and Discard act on them while a failed hand-over of the facts keeps it unended.
+        replay_io::write_session_end(
+            directory,
+            &target,
+            WAITING_FILE,
+            &json!({"target":target,"waiting":waiting,"recovered":true}),
+        )?;
+        waiting
+    };
+    let listed: BTreeSet<&str> = waiting
+        .iter()
+        .filter_map(|entry| entry["campaign"].as_str())
+        .collect();
+    // The facts go to what its checkpoints published and, with the hours staged as a session's
+    // end without Auto save stages them, wait beside each; a failure is retried by the next pass.
+    if listed.is_empty() {
+        let unattached = replay_io::attach_published_facts(directory, &[]);
+        if !unattached.is_empty() {
+            return Err(unattached.join("; "));
+        }
+    } else {
+        let settings = RecorderSettings::path();
+        let finalized = replay_io::finalize_session_ahead(
+            directory,
+            &target,
+            &|| Ok(()),
+            replay_io::Ahead::default(),
+            replay_io::Naming {
+                localisation: None,
+                settings: &settings,
+                report: None,
+            },
+            &|campaign| {
+                if listed.contains(campaign) {
+                    replay_io::Destination::Unsaved
+                } else {
+                    replay_io::Destination::Neither
+                }
+            },
+        )?;
+        if !finalized.errors.is_empty() {
+            return Err(finalized.errors.join("; "));
+        }
+    }
+    publish_completion(
+        directory,
+        &target,
+        json!({
+            "replays":[],"target":target,"waiting":waiting,"recovered":true,
+            "nothing_recorded":spooled.is_empty(),"detach_requested":false,
+            "drain_complete":terminal.drain_complete,"capture_failed":terminal.capture_failed,
+            "failure_code":terminal.witness.as_ref().map(|_| "allocation_failed"),
+            "failed_hour":terminal.witness.as_ref().and_then(|witness| witness.failed_hour),
+            "partial":!terminal.issues.is_empty(),"issues":terminal.issues,
+            "warnings":terminal.warnings,
+        }),
+        CollectorPresence::exited(),
+    )?;
+    let _ = fs::remove_file(directory.join(WAITING_FILE));
+    remove_active(&output.join("active.json"), directory)?;
+    Ok(Abandoned::Settled)
+}
+
+/// Whether an earlier pass listed this abandoned session's hours and has not ended it yet.
+fn recovery_listed(directory: &Path) -> bool {
+    !directory.join("completed.json").is_file()
+        && read_status(&directory.join(WAITING_FILE)).is_some_and(|listed| listed["recovered"] == true)
+}
+
+/// Whether the session has a waiting or completion record, so a recorder ended its capture.
+fn session_ended(directory: &Path) -> bool {
+    ["completed.json", WAITING_FILE]
+        .iter()
+        .any(|name| directory.join(name).is_file())
+}
+
+/// Whether the session's game still runs; a process that cannot be told apart from it does.
+fn game_alive(session: &SessionStart) -> Result<bool, String> {
+    if !windows::games()?.contains(&session.process_id) {
+        return Ok(false);
+    }
+    match Process::open(session.process_id, false) {
+        Ok(process) => {
+            Ok(process.start_time == session.process_start_time && !process.handle.signaled()?)
+        }
+        Err(_) => Ok(windows::games()?.contains(&session.process_id)),
+    }
 }
 
 /// Lists a session's waiting campaigns before it stages them, until its completion record does.

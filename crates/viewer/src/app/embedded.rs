@@ -1,5 +1,5 @@
 use job_priority::SpawnCarried as _;
-use super::{Capture, Playhead, Viewer, VisualStale, seek_open_target};
+use super::{Capture, HeldClock, Playhead, Viewer, VisualStale, seek_open_target};
 use eframe::{egui, wgpu};
 use replay_data::rows::TableId;
 use replay_frame::frame::TableView;
@@ -300,6 +300,13 @@ impl Viewer {
         if visible {
             if let Some(hidden) = self.hidden_since.take() {
                 self.started += now.duration_since(hidden);
+                // The host's clock ran on while hidden and sends no anchor on showing: catch up.
+                if self.capture.is_none()
+                    && let (Some(head), Some(document)) = (self.playhead, &self.document)
+                    && let Some((_, last)) = document.playback.range(head.branch)
+                {
+                    self.tick_playhead(now.duration_since(self.last_step).as_secs_f64(), last);
+                }
                 self.last_step = now;
                 self.last_frame = now;
                 self.input.restart_clock();
@@ -449,7 +456,21 @@ impl Viewer {
             self.options.branch = Some(document.playback.branch());
             self.options.hour = Some(document.playback.hour());
         }
-        self.options.camera = self.camera;
+        // The host clock keeps running and sends no anchor for a reload, so the load resumes it.
+        let clock = HeldClock {
+            playhead: self.playhead,
+            playing: self.playing,
+            anchor: self.clock_anchor,
+            // The playhead stands where the last step left it.
+            at: self.last_step,
+        };
+        self.held_view = Some((
+            source
+                .path()
+                .canonicalize()
+                .unwrap_or_else(|_| source.path().to_path_buf()),
+            clock,
+        ));
         self.playing = false;
         self.open(
             source.path().to_path_buf(),

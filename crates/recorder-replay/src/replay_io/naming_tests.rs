@@ -1098,7 +1098,7 @@ fn predictions_wait_for_decisions_and_exclude_refused_loads_exactly_as_save_does
     let admitted = admissions.loads[CAMPAIGN].clone();
     for _ in 0..2 {
         fs::write(&source, &native).unwrap();
-        publish_columnar(&campaign_dir, &fixture.output, Some(&admitted));
+        publish_columnar(&campaign_dir, &fixture.output, Some(&admitted), false).unwrap();
         assert!(!source.exists());
     }
     let folder = replay::columnar_file::campaign_folder(&fixture.output, CAMPAIGN.as_bytes());

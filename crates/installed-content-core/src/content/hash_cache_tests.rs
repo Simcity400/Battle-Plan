@@ -89,7 +89,7 @@ impl Fixture {
         self.options.cache_dir.join(HASH_CACHE)
     }
 
-    fn cache(&self) -> HashCache {
+    fn cache(&self) -> HashCache<'_> {
         HashCache::decode(&fs::read(self.cache_path()).unwrap()).unwrap()
     }
 
@@ -334,14 +334,17 @@ fn missing_or_malformed_hash_cache_is_rebuilt_before_first_hash_failure() {
 }
 
 #[test]
-fn dirty_hash_cache_write_errors_remain_resolution_failures() {
+fn dirty_hash_cache_write_errors_leave_resolution_intact() {
     let fixture = Fixture::new("write_failure");
     fs::remove_file(fixture.cache_path()).unwrap();
     fs::create_dir(fixture.cache_path()).unwrap();
-    let expected = fs::write(fixture.cache_path(), b"probe").unwrap_err();
-    let error = resolve(&fixture.identity, &fixture.options).unwrap_err();
-    assert_eq!(error.kind(), expected.kind());
+    let resolved = resolve(&fixture.identity, &fixture.options).unwrap();
+    assert!(resolved.stats.cache_unsaved.is_some());
     assert!(fixture.cache_path().is_dir());
+    // A content failure keeps its own error, not the cache's.
+    fs::remove_file(fixture.options.game_dir.join("hoi4.exe")).unwrap();
+    let error = resolve(&fixture.identity, &fixture.options).unwrap_err();
+    assert!(error.to_string().starts_with("Game hoi4.exe: "), "{error}");
 }
 
 /// A warm resolve takes every listed folder file's stamp from the content walk, reading none of

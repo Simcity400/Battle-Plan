@@ -210,6 +210,9 @@ fn a_truncated_intel_census_leaves_an_unlisted_foreign_task_force_unknown() {
     // A recorded entry decides; an unlisted foreign unit could be the omitted one.
     assert_eq!(vision.navy_byte_known(9, 3), Some(vision.navy_byte(9, 3)));
     assert_eq!(vision.navy_byte_known(8, 3), None);
+    // Drawn as fog off draws it, never hidden by the omitted row's absence.
+    assert_eq!(vision.navy_byte(8, 3), 255);
+    assert_eq!(vision.sees_land(8, 3, 2), Sight::Full);
     // Our own units are seen in full whatever the census.
     assert_eq!(vision.navy_byte_known(8, 1), Some(255));
     set::<tables::UnitIntel>(&mut frame, Vec::new());

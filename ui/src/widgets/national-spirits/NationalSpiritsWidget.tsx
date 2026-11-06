@@ -29,9 +29,10 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const widgetOwner = useId();
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
+  const { track, tag, data, answered, error, retry } = useIdeaHistory(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = window?.lastHour;
+  // A retained reply is shown at the hour it answers, never at a later moment it has not read.
+  const hour = data && answered !== undefined && window && answered !== Math.floor(window.lastHour) ? answered : window?.lastHour;
   const held = data?.held?.hour === Math.floor(hour ?? NaN) ? data.held : undefined;
   // Each recorded holder starts a new segment, even when it reuses the same tag.
   const identityStart = data?.identityStarts.reduce<number | null>((latest, start) => hour != null && start <= hour ? start : latest, null) ?? null;
