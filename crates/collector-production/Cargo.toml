@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-memory/test-support"]
 
 [dependencies]
+engine-sites.workspace = true
 engine-events.workspace = true
 engine-production.workspace = true
 serde = { workspace = true, features = ["derive"] }

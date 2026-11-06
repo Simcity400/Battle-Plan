@@ -72,7 +72,7 @@ fn fixture() -> Vec<u8> {
         p32(&mut bytes, LINKS + index * 4, id);
     }
     for owner in 0..3 {
-        p64(&mut bytes, COUNTRY[owner], ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, COUNTRY[owner], ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, COUNTRY[owner] + ccountry::ID, [4, 2, 3][owner]);
         p64(
             &mut bytes,
@@ -82,7 +82,7 @@ fn fixture() -> Vec<u8> {
         p64(
             &mut bytes,
             DIPLOMACY[owner],
-            cdiplomacy_status::VTABLE_RVA as u64,
+            cdiplomacy_status::VTABLE_RVA.0 as u64,
         );
         p64(
             &mut bytes,
@@ -98,7 +98,7 @@ fn fixture() -> Vec<u8> {
         );
         for target in 0..5 {
             let at = status(owner, target);
-            p64(&mut bytes, at, crelation_status::VTABLE_RVA as u64);
+            p64(&mut bytes, at, crelation_status::VTABLE_RVA.0 as u64);
             p64(
                 &mut bytes,
                 at + crelation_status::DIPLOMACY_STATUS,
@@ -132,7 +132,7 @@ fn fixture() -> Vec<u8> {
     );
     p32(&mut bytes, OTHER + crelation::TYPE_ID, 0x28da);
     for (war, second) in [(WAR1, 2), (WAR2, 3)] {
-        p64(&mut bytes, war, VTABLE_RVA as u64);
+        p64(&mut bytes, war, VTABLE_RVA.0 as u64);
         p32(&mut bytes, war + crelation::TYPE_ID, TYPE);
         p32(&mut bytes, war + crelation::FIRST_COUNTRY, 4);
         p32(&mut bytes, war + crelation::SECOND_COUNTRY, second as u32);
@@ -2216,7 +2216,7 @@ fn war_census(countries: usize) -> Census {
     let mut diplomacy = vec![0; countries + 1];
     for (slot, root) in diplomacy.iter_mut().enumerate().skip(1) {
         let at = country(slot);
-        p64(&mut space.bytes, at, ccountry::VTABLE_RVA as u64);
+        p64(&mut space.bytes, at, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut space.bytes, at + ccountry::ID, slot as u32);
         *root = space.alloc(cdiplomacy_status::COUNTRY + 8);
         p64(
@@ -2227,7 +2227,7 @@ fn war_census(countries: usize) -> Census {
         p64(
             &mut space.bytes,
             *root,
-            cdiplomacy_status::VTABLE_RVA as u64,
+            cdiplomacy_status::VTABLE_RVA.0 as u64,
         );
         p64(
             &mut space.bytes,
@@ -2240,7 +2240,7 @@ fn war_census(countries: usize) -> Census {
     let mut rows = Vec::new();
     let status = |space: &mut Space, owner: usize, target: usize, war: usize, first| {
         let at = space.alloc(0x300);
-        p64(&mut space.bytes, at, crelation_status::VTABLE_RVA as u64);
+        p64(&mut space.bytes, at, crelation_status::VTABLE_RVA.0 as u64);
         p64(
             &mut space.bytes,
             at + crelation_status::DIPLOMACY_STATUS,
@@ -2264,7 +2264,7 @@ fn war_census(countries: usize) -> Census {
     };
     for partner in 2..=countries {
         let war = space.alloc(0x168);
-        p64(&mut space.bytes, war, VTABLE_RVA as u64);
+        p64(&mut space.bytes, war, VTABLE_RVA.0 as u64);
         p32(&mut space.bytes, war + crelation::TYPE_ID, TYPE);
         p32(&mut space.bytes, war + crelation::FIRST_COUNTRY, 1);
         p32(

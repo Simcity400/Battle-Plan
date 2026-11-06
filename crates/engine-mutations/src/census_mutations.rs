@@ -28,78 +28,27 @@
 //!   gathered rows.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
-const SET_COUNTRY_RVA: usize = 0x102_a700;
+const SET_COUNTRY_RVA: Rva = Rva(0x102_a700);
 
 /// The writers, in callback order. Each takes at most three integer or
 /// pointer arguments; a detour forwards RCX..R9 and returns RAX unchanged.
 pub const MUTATIONS: [MutationSite; 8] = [
-    site(
-        "set_country",
-        SET_COUNTRY_RVA,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x02, 0x48, 0x8d,
-            0x99, 0xa8,
-        ],
-    ),
-    site("create_army_role", 0x102_18f0, CREATE_ROLE),
-    site("create_navy_role", 0x102_1d10, CREATE_ROLE),
+    site("set_country", SET_COUNTRY_RVA),
+    site("create_army_role", Rva(0x102_18f0)),
+    site("create_navy_role", Rva(0x102_1d10)),
     // The RBX save and 0x20-byte stack reservation relocate in six bytes.
-    site(
-        "clear_unit_role",
-        0x102_a670,
-        [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0x89, 0xa8, 0x00,
-            0x00, 0x00,
-        ],
-    ),
-    site(
-        "add_country_leader_role",
-        0x36_18c0,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
-    ),
-    site(
-        "erase_leader_roles",
-        0x3d_2830,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x41, 0x56, 0x41,
-            0x57, 0x48,
-        ],
-    ),
-    site(
-        "add_scientist_role",
-        0x36_4610,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec,
-            0x50, 0x01,
-        ],
-    ),
+    site("clear_unit_role", Rva(0x102_a670)),
+    site("add_country_leader_role", Rva(0x36_18c0)),
+    site("erase_leader_roles", Rva(0x3d_2830)),
+    site("add_scientist_role", Rva(0x36_4610)),
     // Loads the reference held by RDX's object into RAX and stores it in the
     // character's operative reference; eleven bytes relocate before the return
     // and padding.
-    site(
-        "set_operative_reference",
-        0x102_a8b0,
-        [
-            0x48, 0x8b, 0x42, 0x08, 0x48, 0x89, 0x81, 0xc8, 0x00, 0x00, 0x00, 0xc3, 0xcc, 0xcc,
-            0xcc, 0xcc,
-        ],
-    ),
+    site("set_operative_reference", Rva(0x102_a8b0)),
 ];
 
-/// Both unit-role creators share a prologue whose five-byte RBX store to RDX's
-/// home slot relocates.
-const CREATE_ROLE: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x55, 0x57, 0x41, 0x56, 0x48, 0x8b,
-];
-
-const fn site(name: &'static str, rva: usize, sentinel: [u8; 16]) -> MutationSite {
-    MutationSite {
-        name,
-        rva,
-        sentinel,
-    }
+const fn site(name: &'static str, rva: Rva) -> MutationSite {
+    MutationSite { name, rva }
 }

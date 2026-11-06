@@ -212,6 +212,7 @@ census_changes = ["advisor_changes", "roster_changes", "collector-observers/cens
 unit_leader_trait_changes = ["naval_tree_changes", "collector-observers/unit_leader_trait_changes"]
 
 [dependencies]
+engine-sites.workspace = true
 collector-naval-management.workspace = true
 replay.workspace = true
 engine-air-history.workspace = true

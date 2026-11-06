@@ -31,7 +31,7 @@ fn fixture(counts: [usize; 2]) -> Vec<u8> {
     let mut bytes = vec![0; 0x9000];
     array(&mut bytes, ROOT, 0x1800, 2);
     put(&mut bytes, 0x1808, &(PROVINCE as u64).to_le_bytes());
-    put(&mut bytes, PROVINCE, &(VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, PROVINCE, &(VTABLE_RVA.0 as u64).to_le_bytes());
     put(&mut bytes, PROVINCE + ID, &1u32.to_le_bytes());
     for (lane, offset) in [OCCUPANTS, NAVAL_OCCUPANTS].into_iter().enumerate() {
         array(&mut bytes, PROVINCE + offset, LANES[lane], counts[lane]);
@@ -63,7 +63,7 @@ fn fixture(counts: [usize; 2]) -> Vec<u8> {
     .enumerate()
     {
         let unit = UNITS[index];
-        put(&mut bytes, unit, &(vtable as u64).to_le_bytes());
+        put(&mut bytes, unit, &(vtable.0 as u64).to_le_bytes());
         put(&mut bytes, unit + cunit::CLASS, &class.to_le_bytes());
         put(
             &mut bytes,
@@ -108,7 +108,7 @@ impl Memory for Observed<'_> {
             output.fill(0xee); // A partial failed copy must not become a handle.
             return false;
         }
-        if address == registry::HIGH_ROOT_RVA && output.len() == 8 {
+        if address == registry::HIGH_ROOT_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(TABLE as u64).to_le_bytes());
         } else if !(SliceMemory {
             base: 0,
@@ -156,7 +156,7 @@ fn trace(counts: [usize; 2]) -> Vec<(usize, usize, &'static str)> {
                 reads.push((UNITS[index], 32, "counter unit header unreadable"));
                 if !registry_seen {
                     reads.extend([
-                        (registry::HIGH_ROOT_RVA, 8, "reference root unreadable"),
+                        (registry::HIGH_ROOT_RVA.0, 8, "reference root unreadable"),
                         (TABLE + registry::ENTRIES, 17, "reference header unreadable"),
                         (
                             BUCKETS + 13 * reference_bucket::STRIDE + reference_bucket::DISTANCE,
@@ -368,7 +368,7 @@ fn unit_order_strided_census_keeps_batch_order_short_tails_and_failure_prefixes(
                 0x1808 + index * 8,
                 &(pointer as u64).to_le_bytes(),
             );
-            put(&mut bytes, pointer, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, pointer, &(VTABLE_RVA.0 as u64).to_le_bytes());
             put(&mut bytes, pointer + ID, &(index as u32 + 1).to_le_bytes());
         }
         let mut expected = vec![(ROOT, 16, "province order root unreadable")];
@@ -539,7 +539,7 @@ fn unit_order_lookahead_retains_class_registry_and_backlink_short_circuits() {
     put(
         &mut wrong_class,
         UNITS[1],
-        &(crate::carmy::VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::carmy::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut wrong_class,

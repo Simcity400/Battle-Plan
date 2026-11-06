@@ -369,7 +369,7 @@ mod tests {
         struct Loaded(Vec<u8>);
         impl Memory for Loaded {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&(kit::BASE as u64).to_le_bytes());
                     true
                 } else {
@@ -420,7 +420,7 @@ mod tests {
             set(
                 &mut memory.0,
                 0x11900,
-                &(engine_production::cbuilding_production_line::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_production::cbuilding_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             assert!(prepare_outputs_at(11, false, false));
             assert!(prepare_outputs_at(23, true, false));

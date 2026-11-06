@@ -2942,11 +2942,10 @@ unsafe fn acquire_with_memory(
             let cache_prepare_ticks = qpc() - cache_begin;
             let characters_refresh = decode::characters_refresh_hour(clock.hour, force_full);
             let projects_refresh = decode::projects_refresh_hour(clock.hour, force_full);
-            let lexical_max = engine_native::read::<i32>(
-                &memory,
-                shared.base + engine_native::cpdx_lexer::MAX_TOKEN_ID_RVA,
-            )
-            .unwrap_or(-1);
+            let lexical_max =
+                engine_sites::at(shared.base, engine_native::cpdx_lexer::MAX_TOKEN_ID_RVA)
+                    .and_then(|at| engine_native::read::<i32>(&memory, at))
+                    .unwrap_or(-1);
             let lexical_refresh = decode::lexical_refresh_hour(clock.hour, force_full)
                 || lexical_max != shared.lexical_max.load(Ordering::Relaxed);
             if lexical_refresh {
@@ -8128,11 +8127,13 @@ fn new_division_mark(
     extended::new_divisions::next_mark(
         &shared.division_mark,
         daily,
-        engine_native::read::<i32>(memory, shared.base + engine_native::cship::NEXT_ID_RVA),
-        engine_native::read::<u32>(
-            memory,
-            shared.base + engine_native::creference_registry::ID_COUNTER_RVA,
-        ),
+        engine_sites::at(shared.base, engine_native::cship::NEXT_ID_RVA)
+            .and_then(|at| engine_native::read::<i32>(memory, at)),
+        engine_sites::at(
+            shared.base,
+            engine_native::creference_registry::ID_COUNTER_RVA,
+        )
+        .and_then(|at| engine_native::read::<u32>(memory, at)),
     )
 }
 

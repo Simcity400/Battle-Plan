@@ -39,7 +39,7 @@ impl World {
             world.put(links + slot as usize * 4, &slot.to_le_bytes());
             world.put(
                 pointer,
-                &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             world.put(pointer + ccountry::ID, &slot.to_le_bytes());
             world.put(counts + slot as usize, &[slot as u8]);
@@ -47,7 +47,7 @@ impl World {
         for index in 0..player_count {
             let address = HUMANS + index as usize * STRIDE;
             let text = heap + index as usize * (user_len + 20);
-            world.put(address, &((BASE + VTABLE_RVA) as u64).to_le_bytes());
+            world.put(address, &((BASE + VTABLE_RVA.0) as u64).to_le_bytes());
             world.put(address + PLAYER_KEY, &(index as i32).to_le_bytes());
             world.put(
                 address + COUNTRY_TAG,

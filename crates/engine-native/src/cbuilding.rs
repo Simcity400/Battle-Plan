@@ -5,9 +5,10 @@ use crate::{
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
 };
+use engine_sites::Rva;
 
 /// Building vtable.
-pub const VTABLE_RVA: usize = 0x02a0_65c8;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_65c8);
 /// Lexer type id, u32.
 pub const TYPE_ID: usize = 0x08;
 /// Total level, i16.
@@ -23,7 +24,7 @@ pub const BUILDING_STATUS: usize = 0x1d8;
 /// Template pointer selecting localized names.
 pub const TEMPLATE: usize = 0x1e0;
 /// Signed-short level setter following status and template pointers.
-pub const SET_LEVEL_RVA: usize = 0x0116_3f20;
+pub const SET_LEVEL_RVA: Rva = Rva(0x0116_3f20);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -254,9 +255,7 @@ pub(crate) fn read_rows(
         RecordLayout::new(&TEMPLATE_FIELDS, 8).expect("valid record layout");
     const INDEX_LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&INDEX, 4).expect("valid record layout");
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     for location in locations {
         if location.len > location.buildings.count as usize {
             return Err("building output exceeds native vector");

@@ -35,9 +35,9 @@ impl Fixture {
         self.qword(
             pointer,
             if null {
-                definition::NULL_VTABLE_RVA
+                definition::NULL_VTABLE_RVA.0
             } else {
-                definition::VTABLE_RVA
+                definition::VTABLE_RVA.0
             } as u64,
         );
         self.dword(
@@ -58,14 +58,14 @@ impl Fixture {
         memory.header(GLOBAL, false);
         memory.dword(DEFINITION + definition::DATABASE_INDEX, 1);
         memory.dword(DEFINITION + definition::AIR_FLAGS, TRANSPORT);
-        memory.qword(definition::DATABASE_RVA, DATABASE as u64);
+        memory.qword(definition::DATABASE_RVA.0, DATABASE as u64);
         memory.qword(DATABASE + definition::DATABASE_VECTOR, ENTRIES as u64);
         memory.dword(DATABASE + definition::DATABASE_VECTOR + 8, 2);
         memory.dword(DATABASE + definition::DATABASE_VECTOR + 12, 2);
         memory.qword(ENTRIES + 8, GLOBAL as u64);
         memory.qword(WING + RAID_REFERENCE, HANDLE);
         memory.qword(OTHER_WING + RAID_REFERENCE, HANDLE);
-        memory.qword(RAID, crate::craid_instance::VTABLE_RVA as u64);
+        memory.qword(RAID, crate::craid_instance::VTABLE_RVA.0 as u64);
         memory.qword(RAID + 8, HANDLE);
         memory.registry.entry(
             registry::test_support::Fixture::index(HANDLE),
@@ -176,7 +176,7 @@ fn internal_mask_fault_preserves_index_and_failed_raw_reads_do_not_retry() {
 fn database_and_registry_header_faults_are_retained_for_other_keys() {
     let mut memory = Fixture::new();
     memory.qword(POOL + 0x100 + cair_wing_pool::DEFINITION, DEFINITION as u64);
-    memory.fault = Some(definition::DATABASE_RVA);
+    memory.fault = Some(definition::DATABASE_RVA.0);
     let mut scratch = Scratch::with_capacity(3).unwrap();
     let mut row = super::super::Row::default();
     {
@@ -188,12 +188,12 @@ fn database_and_registry_header_faults_are_retained_for_other_keys() {
                 .reads
                 .borrow()
                 .iter()
-                .filter(|(address, _)| *address == definition::DATABASE_RVA)
+                .filter(|(address, _)| *address == definition::DATABASE_RVA.0)
                 .count(),
             1
         );
     }
-    memory.fault = Some(registry::LOW_ROOTS_RVA + 84 * 8);
+    memory.fault = Some(registry::LOW_ROOTS_RVA.0 + 84 * 8);
     memory.qword(OTHER_WING + RAID_REFERENCE, HANDLE.wrapping_add(1 << 32));
     memory.reads.borrow_mut().clear();
     let mut pass = Pass::new(0, 3, &mut scratch);
@@ -204,7 +204,7 @@ fn database_and_registry_header_faults_are_retained_for_other_keys() {
             .reads
             .borrow()
             .iter()
-            .filter(|(address, _)| *address == registry::LOW_ROOTS_RVA + 84 * 8)
+            .filter(|(address, _)| *address == registry::LOW_ROOTS_RVA.0 + 84 * 8)
             .count(),
         1
     );
@@ -240,7 +240,7 @@ fn live_identity_mismatch_is_a_cached_fault_and_null_raw_needs_no_registry() {
             .reads
             .borrow()
             .iter()
-            .any(|(address, _)| *address == registry::LOW_ROOTS_RVA + 84 * 8)
+            .any(|(address, _)| *address == registry::LOW_ROOTS_RVA.0 + 84 * 8)
     );
 }
 

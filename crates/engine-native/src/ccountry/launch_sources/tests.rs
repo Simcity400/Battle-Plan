@@ -66,7 +66,7 @@ fn image() -> Image {
     header(&mut image, ROOT + crate::ccountry::OWNED_STATES, 0x3000, 3);
     header(&mut image, STATE + cgame_state::STATES, 0x3100, 10);
     for (object, id) in [(0x4000, 9), (0x4200, 3)] {
-        pointer(&mut image, object, cstate::VTABLE_RVA);
+        pointer(&mut image, object, cstate::VTABLE_RVA.0);
         word(&mut image, object + cstate::ID, id);
         pointer(&mut image, 0x3100 + id as usize * 8, object);
     }
@@ -76,7 +76,7 @@ fn image() -> Image {
     header(&mut image, NAVY + 0x18, 0x6000, 3);
     word(&mut image, NAVY + cnaval_base::HOLDER_COUNTRY, 999);
     for (object, province) in [(0x7000, (-3_i32) as u32), (0x7100, 0)] {
-        pointer(&mut image, object, cnaval_base::VTABLE_RVA);
+        pointer(&mut image, object, cnaval_base::VTABLE_RVA.0);
         pointer(&mut image, object + cnaval_base::HOLDER, NAVY);
         word(&mut image, object + cnaval_base::PROVINCE_ID, province);
     }

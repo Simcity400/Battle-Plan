@@ -114,12 +114,10 @@ pub struct Hooks {
 impl Hooks {
     /// # Safety
     /// The caller has verified this process's executable and owns installation and quiescence.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "naval_tree_changes")
-            && SITES
-                .iter()
-                .all(|s| engine_native::read::<[u8; 16]>(memory, base + s.rva) == Some(s.sentinel))
+            && SITES.iter().all(|s| crate::verified(base, s.rva).is_ok())
         {
             let callbacks: [usize; SITES.len()] = [
                 update_levels as *const () as usize,
@@ -151,7 +149,8 @@ impl Hooks {
             engine_allocation::reserve(&mut hooks, SITES.len())
                 .map_err(|_| "occupation_changes hooks allocation failed")?;
             for (i, site) in SITES.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[i], site.sentinel) }
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook = unsafe { Hook::new(code.address, callbacks[i], code.sentinel::<16>()?) }
                     .map_err(|cause| {
                         format!(
                             "occupation_changes hook {} construction failed: {cause}",

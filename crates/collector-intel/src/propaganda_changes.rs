@@ -287,11 +287,9 @@ impl Store {
                         if pointer == 0 {
                             continue;
                         }
-                        if read::<u64>(memory, pointer)
-                            != base
-                                .checked_add(cstrategic_operative::VTABLE_RVA)
-                                .map(|value| value as u64)
-                        {
+                        let vtable = engine_sites::at(base, cstrategic_operative::VTABLE_RVA)
+                            .ok_or("propaganda bootstrap object vtable mismatch")?;
+                        if read::<u64>(memory, pointer) != Some(vtable as u64) {
                             return Err("propaganda bootstrap object vtable mismatch");
                         }
                         let country = pointer
@@ -659,7 +657,9 @@ impl Hooks {
         if !capture {
             return Ok(Self { hooks: Vec::new() });
         }
-        let state = read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
+        let state = engine_sites::resolve(base, engine_native::cgame_state::SINGLETON_RVA)
+            .ok()
+            .and_then(|at| read::<u64>(memory, at))
             .and_then(|state| usize::try_from(state).ok())
             .ok_or("propaganda bootstrap game state unreadable")?;
         // A collector attached before any load sizes for nothing; captures grow the lane.
@@ -686,24 +686,16 @@ impl Hooks {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .prepare(count)?;
         let mut hooks = Vec::new();
-        for (index, (rva, sentinel, callback)) in [
-            (
-                native::DAILY_UPDATE_RVA,
-                native::DAILY_UPDATE_SENTINEL,
-                daily as *const () as usize,
-            ),
-            (
-                native::RESET_RVA,
-                native::RESET_SENTINEL,
-                reset as *const () as usize,
-            ),
+        for (index, (rva, callback)) in [
+            (native::DAILY_UPDATE_RVA, daily as *const () as usize),
+            (native::RESET_RVA, reset as *const () as usize),
         ]
         .into_iter()
         .enumerate()
         {
             let name = ["daily append", "reset"][index];
-            hook_errors::verify(memory, base, rva, sentinel, "propaganda", name, index)?;
-            let hook = unsafe { Hook::new(base + rva, callback, sentinel) }.map_err(|cause| {
+            let (address, original) = hook_errors::locate(base, rva, "propaganda", name, index)?;
+            let hook = unsafe { Hook::new(address, callback, original) }.map_err(|cause| {
                 hook_errors::site("propaganda", name, index, "construction failed", &cause)
             })?;
             ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
@@ -761,7 +753,7 @@ mod tests {
         for slot in 0..=COUNTRIES {
             let object = roots + slot * cstrategic_operative::SIZE;
             world.u64(pointers + slot * 8, object as u64);
-            world.u64(object, cstrategic_operative::VTABLE_RVA as u64);
+            world.u64(object, cstrategic_operative::VTABLE_RVA.0 as u64);
             world.u32(object + cstrategic_operative::OWNER, slot as u32);
             world.u64(object + native::HISTORY, ring_data as u64);
             world.u32(object + native::HISTORY + 8, 2);

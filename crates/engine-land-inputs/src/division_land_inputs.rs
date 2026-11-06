@@ -130,8 +130,12 @@ fn capture_buffer(
         let pointers = &mut *scratch.pointers;
         let ordinals = &mut *scratch.ordinals;
         let first = scratch.first.as_flattened_mut();
+        let army_vtable = engine_sites::at(base, carmy::VTABLE_RVA)
+            .ok_or("division land primary identity unavailable")? as u64;
+        let manpower_vtable = engine_sites::at(base, carmy_manpower_values::VTABLE_RVA)
+            .ok_or("division manpower vtable mismatch")? as u64;
         for seed in &sources[..source.len()] {
-            if seed.primary_vtable != Some((base + carmy::VTABLE_RVA) as u64) {
+            if seed.primary_vtable != Some(army_vtable) {
                 return Err("division land primary identity unavailable");
             }
             if seed.handle != Some(seed.division) || seed.naval_transfer_membership.is_none() {
@@ -141,7 +145,7 @@ fn capture_buffer(
                 .manpower_values
                 .ok_or("division manpower header unavailable")?;
             if u64::from_le_bytes(header[..carmy_manpower_values::DATA].try_into().unwrap())
-                != (base + carmy_manpower_values::VTABLE_RVA) as u64
+                != manpower_vtable
             {
                 return Err("division manpower vtable mismatch");
             }
@@ -281,14 +285,14 @@ mod sizing_tests {
 
     fn seeds(count: usize, contributors: u32) -> Vec<carmy::DivisionSeed> {
         let mut header = [0; 24];
-        header[..8].copy_from_slice(&(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes());
+        header[..8].copy_from_slice(&(carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes());
         header[8..16].copy_from_slice(&0x1000u64.to_le_bytes());
         header[16..20].copy_from_slice(&contributors.to_le_bytes());
         header[20..24].copy_from_slice(&contributors.to_le_bytes());
         (0..count)
             .map(|ordinal| carmy::DivisionSeed {
                 division: ((ordinal as u64 + 1) << 32) | 1,
-                primary_vtable: Some(carmy::VTABLE_RVA as u64),
+                primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
                 handle: Some(((ordinal as u64 + 1) << 32) | 1),
                 // The supply operands are DivisionStatus's; an unread one
                 // never withholds the land row.

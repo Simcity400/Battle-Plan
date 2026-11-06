@@ -265,49 +265,42 @@ pub(crate) fn status() -> impl serde::Serialize {
     WATCHES.status()
 }
 
-fn fingerprint(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
-    })
-}
-
 pub(crate) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub(crate) unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         if !cfg!(feature = "mission_changes") {
             return Ok(Self { hooks: Vec::new() });
         }
         let sites = [
             (
                 native::GROUND_CREWS_ENABLE_RVA,
-                native::GROUND_CREWS_COMMAND_PREFIX_HASH,
                 enable as *const () as usize,
             ),
             (
                 native::GROUND_CREWS_DISABLE_RVA,
-                native::GROUND_CREWS_COMMAND_PREFIX_HASH,
                 disable as *const () as usize,
             ),
             (
                 native::GROUND_CREWS_CONSTRUCTOR_RVA,
-                native::GROUND_CREWS_CONSTRUCTOR_PREFIX_HASH,
                 construct as *const () as usize,
             ),
         ];
         let mut hooks = Vec::new();
         let names = ["enable", "disable", "allocator construction"];
-        for (index, (rva, hash, callback)) in sites.into_iter().enumerate() {
-            let fail = |action, reason: &str| {
-                crate::mission_changes::hook_failure("ground_crews", action, names[index], reason)
-            };
-            let prefix = engine_native::read::<[u8; 16]>(memory, base + rva)
-                .ok_or_else(|| fail("verification failed", "entry prefix unreadable"))?;
-            if fingerprint(&prefix) != hash {
-                return Err(fail("verification failed", "entry fingerprint mismatch"));
-            }
-            let hook = unsafe { Hook::new(base + rva, callback, prefix) }.map_err(|reason| {
+        for (index, (rva, callback)) in sites.into_iter().enumerate() {
+            let (at, prefix) = engine_sites::hook(base, rva)
+                .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                .map_err(|reason| {
+                    crate::mission_changes::hook_failure(
+                        "ground_crews",
+                        "verification failed",
+                        names[index],
+                        reason,
+                    )
+                })?;
+            let hook = unsafe { Hook::new(at, callback, prefix) }.map_err(|reason| {
                 crate::mission_changes::hook_failure(
                     "ground_crews",
                     "construction failed",

@@ -169,7 +169,7 @@ mod tests {
         impl Memory for Registry {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 const STATE: usize = 0x1000;
-                if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&(STATE as u64).to_le_bytes());
                     return true;
                 }

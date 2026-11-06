@@ -12,7 +12,7 @@ const ARCHETYPE: usize = 0xa000;
 const GLOBAL: usize = 0xb000;
 impl engine_native::Memory for World {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-        if at == csub_unit_definition::DATABASE_RVA && output.len() == 8 {
+        if at == csub_unit_definition::DATABASE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
             return true;
         }
@@ -37,7 +37,7 @@ impl World {
     }
     /// A sub-unit definition of token 5 requiring `amount` of the archetype.
     fn subunit(&mut self, at: usize, amount: i64) {
-        self.word(at, csub_unit_definition::VTABLE_RVA);
+        self.word(at, csub_unit_definition::VTABLE_RVA.0);
         self.put(at + csub_unit_definition::TOKEN, &5_u32.to_le_bytes());
         self.0[at + csub_unit_definition::IS_REAL] = 1;
         self.put(
@@ -77,10 +77,10 @@ fn world() -> World {
         let status = World::status(id);
         world.word(0x2000 + id * 8, country);
         world.put(0x2100 + id * 4, &(id as u32).to_le_bytes());
-        world.word(country, ccountry::VTABLE_RVA);
+        world.word(country, ccountry::VTABLE_RVA.0);
         world.put(country + ccountry::ID, &(id as u32).to_le_bytes());
         world.word(country + ccountry::DEPLOYMENT_MANAGER, status);
-        world.word(status, cdeployment_status::VTABLE_RVA);
+        world.word(status, cdeployment_status::VTABLE_RVA.0);
         world.word(status + cdeployment_status::OWNER, country);
         world.array(
             status + cdeployment_status::LOCAL_SUBUNITS,
@@ -93,7 +93,7 @@ fn world() -> World {
     world.subunit(GLOBAL, 100_000);
     world.array(DATABASE + csub_unit_definition::DATABASE_VECTOR, 0x9900, 2);
     world.word(0x9908, GLOBAL);
-    world.word(ARCHETYPE, cequipment_type::VTABLE_RVA);
+    world.word(ARCHETYPE, cequipment_type::VTABLE_RVA.0);
     world.put(ARCHETYPE + cequipment_type::TOKEN, &71_u32.to_le_bytes());
     world.0[ARCHETYPE + cequipment_type::ACTIVE] = 1;
     world

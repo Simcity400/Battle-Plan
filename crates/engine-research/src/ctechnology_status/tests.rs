@@ -35,7 +35,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         STATUS_POINTER,
-        ((MODULE + VTABLE_RVA) as u64).to_le_bytes(),
+        ((MODULE + VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -57,7 +57,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             pointer,
-            ((MODULE + ctechnology::VTABLE_RVA) as u64).to_le_bytes(),
+            ((MODULE + ctechnology::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -138,7 +138,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             pointer,
-            ((MODULE + cresearch_slot::VTABLE_RVA) as u64).to_le_bytes(),
+            ((MODULE + cresearch_slot::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

@@ -130,7 +130,7 @@ fn air_source(
     let mut memory = AirBytes::default();
     memory.put(
         mission,
-        &((base + crate::air_mission::VTABLE_RVA) as u64).to_le_bytes(),
+        &((base + crate::air_mission::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     memory.put(
         mission + crate::air_mission::WING,

@@ -99,7 +99,7 @@ mod tests {
             );
         }
         fn definition(&mut self, at: usize, archetype: usize, flags: u64) {
-            self.word(at, equipment::VTABLE_RVA as u64);
+            self.word(at, equipment::VTABLE_RVA.0 as u64);
             self.word(at + equipment::ARCHETYPE, archetype as u64);
             self.word(at + equipment::PRIMARY_CATEGORY_FLAGS, flags);
             self.word(at + equipment::SECONDARY_CATEGORY_FLAGS, 0);
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn inherited_positive_category_is_lazy_and_quiet_certificate_avoids_type_reads() {
         let mut image = Image::default();
-        image.word(0x1000, equipment::VTABLE_RVA as u64);
+        image.word(0x1000, equipment::VTABLE_RVA.0 as u64);
         image.word(0x1000 + equipment::ARCHETYPE, 0x2000);
         image.definition(0x2000, 0x2000, equipment::PLANE_MASK);
         let mut air = VolunteerAir::default();

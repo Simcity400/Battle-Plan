@@ -5,6 +5,7 @@
 //! ordinary. Omission means exact zero, and an all-zero entry still produces
 //! an empty block.
 
+use engine_sites::Rva;
 /// Country-intel entry stride.
 pub const STRIDE: usize = 0x20;
 /// Entry civilian amount (native i64).
@@ -17,7 +18,7 @@ pub const NAVY: usize = 0x10;
 pub const AIR: usize = 0x18;
 
 /// Record serializer emitting conditional lane keys in this file's order.
-pub const WRITER_RVA: usize = 0x0112_25b0;
+pub const WRITER_RVA: Rva = Rva(0x0112_25b0);
 /// Lane denominator used by the signed fixed5 formatter.
 pub const LANE_DENOMINATOR: i64 = 100_000;
 

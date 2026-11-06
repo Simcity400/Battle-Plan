@@ -270,23 +270,25 @@ pub(crate) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub(crate) unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub(crate) unsafe fn new(base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         let callbacks = [deploy as *const () as usize, setting as *const () as usize];
         if cfg!(feature = "wing_changes")
-            && MUTATIONS.iter().all(|site| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
-            })
+            && MUTATIONS
+                .iter()
+                .all(|site| crate::verified(base, site.rva).is_ok())
         {
             for (index, site) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| {
-                    if index == 0 {
-                        "wing-preference DeployWing hook construction failed"
-                    } else {
-                        "wing-preference SetWingReplacement hook construction failed"
-                    }
-                })?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|_| {
+                            if index == 0 {
+                                "wing-preference DeployWing hook construction failed"
+                            } else {
+                                "wing-preference SetWingReplacement hook construction failed"
+                            }
+                        })?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }

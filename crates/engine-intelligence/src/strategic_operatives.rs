@@ -135,8 +135,7 @@ pub fn walk_buffer(
             Array::read(memory, address, manager::OPERATIVE_STRIDE)
                 .ok_or("strategic operative vector unreadable or invalid")
         })?;
-        let expected = base
-            .checked_add(strategic::VTABLE_RVA)
+        let expected = engine_sites::at(base, strategic::VTABLE_RVA)
             .ok_or("strategic operative vtable address overflow")?;
         let (mut len, mut unread_rows) = (0_usize, 0_u32);
         let (mut entries_len, mut required_entries) = (0_usize, 0_usize);
@@ -220,8 +219,7 @@ pub fn walk_buffer(
                         None => 0,
                         Some(pointer) => {
                             if field::<u64>(memory, pointer, 0)?
-                                != base
-                                    .checked_add(engine_native::coperative_leader::VTABLE_RVA)
+                                != engine_sites::at(base, engine_native::coperative_leader::VTABLE_RVA)
                                     .ok_or("strategic operative mission vtable overflow")?
                                     as u64
                                 || field::<u64>(
@@ -444,7 +442,9 @@ pub fn trade_influence<M: Memory>(
     if object == 0 {
         return Ok(0);
     }
-    if field::<u64>(memory, object, 0)? != at(base, strategic::VTABLE_RVA)? as u64
+    let expected = engine_sites::at(base, strategic::VTABLE_RVA)
+        .ok_or("strategic operative address overflow")?;
+    if field::<u64>(memory, object, 0)? != expected as u64
         || countries
             .resolve(field(memory, object, strategic::OWNER)?)?
             .canonical_slot

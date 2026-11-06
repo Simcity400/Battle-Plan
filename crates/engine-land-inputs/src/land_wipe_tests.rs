@@ -39,15 +39,15 @@ const OTHER_COMBAT: u64 = 0x8000_0003_0000_003e;
 
 fn fixture() -> Fixture {
     let mut memory = Fixture::default();
-    memory.qword(cgame_state::SINGLETON_RVA, 0x1000);
+    memory.qword(cgame_state::SINGLETON_RVA.0, 0x1000);
     memory.dword(0x1000 + cgame_state::CURRENT_HOUR, 80);
-    memory.qword(0x2000, combat::VTABLE_RVA as u64);
+    memory.qword(0x2000, combat::VTABLE_RVA.0 as u64);
     memory.qword(0x2000 + combat::HANDLE, TRIGGER);
     memory.qword(0x2000 + combat::ATTACKER, 0x3000);
     memory.qword(0x2000 + combat::DEFENDER, 0x4000);
     memory.qword(0x2000 + combat::PROVINCE, 0x7000);
     for pointer in [0x3000, 0x4000] {
-        memory.qword(pointer, side::VTABLE_RVA as u64);
+        memory.qword(pointer, side::VTABLE_RVA.0 as u64);
         memory.qword(pointer + side::COMBAT, 0x2000);
     }
     memory.put(0x3000 + side::IS_ATTACKER, &[1]);
@@ -55,18 +55,18 @@ fn fixture() -> Fixture {
     memory.array(0x4000 + COUNTRY_ARRAY, 0x9000, 2);
     memory.dword(0x9000, 0x8000_0007);
     // A later unreadable country must not hide the native first-country read.
-    memory.qword(0x5000, cprovince::VTABLE_RVA as u64);
+    memory.qword(0x5000, cprovince::VTABLE_RVA.0 as u64);
     memory.dword(0x5000 + cprovince::ID, 42);
-    memory.qword(0x7000, cprovince::VTABLE_RVA as u64);
+    memory.qword(0x7000, cprovince::VTABLE_RVA.0 as u64);
     memory.dword(0x7000 + cprovince::ID, 55);
-    memory.qword(0x8000, carmy::VTABLE_RVA as u64);
+    memory.qword(0x8000, carmy::VTABLE_RVA.0 as u64);
     memory.dword(0x8000 + cunit::CLASS, 0);
     memory.qword(0x8000 + cunit::HANDLE, DIVISION);
     memory.dword(0x8000 + cunit::LOGICAL_OWNER, 0x8000_0009);
     memory.qword(0x8000 + cunit::LOCATION, 0x5000);
     memory.array(0x8000 + cunit::COMBAT_REFERENCE_DATA, 0xb000, 1);
     memory.qword(0xb000, 0x6000);
-    memory.qword(0x6000, combat::VTABLE_RVA as u64);
+    memory.qword(0x6000, combat::VTABLE_RVA.0 as u64);
     memory.qword(0x6000 + combat::HANDLE, OTHER_COMBAT);
     memory
 }
@@ -149,7 +149,7 @@ fn combat_wipe_rejects_side_and_remaining_identity_failures() {
         Err("combat wipe opposite backlink differs")
     );
     memory.qword(0x4000 + side::COMBAT, 0x2000);
-    memory.qword(0x6000, carmy::VTABLE_RVA as u64);
+    memory.qword(0x6000, carmy::VTABLE_RVA.0 as u64);
     assert_eq!(
         words(&memory, 0x3000),
         Err("combat wipe remaining class unsupported")
@@ -161,9 +161,9 @@ fn combat_wipe_defender_and_border_side_follow_native_opposite_selection() {
     let mut memory = fixture();
     memory.array(0x3000 + COUNTRY_ARRAY, 0x9000, 1);
     assert_eq!(words(&memory, 0x4000).unwrap()[4], 0x8000_0007);
-    memory.qword(0x2000, cland_border_war_combat::VTABLE_RVA as u64);
+    memory.qword(0x2000, cland_border_war_combat::VTABLE_RVA.0 as u64);
     for pointer in [0x3000, 0x4000] {
-        memory.qword(pointer, cland_border_war_combatant::VTABLE_RVA as u64);
+        memory.qword(pointer, cland_border_war_combatant::VTABLE_RVA.0 as u64);
     }
     assert_eq!(words(&memory, 0x3000).unwrap()[7], TRIGGER);
 }
@@ -171,10 +171,10 @@ fn combat_wipe_defender_and_border_side_follow_native_opposite_selection() {
 #[test]
 fn combat_wipe_ignores_authenticated_naval_side_and_refuses_unknown_side() {
     let mut memory = fixture();
-    memory.qword(0x3000, cnaval_combatant::VTABLE_RVA as u64);
+    memory.qword(0x3000, cnaval_combatant::VTABLE_RVA.0 as u64);
     // No unit read is attempted for the known unrelated native domain.
     assert!(WipePlan::read(&memory, 0, 0x3000, 0).unwrap().is_none());
-    memory.qword(0x3000, carmy::VTABLE_RVA as u64);
+    memory.qword(0x3000, carmy::VTABLE_RVA.0 as u64);
     assert_eq!(words(&memory, 0x3000), Err("combat wipe class unsupported"));
 }
 

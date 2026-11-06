@@ -70,8 +70,7 @@ pub fn capture_stats(
     names: &mut crate::cname_group_member::Names<'_>,
 ) -> Result<Row, &'static str> {
     let identity = bytes::<8>(memory, pointer, 0)?;
-    let expected_vtable = base
-        .checked_add(carmy::VTABLE_RVA)
+    let expected_vtable = engine_sites::at(base, carmy::VTABLE_RVA)
         .ok_or("land combat division identity mismatch")? as u64;
     let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
     if pointer == 0
@@ -87,8 +86,7 @@ pub fn capture_stats(
     let stat_identity = bytes::<8>(memory, stat, 0)?;
     if stat == 0
         || Some(u64::from_le_bytes(stat_identity))
-            != base
-                .checked_add(csub_unit_definition::VTABLE_RVA)
+            != engine_sites::at(base, csub_unit_definition::VTABLE_RVA)
                 .map(|p| p as u64)
     {
         return Err("land combat division stat identity mismatch");
@@ -200,7 +198,7 @@ pub fn capture_modifiers(
         || expected_handle == 0
         || u64::from_le_bytes(handle) != expected_handle
         || Some(u64::from_le_bytes(identity))
-            != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
+            != engine_sites::at(base, carmy::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("land combat division identity mismatch");
     }
@@ -266,7 +264,7 @@ pub fn capture_context(
     if expected_handle == 0
         || u64::from_le_bytes(handle) != expected_handle
         || Some(u64::from_le_bytes(identity))
-            != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
+            != engine_sites::at(base, carmy::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("land combat division context identity mismatch");
     }
@@ -303,7 +301,7 @@ pub fn capture_context(
     } else {
         [ContextModifier::default(); 3]
     };
-    let table = u64::from_le_bytes(bytes(memory, base, metadata::TABLE_RVA)?) as usize;
+    let table = u64::from_le_bytes(bytes(memory, base, metadata::TABLE_RVA.0)?) as usize;
     if table == 0 {
         return Err("land combat context metadata table null");
     }
@@ -327,24 +325,23 @@ pub fn capture_context(
             u32::from_le_bytes(raw[8..].try_into().unwrap()),
         ]
     });
-    let callback = u64::from_le_bytes(bytes(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?);
+    let callback = u64::from_le_bytes(bytes(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA.0)?);
     let eligibility_callback = if callback == 0 {
         0
     } else if Some(callback)
-        == base
-            .checked_add(metadata::ELIGIBILITY_FLAGS_GETTER_RVA)
+        == engine_sites::at(base, metadata::ELIGIBILITY_FLAGS_GETTER_RVA)
             .map(|p| p as u64)
     {
         1
     } else {
         return Err("land combat context modifier callback unsupported");
     };
-    let feature_flags = u32::from_le_bytes(bytes(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?);
+    let feature_flags =
+        u32::from_le_bytes(bytes(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA.0)?);
     let stat_pointer = u64::from_le_bytes(bytes(memory, pointer, cunit::STAT_BLOCK)?) as usize;
     let stat_identity = bytes::<8>(memory, stat_pointer, 0)?;
     if Some(u64::from_le_bytes(stat_identity))
-        != base
-            .checked_add(csub_unit_definition::VTABLE_RVA)
+        != engine_sites::at(base, csub_unit_definition::VTABLE_RVA)
             .map(|p| p as u64)
     {
         return Err("land combat context stat identity mismatch");
@@ -359,7 +356,7 @@ pub fn capture_context(
         template_handle = u64::from_le_bytes(template_identity[8..].try_into().unwrap());
         if Some(u64::from_le_bytes(
             template_identity[..8].try_into().unwrap(),
-        )) != base.checked_add(template::VTABLE_RVA).map(|p| p as u64)
+        )) != engine_sites::at(base, template::VTABLE_RVA).map(|p| p as u64)
             || template_handle as u32 != template::REFERENCE_TYPE
             || template_handle >> 32 == 0
         {
@@ -384,8 +381,7 @@ pub fn capture_context(
             let raw = bytes::<12>(memory, subunit, 0)?;
             if subunit == 0
                 || Some(u64::from_le_bytes(raw[..8].try_into().unwrap()))
-                    != base
-                        .checked_add(csub_unit_definition::VTABLE_RVA)
+                    != engine_sites::at(base, csub_unit_definition::VTABLE_RVA)
                         .map(|p| p as u64)
             {
                 return Err("land combat width subunit identity mismatch");
@@ -487,7 +483,7 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
         crate::carmy_group::VTABLE_RVA,
     ]
     .iter()
-    .any(|rva| base.checked_add(*rva).map(|value| value as u64) == Some(vtable))
+    .any(|&key| engine_sites::at(base, key).map(|value| value as u64) == Some(vtable))
         || group_handle as u32 != crate::corders_group::REFERENCE_TYPE
         || group_handle >> 32 == 0
     {
@@ -503,8 +499,7 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
     let identity = bytes::<16>(memory, leader, 0)?;
     let handle = u64::from_le_bytes(identity[8..].try_into().unwrap());
     if Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
-        != base
-            .checked_add(crate::carmy_leader::VTABLE_RVA)
+        != engine_sites::at(base, crate::carmy_leader::VTABLE_RVA)
             .map(|value| value as u64)
         || handle as u32 != crate::cunit_leader::REFERENCE_TYPE
         || handle >> 32 == 0

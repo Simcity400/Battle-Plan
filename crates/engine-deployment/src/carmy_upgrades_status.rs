@@ -3,12 +3,13 @@
 //! Walk the supplied division census through each army's requests object to
 //! retain the serialized graph.
 
+use engine_sites::Rva;
 /// Primary upgrade-status vtable.
-pub const VTABLE_RVA: usize = 0x2a4ba28;
+pub const VTABLE_RVA: Rva = Rva(0x2a4ba28);
 /// Persistent subobject displacement.
 pub const PERSISTENT_SUBOBJECT: usize = 0x18;
 /// Persistent subobject vtable.
-pub const PERSISTENT_VTABLE_RVA: usize = 0x2a4ba60;
+pub const PERSISTENT_VTABLE_RVA: Rva = Rva(0x2a4ba60);
 /// CArmyUpgradesRequests pointer-array data.
 #[cfg(test)]
 pub const GROUPS_DATA: usize = 0x20;
@@ -373,18 +374,18 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0_u8; 0xe000];
-        put64(&mut bytes, STATUS, VTABLE_RVA as u64);
+        put64(&mut bytes, STATUS, VTABLE_RVA.0 as u64);
         put64(
             &mut bytes,
             STATUS + PERSISTENT_SUBOBJECT,
-            PERSISTENT_VTABLE_RVA as u64,
+            PERSISTENT_VTABLE_RVA.0 as u64,
         );
         array(&mut bytes, STATUS + GROUPS_DATA, GROUPS, 1);
         put64(&mut bytes, GROUPS, GROUP as u64);
         put64(
             &mut bytes,
             GROUP,
-            carmy_upgrades_requests::VTABLE_RVA as u64,
+            carmy_upgrades_requests::VTABLE_RVA.0 as u64,
         );
         put32(
             &mut bytes,
@@ -394,7 +395,7 @@ mod tests {
         put64(
             &mut bytes,
             GROUP + carmy_upgrades_requests::PERSISTENT_SUBOBJECT,
-            carmy_upgrades_requests::PERSISTENT_VTABLE_RVA as u64,
+            carmy_upgrades_requests::PERSISTENT_VTABLE_RVA.0 as u64,
         );
         put64(
             &mut bytes,
@@ -418,7 +419,7 @@ mod tests {
             DELIVERIES,
             2,
         );
-        put64(&mut bytes, ARMY, carmy::VTABLE_RVA as u64);
+        put64(&mut bytes, ARMY, carmy::VTABLE_RVA.0 as u64);
         put64(
             &mut bytes,
             ARMY + carmy::REQUESTS,
@@ -427,11 +428,15 @@ mod tests {
         put64(
             &mut bytes,
             ARMY + carmy::SECONDARY_BASE,
-            carmy::SECONDARY_VTABLE_RVA as u64,
+            carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         // Existing CArmy capture preserves nonzero handles with either word zero.
         put64(&mut bytes, ARMY + crate::cunit::HANDLE, 9000);
-        put64(&mut bytes, EQUIPMENT, cequipment_variant::VTABLE_RVA as u64);
+        put64(
+            &mut bytes,
+            EQUIPMENT,
+            cequipment_variant::VTABLE_RVA.0 as u64,
+        );
         put64(&mut bytes, EQUIPMENT + cequipment_variant::TYPE, 70);
         for ordinal in 0..2 {
             let request = REQUESTS + ordinal * army_upgrade_request_row::STRIDE;
@@ -448,7 +453,7 @@ mod tests {
         }
         for (ordinal, pointer, status) in [(0, DELIVERY, 1), (1, EMPTY_DELIVERY, 2)] {
             put64(&mut bytes, DELIVERIES + ordinal * 8, pointer as u64);
-            put64(&mut bytes, pointer, cupgrade_delivery::VTABLE_RVA as u64);
+            put64(&mut bytes, pointer, cupgrade_delivery::VTABLE_RVA.0 as u64);
             put32(&mut bytes, pointer + cupgrade_delivery::STATUS, status);
             put64(
                 &mut bytes,
@@ -463,7 +468,7 @@ mod tests {
             put64(
                 &mut bytes,
                 pointer + cupgrade_delivery::PRODUCED_EQUIPMENT_POOL,
-                cequipment_variant_pool::VTABLE_RVA as u64,
+                cequipment_variant_pool::VTABLE_RVA.0 as u64,
             );
             bytes[pointer
                 + cupgrade_delivery::PRODUCED_EQUIPMENT_POOL

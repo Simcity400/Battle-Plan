@@ -59,22 +59,22 @@ fn fixture(province_scope: bool) -> Vec<u8> {
     };
     let status = object + offset;
     for (address, value) in [
-        (STATE, BASE + cstate::VTABLE_RVA),
-        (PROVINCE, BASE + cprovince::VTABLE_RVA),
+        (STATE, BASE + cstate::VTABLE_RVA.0),
+        (PROVINCE, BASE + cprovince::VTABLE_RVA.0),
         (PROVINCE + cprovince::STATE, STATE),
-        (BUILDING, BASE + cbuilding::VTABLE_RVA),
+        (BUILDING, BASE + cbuilding::VTABLE_RVA.0),
         (BUILDING + cbuilding::BUILDING_STATUS, status),
         (BUILDING + cbuilding::TEMPLATE, TEMPLATE),
-        (status, BASE + cbuilding_status::VTABLE_RVA),
+        (status, BASE + cbuilding_status::VTABLE_RVA.0),
         (STATES + 3 * 8, STATE),
         (PROVINCES + 4 * 8, PROVINCE),
         (BUILDINGS, BUILDING),
         (SOURCE + SOURCE_WING, WING),
-        (WING, BASE + cair_wing::VTABLE_RVA),
+        (WING, BASE + cair_wing::VTABLE_RVA.0),
         (WING + cair_wing::POOL, POOL),
-        (POOL, BASE + cair_wing_pool::VTABLE_RVA),
+        (POOL, BASE + cair_wing_pool::VTABLE_RVA.0),
         (POOL + cair_wing_pool::OWNER, OWNER),
-        (OWNER, BASE + cstrategic_air::VTABLE_RVA),
+        (OWNER, BASE + cstrategic_air::VTABLE_RVA.0),
     ] {
         u64_at(&mut bytes, address, value);
     }
@@ -132,7 +132,7 @@ fn snapshot_preserves_mod_token_and_credits_controller_in_both_scopes() {
     assert!(std::mem::size_of::<Snapshot>() <= 128);
     for province_scope in [false, true] {
         let bytes = fixture(province_scope);
-        let result = capture(&bytes, CALLERS[0].0).unwrap();
+        let result = capture(&bytes, CALLERS[0].0.0).unwrap();
         assert_eq!(result.building_type, TYPE);
         assert_eq!(result.attacker, Some(6001));
         assert_eq!(result.victim, if province_scope { 5002 } else { 5001 });
@@ -155,7 +155,7 @@ fn neutral_controller_is_preserved_without_changing_positive_damage() {
             (STATE, cstate::CONTROLLER)
         };
         u32_at(&mut bytes, object + offset, 0);
-        let before = capture(&bytes, CALLERS[0].0).unwrap();
+        let before = capture(&bytes, CALLERS[0].0.0).unwrap();
         assert_eq!(before.victim, 0);
         health_at(&mut bytes, 5, 2, 3_000_000);
         assert_eq!(
@@ -177,26 +177,29 @@ fn effective_country_uses_positive_override_otherwise_pool_owner() {
     for (raw, expected) in [(7_i32, Some(7)), (0, Some(6001)), (-9, Some(6001))] {
         let mut bytes = fixture(false);
         u32_at(&mut bytes, WING + cair_wing::COUNTRY_OVERRIDE, raw as u32);
-        assert_eq!(capture(&bytes, CALLERS[1].0).unwrap().attacker, expected);
+        assert_eq!(capture(&bytes, CALLERS[1].0.0).unwrap().attacker, expected);
     }
     let mut bytes = fixture(false);
     u32_at(&mut bytes, WING + cair_wing::COUNTRY_OVERRIDE, 7001);
     u64_at(&mut bytes, WING + cair_wing::POOL, 0);
-    assert_eq!(capture(&bytes, CALLERS[1].0).unwrap().attacker, Some(7001));
+    assert_eq!(
+        capture(&bytes, CALLERS[1].0.0).unwrap().attacker,
+        Some(7001)
+    );
     u32_at(&mut bytes, WING + cair_wing::COUNTRY_OVERRIDE, 0);
-    assert_eq!(capture(&bytes, CALLERS[1].0).unwrap().attacker, None);
+    assert_eq!(capture(&bytes, CALLERS[1].0.0).unwrap().attacker, None);
 }
 
 #[test]
 fn null_air_wing_and_nonair_or_unknown_sources_stay_null() {
     let mut bytes = fixture(false);
     u64_at(&mut bytes, SOURCE + SOURCE_WING, 0);
-    assert_eq!(capture(&bytes, CALLERS[0].0).unwrap().attacker, None);
+    assert_eq!(capture(&bytes, CALLERS[0].0.0).unwrap().attacker, None);
     for kind in [0, 2, 3, 99] {
         u32_at(&mut bytes, SOURCE, kind);
         u64_at(&mut bytes, SOURCE + SOURCE_WING, usize::MAX);
         for (caller, expected) in CALLERS {
-            let result = capture(&bytes, caller).unwrap();
+            let result = capture(&bytes, caller.0).unwrap();
             assert_eq!(
                 (result.native_cause, result.cause, result.attacker),
                 (kind, expected, None)
@@ -213,7 +216,7 @@ fn null_air_wing_and_nonair_or_unknown_sources_stay_null() {
 #[test]
 fn post_read_uses_actual_health_delta_including_partial_level_and_clamp() {
     let mut bytes = fixture(false);
-    let before = capture(&bytes, CALLERS[0].0).unwrap();
+    let before = capture(&bytes, CALLERS[0].0.0).unwrap();
     health_at(&mut bytes, 5, 1, 1_000_000);
     assert_eq!(
         applied_damage(
@@ -380,7 +383,7 @@ fn capture_refuses_identity_health_bounds_and_short_reads_by_first_failure() {
         cases.push((bytes, None));
     }
     for (bytes, reason) in cases {
-        let actual = capture(&bytes, CALLERS[0].0).unwrap_err();
+        let actual = capture(&bytes, CALLERS[0].0.0).unwrap_err();
         if let Some(reason) = reason {
             assert_eq!(actual, reason);
         }
@@ -391,7 +394,7 @@ fn capture_refuses_identity_health_bounds_and_short_reads_by_first_failure() {
 fn negative_modified_damage_preserves_health_above_a_full_level() {
     let mut bytes = fixture(false);
     health_at(&mut bytes, 1, 0, 10_000_000);
-    let before = capture(&bytes, CALLERS[0].0).unwrap();
+    let before = capture(&bytes, CALLERS[0].0.0).unwrap();
     health_at(&mut bytes, 1, 0, 11_000_000);
     assert_eq!(
         applied_damage(
@@ -405,7 +408,7 @@ fn negative_modified_damage_preserves_health_above_a_full_level() {
         Ok(-1_000_000)
     );
     assert_eq!(
-        capture(&bytes, CALLERS[0].0).unwrap().health_raw,
+        capture(&bytes, CALLERS[0].0.0).unwrap().health_raw,
         11_000_000
     );
 }
@@ -415,19 +418,19 @@ fn attribution_read_failures_are_distinct_from_native_absence() {
     for address in [WING, WING + cair_wing::ID, POOL, OWNER] {
         let mut bytes = fixture(false);
         bytes[address..address + 8].fill(0);
-        let row = capture(&bytes, CALLERS[0].0).unwrap();
+        let row = capture(&bytes, CALLERS[0].0.0).unwrap();
         assert_eq!(row.attacker, None);
         assert!(row.attribution_failed);
     }
     for (address, value) in [(SOURCE, 0_u64), (SOURCE + SOURCE_WING, 0)] {
         let mut bytes = fixture(false);
         bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
-        let row = capture(&bytes, CALLERS[0].0).unwrap();
+        let row = capture(&bytes, CALLERS[0].0.0).unwrap();
         assert_eq!(row.attacker, None);
         assert!(!row.attribution_failed);
     }
     assert!(
-        !capture(&fixture(false), CALLERS[0].0)
+        !capture(&fixture(false), CALLERS[0].0.0)
             .unwrap()
             .attribution_failed
     );
@@ -441,10 +444,10 @@ fn native_zero_ordinal_and_absent_province_state_are_valid() {
         TEMPLATE + cbuilding_template::DATABASE_ORDINAL,
         0,
     );
-    assert!(capture(&bytes, CALLERS[0].0).is_ok());
+    assert!(capture(&bytes, CALLERS[0].0.0).is_ok());
     let mut bytes = fixture(true);
     u64_at(&mut bytes, PROVINCE + cprovince::STATE, 0);
-    assert_eq!(capture(&bytes, CALLERS[0].0).unwrap().state, 0);
+    assert_eq!(capture(&bytes, CALLERS[0].0.0).unwrap().state, 0);
 }
 
 struct CensusMemory<'a> {
@@ -454,7 +457,7 @@ struct CensusMemory<'a> {
 
 impl Memory for CensusMemory<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        if address == BASE + cgame_state::SINGLETON_RVA && destination.len() == 8 {
+        if address == BASE + cgame_state::SINGLETON_RVA.0 && destination.len() == 8 {
             destination.copy_from_slice(&(self.game_state as u64).to_le_bytes());
             return true;
         }
@@ -470,7 +473,7 @@ impl Memory for CensusMemory<'_> {
 fn capacity_census_sizes_from_every_live_location_and_refuses_missing() {
     let mut bytes = fixture(false);
     let status = PROVINCE + cprovince::BUILDING_STATUS;
-    u64_at(&mut bytes, status, BASE + cbuilding_status::VTABLE_RVA);
+    u64_at(&mut bytes, status, BASE + cbuilding_status::VTABLE_RVA.0);
     u32_at(
         &mut bytes,
         status + cbuilding_status::FLAGS,
@@ -583,7 +586,7 @@ fn exhausted_health_skips_source_reads_but_positive_health_reads_source() {
             GAME,
             BUILDING,
             usize::MAX,
-            BASE + CALLERS[0].0,
+            BASE + CALLERS[0].0.0,
             12345
         )
         .unwrap()
@@ -602,7 +605,7 @@ fn exhausted_health_skips_source_reads_but_positive_health_reads_source() {
             GAME,
             BUILDING,
             SOURCE,
-            BASE + CALLERS[0].0,
+            BASE + CALLERS[0].0.0,
             12345
         )
         .unwrap()
@@ -622,7 +625,7 @@ fn building_damage_5000_country_scale() {
     bytes.resize(WINGS + 5000 * STRIDE, 0);
     for index in 0..5000 {
         let wing = WINGS + index * STRIDE;
-        u64_at(&mut bytes, wing, BASE + cair_wing::VTABLE_RVA);
+        u64_at(&mut bytes, wing, BASE + cair_wing::VTABLE_RVA.0);
         u32_at(&mut bytes, wing + cair_wing::ID, index as u32 + 1);
         u32_at(
             &mut bytes,
@@ -644,7 +647,7 @@ fn building_damage_5000_country_scale() {
             GAME,
             BUILDING,
             SOURCE,
-            BASE + CALLERS[0].0,
+            BASE + CALLERS[0].0.0,
             12345,
         )
         .unwrap();
@@ -678,7 +681,7 @@ fn post_attribution_uses_controller_at_return_and_noop_skips_location() {
         GAME,
         BUILDING,
         SOURCE,
-        BASE + CALLERS[0].0,
+        BASE + CALLERS[0].0.0,
         12345,
     )
     .unwrap();

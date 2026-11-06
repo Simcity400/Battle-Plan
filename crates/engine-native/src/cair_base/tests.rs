@@ -29,7 +29,7 @@ impl Memory for CarrierMemory<'_> {
         // world: the nonzero host reference is known stale, hence empty text.
         if address
             == IMAGE
-                + crate::creference_registry::LOW_ROOTS_RVA
+                + crate::creference_registry::LOW_ROOTS_RVA.0
                 + crate::cship::HANDLE_TYPE as usize * 8
             && destination.len() == 8
         {
@@ -72,18 +72,18 @@ fn carrier_globals() -> std::collections::BTreeMap<usize, u8> {
     let mut bytes = std::collections::BTreeMap::new();
     for (pointer, value) in [
         (
-            IMAGE + crate::csub_unit_definition::DATABASE_RVA,
+            IMAGE + crate::csub_unit_definition::DATABASE_RVA.0,
             CARRIER_DATABASE as u64,
         ),
         (
-            IMAGE + crate::csub_unit_definition::NULL_OBJECT_RVA,
+            IMAGE + crate::csub_unit_definition::NULL_OBJECT_RVA.0,
             CARRIER_NULL as u64,
         ),
         (
-            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA,
+            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA.0,
             CARRIER_COSTS as u64,
         ),
-        (IMAGE + crate::air_fuel_defines::AIR_WEIGHT_RVA, 100000),
+        (IMAGE + crate::air_fuel_defines::AIR_WEIGHT_RVA.0, 100000),
     ] {
         bytes.extend(
             value
@@ -97,11 +97,11 @@ fn carrier_globals() -> std::collections::BTreeMap<usize, u8> {
     // deliberately larger than all first eighteen; maximum must exclude it.
     for (pointer, value) in [
         (
-            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA + 8,
+            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA.0 + 8,
             19_u32,
         ),
         (
-            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA + 12,
+            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA.0 + 12,
             19_u32,
         ),
     ] {
@@ -118,9 +118,9 @@ fn carrier_globals() -> std::collections::BTreeMap<usize, u8> {
 
 fn carrier_definition(bytes: &mut [u8], pointer: usize, real: bool, token: u32) {
     let definition = if real {
-        crate::csub_unit_definition::VTABLE_RVA
+        crate::csub_unit_definition::VTABLE_RVA.0
     } else {
-        crate::csub_unit_definition::NULL_VTABLE_RVA
+        crate::csub_unit_definition::NULL_VTABLE_RVA.0
     };
     qword(bytes, pointer, (IMAGE + definition) as u64);
     dword(bytes, pointer + crate::csub_unit_definition::TOKEN, token);
@@ -206,7 +206,7 @@ fn host_registration_fixture() -> Vec<u8> {
         qword(
             &mut bytes,
             owner,
-            (IMAGE + crate::cstrategic_air::VTABLE_RVA) as u64,
+            (IMAGE + crate::cstrategic_air::VTABLE_RVA.0) as u64,
         );
         dword(&mut bytes, owner + crate::cstrategic_air::COUNTRY, country);
     }
@@ -238,7 +238,7 @@ fn host_registration_fixture() -> Vec<u8> {
         qword(
             &mut bytes,
             pointer + cair_wing::MISSION,
-            (IMAGE + crate::air_mission::VTABLE_RVA) as u64,
+            (IMAGE + crate::air_mission::VTABLE_RVA.0) as u64,
         );
         dword(
             &mut bytes,
@@ -554,7 +554,7 @@ fn denied_transport_carrier_demand_keeps_legacy_fuel_and_never_reads_unreached_p
     let bytes = host_registration_fixture();
     // This ORIGINAL cost-header refusal prevents both legacy fuel branches from reaching the plane
     // count. An admitted transport suffix would add those leaves.
-    let fault = Some(IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA);
+    let fault = Some(IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA.0);
     let denied = carrier_walk_fixture_with_transport(
         &bytes,
         fault,
@@ -833,7 +833,7 @@ fn fixture() -> Vec<u8> {
     qword(
         &mut bytes,
         MANAGER,
-        (IMAGE + cstrategic_air_manager::VTABLE_RVA) as u64,
+        (IMAGE + cstrategic_air_manager::VTABLE_RVA.0) as u64,
     );
     array(
         &mut bytes,
@@ -852,7 +852,7 @@ fn fixture() -> Vec<u8> {
     qword(&mut bytes, STATE_TABLE + 8, STATE_BASE as u64);
     qword(&mut bytes, HOST_TABLE, HOST_BASE as u64);
     for (pointer, id) in [(STATE_BASE, 7_u64), (HOST_BASE, 9)] {
-        qword(&mut bytes, pointer, (IMAGE + VTABLE_RVA) as u64);
+        qword(&mut bytes, pointer, (IMAGE + VTABLE_RVA.0) as u64);
         qword(&mut bytes, pointer + HANDLE, (id << 32) | u64::from(TYPE));
     }
     qword(&mut bytes, STATE_BASE + STATE, STATE_OBJECT as u64);
@@ -861,13 +861,13 @@ fn fixture() -> Vec<u8> {
     qword(
         &mut bytes,
         STATE_OBJECT,
-        (IMAGE + cstate::VTABLE_RVA) as u64,
+        (IMAGE + cstate::VTABLE_RVA.0) as u64,
     );
     dword(&mut bytes, STATE_OBJECT + cstate::ID, 1);
     qword(
         &mut bytes,
         PROVINCE_OBJECT,
-        (IMAGE + cprovince::VTABLE_RVA) as u64,
+        (IMAGE + cprovince::VTABLE_RVA.0) as u64,
     );
     dword(&mut bytes, PROVINCE_OBJECT + cprovince::ID, 14);
     qword(
@@ -1001,11 +1001,11 @@ const WING_A: usize = 0x3a00;
 const WING_B: usize = 0x3b00;
 
 fn wing(bytes: &mut [u8], at: usize, handle: u64, pool: usize) {
-    qword(bytes, at, (IMAGE + cair_wing::VTABLE_RVA) as u64);
+    qword(bytes, at, (IMAGE + cair_wing::VTABLE_RVA.0) as u64);
     qword(
         bytes,
         at + cair_wing::SECONDARY,
-        (IMAGE + cair_wing::SECONDARY_VTABLE_RVA) as u64,
+        (IMAGE + cair_wing::SECONDARY_VTABLE_RVA.0) as u64,
     );
     qword(bytes, at + cair_wing::REFERENCE_TYPE, handle);
     qword(bytes, at + cair_wing::POOL, pool as u64);
@@ -1037,7 +1037,7 @@ fn registration_fixture() -> Vec<u8> {
         dword(&mut bytes, LINK_TABLE + link * 4, slot);
     }
     for (pointer, id) in [(COUNTRY_A, 5_u32), (COUNTRY_B, 9)] {
-        qword(&mut bytes, pointer, (IMAGE + ccountry::VTABLE_RVA) as u64);
+        qword(&mut bytes, pointer, (IMAGE + ccountry::VTABLE_RVA.0) as u64);
         dword(&mut bytes, pointer + ccountry::ID, id);
     }
     array(
@@ -1056,7 +1056,7 @@ fn registration_fixture() -> Vec<u8> {
         qword(
             &mut bytes,
             pointer,
-            (IMAGE + ccountry_air_container::VTABLE_RVA) as u64,
+            (IMAGE + ccountry_air_container::VTABLE_RVA.0) as u64,
         );
         dword(
             &mut bytes,
@@ -1077,7 +1077,7 @@ fn registration_fixture() -> Vec<u8> {
         qword(
             &mut bytes,
             pool,
-            (IMAGE + cair_wing_pool::VTABLE_RVA) as u64,
+            (IMAGE + cair_wing_pool::VTABLE_RVA.0) as u64,
         );
         array(
             &mut bytes,
@@ -1211,8 +1211,8 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
         (SHORT_CONTAINERS, CONTAINER),
         (SHORT_POOLS, POOL),
         (SHORT_WINGS, WING),
-        (CONTAINER, IMAGE + ccountry_air_container::VTABLE_RVA),
-        (POOL, IMAGE + cair_wing_pool::VTABLE_RVA),
+        (CONTAINER, IMAGE + ccountry_air_container::VTABLE_RVA.0),
+        (POOL, IMAGE + cair_wing_pool::VTABLE_RVA.0),
     ] {
         qword(&mut bytes, at, value as u64);
     }
@@ -1604,7 +1604,7 @@ fn country_registrations_match_with_any_resolver_length() {
     qword(
         &mut bytes,
         MANAGER,
-        (IMAGE + cstrategic_air_manager::VTABLE_RVA) as u64,
+        (IMAGE + cstrategic_air_manager::VTABLE_RVA.0) as u64,
     );
     array(
         &mut bytes,
@@ -1632,7 +1632,7 @@ fn country_registrations_match_with_any_resolver_length() {
         .enumerate()
     {
         qword(&mut bytes, HOSTS + index * 8, base as u64);
-        qword(&mut bytes, base, (IMAGE + VTABLE_RVA) as u64);
+        qword(&mut bytes, base, (IMAGE + VTABLE_RVA.0) as u64);
         qword(&mut bytes, base + HANDLE, (id << 32) | u64::from(TYPE));
         array(
             &mut bytes,
@@ -1646,7 +1646,7 @@ fn country_registrations_match_with_any_resolver_length() {
     for slot in 1..COUNTRIES {
         let object = OBJECTS + slot as usize * 16;
         qword(&mut bytes, TABLE + slot as usize * 8, object as u64);
-        qword(&mut bytes, object, (IMAGE + ccountry::VTABLE_RVA) as u64);
+        qword(&mut bytes, object, (IMAGE + ccountry::VTABLE_RVA.0) as u64);
         dword(&mut bytes, object + ccountry::ID, slot);
         dword(&mut bytes, LINK + slot as usize * 4, slot);
         dword(&mut bytes, LINK + (slot + COUNTRIES) as usize * 4, slot);
@@ -1659,7 +1659,7 @@ fn country_registrations_match_with_any_resolver_length() {
         qword(
             &mut bytes,
             container,
-            (IMAGE + ccountry_air_container::VTABLE_RVA) as u64,
+            (IMAGE + ccountry_air_container::VTABLE_RVA.0) as u64,
         );
         dword(&mut bytes, container + ccountry_air_container::COUNTRY, raw);
         qword(
@@ -1774,7 +1774,7 @@ fn sparse_slot_fixture(listed: &[usize]) -> Vec<u8> {
     qword(
         &mut bytes,
         MANAGER,
-        (IMAGE + cstrategic_air_manager::VTABLE_RVA) as u64,
+        (IMAGE + cstrategic_air_manager::VTABLE_RVA.0) as u64,
     );
     array(
         &mut bytes,
@@ -1798,7 +1798,7 @@ fn sparse_slot_fixture(listed: &[usize]) -> Vec<u8> {
         SPARSE_COUNTRIES,
     );
     qword(&mut bytes, SPARSE_HOSTS, SPARSE_BASE as u64);
-    qword(&mut bytes, SPARSE_BASE, (IMAGE + VTABLE_RVA) as u64);
+    qword(&mut bytes, SPARSE_BASE, (IMAGE + VTABLE_RVA.0) as u64);
     qword(
         &mut bytes,
         SPARSE_BASE + HANDLE,
@@ -1829,14 +1829,14 @@ fn sparse_slot_fixture(listed: &[usize]) -> Vec<u8> {
     for (index, slot) in SPARSE_OCCUPIED.into_iter().enumerate() {
         let object = SPARSE_OBJECTS + slot as usize * 16;
         qword(&mut bytes, SPARSE_TABLE + slot as usize * 8, object as u64);
-        qword(&mut bytes, object, (IMAGE + ccountry::VTABLE_RVA) as u64);
+        qword(&mut bytes, object, (IMAGE + ccountry::VTABLE_RVA.0) as u64);
         dword(&mut bytes, object + ccountry::ID, slot);
         dword(&mut bytes, SPARSE_LINK + slot as usize * 4, slot);
         let container = sparse_container(index);
         qword(
             &mut bytes,
             container,
-            (IMAGE + ccountry_air_container::VTABLE_RVA) as u64,
+            (IMAGE + ccountry_air_container::VTABLE_RVA.0) as u64,
         );
         dword(
             &mut bytes,

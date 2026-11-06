@@ -3,13 +3,14 @@ use crate::{
     Memory, allocation, carmy, cgame_date, cpdx_array::Array, cprovince, msvc_string::Descriptor,
     read,
 };
+use engine_sites::Rva;
 
 pub const DIVISION_HISTORY: usize = 0x638;
-pub const HISTORY_VTABLE_RVA: usize = 0x2a3bcf8;
-pub const STORE_VTABLE_RVA: usize = 0x2a3bca8;
-pub const ENTRY_VTABLE_RVA: usize = 0x2a3c018;
-pub const MEDAL_VTABLE_RVA: usize = 0x2a3bc58;
-pub const NULL_MEDAL_VTABLE_RVA: usize = 0x29c27b0;
+pub const HISTORY_VTABLE_RVA: Rva = Rva(0x2a3bcf8);
+pub const STORE_VTABLE_RVA: Rva = Rva(0x2a3bca8);
+pub const ENTRY_VTABLE_RVA: Rva = Rva(0x2a3c018);
+pub const MEDAL_VTABLE_RVA: Rva = Rva(0x2a3bc58);
+pub const NULL_MEDAL_VTABLE_RVA: Rva = Rva(0x29c27b0);
 pub const UNIT_BACKLINK: usize = 8;
 pub const MEDAL_STORE: usize = 0x20;
 pub const HISTORY_ENTRIES: usize = 0x28;
@@ -61,6 +62,9 @@ pub struct Entry {
     pub sunk_ship: Option<usize>,
 }
 
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("unit history site withheld")
+}
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)
@@ -76,9 +80,9 @@ fn identity(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    expected: usize,
+    expected: Rva,
 ) -> Result<(), &'static str> {
-    if read::<u64>(memory, pointer) != Some(at(base, expected)? as u64) {
+    if read::<u64>(memory, pointer) != Some(site(base, expected)? as u64) {
         return Err("unit history object identity mismatch");
     }
     Ok(())
@@ -118,8 +122,8 @@ pub fn validate_seed(base: usize, seed: &carmy::DivisionSeed) -> Result<(), &'st
     if seed.division == 0
         || seed.handle != Some(seed.division)
         || seed.class != Some(0)
-        || seed.primary_vtable != Some(at(base, carmy::VTABLE_RVA)? as u64)
-        || seed.secondary_vtable != Some(at(base, carmy::SECONDARY_VTABLE_RVA)? as u64)
+        || seed.primary_vtable != Some(site(base, carmy::VTABLE_RVA)? as u64)
+        || seed.secondary_vtable != Some(site(base, carmy::SECONDARY_VTABLE_RVA)? as u64)
     {
         return Err("unit history division identity unavailable");
     }
@@ -173,11 +177,11 @@ pub fn entry(memory: &impl Memory, base: usize, address: usize) -> Result<Entry,
     let raw = read::<[u8; ENTRY_SIZE]>(memory, address).ok_or("unit history entry unreadable")?;
     let u64_at = |offset: usize| u64::from_le_bytes(raw[offset..offset + 8].try_into().unwrap());
     let i32_at = |offset: usize| i32::from_le_bytes(raw[offset..offset + 4].try_into().unwrap());
-    if u64_at(0) != at(base, ENTRY_VTABLE_RVA)? as u64 {
+    if u64_at(0) != site(base, ENTRY_VTABLE_RVA)? as u64 {
         return Err("unit history entry identity mismatch");
     }
-    if u64_at(DATE) != at(base, cgame_date::VTABLE_RVA)? as u64
-        || u64_at(DATE_PERSISTENT) != at(base, cgame_date::PERSISTENT_VTABLE_RVA)? as u64
+    if u64_at(DATE) != site(base, cgame_date::VTABLE_RVA)? as u64
+        || u64_at(DATE_PERSISTENT) != site(base, cgame_date::PERSISTENT_VTABLE_RVA)? as u64
     {
         return Err("unit history date identity mismatch");
     }
@@ -201,8 +205,12 @@ pub fn entry(memory: &impl Memory, base: usize, address: usize) -> Result<Entry,
         let words =
             read::<[u8; 12]>(memory, definition).ok_or("unit history medal identity unreadable")?;
         let vtable = u64::from_le_bytes(words[..8].try_into().unwrap());
-        if vtable != at(base, MEDAL_VTABLE_RVA)? as u64
-            && vtable != at(base, NULL_MEDAL_VTABLE_RVA)? as u64
+        if engine_sites::which(
+            base,
+            vtable as usize,
+            &[MEDAL_VTABLE_RVA, NULL_MEDAL_VTABLE_RVA],
+        )
+        .is_none()
         {
             return Err("unit history medal identity mismatch");
         }
@@ -249,7 +257,7 @@ pub fn entry(memory: &impl Memory, base: usize, address: usize) -> Result<Entry,
 
 /// Embedded active officer holder; both XP mutators name this receiver.
 pub const OFFICER: usize = 0x4f8;
-const OFFICER_VTABLE_RVA: usize = 0x29d4838;
+const OFFICER_VTABLE_RVA: Rva = Rva(0x29d4838);
 const OFFICER_EXPERIENCE: usize = 0x88;
 /// The history panel's saved cumulative casualty counter. The native label
 /// uses HISTORY_KILL_COUNT_TEXT even though damage increments casualties.
@@ -279,17 +287,17 @@ mod tests {
         let mut bytes = vec![0; 0x3000];
         let address = 0x200;
         let medal = 0x2000;
-        put(&mut bytes, address, ENTRY_VTABLE_RVA as u64);
+        put(&mut bytes, address, ENTRY_VTABLE_RVA.0 as u64);
         put(&mut bytes, address + NAME + 24, 15);
         put(&mut bytes, address + CUSTOM_NAME + 24, 15);
-        put(&mut bytes, address + DATE, cgame_date::VTABLE_RVA as u64);
+        put(&mut bytes, address + DATE, cgame_date::VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             address + DATE_PERSISTENT,
-            cgame_date::PERSISTENT_VTABLE_RVA as u64,
+            cgame_date::PERSISTENT_VTABLE_RVA.0 as u64,
         );
         put(&mut bytes, address + MEDAL, medal as u64);
-        put(&mut bytes, medal, NULL_MEDAL_VTABLE_RVA as u64);
+        put(&mut bytes, medal, NULL_MEDAL_VTABLE_RVA.0 as u64);
         let row = entry(
             &SliceMemory {
                 base: 0,
@@ -306,7 +314,7 @@ mod tests {
     fn career_scalars_keep_signed_words_and_authenticate_the_officer_holder() {
         let mut bytes = vec![0; 0x2000];
         let army = 0x200;
-        put(&mut bytes, army + OFFICER, OFFICER_VTABLE_RVA as u64);
+        put(&mut bytes, army + OFFICER, OFFICER_VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             army + OFFICER + OFFICER_EXPERIENCE,

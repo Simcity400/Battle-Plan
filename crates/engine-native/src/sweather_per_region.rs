@@ -7,9 +7,10 @@ use crate::{
     Memory, cpdx_array::Array, cweather_manager::walk_dense_records, memory::RecordField,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Region-weather vtable.
-pub const VTABLE_RVA: usize = 0x029f_40e8;
+pub const VTABLE_RVA: Rva = Rva(0x029f_40e8);
 /// Region-weather array stride (`cweather_manager::REGIONS`).
 pub const STRIDE: usize = 0x160;
 /// Region ID, i32, authenticated against its array slot.
@@ -24,7 +25,7 @@ pub const SNOW: usize = 0x118;
 /// Blizzard flag used to accumulate province snow.
 pub const BLIZZARD: usize = 0x120;
 /// Region-weather update invoked from a parallel region job.
-pub const UPDATE_RVA: usize = 0x00fa_3de0;
+pub const UPDATE_RVA: Rva = Rva(0x00fa_3de0);
 
 /// The named native weather flags are independent bytes. They are retained
 /// separately, without deriving a weather-kind enum or quantized intensity.
@@ -62,7 +63,7 @@ pub const FIELDS: [RecordField; 7] = {
 pub const RECORD_BYTES: usize = 18;
 
 pub(crate) fn walk(memory: &impl Memory, base: usize, array: Array, output: &mut [Row]) -> Outcome {
-    let Some(vtable) = base.checked_add(VTABLE_RVA) else {
+    let Some(vtable) = engine_sites::at(base, VTABLE_RVA) else {
         return Outcome::Unavailable {
             reason: "module address overflow",
         };
@@ -121,7 +122,7 @@ mod tests {
     #[test]
     fn independent_flags_include_slot_zero() {
         let mut bytes = [0; STRIDE];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         for (flag, value) in [1, 0, 255, 1, 2, 3].into_iter().enumerate() {
             bytes[FLAGS + flag * 8] = value;
         }
@@ -160,7 +161,7 @@ mod tests {
     fn row_fault_and_wrong_identity_never_publish_a_complete_prefix() {
         let mut bytes = [0; STRIDE * 2];
         for offset in [0, STRIDE] {
-            bytes[offset..offset + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+            bytes[offset..offset + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         }
         let array = Array {
             data: 0x1000,

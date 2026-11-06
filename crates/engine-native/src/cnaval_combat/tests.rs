@@ -60,7 +60,7 @@ impl World {
         let mut world = Self(vec![0; 0xa000]);
         world.array(GS + cgame_state::COMBATS + 8, ROOTS, 2, 1);
         world.u64(ROOTS, BODY as u64);
-        world.u64(BODY, (IMAGE + VTABLE_RVA) as u64);
+        world.u64(BODY, (IMAGE + VTABLE_RVA.0) as u64);
         world.u64(
             BODY + HANDLE,
             (u64::from(u32::MAX) << 32) | u64::from(OBSERVED_REFERENCE_TYPE + 17),
@@ -68,7 +68,7 @@ impl World {
         world.u64(BODY + ATTACKER, ATTACKING as u64);
         world.u64(BODY + DEFENDER, DEFENDING as u64);
         world.u64(BODY + PROVINCE, FRONT as u64);
-        world.u64(FRONT, (IMAGE + cprovince::VTABLE_RVA) as u64);
+        world.u64(FRONT, (IMAGE + cprovince::VTABLE_RVA.0) as u64);
         world.u32(FRONT + cprovince::ID, 42);
         world.array(GS + cgame_state::PROVINCES, 0xa500, 43, 43);
         world.u64(0xa500 + 42 * 8, FRONT as u64);
@@ -92,7 +92,7 @@ impl World {
                 u32::MAX,
             ),
         ] {
-            world.u64(side, (IMAGE + cnaval_combatant::VTABLE_RVA) as u64);
+            world.u64(side, (IMAGE + cnaval_combatant::VTABLE_RVA.0) as u64);
             world.u64(side + cnaval_combatant::COMBAT, BODY as u64);
             let sentinel = if side == ATTACKING { 0xa680 } else { 0xa6a0 };
             world.u64(side + 0x2b0, sentinel as u64);
@@ -102,12 +102,12 @@ impl World {
             world.u64(roots, group as u64);
             world.u64(side + cnaval_combatant::POSITIONING, i64::MIN as u64);
             world.u64(side + cnaval_combatant::ANTI_AIR, i64::MAX as u64);
-            world.u64(group, (IMAGE + cfex_group::VTABLE_RVA) as u64);
+            world.u64(group, (IMAGE + cfex_group::VTABLE_RVA.0) as u64);
             world.u64(group + cfex_group::SIDE, side as u64);
             world.u64(group + cfex_group::OPPONENT_GROUP, other as u64);
             world.array(group + cfex_group::MEMBERS, members, 3, 1);
             world.u64(members, member as u64);
-            world.u64(member, (IMAGE + cfex_member::VTABLE_RVA) as u64);
+            world.u64(member, (IMAGE + cfex_member::VTABLE_RVA.0) as u64);
             world.u64(member + cfex_member::GROUP, group as u64);
             world.u64(
                 member + cfex_member::SHIP_HANDLE,
@@ -141,12 +141,12 @@ impl Memory for DetailMemory<'_> {
         use crate::{modifier_definition as md, naval_combat_summary_inputs as summary};
         // Named synthetic module globals and metadata required by the
         // summary reader. Other absent addresses remain unreadable.
-        if address == IMAGE + md::TABLE_RVA && output.len() == 8 {
+        if address == IMAGE + md::TABLE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x100000u64.to_le_bytes());
             return true;
         }
-        if (address == IMAGE + md::ELIGIBILITY_CALLBACK_RVA && output.len() == 8)
-            || (address == IMAGE + md::TRADE_FEATURE_FLAGS_RVA && output.len() == 4)
+        if (address == IMAGE + md::ELIGIBILITY_CALLBACK_RVA.0 && output.len() == 8)
+            || (address == IMAGE + md::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4)
             || (output.len() == 4
                 && summary::MODIFIER_KEYS.iter().any(|key| {
                     let row = 0x100000 + *key as usize * md::STRIDE;
@@ -190,7 +190,7 @@ fn unreadable_custom_sea_grid_does_not_withhold_live_combat_details() {
     world.u64(FRONT + cprovince::STRATEGIC_REGION, REGION as u64);
     world.u64(
         REGION,
-        (IMAGE + crate::cstrategic_region::VTABLE_RVA) as u64,
+        (IMAGE + crate::cstrategic_region::VTABLE_RVA.0) as u64,
     );
     world.u32(REGION + crate::cstrategic_region::ID, 94);
     world.u64(REGION + 0x30, TEMPLATE as u64);
@@ -218,10 +218,10 @@ fn side_units_keep_stored_order_and_report_their_demand() {
     world.array(ATTACKING + cnaval_combatant::UNITS, SLOTS, 4, 2);
     for (index, (force, handle)) in FORCES.into_iter().zip(handles).enumerate() {
         world.u64(SLOTS + index * 8, force as u64);
-        world.u64(force, (IMAGE + crate::ctask_force::VTABLE_RVA) as u64);
+        world.u64(force, (IMAGE + crate::ctask_force::VTABLE_RVA.0) as u64);
         world.u64(
             force + crate::ctask_force::SECONDARY_BASE,
-            (IMAGE + crate::ctask_force::SECONDARY_VTABLE_RVA) as u64,
+            (IMAGE + crate::ctask_force::SECONDARY_VTABLE_RVA.0) as u64,
         );
         world.u64(force + crate::ctask_force::SECONDARY_BASE + 8, handle);
     }
@@ -307,7 +307,7 @@ fn side_units_keep_stored_order_and_report_their_demand() {
         }
     );
     assert_eq!((len, required), (0, 2));
-    world.u64(FORCES[1], (IMAGE + cship::VTABLE_RVA) as u64);
+    world.u64(FORCES[1], (IMAGE + cship::VTABLE_RVA.0) as u64);
     assert!(matches!(
         run(&world, &mut [0; 3]).0,
         Outcome::Unavailable { .. }
@@ -553,7 +553,7 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
     world.array(MEMBER_A + cfex_member::DAMAGE_ENTRIES, 0xa800, 1, 1);
     world.u64(
         0xa800,
-        (IMAGE + crate::cfex_damage_entry::VTABLE_RVA) as u64,
+        (IMAGE + crate::cfex_damage_entry::VTABLE_RVA.0) as u64,
     );
     world.u64(0xa818, i64::MAX as u64);
     // One member occurs in both active and retained lists. Both air-hit
@@ -565,17 +565,17 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
     world.u64(0xa840, 0xaa00);
     world.u64(
         0xaa00,
-        (IMAGE + crate::naval_combat_air_hit::VTABLE_RVA) as u64,
+        (IMAGE + crate::naval_combat_air_hit::VTABLE_RVA.0) as u64,
     );
     world.u64(0xaa08, 0xab00);
     world.u64(
         0xab00,
-        (IMAGE + crate::cequipment_variant::VTABLE_RVA) as u64,
+        (IMAGE + crate::cequipment_variant::VTABLE_RVA.0) as u64,
     );
     world.u64(0xab08, u64::MAX);
     world.array(MEMBER_A + 0x180, 0xa848, 1, 1);
     world.u64(0xa848, 0xac00);
-    world.u64(0xac00, (IMAGE + crate::naval_combat_hit::VTABLE_RVA) as u64);
+    world.u64(0xac00, (IMAGE + crate::naval_combat_hit::VTABLE_RVA.0) as u64);
     world.u64(0xac10 + crate::msvc_string::CAPACITY, 15);
     world.u64(0xac38, i64::MIN as u64);
     let run = |initial, fault| {
@@ -699,7 +699,7 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
 fn side_external_planes_keep_their_first_group_owner() {
     const PLANE: usize = 0xa900;
     let mut world = detail_world();
-    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA) as u64);
+    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA.0) as u64);
     world.u64(PLANE + 8, GROUP_A as u64);
     world.u64(PLANE + 0x88 + crate::msvc_string::CAPACITY, 15);
     world.u64(0xa880, PLANE as u64);
@@ -927,12 +927,12 @@ fn core_combat_rows_groups_and_members_follow_first_and_later_mod_headers() {
                 (block, block + 0x40, block + 0x80, block + 0x2e0, ATTACKING),
                 (block + 0x40, block, block + 0x1b0, block + 0x2e8, DEFENDING),
             ] {
-                world.u64(group, (IMAGE + cfex_group::VTABLE_RVA) as u64);
+                world.u64(group, (IMAGE + cfex_group::VTABLE_RVA.0) as u64);
                 world.u64(group + cfex_group::SIDE, side as u64);
                 world.u64(group + cfex_group::OPPONENT_GROUP, opponent as u64);
                 world.array(group + cfex_group::MEMBERS, slots, 1, 1);
                 world.u64(slots, member as u64);
-                world.u64(member, (IMAGE + cfex_member::VTABLE_RVA) as u64);
+                world.u64(member, (IMAGE + cfex_member::VTABLE_RVA.0) as u64);
                 world.u64(member + cfex_member::GROUP, group as u64);
                 world.u32(member + cfex_member::BATTLE_SLOT, index as u32);
             }
@@ -1188,7 +1188,7 @@ fn a_registry_past_4096_combats_is_walked_whole_and_truncates_by_demand() {
     let naval = (0..entries).filter(|&index| is_naval(index)).count();
     let mut world = detail_world();
     world.0.resize(REGISTRY + entries * 8 - GS, 0);
-    world.u64(LAND, (IMAGE + cland_combat::VTABLE_RVA) as u64);
+    world.u64(LAND, (IMAGE + cland_combat::VTABLE_RVA.0) as u64);
     world.array(
         GS + cgame_state::COMBATS + 8,
         REGISTRY,
@@ -1400,7 +1400,7 @@ fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
     for index in 0..8192 {
         let group = GROUPS + index * 0x100;
         world.u64(ARRAY + index * 8, group as u64);
-        world.u64(group, (IMAGE + cfex_group::VTABLE_RVA) as u64);
+        world.u64(group, (IMAGE + cfex_group::VTABLE_RVA.0) as u64);
         world.u64(group + cfex_group::SIDE, ATTACKING as u64);
     }
     world.u64(ARRAY + 8192 * 8, GROUP_A as u64);
@@ -1438,7 +1438,7 @@ fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
     const PLANE: usize = 0xa900;
     let mut world = detail_world();
     world.0.resize(size, 0);
-    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA) as u64);
+    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA.0) as u64);
     world.u64(PLANE + 8, GROUP_A as u64);
     world.u64(PLANE + 0x88 + crate::msvc_string::CAPACITY, 15);
     world.array(GROUP_A + 0x58, ARRAY, 16_385, 16_385);
@@ -1466,7 +1466,7 @@ fn active_wing_vectors_exceed_256() {
     const ARRAY: usize = 0xc000;
     let mut world = World::new();
     world.0.resize(ARRAY + COUNT * 16 - GS, 0);
-    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA) as u64);
+    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA.0) as u64);
     world.u64(PLANE + 8, GROUP_A as u64);
     world.array(PLANE + 0x28, ARRAY, COUNT as u32, COUNT as u32);
     world.array(PLANE + 0x40, ARRAY + COUNT * 8, COUNT as u32, COUNT as u32);
@@ -1520,7 +1520,7 @@ fn member_damage_past_16384_grows_from_the_native_header() {
     );
     for index in 0..COUNT {
         let entry = ARRAY + index * 0x20;
-        world.u64(entry, (IMAGE + crate::cfex_damage_entry::VTABLE_RVA) as u64);
+        world.u64(entry, (IMAGE + crate::cfex_damage_entry::VTABLE_RVA.0) as u64);
         world.u64(entry + 0x18, i64::MIN as u64);
     }
     let (capture, _, ships, _, _) = walk_whole(&world, 0);
@@ -1549,8 +1549,8 @@ fn mixed_registry_skips_known_land_classes_and_refuses_null_or_unknown_entries()
     world.array(GS + cgame_state::COMBATS + 8, ROOTS, 3, 3);
     world.u64(ROOTS + 8, land as u64);
     world.u64(ROOTS + 16, border as u64);
-    world.u64(land, (IMAGE + cland_combat::VTABLE_RVA) as u64);
-    world.u64(border, (IMAGE + cland_border_war_combat::VTABLE_RVA) as u64);
+    world.u64(land, (IMAGE + cland_combat::VTABLE_RVA.0) as u64);
+    world.u64(border, (IMAGE + cland_border_war_combat::VTABLE_RVA.0) as u64);
     let capture = walk(
         &world.memory(),
         IMAGE,
@@ -1580,7 +1580,7 @@ fn mixed_registry_skips_known_land_classes_and_refuses_null_or_unknown_entries()
         if null {
             world.u64(ROOTS + 16, 0);
         } else {
-            world.u64(border, (IMAGE + VTABLE_RVA + 8) as u64);
+            world.u64(border, (IMAGE + VTABLE_RVA.0 + 8) as u64);
         }
         let capture = walk(
             &world.memory(),
@@ -1764,7 +1764,7 @@ fn cold_worker_reads_growing_plane_populations_on_the_original_hour() {
     for count in [15, 50, 165] {
         let mut world = detail_world();
         world.0.resize(ARRAY + count * 8 - GS, 0);
-        world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA) as u64);
+        world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA.0) as u64);
         world.u64(PLANE + 8, GROUP_A as u64);
         world.array(GROUP_A + 0x58, ARRAY, count as u32, count as u32);
         for index in 0..count {

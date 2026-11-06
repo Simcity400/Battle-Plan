@@ -73,7 +73,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             country,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, country + ccountry::ID, &id.to_le_bytes());
         put(
@@ -81,7 +81,7 @@ fn fixture() -> Vec<u8> {
             country + ccountry::FUEL_STATUS,
             &(status as u64).to_le_bytes(),
         );
-        put(&mut bytes, status, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, status, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(
             &mut bytes,
             status + COUNTRY,

@@ -1,5 +1,6 @@
 //! COrderInstance state and the functions that establish its saved representation.
 
+use engine_sites::Rva;
 use crate::{
     Memory, corders_group,
     cpdx_array::Array,
@@ -110,7 +111,7 @@ fn invasion_transports(
     pointer: usize,
     record: Gathered<'_>,
 ) -> Option<i32> {
-    let expected = base.checked_add(INVASION_SUBSCRIBER_VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, INVASION_SUBSCRIBER_VTABLE_RVA)? as u64;
     if gathered_field::<u64>(memory, pointer, 8, record).ok()? != expected {
         return None;
     }
@@ -935,8 +936,9 @@ pub fn walk_plans_ordered_with_sources(
         let census = || census_orders(visits, census_order).map(|(_, visit)| visit);
         let invalid = plan_field::<u64>(
             memory,
-            base,
-            crate::creference_registry::INVALID_REFERENCE_RVA,
+            engine_sites::at(base, crate::creference_registry::INVALID_REFERENCE_RVA)
+                .ok_or("plan field unreadable or address overflow")?,
+            0,
         )?;
         grow_payload(output, expected, "plan row allocation failed")?;
         // Each order's row, from its key; without the scratch the rows stay
@@ -981,10 +983,12 @@ pub fn walk_plans_ordered_with_sources(
                     .ok_or("plan owner absent from census")?;
                 let pointer = visit.pointer;
                 let field = |offset| gathered_field::<u64>(memory, pointer, offset, record);
+                let vtable = engine_sites::at(base, VTABLE_RVA)
+                    .ok_or("plan order identity mismatch")? as u64;
                 if record
                     .get::<u64>(0)
                     .or_else(|| read::<u64>(memory, pointer))
-                    != base.checked_add(VTABLE_RVA).map(|v| v as u64)
+                    != Some(vtable)
                     || field(OWNER)? != group.pointer as u64
                 {
                     return Err("plan order identity mismatch");
@@ -1245,13 +1249,13 @@ fn assigned_handle(
     let header = header.unwrap_or_else(|| read::<[u8; ASSIGNED_SPAN]>(memory, unit));
     let word =
         |at: usize| header.map(|header| u64::from_le_bytes(header[at..at + 8].try_into().unwrap()));
-    if word(0).or_else(|| read::<u64>(memory, unit))
-        != base.checked_add(crate::carmy::VTABLE_RVA).map(|v| v as u64)
+    let primary = engine_sites::at(base, crate::carmy::VTABLE_RVA)
+        .ok_or("plan assigned division identity mismatch")? as u64;
+    if word(0).or_else(|| read::<u64>(memory, unit)) != Some(primary)
         || match word(crate::carmy::SECONDARY_BASE) {
             Some(value) => value,
             None => plan_field::<u64>(memory, unit, crate::carmy::SECONDARY_BASE)?,
-        } != base
-            .checked_add(crate::carmy::SECONDARY_VTABLE_RVA)
+        } != engine_sites::at(base, crate::carmy::SECONDARY_VTABLE_RVA)
             .ok_or("module overflow")? as u64
     {
         return Err("plan assigned division identity mismatch");
@@ -1267,10 +1271,10 @@ fn assigned_handle(
 }
 
 /// COrderInstance vtable.
-pub const VTABLE_RVA: usize = 0x02a0_26e8;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_26e8);
 /// Embedded convoy-subscriber vtable after the order's own vtable; its serializer stores allocated
 /// and required counts.
-const INVASION_SUBSCRIBER_VTABLE_RVA: usize = 0x029d_8b80;
+const INVASION_SUBSCRIBER_VTABLE_RVA: Rva = Rva(0x029d_8b80);
 /// The embedded subscriber's signed allocated convoys, saved even when zero.
 const INVASION_TRANSPORTS: usize = 0x10;
 /// COrderInstance signed order type.
@@ -2720,9 +2724,7 @@ impl<M: Memory> Graph<'_, M> {
         } else {
             parent
         };
-        let expected = self
-            .base
-            .checked_add(VTABLE_RVA)
+        let expected = engine_sites::at(self.base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let at = |offset| {
             pointer

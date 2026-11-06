@@ -282,9 +282,7 @@ impl<'a> Pass<'a> {
                     };
                     let identity = field::<[u8; 16]>(memory, pointer, 0)?;
                     if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                        != self
-                            .base
-                            .checked_add(crate::craid_instance::VTABLE_RVA)
+                        != engine_sites::at(self.base, crate::craid_instance::VTABLE_RVA)
                             .ok_or("raid module overflow")? as u64
                         || u64::from_le_bytes(identity[8..].try_into().unwrap()) != raw
                         || raw as u32 != crate::craid_instance::REFERENCE_TYPE_VALUE
@@ -340,15 +338,13 @@ fn header(memory: &impl Memory, base: usize, pointer: usize) -> Result<(u32, boo
     let token = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     match bytes[16] {
         1 if vtable
-            == base
-                .checked_add(definition::VTABLE_RVA)
-                .ok_or("subunit module overflow")? as u64 =>
+            == engine_sites::at(base, definition::VTABLE_RVA).ok_or("subunit module overflow")?
+                as u64 =>
         {
             Ok((token, true))
         }
         0 if vtable
-            == base
-                .checked_add(definition::NULL_VTABLE_RVA)
+            == engine_sites::at(base, definition::NULL_VTABLE_RVA)
                 .ok_or("subunit module overflow")? as u64
             && token == definition::NULL_TOKEN =>
         {

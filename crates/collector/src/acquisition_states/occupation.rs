@@ -704,8 +704,8 @@ mod tests {
         };
         let object = source.pointer + cstate::RESISTANCE;
         for (at, value) in [
-            (source.pointer, cstate::VTABLE_RVA as u64),
-            (object, cresistance::VTABLE_RVA as u64),
+            (source.pointer, cstate::VTABLE_RVA.0 as u64),
+            (object, cresistance::VTABLE_RVA.0 as u64),
             (object + cresistance::STATE, source.pointer as u64),
             (object + cresistance::LEVEL, 123_456),
         ] {
@@ -784,7 +784,7 @@ mod tests {
             marker_put(
                 &mut bytes,
                 country,
-                (ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                (ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             marker_put(&mut bytes, country + ccountry::ID, slot.to_le_bytes());
             marker_put(
@@ -795,7 +795,7 @@ mod tests {
             marker_put(
                 &mut bytes,
                 diplomacy,
-                (cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+                (cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             marker_put(
                 &mut bytes,
@@ -812,7 +812,7 @@ mod tests {
         marker_put(
             &mut bytes,
             MARKER_STATE.pointer,
-            (cstate::VTABLE_RVA as u64).to_le_bytes(),
+            (cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         marker_put(
             &mut bytes,
@@ -834,7 +834,7 @@ mod tests {
         marker_put(
             &mut bytes,
             object,
-            (cresistance::VTABLE_RVA as u64).to_le_bytes(),
+            (cresistance::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         marker_put(
             &mut bytes,
@@ -866,12 +866,12 @@ mod tests {
         marker_put(
             &mut bytes,
             MARKER_HOLDER,
-            (holder::VTABLE_RVA as u64).to_le_bytes(),
+            (holder::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         marker_put(
             &mut bytes,
             MARKER_HOLDER + holder::SECONDARY_BASE,
-            (holder::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            (holder::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         marker_array(
             &mut bytes,
@@ -888,7 +888,7 @@ mod tests {
         marker_put(
             &mut bytes,
             MARKER_GROUP,
-            (group::VTABLE_RVA as u64).to_le_bytes(),
+            (group::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         marker_put(
             &mut bytes,
@@ -923,7 +923,7 @@ mod tests {
             marker_put(
                 &mut bytes,
                 definition,
-                (map::DEFINITION_VTABLE_RVA as u64).to_le_bytes(),
+                (map::DEFINITION_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             marker_put(&mut bytes, definition + map::DEFINITION_NAME, [name]);
             marker_put(
@@ -960,7 +960,7 @@ mod tests {
         marker_put(
             &mut bytes,
             MARKER_RETAINED_COUNTRY,
-            (ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            (ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         marker_put(
             &mut bytes,
@@ -1793,7 +1793,7 @@ mod tests {
             {
                 return false;
             }
-            if address == engine_native::modifier_definition::TABLE_RVA {
+            if address == engine_native::modifier_definition::TABLE_RVA.0 {
                 out.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
                 return true;
             }

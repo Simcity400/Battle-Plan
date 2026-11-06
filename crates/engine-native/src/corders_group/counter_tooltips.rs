@@ -4,6 +4,7 @@
 //! are passive and callback-local; tooltip naming uses the stored UnitLeaders
 //! name without copying rendered text or UI cache.
 
+use engine_sites::Rva;
 use super::LEADER;
 use crate::{
     Memory, carmy_leader, cgame_date, cgame_state, corders_group,
@@ -19,15 +20,27 @@ const DEPLOYMENT_PENDING: usize = 0x19a;
 const HQ_TEMPLATE: usize = 0x190;
 const TEMPLATE_MANPOWER: usize = 0x190;
 // Deployment defines are signed dwords; the date pair uses qwords.
-const DEPLOY_DAYS_RVA: usize = 0x033e_1fb8;
-const DEPLOY_MIN_RVA: usize = 0x033e_2024;
-const REFERENCE_MANPOWER_RVA: usize = 0x033e_22a8;
-const MANPOWER_EXPONENT_RVA: usize = 0x033e_2338;
+const DEPLOY_DAYS_RVA: Rva = Rva(0x033e_1fb8);
+const DEPLOY_MIN_RVA: Rva = Rva(0x033e_2024);
+const REFERENCE_MANPOWER_RVA: Rva = Rva(0x033e_22a8);
+const MANPOWER_EXPONENT_RVA: Rva = Rva(0x033e_2338);
 
 fn at_counter(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)
         .ok_or("HQ cooldown address overflow")
+}
+
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("HQ cooldown address overflow")
+}
+
+fn define<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    field(memory, site(base, key)?, 0)
 }
 
 fn field<T: crate::memory::Raw>(
@@ -39,22 +52,22 @@ fn field<T: crate::memory::Raw>(
 }
 
 fn date(memory: &impl Memory, base: usize, pointer: usize) -> Result<i32, &'static str> {
-    if field::<u64>(memory, pointer, 0)? != at_counter(base, cgame_date::VTABLE_RVA)? as u64 {
+    if field::<u64>(memory, pointer, 0)? != site(base, cgame_date::VTABLE_RVA)? as u64 {
         return Err("HQ cooldown date identity mismatch");
     }
     field(memory, pointer, cgame_date::DATE_BASE)
 }
 
 fn deployment_days(memory: &impl Memory, base: usize, manpower: i32) -> Result<i32, &'static str> {
-    let days = field::<i32>(memory, base, DEPLOY_DAYS_RVA)?;
-    let minimum = field::<i32>(memory, base, DEPLOY_MIN_RVA)?;
+    let days = define::<i32>(memory, base, DEPLOY_DAYS_RVA)?;
+    let minimum = define::<i32>(memory, base, DEPLOY_MIN_RVA)?;
     if days < 1 {
         return Ok(0);
     }
     if manpower <= 0 {
         return Ok(days);
     }
-    let reference = field::<i64>(memory, base, REFERENCE_MANPOWER_RVA)?;
+    let reference = define::<i64>(memory, base, REFERENCE_MANPOWER_RVA)?;
     if reference <= 0 {
         return Ok(days);
     }
@@ -62,7 +75,7 @@ fn deployment_days(memory: &impl Memory, base: usize, manpower: i32) -> Result<i
         .wrapping_mul(10_000_000_000)
         .checked_div(reference)
         .ok_or("HQ cooldown manpower division traps")?;
-    let factor = fixed5::power(ratio, field(memory, base, MANPOWER_EXPONENT_RVA)?)?;
+    let factor = fixed5::power(ratio, define(memory, base, MANPOWER_EXPONENT_RVA)?)?;
     let value = i64::from(days).wrapping_mul(factor);
     let rounded = value.wrapping_add(if value < 0 { -50_000 } else { 50_000 }) / fixed5::SCALE;
     Ok((rounded as i32).max(minimum))
@@ -151,7 +164,7 @@ pub(super) fn leader_enroute_observed(
             if template_handle as u32 != creferenced_division_template::REFERENCE_TYPE
                 || template_handle >> 32 == 0
                 || field::<u64>(memory, template, 0)?
-                    != at_counter(base, creferenced_division_template::VTABLE_RVA)? as u64
+                    != site(base, creferenced_division_template::VTABLE_RVA)? as u64
                 || field::<u64>(memory, template, creferenced_division_template::TYPE)?
                     != template_handle
             {

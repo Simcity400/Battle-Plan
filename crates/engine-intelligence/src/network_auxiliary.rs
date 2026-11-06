@@ -1,6 +1,7 @@
 //! Saved network occurrences outside the state-strength census. The caller
 //! supplies an authenticated, marked network; this reader never finds owners.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry_intel_network as network, cpdx_array::Array, csub_intel_network as sub, read,
 };
@@ -143,7 +144,7 @@ pub fn acquire(
     out: &mut Vec<Entry>,
 ) -> Result<(), &'static str> {
     let object = seed.native_pointer;
-    if field::<u64>(memory, object, 0)? != (base + network::VTABLE_RVA) as u64
+    if field::<u64>(memory, object, 0)? != auth(base, network::VTABLE_RVA, "network auxiliary holder authentication failed")?
         || field::<u32>(memory, object, network::TARGET)? != seed.target_country
     {
         return Err("network auxiliary holder authentication failed");
@@ -152,7 +153,11 @@ pub fn acquire(
     let local = object
         .checked_add(network::LOCAL_NETWORK)
         .ok_or("network auxiliary address overflow")?;
-    if field::<u64>(memory, local, 0)? != (base + crate::clocal_intel_network::VTABLE_RVA) as u64 {
+    if field::<u64>(memory, local, 0)? != auth(
+        base,
+        crate::clocal_intel_network::VTABLE_RVA,
+        "network auxiliary local holder authentication failed",
+    )? {
         return Err("network auxiliary local holder authentication failed");
     }
     let graph = field::<u64>(memory, local, LOCAL_GRAPH)? as usize;
@@ -298,7 +303,7 @@ pub fn acquire(
         let at = subnetworks
             .element(ordinal, sub::STRIDE)
             .ok_or("network auxiliary subnetwork address overflow")?;
-        if field::<u64>(memory, at, 0)? != (base + sub::VTABLE_RVA) as u64 {
+        if field::<u64>(memory, at, 0)? != auth(base, sub::VTABLE_RVA, "network auxiliary subnetwork authentication failed")? {
             return Err("network auxiliary subnetwork authentication failed");
         }
         push(
@@ -464,60 +469,42 @@ fn records(
     )
 }
 
+fn auth(base: usize, key: Rva, failed: &'static str) -> Result<u64, &'static str> {
+    engine_sites::at(base, key).map(|address| address as u64).ok_or(failed)
+}
+
 pub struct Site {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 pub const SITES: [Site; 7] = [
     Site {
         name: "national rebuild",
-        rva: 0x12638d0,
-        sentinel: [
-            72, 137, 92, 36, 16, 72, 137, 116, 36, 24, 85, 87, 65, 84, 65, 85,
-        ],
+        rva: Rva(0x12638d0),
     },
     Site {
         name: "national token load",
-        rva: 0x1263400,
-        sentinel: [
-            72, 137, 92, 36, 8, 85, 86, 87, 72, 139, 236, 72, 131, 236, 112, 72,
-        ],
+        rva: Rva(0x1263400),
     },
     Site {
         name: "network construction",
-        rva: 0x125ccf0,
-        sentinel: [
-            64, 83, 72, 131, 236, 32, 72, 141, 5, 0xdb, 0x0f, 124, 1, 72, 139, 217,
-        ],
+        rva: Rva(0x125ccf0),
     },
     Site {
         name: "empty network construction",
-        rva: 0x125cda0,
-        sentinel: [
-            72, 137, 92, 36, 8, 87, 72, 131, 236, 32, 72, 141, 5, 0x27, 0x0f, 124,
-        ],
+        rva: Rva(0x125cda0),
     },
     Site {
         name: "network destruction",
-        rva: 0x125dff0,
-        sentinel: [
-            72, 137, 92, 36, 8, 72, 137, 116, 36, 16, 87, 72, 131, 236, 32, 72,
-        ],
+        rva: Rva(0x125dff0),
     },
     Site {
         name: "local token load",
-        rva: 0x1251e10,
-        sentinel: [
-            72, 137, 76, 36, 8, 85, 83, 86, 87, 65, 84, 65, 85, 65, 86, 65,
-        ],
+        rva: Rva(0x1251e10),
     },
     Site {
         name: "subnetwork preparation",
-        rva: 0x125e790,
-        sentinel: [
-            72, 137, 92, 36, 16, 76, 137, 68, 36, 24, 72, 137, 76, 36, 8, 85,
-        ],
+        rva: Rva(0x125e790),
     },
 ];
 
@@ -543,12 +530,12 @@ mod tests {
         const SUBS: usize = 0x1000;
         const OPS: usize = 0x2000;
         let mut bytes = vec![0; 0x3000];
-        word(&mut bytes, OBJECT, network::VTABLE_RVA as u64);
+        word(&mut bytes, OBJECT, network::VTABLE_RVA.0 as u64);
         count(&mut bytes, OBJECT + network::TARGET, 23);
         word(
             &mut bytes,
             OBJECT + network::LOCAL_NETWORK,
-            crate::clocal_intel_network::VTABLE_RVA as u64,
+            crate::clocal_intel_network::VTABLE_RVA.0 as u64,
         );
         word(
             &mut bytes,
@@ -558,7 +545,7 @@ mod tests {
         header(&mut bytes, OBJECT + network::SUBNETWORKS_DATA, SUBS, 2);
         for index in 0..2 {
             let at = SUBS + index * sub::STRIDE;
-            word(&mut bytes, at, sub::VTABLE_RVA as u64);
+            word(&mut bytes, at, sub::VTABLE_RVA.0 as u64);
             count(&mut bytes, at + SUB_COVERAGE, -7 - index as i32);
             word(&mut bytes, at + SUB_DETECTION_FACTOR, 100_000);
             word(&mut bytes, at + SUB_DETECTION_FACTOR + 8, i64::MIN as u64);

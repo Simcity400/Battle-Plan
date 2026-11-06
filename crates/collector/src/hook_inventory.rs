@@ -15,91 +15,45 @@ use engine_mutations::{
     country_input_mutations, faction_companion_mutations, faction_goal_mutations,
     local_subunit_mutations, naval_tree_mutations, opinion_mutations, party_leader_mutations,
     political_party_mutations, political_status_mutations, province_combat_mutations,
-    province_unit_mutations, raid_mutations,
-    railway_mutations, regional_mission_mutations, script_flag_mutations,
-    script_variable_mutations, ship_model_mutations, template_mutations, territory_mutations,
-    world_input_mutations, world_lifetime_sites,
+    province_unit_mutations, raid_mutations, railway_mutations, regional_mission_mutations,
+    script_flag_mutations, script_variable_mutations, ship_model_mutations, template_mutations,
+    territory_mutations, world_input_mutations, world_lifetime_sites,
 };
 use engine_native::cgame_state;
 use engine_naval_history::naval_result_sources;
 use engine_peace::peace_finalizer_site;
 use engine_production::{construction_ic_sites, line_output_sites, market_mutations};
+use engine_sites::Rva;
 
-/// One patch: its family, site name, RVA and the bytes it replaces.
+/// One patch: its family, site name, key and the bytes it writes.
 #[derive(Clone, Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Patch {
     pub(crate) family: &'static str,
     pub(crate) name: String,
-    pub(crate) rva: usize,
-    pub(crate) len: usize,
-    pub(crate) sentinel: Vec<u8>,
+    pub(crate) rva: Rva,
+    /// `None` for a tap: its span decodes from the located bytes, at least [`PATCH`].
+    pub(crate) len: Option<usize>,
 }
 
 /// A detour or replaced CALL patches five bytes.
 pub(crate) const PATCH: usize = 5;
 /// A replaced `CALL [RAX+disp32]` patches six.
 const INDIRECT: usize = 6;
-// These indirect CALL hooks authenticate the shared opcode prefix, then
-// retain the complete live fingerprint for publication. Register its full
-// pinned span so neighbour checks include the captured suffix too.
-const LEADER_CALL_SENTINELS: [[u8; 16]; 2] = [
-    [
-        0xff, 0x90, 0xe8, 0x00, 0x00, 0x00, 0x48, 0x85, 0xc0, 0x74, 0x0d, 0x4c, 0x8b, 0xc7, 0x33,
-        0xd2,
-    ],
-    [
-        0xff, 0x90, 0xe8, 0x00, 0x00, 0x00, 0x48, 0x85, 0xc0, 0x74, 0x0d, 0x4c, 0x8b, 0xc3, 0xb2,
-        0x01,
-    ],
-];
+const FIVE: Option<usize> = Some(PATCH);
+const TAP: Option<usize> = None;
 
-/// A tap owns the instructions it relocates; the epilogue form (span 0)
-/// writes its CALL, the copied epilogue and the moved JMP: 15 bytes.
-fn tap(sentinel: &[u8; 16]) -> usize {
-    match crate::hook::tap_span(sentinel).expect("tap sentinel decodes") {
-        0 => 15,
-        span => span,
-    }
-}
-
-// Hash-backed native descriptors authenticate their complete entry prefix.
-#[cfg(test)]
-fn hashed_sentinel(rva: usize, expected: u64) -> [u8; 16] {
-    static IMAGE: std::sync::OnceLock<engine_executable::executable_tables::pe::PeImage> =
-        std::sync::OnceLock::new();
-    let image = IMAGE.get_or_init(|| {
-        let directory =
-            std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("hook checks require BATTLE_PLAN_GAME_DIR");
-        let bytes = std::fs::read(std::path::Path::new(&directory).join("hoi4.exe")).unwrap();
-        let identity = engine_executable::build::hash_executable(bytes.as_slice()).unwrap();
-        assert!(engine_executable::build::PINNED_BUILD.matches(&identity));
-        engine_executable::executable_tables::pe::PeImage::parse(bytes).unwrap()
-    });
-    let bytes = image.bytes(u32::try_from(rva).unwrap(), 16).unwrap();
-    let actual = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
-    });
-    assert_eq!(actual, expected, "hook entry fingerprint mismatch");
-    bytes.try_into().unwrap()
-}
-
-#[cfg(not(test))]
-fn hashed_sentinel(_rva: usize, _expected: u64) -> [u8; 16] {
-    [0; 16]
-}
 pub(crate) fn patches() -> Vec<Patch> {
     let mut out = Vec::new();
-    let mut add = |family: &'static str, name: &str, rva: usize, len: usize, sentinel: &[u8]| {
+    let mut add = |family: &'static str, name: &str, rva: Rva, len: Option<usize>| {
         out.push(Patch {
             family,
             name: name.to_owned(),
             rva,
             len,
-            sentinel: sentinel.to_vec(),
         })
     };
-    for (name, rva, hash) in engine_native::naval_mine_inputs::WRITERS
+    for (name, rva) in engine_native::naval_mine_inputs::WRITERS
         .into_iter()
         .enumerate()
         .filter(|(index, _)| *index != 5)
@@ -112,114 +66,51 @@ pub(crate) fn patches() -> Vec<Patch> {
                 "mine incident",
             ]
             .into_iter()
-            .zip(engine_naval_history::cnaval_accident_report::WRITERS)
-            .map(|(name, (rva, hash))| (name, rva, hash)),
+            .zip(engine_naval_history::cnaval_accident_report::WRITERS),
         )
     {
-        add(
-            "naval_map_changes",
-            name,
-            rva,
-            PATCH,
-            &hashed_sentinel(rva, hash),
-        );
+        add("naval_map_changes", name, rva, FIVE);
     }
     for site in engine_mutations::navy_ledger_mutations::MUTATIONS {
-        add(
-            "naval_map_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("naval_map_changes", site.name, site.rva, FIVE);
     }
     for site in collector_observers::fleet_region_changes::SITES {
-        add(
-            "fleet_region_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("fleet_region_changes", site.name, site.rva, FIVE);
     }
     add(
         "hourly",
         "HourlyUpdate",
         cgame_state::HOURLY_UPDATE_RVA,
-        PATCH,
-        &cgame_state::HOURLY_UPDATE_SENTINEL,
+        FIVE,
     );
     for site in engine_mutations::unit_leader_mutations::MUTATIONS {
-        add(
-            "unit_leader_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("unit_leader_changes", site.name, site.rva, FIVE);
     }
     for site in engine_mutations::census_mutations::MUTATIONS {
-        add("census_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("census_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in engine_mutations::orders_group_mutations::MUTATIONS {
-        add(
-            "orders_group_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("orders_group_changes", site.name, site.rva, FIVE);
     }
     use engine_events::map_event_sites as map;
-    for (name, rva, sentinel) in [
-        (
-            "FakeDivisionRevealed",
-            map::FAKE_REVEAL_VISIBILITY_CALL_RVA,
-            map::FAKE_REVEAL_VISIBILITY_CALL_SENTINEL,
-        ),
-        (
-            "GeneralCaptured",
-            map::GENERAL_CAPTURE_CALL_RVA,
-            map::GENERAL_CAPTURE_CALL_SENTINEL,
-        ),
-        (
-            "ParadropLanding",
-            map::PARADROP_LANDING_CALL_RVA,
-            map::PARADROP_LANDING_CALL_SENTINEL,
-        ),
-        (
-            "RailwayGunOverrun",
-            map::RAILWAY_OVERRUN_RVA,
-            map::RAILWAY_OVERRUN_SENTINEL,
-        ),
-        (
-            "ResistanceActivity",
-            map::RESISTANCE_ACTIVITY_RVA,
-            map::RESISTANCE_ACTIVITY_SENTINEL,
-        ),
-        (
-            "BuildingDamage",
-            map::BUILDING_NOTIFICATION_RVA,
-            map::BUILDING_NOTIFICATION_SENTINEL,
-        ),
+    for (name, rva) in [
+        ("FakeDivisionRevealed", map::FAKE_REVEAL_VISIBILITY_CALL_RVA),
+        ("GeneralCaptured", map::GENERAL_CAPTURE_CALL_RVA),
+        ("ParadropLanding", map::PARADROP_LANDING_CALL_RVA),
+        ("RailwayGunOverrun", map::RAILWAY_OVERRUN_RVA),
+        ("ResistanceActivity", map::RESISTANCE_ACTIVITY_RVA),
+        ("BuildingDamage", map::BUILDING_NOTIFICATION_RVA),
     ] {
-        add("map_events", name, rva, PATCH, &sentinel);
+        add("map_events", name, rva, FIVE);
     }
     add(
         "map_events",
         "CriticalShoreBombardment",
         map::CRITICAL_BOMBARDMENT_TAP_RVA,
-        tap(&map::CRITICAL_BOMBARDMENT_TAP_SENTINEL),
-        &map::CRITICAL_BOMBARDMENT_TAP_SENTINEL[..tap(&map::CRITICAL_BOMBARDMENT_TAP_SENTINEL)],
+        TAP,
     );
     for site in ccharacter_portraits::MUTATIONS {
-        add(
-            "portrait_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("portrait_changes", site.name, site.rva, FIVE);
     }
     for (index, site) in engine_native::cequipment_variant::mutations::MUTATIONS
         .iter()
@@ -228,137 +119,68 @@ pub(crate) fn patches() -> Vec<Patch> {
         if engine_native::cequipment_variant::mutations::FORWARDED_SITES.contains(&index) {
             continue;
         }
-        add("design_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("design_changes", site.name, site.rva, FIVE);
     }
     for site in engine_native::cequipment_variant::source_mutations::MUTATIONS {
-        add(
-            "design_source_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("design_source_changes", site.name, site.rva, FIVE);
     }
     for site in engine_native::cequipment_variant::source_mutations::ORGANISATIONS {
-        add(
-            "design_organisation_liveness",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("design_organisation_liveness", site.name, site.rva, FIVE);
     }
     for site in engine_native::cproduction_status::design_templates::MUTATIONS {
-        add(
-            "design_template_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("design_template_changes", site.name, site.rva, FIVE);
     }
     for site in engine_native::cair_wing::replacement::MUTATIONS {
-        add(
-            "wing_preferences",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("wing_preferences", site.name, site.rva, FIVE);
     }
     for site in advisor_mutations::MUTATIONS {
-        add(
-            "advisor_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("advisor_changes", site.name, site.rva, FIVE);
     }
     for site in character_role_mutations::MUTATIONS {
-        add(
-            "advisor_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("advisor_changes", site.name, site.rva, FIVE);
     }
     for site in diplomacy_mutations::MUTATIONS {
-        add(
-            "relation_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("relation_changes", site.name, site.rva, FIVE);
     }
     for site in air_history_mutations::MUTATIONS {
-        add(
-            "history_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("history_changes", site.name, site.rva, FIVE);
     }
     add(
         "propaganda_changes",
         "daily propaganda append",
         engine_intelligence::propaganda_history::DAILY_UPDATE_RVA,
-        PATCH,
-        &engine_intelligence::propaganda_history::DAILY_UPDATE_SENTINEL,
+        FIVE,
     );
     add(
         "propaganda_changes",
         "strategic operative reset",
         engine_intelligence::propaganda_history::RESET_RVA,
-        PATCH,
-        &engine_intelligence::propaganda_history::RESET_SENTINEL,
+        FIVE,
     );
     for site in &engine_intelligence::network_auxiliary::SITES {
-        add(
-            "network_auxiliary",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("network_auxiliary", site.name, site.rva, FIVE);
     }
     for site in &engine_intelligence::intel_source_sites::SITES {
-        add("intel_sources", site.name, site.rva, PATCH, &site.sentinel);
+        add("intel_sources", site.name, site.rva, FIVE);
     }
     for (site, _) in script_flag_mutations::MUTATIONS {
-        add("flag_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("flag_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in building_mutations::MUTATIONS {
-        add(
-            "building_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("building_changes", site.name, site.rva, FIVE);
     }
     for site in engine_mutations::doctrine_mutations::SITES {
-        add(
-            "world_input_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("world_input_changes", site.name, site.rva, FIVE);
     }
-    for (index, (rva, sentinel)) in engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES
-        .iter()
+    for (index, rva) in engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES
+        .into_iter()
         .enumerate()
     {
         add(
             "world_input_changes",
             &format!("doctrine_gain_{index}"),
-            *rva,
-            tap(sentinel),
-            &sentinel[..tap(sentinel)],
+            rva,
+            TAP,
         );
     }
     // The advisor pool family's last site, the unappointment helper, is
@@ -369,192 +191,94 @@ pub(crate) fn patches() -> Vec<Patch> {
         country_input_mutations::MUTATIONS[13].0.rva
     );
     for (site, _) in pool_sites {
-        add(
-            "advisor_pool_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("advisor_pool_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in party_leader_mutations::MUTATIONS {
-        add(
-            "party_leader_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("party_leader_changes", site.name, site.rva, FIVE);
     }
     for (site, _, _) in script_variable_mutations::MUTATIONS {
-        add(
-            "variable_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("variable_changes", site.name, site.rva, FIVE);
     }
     for site in political_party_mutations::MUTATIONS {
-        add("party_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("party_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in air_wing_equipment_mutations::MUTATIONS {
-        add("wing_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("wing_changes", site.name, site.rva, FIVE);
     }
     for site in air_wing_equipment_mutations::MAP_MUTATIONS {
         // Includes direct incoming-wing append/erase. Their disjoint base
         // receiver certifies transfer order without changing wing equipment.
-        // Ordinary entry detours publish five bytes; retour owns relocation.
-        add("wing_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("wing_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in character_roster_mutations::MUTATIONS {
-        add("roster_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("roster_changes", site.name, site.rva, FIVE);
     }
     // Entry detours and replaced five-byte CALLs alike patch five bytes.
     for (site, _, _) in political_status_mutations::MUTATIONS {
-        add(
-            "political_status_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("political_status_changes", site.name, site.rva, FIVE);
     }
     for site in regional_mission_mutations::MUTATIONS {
-        add(
-            "mission_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("mission_changes", site.name, site.rva, FIVE);
     }
     add(
         "air_detection_overrides",
         "console vector writer",
         engine_map_air::map_air_sortie_inputs::DETECTION_OVERRIDE_WRITER_RVA,
-        PATCH,
-        &hashed_sentinel(
-            engine_map_air::map_air_sortie_inputs::DETECTION_OVERRIDE_WRITER_RVA,
-            engine_map_air::map_air_sortie_inputs::DETECTION_OVERRIDE_WRITER_PREFIX_HASH,
-        ),
+        FIVE,
     );
     add(
         "radar_symbols",
         "group update",
         engine_map_air::radar_group::UPDATE_RVA,
-        PATCH,
-        &hashed_sentinel(
-            engine_map_air::radar_group::UPDATE_RVA,
-            engine_map_air::radar_group::UPDATE_PREFIX_HASH,
-        ),
+        FIVE,
     );
-    for (name, rva, hash) in [
-        (
-            "enable",
-            engine_map_air::map_air_country_region_modifier::GROUND_CREWS_ENABLE_RVA,
-            engine_map_air::map_air_country_region_modifier::GROUND_CREWS_COMMAND_PREFIX_HASH,
-        ),
-        (
-            "disable",
-            engine_map_air::map_air_country_region_modifier::GROUND_CREWS_DISABLE_RVA,
-            engine_map_air::map_air_country_region_modifier::GROUND_CREWS_COMMAND_PREFIX_HASH,
-        ),
-        (
-            "construction",
-            engine_map_air::map_air_country_region_modifier::GROUND_CREWS_CONSTRUCTOR_RVA,
-            engine_map_air::map_air_country_region_modifier::GROUND_CREWS_CONSTRUCTOR_PREFIX_HASH,
-        ),
+    use engine_map_air::map_air_country_region_modifier as ground_crews;
+    for (name, rva) in [
+        ("enable", ground_crews::GROUND_CREWS_ENABLE_RVA),
+        ("disable", ground_crews::GROUND_CREWS_DISABLE_RVA),
+        ("construction", ground_crews::GROUND_CREWS_CONSTRUCTOR_RVA),
     ] {
-        add(
-            "ground_crews",
-            name,
-            rva,
-            PATCH,
-            &hashed_sentinel(rva, hash),
-        );
+        add("ground_crews", name, rva, FIVE);
     }
     for (site, _) in railway_mutations::MUTATIONS {
-        add("rail_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("rail_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in territory_mutations::MUTATIONS {
-        add(
-            "territory_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("territory_changes", site.name, site.rva, FIVE);
     }
     for site in engine_mutations::division_panel_mutations::MUTATIONS {
-        add(
-            "division_panel_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("division_panel_changes", site.name, site.rva, FIVE);
     }
     add(
         "map_events",
         "scripted_refresh",
         map_event_sites::SCRIPTED_REFRESH_CALL_RVA,
-        PATCH,
-        &map_event_sites::SCRIPTED_REFRESH_CALL_SENTINEL,
+        FIVE,
     );
     for site in &engine_mutations::war_participation_sites::SITES {
-        add(
-            "war_participation",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("war_participation", site.name, site.rva, FIVE);
     }
     for site in army_stat_mutations::MUTATIONS {
-        add(
-            "army_stat_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("army_stat_changes", site.name, site.rva, FIVE);
     }
     for site in ship_model_mutations::MUTATIONS {
-        add(
-            "ship_model_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("ship_model_changes", site.name, site.rva, FIVE);
     }
     // The whole descriptor list includes recruitment, exile resources, crew
     // writers and sent-expeditionary references. Other families observe these
     // sites through the country-input forwarder, without a second patch.
-    for (name, rva, len, sentinel) in collector_naval_management::changes::patch_sentinels() {
-        add("naval_management_changes", name, rva, len, &sentinel);
+    // Taps and five-byte method detours share the list: no static span.
+    for (name, rva) in collector_naval_management::changes::patch_sites() {
+        add("naval_management_changes", name, rva, TAP);
     }
     for (site, _, _) in country_input_mutations::MUTATIONS {
-        add(
-            "country_input_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("country_input_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in raid_mutations::MUTATIONS {
-        add("raid_changes", site.name, site.rva, PATCH, &site.sentinel);
+        add("raid_changes", site.name, site.rva, FIVE);
     }
     let daily = raid_mutations::DAILY_CAPACITIES;
-    add(
-        "raid_changes",
-        daily.name,
-        daily.rva,
-        PATCH,
-        &daily.sentinel,
-    );
+    add("raid_changes", daily.name, daily.rva, FIVE);
     // The naval tree family patches only its commander sites; its country
     // sites are the patches of the families that forward them.
     let country = naval_tree_mutations::COUNTRY_SITES;
@@ -567,581 +291,270 @@ pub(crate) fn patches() -> Vec<Patch> {
         engine_events::politics_sites::RESET_COUNTRY.rva
     );
     for site in &naval_tree_mutations::MUTATIONS[country..] {
-        add(
-            "naval_tree_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("naval_tree_changes", site.name, site.rva, FIVE);
     }
     for site in engine_native::cwar_goal::mutations::SITES {
-        add(
-            "wargoal_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("wargoal_changes", site.name, site.rva, FIVE);
     }
     // Daily diplomacy also expires goals; occupation owns that one patch and
     // forwards a notification spanning the native call to wargoal_changes.
     for site in engine_occupation::cresistance::changes::SITES {
-        add(
-            "occupation_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("occupation_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in world_input_mutations::MUTATIONS {
         // World inputs also owns every MIO roster/policy/design entry below;
         // dependent design observers receive the shared entries by forwarding.
-        add(
-            "world_input_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("world_input_changes", site.name, site.rva, FIVE);
     }
     for site in air_record_mutations::MUTATIONS {
-        add(
-            "air_record_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("air_record_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in local_subunit_mutations::MUTATIONS {
-        add(
-            "local_subunit_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("local_subunit_changes", site.name, site.rva, FIVE);
     }
     // The complete manifest includes template data, country configuration,
     // occupation lifecycle and HQ deployment detours; none are taps.
     for (site, _) in template_mutations::MUTATIONS {
-        add(
-            "template_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("template_changes", site.name, site.rva, FIVE);
     }
     for (site, _, patch) in faction_companion_mutations::MUTATIONS {
         let len = if matches!(patch, faction_companion_mutations::Patch::Tap) {
-            tap(&site.sentinel)
+            TAP
         } else {
-            PATCH
+            FIVE
         };
-        add(
-            "faction_companions",
-            site.name,
-            site.rva,
-            len,
-            &site.sentinel[..if matches!(patch, faction_companion_mutations::Patch::Tap) {
-                len
-            } else {
-                site.sentinel.len()
-            }],
-        );
+        add("faction_companions", site.name, site.rva, len);
     }
     for (site, _, patch) in faction_goal_mutations::MUTATIONS {
         let len = if matches!(patch, faction_goal_mutations::Patch::Tap) {
-            tap(&site.sentinel)
+            TAP
         } else {
-            PATCH
+            FIVE
         };
-        add(
-            "faction_goals",
-            site.name,
-            site.rva,
-            len,
-            &site.sentinel[..if matches!(patch, faction_goal_mutations::Patch::Tap) {
-                len
-            } else {
-                site.sentinel.len()
-            }],
-        );
+        add("faction_goals", site.name, site.rva, len);
     }
     for site in province_unit_mutations::MUTATIONS {
-        add(
-            "province_unit_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("province_unit_changes", site.name, site.rva, FIVE);
     }
     for site in province_combat_mutations::MUTATIONS {
-        add(
-            "province_combat_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("province_combat_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in air_base_mutations::MUTATIONS {
-        add(
-            "air_base_carry_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("air_base_carry_changes", site.name, site.rva, FIVE);
     }
     for site in opinion_mutations::MUTATIONS
         .iter()
         .chain(&opinion_mutations::RELATIONS)
     {
-        add(
-            "opinion_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("opinion_changes", site.name, site.rva, FIVE);
     }
     for site in equipment_destruction::SITES {
-        add(
-            "equipment_destruction",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("equipment_destruction", site.name, site.rva, FIVE);
     }
     for index in crate::market_changes::OBSERVED_SITES {
         let site = &market_mutations::SITES[index];
         let len = if index == market_mutations::FUEL_SENT_SITE
             || index == market_mutations::FUEL_LOST_SITE
         {
-            tap(&site.sentinel)
+            TAP
         } else {
-            PATCH
+            FIVE
         };
-        add(
-            "market_changes",
-            site.name,
-            site.rva,
-            len,
-            &site.sentinel[..if len != PATCH {
-                len
-            } else {
-                site.sentinel.len()
-            }],
-        );
+        add("market_changes", site.name, site.rva, len);
     }
     for (index, site) in naval_result_sources::SITES.into_iter().enumerate() {
         add(
             "naval_result_sources",
             &format!("site {index}"),
             site.rva,
-            PATCH,
-            &site.sentinel[..site.sentinel_len],
+            Some(site.span),
         );
     }
     for (index, site) in experience_gain_sites::SITES.iter().enumerate() {
-        add(
-            "experience_gains",
-            &format!("tap {index}"),
-            site.rva,
-            tap(&site.sentinel),
-            &site.sentinel[..tap(&site.sentinel)],
-        );
+        add("experience_gains", &format!("tap {index}"), site.rva, TAP);
     }
     for (index, site) in engine_native::command_inputs::SITES.iter().enumerate() {
-        let sentinel = hashed_sentinel(site.rva, site.fingerprint);
         add(
             "player_commands",
             &format!("site {index}"),
             site.rva,
-            site.span,
-            &sentinel[..site.span],
+            Some(site.span),
         );
     }
     for (index, site) in air_loss_sites::SITES.iter().enumerate() {
-        add(
-            "air_losses",
-            &format!("call {index}"),
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("air_losses", &format!("call {index}"), site.rva, FIVE);
     }
     add(
         "building_bombing",
         "ApplyDamage",
         building_damage_sites::APPLY_DAMAGE_RVA,
-        PATCH,
-        &building_damage_sites::APPLY_DAMAGE_SENTINEL,
+        FIVE,
     );
     for site in nuclear_strike_sites::SITES {
-        add(
-            "nuclear_strikes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("nuclear_strikes", site.name, site.rva, FIVE);
     }
-    for (name, rva, sentinel) in [
-        (
-            "credit",
-            line_output_sites::CREDIT.rva,
-            line_output_sites::CREDIT.sentinel,
-        ),
-        (
-            "delivery",
-            line_output_sites::DELIVERY.rva,
-            line_output_sites::DELIVERY.sentinel,
-        ),
-        (
-            "rocket",
-            line_output_sites::ROCKET_ADVANCE.rva,
-            line_output_sites::ROCKET_ADVANCE.sentinel,
-        ),
+    for (name, rva) in [
+        ("credit", line_output_sites::CREDIT.rva),
+        ("delivery", line_output_sites::DELIVERY.rva),
+        ("rocket", line_output_sites::ROCKET_ADVANCE.rva),
     ] {
-        add("line_output", name, rva, PATCH, &sentinel);
+        add("line_output", name, rva, FIVE);
     }
     for site in crate::construction_ic::SITES {
         let site: &construction_ic_sites::Site = site;
-        add(
-            "construction_ic",
-            "construction",
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("construction_ic", "construction", site.rva, FIVE);
     }
     for (name, site) in [
         ("reset", &world_lifetime_sites::RESET),
         ("construct", &world_lifetime_sites::CONSTRUCT),
     ] {
-        add(
-            "world_lifetime",
-            name,
-            site.rva,
-            tap(&site.sentinel),
-            &site.sentinel[..tap(&site.sentinel)],
-        );
+        add("world_lifetime", name, site.rva, TAP);
     }
     for (name, site) in [
         ("delete", &world_lifetime_sites::DELETE),
         ("state_reload", &world_lifetime_sites::STATE_RELOAD),
         ("straits_reload", &world_lifetime_sites::STRAITS_RELOAD),
     ] {
-        add("world_lifetime", name, site.rva, PATCH, &site.sentinel);
+        add("world_lifetime", name, site.rva, FIVE);
     }
-    for (name, rva, sentinel) in [
-        (
-            "finalize",
-            land_events::FINALIZE_RVA,
-            land_events::FINALIZE_SENTINEL,
-        ),
-        (
-            "destroy",
-            land_events::DESTROY_RVA,
-            land_events::DESTROY_SENTINEL,
-        ),
-        (
-            "border_finalize",
-            land_events::BORDER_FINALIZE_RVA,
-            land_events::BORDER_FINALIZE_SENTINEL,
-        ),
-        (
-            "border_terminate",
-            land_events::BORDER_TERMINATE_RVA,
-            land_events::BORDER_TERMINATE_SENTINEL,
-        ),
-        (
-            "dispatch",
-            land_events::DISPATCH_RVA,
-            land_events::DISPATCH_SENTINEL,
-        ),
-        (
-            "destruction",
-            land_events::DESTRUCTION_RVA,
-            land_events::DESTRUCTION_SENTINEL,
-        ),
-        (
-            "lifecycle",
-            land_wipe::LIFECYCLE_RVA,
-            land_wipe::LIFECYCLE_SENTINEL,
-        ),
+    for (name, rva) in [
+        ("finalize", land_events::FINALIZE_RVA),
+        ("destroy", land_events::DESTROY_RVA),
+        ("border_finalize", land_events::BORDER_FINALIZE_RVA),
+        ("border_terminate", land_events::BORDER_TERMINATE_RVA),
+        ("dispatch", land_events::DISPATCH_RVA),
+        ("destruction", land_events::DESTRUCTION_RVA),
     ] {
-        let len = if rva == land_wipe::LIFECYCLE_RVA {
-            8
-        } else {
-            PATCH
-        };
-        add("land_events", name, rva, len, &sentinel);
+        add("land_events", name, rva, FIVE);
     }
-    for ((name, rva), sentinel) in land_events::DISPATCH_LEADER_CALL_NAMES
+    add(
+        "land_events",
+        "lifecycle",
+        land_wipe::LIFECYCLE_RVA,
+        Some(8),
+    );
+    for (name, rva) in land_events::DISPATCH_LEADER_CALL_NAMES
         .into_iter()
         .zip(land_events::DISPATCH_LEADER_CALLS)
-        .zip(LEADER_CALL_SENTINELS)
     {
-        assert_eq!(
-            sentinel[..INDIRECT],
-            land_events::DISPATCH_LEADER_CALL_SENTINEL
-        );
-        add("land_events", name, rva, INDIRECT, &sentinel);
+        add("land_events", name, rva, Some(INDIRECT));
     }
     add(
         "combat_log_prune",
         "prune",
         ncombat_log_cmanager::PRUNE_RVA,
-        PATCH,
-        &ncombat_log_cmanager::PRUNE_SENTINEL,
+        FIVE,
     );
-    for (name, rva, sentinel) in [
-        (
-            "group_create_call",
-            combat_log_sites::GROUP_CREATE_CALL_RVA,
-            combat_log_sites::GROUP_CREATE_CALL_SENTINEL,
-        ),
-        (
-            "own_equipment",
-            combat_log_sites::OWN_EQUIPMENT_RVA,
-            combat_log_sites::OWN_EQUIPMENT_SENTINEL,
-        ),
-        (
-            "own_variant",
-            combat_log_sites::OWN_VARIANT_RVA,
-            combat_log_sites::OWN_VARIANT_SENTINEL,
-        ),
-        (
-            "enemy",
-            combat_log_sites::ENEMY_RVA,
-            combat_log_sites::ENEMY_SENTINEL,
-        ),
-        (
-            "recovered",
-            combat_log_sites::RECOVERED_RVA,
-            combat_log_sites::RECOVERED_SENTINEL,
-        ),
-        (
-            "manpower",
-            combat_log_sites::MANPOWER_RVA,
-            combat_log_sites::MANPOWER_SENTINEL,
-        ),
-        (
-            "result",
-            combat_log_sites::RESULT_RVA,
-            combat_log_sites::RESULT_SENTINEL,
-        ),
-        (
-            "group_prune",
-            combat_log_sites::GROUP_PRUNE_RVA,
-            combat_log_sites::GROUP_PRUNE_SENTINEL,
-        ),
-        (
-            "group_destroy",
-            combat_log_sites::GROUP_DESTROY_RVA,
-            combat_log_sites::GROUP_DESTROY_SENTINEL,
-        ),
-        (
-            "battle_allocate",
-            combat_log_sites::BATTLE_ALLOCATE_RVA,
-            combat_log_sites::BATTLE_ALLOCATE_SENTINEL,
-        ),
-        (
-            "battle_release",
-            combat_log_sites::BATTLE_RELEASE_RVA,
-            combat_log_sites::BATTLE_RELEASE_SENTINEL,
-        ),
-        (
-            "battle_reset",
-            combat_log_sites::BATTLE_RESET_RVA,
-            combat_log_sites::BATTLE_RESET_SENTINEL,
-        ),
-        (
-            "battle_load",
-            combat_log_sites::BATTLE_LOAD_RVA,
-            combat_log_sites::BATTLE_LOAD_SENTINEL,
-        ),
+    for (name, rva) in [
+        ("group_create_call", combat_log_sites::GROUP_CREATE_CALL_RVA),
+        ("own_equipment", combat_log_sites::OWN_EQUIPMENT_RVA),
+        ("own_variant", combat_log_sites::OWN_VARIANT_RVA),
+        ("enemy", combat_log_sites::ENEMY_RVA),
+        ("recovered", combat_log_sites::RECOVERED_RVA),
+        ("manpower", combat_log_sites::MANPOWER_RVA),
+        ("result", combat_log_sites::RESULT_RVA),
+        ("group_prune", combat_log_sites::GROUP_PRUNE_RVA),
+        ("group_destroy", combat_log_sites::GROUP_DESTROY_RVA),
+        ("battle_allocate", combat_log_sites::BATTLE_ALLOCATE_RVA),
+        ("battle_release", combat_log_sites::BATTLE_RELEASE_RVA),
+        ("battle_reset", combat_log_sites::BATTLE_RESET_RVA),
+        ("battle_load", combat_log_sites::BATTLE_LOAD_RVA),
     ] {
-        add("combat_log_history", name, rva, PATCH, &sentinel);
+        add("combat_log_history", name, rva, FIVE);
     }
     add(
         "combat_log_history",
         "template_counter",
         combat_log_sites::TEMPLATE_COUNTER_RVA,
-        tap(&combat_log_sites::TEMPLATE_COUNTER_SENTINEL),
-        &combat_log_sites::TEMPLATE_COUNTER_SENTINEL
-            [..tap(&combat_log_sites::TEMPLATE_COUNTER_SENTINEL)],
+        TAP,
     );
-    for (rva, sentinel, _) in clogistics_status::BALANCE_CALLS {
-        add("logistics_balance", "balance call", rva, PATCH, &sentinel);
+    for (rva, _) in clogistics_status::BALANCE_CALLS {
+        add("logistics_balance", "balance call", rva, FIVE);
     }
-    for (rva, sentinel, _) in clogistics_status::HISTORY_CALLS {
-        add("logistics_balance", "history call", rva, PATCH, &sentinel);
+    for (rva, _) in clogistics_status::HISTORY_CALLS {
+        add("logistics_balance", "history call", rva, FIVE);
     }
     let mut fuel = vec![fuel_awards::BEGIN, fuel_awards::END];
     fuel.extend(fuel_awards::LAND);
     fuel.extend([fuel_awards::NAVAL, fuel_awards::AIR, fuel_awards::RESET]);
-    for (index, (rva, sentinel)) in fuel.into_iter().enumerate() {
-        add(
-            "fuel_awards",
-            &format!("tap {index}"),
-            rva,
-            tap(&sentinel),
-            &sentinel[..tap(&sentinel)],
-        );
+    for (index, rva) in fuel.into_iter().enumerate() {
+        add("fuel_awards", &format!("tap {index}"), rva, TAP);
     }
     add(
         "operation_outcomes",
         "completion",
         operation_outcome_sites::COMPLETION_RVA,
-        PATCH,
-        &operation_outcome_sites::COMPLETION_SENTINEL,
+        FIVE,
     );
     for site in crate::politics_changes::entry_sites() {
-        add(
-            "politics_changes",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("politics_changes", site.name, site.rva, FIVE);
     }
     for site in crate::politics_changes::TAPS {
-        add(
-            "politics_changes",
-            site.name,
-            site.rva,
-            tap(&site.sentinel),
-            &site.sentinel[..tap(&site.sentinel)],
-        );
+        add("politics_changes", site.name, site.rva, TAP);
     }
     for (name, site) in [
         ("war", event_feed_sites::WAR),
         ("annex", event_feed_sites::ANNEX),
     ] {
-        add("event_feed_observer", name, site.rva, PATCH, &site.sentinel);
+        add("event_feed_observer", name, site.rva, FIVE);
     }
     for entry in event_feed_sites::provenance::ENTRIES {
-        add(
-            "event_feed_observer",
-            entry.name,
-            entry.rva,
-            PATCH,
-            &entry.sentinel,
-        );
+        add("event_feed_observer", entry.name, entry.rva, FIVE);
     }
-    for site in engine_events::script_event_sites::TAPS {
-        add(
-            "event_feed_observer",
-            site.name,
-            site.rva,
-            tap(&site.sentinel),
-            &site.sentinel[..tap(&site.sentinel)],
-        );
+    use engine_events::script_event_sites as script;
+    for site in script::TAPS {
+        add("event_feed_observer", site.name, site.rva, TAP);
     }
-    for site in engine_events::script_event_sites::REGISTRY_ENTRIES
+    for site in script::REGISTRY_ENTRIES
         .into_iter()
-        .chain([engine_events::script_event_sites::ACTIVATE_TARGETED])
+        .chain([script::ACTIVATE_TARGETED])
     {
-        add(
-            "event_feed_observer",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
+        add("event_feed_observer", site.name, site.rva, FIVE);
     }
-    for (name, rva, sentinel) in engine_decisions::cdecision::EVENT_FEED_ENTRIES {
-        add("event_feed_observer", name, rva, PATCH, &sentinel);
+    for (name, rva) in engine_decisions::cdecision::EVENT_FEED_ENTRIES {
+        add("event_feed_observer", name, rva, FIVE);
     }
     // The duration taps and the candidate clear tap are descriptors only:
     // their enclosing CALL and entry detours replace them.
-    for site in engine_events::script_event_sites::LIFECYCLE_TAPS
+    for site in script::LIFECYCLE_TAPS
         .into_iter()
-        .chain(engine_events::script_event_sites::decisions::TAPS)
-        .filter(|site| {
-            site.rva != engine_events::script_event_sites::decisions::CLEAR_CANDIDATES.rva
-        })
+        .chain(script::decisions::TAPS)
+        .filter(|site| site.rva != script::decisions::CLEAR_CANDIDATES.rva)
     {
         add(
-            if site.rva
-                == engine_events::script_event_sites::decisions::TARGETED_SELECTION_RESULT.rva
-            {
+            if site.rva == script::decisions::TARGETED_SELECTION_RESULT.rva {
                 "politics_changes"
             } else {
                 "event_feed_observer"
             },
             site.name,
             site.rva,
-            tap(&site.sentinel),
-            &site.sentinel[..tap(&site.sentinel)],
+            TAP,
         );
     }
-    for site in engine_events::script_event_sites::DELAYED_ENTRIES
+    for site in script::DELAYED_ENTRIES
         .into_iter()
         .take(2)
-        .chain(engine_events::script_event_sites::LIFECYCLE_ENTRIES)
-        .chain(engine_events::script_event_sites::decisions::ENTRIES)
+        .chain(script::LIFECYCLE_ENTRIES)
+        .chain(script::decisions::ENTRIES)
+        .chain(script::decisions::CALLS)
     {
-        add(
-            "event_feed_observer",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel,
-        );
-    }
-    for site in engine_events::script_event_sites::decisions::CALLS {
-        let verified = engine_events::script_event_sites::decisions::call_sentinel_len(site);
-        add(
-            "event_feed_observer",
-            site.name,
-            site.rva,
-            PATCH,
-            &site.sentinel[..verified],
-        );
+        add("event_feed_observer", site.name, site.rva, FIVE);
     }
     add(
         "variable_changes",
-        engine_events::script_event_sites::DELAYED_PASS.name,
-        engine_events::script_event_sites::DELAYED_PASS.rva,
-        PATCH,
-        &engine_events::script_event_sites::DELAYED_PASS.sentinel,
+        script::DELAYED_PASS.name,
+        script::DELAYED_PASS.rva,
+        FIVE,
     );
-    for site in engine_events::script_event_sites::DELAYED_TAPS {
-        add(
-            "variable_changes",
-            site.name,
-            site.rva,
-            tap(&site.sentinel),
-            &site.sentinel[..tap(&site.sentinel)],
-        );
+    for site in script::DELAYED_TAPS {
+        add("variable_changes", site.name, site.rva, TAP);
     }
     add(
         "peace_settlements",
         "finalizer",
         peace_finalizer_site::RVA,
-        PATCH,
-        &peace_finalizer_site::SENTINEL,
+        FIVE,
     );
     out
-}
-
-#[cfg(test)]
-mod command_tap_tests {
-    #[test]
-    fn authenticated_command_sites_replace_exact_instruction_spans() {
-        for site in engine_native::command_inputs::SITES {
-            let bytes = super::hashed_sentinel(site.rva, site.fingerprint);
-            assert_eq!(super::tap(&bytes), site.span);
-        }
-    }
 }

@@ -8,11 +8,11 @@ const LAUNCH_POINTERS: usize = 0x17200;
 fn launch_world() -> TestMemory {
     let mut memory = world();
     pointer(&mut memory.bytes, 0xa100, ZERO_NAVY);
-    pointer(&mut memory.bytes, ZERO_NAVY, cstrategic_navy::VTABLE_RVA);
+    pointer(&mut memory.bytes, ZERO_NAVY, cstrategic_navy::VTABLE_RVA.0);
     pointer(
         &mut memory.bytes,
         ZERO_NAVY + cstrategic_navy::SECONDARY,
-        cstrategic_navy::SECONDARY_VTABLE_RVA,
+        cstrategic_navy::SECONDARY_VTABLE_RVA.0,
     );
     pointer(&mut memory.bytes, ZERO_NAVY + native::MANAGER, MANAGER);
     word(
@@ -27,7 +27,7 @@ fn launch_world() -> TestMemory {
         3,
     );
     for (object, id) in [(0x17080, (-1_i32) as u32), (0x17100, 0)] {
-        pointer(&mut memory.bytes, object, cnaval_base::VTABLE_RVA);
+        pointer(&mut memory.bytes, object, cnaval_base::VTABLE_RVA.0);
         pointer(&mut memory.bytes, object + cnaval_base::HOLDER, ZERO_NAVY);
         word(&mut memory.bytes, object + cnaval_base::PROVINCE_ID, id);
     }

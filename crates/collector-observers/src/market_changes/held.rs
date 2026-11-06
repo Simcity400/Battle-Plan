@@ -3,6 +3,7 @@
 use super::*;
 use engine_native::{ccountry, cpdx_array::Array};
 use engine_production::market_ledger as market;
+use engine_sites::Rva;
 use replay_data::rows::{
     CountryMarketRow, LendLeaseAgreementRow, MarketContractRuntime, MarketContractTermsRow,
     MarketEquipment, MarketPool, MarketPriceLevel, MarketSubsidy, MarketVariable, SharedMarketPool,
@@ -12,7 +13,7 @@ use std::{
     sync::Mutex,
 };
 const PENDING_REQUESTS: usize = 0x60;
-const REQUEST_VTABLE_RVA: usize = 0x2aa1c88;
+const REQUEST_VTABLE_RVA: Rva = Rva(0x2aa1c88);
 mod worker;
 
 static EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -285,12 +286,15 @@ fn read_contract(
     pointer: usize,
     request: bool,
 ) -> Result<MarketContractTermsRow, &'static str> {
-    let expected = base
-        + if request {
+    let expected = engine_sites::at(
+        base,
+        if request {
             REQUEST_VTABLE_RVA
         } else {
             engine_production::cpurchase_contract::VTABLE_RVA
-        };
+        },
+    )
+    .ok_or("market terms holder vtable mismatch")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("market terms holder vtable mismatch");
     }
@@ -461,8 +465,7 @@ fn authenticate_country(
     base: usize,
     country: ccountry::Country,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(ccountry::VTABLE_RVA)
+    let expected = engine_sites::at(base, ccountry::VTABLE_RVA)
         .ok_or("market country vtable address overflow")? as u64;
     if read::<u64>(memory, country.pointer) != Some(expected)
         || scalar::<u32>(memory, country.pointer, ccountry::ID)? != country.id
@@ -1718,7 +1721,7 @@ mod tests {
         fn put(bytes: &mut [u8], at: usize, value: u64) {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         }
-        put(&mut bytes, HOLDER, REQUEST_VTABLE_RVA as u64);
+        put(&mut bytes, HOLDER, REQUEST_VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             HOLDER + engine_production::cpurchase_contract::ID_TYPE,
@@ -1733,7 +1736,7 @@ mod tests {
             put(
                 &mut bytes,
                 at,
-                engine_native::cequipment_variant_pool::VTABLE_RVA as u64,
+                engine_native::cequipment_variant_pool::VTABLE_RVA.0 as u64,
             );
         }
         put(

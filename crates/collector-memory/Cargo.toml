@@ -14,6 +14,7 @@ alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-nati
 test-support = ["dep:collector-test-support"]
 
 [dependencies]
+engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-native.workspace = true
 replay-data.workspace = true

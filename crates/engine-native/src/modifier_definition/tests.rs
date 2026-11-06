@@ -34,14 +34,14 @@ impl Fixture {
     }
     fn new(key: u32, selector: u32, flags: u32) -> Self {
         let mut result = Self::default();
-        result.put(BASE + TABLE_RVA, &(TABLE as u64).to_le_bytes());
+        result.put(BASE + TABLE_RVA.0, &(TABLE as u64).to_le_bytes());
         result.put(Self::row(key) + FEATURE_SELECTOR, &selector.to_le_bytes());
         result.put(Self::row(key) + FLAGS, &flags.to_le_bytes());
         result
     }
     fn callback(&mut self, pointer: u64, flags: u32) {
-        self.put(BASE + ELIGIBILITY_CALLBACK_RVA, &pointer.to_le_bytes());
-        self.put(BASE + TRADE_FEATURE_FLAGS_RVA, &flags.to_le_bytes());
+        self.put(BASE + ELIGIBILITY_CALLBACK_RVA.0, &pointer.to_le_bytes());
+        self.put(BASE + TRADE_FEATURE_FLAGS_RVA.0, &flags.to_le_bytes());
     }
 }
 impl Memory for Fixture {
@@ -81,13 +81,13 @@ fn effective_uses_only_authenticated_feature_flags_and_null_disables() {
     memory.callback(0, u32::MAX);
     assert_eq!(effective(&memory, BASE, KEY, 123456), Ok(0));
     for flags in [0, 2, 4, 0x80000000] {
-        memory.callback((BASE + ELIGIBILITY_FLAGS_GETTER_RVA) as u64, flags);
+        memory.callback((BASE + ELIGIBILITY_FLAGS_GETTER_RVA.0) as u64, flags);
         assert_eq!(
             effective(&memory, BASE, KEY, 123456),
             Ok(if flags & 0x80000004 == 0 { 0 } else { 100000 })
         );
     }
-    memory.callback((BASE + ELIGIBILITY_FLAGS_GETTER_RVA + 1) as u64, u32::MAX);
+    memory.callback((BASE + ELIGIBILITY_FLAGS_GETTER_RVA.0 + 1) as u64, u32::MAX);
     assert_eq!(
         effective(&memory, BASE, KEY, 123456),
         Err("modifier eligibility callback unsupported")
@@ -101,19 +101,19 @@ fn effective_uses_only_authenticated_feature_flags_and_null_disables() {
 #[test]
 fn effective_first_faults_never_become_a_derived_value() {
     for address in [
-        BASE + TABLE_RVA,
+        BASE + TABLE_RVA.0,
         Fixture::row(KEY) + FEATURE_SELECTOR,
         Fixture::row(KEY) + FLAGS,
-        BASE + ELIGIBILITY_CALLBACK_RVA,
-        BASE + TRADE_FEATURE_FLAGS_RVA,
+        BASE + ELIGIBILITY_CALLBACK_RVA.0,
+        BASE + TRADE_FEATURE_FLAGS_RVA.0,
     ] {
         let mut memory = Fixture::new(KEY, 4, CLAMP_MAXIMUM);
-        memory.callback((BASE + ELIGIBILITY_FLAGS_GETTER_RVA) as u64, 4);
+        memory.callback((BASE + ELIGIBILITY_FLAGS_GETTER_RVA.0) as u64, 4);
         memory.bytes.remove(&address);
         assert!(effective(&memory, BASE, KEY, 1).is_err());
     }
     let mut memory = Fixture::new(KEY, 0, 0);
-    memory.put(BASE + TABLE_RVA, &0_u64.to_le_bytes());
+    memory.put(BASE + TABLE_RVA.0, &0_u64.to_le_bytes());
     assert!(effective(&memory, BASE, KEY, 1).is_err());
     assert!(effective(&memory, usize::MAX, KEY, 1).is_err());
 }
@@ -158,8 +158,8 @@ impl Table {
         table.header(TABLE, count + 3, count);
         // The process-wide eligibility callback: the flags getter.
         table.memory.put(
-            BASE + ELIGIBILITY_CALLBACK_RVA,
-            &((BASE + ELIGIBILITY_FLAGS_GETTER_RVA) as u64).to_le_bytes(),
+            BASE + ELIGIBILITY_CALLBACK_RVA.0,
+            &((BASE + ELIGIBILITY_FLAGS_GETTER_RVA.0) as u64).to_le_bytes(),
         );
         for (position, row) in rows.iter().enumerate() {
             let address = TABLE + position * STRIDE;
@@ -194,26 +194,27 @@ impl Table {
         header[..8].copy_from_slice(&(data as u64).to_le_bytes());
         header[8..12].copy_from_slice(&capacity.to_le_bytes());
         header[12..].copy_from_slice(&count.to_le_bytes());
-        self.memory.put(BASE + TABLE_RVA, &header);
+        self.memory.put(BASE + TABLE_RVA.0, &header);
     }
 
     /// Lexer reverse dictionary `names[id]`, read with no active writer.
     fn lexer(&mut self, names: &[&[u8]]) {
         let mut header = [0_u8; 64];
-        let at = |rva: usize| rva - cpdx_lexer::INITIALIZED_RVA;
+        let at = |rva: usize| rva - cpdx_lexer::INITIALIZED_RVA.0;
         header[0] = 1;
         let maximum = names.len() as i32 - 1;
         for (rva, value) in [
-            (cpdx_lexer::MAX_TOKEN_ID_RVA, maximum),
-            (cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, maximum),
-            (cpdx_lexer::TOKEN_ALLOCATION_RVA, names.len() as i32),
-            (cpdx_lexer::TOKEN_CAPACITY_RVA, names.len() as i32),
+            (cpdx_lexer::MAX_TOKEN_ID_RVA.0, maximum),
+            (cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA.0, maximum),
+            (cpdx_lexer::TOKEN_ALLOCATION_RVA.0, names.len() as i32),
+            (cpdx_lexer::TOKEN_CAPACITY_RVA.0, names.len() as i32),
         ] {
             header[at(rva)..at(rva) + 4].copy_from_slice(&value.to_le_bytes());
         }
-        let table = at(cpdx_lexer::TOKEN_NAMES_RVA);
+        let table = at(cpdx_lexer::TOKEN_NAMES_RVA.0);
         header[table..table + 8].copy_from_slice(&(NAMES as u64).to_le_bytes());
-        self.memory.put(BASE + cpdx_lexer::INITIALIZED_RVA, &header);
+        self.memory
+            .put(BASE + cpdx_lexer::INITIALIZED_RVA.0, &header);
         for (id, name) in names.iter().enumerate() {
             self.string(NAMES + id * cpdx_lexer::TOKEN_NAME_STRIDE, name);
         }
@@ -251,13 +252,13 @@ fn walk_records_the_eligibility_callback_state() {
     );
     table
         .memory
-        .put(BASE + ELIGIBILITY_CALLBACK_RVA, &0_u64.to_le_bytes());
+        .put(BASE + ELIGIBILITY_CALLBACK_RVA.0, &0_u64.to_le_bytes());
     let (result, rows, _) = table.walk(8, 128);
     assert_eq!(result.outcome, Outcome::Rows { len: 3 });
     assert!(rows[..3].iter().all(|row| row.eligibility == 0));
     table
         .memory
-        .put(BASE + ELIGIBILITY_CALLBACK_RVA, &0x1234_u64.to_le_bytes());
+        .put(BASE + ELIGIBILITY_CALLBACK_RVA.0, &0x1234_u64.to_le_bytes());
     assert_eq!(
         table.walk(8, 128).0.outcome,
         Outcome::Unavailable {
@@ -308,7 +309,7 @@ fn inconsistent_rows_and_every_short_read_are_unavailable() {
         Outcome::Unavailable { .. }
     ));
     for address in [
-        BASE + TABLE_RVA + 12,
+        BASE + TABLE_RVA.0 + 12,
         TABLE + STRIDE + FLAGS,
         // The heap bytes and the terminator of the long name key.
         HEAP + 3,
@@ -392,7 +393,7 @@ fn the_header_is_the_refresh_control_and_a_moved_table_discards_the_copy() {
     }
     impl Memory for Moving<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == BASE + TABLE_RVA {
+            if address == BASE + TABLE_RVA.0 {
                 self.header_reads.set(self.header_reads.get() + 1);
                 if self.header_reads.get() > 1 {
                     destination.copy_from_slice(&[0x11; HEADER_LEN]);
@@ -455,7 +456,7 @@ fn key_by_name_resolves_the_registered_index_through_the_lexer() {
         .put(TABLE + 3 * STRIDE + TOKEN, &2_u32.to_le_bytes());
     table
         .memory
-        .put(BASE + cpdx_lexer::WRITER_FLAG_RVA, &1_u32.to_le_bytes());
+        .put(BASE + cpdx_lexer::WRITER_FLAG_RVA.0, &1_u32.to_le_bytes());
     assert!(key(&table.memory, b"stability_factor").is_err());
 }
 
@@ -542,7 +543,7 @@ fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populat
         assert_eq!(
             trace
                 .iter()
-                .filter(|&&(at, _)| at == BASE + TABLE_RVA)
+                .filter(|&&(at, _)| at == BASE + TABLE_RVA.0)
                 .count(),
             2
         );

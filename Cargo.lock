@@ -658,6 +658,7 @@ dependencies = [
  "engine-research",
  "engine-resources",
  "engine-scripts",
+ "engine-sites",
  "engine-stability",
  "engine-visibility",
  "installed-content-country-names",
@@ -724,6 +725,7 @@ dependencies = [
  "engine-air-history",
  "engine-allocation",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -751,6 +753,7 @@ dependencies = [
  "engine-air-history",
  "engine-allocation",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-derive",
  "replay-frame",
@@ -781,6 +784,7 @@ dependencies = [
  "engine-allocation",
  "engine-events",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -802,6 +806,7 @@ dependencies = [
  "engine-allocation",
  "engine-map-air",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -903,6 +908,7 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-resources",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -939,6 +945,7 @@ dependencies = [
  "engine-occupation",
  "engine-production",
  "engine-resources",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1003,6 +1010,7 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-naval-history",
+ "engine-sites",
  "foldhash 0.2.0",
  "replay-data",
  "replay-frame",
@@ -1060,6 +1068,7 @@ dependencies = [
  "engine-allocation",
  "engine-events",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1081,6 +1090,7 @@ dependencies = [
  "engine-allocation",
  "engine-land-inputs",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-identity",
  "serde",
@@ -1105,6 +1115,7 @@ dependencies = [
  "engine-allocation",
  "engine-fuel",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1138,6 +1149,7 @@ dependencies = [
  "engine-native",
  "engine-power-balance",
  "engine-research",
+ "engine-sites",
  "engine-stability",
  "replay-data",
  "replay-derive",
@@ -1194,6 +1206,7 @@ dependencies = [
  "engine-native",
  "engine-resources",
  "engine-scripts",
+ "engine-sites",
  "replay-data",
  "replay-derive",
  "replay-frame",
@@ -1288,6 +1301,7 @@ dependencies = [
  "collector-timing",
  "engine-mutations",
  "engine-native",
+ "engine-sites",
  "serde",
  "test-unify",
  "windows-sys 0.52.0",
@@ -1306,6 +1320,7 @@ dependencies = [
  "engine-allocation",
  "engine-land-inputs",
  "engine-native",
+ "engine-sites",
  "serde",
  "test-unify",
  "windows-sys 0.52.0",
@@ -1325,6 +1340,7 @@ dependencies = [
  "engine-allocation",
  "engine-events",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-identity",
  "serde",
@@ -1367,6 +1383,7 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-identity",
  "test-unify",
@@ -1414,6 +1431,7 @@ dependencies = [
  "engine-deployment",
  "engine-mutations",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1494,6 +1512,7 @@ dependencies = [
  "collector-timing",
  "engine-allocation",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1571,6 +1590,7 @@ dependencies = [
  "engine-research",
  "engine-resources",
  "engine-scripts",
+ "engine-sites",
  "replay-data",
  "replay-identity",
  "serde",
@@ -1599,6 +1619,7 @@ dependencies = [
  "engine-allocation",
  "engine-native",
  "engine-production",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1624,6 +1645,7 @@ dependencies = [
  "engine-allocation",
  "engine-native",
  "engine-peace",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1657,6 +1679,7 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-production",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1677,6 +1700,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "serde",
  "test-unify",
  "windows-sys 0.61.2",
@@ -1703,6 +1727,7 @@ dependencies = [
  "engine-events",
  "engine-native",
  "engine-production",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1784,6 +1809,7 @@ dependencies = [
  "engine-projects",
  "engine-raid-inputs",
  "engine-scripts",
+ "engine-sites",
  "engine-visibility",
  "replay-data",
  "replay-frame",
@@ -1865,6 +1891,7 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-identity",
  "serde",
@@ -1920,6 +1947,7 @@ dependencies = [
  "engine-executable",
  "engine-mutations",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -2101,6 +2129,7 @@ dependencies = [
  "engine-allocation",
  "engine-mutations",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -2129,6 +2158,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -4761,6 +4791,7 @@ name = "engine-air-history"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4776,6 +4807,7 @@ name = "engine-characters"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4784,6 +4816,7 @@ name = "engine-decisions"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4792,6 +4825,7 @@ name = "engine-deployment"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4800,6 +4834,7 @@ name = "engine-dlc"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4808,6 +4843,7 @@ name = "engine-equipment"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4819,6 +4855,7 @@ dependencies = [
  "engine-native",
  "engine-peace",
  "engine-production",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4849,6 +4886,7 @@ dependencies = [
  "engine-governance-tests",
  "engine-native",
  "engine-research",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4857,6 +4895,7 @@ name = "engine-fuel"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "replay-spool",
  "test-unify",
 ]
@@ -4870,6 +4909,7 @@ dependencies = [
  "engine-governance-tests",
  "engine-native",
  "engine-research",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4878,6 +4918,7 @@ name = "engine-intelligence"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4889,6 +4930,7 @@ dependencies = [
  "engine-deployment",
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4897,6 +4939,7 @@ name = "engine-map-air"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4912,6 +4955,7 @@ dependencies = [
  "engine-railways",
  "engine-research",
  "engine-resources",
+ "engine-sites",
  "engine-stability",
  "test-unify",
 ]
@@ -4924,6 +4968,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "replay-spool",
  "test-unify",
 ]
@@ -4934,6 +4979,7 @@ version = "0.1.0"
 dependencies = [
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "engine-stability",
  "test-unify",
 ]
@@ -4944,6 +4990,7 @@ version = "0.1.0"
 dependencies = [
  "engine-deployment",
  "engine-native",
+ "engine-sites",
  "replay-spool",
  "test-unify",
 ]
@@ -4953,6 +5000,7 @@ name = "engine-peace"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4962,6 +5010,7 @@ version = "0.1.0"
 dependencies = [
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4974,6 +5023,7 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-scripts",
+ "engine-sites",
  "replay-spool",
  "test-unify",
 ]
@@ -4984,6 +5034,7 @@ version = "0.1.0"
 dependencies = [
  "engine-characters",
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -4996,6 +5047,7 @@ dependencies = [
  "engine-native",
  "engine-projects",
  "engine-resources",
+ "engine-sites",
  "engine-stability",
  "test-unify",
 ]
@@ -5008,6 +5060,7 @@ dependencies = [
  "engine-fixed-layout",
  "engine-native",
  "engine-naval-history",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -5020,6 +5073,7 @@ dependencies = [
  "engine-governance-tests",
  "engine-native",
  "engine-projects",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -5028,6 +5082,7 @@ name = "engine-resources"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -5036,7 +5091,17 @@ name = "engine-scripts"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "engine-sites"
+version = "0.1.0"
+dependencies = [
+ "engine-executable",
+ "sha2",
  "test-unify",
 ]
 
@@ -5045,6 +5110,7 @@ name = "engine-stability"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -5055,6 +5121,7 @@ dependencies = [
  "engine-dlc",
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "test-unify",
 ]
 
@@ -8277,6 +8344,7 @@ dependencies = [
  "engine-dlc",
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-division-names",
@@ -8384,6 +8452,7 @@ dependencies = [
  "engine-dlc",
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "installed-content-core",
  "recorder-platform",
  "replay",

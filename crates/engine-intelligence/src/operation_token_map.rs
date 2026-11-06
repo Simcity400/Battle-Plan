@@ -2,6 +2,7 @@
 //! A census includes empty slots through mask plus overflow, stopping before
 //! the separate end sentinel. Slot extent is distinct from live entry count.
 
+use engine_sites::Rva;
 /// Operation-token slot-array pointer.
 pub const TABLE: usize = 0x08;
 /// Signed i32 live entry count, incremented only for a new target.
@@ -11,7 +12,7 @@ pub const MASK: usize = 0x14;
 /// Overflow u8 extent, with a separate end sentinel after the slot extent.
 pub const OVERFLOW: usize = 0x18;
 /// Shared static empty-target storage, excluded from deallocation.
-pub const EMPTY_TARGET_STORAGE_RVA: usize = 0x0312_b8c0;
+pub const EMPTY_TARGET_STORAGE_RVA: Rva = Rva(0x0312_b8c0);
 
 use crate::{Memory, read};
 

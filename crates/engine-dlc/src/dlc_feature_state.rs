@@ -2,8 +2,9 @@
 //! The legacy game-state word is not treated as an equivalent runtime mask.
 //! This module describes predicates without calling the game.
 
+use engine_sites::Rva;
 /// Runtime DLC mask, u32.
-pub const MASK_RVA: usize = 0x033d_d698;
+pub const MASK_RVA: Rva = Rva(0x033d_d698);
 /// Feature ID required by equipment-loss bookkeeping.
 #[cfg(test)]
 pub const EQUIPMENT_LOSSES_FEATURE: u32 = 3;

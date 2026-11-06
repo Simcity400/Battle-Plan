@@ -25,7 +25,7 @@ pub fn demand(
     };
     let database = read::<u64>(
         memory,
-        address(base, cstrategic_resource_database::SINGLETON_RVA)?,
+        site(base, cstrategic_resource_database::SINGLETON_RVA)?,
     )
     .and_then(|pointer| usize::try_from(pointer).ok())
     .filter(|&pointer| pointer != 0)
@@ -45,7 +45,7 @@ pub fn demand(
     demand.resource_rows = mul(demand.states, demand.resources)?;
     let pool_bytes = mul(demand.resources + 1, cstrategic_resource_pool::VALUE_STRIDE)?;
     let mut core_links = 0;
-    let vtable = address(base, cstate::VTABLE_RVA)? as u64;
+    let vtable = site(base, cstate::VTABLE_RVA)? as u64;
     crate::cpdx_array::pointers(
         memory,
         states.slice(1, states.count - 1, 8)?,
@@ -86,7 +86,7 @@ pub fn demand(
             let accumulator = array(pointer, cstate::BASE_MODIFIERS, modifier_entry::STRIDE)?;
             let container = address(pointer, cstate::DYNAMIC_MODIFIERS)?;
             if read::<u64>(memory, container)
-                != Some(address(base, cdynamic_modifier_container::VTABLE_RVA)? as u64)
+                != Some(site(base, cdynamic_modifier_container::VTABLE_RVA)? as u64)
                 || read::<u64>(
                     memory,
                     address(container, cdynamic_modifier_container::COUNTRY)?,
@@ -119,7 +119,7 @@ pub fn demand(
                     .element(ordinal, dynamic_modifier_entry::STRIDE)
                     .ok_or("state modifier sizing entry overflow")?;
                 if read::<u64>(memory, entry)
-                    != Some(address(base, dynamic_modifier_entry::VTABLE_RVA)? as u64)
+                    != Some(site(base, dynamic_modifier_entry::VTABLE_RVA)? as u64)
                 {
                     return Err("state modifier sizing entry vtable mismatch");
                 }
@@ -158,7 +158,7 @@ pub fn demand(
             .filter(|&pointer| pointer != 0)
             .ok_or("country resources pointer unreadable or null")?;
         if read::<u64>(memory, resources)
-            != Some(address(base, ccountry_resources::VTABLE_RVA)? as u64)
+            != Some(site(base, ccountry_resources::VTABLE_RVA)? as u64)
         {
             return Err("country resources vtable mismatch");
         }
@@ -338,8 +338,8 @@ fn state_cores_buffer(
             .ok()
             .and_then(|at| Array::read(memory, at, 8))
             .ok_or("state array unreadable or invalid")?;
-        let vtable = address(base, cstate::VTABLE_RVA)? as u64;
-        let province_vtable = address(base, cprovince::VTABLE_RVA)? as u64;
+        let vtable = site(base, cstate::VTABLE_RVA)? as u64;
+        let province_vtable = site(base, cprovince::VTABLE_RVA)? as u64;
         let (mut len, mut used, mut unread) = (0, 0, 0_u32);
         let mut ids = [0_u32; BATCH];
         let mut pointers = [0_usize; BATCH];

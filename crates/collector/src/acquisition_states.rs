@@ -445,7 +445,7 @@ pub(crate) mod tests {
             put(
                 &mut bytes,
                 pointer,
-                (cstate::VTABLE_RVA as u64).to_le_bytes(),
+                (cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, pointer + cstate::ID, row.id.to_le_bytes());
             put(&mut bytes, pointer + cstate::OWNER, row.owner.to_le_bytes());
@@ -481,7 +481,7 @@ pub(crate) mod tests {
     fn movement_globals() -> [(usize, [u8; 8]); 5] {
         [
             (
-                cbuilding_database::SINGLETON_RVA,
+                cbuilding_database::SINGLETON_RVA.0,
                 (DATABASE as u64).to_le_bytes(),
             ),
             (DATABASE + 0x3b0, (DEFINITION as u64).to_le_bytes()),
@@ -800,7 +800,7 @@ pub(crate) mod tests {
             .calls
             .borrow()
             .iter()
-            .rposition(|(address, _)| *address == cbuilding_database::SINGLETON_RVA)
+            .rposition(|(address, _)| *address == cbuilding_database::SINGLETON_RVA.0)
             .unwrap();
         let mut memory = Traced::new(&bytes);
         memory.fault = Some(fault);
@@ -832,7 +832,7 @@ pub(crate) mod tests {
             .calls
             .borrow()
             .iter()
-            .position(|(address, _)| *address == cbuilding_database::SINGLETON_RVA)
+            .position(|(address, _)| *address == cbuilding_database::SINGLETON_RVA.0)
             .unwrap();
         let mut memory = Traced::new(&bytes);
         memory.fault = Some(fault);

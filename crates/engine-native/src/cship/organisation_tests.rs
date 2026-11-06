@@ -103,23 +103,23 @@ fn fixture() -> Fixture {
         copied: Cell::new(0),
     };
     f.put(0x1000, &vec![0; 0x20000]);
-    f.word(SHIP, (IMAGE + VTABLE_RVA) as u64);
+    f.word(SHIP, (IMAGE + VTABLE_RVA.0) as u64);
     f.word(SHIP + HANDLE, (42 << 32) | 51);
     f.word(SHIP + TASK_FORCE, TASK as u64);
-    f.word(TASK, (IMAGE + ctask_force::VTABLE_RVA) as u64);
+    f.word(TASK, (IMAGE + ctask_force::VTABLE_RVA.0) as u64);
     f.dword(TASK + cunit::ROSTER_OWNER, 1);
-    f.word(IMAGE + cgame_state::SINGLETON_RVA, GAME as u64);
+    f.word(IMAGE + cgame_state::SINGLETON_RVA.0, GAME as u64);
     f.array(GAME + cgame_state::COUNTRIES, 0x4000, 2);
     f.word(0x4008, COUNTRY as u64);
     f.array(GAME + cgame_state::COUNTRY_LINKS, 0x4100, 2);
     f.dword(0x4104, 1);
-    f.word(COUNTRY, (IMAGE + ccountry::VTABLE_RVA) as u64);
+    f.word(COUNTRY, (IMAGE + ccountry::VTABLE_RVA.0) as u64);
     f.dword(COUNTRY + ccountry::ID, 1);
     f.word(SHIP + 0x8f8, 0x7000);
     f.word(TASK + 0x640, 0x8000);
     f.word(0x8000, 0x8000);
     f.put(0x8019, &[1]);
-    f.word(IMAGE + md::TABLE_RVA, 0x9000);
+    f.word(IMAGE + md::TABLE_RVA.0, 0x9000);
     f.word(SHIP + BASE_ORGANISATION, 10_000_000);
     f.modifier(
         COUNTRY + 0x5b8,
@@ -137,7 +137,7 @@ fn support_fixture() -> Fixture {
     f.word(0x12000, 0x12100);
     f.word(0x12140, 0x12200);
     f.word(0x12208, handle);
-    f.word(IMAGE + registry::LOW_ROOTS_RVA + 7 * 8, 0x14000);
+    f.word(IMAGE + registry::LOW_ROOTS_RVA.0 + 7 * 8, 0x14000);
     f.word(0x14000 + registry::ENTRIES, 0x15000);
     f.dword(0x14000 + registry::COUNT, 1);
     f.dword(0x14000 + registry::MASK, 7);
@@ -151,9 +151,9 @@ fn support_fixture() -> Fixture {
     f.put(cell + bucket::DISTANCE, &[1]);
     f.word(cell + 8, handle);
     f.word(cell + 16, 0x17000);
-    f.word(0x17000, (IMAGE + crate::ccharacter::VTABLE_RVA) as u64);
+    f.word(0x17000, (IMAGE + crate::ccharacter::VTABLE_RVA.0) as u64);
     f.word(0x17000 + crate::ccharacter::UNIT_LEADER, 0x18000);
-    f.word(0x18000, (IMAGE + crate::cnavy_leader::VTABLE_RVA) as u64);
+    f.word(0x18000, (IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64);
     f.dword(0x18000 + crate::cunit_leader::CATEGORY, 2);
     for (index, offset) in [0xf70, 0xf80, 0xfa0, 0xf90].into_iter().enumerate() {
         let definition = 0x1a000 + index * 0x200;
@@ -183,11 +183,11 @@ fn shared_sources_fixture() -> Fixture {
     let mut f = fixture();
     f.put(PROVINCE, &vec![0; 0x20000]);
     f.word(TASK + cunit::LOCATION, PROVINCE as u64);
-    f.word(PROVINCE, (IMAGE + crate::cprovince::VTABLE_RVA) as u64);
+    f.word(PROVINCE, (IMAGE + crate::cprovince::VTABLE_RVA.0) as u64);
     f.word(PROVINCE + 0xc8, PROVINCE_DEFINITION as u64);
     f.word(PROVINCE_DEFINITION + 0x30, TERRAIN_SOURCE as u64);
     f.word(TERRAIN_SOURCE + 0x130, TERRAIN as u64);
-    f.word(TERRAIN, (IMAGE + crate::cterrain_type::VTABLE_RVA) as u64);
+    f.word(TERRAIN, (IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64);
     f.put(TERRAIN + 0x10, &[1]);
     f.dword(SHIP + CLASS_DATABASE_ID, 9);
     f.word(TERRAIN + 0x1b8, TERRAIN_BUCKET as u64);
@@ -203,7 +203,7 @@ fn shared_sources_fixture() -> Fixture {
     f.word(GAME + cgame_state::WEATHER_MANAGER, WEATHER as u64);
     f.word(
         WEATHER,
-        (IMAGE + crate::cweather_manager::VTABLE_RVA) as u64,
+        (IMAGE + crate::cweather_manager::VTABLE_RVA.0) as u64,
     );
     f.array(WEATHER + 0x40, 0x29000, 1);
     f.array(WEATHER + 0x370, 0x2a000, 1);
@@ -211,9 +211,9 @@ fn shared_sources_fixture() -> Fixture {
 
     let handle = (2_u64 << 32) | 7;
     f.word(TASK + ctask_force::FLEET, FLEET as u64);
-    f.word(FLEET, (IMAGE + crate::cfleet::VTABLE_RVA) as u64);
+    f.word(FLEET, (IMAGE + crate::cfleet::VTABLE_RVA.0) as u64);
     f.word(FLEET + 0xb0, handle);
-    f.word(IMAGE + registry::LOW_ROOTS_RVA + 7 * 8, 0x14000);
+    f.word(IMAGE + registry::LOW_ROOTS_RVA.0 + 7 * 8, 0x14000);
     f.word(0x14000 + registry::ENTRIES, 0x15000);
     f.dword(0x14000 + registry::COUNT, 1);
     f.dword(0x14000 + registry::MASK, 7);
@@ -227,7 +227,7 @@ fn shared_sources_fixture() -> Fixture {
     f.put(cell + bucket::DISTANCE, &[1]);
     f.word(cell + 8, handle);
     f.word(cell + 16, LEADER as u64);
-    f.word(LEADER, (IMAGE + crate::cnavy_leader::VTABLE_RVA) as u64);
+    f.word(LEADER, (IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64);
     f.modifier(
         LEADER + 0x418,
         0x33000,
@@ -312,7 +312,7 @@ fn organisation_certified_operands_match_direct_after_task_terms_change() {
 
         const MOVED: usize = 0x40000;
         f.word(TASK + cunit::LOCATION, MOVED as u64);
-        f.word(MOVED, (IMAGE + crate::cprovince::VTABLE_RVA) as u64);
+        f.word(MOVED, (IMAGE + crate::cprovince::VTABLE_RVA.0) as u64);
         f.word(MOVED + 0xc8, PROVINCE_DEFINITION as u64);
         f.dword(MOVED + crate::cprovince::ID, 0);
         f.modifier(TASK + 0x668, 0x37200, &[(0x46, 700000), (0x1bb, 25000)]);
@@ -486,17 +486,17 @@ fn organisation_certified_operands_apply_current_own_only_feature_eligibility() 
     f.modifier(0x7400 + 0x98, 0x6400, &[(0x46, 100000)]);
     f.dword(0x9000 + 0x1bb * md::STRIDE + md::FEATURE_SELECTOR, 4);
     f.word(
-        IMAGE + md::ELIGIBILITY_CALLBACK_RVA,
-        (IMAGE + md::ELIGIBILITY_FLAGS_GETTER_RVA) as u64,
+        IMAGE + md::ELIGIBILITY_CALLBACK_RVA.0,
+        (IMAGE + md::ELIGIBILITY_FLAGS_GETTER_RVA.0) as u64,
     );
-    f.dword(IMAGE + md::TRADE_FEATURE_FLAGS_RVA, 0);
+    f.dword(IMAGE + md::TRADE_FEATURE_FLAGS_RVA.0, 0);
     let mut memo = OrganisationMemo::default();
     let before = read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
     let held = memo.organisation_operands(SHIP).unwrap();
     let old_terms = current_task_terms(&f, &mut OrganisationMemo::default());
     // The native command resets the world and revokes the certificate.
     // This fixture isolates the packet's raw-versus-effective dependency.
-    f.dword(IMAGE + md::TRADE_FEATURE_FLAGS_RVA, 4);
+    f.dword(IMAGE + md::TRADE_FEATURE_FLAGS_RVA.0, 4);
     let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
     assert_ne!(before, expected);
     let mut memo = OrganisationMemo::default();
@@ -529,7 +529,7 @@ fn organisation_certified_operands_apply_current_own_only_feature_eligibility() 
     );
 
     let mut faulted = f.clone();
-    faulted.bytes.remove(&(IMAGE + md::TRADE_FEATURE_FLAGS_RVA));
+    faulted.bytes.remove(&(IMAGE + md::TRADE_FEATURE_FLAGS_RVA.0));
     let mut memo = OrganisationMemo::default();
     let terms = current_task_terms(&faulted, &mut memo);
     assert_eq!(
@@ -591,7 +591,7 @@ fn organisation_weather_packet_preserves_every_ship_factor_and_critical_operand(
     f.word(TASK + cunit::LOCATION, PROVINCE as u64);
     f.word(
         WEATHER,
-        (IMAGE + crate::cweather_manager::VTABLE_RVA) as u64,
+        (IMAGE + crate::cweather_manager::VTABLE_RVA.0) as u64,
     );
     f.word(SHIP + 0x270, 100000);
     f.modifier(0x29000 + 0x58, 0x37000, &[(0x47, 100000)]);
@@ -745,7 +745,7 @@ fn organisation_weather_packet_rejects_changed_location_and_definition_sources()
             memo.location = None;
         } else {
             f.word(TASK + cunit::LOCATION, OTHER as u64);
-            f.word(OTHER, (IMAGE + crate::cprovince::VTABLE_RVA) as u64);
+            f.word(OTHER, (IMAGE + crate::cprovince::VTABLE_RVA.0) as u64);
             f.word(OTHER + 0xc8, PROVINCE_DEFINITION as u64);
             f.dword(OTHER + crate::cprovince::ID, 1);
         }
@@ -1003,7 +1003,7 @@ fn organisation_memo_shares_country_and_support_but_reads_current_ship_terms() {
     // A different task force cannot reuse the old support maximum.
     const OTHER_TASK: usize = 0x22000;
     f.put(OTHER_TASK, &[0; 0x900]);
-    f.word(OTHER_TASK, (IMAGE + ctask_force::VTABLE_RVA) as u64);
+    f.word(OTHER_TASK, (IMAGE + ctask_force::VTABLE_RVA.0) as u64);
     f.dword(OTHER_TASK + cunit::ROSTER_OWNER, 1);
     f.word(OTHER_TASK + 0x640, 0x8000);
     f.word(SHIP + TASK_FORCE, OTHER_TASK as u64);
@@ -1023,7 +1023,7 @@ fn organisation_memo_shares_country_and_support_but_reads_current_ship_terms() {
     f.array(GAME + cgame_state::COUNTRY_LINKS, 0x4100, 3);
     f.word(0x4010, OTHER_COUNTRY as u64);
     f.dword(0x4108, 2);
-    f.word(OTHER_COUNTRY, (IMAGE + ccountry::VTABLE_RVA) as u64);
+    f.word(OTHER_COUNTRY, (IMAGE + ccountry::VTABLE_RVA.0) as u64);
     f.dword(OTHER_COUNTRY + ccountry::ID, 2);
     f.dword(OTHER_TASK + cunit::ROSTER_OWNER, 2);
     let other = maximum_organisation(&f, IMAGE, SHIP).unwrap();
@@ -1210,7 +1210,7 @@ fn organisation_batch_preserves_every_mixed_hook_pattern_and_metadata_order() {
 #[test]
 fn organisation_batch_absence_skips_metadata_but_present_zero_does_not() {
     let mut f = fixture();
-    f.bytes.remove(&(IMAGE + md::TABLE_RVA));
+    f.bytes.remove(&(IMAGE + md::TABLE_RVA.0));
     for entries in [&[][..], &[(1, i64::MIN), (0x300, i64::MAX)][..]] {
         f.modifier(ACCUMULATOR, ENTRIES, entries);
         assert_eq!(
@@ -1329,7 +1329,7 @@ fn organisation_batch_rejects_bad_headers_suffixes_and_entry_faults_before_metad
         );
         // A full census must fail before consulting even the first key's
         // unreadable metadata, including when all four keys were found.
-        f.bytes.remove(&(IMAGE + md::TABLE_RVA));
+        f.bytes.remove(&(IMAGE + md::TABLE_RVA.0));
         let expected = match fault {
             0 => {
                 f.bytes.remove(&(ACCUMULATOR + 15));
@@ -1401,12 +1401,12 @@ fn organisation_batch_preserves_metadata_rules_and_full_graph_fixed5_results() {
     f.dword(METADATA + 0x46 * md::STRIDE + md::FLAGS, md::CLAMP_MAXIMUM);
     f.dword(METADATA + 0x47 * md::STRIDE + md::FEATURE_SELECTOR, 4);
     f.word(
-        IMAGE + md::ELIGIBILITY_CALLBACK_RVA,
-        (IMAGE + md::ELIGIBILITY_FLAGS_GETTER_RVA) as u64,
+        IMAGE + md::ELIGIBILITY_CALLBACK_RVA.0,
+        (IMAGE + md::ELIGIBILITY_FLAGS_GETTER_RVA.0) as u64,
     );
     for enabled in [false, true] {
         f.dword(
-            IMAGE + md::TRADE_FEATURE_FLAGS_RVA,
+            IMAGE + md::TRADE_FEATURE_FLAGS_RVA.0,
             if enabled { 4 } else { 0 },
         );
         assert_eq!(
@@ -1652,7 +1652,7 @@ fn organisation_memo_shares_an_influence_across_task_forces() {
     const OTHER_TASK: usize = 0x22000;
     let mut f = support_fixture();
     f.put(OTHER_TASK, &[0; 0x900]);
-    f.word(OTHER_TASK, (IMAGE + ctask_force::VTABLE_RVA) as u64);
+    f.word(OTHER_TASK, (IMAGE + ctask_force::VTABLE_RVA.0) as u64);
     f.dword(OTHER_TASK + cunit::ROSTER_OWNER, 1);
     f.word(OTHER_TASK + 0x640, 0x8000);
     f.array(OTHER_TASK + 0x728, 0x12000, 1);

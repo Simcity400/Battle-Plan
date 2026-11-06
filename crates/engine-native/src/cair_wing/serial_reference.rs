@@ -47,8 +47,7 @@ pub(super) fn walk_projected(
         // primary vtable is distinct from its secondary base's.
         let vtable =
             read::<u64>(memory, manager).ok_or("strategic air manager vtable unreadable")?;
-        let expected = base
-            .checked_add(cstrategic_air_manager::VTABLE_RVA)
+        let expected = engine_sites::at(base, cstrategic_air_manager::VTABLE_RVA)
             .ok_or("module address overflow")?;
         if vtable != expected as u64 {
             return Err("strategic air manager vtable mismatch");

@@ -177,7 +177,7 @@ fn raw_modifier_preserves_negative_values_absence_and_order() {
     struct WithMetadata<'a>(&'a [u8]);
     impl Memory for WithMetadata<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == crate::modifier_definition::TABLE_RVA {
+            if address == crate::modifier_definition::TABLE_RVA.0 {
                 output.copy_from_slice(&0x10000_u64.to_le_bytes());
                 return true;
             }
@@ -270,7 +270,7 @@ fn raw_shared_modifier_snapshot_avoids_native_recensus() {
     impl Memory for Shared {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.copies.set(self.copies.get() + 1);
-            if address == crate::modifier_definition::TABLE_RVA {
+            if address == crate::modifier_definition::TABLE_RVA.0 {
                 output.copy_from_slice(&0x10000_u64.to_le_bytes());
                 return true;
             }
@@ -321,29 +321,29 @@ fn raw_shared_modifier_snapshot_avoids_native_recensus() {
 fn transport_without_static_feature_preserves_branch_without_normal_dependencies() {
     let mut bytes = vec![0_u8; 0x9000];
     let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-    put(0x1000, carmy::VTABLE_RVA as u64);
+    put(0x1000, carmy::VTABLE_RVA.0 as u64);
     put(0x1000 + cunit::HANDLE, 0x1234_0000_0033);
     put(0x1000 + cunit::STAT_BLOCK, 0x2000);
-    put(0x2000, crate::csub_unit_definition::VTABLE_RVA as u64);
+    put(0x2000, crate::csub_unit_definition::VTABLE_RVA.0 as u64);
     put(0x1000 + cunit::LOCATION, 0x3000);
     put(0x1000 + carmy::NAVAL_TRANSFER_MEMBERSHIP, 42);
     put(0x1000 + cunit::LOGICAL_OWNER, 1);
-    put(0x3000, cprovince::VTABLE_RVA as u64);
+    put(0x3000, cprovince::VTABLE_RVA.0 as u64);
     put(0x3000 + cprovince::DEFINITION, 0x3800);
     put(0x3000 + cprovince::ID, 14);
     put(0x3800 + crate::province_definition::ID, 14);
     put(0x3000 + cprovince::STRATEGIC_REGION, 0x4000);
-    put(0x4000, crate::cstrategic_region::VTABLE_RVA as u64);
+    put(0x4000, crate::cstrategic_region::VTABLE_RVA.0 as u64);
     put(0x4000 + crate::cstrategic_region::ID, 22);
     put(0x7000 + cgame_state::WEATHER_MANAGER, 0x5000);
-    put(0x5000, crate::cweather_manager::VTABLE_RVA as u64);
+    put(0x5000, crate::cweather_manager::VTABLE_RVA.0 as u64);
     put(0x7000 + cgame_state::COUNTRIES, 0x8000);
     put(0x7000 + cgame_state::COUNTRIES + 8, 0x2_0000_0002);
     put(0x8008, 0x6000);
     put(0x7000 + cgame_state::COUNTRY_LINKS, 0x8100);
     put(0x7000 + cgame_state::COUNTRY_LINKS + 8, 0x2_0000_0002);
     put(0x8100, 0x1_0000_0000);
-    put(0x6000, ccountry::VTABLE_RVA as u64);
+    put(0x6000, ccountry::VTABLE_RVA.0 as u64);
     put(0x6000 + ccountry::ID, 1);
     struct Source<'a>(&'a [u8]);
     impl Memory for Source<'_> {
@@ -357,8 +357,8 @@ fn transport_without_static_feature_preserves_branch_without_normal_dependencies
                 "naval transfer reached a normal land packet"
             );
             if [
-                crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA,
-                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+                crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0,
+                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
             ]
             .contains(&address)
             {
@@ -476,7 +476,7 @@ fn worker_modifier_batches_keep_mod_sized_populations_on_the_original_pass() {
     struct Shared;
     impl Memory for Shared {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == crate::modifier_definition::TABLE_RVA && output.len() == 8 {
+            if address == crate::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x100_0000_u64.to_le_bytes());
                 return true;
             }
@@ -529,14 +529,14 @@ fn supply_and_priority_category_arenas_keep_all_mod_sized_occurrences() {
         let mut memory = Sparse::default();
         memory.u64(
             0x1000,
-            crate::creferenced_division_template::VTABLE_RVA as u64,
+            crate::creferenced_division_template::VTABLE_RVA.0 as u64,
         );
         memory.u64(
             0x1000 + crate::creferenced_division_template::PRIORITY_UNIT,
             0x2000,
         );
         memory.array(0x1000 + 0xc0, 0x10_0000, count as u32);
-        memory.u64(0x2000, crate::csub_unit_definition::VTABLE_RVA as u64);
+        memory.u64(0x2000, crate::csub_unit_definition::VTABLE_RVA.0 as u64);
         memory.u32(0x2008, 7);
         memory.u32(0x2000 + 0x5d8, 9);
         memory.put(0x2000 + 0x5b7, &[1]);
@@ -644,30 +644,30 @@ fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
     let regional = |slot: usize| 0x3000_0000 + slot * 0x100;
     let slots = enemies as usize + 2;
     let mut m = Sparse::default();
-    m.u64(ARMY, carmy::VTABLE_RVA as u64);
+    m.u64(ARMY, carmy::VTABLE_RVA.0 as u64);
     m.u64(ARMY + cunit::HANDLE, HANDLE);
     m.u64(ARMY + carmy::NAVAL_TRANSFER_MEMBERSHIP, 1);
     m.u64(ARMY + cunit::STAT_BLOCK, STATS as u64);
     m.u64(ARMY + cunit::LOCATION, LOCATION as u64);
     m.u32(ARMY + cunit::LOGICAL_OWNER, 1);
-    m.u64(STATS, crate::csub_unit_definition::VTABLE_RVA as u64);
-    m.u64(LOCATION, cprovince::VTABLE_RVA as u64);
+    m.u64(STATS, crate::csub_unit_definition::VTABLE_RVA.0 as u64);
+    m.u64(LOCATION, cprovince::VTABLE_RVA.0 as u64);
     m.u64(LOCATION + cprovince::DEFINITION, LOCATION as u64 + 0x1000);
     m.u32(LOCATION + cprovince::ID, 14);
     m.u32(LOCATION + 0x1000 + province_definition::ID, 14);
     m.u64(LOCATION + cprovince::STRATEGIC_REGION, REGION as u64);
-    m.u64(REGION, cstrategic_region::VTABLE_RVA as u64);
+    m.u64(REGION, cstrategic_region::VTABLE_RVA.0 as u64);
     m.u32(REGION + cstrategic_region::ID, 22);
     m.u64(GAME + cgame_state::WEATHER_MANAGER, WEATHER as u64);
-    m.u64(WEATHER, cweather_manager::VTABLE_RVA as u64);
+    m.u64(WEATHER, cweather_manager::VTABLE_RVA.0 as u64);
     m.array(WEATHER + cweather_manager::REGIONS, 0, 0);
-    m.u32(metadata::TRADE_FEATURE_FLAGS_RVA, 1 << 4);
-    m.u64(metadata::ELIGIBILITY_CALLBACK_RVA, 0);
+    m.u32(metadata::TRADE_FEATURE_FLAGS_RVA.0, 1 << 4);
+    m.u64(metadata::ELIGIBILITY_CALLBACK_RVA.0, 0);
     m.u64(0x033d_e590, DEFINITIONS as u64);
     m.u64(DEFINITIONS + 0xf8, STATIC as u64);
-    m.u64(STATIC, cstatic_modifier::VTABLE_RVA as u64);
+    m.u64(STATIC, cstatic_modifier::VTABLE_RVA.0 as u64);
     m.array(STATIC + cstatic_modifier::ACCUMULATOR, 0, 0);
-    m.u64(metadata::TABLE_RVA, META as u64);
+    m.u64(metadata::TABLE_RVA.0, META as u64);
     m.u32(
         META + 0x29 * metadata::STRIDE + metadata::CATEGORY_MASK,
         0xabc,
@@ -682,7 +682,7 @@ fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
         GAME + cgame_state::STRATEGIC_NAVY_MANAGER,
         NAVY_MANAGER as u64,
     );
-    m.u64(NAVY_MANAGER, cstrategic_navy_manager::VTABLE_RVA as u64);
+    m.u64(NAVY_MANAGER, cstrategic_navy_manager::VTABLE_RVA.0 as u64);
     m.array(
         NAVY_MANAGER + cstrategic_navy_manager::NAVIES,
         NAVIES,
@@ -702,28 +702,28 @@ fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
         navies[slot * 8..slot * 8 + 8].copy_from_slice(&(navy(slot) as u64).to_le_bytes());
         let row = slot * country_intel_row::STRIDE + country_intel_row::NAVY;
         owner_rows[row..row + 8].copy_from_slice(&(1000 + slot as i64).to_le_bytes());
-        m.u64(c, ccountry::VTABLE_RVA as u64);
+        m.u64(c, ccountry::VTABLE_RVA.0 as u64);
         m.u32(c + ccountry::ID, slot as u32);
         let fog = i32::from(slot % 11 != 0);
         m.put(c + ccountry::FOG_NETWORK_TABLE_COUNT, &fog.to_le_bytes());
         m.u64(c + ccountry::DIPLOMACY_STATUS, diplomacy_at(slot) as u64);
         m.u64(c + ccountry::INTEL_TABLE, intel(slot) as u64);
-        m.u64(diplomacy_at(slot), cdiplomacy_status::VTABLE_RVA as u64);
+        m.u64(diplomacy_at(slot), cdiplomacy_status::VTABLE_RVA.0 as u64);
         m.u64(diplomacy_at(slot) + cdiplomacy_status::COUNTRY, c as u64);
         let capitulated = u8::from(slot % 7 == 0);
         m.put(
             diplomacy_at(slot) + cdiplomacy_status::CAPITULATED,
             &[capitulated],
         );
-        m.u64(intel(slot), ccountry_intel::VTABLE_RVA as u64);
+        m.u64(intel(slot), ccountry_intel::VTABLE_RVA.0 as u64);
         m.put(
             intel(slot) + ccountry_intel::OWNER,
             &(slot as i32).to_le_bytes(),
         );
-        m.u64(navy(slot), cstrategic_navy::VTABLE_RVA as u64);
+        m.u64(navy(slot), cstrategic_navy::VTABLE_RVA.0 as u64);
         m.u64(
             navy(slot) + cstrategic_navy::SECONDARY,
-            cstrategic_navy::SECONDARY_VTABLE_RVA as u64,
+            cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         m.u32(navy(slot) + cstrategic_navy::OWNER, slot as u32);
         m.array(

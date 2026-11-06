@@ -15,7 +15,7 @@ const TASK_A: usize = IMAGE + 0x4000;
 const TASK_B: usize = IMAGE + 0x4800;
 const PROVINCE: usize = IMAGE + 0x5000;
 const SINGLETON: usize = IMAGE + 0x5800;
-const MODULE: usize = SINGLETON - cgame_state::SINGLETON_RVA;
+const MODULE: usize = SINGLETON - cgame_state::SINGLETON_RVA.0;
 
 fn image() -> Vec<u8> {
     let mut bytes: Vec<u8> = (0..LEN).map(|index| (index * 7 + 3) as u8).collect();
@@ -457,7 +457,7 @@ fn worker_power_fields_invalidate_variant_reuse_without_widening_ordinary_gather
     let pointer = 0x1000;
     let mut bytes = vec![0; 0x2000];
     bytes[pointer..pointer + 8]
-        .copy_from_slice(&(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+        .copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[pointer + 8..pointer + 16].copy_from_slice(
         &((1_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE)).to_le_bytes(),
     );
@@ -495,7 +495,7 @@ fn power_companion_demands_only_the_selected_variant_and_selected_carrier_word()
         (selected, super::super::naval_power::CARRIER_SIZE_SELECTOR),
     ] {
         bytes[pointer..pointer + 8]
-            .copy_from_slice(&(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[pointer + 8..pointer + 16].copy_from_slice(
             &((pointer as u64) << 32 | u64::from(cequipment_variant::REFERENCE_TYPE)).to_le_bytes(),
         );

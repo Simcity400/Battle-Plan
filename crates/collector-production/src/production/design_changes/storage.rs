@@ -673,7 +673,7 @@ mod tests {
         struct Scalar;
         impl Memory for Scalar {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+                if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&0x2000_u64.to_le_bytes());
                 } else if address == 0x2000 + engine_native::cgame_state::CURRENT_HOUR
                     && output.len() == 4

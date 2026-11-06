@@ -416,14 +416,12 @@ fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str
     )
 }
 
-fn validate_sites(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
+fn validate_sites(base: usize) -> Result<(), &'static str> {
     for (index, site) in MUTATIONS.iter().enumerate() {
-        if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-            return Err(hook_failure(
-                Some(index),
-                "sentinel validation",
-                "native bytes differ",
-            ));
+        if let Err(cause) =
+            engine_sites::hook(base, site.rva).and_then(|code| code.sentinel::<16>().map(drop))
+        {
+            return Err(hook_failure(Some(index), "site location", cause));
         }
     }
     Ok(())
@@ -435,16 +433,16 @@ pub struct Hooks {
 }
 impl Hooks {
     /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel refuses installation with the owning family and site.
+    /// A withheld site refuses installation with the owning family and site.
     ///
     /// # Safety
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "army_stat_changes") {
-            validate_sites(memory, base)?;
+            validate_sites(base)?;
             let callbacks: [usize; SITES] = [
                 update_active_stats as *const () as usize,
                 refresh_cached_name as *const () as usize,
@@ -467,15 +465,17 @@ impl Hooks {
                 set_officer_experience as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|reason| hook_failure(Some(index), "construction", &reason))?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|reason| hook_failure(Some(index), "construction", &reason))?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
         }
         Ok(Self {
             hooks,
-            operands: unsafe { crate::panel_operand_hooks::Hooks::new(memory, base) }?,
+            operands: unsafe { crate::panel_operand_hooks::Hooks::new(base) }?,
         })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
@@ -612,33 +612,6 @@ mod tests {
         experience_patched(false);
         experience_forwarder(false);
         WATCHES.progression.set_enabled(false);
-    }
-
-    #[test]
-    fn sentinel_refusals_identify_the_exact_site_before_any_patch_is_built() {
-        struct Refuses(usize);
-        impl Memory for Refuses {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                let Some((index, site)) = MUTATIONS
-                    .iter()
-                    .enumerate()
-                    .find(|(_, site)| site.rva == address)
-                else {
-                    return false;
-                };
-                if index == self.0 || destination.len() != site.sentinel.len() {
-                    return false;
-                }
-                destination.copy_from_slice(&site.sentinel);
-                true
-            }
-        }
-        for (index, site) in MUTATIONS.iter().enumerate() {
-            let error = validate_sites(&Refuses(index), 0).unwrap_err();
-            assert!(error.contains("army_stat_changes"));
-            assert!(error.contains(site.name));
-            assert!(error.contains("sentinel validation"));
-        }
     }
 
     #[test]

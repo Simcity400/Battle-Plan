@@ -138,12 +138,12 @@ mod tests {
         put(
             &mut bytes,
             0x800,
-            &(csupply_system::VTABLE_RVA as u64).to_le_bytes(),
+            &(csupply_system::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             0x808,
-            &(csupply_system::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            &(csupply_system::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         for (at, pointer) in [
             (cgame_state::PROVINCES, 0x4000_u64),

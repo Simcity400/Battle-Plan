@@ -3,10 +3,11 @@
 //! The vtable pointers at `GREGORIAN_BASE` and `PERSISTENT_BASE` belong to one date object. Textual
 //! save hours range from 1 through 24.
 
+use engine_sites::Rva;
 /// CGameDate primary vtable.
-pub const VTABLE_RVA: usize = 0x0279_63d0;
+pub const VTABLE_RVA: Rva = Rva(0x0279_63d0);
 /// CGameDate CPersistent vtable.
-pub const PERSISTENT_VTABLE_RVA: usize = 0x0279_6400;
+pub const PERSISTENT_VTABLE_RVA: Rva = Rva(0x0279_6400);
 /// CGameDate CGregorianDate base.
 pub const GREGORIAN_BASE: usize = 0;
 /// Embedded date base containing signed i32 raw hour.
@@ -21,11 +22,9 @@ pub fn read_raw(
     base: usize,
     address: usize,
 ) -> Result<i32, &'static str> {
-    let primary = base
-        .checked_add(VTABLE_RVA)
+    let primary = engine_sites::at(base, VTABLE_RVA)
         .ok_or("game date vtable address overflow")? as u64;
-    let persistent = base
-        .checked_add(PERSISTENT_VTABLE_RVA)
+    let persistent = engine_sites::at(base, PERSISTENT_VTABLE_RVA)
         .ok_or("game date vtable address overflow")? as u64;
     if crate::read::<u64>(memory, address) != Some(primary)
         || address

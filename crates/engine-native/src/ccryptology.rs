@@ -9,9 +9,10 @@ use crate::{
     read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CCryptology primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_7ef0;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_7ef0);
 /// CCryptology inline CCountryDecryptionState array data pointer.
 pub const DECRYPTION_STATES: usize = 0x28;
 /// Decryption-state signed i32 count, incremented after each 0x38-byte inline row.
@@ -200,9 +201,7 @@ fn cryptology(
         }
         return pointer(memory, agency_pointer, agency::CRYPTOLOGY);
     }
-    let expected = base
-        .checked_add(agency::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, agency::VTABLE_RVA).ok_or("module address overflow")?;
     let mut bytes = [0_u8; 24];
     let copied = memory.copy_records(
         RecordSources::Pointers(&[agency_pointer]),
@@ -249,9 +248,7 @@ fn decryption_states(
             .and_then(|address| Array::read(memory, address, state::STRIDE))
             .ok_or("cryptology state array unreadable or invalid");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     let mut bytes = [0_u8; 32];
     let copied = memory.copy_records(RecordSources::Pointers(&[crypto]), &LAYOUT, &mut bytes);
     let word =
@@ -302,9 +299,7 @@ fn read_state(memory: &impl Memory, base: usize, at: usize) -> Result<Row, &'sta
 }
 
 fn decode_state(base: usize, bytes: [u8; 32]) -> Result<Row, &'static str> {
-    let expected = base
-        .checked_add(state::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, state::VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(bytes[0..8].try_into().unwrap()) != expected as u64 {
         return Err("cryptology state vtable mismatch");
     }
@@ -335,9 +330,9 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    rva: usize,
+    rva: Rva,
 ) -> Result<(), &'static str> {
-    let expected = base.checked_add(rva).ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, rva).ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) == Some(expected as u64) {
         Ok(())
     } else {
@@ -625,7 +620,7 @@ mod tests {
             p32(&mut bytes, LINKS + index * 4, slot);
         }
         for (index, country) in COUNTRY.into_iter().enumerate() {
-            p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            p64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
             p32(&mut bytes, country + ccountry::ID, [4, 2, 3][index]);
         }
         p64(
@@ -633,20 +628,20 @@ mod tests {
             COUNTRY[0] + ccountry::INTELLIGENCE_AGENCY,
             AGENCY as u64,
         );
-        p64(&mut bytes, AGENCY, agency::VTABLE_RVA as u64);
+        p64(&mut bytes, AGENCY, agency::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             AGENCY + agency::OWNER_COUNTRY,
             COUNTRY[0] as u64,
         );
         p64(&mut bytes, AGENCY + agency::CRYPTOLOGY, CRYPTO as u64);
-        p64(&mut bytes, CRYPTO, VTABLE_RVA as u64);
+        p64(&mut bytes, CRYPTO, VTABLE_RVA.0 as u64);
         p64(&mut bytes, CRYPTO + OWNER_COUNTRY, COUNTRY[0] as u64);
         // A spare, uninitialized capacity slot must never become a row.
         header(&mut bytes, CRYPTO + DECRYPTION_STATES, STATES, 3, 2);
         for (index, target) in [2, 3].into_iter().enumerate() {
             let at = STATES + index * state::STRIDE;
-            p64(&mut bytes, at, state::VTABLE_RVA as u64);
+            p64(&mut bytes, at, state::VTABLE_RVA.0 as u64);
             p32(&mut bytes, at + state::TARGET_COUNTRY, target);
             p32(&mut bytes, at + state::BONUS_DAYS, (-1_i32) as u32);
             bytes[at + state::BONUS_ACTIVE] = 7;

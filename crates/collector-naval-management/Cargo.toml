@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-hooks/test-support"]
 
 [dependencies]
+engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-native.workspace = true
 replay-data.workspace = true

@@ -2,14 +2,10 @@
 //! runs the same capture through [`crate::recording`].
 use crate::{
     recording::{self, COLLECTOR_LOADED, CaptureOptions, GAME_CLAIMED, TWO_GAMES},
-    windows::{self, Process, ProcessMemory},
+    windows::{Process, ProcessMemory},
 };
-use engine_executable::build::hash_executable;
 use replay_data::{identity::IdentityCodec, scope::CaptureMode};
-use std::{
-    fs::File,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 pub use crate::recording::{
     CaptureOutcome, Control, Omission, Refusal, SavedWaiting, SetAside, Stage, UnloadObservation,
@@ -101,27 +97,16 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// Find the game's image base. The campaign is read through the recognised build's
-    /// memory layout, so on any other build the probe is withheld.
+    /// Find the game's image base and locate its sites. On a build other than the recognised
+    /// one the campaign is read only once its struct layouts verify.
     pub fn open(pid: u32) -> Result<Self, String> {
         let process = Process::open(pid, false)?;
-        let exe = hash_executable(File::open(&process.path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        if !exe.recognised() {
-            return Err(format!(
-                "{PROBE_WITHHELD}: it reads the recognised build's memory layout"
-            ));
-        }
-        let name = process
-            .path
-            .file_name()
-            .ok_or("game executable has no name")?
-            .to_owned();
-        let base = windows::modules(pid)?
-            .into_iter()
-            .find(|module| module.path.file_name() == Some(name.as_os_str()))
-            .ok_or("game module not found")?
-            .base;
+        let base = crate::game_sites::module_base(&process, pid)?;
+        crate::game_sites::locate(&process.path, base)?
+            .layouts()
+            .map_err(|withheld| format!("{PROBE_WITHHELD}: {withheld}"))?;
+        engine_native::cgame_state::clock_sites(base)
+            .map_err(|withheld| format!("{PROBE_WITHHELD}: {withheld}"))?;
         Ok(Self { process, base })
     }
 

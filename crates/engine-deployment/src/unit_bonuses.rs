@@ -28,15 +28,16 @@ use crate::{
     csub_unit_definition, msvc_string, read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// List entry stride.
 pub const STRIDE: usize = 0x70;
 /// Entry vtable.
-pub const VTABLE_RVA: usize = 0x029d_c408;
+pub const VTABLE_RVA: Rva = Rva(0x029d_c408);
 /// The entry's embedded bonus payload.
 pub const PAYLOAD: usize = 0x08;
 /// The payload's vtable.
-pub const PAYLOAD_VTABLE_RVA: usize = 0x0285_e858;
+pub const PAYLOAD_VTABLE_RVA: Rva = Rva(0x0285_e858);
 /// Payload CPdxArray of exact sub-unit targets: pointers to owned bonus
 /// definitions, whose token names the target sub-unit.
 pub const EXACT_TARGETS: usize = 0x08;
@@ -322,8 +323,8 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
         missing: 0,
     };
     let captured = (|| {
-        let vtable = |rva: usize| {
-            base.checked_add(rva)
+        let vtable = |key: Rva| {
+            engine_sites::at(base, key)
                 .map(|vtable| vtable as u64)
                 .ok_or("unit bonus module address overflow")
         };

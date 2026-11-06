@@ -4,8 +4,9 @@
 //! overflow their slot and alias another definition, so combined ids alone do
 //! not prove a unique script event. The exact namespace-record class is unknown.
 
+use engine_sites::Rva;
 /// Namespace row array pointer.
-pub const TABLE_RVA: usize = 0x033d_d7b8;
+pub const TABLE_RVA: Rva = Rva(0x033d_d7b8);
 /// Namespace record stride.
 pub const STRIDE: usize = 0x28;
 /// Namespace MSVC name string.

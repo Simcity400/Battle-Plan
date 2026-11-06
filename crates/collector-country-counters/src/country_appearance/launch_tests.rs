@@ -11,16 +11,16 @@ fn empty_navy(capture: &mut Captured, hour: Option<i32>) {
         0x1000 + cgame_state::STRATEGIC_NAVY_MANAGER,
         0x2000,
     );
-    pointer(&mut bytes, 0x2000, cstrategic_navy_manager::VTABLE_RVA);
+    pointer(&mut bytes, 0x2000, cstrategic_navy_manager::VTABLE_RVA.0);
     pointer(&mut bytes, 0x2000 + cstrategic_navy_manager::NAVIES, 0x2100);
     bytes[0x2010..0x2014].copy_from_slice(&1_u32.to_le_bytes());
     bytes[0x2014..0x2018].copy_from_slice(&1_u32.to_le_bytes());
     pointer(&mut bytes, 0x2100, 0x3000);
-    pointer(&mut bytes, 0x3000, cstrategic_navy::VTABLE_RVA);
+    pointer(&mut bytes, 0x3000, cstrategic_navy::VTABLE_RVA.0);
     pointer(
         &mut bytes,
         0x3000 + cstrategic_navy::SECONDARY,
-        cstrategic_navy::SECONDARY_VTABLE_RVA,
+        cstrategic_navy::SECONDARY_VTABLE_RVA.0,
     );
     pointer(
         &mut bytes,

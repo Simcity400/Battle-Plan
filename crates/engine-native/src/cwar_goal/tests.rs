@@ -17,12 +17,12 @@ fn fixture(countries: u32) -> (World, Vec<usize>) {
         world.u64(owner + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         world.u64(
             diplomacy,
-            (world.module + cdiplomacy_status::VTABLE_RVA) as u64,
+            (world.module + cdiplomacy_status::VTABLE_RVA.0) as u64,
         );
         world.u64(diplomacy + cdiplomacy_status::COUNTRY, owner as u64);
         world.array(diplomacy + cdiplomacy_status::OWNED_WARGOALS, list, 1);
         world.u64(list, goal as u64);
-        world.u64(goal, (world.module + VTABLE_RVA) as u64);
+        world.u64(goal, (world.module + VTABLE_RVA.0) as u64);
         world.u32(goal + RECIPIENT, 0x8000_0000 | country);
         world.u64(goal + GOAL_TYPE, definition as u64);
         world.array(goal + STATES, state_list, 4);

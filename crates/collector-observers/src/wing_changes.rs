@@ -287,23 +287,23 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         use engine_mutations::{
             air_wing_equipment_mutations::Receiver,
             air_wing_equipment_mutations::SUBTRACT_VARIANT_RVA,
         };
         let mut hooks = Vec::new();
         if cfg!(feature = "wing_changes")
-            && MUTATIONS.iter().all(|(site, _)| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            })
+            && MUTATIONS
+                .iter()
+                .all(|(site, _)| crate::located(base, site.rva).is_ok())
+            && let Ok(subtract) = engine_sites::hook(base, SUBTRACT_VARIANT_RVA)
         {
             for site in MAP_MUTATIONS {
-                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-                    return Err(map_hook_error(site.name, "entry verification failed"));
-                }
+                crate::verified(base, site.rva)
+                    .map_err(|reason| map_hook_error(site.name, reason))?;
             }
-            SUBTRACT.store(base + SUBTRACT_VARIANT_RVA, Ordering::Release);
+            SUBTRACT.store(subtract.address, Ordering::Release);
             let callbacks: [usize; SITES] = [
                 add_airplanes as *const () as usize,
                 add_equipment_pool as *const () as usize,
@@ -314,12 +314,14 @@ impl Hooks {
                 destroy_wing as *const () as usize,
             ];
             for (index, (site, receiver)) in MUTATIONS.iter().enumerate() {
+                let code = engine_sites::hook(base, site.rva)?;
+                let original = code.sentinel::<16>()?;
                 let hook = match receiver {
                     Receiver::Pool => unsafe {
-                        Hook::new_call(base + site.rva, callbacks[index], site.sentinel)
+                        Hook::new_call(code.address, callbacks[index], original)
                     },
                     Receiver::Wing | Receiver::Wings => unsafe {
-                        Hook::new(base + site.rva, callbacks[index], site.sentinel)
+                        Hook::new(code.address, callbacks[index], original)
                     },
                 }
                 .map_err(|_| "native hook construction failed")?;
@@ -339,15 +341,17 @@ impl Hooks {
                 erase_incoming as *const () as usize,
             ];
             for (index, site) in MAP_MUTATIONS.into_iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|reason| map_hook_error(site.name, &reason))?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|reason| map_hook_error(site.name, &reason))?;
                 MAP_ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
         }
         Ok(Self {
             hooks,
-            preferences: unsafe { crate::wing_preferences::Hooks::new(memory, base) }?,
+            preferences: unsafe { crate::wing_preferences::Hooks::new(base) }?,
         })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {

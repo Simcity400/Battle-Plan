@@ -17,9 +17,10 @@ use crate::{
     read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Lend-lease exchange primary vtable.
-pub const VTABLE_RVA: usize = 0x02a9_9cf8;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_9cf8);
 /// The exchange's reference (u32 type, u32 id) of its CReferenceObject base.
 pub const HANDLE: usize = 0x08;
 /// The receiver's raw country reference.
@@ -47,28 +48,6 @@ pub const FUEL_PERCENTAGE: usize = 0x358;
 pub const FUEL_SENT: usize = 0x360;
 pub const FUEL_SUNK: usize = 0x368;
 pub const LAST_FUEL_DELIVERED: usize = 0x370;
-
-/// The pool-addition calls that commit cumulative delivered and sunk amounts.
-/// Only these call sites supply a lend-lease update; additions to other pools
-/// must not acquire lend-lease identities or appear as deliveries.
-#[cfg(test)]
-pub const DELIVERED_POOL_RETURN_RVA: usize = 0x19f8f4a;
-#[cfg(test)]
-pub const SUNK_POOL_RETURN_RVA: usize = 0x19faf4f;
-#[cfg(test)]
-pub const POOL_ADDITION_RVA: usize = 0x1092970;
-#[cfg(test)]
-pub const DELIVERED_POOL_CALL_RVA: usize = DELIVERED_POOL_RETURN_RVA - 5;
-#[cfg(test)]
-pub const SUNK_POOL_CALL_RVA: usize = SUNK_POOL_RETURN_RVA - 5;
-#[cfg(test)]
-pub const DELIVERED_POOL_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0x26, 0x9a, 0x69, 0xff, 0x4d, 0x8b, 0xb5, 0xb0, 0x00, 0x00, 0x00, 0x49, 0x8d, 0x4e, 0x20,
-];
-#[cfg(test)]
-pub const SUNK_POOL_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0x21, 0x7a, 0x69, 0xff, 0x44, 0x8b, 0xc6, 0x48, 0x8b, 0xd5, 0x48, 0x8b, 0xcf, 0xe8, 0xd3,
-];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
@@ -176,9 +155,8 @@ pub fn identity(
     base: usize,
     exchange: usize,
 ) -> Result<Identity, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("lend-lease module address overflow")? as u64;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("lend-lease module address overflow")? as u64;
     if crate::read::<u64>(memory, exchange) != Some(expected) {
         return Err("lend-lease exchange vtable unreadable or mismatch");
     }
@@ -190,8 +168,7 @@ pub fn identity(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("lend-lease giver resources unreadable or null")?;
-    let resources_vtable = base
-        .checked_add(ccountry_resources::VTABLE_RVA)
+    let resources_vtable = engine_sites::at(base, ccountry_resources::VTABLE_RVA)
         .ok_or("lend-lease module address overflow")? as u64;
     if crate::read::<u64>(memory, resources) != Some(resources_vtable) {
         return Err("lend-lease giver resources vtable unreadable or mismatch");
@@ -353,8 +330,8 @@ fn walk_inner(
     len: &mut usize,
     unread_rows: &mut u32,
 ) -> Result<(), &'static str> {
-    let relocate = |rva: usize| {
-        base.checked_add(rva)
+    let relocate = |rva| {
+        engine_sites::at(base, rva)
             .map(|address| address as u64)
             .ok_or("lend-lease module address overflow")
     };

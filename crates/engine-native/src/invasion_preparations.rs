@@ -60,6 +60,7 @@ use crate::{
     modifier_keys,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// A CModifier's accumulator, inside it.
 const MODIFIER_ACCUMULATOR: usize = 0x10;
@@ -130,11 +131,10 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    if object == 0
-        || crate::read::<u64>(memory, object) != base.checked_add(vtable).map(|v| v as u64)
-    {
+    let expected = engine_sites::at(base, vtable).map(|v| v as u64);
+    if object == 0 || expected.is_none() || crate::read::<u64>(memory, object) != expected {
         return Err("invasion preparation object identity mismatch");
     }
     Ok(())

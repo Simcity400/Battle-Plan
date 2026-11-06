@@ -10,9 +10,10 @@ use crate::{
     sair_wing_combat_data, sdamage_entry,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Regional combat-data vtable.
-pub const VTABLE_RVA: usize = 0x029d_5288;
+pub const VTABLE_RVA: Rva = Rva(0x029d_5288);
 /// First wing-combat-record vector.
 pub const FIRST_RECORDS: usize = 0x08;
 /// First-vector count, i32.
@@ -23,9 +24,9 @@ pub const SECOND_RECORDS: usize = 0x20;
 /// Raw owner-country link, including zero, copied from strategic air.
 pub const OWNER: usize = 0x38;
 /// Record update accumulating flags, masks, plane high-water count and damage.
-pub const UPDATE_RECORD_RVA: usize = 0x019e_fb90;
+pub const UPDATE_RECORD_RVA: Rva = Rva(0x019e_fb90);
 /// Pruning records older than the runtime timeout from both vectors.
-pub const PRUNE_RVA: usize = 0x019f_07b0;
+pub const PRUNE_RVA: Rva = Rva(0x019f_07b0);
 
 /// One non-null slot from a completely enumerated, authenticated CStrategicAir
 /// region table. The slot index is the native strategic-region id. Addresses
@@ -161,9 +162,7 @@ pub fn walk_buffer(
             let slot = index - batch_first;
             let copied = copied_fields[slot];
             let record = &identities[slot * ROOT_RECORD_BYTES..(slot + 1) * ROOT_RECORD_BYTES];
-            let expected = base
-                .checked_add(VTABLE_RVA)
-                .ok_or("module address overflow")?;
+            let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
             if copied == 0 || u64::from_le_bytes(record[..8].try_into().unwrap()) != expected as u64
             {
                 return Err("air combat region vtable mismatch or unreadable");
@@ -418,9 +417,9 @@ impl Reader {
         let identity = match crate::read::<[u8; 16]>(memory, pointer) {
             None => Err(3),
             Some(bytes) => {
-                let expected = base
-                    .checked_add(engine_native::cequipment_variant::VTABLE_RVA)
-                    .ok_or("variant module address overflow")?;
+                let expected =
+                    engine_sites::at(base, engine_native::cequipment_variant::VTABLE_RVA)
+                        .ok_or("variant module address overflow")?;
                 engine_native::cequipment_variant::identity_from_header(expected, bytes)
                     .map_err(|_| 4)
             }
@@ -474,9 +473,7 @@ pub fn read_holder_into(
         &ROOT_LAYOUT,
         &mut identity,
     );
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if copied == 0 || u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64 {
         return Err("air combat region vtable mismatch or unreadable");
     }
@@ -551,9 +548,7 @@ fn read_record(
     use sair_wing_combat_data as wing;
     let qword = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
     let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-    let expected = base
-        .checked_add(wing::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, wing::VTABLE_RVA).ok_or("module address overflow")?;
     if qword(0) != expected as u64 {
         return Err("air combat record vtable mismatch");
     }
@@ -565,9 +560,8 @@ fn read_record(
     if selection > 1 || classification > 1 || copied > 1 {
         return Err("air combat record flag is not boolean");
     }
-    let damage_vtable = base
-        .checked_add(sdamage_entry::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let damage_vtable =
+        engine_sites::at(base, sdamage_entry::VTABLE_RVA).ok_or("module address overflow")?;
     let mut damage: [std::ops::Range<usize>; 2] = Default::default();
     for (channel, offset) in [wing::FIRST_DAMAGE, wing::SECOND_DAMAGE]
         .into_iter()
@@ -626,9 +620,8 @@ fn equipment(
 ) -> Result<Result<std::ops::Range<usize>, u8>, &'static str> {
     use engine_native::{cequipment_variant_pool as pool, equipment_entry as entry};
     let at = sair_wing_combat_data::EQUIPMENT_POOL;
-    let expected = base
-        .checked_add(pool::VTABLE_RVA)
-        .ok_or("equipment pool vtable address overflow")?;
+    let expected =
+        engine_sites::at(base, pool::VTABLE_RVA).ok_or("equipment pool vtable address overflow")?;
     if u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) != expected as u64 {
         return Ok(Err(0));
     }
@@ -751,8 +744,7 @@ pub fn locate(
         .and_then(|at| crate::read::<u64>(memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .ok_or("strategic air manager pointer unreadable or address overflow")?;
-    let expected = base
-        .checked_add(crate::cstrategic_air_manager::VTABLE_RVA)
+    let expected = engine_sites::at(base, crate::cstrategic_air_manager::VTABLE_RVA)
         .ok_or("strategic air manager vtable address overflow")?;
     if manager == 0 || crate::read::<u64>(memory, manager) != Some(expected as u64) {
         return Err("strategic air manager vtable unreadable or mismatched");
@@ -770,8 +762,7 @@ pub fn locate(
     if air == 0 {
         return Ok(None);
     }
-    let expected = base
-        .checked_add(cstrategic_air::VTABLE_RVA)
+    let expected = engine_sites::at(base, cstrategic_air::VTABLE_RVA)
         .ok_or("strategic air country vtable address overflow")?;
     if crate::read::<u64>(memory, air) != Some(expected as u64) {
         return Err("strategic air country vtable unreadable or mismatched");
@@ -853,7 +844,7 @@ mod tests {
             put(
                 &mut bytes,
                 address,
-                &((IMAGE_BASE + VTABLE_RVA) as u64).to_le_bytes(),
+                &((IMAGE_BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(&mut bytes, address + OWNER, &(index as u32).to_le_bytes());
             Root {
@@ -912,7 +903,7 @@ mod tests {
         put(
             &mut bytes,
             REGION,
-            &((IMAGE_BASE + VTABLE_RVA) as u64).to_le_bytes(),
+            &((IMAGE_BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, REGION + OWNER, &77_u32.to_le_bytes());
         vector(&mut bytes, REGION + FIRST_RECORDS, FIRST, 2);
@@ -925,7 +916,7 @@ mod tests {
             put(
                 &mut bytes,
                 address,
-                &((IMAGE_BASE + sair_wing_combat_data::VTABLE_RVA) as u64).to_le_bytes(),
+                &((IMAGE_BASE + sair_wing_combat_data::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -964,7 +955,7 @@ mod tests {
             put(
                 &mut bytes,
                 address,
-                &((IMAGE_BASE + sdamage_entry::VTABLE_RVA) as u64).to_le_bytes(),
+                &((IMAGE_BASE + sdamage_entry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -993,7 +984,7 @@ mod tests {
         put(
             &mut bytes,
             COUNTRY,
-            &((IMAGE_BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+            &((IMAGE_BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, COUNTRY + ccountry::ID, &3_u32.to_le_bytes());
         put(
@@ -1004,7 +995,7 @@ mod tests {
         put(
             &mut bytes,
             MANAGER,
-            &((IMAGE_BASE + cstrategic_air_manager::VTABLE_RVA) as u64).to_le_bytes(),
+            &((IMAGE_BASE + cstrategic_air_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         vector(
             &mut bytes,
@@ -1016,7 +1007,7 @@ mod tests {
         put(
             &mut bytes,
             AIR,
-            &((IMAGE_BASE + cstrategic_air::VTABLE_RVA) as u64).to_le_bytes(),
+            &((IMAGE_BASE + cstrategic_air::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1349,7 +1340,7 @@ mod tests {
         put(
             &mut bytes,
             at,
-            &((IMAGE_BASE + pool::VTABLE_RVA) as u64).to_le_bytes(),
+            &((IMAGE_BASE + pool::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         vector(&mut bytes, at + pool::ITEMS, ENTRIES, 2);
         for (index, amount) in [5_i64, -7].into_iter().enumerate() {
@@ -1364,7 +1355,7 @@ mod tests {
         put(
             &mut bytes,
             VARIANT,
-            &((IMAGE_BASE + variant::VTABLE_RVA) as u64).to_le_bytes(),
+            &((IMAGE_BASE + variant::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, VARIANT + 8, &handle.to_le_bytes());
         let memory = SliceMemory {

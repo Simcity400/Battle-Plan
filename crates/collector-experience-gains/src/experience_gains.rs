@@ -725,25 +725,26 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         let result = (|| {
-            for site in &native::SITES {
-                let at = base
-                    .checked_add(site.rva)
-                    .ok_or("experience gain site address overflow")?;
-                if !crate::hook::installation::sentinel(memory, at, site.sentinel) {
-                    return Err("experience gain native sentinel mismatch");
-                }
+            let mut located = [(0, [0; 16]); native::SITES.len()];
+            for (slot, site) in located.iter_mut().zip(&native::SITES) {
+                *slot = engine_sites::hook(base, site.rva)
+                    .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                    .inspect_err(|cause| {
+                        crate::hook::installation::refused(
+                            crate::hook::installation::Kind::Sentinel,
+                            None,
+                            cause,
+                        )
+                    })?;
             }
             BASE.store(base, Ordering::Relaxed);
-            native::SITES
+            located
                 .iter()
                 .enumerate()
-                .map(|(index, site)| unsafe {
-                    let at = base
-                        .checked_add(site.rva)
-                        .ok_or("experience gain site address overflow")?;
-                    Tap::new(at, observe, index, site.sentinel)
+                .map(|(index, &(at, original))| unsafe {
+                    Tap::new(at, observe, index, original)
                         .map_err(|_| "experience gain tap construction failed")
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -852,14 +853,14 @@ mod tests {
             let status = STATUSES + slot * 16;
             put(POINTERS + slot * 8, &(country as u64).to_le_bytes());
             put(LINKS + slot * 4, &(slot as u32).to_le_bytes());
-            put(country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+            put(country, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
             put(country + 8, &(slot as u32).to_le_bytes());
             put(country + 12, &(slot as u32 * 7).to_le_bytes());
             put(
                 country + ccountry::EXPERIENCE_STATUS,
                 &(status as u64).to_le_bytes(),
             );
-            put(status, &(status::VTABLE_RVA as u64).to_le_bytes());
+            put(status, &(status::VTABLE_RVA.0 as u64).to_le_bytes());
             put(status + 8, &(country as u64).to_le_bytes());
         }
         for (index, amount) in amounts.iter().enumerate() {
@@ -1322,7 +1323,7 @@ mod tests {
             bytes[LINKS + slot * 4..LINKS + slot * 4 + 4]
                 .copy_from_slice(&(slot as u32).to_le_bytes());
             bytes[pointer..pointer + 8]
-                .copy_from_slice(&(ccountry::VTABLE_RVA as u64).to_le_bytes());
+                .copy_from_slice(&(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
             bytes[pointer + 8..pointer + 12].copy_from_slice(&(slot as u32).to_le_bytes());
             bytes[pointer + 12..pointer + 16].copy_from_slice(&u32::MAX.to_le_bytes());
         }

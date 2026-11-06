@@ -789,7 +789,9 @@ impl Hooks {
             return Ok(Self { hooks: Vec::new() });
         }
         BASE.store(base, Ordering::Release);
-        let game = read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
+        let game = engine_sites::resolve(base, engine_native::cgame_state::SINGLETON_RVA)
+            .ok()
+            .and_then(|at| read::<u64>(memory, at))
             .and_then(|p| usize::try_from(p).ok())
             .ok_or("intel source bootstrap game state unreadable")?;
         // A collector attached before any load sizes for nothing; captures grow the lane.
@@ -821,26 +823,17 @@ impl Hooks {
         .enumerate()
         {
             let site = &sites::SITES[index];
-            hook_errors::verify(
-                memory,
-                base,
-                site.rva,
-                site.sentinel,
-                "intel sources",
-                site.name,
-                index,
-            )?;
-            let hook = unsafe { Hook::new(base + site.rva, callback, site.sentinel) }.map_err(
-                |cause| {
-                    hook_errors::site(
-                        "intel sources",
-                        site.name,
-                        index,
-                        "construction failed",
-                        &cause,
-                    )
-                },
-            )?;
+            let (address, original) =
+                hook_errors::locate(base, site.rva, "intel sources", site.name, index)?;
+            let hook = unsafe { Hook::new(address, callback, original) }.map_err(|cause| {
+                hook_errors::site(
+                    "intel sources",
+                    site.name,
+                    index,
+                    "construction failed",
+                    &cause,
+                )
+            })?;
             ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
             hooks.push(hook);
         }
@@ -961,7 +954,7 @@ mod tests {
         // reference events cannot overwrite a freshly read network reference.
         let mut world = engine_native::ccountry::synthetic::World::new(0, 0, 0x200);
         let address = world.alloc(24);
-        world.u64(address, native::REFERENCE_VTABLE as u64);
+        world.u64(address, native::REFERENCE_VTABLE.0 as u64);
         world.u32(address + 8, 19);
         world.u32(address + 12, 7);
         world.u32(address + 16, 23);

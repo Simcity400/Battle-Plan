@@ -19,11 +19,9 @@ pub fn visit(
     capacity: usize,
     mut entry: impl FnMut(u32, u32, i32) -> Result<(), &'static str>,
 ) -> Result<u32, &'static str> {
-    if base
-        .checked_add(carmy_manpower_values::VTABLE_RVA)
-        .map(|p| p as u64)
-        != read::<u64>(memory, container)
-    {
+    let expected = engine_sites::at(base, carmy_manpower_values::VTABLE_RVA)
+        .ok_or("assigned manpower container vtable mismatch")?;
+    if read::<u64>(memory, container) != Some(expected as u64) {
         return Err("assigned manpower container vtable mismatch");
     }
     let array = container
@@ -51,7 +49,7 @@ mod tests {
     #[test]
     fn every_native_source_and_signed_amount_is_retained_with_capacity_count() {
         let mut bytes = [0; 0x40];
-        bytes[..8].copy_from_slice(&(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8..16].copy_from_slice(&0x1020_u64.to_le_bytes());
         bytes[16..20].copy_from_slice(&2_u32.to_le_bytes());
         bytes[20..24].copy_from_slice(&2_u32.to_le_bytes());

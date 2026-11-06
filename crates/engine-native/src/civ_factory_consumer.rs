@@ -6,6 +6,7 @@
 //! that order, adding each allocation to civilian unavailable factories before
 //! the next consumer runs. These fields are not serialized.
 
+use engine_sites::Rva;
 /// Consumer size.
 pub const SIZE: usize = 0x18;
 /// Factories left before this consumer, i32. Before allocating, every
@@ -18,12 +19,12 @@ pub const ALLOCATED: usize = 0x10;
 
 /// Consumer-goods primary vtable. Allocation takes the minimum of
 /// available civilian factories and required consumer goods.
-pub const CONSUMER_GOODS_VTABLE_RVA: usize = 0x029e_cf80;
+pub const CONSUMER_GOODS_VTABLE_RVA: Rva = Rva(0x029e_cf80);
 /// National-projects factory-consumer primary vtable.
-pub const SPECIAL_PROJECTS_VTABLE_RVA: usize = 0x029e_cf98;
+pub const SPECIAL_PROJECTS_VTABLE_RVA: Rva = Rva(0x029e_cf98);
 /// Licensed-production factory-consumer primary vtable.
-pub const LICENSED_PRODUCTION_VTABLE_RVA: usize = 0x029e_cfb0;
+pub const LICENSED_PRODUCTION_VTABLE_RVA: Rva = Rva(0x029e_cfb0);
 /// Trade factory-consumer primary vtable.
-pub const TRADE_VTABLE_RVA: usize = 0x029e_cfc8;
+pub const TRADE_VTABLE_RVA: Rva = Rva(0x029e_cfc8);
 /// Market-payment factory-consumer primary vtable.
-pub const CONTRACT_PAYMENTS_VTABLE_RVA: usize = 0x029e_cfe0;
+pub const CONTRACT_PAYMENTS_VTABLE_RVA: Rva = Rva(0x029e_cfe0);

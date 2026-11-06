@@ -44,11 +44,11 @@ fn reserved(bytes: &mut [u8]) {
     const ROOT: usize = 0x7000;
     const DIP: usize = 0xc000;
     p64(bytes, 0x3000, ROOT as u64);
-    p64(bytes, ROOT, ccountry::VTABLE_RVA as u64);
+    p64(bytes, ROOT, ccountry::VTABLE_RVA.0 as u64);
     p32(bytes, ROOT + ccountry::ID, 0);
     p64(bytes, ROOT + ccountry::DIPLOMACY_STATUS, DIP as u64);
     bytes[ROOT + ccountry::CAN_OCCUPY_NON_WAR] = 0x80;
-    p64(bytes, DIP, cdiplomacy_status::VTABLE_RVA as u64);
+    p64(bytes, DIP, cdiplomacy_status::VTABLE_RVA.0 as u64);
     p64(bytes, DIP + cdiplomacy_status::COUNTRY, ROOT as u64);
     links_vector(
         bytes,

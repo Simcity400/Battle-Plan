@@ -2,18 +2,19 @@
 //! There is no generation word. Growth publishes mask before slots pointer,
 //! requiring a quiescent boundary.
 
+use engine_sites::Rva;
 /// Low-type reference-table array RVA.
-pub const LOW_ROOTS_RVA: usize = 0x034f_fc00;
+pub const LOW_ROOTS_RVA: Rva = Rva(0x034f_fc00);
 /// Engine mid-type reference-table root RVA.
-pub const MID_ROOT_RVA: usize = 0x034f_fbf8;
+pub const MID_ROOT_RVA: Rva = Rva(0x034f_fbf8);
 /// Engine high-type reference-table root RVA.
-pub const HIGH_ROOT_RVA: usize = 0x034f_fbf0;
+pub const HIGH_ROOT_RVA: Rva = Rva(0x034f_fbf0);
 /// Engine low-type root count.
 pub const LOW_ROOT_COUNT: u32 = 100;
 /// Engine mid-type cutoff.
 pub const MID_TYPE_LIMIT: u32 = 0x1269;
 /// Engine static-empty bucket RVA.
-pub const STATIC_EMPTY_RVA: usize = 0x0313_5f98;
+pub const STATIC_EMPTY_RVA: Rva = Rva(0x0313_5f98);
 /// Reference registry entries pointer.
 pub const ENTRIES: usize = 0x08;
 /// Reference registry u32 count.
@@ -198,13 +199,13 @@ impl HeaderResolver {
 fn root_address(base: usize, handle: u64) -> Result<usize, &'static str> {
     let kind = handle as u32;
     let root = if kind < LOW_ROOT_COUNT {
-        LOW_ROOTS_RVA + kind as usize * 8
+        engine_sites::at(base, LOW_ROOTS_RVA).and_then(|roots| roots.checked_add(kind as usize * 8))
     } else if kind < MID_TYPE_LIMIT {
-        MID_ROOT_RVA
+        engine_sites::at(base, MID_ROOT_RVA)
     } else {
-        HIGH_ROOT_RVA
+        engine_sites::at(base, HIGH_ROOT_RVA)
     };
-    base.checked_add(root).ok_or("reference root overflow")
+    root.ok_or("reference root overflow")
 }
 
 fn read_header(
@@ -233,9 +234,8 @@ fn read_header(
     {
         return Err("reference header invalid");
     }
-    let static_empty = base
-        .checked_add(STATIC_EMPTY_RVA)
-        .ok_or("reference static empty overflow")?;
+    let static_empty =
+        engine_sites::at(base, STATIC_EMPTY_RVA).ok_or("reference static empty overflow")?;
     let exponent = capacity.trailing_zeros();
     if count > capacity
         || if capacity == 1 {
@@ -363,11 +363,11 @@ fn probe_with(
 pub const DYNAMIC_TYPE_BASE: u32 = 0x1268;
 /// Minted-ID counter, u32, incremented on minting and serialized unsigned
 /// as `debug_current_ref_id`.
-pub const ID_COUNTER_RVA: usize = 0x034f_ff20;
+pub const ID_COUNTER_RVA: Rva = Rva(0x034f_ff20);
 /// Default/invalid packed handle: low u32 type and high u32 ID. New reference
 /// objects and fields initialize from it; absent front bindings compare both
 /// words against it. It is not a counter and never advances.
-pub const INVALID_REFERENCE_RVA: usize = 0x033e_b2a0;
+pub const INVALID_REFERENCE_RVA: Rva = Rva(0x033e_b2a0);
 
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
@@ -524,11 +524,14 @@ pub(crate) mod tests {
         assert_eq!(resolve(&census, 0, handle), Ok(None));
         assert_eq!((census.calls(), census.bytes()), (1, 8));
         memory.put(Fixture::root(53), &(TABLE as u64).to_le_bytes());
-        memory.put(TABLE + ENTRIES, &(STATIC_EMPTY_RVA as u64).to_le_bytes());
+        memory.put(TABLE + ENTRIES, &(STATIC_EMPTY_RVA.0 as u64).to_le_bytes());
         memory.put(TABLE + MASK, &0_u32.to_le_bytes());
         memory.put(TABLE + OVERFLOW_DISTANCE, &[0]);
-        memory.put(STATIC_EMPTY_RVA, &[0; 2 * bucket::STRIDE]);
-        memory.put(STATIC_EMPTY_RVA + bucket::STRIDE + bucket::DISTANCE, &[255]);
+        memory.put(STATIC_EMPTY_RVA.0, &[0; 2 * bucket::STRIDE]);
+        memory.put(
+            STATIC_EMPTY_RVA.0 + bucket::STRIDE + bucket::DISTANCE,
+            &[255],
+        );
         let census = crate::read_census::ReadCensus::new(&memory);
         assert_eq!(resolve(&census, 0, handle), Ok(None));
         assert_eq!(
@@ -612,7 +615,7 @@ pub(crate) mod tests {
         f.put(0x4000 + gs::PROVINCES + 8, &2u32.to_le_bytes());
         f.put(0x4000 + gs::PROVINCES + 12, &2u32.to_le_bytes());
         f.put(0x5008, &0x6000u64.to_le_bytes());
-        f.put(0x6000, &(p::VTABLE_RVA as u64).to_le_bytes());
+        f.put(0x6000, &(p::VTABLE_RVA.0 as u64).to_le_bytes());
         f.put(0x6000 + p::ID, &1u32.to_le_bytes());
         f.put(0x6000 + p::OCCUPANTS, &0x6500u64.to_le_bytes());
         f.put(0x6000 + p::OCCUPANTS + 8, &2u32.to_le_bytes());
@@ -624,7 +627,7 @@ pub(crate) mod tests {
         for (i, &id) in ids.iter().enumerate() {
             let unit = 0x7000 + i * 0x1000;
             f.put(0x6500 + i * 8, &(unit as u64).to_le_bytes());
-            f.put(unit, &(carmy::VTABLE_RVA as u64).to_le_bytes());
+            f.put(unit, &(carmy::VTABLE_RVA.0 as u64).to_le_bytes());
             f.put(unit + cunit::HANDLE, &id.to_le_bytes());
             f.put(unit + cunit::LOCATION, &0x6000u64.to_le_bytes());
             f.entry(Fixture::index(id), 1, id, (unit + 0x10) as u64);

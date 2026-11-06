@@ -3,8 +3,9 @@
 //! preserves both live counts; specialization records have stride 0x20.
 //! Capacity is not a count and specialization population has no fixed cap.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_b128;
+pub const VTABLE_RVA: Rva = Rva(0x029f_b128);
 /// Trait-token vector data.
 pub const TRAIT_DATA: usize = 0x30;
 /// Trait-vector capacity, u32, separate from live count.
@@ -16,19 +17,19 @@ pub const SKILLS: usize = 0x110;
 /// Specialization-vector signed count used by copying.
 pub const SKILL_COUNT: usize = 0x11c;
 /// Scientist-trait primary vtable.
-pub const TRAIT_VTABLE_RVA: usize = 0x0279_9590;
+pub const TRAIT_VTABLE_RVA: Rva = Rva(0x0279_9590);
 /// Trait lexer token, serialized as its token string and used as database key.
 pub const TRAIT_TOKEN: usize = 0x08;
 /// Nullable retained scientist-template pointer controlling visible predicates.
 pub const VISIBILITY_TEMPLATE: usize = 0x128;
 /// Retained role-template and its embedded visible conjunction identities.
-pub const TEMPLATE_VTABLE_RVA: usize = 0x027e_3720;
+pub const TEMPLATE_VTABLE_RVA: Rva = Rva(0x027e_3720);
 pub const TEMPLATE_VISIBLE: usize = 0x60;
-pub const VISIBLE_VTABLE_RVA: usize = 0x0279_64c8;
+pub const VISIBLE_VTABLE_RVA: Rva = Rva(0x0279_64c8);
 const VISIBLE_CHILDREN: usize = 0x08;
 const VISIBLE_SOURCE: usize = 0x2c;
 const VISIBLE_HAS_SOURCE: usize = 0x34;
-const SOURCE_FILES_RVA: usize = 0x0369_19e0;
+const SOURCE_FILES_RVA: Rva = Rva(0x0369_19e0);
 
 /// Only a nonempty retained conjunction demands a filename. The source belongs
 /// to this role, including roles installed by effects, not the character's template.
@@ -57,11 +58,15 @@ pub fn visibility(
     if template == 0 {
         return Ok((0, None));
     }
-    if read::<u64>(memory, template) != Some(at(base, TEMPLATE_VTABLE_RVA)? as u64) {
+    let template_vtable = engine_sites::at(base, TEMPLATE_VTABLE_RVA)
+        .ok_or("scientist retained template identity mismatch")?;
+    if read::<u64>(memory, template) != Some(template_vtable as u64) {
         return Err("scientist retained template identity mismatch");
     }
     let visible = at(template, TEMPLATE_VISIBLE)?;
-    if read::<u64>(memory, visible) != Some(at(base, VISIBLE_VTABLE_RVA)? as u64) {
+    let visible_vtable = engine_sites::at(base, VISIBLE_VTABLE_RVA)
+        .ok_or("scientist visible conjunction identity mismatch")?;
+    if read::<u64>(memory, visible) != Some(visible_vtable as u64) {
         return Err("scientist visible conjunction identity mismatch");
     }
     let children = Array::read(memory, at(visible, VISIBLE_CHILDREN)?, 8)
@@ -78,7 +83,9 @@ pub fn visibility(
         u32::from_le_bytes(source[..4].try_into().unwrap()),
         u32::from_le_bytes(source[4..].try_into().unwrap()),
     ];
-    let pool = word(at(base, SOURCE_FILES_RVA)?)?;
+    let pool = word(
+        engine_sites::at(base, SOURCE_FILES_RVA).ok_or("scientist visibility address overflow")?,
+    )?;
     let size = read::<i32>(memory, pool).ok_or("source filename pool size unreadable")?;
     if size < 0 || source[0] >= size as u32 {
         return Err("source filename index invalid");
@@ -156,7 +163,7 @@ mod tests {
     struct Fixture(Vec<u8>);
     impl Memory for Fixture {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-            if at == SOURCE_FILES_RVA && out.len() == 8 {
+            if at == SOURCE_FILES_RVA.0 && out.len() == 8 {
                 out.copy_from_slice(&0xe00u64.to_le_bytes());
                 return true;
             }
@@ -176,9 +183,9 @@ mod tests {
     fn fixture() -> Fixture {
         let mut bytes = vec![0; 0x2000];
         put64(&mut bytes, 0x200 + VISIBILITY_TEMPLATE, 0x400);
-        put64(&mut bytes, 0x400, TEMPLATE_VTABLE_RVA as u64);
+        put64(&mut bytes, 0x400, TEMPLATE_VTABLE_RVA.0 as u64);
         let visible = 0x400 + TEMPLATE_VISIBLE;
-        put64(&mut bytes, visible, VISIBLE_VTABLE_RVA as u64);
+        put64(&mut bytes, visible, VISIBLE_VTABLE_RVA.0 as u64);
         put64(&mut bytes, visible + VISIBLE_CHILDREN, 0x900);
         put32(&mut bytes, visible + VISIBLE_CHILDREN + 8, 1);
         put32(&mut bytes, visible + VISIBLE_CHILDREN + 12, 1);

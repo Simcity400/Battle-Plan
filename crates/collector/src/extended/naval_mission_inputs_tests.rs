@@ -345,7 +345,7 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
     let overflow = exponent + 2;
     let registry = heap.alloc(creference_registry::SIZE);
     let buckets = heap.alloc((capacity + overflow as usize + 1) * bucket::STRIDE);
-    heap.u64(creference_registry::HIGH_ROOT_RVA, heap.ptr(registry));
+    heap.u64(creference_registry::HIGH_ROOT_RVA.0, heap.ptr(registry));
     heap.u64(registry + creference_registry::ENTRIES, heap.ptr(buckets));
     heap.u32(registry + creference_registry::COUNT, handles.len() as u32);
     heap.u32(registry + creference_registry::MASK, capacity as u32 - 1);

@@ -66,22 +66,22 @@ impl Fixture {
         let mut f = Self::default();
         f.array(GS + cgame_state::COMBATS + 8, 0x2000, 1);
         f.u64(0x2000, COMBAT);
-        f.u64(COMBAT, combat::VTABLE_RVA);
-        f.u64(COMBAT + cland_combat::BODY, combat::BODY_VTABLE_RVA);
+        f.u64(COMBAT, combat::VTABLE_RVA.0);
+        f.u64(COMBAT + cland_combat::BODY, combat::BODY_VTABLE_RVA.0);
         f.u64(
             COMBAT + cland_combat::HANDLE,
             (42_u64 << 32 | 4714) as usize,
         );
         for (index, address) in [0x4000, 0x5000].into_iter().enumerate() {
             f.u64(COMBAT + cland_combat::ATTACKER + index * 8, address);
-            f.u64(address, side::VTABLE_RVA);
+            f.u64(address, side::VTABLE_RVA.0);
             f.u64(address + cland_combatant::COMBAT, COMBAT);
             f.put(address + cland_combatant::IS_ATTACKER, &[(1 - index) as u8]);
             f.text(address + side::WIN_EVENT, b"");
             f.text(address + side::LOSE_EVENT, b"");
         }
         f.text(0x4000 + side::WIN_EVENT, b"Test.7");
-        f.array(namespace::TABLE_RVA, 0x6000, 1);
+        f.array(namespace::TABLE_RVA.0, 0x6000, 1);
         f.text(0x6000, b"TEST");
         let hash = b"test".iter().fold(0x811c_9dc5_u32, |hash, byte| {
             (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
@@ -90,7 +90,7 @@ impl Fixture {
         let id = 1_000_007_u32;
         let handle = (u64::from(id) << 32) | u64::from(EVENT_TYPE);
         f.u64(
-            creference_registry::LOW_ROOTS_RVA + EVENT_TYPE as usize * 8,
+            creference_registry::LOW_ROOTS_RVA.0 + EVENT_TYPE as usize * 8,
             0x7000,
         );
         f.u64(0x7000 + creference_registry::ENTRIES, 0x8000);
@@ -109,26 +109,26 @@ impl Fixture {
             handle as usize,
         );
         f.u64(0x8000 + index * bucket::STRIDE + bucket::OBJECT, EVENT);
-        f.u64(EVENT, EVENT_VTABLE);
+        f.u64(EVENT, EVENT_VTABLE.0);
         f.u64(EVENT + 8, handle as usize);
         f.put(EVENT + cevent::OPERATIVE_CHROME, &[0]);
         f.array(EVENT + cevent::OPTIONS, 0xb000, 1);
         f.u64(0xb000, 0xc000);
-        f.u64(EVENT + IMMEDIATE, OPTION_VTABLE);
+        f.u64(EVENT + IMMEDIATE, OPTION_VTABLE.0);
         f.effect(
             EVENT + IMMEDIATE + OPTION_EFFECT,
-            EFFECT_VTABLE,
+            EFFECT_VTABLE.0,
             &[CONDITIONAL],
         );
-        f.u64(0xc000, OPTION_VTABLE);
-        f.effect(0xc000 + OPTION_EFFECT, EFFECT_VTABLE, &[SECOND]);
-        f.effect(CONDITIONAL, IF_VTABLE, &[FIRST]);
+        f.u64(0xc000, OPTION_VTABLE.0);
+        f.effect(0xc000 + OPTION_EFFECT, EFFECT_VTABLE.0, &[SECOND]);
+        f.effect(CONDITIONAL, IF_VTABLE.0, &[FIRST]);
         f.u64(CONDITIONAL + ELSE, 0x11000);
-        f.effect(0x11000, IF_VTABLE, &[SECOND]);
+        f.effect(0x11000, IF_VTABLE.0, &[SECOND]);
         f.u64(0x11000 + ELSE, 0);
-        f.effect(FIRST, REMOVE_VTABLE, &[]);
+        f.effect(FIRST, REMOVE_VTABLE.0, &[]);
         f.text(FIRST + DECISION_NAME, b"first_decision");
-        f.effect(SECOND, REMOVE_VTABLE, &[]);
+        f.effect(SECOND, REMOVE_VTABLE.0, &[]);
         f.text(SECOND + DECISION_NAME, b"second_decision");
         f
     }
@@ -146,7 +146,7 @@ fn zero_border_combats_reads_only_the_manager_header() {
     assert_eq!((census.calls(), census.bytes()), (1, 16));
     f.array(GS + cgame_state::COMBATS + 8, 0x2000, 1);
     f.u64(0x2000, COMBAT);
-    f.u64(COMBAT, cland_combat::VTABLE_RVA);
+    f.u64(COMBAT, cland_combat::VTABLE_RVA.0);
     assert_eq!(
         walk(&f, 0, GS, &mut [], &mut [], &mut [0; 8]).outcome,
         Outcome::Rows { len: 0 }
@@ -347,7 +347,7 @@ fn event_identifiers_use_bulk_reads_without_a_length_cap_and_keep_signed_suffix_
     let mut identifier = prefix.clone();
     identifier.extend_from_slice(b".\xff7");
     f.put(0x20000, &identifier);
-    f.array(namespace::TABLE_RVA, 0x21000, 1);
+    f.array(namespace::TABLE_RVA.0, 0x21000, 1);
     f.put(0x21000, &[0; 32]);
     f.u64(0x21000, 0x22000);
     f.u64(0x21000 + 16, prefix.len());

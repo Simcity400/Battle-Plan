@@ -139,7 +139,9 @@ pub fn province_state(
     if province == 0 {
         return Ok(None);
     }
-    if read::<u64>(memory, province) != Some((base + cprovince::VTABLE_RVA) as u64) {
+    if engine_sites::at(base, cprovince::VTABLE_RVA)
+        .is_none_or(|vtable| read::<u64>(memory, province) != Some(vtable as u64))
+    {
         return Err("attrition province identity mismatch");
     }
     let state = read::<u64>(memory, province + cprovince::STATE)
@@ -147,7 +149,9 @@ pub fn province_state(
     if state == 0 {
         return Ok(None);
     }
-    if read::<u64>(memory, state) != Some((base + cstate::VTABLE_RVA) as u64) {
+    if engine_sites::at(base, cstate::VTABLE_RVA)
+        .is_none_or(|vtable| read::<u64>(memory, state) != Some(vtable as u64))
+    {
         return Err("attrition state identity mismatch");
     }
     let id = read(memory, state + cstate::ID).ok_or("attrition state identity unreadable")?;
@@ -168,7 +172,11 @@ mod tests {
         let put = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
         };
-        put(&mut bytes, pool, cequipment_variant_pool::VTABLE_RVA as u64);
+        put(
+            &mut bytes,
+            pool,
+            cequipment_variant_pool::VTABLE_RVA.0 as u64,
+        );
         put(
             &mut bytes,
             pool + cequipment_variant_pool::ITEMS,
@@ -182,7 +190,7 @@ mod tests {
         put(&mut bytes, entries, u64::MAX);
         put(&mut bytes, entries + 16, variant as u64);
         put(&mut bytes, entries + 24, (-2i64) as u64);
-        put(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        put(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             variant + 8,

@@ -26,7 +26,7 @@ impl World {
         };
         put(
             &mut bytes,
-            cgame_state::SINGLETON_RVA,
+            cgame_state::SINGLETON_RVA.0,
             &((base + STATE) as u64).to_le_bytes(),
         );
         for (header, data) in [
@@ -66,7 +66,7 @@ impl World {
             put(
                 &mut bytes,
                 pointer,
-                &((base + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+                &((base + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -81,7 +81,7 @@ impl World {
             put(
                 &mut bytes,
                 politics,
-                &((base + cpolitical_status::VTABLE_RVA) as u64).to_le_bytes(),
+                &((base + cpolitical_status::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -113,7 +113,7 @@ impl World {
                 put(
                     &mut bytes,
                     at,
-                    &((base + mio::VTABLE_RVA) as u64).to_le_bytes(),
+                    &((base + mio::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -137,7 +137,7 @@ impl World {
                 put(
                     &mut bytes,
                     definition,
-                    &((base + cability::VTABLE_RVA) as u64).to_le_bytes(),
+                    &((base + cability::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 put(&mut bytes, definition + cability::TOKEN, b"bench_item");
                 put(
@@ -153,7 +153,7 @@ impl World {
                 put(
                     &mut bytes,
                     leader,
-                    &((base + cunit_leader::VTABLE_RVA) as u64).to_le_bytes(),
+                    &((base + cunit_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -268,7 +268,7 @@ fn measure(values: &mut [std::time::Duration]) -> (u128, u128) {
 fn politics_daily_tap_profile() {
     for countries in [1500, 5000] {
         let mut world = World::new(countries);
-        let define = engine_events::politics_sites::BLOCKADE_COST_DEFINE_RVA;
+        let define = engine_events::politics_sites::BLOCKADE_COST_DEFINE_RVA.0;
         world.bytes[define..define + 8].copy_from_slice(&1i64.to_le_bytes());
         let mut modifier = [0u8; 0x400];
         let mut rate = [0u8; 0x400];

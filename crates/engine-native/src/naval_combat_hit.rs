@@ -2,9 +2,10 @@
 //! denominator and final-hit flag. The denominator is distinct from a hit count.
 use crate::capture_text::Value;
 use crate::{Memory, cnaval_combatant::field};
+use engine_sites::Rva;
 
 /// Naval-hit entry primary vtable.
-pub const VTABLE_RVA: usize = 0x02a5_6f88;
+pub const VTABLE_RVA: Rva = Rva(0x02a5_6f88);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -58,9 +59,7 @@ pub const RECORD: [crate::memory::RecordField; 5] = {
 
 pub fn read(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'static str> {
     if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(VTABLE_RVA)
-            .ok_or("naval hit module overflow")? as u64
+        != engine_sites::at(base, VTABLE_RVA).ok_or("naval hit module withheld")? as u64
     {
         return Err("naval hit vtable mismatch");
     }

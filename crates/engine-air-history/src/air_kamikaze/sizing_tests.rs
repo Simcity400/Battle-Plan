@@ -54,13 +54,13 @@ impl Fixture {
             let history = fixture.allocate(0x40);
             let window = fixture.allocate(0x40);
             let records = fixture.allocate(capacity * 8);
-            fixture.qword(history, (BASE + cloop_history::VTABLE_RVA) as u64);
+            fixture.qword(history, (BASE + cloop_history::VTABLE_RVA.0) as u64);
             fixture.dword(
                 history + cloop_history::FIELD_COUNT,
                 cloop_history::air_stats::FIELD_COUNT,
             );
             fixture.qword(history + FIRST_WINDOW, window as u64);
-            fixture.qword(window, (BASE + loop_history_window::VTABLE_RVA) as u64);
+            fixture.qword(window, (BASE + loop_history_window::VTABLE_RVA.0) as u64);
             fixture.qword(window + loop_history_window::RECORDS, records as u64);
             fixture.dword(window + loop_history_window::RECORDS + 8, capacity as u32);
             fixture.dword(window + loop_history_window::RECORDS + 12, capacity as u32);

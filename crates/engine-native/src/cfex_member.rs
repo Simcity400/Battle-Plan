@@ -2,6 +2,7 @@
 //! Sunk-ship and convoy event hooks are excluded. The copied battle-slot
 //! information survives ship loss and remains separate from live ship fields.
 
+use engine_sites::Rva;
 use crate::capture_text::Value;
 use crate::{
     Memory, cnaval_combatant,
@@ -12,7 +13,7 @@ use crate::{
 };
 
 /// CFEXMember vtable.
-pub const VTABLE_RVA: usize = 0x02a9_a258;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_a258);
 /// Packed ship u64 handle; zero is valid only for convoy members.
 pub const SHIP_HANDLE: usize = 0x08;
 /// CFEXMember convoy handle u64.
@@ -439,7 +440,8 @@ fn details_timed(
         // in one guarded call and served to them.
         let fields = crate::cship::GatheredObject::gather(memory, ship, COMBAT_SHIP_FIELDS);
         let memory = &fields.memory(memory);
-        if field::<u64>(memory, ship, 0)? != (base + cship::VTABLE_RVA) as u64
+        if Some(field::<u64>(memory, ship, 0)?)
+            != engine_sites::at(base, cship::VTABLE_RVA).map(|address| address as u64)
             || field::<u64>(memory, ship, cship::HANDLE)? != member.ship
         {
             return Err("naval detail ship identity mismatch");

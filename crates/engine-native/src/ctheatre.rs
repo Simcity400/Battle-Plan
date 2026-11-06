@@ -12,9 +12,10 @@ use crate::{
     msvc_string, read, read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// CTheatre vtable.
-pub const VTABLE_RVA: usize = 0x029f_22b8;
+pub const VTABLE_RVA: Rva = Rva(0x029f_22b8);
 /// CTheatre reference type.
 pub const REFERENCE_TYPE: u32 = 67;
 /// CTheatre packed type/id handle.
@@ -36,7 +37,7 @@ pub const VOLUNTEERS_THEATRE: usize = 0x110;
 /// CTheatre allocation size.
 pub const SIZE: usize = 0x1d0;
 /// CTheatre constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00f6_8bf0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f6_8bf0);
 
 /// The CTheatre spans of one LandTheatres header row, as `(offset, len)`:
 /// identity (vtable and handle), raw owner, and volunteer key. The land walk
@@ -378,7 +379,7 @@ impl<M: Memory> Reader<'_, M> {
     fn identity(
         &self,
         pointer: usize,
-        vtable: usize,
+        vtable: Rva,
         reference_type: u32,
     ) -> Result<u64, &'static str> {
         self.identity_from(pointer, None, vtable, reference_type)
@@ -389,17 +390,14 @@ impl<M: Memory> Reader<'_, M> {
         &self,
         pointer: usize,
         gathered: Option<[u8; 16]>,
-        vtable: usize,
+        vtable: Rva,
         reference_type: u32,
     ) -> Result<u64, &'static str> {
         let header = match gathered {
             Some(header) => header,
             None => read::<[u8; 16]>(self.memory, pointer).ok_or("theatre identity unreadable")?,
         };
-        let expected = self
-            .base
-            .checked_add(vtable)
-            .ok_or("module address overflow")? as u64;
+        let expected = engine_sites::at(self.base, vtable).ok_or("module address overflow")? as u64;
         if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected {
             return Err("theatre object vtable mismatch");
         }
@@ -519,14 +517,10 @@ impl<M: Memory> Reader<'_, M> {
                     for member_ordinal in 0..members.count {
                         let member = self.pointer(members, member_ordinal)?;
                         let vtable = self.field::<u64>(member, 0)?;
-                        let normal = self
-                            .base
-                            .checked_add(corders_group::VTABLE_RVA)
+                        let normal = engine_sites::at(self.base, corders_group::VTABLE_RVA)
                             .ok_or("module address overflow")?
                             as u64;
-                        let army_group = self
-                            .base
-                            .checked_add(carmy_group::VTABLE_RVA)
+                        let army_group = engine_sites::at(self.base, carmy_group::VTABLE_RVA)
                             .ok_or("module address overflow")?
                             as u64;
                         let expected_vtable = if vtable == normal {
@@ -929,9 +923,7 @@ impl<M: Memory> Reader<'_, M> {
             let area = self
                 .pointer(areas, ordinal)
                 .map_err(|_| "theatre controller area pointer unreadable or null")?;
-            let expected = self
-                .base
-                .checked_add(ccontroller_area::VTABLE_RVA)
+            let expected = engine_sites::at(self.base, ccontroller_area::VTABLE_RVA)
                 .ok_or("module address overflow")?;
             if read::<u64>(self.memory, area) != Some(expected as u64) {
                 return Err("theatre controller area vtable mismatch");
@@ -978,9 +970,7 @@ impl<M: Memory> Reader<'_, M> {
                 {
                     return Err("controller area province fields unreadable");
                 }
-                let expected = self
-                    .base
-                    .checked_add(cprovince::VTABLE_RVA)
+                let expected = engine_sites::at(self.base, cprovince::VTABLE_RVA)
                     .ok_or("module address overflow")?;
                 for record in identities[..count * 16].chunks_exact(16) {
                     if u64::from_le_bytes(record[..8].try_into().expect("eight bytes"))
@@ -1040,10 +1030,8 @@ impl<M: Memory> Reader<'_, M> {
     }
 
     fn province_id(&self, province: usize) -> Result<u32, &'static str> {
-        let expected = self
-            .base
-            .checked_add(cprovince::VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected =
+            engine_sites::at(self.base, cprovince::VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(self.memory, province) != Some(expected as u64) {
             return Err("theatre province vtable mismatch");
         }
@@ -1080,8 +1068,7 @@ impl<M: Memory> Reader<'_, M> {
             if ![carmy::VTABLE_RVA, ctask_force::VTABLE_RVA]
                 .into_iter()
                 .any(|rva| {
-                    self.base
-                        .checked_add(rva)
+                    engine_sites::at(self.base, rva)
                         .is_some_and(|expected| vtable == Some(expected as u64))
                 })
             {

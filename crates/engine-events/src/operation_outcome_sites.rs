@@ -8,14 +8,12 @@ use crate::{
     Memory, ccharacter::Literal, ccountry, cgame_state, coperation,
     coperation_instance as operation, read,
 };
+use engine_sites::Rva;
 
 /// Completion entry with a five-byte stack-spill patch span. It has no
 /// relative operand, call-return PC or interior branch target. The remaining
 /// bytes authenticate the entry without extending the patched span.
-pub const COMPLETION_RVA: usize = 0x0149_f710;
-pub const COMPLETION_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-];
+pub const COMPLETION_RVA: Rva = Rva(0x0149_f710);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -89,8 +87,7 @@ pub fn observe(
             .checked_add(offset)
             .ok_or("operation completion address overflow")
     };
-    let expected = base
-        .checked_add(operation::VTABLE_RVA)
+    let expected = engine_sites::at(base, operation::VTABLE_RVA)
         .ok_or("operation completion module overflow")?;
     let identity =
         read::<[u8; 16]>(memory, pointer).ok_or("operation completion identity unreadable")?;
@@ -109,8 +106,7 @@ pub fn observe(
     let owner = read::<[u8; 16]>(memory, owner_pointer)
         .ok_or("operation completion owner identity unreadable")?;
     if u64::from_le_bytes(owner[..8].try_into().unwrap())
-        != base
-            .checked_add(ccountry::VTABLE_RVA)
+        != engine_sites::at(base, ccountry::VTABLE_RVA)
             .ok_or("operation completion module overflow")? as u64
     {
         return Err("operation completion owner vtable mismatch");
@@ -141,7 +137,7 @@ pub fn observe(
         .map_err(|_| "operation completion description terminator unreadable or invalid")?;
     let state = read::<u64>(
         memory,
-        base.checked_add(cgame_state::SINGLETON_RVA)
+        engine_sites::at(base, cgame_state::SINGLETON_RVA)
             .ok_or("operation completion clock address overflow")?,
     )
     .ok_or("operation completion clock unreadable")? as usize;

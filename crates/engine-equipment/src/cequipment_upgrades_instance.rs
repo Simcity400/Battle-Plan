@@ -1,5 +1,6 @@
 //! CEquipmentUpgradesInstance, embedded in the equipment variant (`cequipment_variant::UPGRADES`).
 
+use engine_sites::Rva;
 use crate::{
     Memory, cequipment_upgrade, cequipment_variant,
     cpdx_array::Array,
@@ -9,7 +10,7 @@ use crate::{
 };
 
 /// CEquipmentUpgradesInstance primary vtable.
-pub const VTABLE_RVA: usize = 0x0283_f1b0;
+pub const VTABLE_RVA: Rva = Rva(0x0283_f1b0);
 /// CEquipmentUpgradesInstance entry vector data.
 pub const ENTRIES: usize = 0x08;
 
@@ -37,12 +38,10 @@ pub fn walk(
     output: &mut Vec<Row>,
 ) -> Outcome {
     let result = (|| {
-        let expected = base
-            .checked_add(VTABLE_RVA)
+        let expected = engine_sites::at(base, VTABLE_RVA)
             .ok_or("upgrade module address overflow")?;
         let mut len = 0_usize;
-        let definition_vtable = base
-            .checked_add(cequipment_upgrade::VTABLE_RVA)
+        let definition_vtable = engine_sites::at(base, cequipment_upgrade::VTABLE_RVA)
             .ok_or("upgrade definition module address overflow")?;
         const BATCH: usize = 64;
         const HEADERS: [RecordField; 1] = [RecordField {
@@ -180,16 +179,16 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x300];
-        bytes[..8].copy_from_slice(&(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8..16].copy_from_slice(&0x8000_0000_0000_0046_u64.to_le_bytes());
-        bytes[0x68..0x70].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x68..0x70].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x70..0x78].copy_from_slice(&0x1180_u64.to_le_bytes());
         bytes[0x78..0x7c].copy_from_slice(&1_u32.to_le_bytes());
         bytes[0x7c..0x80].copy_from_slice(&1_u32.to_le_bytes());
         bytes[0x180..0x188].copy_from_slice(&0x1200_u64.to_le_bytes());
         bytes[0x188] = 255;
         bytes[0x189..0x190].fill(0xce);
-        bytes[0x200..0x208].copy_from_slice(&(cequipment_upgrade::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x200..0x208].copy_from_slice(&(cequipment_upgrade::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x208..0x20c].copy_from_slice(&i32::MIN.to_le_bytes());
         bytes
     }

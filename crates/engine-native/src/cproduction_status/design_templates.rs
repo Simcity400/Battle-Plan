@@ -1,6 +1,7 @@
 //! Owner-scoped consumable equipment-design discount records. Reads preserve
 //! native order, duplicate equipment tokens and exhausted unpruned records.
 use super::*;
+use engine_sites::Rva;
 
 pub const RECORDS: usize = 0x4e8;
 pub const RECORD_STRIDE: usize = 40;
@@ -44,7 +45,7 @@ pub fn read_templates(
             .checked_add(offset)
             .ok_or("design template address overflow")
     };
-    if read::<u64>(memory, status) != base.checked_add(VTABLE_RVA).map(|value| value as u64) {
+    if read::<u64>(memory, status) != engine_sites::at(base, VTABLE_RVA).map(|value| value as u64) {
         return Err("design template production owner identity mismatch");
     }
     let entries = Array::read(memory, at(RECORDS)?, RECORD_STRIDE)
@@ -96,45 +97,28 @@ pub enum Receiver {
 }
 pub struct Mutation {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
     pub receiver: Receiver,
 }
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: "AppendDesignTemplate",
-        rva: 0x004b_6bb0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x4c, 0x89, 0x74, 0x24, 0x20, 0x41, 0x57, 0x48, 0x83,
-            0xec, 0x20,
-        ],
+        rva: Rva(0x004b_6bb0),
         receiver: Receiver::FirstArray,
     },
     Mutation {
         name: "ReadDesignTemplates",
-        rva: 0x00ec_9050,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24,
-            0x18, 0x4c,
-        ],
+        rva: Rva(0x00ec_9050),
         receiver: Receiver::SecondArray,
     },
     Mutation {
         name: "ConsumeDesignTemplate",
-        rva: 0x00ee_29d0,
-        sentinel: [
-            0x4c, 0x8b, 0xdc, 0x41, 0x57, 0x48, 0x83, 0xec, 0x40, 0x4c, 0x63, 0x89, 0xf4, 0x04,
-            0x00, 0x00,
-        ],
+        rva: Rva(0x00ee_29d0),
         receiver: Receiver::Status,
     },
     Mutation {
         name: "ResetDesignTemplates",
-        rva: 0x00ed_69a0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54,
-            0x41, 0x56,
-        ],
+        rva: Rva(0x00ed_69a0),
         receiver: Receiver::Status,
     },
 ];
@@ -170,7 +154,7 @@ mod tests {
     #[test]
     fn design_templates_read_only_bounded_payload_and_preserve_known_empty() {
         let mut bytes = vec![0_u8; 0x800];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         fn memory(bytes: &[u8]) -> crate::memory::SliceMemory<'_> {
             crate::memory::SliceMemory {
                 base: 0x1000,
@@ -210,32 +194,5 @@ mod tests {
             read_templates(&memory(&bytes), 0, 0x1000),
             Err("design template equipment roster invalid")
         );
-    }
-    #[test]
-    fn design_template_writer_sites_match_supported_executable() {
-        let path = std::path::PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
-                .expect("template writer checks require BATTLE_PLAN_GAME_DIR"),
-        )
-        .join("hoi4.exe");
-        let bytes = std::fs::read(path).unwrap();
-        let identity =
-            engine_executable::build::hash_executable(std::io::Cursor::new(&bytes)).unwrap();
-        assert!(engine_executable::build::PINNED_BUILD.matches(&identity));
-        let image = engine_executable::executable_tables::PeImage::parse(bytes).unwrap();
-        for site in MUTATIONS {
-            assert_eq!(
-                image.bytes(site.rva as u32, 16).unwrap(),
-                site.sentinel,
-                "{}",
-                site.name
-            );
-            assert_eq!(
-                image.function(site.rva as u32).unwrap().0,
-                site.rva as u32,
-                "{}",
-                site.name
-            );
-        }
     }
 }

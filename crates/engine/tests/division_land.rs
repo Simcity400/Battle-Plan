@@ -38,7 +38,7 @@ fn world(countries: usize) -> (Vec<u8>, Vec<DivisionSeed>) {
         let b = &mut bytes[n * 0x700..(n + 1) * 0x700];
         let pointer = base + n * 0x700;
         b[carmy::MANPOWER_VALUES..carmy::MANPOWER_VALUES + 8]
-            .copy_from_slice(&(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes());
         b[carmy::MANPOWER_VALUES + 8..carmy::MANPOWER_VALUES + 16]
             .copy_from_slice(&((pointer + 0x680) as u64).to_le_bytes());
         b[carmy::MANPOWER_VALUES + 16..carmy::MANPOWER_VALUES + 20]
@@ -49,7 +49,7 @@ fn world(countries: usize) -> (Vec<u8>, Vec<DivisionSeed>) {
             .copy_from_slice(&300_000i64.to_le_bytes());
         b[carmy::REMAINING_SUPPLY_GRACE..carmy::REMAINING_SUPPLY_GRACE + 8]
             .copy_from_slice(&200_000i64.to_le_bytes());
-        b[..8].copy_from_slice(&(carmy::VTABLE_RVA as u64).to_le_bytes());
+        b[..8].copy_from_slice(&(carmy::VTABLE_RVA.0 as u64).to_le_bytes());
         b[0x18..0x20].copy_from_slice(&(((n as u64 + 1) << 32 | 4713).to_le_bytes()));
         b[0x40..0x48].copy_from_slice(&17001i64.to_le_bytes());
         b[carmy::NAVAL_TRANSFER_MEMBERSHIP..carmy::NAVAL_TRANSFER_MEMBERSHIP + 8]
@@ -62,7 +62,7 @@ fn world(countries: usize) -> (Vec<u8>, Vec<DivisionSeed>) {
             pointer,
             division: (n as u64 + 1) << 32 | 4713,
             handle: Some((n as u64 + 1) << 32 | 4713),
-            primary_vtable: Some(carmy::VTABLE_RVA as u64),
+            primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
             counter_supply_status: Some(17_001),
             naval_transfer_membership: Some(usize::from(n % 2 == 0)),
             ..Default::default()

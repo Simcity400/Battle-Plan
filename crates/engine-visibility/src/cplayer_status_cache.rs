@@ -8,11 +8,12 @@ use crate::{
     Memory, ccountry_raid_status::TypeTokens, cgame_state, cpdx_array::Array, craid_system,
     raid_database, read, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Embedded raid-system player-status cache.
 pub const CACHE: usize = 0xf0;
 /// Primary cache vtable.
-pub const VTABLE_RVA: usize = 0x02a5_d9f8;
+pub const VTABLE_RVA: Rva = Rva(0x02a5_d9f8);
 /// Raw country reference this cache was built for; zero before first rebuild.
 pub const COUNTRY: usize = 0x08;
 /// Allowed raid database indices, u16, with capacity and count.
@@ -116,7 +117,7 @@ pub fn walk_buffer(
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
             .ok_or("raid system unreadable or null")?;
-        let vtable = |rva: usize| base.checked_add(rva).ok_or("module address overflow");
+        let vtable = |rva: Rva| engine_sites::at(base, rva).ok_or("module address overflow");
         if read::<u64>(memory, root) != Some(vtable(craid_system::VTABLE_RVA)? as u64) {
             return Err("raid system vtable mismatch");
         }
@@ -142,8 +143,7 @@ pub fn walk_buffer(
                 unread_rows: 1,
             });
         };
-        let database = base
-            .checked_add(raid_database::SINGLETON_RVA)
+        let database = engine_sites::at(base, raid_database::SINGLETON_RVA)
             .and_then(|at| read::<u64>(memory, at))
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
@@ -220,7 +220,7 @@ mod tests {
 
     /// A cache built for country 7 allowing database indices 2 then 0.
     fn fixture() -> Vec<u8> {
-        let mut bytes = vec![0_u8; raid_database::SINGLETON_RVA + 16];
+        let mut bytes = vec![0_u8; raid_database::SINGLETON_RVA.0 + 16];
         put(
             &mut bytes,
             GS + cgame_state::RAID_SYSTEM,
@@ -229,10 +229,10 @@ mod tests {
         put(
             &mut bytes,
             ROOT,
-            &(craid_system::VTABLE_RVA as u64).to_le_bytes(),
+            &(craid_system::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         let cache = ROOT + CACHE;
-        put(&mut bytes, cache, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, cache, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, cache + COUNTRY, &7_u32.to_le_bytes());
         put(
             &mut bytes,
@@ -245,7 +245,7 @@ mod tests {
         put(&mut bytes, INDICES + 2, &0_u16.to_le_bytes());
         put(
             &mut bytes,
-            raid_database::SINGLETON_RVA,
+            raid_database::SINGLETON_RVA.0,
             &(DATABASE as u64).to_le_bytes(),
         );
         put(
@@ -268,7 +268,7 @@ mod tests {
             put(
                 &mut bytes,
                 definition,
-                &(raid_database::TYPE_VTABLE_RVA as u64).to_le_bytes(),
+                &(raid_database::TYPE_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

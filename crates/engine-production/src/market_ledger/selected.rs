@@ -54,7 +54,9 @@ pub fn item(
     destination: usize,
     source: usize,
 ) -> Result<equipment_entry::Row, &'static str> {
-    let game: u64 = field(memory, base, engine_native::cgame_state::SINGLETON_RVA)?;
+    let game: u64 = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+        .and_then(|p| read(memory, p))
+        .ok_or("market selected pool operand unreadable")?;
     let countries = ccountry::Reader::new(memory, base, game as usize)?;
     let wanted = key(memory, base, &countries, source)?;
     let model: u64 = field(memory, source, variant::DEFINITION)?;
@@ -131,7 +133,7 @@ mod tests {
     impl engine_native::Memory for Memory<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
-            if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&(self.world.game_state() as u64).to_le_bytes());
                 true
             } else {
@@ -147,7 +149,7 @@ mod tests {
         let entries = world.alloc(5000 * equipment_entry::STRIDE);
         let archetype = world.alloc(0x500);
         world.u32(archetype + definition::ARCHETYPE_ID, 17);
-        world.u64(destination, pool::VTABLE_RVA as u64);
+        world.u64(destination, pool::VTABLE_RVA.0 as u64);
         world.array(destination + pool::ALLOCATIONS, groups, 1);
         world.array(destination + pool::ITEMS, entries, 5000);
         world.u64(groups, archetype as u64);
@@ -159,7 +161,7 @@ mod tests {
             world.u64(model + definition::ARCHETYPE, archetype as u64);
             world.u32(model + definition::ARCHETYPE_ID, index as u32);
             let at = world.alloc(0x500);
-            world.u64(at, variant::VTABLE_RVA as u64);
+            world.u64(at, variant::VTABLE_RVA.0 as u64);
             world.u64(
                 at + 8,
                 ((index as u64 + 1) << 32) | variant::REFERENCE_TYPE as u64,

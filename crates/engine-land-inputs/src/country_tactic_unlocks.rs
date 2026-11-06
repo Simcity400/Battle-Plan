@@ -22,6 +22,7 @@ use crate::{
     Memory, ccombat_tactic, ccountry, cgame_state, cnull_combat_tactic, cpdx_array::Array, read,
     read_slice, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Game-state doctrine-system pointer.
 pub const DOCTRINE_SYSTEM: usize = 0x400;
@@ -182,7 +183,9 @@ fn lookup(table: &[RegistryEntry], pointer: usize) -> Option<u32> {
 
 /// The database and doctrine-system headers every capture is bounded by.
 fn roots(memory: &impl Memory, base: usize, game: usize) -> Result<Roots, &'static str> {
-    let database = pointer(memory, base, ccombat_tactic::DATABASE_RVA)?;
+    let global = engine_sites::at(base, ccombat_tactic::DATABASE_RVA)
+        .ok_or("country tactic unlock input unreadable")?;
+    let database = pointer(memory, global, 0)?;
     if database == 0 {
         return Err("tactic database is not initialized");
     }
@@ -225,8 +228,8 @@ fn registry(
     if !read_slice(memory, entries.data, &mut list[..bytes]) {
         return Err("tactic database entries unreadable");
     }
-    let vtable = |rva: usize| {
-        base.checked_add(rva)
+    let vtable = |key: Rva| {
+        engine_sites::at(base, key)
             .map(|address| address as u64)
             .ok_or("country tactic unlock module address overflow")
     };

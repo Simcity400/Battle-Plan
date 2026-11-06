@@ -38,12 +38,12 @@ pub(crate) fn fixture() -> Vec<u8> {
     put64(
         &mut bytes,
         REGION_OBJECT,
-        cstrategic_region::VTABLE_RVA as u64,
+        cstrategic_region::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut bytes,
         REGION_OBJECT + cstrategic_region::SECONDARY,
-        cstrategic_region::SECONDARY_VTABLE_RVA as u64,
+        cstrategic_region::SECONDARY_VTABLE_RVA.0 as u64,
     );
     put32(
         &mut bytes,
@@ -63,7 +63,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     put64(
         &mut bytes,
         DOMINANCE,
-        cnaval_region_dominance::VTABLE_RVA as u64,
+        cnaval_region_dominance::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut bytes,
@@ -84,7 +84,7 @@ pub(crate) fn fixture() -> Vec<u8> {
             outer + naval_dominance_entry::COUNTRY_KEY,
             country,
         );
-        put64(&mut bytes, object, cdominance_values::VTABLE_RVA as u64);
+        put64(&mut bytes, object, cdominance_values::VTABLE_RVA.0 as u64);
         put32(&mut bytes, object + cdominance_values::COUNTRY, country);
         put64(
             &mut bytes,

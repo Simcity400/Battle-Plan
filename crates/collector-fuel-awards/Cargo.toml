@@ -17,6 +17,7 @@ callback_profile = []
 engine-allocation.workspace = true
 engine-fuel.workspace = true
 engine-native.workspace = true
+engine-sites.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }

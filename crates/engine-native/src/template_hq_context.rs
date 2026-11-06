@@ -4,6 +4,7 @@ use crate::{
     Memory, allocation, cequipment_type, cequipment_variant_pool, corders_group, cpdx_array::Array,
     equipment_entry, read,
 };
+use engine_sites::Rva;
 
 pub const HOLDER: usize = 0x188;
 pub const TARGET: usize = 0x190;
@@ -13,9 +14,9 @@ const GROUP_SPAN_BYTES: usize = QUEUED + 1 - HOLDER;
 const SIZE: usize = 0x98;
 const PERSISTENT: usize = 0x18;
 const REQUIRED_ENTRIES: usize = 0x08;
-pub const HOLDER_VTABLE_RVA: usize = 0x02a9_63c8;
-pub const HOLDER_PERSISTENT_VTABLE_RVA: usize = 0x02a9_6400;
-const REQUIRED_POOL_VTABLE_RVA: usize = 0x0280_7538;
+pub const HOLDER_VTABLE_RVA: Rva = Rva(0x02a9_63c8);
+pub const HOLDER_PERSISTENT_VTABLE_RVA: Rva = Rva(0x02a9_6400);
+const REQUIRED_POOL_VTABLE_RVA: Rva = Rva(0x0280_7538);
 const PRIORITY: usize = 0x08;
 const OWNER: usize = 0x20;
 const EQUIPMENT: usize = 0x28;
@@ -96,10 +97,8 @@ pub fn header(
         read::<[u8; SIZE]>(memory, holder).ok_or("headquarters deployment holder unreadable")?;
     let word = |offset| u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap());
     let integer = |offset| i32::from_le_bytes(record[offset..offset + 4].try_into().unwrap());
-    if base.checked_add(HOLDER_VTABLE_RVA).map(|at| at as u64) != Some(word(0))
-        || base
-            .checked_add(HOLDER_PERSISTENT_VTABLE_RVA)
-            .map(|at| at as u64)
+    if engine_sites::at(base, HOLDER_VTABLE_RVA).map(|at| at as u64) != Some(word(0))
+        || engine_sites::at(base, HOLDER_PERSISTENT_VTABLE_RVA).map(|at| at as u64)
             != Some(word(PERSISTENT))
     {
         return Err("headquarters deployment holder identity mismatch");
@@ -107,13 +106,9 @@ pub fn header(
     if integer(OWNER) as u32 != root.country {
         return Err("headquarters deployment owner mismatch");
     }
-    if base
-        .checked_add(cequipment_variant_pool::VTABLE_RVA)
-        .map(|at| at as u64)
+    if engine_sites::at(base, cequipment_variant_pool::VTABLE_RVA).map(|at| at as u64)
         != Some(word(EQUIPMENT))
-        || base
-            .checked_add(REQUIRED_POOL_VTABLE_RVA)
-            .map(|at| at as u64)
+        || engine_sites::at(base, REQUIRED_POOL_VTABLE_RVA).map(|at| at as u64)
             != Some(word(REQUIRED))
     {
         return Err("headquarters deployment pool identity mismatch");
@@ -190,12 +185,15 @@ pub fn pools(
         let identity = read::<[u8; 12]>(memory, definition)
             .ok_or("headquarters requirement definition unreadable")?;
         let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
-        if ![
-            cequipment_type::VTABLE_RVA,
-            cequipment_type::NULL_VTABLE_RVA,
-        ]
-        .into_iter()
-        .any(|rva| base.checked_add(rva).map(|at| at as u64) == Some(vtable))
+        if engine_sites::which(
+            base,
+            vtable as usize,
+            &[
+                cequipment_type::VTABLE_RVA,
+                cequipment_type::NULL_VTABLE_RVA,
+            ],
+        )
+        .is_none()
         {
             return Err("headquarters requirement definition identity mismatch");
         }
@@ -225,19 +223,19 @@ mod tests {
         put(&mut bytes, 0x1000 + TARGET, (19 << 32) | 52);
         bytes[0x1199] = 2;
         bytes[0x119a] = 3;
-        put(&mut bytes, 0x2000, HOLDER_VTABLE_RVA as u64);
-        put(&mut bytes, 0x2018, HOLDER_PERSISTENT_VTABLE_RVA as u64);
+        put(&mut bytes, 0x2000, HOLDER_VTABLE_RVA.0 as u64);
+        put(&mut bytes, 0x2018, HOLDER_PERSISTENT_VTABLE_RVA.0 as u64);
         put(&mut bytes, 0x2000 + OWNER, 7);
         put(&mut bytes, 0x2000 + PRIORITY, 9);
         put(
             &mut bytes,
             0x2000 + EQUIPMENT,
-            cequipment_variant_pool::VTABLE_RVA as u64,
+            cequipment_variant_pool::VTABLE_RVA.0 as u64,
         );
         put(
             &mut bytes,
             0x2000 + REQUIRED,
-            REQUIRED_POOL_VTABLE_RVA as u64,
+            REQUIRED_POOL_VTABLE_RVA.0 as u64,
         );
         put(&mut bytes, 0x2048, 0x5000);
         put(&mut bytes, 0x2050, 2 | (2 << 32));
@@ -251,9 +249,9 @@ mod tests {
         );
         put(&mut bytes, 0x2090, 31);
         bytes[0x2094] = 5;
-        put(&mut bytes, 0x3000, cequipment_variant::VTABLE_RVA as u64);
+        put(&mut bytes, 0x3000, cequipment_variant::VTABLE_RVA.0 as u64);
         put(&mut bytes, 0x3008, (u64::from(u32::MAX) << 32) | 70);
-        put(&mut bytes, 0x4000, cequipment_type::VTABLE_RVA as u64);
+        put(&mut bytes, 0x4000, cequipment_type::VTABLE_RVA.0 as u64);
         put(&mut bytes, 0x4008, 41);
         for (at, amount) in [(0x5000, 0), (0x5010, i64::MIN)] {
             put(&mut bytes, at, 0x3000);

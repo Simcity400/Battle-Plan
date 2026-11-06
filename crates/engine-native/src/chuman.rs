@@ -4,14 +4,15 @@
 //! roster (`cgame_state::PLAYER_RECORDS`) is distinct from the saved header roster
 //! (`cgame_state::SAVED_PLAYER_RECORDS`), which retains user-upserted players.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome,
 };
 
 /// CHuman primary vtable.
-pub const VTABLE_RVA: usize = 0x0279_edb8;
+pub const VTABLE_RVA: Rva = Rva(0x0279_edb8);
 /// CHuman constructor; the exact-build export names CHuman and writes the country tag and player key separately.
-pub const CONSTRUCTOR_RVA: usize = 0x00c1_0190;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c1_0190);
 /// CHuman array stride.
 pub const STRIDE: usize = 0xa0;
 /// Exact stored human user string, saved and loaded without transformation.
@@ -110,8 +111,7 @@ pub fn walk_buffer(
             .checked_add(cgame_state::PLAYER_RECORDS)
             .and_then(|p| Array::read(memory, p, STRIDE))
             .ok_or("live player roster unreadable or invalid")?;
-        let vtable = base
-            .checked_add(VTABLE_RVA)
+        let vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")?;
         // Walk every original contiguous human record in the live roster.
         output.ensure(roster.count as usize)?;
@@ -500,7 +500,7 @@ mod tests {
             name: &[u8],
         ) {
             let address = HUMANS + index as usize * STRIDE;
-            self.put(address, &((BASE + VTABLE_RVA) as u64).to_le_bytes());
+            self.put(address, &((BASE + VTABLE_RVA.0) as u64).to_le_bytes());
             self.put(address + PLAYER_KEY, &id.to_le_bytes());
             self.put(address + COUNTRY_TAG, &country.to_le_bytes());
             self.put(address + FLAGS, &[flags]);
@@ -526,7 +526,7 @@ mod tests {
             for (pointer, id) in [(0x7000, 7_u32), (0x7100, 2), (0x7200, 4), (0x7300, 5)] {
                 self.put(
                     pointer,
-                    &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+                    &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 self.put(pointer + ccountry::ID, &id.to_le_bytes());
             }

@@ -21,6 +21,7 @@ use engine_native::{
     creference_registry as registry, ctheatre, memory::CountedMemory, memory::LiveMemory,
     memory::ReadCounts, memory::SliceMemory, msvc_string, reference_bucket as bucket,
 };
+use engine_sites::Rva;
 use replay_data::rows::TableId;
 
 /// The game state's offset from the module base.
@@ -64,8 +65,8 @@ impl Heap {
             (self.origin + offset) as u64
         }
     }
-    pub fn rva(&self, rva: usize) -> u64 {
-        (self.origin + rva) as u64
+    pub fn rva(&self, rva: Rva) -> u64 {
+        (self.origin + rva.0) as u64
     }
     pub fn put(&mut self, at: usize, value: &[u8]) {
         self.bytes[at..at + value.len()].copy_from_slice(value);
@@ -111,7 +112,7 @@ impl Heap {
 }
 
 impl Heap {
-    pub fn vtable(&mut self, at: usize, rva: usize) {
+    pub fn vtable(&mut self, at: usize, rva: Rva) {
         self.u64(at, self.rva(rva));
     }
     pub fn accumulator(&mut self, at: usize, entries: &[(u32, i64)]) {
@@ -227,7 +228,7 @@ fn build_in(countries: u32, groups: usize, shape: Shape, mut bytes: Vec<u8>) -> 
     let registry_table = heap.alloc(registry::SIZE);
     let buckets = heap.alloc((capacity + distance as usize + 1) * bucket::STRIDE);
     heap.u64(
-        registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8,
+        registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8,
         heap.ptr(registry_table),
     );
     heap.u64(registry_table + registry::ENTRIES, heap.ptr(buckets));

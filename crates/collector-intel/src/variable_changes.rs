@@ -587,7 +587,7 @@ pub struct Hooks {
 }
 impl Hooks {
     /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel or an unreadable TLS index leaves the family
+    /// A withheld site or an unreadable TLS index leaves the family
     /// uninstalled; ScriptVariables then reads every store afresh.
     ///
     /// # Safety
@@ -601,14 +601,17 @@ impl Hooks {
         };
         let mut hooks = Vec::new();
         if cfg!(feature = "variable_changes")
-            && let Some(index) = engine_native::read::<u32>(memory, base + TLS_INDEX_RVA)
-            && MUTATIONS.iter().all(|(site, _, _)| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            })
+            && let Ok(tls_index) = engine_sites::resolve(base, TLS_INDEX_RVA)
+            && let Some(index) = engine_native::read::<u32>(memory, tls_index)
+            && let Ok(clear) = engine_sites::resolve(base, CLEAR_RVA)
+            && let Ok(end_context) = engine_sites::resolve(base, END_CONTEXT_RVA)
+            && MUTATIONS
+                .iter()
+                .all(|(site, _, _)| crate::located(base, site.rva).is_ok())
         {
             TLS_INDEX.store(index as usize, Ordering::Release);
-            CLEAR.store(base + CLEAR_RVA, Ordering::Release);
-            END_CONTEXT.store(base + END_CONTEXT_RVA, Ordering::Release);
+            CLEAR.store(clear, Ordering::Release);
+            END_CONTEXT.store(end_context, Ordering::Release);
             let callbacks: [usize; SITES] = [
                 get_mutable_value as *const () as usize,
                 erase_variable as *const () as usize,
@@ -627,12 +630,13 @@ impl Hooks {
                 end_fire_event as *const () as usize,
             ];
             for (index, (site, _, patch)) in MUTATIONS.iter().enumerate() {
+                let code =
+                    engine_sites::hook(base, site.rva).map_err(|_| site_failure(site.name))?;
+                let original = code.sentinel::<16>().map_err(|_| site_failure(site.name))?;
                 let hook = match patch {
-                    Patch::Entry => unsafe {
-                        Hook::new(base + site.rva, callbacks[index], site.sentinel)
-                    },
+                    Patch::Entry => unsafe { Hook::new(code.address, callbacks[index], original) },
                     Patch::Call | Patch::EndContext => unsafe {
-                        Hook::new_call(base + site.rva, callbacks[index], site.sentinel)
+                        Hook::new_call(code.address, callbacks[index], original)
                     },
                 }
                 .map_err(|_| site_failure(site.name))?
@@ -653,14 +657,15 @@ impl Hooks {
         let site = engine_events::script_event_sites::DELAYED_PASS;
         let mut taps = Vec::new();
         if !hooks.is_empty() {
-            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
+            if crate::located(base, site.rva).is_err() {
                 return Err(site.failure());
             }
+            let code = engine_sites::hook(base, site.rva).map_err(|_| site.failure())?;
             let hook = unsafe {
                 Hook::new(
-                    base + site.rva,
+                    code.address,
                     delayed_pass as *const () as usize,
-                    site.sentinel,
+                    code.sentinel::<16>().map_err(|_| site.failure())?,
                 )
             }
             .map_err(|_| site.failure())?

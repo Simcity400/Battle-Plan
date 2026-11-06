@@ -586,17 +586,17 @@ mod tests {
         memory.array(STATE + cgame_state::COUNTRY_LINKS, 0x4000, 2);
         memory.word(0x3008, COUNTRY as u64);
         memory.word(0x4004, 1);
-        memory.word(COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+        memory.word(COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
         memory.word(COUNTRY + ccountry::ID, 1);
         memory.word(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-        memory.word(DIPLOMACY, (BASE + cdiplomacy_status::VTABLE_RVA) as u64);
+        memory.word(DIPLOMACY, (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64);
         memory.word(DIPLOMACY + cdiplomacy_status::COUNTRY, COUNTRY as u64);
         memory.word(COUNTRY + ccountry::POLITICAL_STATUS, STATUS as u64);
-        memory.word(STATUS, (BASE + cpolitical_status::VTABLE_RVA) as u64);
+        memory.word(STATUS, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
         memory.word(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
-        memory.word(PARTY, (BASE + cpolitical_party::VTABLE_RVA) as u64);
+        memory.word(PARTY, (BASE + cpolitical_party::VTABLE_RVA.0) as u64);
         memory.word(PARTY + cpolitical_party::IDEOLOGY_GROUP, GROUP as u64);
-        memory.word(GROUP, (BASE + cideology_group::VTABLE_RVA) as u64);
+        memory.word(GROUP, (BASE + cideology_group::VTABLE_RVA.0) as u64);
         memory.word(
             GROUP
                 + native::IDEOLOGY_GROUP_MODIFIER
@@ -606,12 +606,12 @@ mod tests {
         );
         memory.array(STATUS + cpolitical_status::IDEAS, 0x5000, 1);
         memory.word(0x5000, IDEA as u64);
-        memory.word(IDEA, (BASE + cidea::VTABLE_RVA) as u64);
+        memory.word(IDEA, (BASE + cidea::VTABLE_RVA.0) as u64);
         memory.word(COUNTRY + native::AIR_STATISTICS, STATS as u64);
         memory.word(STATS + 0x10, RING as u64); // empty interception ring
         memory.word(STATE + cgame_state::WORLD_THREAT, WORLD as u64);
-        memory.word(WORLD, (BASE + cworld_threat::VTABLE_RVA) as u64);
-        memory.word(BASE + native::STATIC_DATABASE_RVA, 0x28060);
+        memory.word(WORLD, (BASE + cworld_threat::VTABLE_RVA.0) as u64);
+        memory.word(BASE + native::STATIC_DATABASE_RVA.0, 0x28060);
         let mut captured = Captured::with_capacities(&Capacities::default());
         // Bypass name resolution with an explicitly empty synthetic table.
         captured.keys = Some(native::Keys {
@@ -651,7 +651,7 @@ mod tests {
         // before Observed exists, so the previous count must not be folded.
         const NEXT_COUNTRY: usize = 0x40000;
         memory.word(0x3008, NEXT_COUNTRY as u64);
-        memory.word(NEXT_COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+        memory.word(NEXT_COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
         memory.word(NEXT_COUNTRY + ccountry::ID, 1);
         memory
             .fault

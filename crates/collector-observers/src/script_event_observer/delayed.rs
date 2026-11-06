@@ -206,13 +206,9 @@ pub(super) fn forwarded_pass(country: usize, run: impl FnOnce() -> usize) -> usi
     flight.returned();
     result
 }
-pub(super) unsafe fn hooks(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
+pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
     let mut hooks = Vec::new();
-
-    let verify = |site: native::Site| verify_hook(memory, base, site, site.sentinel.len());
+    let verify = |site: native::Site| verify_hook::<16>(base, site);
     for (index, (site, callback)) in native::DELAYED_ENTRIES
         .into_iter()
         .take(2)
@@ -222,7 +218,8 @@ pub(super) unsafe fn hooks(
         ])
         .enumerate()
     {
-        let hook = unsafe { Hook::new(verify(site)?, callback, site.sentinel) }
+        let (at, original) = verify(site)?;
+        let hook = unsafe { Hook::new(at, callback, original) }
             .map_err(|cause| hook_failure(site, "construction", cause))?
             .named(site.label());
         ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
@@ -230,23 +227,14 @@ pub(super) unsafe fn hooks(
     }
     Ok((hooks, Vec::new()))
 }
-pub(super) unsafe fn forwarded_taps(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<Vec<Tap>, &'static str> {
+pub(super) unsafe fn forwarded_taps(base: usize) -> Result<Vec<Tap>, &'static str> {
     let mut taps = Vec::new();
     for (index, site) in native::DELAYED_TAPS.into_iter().enumerate() {
+        let (at, original) = verify_hook::<16>(base, site)?;
         taps.push(
-            unsafe {
-                Tap::new(
-                    verify_hook(memory, base, site, site.sentinel.len())?,
-                    tap,
-                    index,
-                    site.sentinel,
-                )
-            }
-            .map_err(|cause| hook_failure(site, "construction", cause))?
-            .named(site.label()),
+            unsafe { Tap::new(at, tap, index, original) }
+                .map_err(|cause| hook_failure(site, "construction", cause))?
+                .named(site.label()),
         );
     }
     Ok(taps)

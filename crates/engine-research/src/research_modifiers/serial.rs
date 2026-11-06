@@ -139,7 +139,8 @@ pub fn walk_country_buffer<M: Memory>(
                 let raw = i64_at(&bytes, 0);
                 if raw != 0 {
                     let idea = pointer_from(&bytes[8..])?;
-                    if read::<u64>(memory, idea) != Some(at(base, crate::cidea::VTABLE_RVA)? as u64)
+                    if read::<u64>(memory, idea)
+                        != Some(site(base, crate::cidea::VTABLE_RVA)? as u64)
                     {
                         return Err("research idea identity mismatch");
                     }

@@ -163,7 +163,7 @@ fn set_health(bytes: &mut [u8], id: u32, level: i16, healthy: i16, partial: i64)
 /// neighbouring province id.
 fn add_info(bytes: &mut [u8], id: u32) {
     word(bytes, RAIL_TABLE + id as usize * 8, info(id));
-    word(bytes, info(id), cprovince_railway_info::VTABLE_RVA);
+    word(bytes, info(id), cprovince_railway_info::VTABLE_RVA.0);
     word(
         bytes,
         info(id) + cprovince_railway_info::PROVINCE_RECORD,
@@ -189,7 +189,7 @@ fn add_info(bytes: &mut [u8], id: u32) {
             info(id) + cprovince_railway_info::BUILDING,
             building(id),
         );
-        word(bytes, building(id), cbuilding::VTABLE_RVA);
+        word(bytes, building(id), cbuilding::VTABLE_RVA.0);
         word(bytes, building(id) + cbuilding::BUILDING_STATUS, status(id));
     }
     let mut pairs = Vec::new();
@@ -217,7 +217,7 @@ fn world() -> Vec<u8> {
         PROVINCE_TABLE,
         SLOTS,
     );
-    word(&mut bytes, MANAGER, manager::VTABLE_RVA);
+    word(&mut bytes, MANAGER, manager::VTABLE_RVA.0);
     header(
         &mut bytes,
         MANAGER + manager::PROVINCE_INFO_TABLE,
@@ -226,7 +226,7 @@ fn world() -> Vec<u8> {
     );
     for id in 1..SLOTS {
         word(&mut bytes, PROVINCE_TABLE + id as usize * 8, province(id));
-        word(&mut bytes, province(id), cprovince::VTABLE_RVA);
+        word(&mut bytes, province(id), cprovince::VTABLE_RVA.0);
         put(&mut bytes, province(id) + cprovince::ID, &id.to_le_bytes());
         word(
             &mut bytes,

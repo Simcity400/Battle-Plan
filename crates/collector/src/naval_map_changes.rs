@@ -7,6 +7,7 @@
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 use engine_mutations::navy_ledger_mutations::MUTATIONS as LEDGER_WRITERS;
 use engine_native::{Memory, naval_mine_inputs as mines};
+use engine_sites::Rva;
 use std::{
     ops::Range,
     sync::Mutex,
@@ -153,11 +154,10 @@ const REPORT_SITE_NAMES: [&str; engine_naval_history::cnaval_accident_report::WR
     "standing report expiry",
     "mine incident",
 ];
-fn report_sites() -> impl Iterator<Item = (&'static str, usize, u64)> {
+fn report_sites() -> impl Iterator<Item = (&'static str, Rva)> {
     REPORT_SITE_NAMES
         .into_iter()
         .zip(engine_naval_history::cnaval_accident_report::WRITERS)
-        .map(|(name, (rva, hash))| (name, rva, hash))
 }
 
 pub(crate) struct Hooks {
@@ -184,7 +184,7 @@ unsafe fn forwarded_reset(a: usize, b: usize, c: usize, d: usize, original: usiz
     unsafe { original(a, b, c, d) }
 }
 impl Hooks {
-    pub(crate) unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let callbacks = [
             region_add as *const () as usize,
             index_add as *const () as usize,
@@ -201,7 +201,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "mission_changes") {
             let descriptors = mines::WRITERS.into_iter().chain(report_sites());
-            for (index, (name, rva, hash)) in descriptors.enumerate() {
+            for (index, (name, rva)) in descriptors.enumerate() {
                 // The world-input family owns this entry and forwards it.
                 if index == 5 {
                     continue;
@@ -209,40 +209,39 @@ impl Hooks {
                 let fail = |action: &str, reason: &str| {
                     crate::mission_changes::hook_failure("naval_map_changes", action, name, reason)
                 };
-                let prefix = engine_native::read::<[u8; 16]>(memory, base + rva)
-                    .ok_or_else(|| fail("verification failed", "entry unreadable"))?;
-                let actual = prefix.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-                    (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3)
-                });
-                if actual != hash {
-                    return Err(fail("verification failed", "entry fingerprint mismatch"));
-                }
-                let hook = unsafe { Hook::new(base + rva, callbacks[index], prefix) }
+                let (at, prefix) = engine_sites::hook(base, rva)
+                    .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                    .map_err(|reason| fail("verification failed", reason))?;
+                let hook = unsafe { Hook::new(at, callbacks[index], prefix) }
                     .map_err(|reason| fail("construction failed", &reason))?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
         }
-        // A differing ledger entry leaves both unpatched: every ledger is then read hourly.
+        // A withheld ledger entry leaves both unpatched: every ledger is then read hourly.
+        let mut located = [(0, [0; 16]); LEDGER_SITES];
         let ledgers = cfg!(feature = "navy_ledger_changes")
-            && LEDGER_WRITERS.iter().all(|site| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
+            && LEDGER_WRITERS.iter().zip(&mut located).all(|(site, slot)| {
+                crate::located_hook(base, site.rva)
+                    .map(|code| *slot = code)
+                    .is_ok()
             });
         if ledgers {
             let callbacks = [
                 register_mission as *const () as usize,
                 unregister_mission as *const () as usize,
             ];
-            for (index, site) in LEDGER_WRITERS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|reason| {
-                    crate::mission_changes::hook_failure(
-                        "naval_map_changes",
-                        "construction failed",
-                        site.name,
-                        &reason,
-                    )
-                })?;
+            for (index, (site, &(at, original))) in LEDGER_WRITERS.iter().zip(&located).enumerate()
+            {
+                let hook =
+                    unsafe { Hook::new(at, callbacks[index], original) }.map_err(|reason| {
+                        crate::mission_changes::hook_failure(
+                            "naval_map_changes",
+                            "construction failed",
+                            site.name,
+                            &reason,
+                        )
+                    })?;
                 LEDGER_ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -299,13 +298,13 @@ impl Drop for Hooks {
 }
 
 #[cfg(test)]
-pub(crate) fn patch_sites() -> Vec<(&'static str, usize)> {
+pub(crate) fn patch_sites() -> Vec<(&'static str, Rva)> {
     mines::WRITERS
         .into_iter()
         .enumerate()
         .filter(|(index, _)| *index != 5)
-        .map(|(_, (name, rva, _))| (name, rva))
-        .chain(report_sites().map(|(name, rva, _)| (name, rva)))
+        .map(|(_, site)| site)
+        .chain(report_sites())
         .chain(LEDGER_WRITERS.iter().map(|site| (site.name, site.rva)))
         .collect()
 }
@@ -411,7 +410,7 @@ mod tests {
     fn every_report_hook_error_and_registered_patch_keeps_its_purpose_name() {
         let sites: Vec<_> = report_sites().collect();
         assert_eq!(sites.len(), 4);
-        for ((name, rva, _), expected) in sites.into_iter().zip([
+        for ((name, rva), expected) in sites.into_iter().zip([
             "standing report creation/update",
             "standing report clear",
             "standing report expiry",

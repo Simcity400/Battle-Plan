@@ -2,8 +2,9 @@
 //! country handle may alias another slot; serialization treats signed
 //! nonpositive handles as absent.
 
+use engine_sites::Rva;
 /// Raid-status vtable.
-pub const VTABLE_RVA: usize = 0x02a4_68c8;
+pub const VTABLE_RVA: Rva = Rva(0x02a4_68c8);
 /// Inline raid-status array stride.
 pub const STRIDE: usize = 0xb0;
 /// Country handle, i32, serialized only when positive.
@@ -20,7 +21,7 @@ pub const TARGET_COOLDOWN_STRIDE: usize = 0x40;
 /// Country-eligible raid-type cache.
 pub const ELIGIBLE_TYPES: usize = 0x68;
 /// Target-cooldown vtable.
-pub const COOLDOWN_VTABLE_RVA: usize = 0x02a4_6878;
+pub const COOLDOWN_VTABLE_RVA: Rva = Rva(0x02a4_6878);
 /// Cooldown entry: raid type pointer.
 pub const COOLDOWN_TYPE: usize = 0x08;
 /// Cooldown entry: target scope, as `raid_location_scope_layout`.
@@ -28,7 +29,7 @@ pub const COOLDOWN_SCOPE: usize = 0x10;
 /// Stored cooldown days used by serialization and denial tooltip.
 pub const COOLDOWN_DAYS: usize = 0x38;
 /// Raid-status constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x0158_3a50;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x0158_3a50);
 
 /// Pointer stride of the instance, used-type and eligible-type arrays.
 pub const POINTER_STRIDE: usize = 8;
@@ -130,9 +131,7 @@ pub(crate) fn parse_row(
     let header = |at: usize| -> [u8; 16] { record[at..at + 16].try_into().unwrap() };
     let identity = &record[..12];
     let (instances, used, eligible, cooldowns) = (header(12), header(28), header(44), header(60));
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64 {
         return Err("raid parent vtable mismatch");
     }
@@ -163,8 +162,7 @@ pub(crate) fn type_token(
     base: usize,
     definition: usize,
 ) -> Result<u32, &'static str> {
-    let vtable = base
-        .checked_add(raid_database::TYPE_VTABLE_RVA)
+    let vtable = engine_sites::at(base, raid_database::TYPE_VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     let identity = read::<[u8; raid_database::TYPE_TOKEN + 4]>(memory, definition)
         .ok_or("raid type unreadable")?;
@@ -250,8 +248,7 @@ impl TypeTokens {
     pub(crate) fn begin(&mut self, memory: &impl Memory, base: usize) {
         self.slots.fill((0, 0));
         self.len = 0;
-        let count = base
-            .checked_add(raid_database::SINGLETON_RVA)
+        let count = engine_sites::at(base, raid_database::SINGLETON_RVA)
             .and_then(|at| read::<u64>(memory, at))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|&pointer| pointer != 0)
@@ -353,9 +350,7 @@ pub(crate) fn parse_cooldown(
     record: &[u8],
     tokens: &mut TypeTokens,
 ) -> Result<(u32, craid_target::Row, i32), &'static str> {
-    let vtable = base
-        .checked_add(COOLDOWN_VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let vtable = engine_sites::at(base, COOLDOWN_VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(record[..8].try_into().unwrap()) != vtable as u64 {
         return Err("raid cooldown vtable mismatch");
     }
@@ -421,7 +416,7 @@ mod tests {
         let addresses: Vec<usize> = (0..count).map(|index| FIRST + index * STRIDE).collect();
         for (index, &at) in addresses.iter().enumerate() {
             bytes[at..at + 8]
-                .copy_from_slice(&(raid_database::TYPE_VTABLE_RVA as u64).to_le_bytes());
+                .copy_from_slice(&(raid_database::TYPE_VTABLE_RVA.0 as u64).to_le_bytes());
             bytes[at + raid_database::TYPE_TOKEN..at + raid_database::TYPE_TOKEN + 4]
                 .copy_from_slice(&(0x3000 + index as u32).to_le_bytes());
         }

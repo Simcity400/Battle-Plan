@@ -6,11 +6,12 @@ use crate::{
     read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Strategic-navy primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f950;
+pub const VTABLE_RVA: Rva = Rva(0x029e_f950);
 /// Secondary vtable (`SECONDARY`).
-pub const SECONDARY_VTABLE_RVA: usize = 0x029e_f980;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029e_f980);
 /// Secondary subobject displacement.
 pub const SECONDARY: usize = 8;
 /// Owner raw country reference resolved through country links.
@@ -90,10 +91,9 @@ fn with_identity<M: Memory, T>(
     countries: Option<&ccountry::Reader<'_, M>>,
     consume: impl FnOnce() -> Result<T, &'static str>,
 ) -> Result<T, &'static str> {
-    let primary = base.checked_add(VTABLE_RVA).ok_or("navy vtable overflow")? as u64;
-    let secondary = base
-        .checked_add(SECONDARY_VTABLE_RVA)
-        .ok_or("navy vtable overflow")? as u64;
+    let primary = engine_sites::at(base, VTABLE_RVA).ok_or("navy vtable overflow")? as u64;
+    let secondary =
+        engine_sites::at(base, SECONDARY_VTABLE_RVA).ok_or("navy vtable overflow")? as u64;
     let secondary_at = navy
         .checked_add(SECONDARY)
         .ok_or("navy identity overflow")?;
@@ -339,8 +339,8 @@ pub fn access_modes_buffer(
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|&pointer| pointer != 0)
             .ok_or("navy manager absent or unreadable")?;
-        let expected = |rva: usize| {
-            base.checked_add(rva)
+        let expected = |rva: Rva| {
+            engine_sites::at(base, rva)
                 .map(|value| value as u64)
                 .ok_or("module address overflow")
         };
@@ -480,7 +480,7 @@ mod access_tests {
         p64(&mut bytes, 0x3000, u64::MAX);
         for (slot, country) in COUNTRIES.iter().enumerate() {
             p64(&mut bytes, 0x3008 + slot * 8, *country as u64);
-            p64(&mut bytes, *country, ccountry::VTABLE_RVA as u64);
+            p64(&mut bytes, *country, ccountry::VTABLE_RVA.0 as u64);
             p32(&mut bytes, country + ccountry::ID, slot as u32 + 1);
         }
         header(&mut bytes, GS + cgame_state::COUNTRY_LINKS, 0x3100, 4);
@@ -492,12 +492,12 @@ mod access_tests {
             GS + cgame_state::STRATEGIC_NAVY_MANAGER,
             MANAGER as u64,
         );
-        p64(&mut bytes, MANAGER, manager::VTABLE_RVA as u64);
+        p64(&mut bytes, MANAGER, manager::VTABLE_RVA.0 as u64);
         header(&mut bytes, MANAGER + manager::NAVIES, 0x6100, 4);
         for (slot, navy) in NAVIES.iter().enumerate() {
             p64(&mut bytes, 0x6108 + slot * 8, *navy as u64);
-            p64(&mut bytes, *navy, VTABLE_RVA as u64);
-            p64(&mut bytes, navy + SECONDARY, SECONDARY_VTABLE_RVA as u64);
+            p64(&mut bytes, *navy, VTABLE_RVA.0 as u64);
+            p64(&mut bytes, navy + SECONDARY, SECONDARY_VTABLE_RVA.0 as u64);
             p32(&mut bytes, navy + OWNER, slot as u32 + 1);
         }
         header(&mut bytes, NAVIES[0] + ACCESS_MODES, 0x8000, 700);

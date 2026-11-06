@@ -7,6 +7,7 @@
 //! mask has bit 0 or 2 and its mission region matches the task-force location.
 
 use crate::{Memory, modifier_accumulator, read as read_native};
+use engine_sites::Rva;
 
 /// Task-force stance index used for ordinary host-base counts.
 pub const CARRIER_STANCE: usize = 0x4ec;
@@ -39,6 +40,10 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("map air carrier address overflow")
 }
 
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("map air carrier address overflow")
+}
+
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
@@ -56,9 +61,9 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable_rva: usize,
+    vtable_rva: Rva,
 ) -> Result<(), &'static str> {
-    if object == 0 || field::<u64>(memory, object, 0)? != at(base, vtable_rva)? as u64 {
+    if object == 0 || field::<u64>(memory, object, 0)? != site(base, vtable_rva)? as u64 {
         return Err("map air carrier object identity mismatch");
     }
     Ok(())
@@ -110,7 +115,7 @@ pub fn read(
     }
     authenticate(memory, base, task, crate::ctask_force::VTABLE_RVA)?;
     if field::<u64>(memory, task, crate::ctask_force::SECONDARY_BASE)?
-        != at(base, crate::ctask_force::SECONDARY_VTABLE_RVA)? as u64
+        != site(base, crate::ctask_force::SECONDARY_VTABLE_RVA)? as u64
     {
         return Err("map air carrier task secondary identity mismatch");
     }
@@ -242,9 +247,9 @@ mod tests {
 
         fn registry(&mut self, handle: u64, object: usize, table: usize, buckets: usize) {
             let root = if (handle as u32) < registry::LOW_ROOT_COUNT {
-                registry::LOW_ROOTS_RVA + (handle as u32 as usize) * 8
+                registry::LOW_ROOTS_RVA.0 + (handle as u32 as usize) * 8
             } else {
-                registry::HIGH_ROOT_RVA
+                registry::HIGH_ROOT_RVA.0
             };
             self.q(root, table as u64);
             self.q(table + registry::ENTRIES, buckets as u64);
@@ -267,30 +272,30 @@ mod tests {
 
         fn full() -> Self {
             let mut memory = Self::default();
-            memory.q(AIR_BASE, crate::cair_base::VTABLE_RVA as u64);
+            memory.q(AIR_BASE, crate::cair_base::VTABLE_RVA.0 as u64);
             memory.q(AIR_BASE + crate::cair_base::HANDLE, AIR_BASE_HANDLE);
             memory.q(AIR_BASE + crate::cair_base::STATE, 0);
             memory.d(AIR_BASE + crate::cair_base::KIND, 0);
             memory.q(AIR_BASE + crate::cair_base::HOST_REFERENCE, SHIP_HANDLE);
             memory.registry(SHIP_HANDLE, SHIP, SHIP_TABLE, SHIP_BUCKETS);
-            memory.q(SHIP, crate::cship::VTABLE_RVA as u64);
+            memory.q(SHIP, crate::cship::VTABLE_RVA.0 as u64);
             memory.q(SHIP + crate::cship::HANDLE, SHIP_HANDLE);
             memory.q(SHIP + crate::cship::CARRIER_AIR_BASE, AIR_BASE as u64);
             memory.q(SHIP + crate::cship::TASK_FORCE, TASK as u64);
-            memory.q(TASK, crate::ctask_force::VTABLE_RVA as u64);
+            memory.q(TASK, crate::ctask_force::VTABLE_RVA.0 as u64);
             memory.q(
                 TASK + crate::ctask_force::SECONDARY_BASE,
-                crate::ctask_force::SECONDARY_VTABLE_RVA as u64,
+                crate::ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
             );
             memory.q(TASK + crate::cunit::HANDLE, (7_u64 << 32) | 61);
             memory.q(TASK + crate::ctask_force::FLEET, FLEET as u64);
             memory.d(TASK + CARRIER_STANCE, 2);
             memory.d(TASK + crate::cunit::COMBAT_REFERENCE_COUNT, 0);
-            memory.q(FLEET, crate::cfleet::VTABLE_RVA as u64);
+            memory.q(FLEET, crate::cfleet::VTABLE_RVA.0 as u64);
             memory.q(FLEET + crate::cfleet::HANDLE, (8_u64 << 32) | 61);
             memory.q(FLEET + FLEET_LEADER_REFERENCE, LEADER_HANDLE);
             memory.registry(LEADER_HANDLE, LEADER, LEADER_TABLE, LEADER_BUCKETS);
-            memory.q(LEADER, crate::cnavy_leader::VTABLE_RVA as u64);
+            memory.q(LEADER, crate::cnavy_leader::VTABLE_RVA.0 as u64);
             memory.q(LEADER + crate::cunit_leader::TYPE, LEADER_HANDLE);
             memory.d(LEADER + LEADER_MODIFIER_COOLDOWN, 0);
             memory.q(LEADER + LEADER_MODIFIERS, MODIFIER_ENTRIES as u64);
@@ -306,7 +311,7 @@ mod tests {
     #[test]
     fn state_base_stops_before_unused_host_graph() {
         let mut memory = Fixture::default();
-        memory.q(AIR_BASE, crate::cair_base::VTABLE_RVA as u64);
+        memory.q(AIR_BASE, crate::cair_base::VTABLE_RVA.0 as u64);
         memory.q(AIR_BASE + crate::cair_base::HANDLE, AIR_BASE_HANDLE);
         memory.q(AIR_BASE + crate::cair_base::STATE, 0xbeef);
         assert_eq!(
@@ -401,7 +406,7 @@ mod tests {
         memory.q(SHIP + crate::cship::TASK_FORCE, TASK as u64);
         memory.d(TASK + crate::cunit::COMBAT_REFERENCE_COUNT, 2);
         memory.q(TASK + crate::cunit::LOCATION, PROVINCE as u64);
-        memory.q(PROVINCE, crate::cprovince::VTABLE_RVA as u64);
+        memory.q(PROVINCE, crate::cprovince::VTABLE_RVA.0 as u64);
         memory.q(PROVINCE + crate::cprovince::STRATEGIC_REGION, 0);
         let row = read(&memory, BASE, AIR_BASE, AIR_BASE_HANDLE)
             .unwrap()
@@ -411,7 +416,7 @@ mod tests {
             (Some(2), None)
         );
         memory.q(PROVINCE + crate::cprovince::STRATEGIC_REGION, REGION as u64);
-        memory.q(REGION, crate::cstrategic_region::VTABLE_RVA as u64);
+        memory.q(REGION, crate::cstrategic_region::VTABLE_RVA.0 as u64);
         memory.d(REGION + crate::cstrategic_region::ID, 90);
         let row = read(&memory, BASE, AIR_BASE, AIR_BASE_HANDLE)
             .unwrap()
@@ -425,7 +430,7 @@ mod tests {
     fn a_stale_host_is_omitted_not_an_error() {
         let mut memory = Fixture::full();
         memory.q(
-            registry::LOW_ROOTS_RVA + (SHIP_HANDLE as u32 as usize) * 8,
+            registry::LOW_ROOTS_RVA.0 + (SHIP_HANDLE as u32 as usize) * 8,
             0,
         );
         assert_eq!(read(&memory, BASE, AIR_BASE, AIR_BASE_HANDLE), Ok(None));

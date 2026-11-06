@@ -244,15 +244,10 @@ fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str
     )
 }
 
-fn validate_sites(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
+fn validate_sites(base: usize) -> Result<(), &'static str> {
     for (index, site) in MUTATIONS.iter().enumerate() {
-        if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-            return Err(hook_failure(
-                Some(index),
-                "sentinel validation",
-                "native bytes differ",
-            ));
-        }
+        crate::verified(base, site.rva)
+            .map_err(|reason| hook_failure(Some(index), "sentinel validation", reason))?;
     }
     Ok(())
 }
@@ -268,10 +263,10 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "unit_leader_changes") {
-            validate_sites(memory, base)?;
+            validate_sites(base)?;
             let callbacks: [usize; SITES] = [
                 formation as *const () as usize,
                 skill as *const () as usize,
@@ -307,8 +302,10 @@ impl Hooks {
                 trait_factor_remove as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|reason| hook_failure(Some(index), "construction", &reason))?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|reason| hook_failure(Some(index), "construction", &reason))?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -405,30 +402,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sentinel_refusals_identify_the_exact_site_before_any_patch_is_built() {
-        struct Refuses(usize);
-        impl Memory for Refuses {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                let Some((index, site)) = MUTATIONS
-                    .iter()
-                    .enumerate()
-                    .find(|(_, site)| site.rva == address)
-                else {
-                    return false;
-                };
-                if index == self.0 || destination.len() != site.sentinel.len() {
-                    return false;
-                }
-                destination.copy_from_slice(&site.sentinel);
-                true
-            }
-        }
-        for (index, site) in MUTATIONS.iter().enumerate() {
-            let error = validate_sites(&Refuses(index), 0).unwrap_err();
-            assert!(error.contains("unit_leader_changes"));
-            assert!(error.contains(site.name));
-            assert!(error.contains("sentinel validation"));
-        }
+    fn site_refusals_identify_the_exact_site_before_any_patch_is_built() {
+        let error = validate_sites(0).unwrap_err();
+        assert!(error.contains("unit_leader_changes"));
+        assert!(error.contains(MUTATIONS[0].name));
+        assert!(error.contains("sentinel validation"));
     }
 
     #[test]

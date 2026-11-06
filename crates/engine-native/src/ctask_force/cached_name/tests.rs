@@ -8,9 +8,9 @@ const HEAP: usize = 0x1400;
 
 fn fixture(text: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0; 0x400 + text.len() + 1];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[SECONDARY_BASE..SECONDARY_BASE + 8]
-        .copy_from_slice(&(SECONDARY_VTABLE_RVA as u64).to_le_bytes());
+        .copy_from_slice(&(SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[cunit::HANDLE..cunit::HANDLE + 8].copy_from_slice(&HANDLE.to_le_bytes());
     bytes[NAME + 16..NAME + 24].copy_from_slice(&(text.len() as u64).to_le_bytes());
     let capacity = text.len().max(msvc_string::INLINE_CAPACITY as usize);

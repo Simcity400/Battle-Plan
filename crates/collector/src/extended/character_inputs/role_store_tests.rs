@@ -585,7 +585,7 @@ fn an_operative_link_whose_name_was_refused_is_read_again() {
     let object = pointers + 0x10;
     memory.data.resize(object + cunit_leader_trait::SIZE, 0);
     memory.u64(pointers, object as u64);
-    memory.u64(object, (BASE + cunit_leader_trait::VTABLE_RVA) as u64);
+    memory.u64(object, (BASE + cunit_leader_trait::VTABLE_RVA.0) as u64);
     let ordinal = object + cunit_leader_trait::ORDINAL;
     memory.data[ordinal..ordinal + 4].copy_from_slice(&7_u32.to_le_bytes());
     for &leader in &leaders {

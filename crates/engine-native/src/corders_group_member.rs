@@ -4,6 +4,7 @@
 //! callback must not call the virtual accessor: recover the host by subtracting the base offset,
 //! then authenticate its vtables and back-pointer.
 
+use engine_sites::Rva;
 /// Owning orders-group pointer; the unit's `carmy::ORDERS_GROUP` is this base's back-pointer.
 pub const GROUP: usize = 0x08;
 /// Cached root-order pointer, checked against recomputation of the owning root.
@@ -11,7 +12,7 @@ pub const ROOT_ORDER: usize = 0x20;
 /// Order-cache dirty byte; root and fallback queries refresh before reading it.
 pub const ORDER_CACHE_DIRTY: usize = 0x28;
 /// Root-order resolver used by the grouping predicate.
-pub const ROOT_ORDER_RVA: usize = 0x00c4_5310;
+pub const ROOT_ORDER_RVA: Rva = Rva(0x00c4_5310);
 /// Membership-base offset within its host unit.
 pub const HOST_OFFSET: usize = crate::cunit::SCHEDULED_MEMBER;
 /// Virtual-dispatch offset of the membership-base unit accessor.
@@ -462,9 +463,9 @@ impl MembershipPacket {
             failure: None,
         };
         input.identity = (|| {
-            if crate::read::<u64>(memory, at)
-                != base.checked_add(order::VTABLE_RVA).map(|p| p as u64)
-            {
+            let vtable = engine_sites::at(base, order::VTABLE_RVA)
+                .ok_or("membership order identity mismatch")? as u64;
+            if crate::read::<u64>(memory, at) != Some(vtable) {
                 return Err("membership order identity mismatch");
             }
             input.owner = read_at(memory, at, order::OWNER);
@@ -773,7 +774,7 @@ pub(crate) fn group_identity(
     let vtable = crate::read::<u64>(memory, at).ok_or("orders group identity unreadable")?;
     if ![group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
         .iter()
-        .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+        .any(|&key| engine_sites::at(base, key).map(|p| p as u64) == Some(vtable))
     {
         return Err("orders membership group identity mismatch");
     }
@@ -852,7 +853,7 @@ fn has_order(memory: &impl Memory, base: usize, member: usize) -> Result<bool, &
         let vptr = read::<u64>(memory, at).ok_or("orders group identity unreadable")?;
         if ![group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
             .iter()
-            .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vptr))
+            .any(|&key| engine_sites::at(base, key).map(|p| p as u64) == Some(vptr))
             || pointer(at, group::HANDLE)? as u32 != group::REFERENCE_TYPE
         {
             return Err("orders membership group identity mismatch");
@@ -860,6 +861,8 @@ fn has_order(memory: &impl Memory, base: usize, member: usize) -> Result<bool, &
         Ok(())
     };
     authenticate(own)?;
+    let vtable = engine_sites::at(base, order::VTABLE_RVA)
+        .ok_or("membership order identity mismatch")? as u64;
     let parent = pointer(own, group::PARENT)?;
     for (stage, at) in [own, parent].into_iter().enumerate() {
         if at == 0 {
@@ -882,8 +885,7 @@ fn has_order(memory: &impl Memory, base: usize, member: usize) -> Result<bool, &
                     0,
                 )?;
                 if p == 0
-                    || read::<u64>(memory, p)
-                        != base.checked_add(order::VTABLE_RVA).map(|p| p as u64)
+                    || read::<u64>(memory, p) != Some(vtable)
                     || pointer(p, order::OWNER)? != at
                 {
                     return Err("membership order identity mismatch");

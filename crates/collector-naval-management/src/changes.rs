@@ -4,6 +4,7 @@ use collector_certificates::watch_registry::WatchRegistry;
 use collector_hooks::hook::{Hook, Registers, Tap};
 use collector_timing::hook_timing::{self, Family};
 use engine_native::Memory;
+use engine_sites::Rva;
 use std::{
     ops::Range,
     sync::{
@@ -32,34 +33,11 @@ pub(crate) fn read_refused(table: usize) {
 pub const UNAVAILABLE: &str = "naval repair writer observation unavailable";
 
 /// Native patch inventory shared with the collector's cross-family ownership audit.
-pub fn patch_sites() -> impl Iterator<Item = (&'static str, usize, usize)> {
+pub fn patch_sites() -> impl Iterator<Item = (&'static str, Rva)> {
     SITES
         .iter()
-        .map(|site| {
-            let len = collector_hooks::hook::tap_span(&site.sentinel)
-                .expect("naval management tap descriptor must decode");
-            (site.name, site.rva, if len == 0 { 15 } else { len })
-        })
-        .chain(METHODS.iter().map(|site| (site.name, site.rva, 5)))
-}
-
-/// Runtime verification prefixes alongside the production patch inventory.
-pub fn patch_sentinels() -> impl Iterator<Item = (&'static str, usize, usize, Vec<u8>)> {
-    patch_sites()
-        .zip(
-            SITES
-                .iter()
-                .map(|site| (site.sentinel, true))
-                .chain(METHODS.iter().map(|site| (site.sentinel, false))),
-        )
-        .map(|((name, rva, len), (sentinel, tap))| {
-            (
-                name,
-                rva,
-                len,
-                sentinel[..if tap { len } else { sentinel.len() }].to_vec(),
-            )
-        })
+        .map(|site| (site.name, site.rva))
+        .chain(METHODS.iter().map(|site| (site.name, site.rva)))
 }
 
 fn hook_failure(
@@ -161,8 +139,7 @@ pub fn presize(memory: &impl Memory, base: usize) {
     if !CENSUS_PENDING.load(Ordering::Acquire) {
         return;
     }
-    let state = base
-        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+    let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
         .and_then(|value| usize::try_from(value).ok());
     if let Some(state) = state
@@ -287,20 +264,26 @@ impl Hooks {
     ) -> Result<Self, &'static str> {
         let mut taps = Vec::new();
         let mut methods = Vec::new();
+        let mut located = [(0, [0; 16]); SITES.len() + METHODS.len()];
         let mut authenticated = true;
-        for (index, (rva, sentinel)) in SITES
-            .iter()
-            .map(|site| (site.rva, site.sentinel))
-            .chain(METHODS.iter().map(|site| (site.rva, site.sentinel)))
+        for (index, (slot, rva)) in located
+            .iter_mut()
+            .zip(
+                SITES
+                    .iter()
+                    .map(|site| site.rva)
+                    .chain(METHODS.iter().map(|site| site.rva)),
+            )
             .enumerate()
         {
-            if base
-                .checked_add(rva)
-                .and_then(|at| engine_native::read::<[u8; 16]>(memory, at))
-                != Some(sentinel)
+            match engine_sites::hook(base, rva)
+                .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
             {
-                AUTHENTICATION_REFUSALS[index].fetch_add(1, Ordering::Relaxed);
-                authenticated = false;
+                Ok(code) => *slot = code,
+                Err(_) => {
+                    AUTHENTICATION_REFUSALS[index].fetch_add(1, Ordering::Relaxed);
+                    authenticated = false;
+                }
             }
         }
         if !authenticated {
@@ -312,9 +295,9 @@ impl Hooks {
         }
         engine_allocation::reserve(&mut taps, SITES.len())
             .map_err(|_| "naval repair hook allocation failed")?;
-        for (tag, site) in SITES.iter().enumerate() {
-            let tap = unsafe { Tap::new_owned_span(base + site.rva, changed, tag, site.sentinel) }
-                .map_err(|reason| {
+        for (tag, (site, &(at, sentinel))) in SITES.iter().zip(&located).enumerate() {
+            let tap =
+                unsafe { Tap::new_owned_span(at, changed, tag, sentinel) }.map_err(|reason| {
                     hook_failure(
                         "tap construction failed",
                         std::iter::once(site.name),
@@ -346,15 +329,16 @@ impl Hooks {
         ];
         engine_allocation::reserve(&mut methods, METHODS.len())
             .map_err(|_| "naval repair method allocation failed")?;
-        for (index, site) in METHODS.iter().enumerate() {
-            let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                .map_err(|reason| {
-                    hook_failure(
-                        "method construction failed",
-                        std::iter::once(site.name),
-                        reason,
-                    )
-                })?;
+        for (index, (site, &(at, sentinel))) in
+            METHODS.iter().zip(&located[SITES.len()..]).enumerate()
+        {
+            let hook = unsafe { Hook::new(at, callbacks[index], sentinel) }.map_err(|reason| {
+                hook_failure(
+                    "method construction failed",
+                    std::iter::once(site.name),
+                    reason,
+                )
+            })?;
             ORIGINALS[index].store(hook.trampoline(), Ordering::Release);
             methods.push(hook);
         }
@@ -497,7 +481,6 @@ mod tests {
             .iter()
             .position(|site| site.rva == sites::REPAIR_SPLIT_COMMAND.rva)
             .expect("independent split writer must be installed");
-        assert_eq!(collector_hooks::hook::tap_span(&SITES[tag].sentinel), Ok(6));
         // SAFETY: Registers contains only integer register values.
         let mut registers: Registers = unsafe { std::mem::zeroed() };
         registers.rdi = selected;
@@ -549,24 +532,16 @@ mod tests {
     }
 
     #[test]
-    fn naval_management_writer_spans_and_lifetimes_are_distinct() {
-        let mut ranges = Vec::new();
-        for site in SITES {
-            let len = collector_hooks::hook::tap_span(&site.sentinel)
-                .unwrap_or_else(|reason| panic!("{}: {}", site.name, reason));
-            assert!(len >= 5, "{}", site.name);
-            ranges.push((site.rva..site.rva + len, site.name));
-        }
-        for site in METHODS {
-            ranges.push((site.rva..site.rva + 5, site.name));
-        }
-        ranges.sort_unstable_by_key(|(range, _)| range.start);
-        for pair in ranges.windows(2) {
+    fn naval_management_writer_sites_are_distinct() {
+        // Every patch replaces at least five bytes; tap spans are decoded from the located code.
+        let mut sites: Vec<_> = patch_sites().collect();
+        sites.sort_unstable_by_key(|&(_, rva)| rva);
+        for pair in sites.windows(2) {
             assert!(
-                pair[0].0.end <= pair[1].0.start,
+                pair[0].1.0 + 5 <= pair[1].1.0,
                 "{} overlaps {}",
-                pair[0].1,
-                pair[1].1
+                pair[0].0,
+                pair[1].0
             );
         }
     }

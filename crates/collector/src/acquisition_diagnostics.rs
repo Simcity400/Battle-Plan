@@ -38,7 +38,7 @@ impl Identity {
             "role": crate::status::DebugValue(ROLES[self.role]),
             "part": self.part,
             "partition": self.partition,
-            "kind": ["job", "variant_part", "variant_context_part", "event_feed_seal", "technology_part", "project_part", "cold_setup_part", "variant_context_seed_part", "project_runtime_part", "cold_storage_warmup"][self.kind as usize],
+            "kind": ["job", "variant_part", "variant_context_part", "event_feed_seal", "technology_part", "project_part", "cold_setup_part", "variant_context_seed_part", "project_runtime_part", "cold_storage_warmup", "snapshot_part"][self.kind as usize],
         })
     }
 }

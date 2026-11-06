@@ -2036,10 +2036,9 @@ impl Captured {
         self.status_prepared = prepare_only;
         let outcome = source_outcome(&sources);
         let rows = &sources.rows[..outcome.len()];
-        self.supply_grace = engine_native::read::<i32>(
-            memory,
-            base.wrapping_add(engine_land_inputs::carmy_attrition::SUPPLY_GRACE_RVA),
-        );
+        self.supply_grace =
+            engine_sites::at(base, engine_land_inputs::carmy_attrition::SUPPLY_GRACE_RVA)
+                .and_then(|address| engine_native::read::<i32>(memory, address));
         // Only the test fixture omits the worker's sample hour and uses fixed storage.
         if hour.is_some() {
             self.status_packet.enable_growth();
@@ -2978,7 +2977,7 @@ mod tests {
     fn member(base: usize, name: &[u8], order: i32) -> [u8; cname_group_member::INPUT_SPAN] {
         assert!(name.len() < 16);
         let mut bytes = [0; cname_group_member::INPUT_SPAN];
-        bytes[..8].copy_from_slice(&((base + cname_group_member::VTABLE_RVA) as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&((base + cname_group_member::VTABLE_RVA.0) as u64).to_le_bytes());
         bytes[cname_group_member::ORDER..cname_group_member::ORDER + 4]
             .copy_from_slice(&order.to_le_bytes());
         let custom = cname_group_member::OVERRIDE_NAME;
@@ -3042,12 +3041,12 @@ mod tests {
             .copy_from_slice(&(templates.len() as u32).to_le_bytes());
         header[registry::MASK..registry::MASK + 4].copy_from_slice(&mask.to_le_bytes());
         header[registry::OVERFLOW_DISTANCE] = overflow as u8;
-        let root = registry::LOW_ROOTS_RVA
+        let root = registry::LOW_ROOTS_RVA.0
             + engine_native::creferenced_division_template::REFERENCE_TYPE as usize * 8;
         world.bytes[root..root + 8].copy_from_slice(&(header.as_ptr() as u64).to_le_bytes());
         let mut group = Box::new([0; 40]);
         group[..8].copy_from_slice(
-            &((world.base + cname_group_member::GROUP_VTABLE_RVA) as u64).to_le_bytes(),
+            &((world.base + cname_group_member::GROUP_VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         group[8..13].copy_from_slice(b"GROUP");
         group[24..32].copy_from_slice(&5_u64.to_le_bytes());
@@ -4419,7 +4418,7 @@ mod tests {
         let seed = DivisionSeed {
             pointer: 0x8000,
             division: 7,
-            primary_vtable: Some(carmy::VTABLE_RVA as u64),
+            primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
             handle: Some(7),
             class: Some(0),
             ordinary_route: Some([0; 16]),

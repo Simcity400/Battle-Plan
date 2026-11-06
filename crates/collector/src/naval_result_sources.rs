@@ -507,10 +507,7 @@ unsafe extern "system-unwind" fn constructor(pointer: usize, caller: usize) -> u
         unsafe { std::mem::transmute(ORIGINAL[2].load(Ordering::Acquire)) };
     let run = || timing.original(|| unsafe { original(pointer) });
     let base = BASE.load(Ordering::Relaxed);
-    let kind = caller
-        .checked_sub(base)
-        .map(native::constructor_caller)
-        .unwrap_or(native::BirthKind::Unknown);
+    let kind = native::constructor_caller(base, caller);
     if kind == native::BirthKind::Unknown {
         UNKNOWN_CONSTRUCTORS.fetch_add(1, Ordering::Relaxed);
     }
@@ -592,11 +589,22 @@ unsafe fn result_call(site: usize, result: usize, combat: usize) -> usize {
     call.returned(returned)
 }
 
+/// The verified bytes a hook owns at its site, padded to the hook's 16-byte original.
+fn owned_span(code: &engine_sites::Code, span: usize) -> Result<[u8; 16], &'static str> {
+    let mut out = [0; 16];
+    match span {
+        16 => out = code.sentinel::<16>()?,
+        13 => out[..13].copy_from_slice(&code.sentinel::<13>()?),
+        _ => return Err("naval result sources site span unsupported"),
+    }
+    Ok(out)
+}
+
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
         let _ = store();
         let callbacks = [
@@ -605,38 +613,37 @@ impl Hooks {
             constructor_entry as *const () as usize,
         ];
         let install = || -> Result<Vec<Hook>, &'static str> {
-            for site in native::SITES {
-                crate::hook::installation::site(base + site.rva);
-                let mut sentinel = [0u8; 16];
-                if !memory.copy(base + site.rva, &mut sentinel[..site.sentinel_len])
-                    || sentinel[..site.sentinel_len] != site.sentinel[..site.sentinel_len]
-                {
-                    crate::hook::installation::refused(
-                        crate::hook::installation::Kind::Sentinel,
-                        Some(base + site.rva),
-                        "naval result sources sentinel differs or unreadable",
-                    );
-                    return Err("naval result sources sentinel differs or unreadable");
-                }
+            engine_sites::require(base, &native::CONSTRUCTOR_CALLERS)?;
+            let mut located = [(0, [0u8; 16]); 3];
+            for (site, slot) in native::SITES.into_iter().zip(&mut located) {
+                *slot = engine_sites::hook(base, site.rva)
+                    .and_then(|code| Ok((code.address, owned_span(&code, site.span)?)))
+                    .inspect_err(|cause| {
+                        crate::hook::installation::refused(
+                            crate::hook::installation::Kind::Sentinel,
+                            None,
+                            cause,
+                        )
+                    })?;
+                crate::hook::installation::site(slot.0);
+            }
+            let mut targets = [0; 2];
+            for (target, key) in targets.iter_mut().zip(native::TARGETS) {
+                *target = engine_sites::hook(base, key)?.address;
             }
             let mut hooks = Vec::new();
-            for (index, site) in native::SITES.into_iter().enumerate() {
+            for (index, (site, (at, original))) in
+                native::SITES.into_iter().zip(located).enumerate()
+            {
                 let hook = if index < 2 {
-                    unsafe {
-                        Hook::new_call_span(
-                            base + site.rva,
-                            callbacks[index],
-                            site.sentinel,
-                            site.sentinel_len,
-                        )
-                    }
+                    unsafe { Hook::new_call_span(at, callbacks[index], original, site.span) }
                 } else {
-                    unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    unsafe { Hook::new(at, callbacks[index], original) }
                 }
                 .map_err(|_| "naval result sources hook construction failed")?;
                 ORIGINAL[index].store(
                     if index < 2 {
-                        base + native::TARGETS[index]
+                        targets[index]
                     } else {
                         hook.trampoline()
                     },
@@ -691,8 +698,7 @@ pub fn status() -> impl serde::Serialize {
     let hooks = std::array::from_fn::<_, 3, _>(|i| {
         let site = native::SITES[i];
         crate::status::status!({
-            "name": site.name, "rva": site.rva,
-            "sentinel": &site.sentinel[..site.sentinel_len],
+            "name": site.name, "rva": site.rva.0, "span": site.span,
             "installed": INSTALLED[i].load(Ordering::Acquire),
             "enabled": SITE_ENABLED[i].load(Ordering::SeqCst),
             "active": ACTIVE[i].load(Ordering::SeqCst),

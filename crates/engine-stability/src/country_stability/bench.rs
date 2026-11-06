@@ -40,7 +40,7 @@ const STABILITY_KEY: u32 = 1;
 const WAR_SUPPORT_KEY: u32 = 6;
 const UNTRACKED_KEY: u32 = TRACKED as u32 + 1;
 // This fixture's language singleton is the highest image operand it reads.
-const IMAGE: usize = (localization_root_layout::SINGLETON_RVA + 8 + 15) & !15;
+const IMAGE: usize = (localization_root_layout::SINGLETON_RVA.0 + 8 + 15) & !15;
 // Every slot is bound and shared. The at-war fixture adds only one peace/war,
 // good/bad-war-support and good/bad-stability alternative to its child tree.
 const ACTIVE_STATICS: [usize; 5] = [0, 1, 2, 4, 5];
@@ -148,7 +148,7 @@ impl Arena {
 
     fn character(&mut self, id: u32) -> usize {
         let character = self.alloc(16);
-        self.vtable(character, ccharacter::VTABLE_RVA);
+        self.vtable(character, ccharacter::VTABLE_RVA.0);
         self.u32(character + ccharacter::TYPE, ccharacter::REFERENCE_TYPE);
         self.u32(character + ccharacter::ID, id);
         character
@@ -214,7 +214,7 @@ impl Fixture {
 
         let table_count = UNTRACKED_KEY as usize + 1;
         let table = arena.alloc(table_count * modifier_definition::STRIDE);
-        arena.array(modifier_definition::TABLE_RVA, table, table_count);
+        arena.array(modifier_definition::TABLE_RVA.0, table, table_count);
         for key in 1..=UNTRACKED_KEY {
             let row = table + key as usize * modifier_definition::STRIDE;
             arena.u32(row + modifier_definition::FLAGS, 3);
@@ -222,15 +222,15 @@ impl Fixture {
         }
         assert_eq!(DEFINES, DEFINE_RVAS.len());
         for (index, rva) in DEFINE_RVAS.into_iter().enumerate() {
-            arena.i64(rva, 1_000 + index as i64);
+            arena.i64(rva.0, 1_000 + index as i64);
         }
         let world = arena.alloc(0x40);
         arena.pointer(game_state + cgame_state::WORLD_THREAT, world);
-        arena.vtable(world, cworld_threat::VTABLE_RVA);
+        arena.vtable(world, cworld_threat::VTABLE_RVA.0);
         arena.i64(world + cworld_threat::TOTAL, 12_345);
         let language_root = arena.alloc(8);
         let language = arena.alloc(msvc_string::STRIDE);
-        arena.pointer(localization_root_layout::SINGLETON_RVA, language_root);
+        arena.pointer(localization_root_layout::SINGLETON_RVA.0, language_root);
         arena.pointer(
             language_root + localization_root_layout::LANGUAGE_STRING,
             language,
@@ -241,7 +241,7 @@ impl Fixture {
         // same objects for every country, including slots whose children this
         // at-war fixture omits.
         let database = arena.alloc(0x400);
-        arena.pointer(STATIC_DATABASE_RVA, database);
+        arena.pointer(STATIC_DATABASE_RVA.0, database);
         let statics: Vec<_> = STATIC_SLOTS
             .iter()
             .enumerate()
@@ -251,7 +251,7 @@ impl Fixture {
                     format!("synthetic shared static display {index:02}"),
                 );
                 let object = arena.alloc(STATIC_NAME + msvc_string::STRIDE);
-                arena.vtable(object, cstatic_modifier::VTABLE_RVA);
+                arena.vtable(object, cstatic_modifier::VTABLE_RVA.0);
                 arena.pointer(database + slot.offset, object);
                 arena.modifier(object, &spec);
                 arena.string(
@@ -267,7 +267,7 @@ impl Fixture {
             let country = arena.alloc(0x1700);
             arena.pointer(slots + slot * 8, country);
             arena.u32(links + slot * 4, slot as u32);
-            arena.vtable(country, ccountry::VTABLE_RVA);
+            arena.vtable(country, ccountry::VTABLE_RVA.0);
             arena.u32(country + ccountry::ID, slot as u32);
             arena.i64(country + ccountry::STABILITY, 50_000);
             arena.i64(country + ccountry::WAR_SUPPORT, 40_000);
@@ -278,14 +278,14 @@ impl Fixture {
             // and the next country's hosting operand.
             let diplomacy = arena.alloc(cdiplomacy_status::COUNTRY + 8);
             arena.pointer(country + ccountry::DIPLOMACY_STATUS, diplomacy);
-            arena.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA);
+            arena.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
             arena.pointer(diplomacy + cdiplomacy_status::COUNTRY, country);
             arena.u32(diplomacy + DIPLOMACY_HOSTING, 0);
             let relation = arena.alloc(cwar_relation::FIRST_WAS_INSTIGATOR + 1);
             let owned = arena.alloc(8);
             arena.pointer(owned, relation);
             arena.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, owned, 1);
-            arena.vtable(relation, cwar_relation::VTABLE_RVA);
+            arena.vtable(relation, cwar_relation::VTABLE_RVA.0);
             arena.u32(relation + crelation::TYPE_ID, cwar_relation::TYPE);
             arena.u32(relation + crelation::FIRST_COUNTRY, slot as u32);
             arena.u32(relation + crelation::SECOND_COUNTRY, (slot % n + 1) as u32);
@@ -313,11 +313,11 @@ impl Fixture {
             let party = arena.alloc(0x100);
             let ideas = arena.alloc(IDEAS * 8);
             arena.pointer(country + ccountry::POLITICAL_STATUS, status);
-            arena.vtable(status, cpolitical_status::VTABLE_RVA);
+            arena.vtable(status, cpolitical_status::VTABLE_RVA.0);
             arena.pointer(status + cpolitical_status::COUNTRY, country);
             arena.pointer(status + cpolitical_status::RULING_PARTY, party);
             arena.array(status + cpolitical_status::IDEAS, ideas, IDEAS);
-            arena.vtable(party, cpolitical_party::VTABLE_RVA);
+            arena.vtable(party, cpolitical_party::VTABLE_RVA.0);
             arena.i64(party + cpolitical_party::POPULARITY, 4_500_000);
             for index in 0..IDEAS {
                 let mut spec = ChildSpec::new(
@@ -326,7 +326,7 @@ impl Fixture {
                 );
                 let idea = arena.alloc(IDEA_MODIFIER + cmodifier::DISPLAY_NAME + 32);
                 arena.pointer(ideas + index * 8, idea);
-                arena.vtable(idea, cidea::VTABLE_RVA);
+                arena.vtable(idea, cidea::VTABLE_RVA.0);
                 arena.string(
                     idea + cidea::TOKEN,
                     format!("synthetic_idea_{slot:04}_{index:02}").as_bytes(),
@@ -342,7 +342,7 @@ impl Fixture {
             let leaders = arena.alloc(8);
             let character = arena.character(slot as u32 * 4);
             let spec = ChildSpec::new(16, format!("synthetic leader display {slot:04}"));
-            arena.vtable(leader, ccountry_leader::VTABLE_RVA);
+            arena.vtable(leader, ccountry_leader::VTABLE_RVA.0);
             arena.pointer(leader + ccountry_leader::CHARACTER, character);
             arena.pointer(leaders, leader);
             arena.array(party + cpolitical_party::COUNTRY_LEADERS, leaders, 1);
@@ -351,7 +351,7 @@ impl Fixture {
 
             let group = arena.alloc(IDEOLOGY_GROUP_MODIFIER + cmodifier::DISPLAY_NAME + 32);
             let spec = ChildSpec::new(17, format!("synthetic ideology display {slot:04}"));
-            arena.vtable(group, cideology_group::VTABLE_RVA);
+            arena.vtable(group, cideology_group::VTABLE_RVA.0);
             arena.pointer(party + cpolitical_party::IDEOLOGY_GROUP, group);
             arena.string(
                 group + cideology_group::TOKEN,
@@ -365,7 +365,7 @@ impl Fixture {
             let characters = arena.alloc(ccountry_characters::APPOINTED_ADVISORS + 16);
             let advisors = arena.alloc(ADVISORS * 8);
             arena.pointer(country + ccountry::CHARACTERS, characters);
-            arena.vtable(characters, ccountry_characters::VTABLE_RVA);
+            arena.vtable(characters, ccountry_characters::VTABLE_RVA.0);
             arena.pointer(characters + ccountry_characters::OWNER, country);
             arena.array(
                 characters + ccountry_characters::APPOINTED_ADVISORS,
@@ -380,7 +380,7 @@ impl Fixture {
                     format!("synthetic advisor display {slot:04} {index:02}"),
                 );
                 arena.pointer(advisors + index * 8, advisor);
-                arena.vtable(advisor, cadvisor::VTABLE_RVA);
+                arena.vtable(advisor, cadvisor::VTABLE_RVA.0);
                 arena.pointer(advisor + cadvisor::CHARACTER, character);
                 arena.string(
                     advisor + cadvisor::IDEA_TOKEN,
@@ -410,13 +410,13 @@ impl Fixture {
                 let display = format!("synthetic dynamic display {slot:04} {index:02}");
                 let constant = ChildSpec::new(1_000 + index as i64 * 2, display.clone());
                 let evaluated = ChildSpec::new(1_001 + index as i64 * 2, display);
-                arena.vtable(entry, dynamic_modifier_entry::VTABLE_RVA);
+                arena.vtable(entry, dynamic_modifier_entry::VTABLE_RVA.0);
                 arena.u32(entry + dynamic_modifier_entry::SCOPE_COUNTRY, slot as u32);
                 arena.u32(entry + dynamic_modifier_entry::DAYS_REMAINING, u32::MAX);
                 arena.pointer(entry + dynamic_modifier_entry::DEFINITION, definition);
                 arena.u8(entry + dynamic_modifier_entry::ENABLED, 1);
                 arena.array(entry + dynamic_modifier_entry::VALUES, values, 3);
-                arena.vtable(definition, cdynamic_modifier::VTABLE_RVA);
+                arena.vtable(definition, cdynamic_modifier::VTABLE_RVA.0);
                 arena.string(
                     definition + cdynamic_modifier::ID,
                     format!("synthetic_dynamic_{slot:04}_{index:02}").as_bytes(),
@@ -447,7 +447,7 @@ impl Fixture {
             for (index, spec) in children.iter().enumerate() {
                 let child = arena.alloc(cmodifier::DISPLAY_NAME + 32);
                 arena.pointer(child_pointers + index * 8, child);
-                arena.vtable(child, cmodifier::VTABLE_RVA);
+                arena.vtable(child, cmodifier::VTABLE_RVA.0);
                 arena.modifier(child, spec);
                 for ((_, total), (_, value)) in totals.iter_mut().zip(spec.entries) {
                     *total += value;

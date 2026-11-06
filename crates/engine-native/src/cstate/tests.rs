@@ -140,7 +140,7 @@ fn states_with_holes() -> Vec<u8> {
         (0x400, 1_u32, 0_u32, 0xffff_fffe_u32),
         (0x600, 3_u32, 0x8000_0001_u32, 0_u32),
     ] {
-        put(&mut bytes, offset, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, offset, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, offset + ID, &id.to_le_bytes());
         put(&mut bytes, offset + OWNER, &owner.to_le_bytes());
         put(&mut bytes, offset + CONTROLLER, &controller.to_le_bytes());
@@ -205,7 +205,7 @@ fn named_states(count: usize, names: &dyn Fn(usize) -> (Vec<u8>, Vec<u8>)) -> Ma
     for index in 1..=count {
         let state = 0x20_0000 + index * 0x1000;
         memory.put(SLOTS + index * 8, &(state as u64).to_le_bytes());
-        memory.put(state, &(VTABLE_RVA as u64).to_le_bytes());
+        memory.put(state, &(VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(state + PRIMARY_DISPLAY_NAME, &[0; 0xd0]);
         memory.put(state + ID, &(index as u32).to_le_bytes());
         let (custom, owner) = names(index);
@@ -459,9 +459,12 @@ fn movement_infrastructure_is_read_per_state_over_the_census() {
     );
     memory.put(0x2000, &0_u64.to_le_bytes());
     memory.put(0x2008, &0x3000_u64.to_le_bytes());
-    memory.put(0x3000, &(VTABLE_RVA as u64).to_le_bytes());
+    memory.put(0x3000, &(VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(0x3000 + ID, &1_u32.to_le_bytes());
-    memory.put(cbuilding_database::SINGLETON_RVA, &0x4000_u64.to_le_bytes());
+    memory.put(
+        cbuilding_database::SINGLETON_RVA.0,
+        &0x4000_u64.to_le_bytes(),
+    );
     memory.put(0x4000 + 0x3b0, &0x5000_u64.to_le_bytes());
     memory.put(0x5000 + cbuilding_template::SCOPE, &5_i32.to_le_bytes());
     // A disabled lookup keeps the healthy level at zero.
@@ -533,9 +536,12 @@ fn infrastructure_globals_keep_cold_faults_and_lazy_ordinal_acquisition() {
     let first = 0x3000;
     let second = 0x6000;
     let definition = 0x5000;
-    memory.put(first, &(VTABLE_RVA as u64).to_le_bytes());
-    memory.put(second, &(VTABLE_RVA as u64).to_le_bytes());
-    memory.put(cbuilding_database::SINGLETON_RVA, &0x4000_u64.to_le_bytes());
+    memory.put(first, &(VTABLE_RVA.0 as u64).to_le_bytes());
+    memory.put(second, &(VTABLE_RVA.0 as u64).to_le_bytes());
+    memory.put(
+        cbuilding_database::SINGLETON_RVA.0,
+        &0x4000_u64.to_le_bytes(),
+    );
     memory.put(0x4000 + 0x3b0, &(definition as u64).to_le_bytes());
     memory.put(definition + cbuilding_template::SCOPE, &5_i32.to_le_bytes());
     memory.put(
@@ -558,7 +564,7 @@ fn infrastructure_globals_keep_cold_faults_and_lazy_ordinal_acquisition() {
     memory.put(0x033e_5080, &(-10_000_i64).to_le_bytes());
     let cold = [
         (first, 8),
-        (cbuilding_database::SINGLETON_RVA, 8),
+        (cbuilding_database::SINGLETON_RVA.0, 8),
         (0x4000 + 0x3b0, 8),
         (definition + cbuilding_template::SCOPE, 4),
         (definition + cbuilding_template::LOOKUP_ENABLED_CANDIDATE, 1),
@@ -1134,7 +1140,7 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
     put(state + TEMPLATE, &(template as u64).to_le_bytes());
     put(
         template,
-        &(crate::cstate_template::VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::cstate_template::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         template + crate::cstate_template::CONTINENT,
@@ -1242,8 +1248,8 @@ fn state_category_is_named_by_its_authenticated_definitions_token() {
     let mut bytes = states_with_holes();
     // Two definitions: state 1's is a category, state 3's has another vtable.
     for (offset, vtable, token) in [
-        (0x100, CATEGORY_VTABLE_RVA, 0x2fab_u32),
-        (0x140, VTABLE_RVA, 7),
+        (0x100, CATEGORY_VTABLE_RVA.0, 0x2fab_u32),
+        (0x140, VTABLE_RVA.0, 7),
     ] {
         put(&mut bytes, offset, &(vtable as u64).to_le_bytes());
         put(&mut bytes, offset + CATEGORY_TOKEN, &token.to_le_bytes());

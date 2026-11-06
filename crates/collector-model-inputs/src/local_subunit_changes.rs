@@ -214,12 +214,12 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "local_subunit_changes")
-            && MUTATIONS.iter().all(|(site, _)| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            })
+            && MUTATIONS
+                .iter()
+                .all(|(site, _)| crate::located(base, site.rva).is_ok())
         {
             let callbacks: [usize; SITES] = [
                 ensure_local_subunit as *const () as usize,
@@ -230,8 +230,10 @@ impl Hooks {
                 reload_equipment_content as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| "native hook construction failed")?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }

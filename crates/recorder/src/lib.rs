@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod command_tests;
 pub mod controller;
+mod game_sites;
 #[cfg(test)]
 mod derived_command_tests;
 use recorder_derived::derived;

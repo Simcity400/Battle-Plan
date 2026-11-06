@@ -31,7 +31,7 @@ fn sizing_retries_a_missing_world_and_grows_receipt_pressure_after_a_failed_cens
     struct NullState;
     impl engine_native::Memory for NullState {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.fill(0);
                 return true;
             }
@@ -1018,7 +1018,7 @@ fn hook_cost_fuel_awards() {
     release().unwrap();
     let mut storage = vec![0_u64; (OBJECTS + (COUNTRIES + 1) * OBJECT) / 8];
     let at = storage.as_ptr() as usize;
-    let base = at - cgame_state::SINGLETON_RVA;
+    let base = at - cgame_state::SINGLETON_RVA.0;
     let mut word = |offset: usize, value: u64| storage[offset / 8] = value;
     let array = |word: &mut dyn FnMut(usize, u64), offset: usize, data: usize, count: usize| {
         word(offset, (at + data) as u64);
@@ -1041,7 +1041,7 @@ fn hook_cost_fuel_awards() {
     for country in 1..=COUNTRIES {
         let object = OBJECTS + country * OBJECT;
         word(TABLE + country * 8, (at + object) as u64);
-        word(object, (base + ccountry::VTABLE_RVA) as u64);
+        word(object, (base + ccountry::VTABLE_RVA.0) as u64);
         // Id and instance both `country`.
         word(
             object + ccountry::ID,
@@ -1051,7 +1051,7 @@ fn hook_cost_fuel_awards() {
             object + ccountry::FUEL_STATUS,
             (at + status(country)) as u64,
         );
-        word(status(country), (base + fuel::VTABLE_RVA) as u64);
+        word(status(country), (base + fuel::VTABLE_RVA.0) as u64);
         word(status(country) + fuel::COUNTRY, (at + object) as u64);
         let consumers = status(country) + 0x100;
         array(&mut word, status(country) + fuel::CONSUMERS, consumers, 3);

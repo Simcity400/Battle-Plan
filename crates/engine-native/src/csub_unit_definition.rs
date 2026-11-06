@@ -2,8 +2,9 @@
 //! exact native words; the caller owns the active-stat writer certificate and
 //! the parked acquisition boundary.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0280_7710;
+pub const VTABLE_RVA: Rva = Rva(0x0280_7710);
 /// CSubUnitDefinition cached defense, i64/100000.
 pub const DEFENSE: usize = 0xa8;
 /// CSubUnitDefinition cached breakthrough, i64/100000.
@@ -133,7 +134,7 @@ pub fn capture_division_maxima(
     base: usize,
     pointer: usize,
 ) -> Result<DivisionMaxima, &'static str> {
-    base.checked_add(VTABLE_RVA)
+    engine_sites::at(base, VTABLE_RVA)
         .ok_or("division stat block identity mismatch")?;
     if pointer == 0 {
         return Err("division stat block identity mismatch");
@@ -155,8 +156,7 @@ fn decode_division_maxima(
     bytes: &[u8],
     copied: usize,
 ) -> Result<DivisionMaxima, &'static str> {
-    let vtable = base
-        .checked_add(VTABLE_RVA)
+    let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division stat block identity mismatch")? as u64;
     if copied == 0 || u64::from_le_bytes(bytes[..8].try_into().unwrap()) != vtable {
         return Err("division stat block identity mismatch");
@@ -179,8 +179,7 @@ pub fn capture_division_combat_stats(
     base: usize,
     pointer: usize,
 ) -> Result<[i64; 3], &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division combat stat module overflow")? as u64;
     if pointer == 0 || crate::read::<u64>(memory, pointer) != Some(expected) {
         return Err("division combat stat block identity mismatch");
@@ -223,7 +222,7 @@ pub const ARCHETYPE_REQUIREMENT_STRIDE: usize = 0x10;
 /// is global only when the database holds this exact pointer at that index.
 pub const DATABASE_INDEX: usize = 0x58c;
 /// Global subunit database with indexed definition pointers and null entry zero.
-pub const DATABASE_RVA: usize = 0x033d_d4d8;
+pub const DATABASE_RVA: Rva = Rva(0x033d_d4d8);
 /// The database's CPdxArray of definition pointers.
 pub const DATABASE_VECTOR: usize = 0x40;
 
@@ -233,8 +232,7 @@ pub struct Database(crate::cpdx_array::Array);
 
 impl Database {
     pub fn read(memory: &impl crate::Memory, base: usize) -> Result<Self, &'static str> {
-        let database = base
-            .checked_add(DATABASE_RVA)
+        let database = engine_sites::at(base, DATABASE_RVA)
             .and_then(|at| crate::read::<u64>(memory, at))
             .and_then(|at| usize::try_from(at).ok())
             .filter(|at| *at != 0)
@@ -358,13 +356,13 @@ pub(crate) fn category_of(bytes: &[u8; CATEGORY_LEN]) -> i32 {
     }
 }
 /// Subunit-definition constructor, also used for the null subtype.
-pub const CONSTRUCTOR_RVA: usize = 0x0109_ee10;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x0109_ee10);
 /// Null-subtype singleton pointer.
-pub const NULL_OBJECT_RVA: usize = 0x033e_7be0;
+pub const NULL_OBJECT_RVA: Rva = Rva(0x033e_7be0);
 /// Null-singleton getter used by default air-wing pools.
-pub const GET_NULL_OBJECT_RVA: usize = 0x00bf_1d50;
+pub const GET_NULL_OBJECT_RVA: Rva = Rva(0x00bf_1d50);
 /// Null-subtype primary vtable.
-pub const NULL_VTABLE_RVA: usize = 0x029c_1178;
+pub const NULL_VTABLE_RVA: Rva = Rva(0x029c_1178);
 /// Persistent null-subunit lexer token, checked against its loaded spelling.
 pub const NULL_TOKEN: u32 = 0x165;
 
@@ -373,9 +371,9 @@ pub const MOVEMENT_TERRAIN_ADJUSTERS: usize = 0x3f8;
 /// Cached anti-air stat used by combat power calculation.
 pub const MOVEMENT_AIR_DEFENSE: usize = 0x220;
 /// Combat anti-air denominator define, signed fixed point.
-pub const AIR_DEFENSE_DENOMINATOR_RVA: usize = 0x033e_18b8;
+pub const AIR_DEFENSE_DENOMINATOR_RVA: Rva = Rva(0x033e_18b8);
 /// Combat anti-air maximum-reduction define, signed fixed point.
-pub const AIR_DEFENSE_REDUCTION_RVA: usize = 0x033e_1830;
+pub const AIR_DEFENSE_REDUCTION_RVA: Rva = Rva(0x033e_1830);
 
 fn movement_identity(
     memory: &impl crate::Memory,
@@ -383,7 +381,7 @@ fn movement_identity(
     stats: usize,
 ) -> Result<(), &'static str> {
     if stats == 0
-        || crate::read::<u64>(memory, stats) != base.checked_add(VTABLE_RVA).map(|p| p as u64)
+        || crate::read::<u64>(memory, stats) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
     {
         Err("movement stat block identity mismatch")
     } else {
@@ -402,8 +400,8 @@ pub fn movement_terrain(
     terrain: usize,
 ) -> Result<i64, &'static str> {
     // Authenticate terrain type and its embedded unit adjuster.
-    const TERRAIN_VTABLE: usize = 0x02a3_b470;
-    const ADJUSTER_VTABLE: usize = 0x0280_75d8;
+    const TERRAIN_VTABLE: Rva = Rva(0x02a3_b470);
+    const ADJUSTER_VTABLE: Rva = Rva(0x0280_75d8);
     const UNREADABLE: &str = "movement stat operand unreadable";
     // A null or overflowing leaf is an unreadable operand without a read; the
     // scattered copy stops at its zero address exactly where the leaf stops.
@@ -440,7 +438,7 @@ pub fn movement_terrain(
     );
     if stats == 0
         || (read > 0).then(|| u64::from_le_bytes(identity))
-            != base.checked_add(VTABLE_RVA).map(|p| p as u64)
+            != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
     {
         return Err("movement stat block identity mismatch");
     }
@@ -448,8 +446,7 @@ pub fn movement_terrain(
         return Err(UNREADABLE);
     }
     if u64::from_le_bytes(vtable)
-        != base
-            .checked_add(TERRAIN_VTABLE)
+        != engine_sites::at(base, TERRAIN_VTABLE)
             .ok_or("terrain vtable overflow")? as u64
     {
         return Err("movement terrain identity mismatch");
@@ -469,8 +466,7 @@ pub fn movement_terrain(
         .and_then(|index| index.checked_sub(1))
         .and_then(|index| array.element(index, 0x28))
         .ok_or("movement terrain index outside stat cache")?;
-    let expected = base
-        .checked_add(ADJUSTER_VTABLE)
+    let expected = engine_sites::at(base, ADJUSTER_VTABLE)
         .ok_or("adjuster vtable overflow")? as u64;
     let (mut entry_vtable, mut entry_token, mut entry_speed) = ([0_u8; 8], [0_u8; 4], [0_u8; 8]);
     let entry_addresses = [leaf(entry, 0), leaf(entry, 8), leaf(entry, 0x20)];
@@ -578,7 +574,7 @@ mod movement_tests {
         let stats = 0x100;
         let terrain = 0x600;
         let cache = 0x900;
-        bytes[stats..stats + 8].copy_from_slice(&((base + VTABLE_RVA) as u64).to_le_bytes());
+        bytes[stats..stats + 8].copy_from_slice(&((base + VTABLE_RVA.0) as u64).to_le_bytes());
         bytes[stats + MOVEMENT_TERRAIN_ADJUSTERS..stats + MOVEMENT_TERRAIN_ADJUSTERS + 8]
             .copy_from_slice(&(cache as u64).to_le_bytes());
         bytes[stats + MOVEMENT_TERRAIN_ADJUSTERS + 8..stats + MOVEMENT_TERRAIN_ADJUSTERS + 12]
@@ -622,7 +618,7 @@ mod movement_tests {
 
 /// The `CUnitAdjuster` vtable of each entry of [`MOVEMENT_TERRAIN_ADJUSTERS`]
 /// and of a terrain's own adjuster.
-pub const UNIT_ADJUSTER_VTABLE_RVA: usize = 0x0280_75d8;
+pub const UNIT_ADJUSTER_VTABLE_RVA: Rva = Rva(0x0280_75d8);
 /// Unit adjuster stride and its attack component, used by additive adjustment.
 pub const UNIT_ADJUSTER_STRIDE: usize = 0x28;
 pub const UNIT_ADJUSTER_ATTACK: usize = 0x10;
@@ -794,8 +790,7 @@ pub fn capture_attack_stats_holding(
         UNIT_ADJUSTER_STRIDE,
     )
     .ok_or("stat block terrain adjuster array invalid")?;
-    let expected = base
-        .checked_add(UNIT_ADJUSTER_VTABLE_RVA)
+    let expected = engine_sites::at(base, UNIT_ADJUSTER_VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     terrain.clear();
     movement_terrain.clear();
@@ -868,7 +863,7 @@ mod attack_tests {
         put(
             &mut bytes,
             STATS,
-            &((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         for (offset, value) in [
             (ATTACK_NIGHT, -50_000_i64),
@@ -889,7 +884,7 @@ mod attack_tests {
             put(
                 &mut bytes,
                 entry,
-                &((BASE + UNIT_ADJUSTER_VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + UNIT_ADJUSTER_VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -1010,7 +1005,7 @@ mod attack_tests {
             put(
                 &mut bytes,
                 STATS + adjuster,
-                &((BASE + UNIT_ADJUSTER_VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + UNIT_ADJUSTER_VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -1110,7 +1105,7 @@ mod maxima_tests {
 
     fn block() -> Vec<u8> {
         let mut bytes = vec![0_u8; CAN_EXFILTRATE_FROM_COAST + 1];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[MAXIMUM_ORGANISATION..MAXIMUM_ORGANISATION + 8]
             .copy_from_slice(&70_000_i64.to_le_bytes());
         bytes[MAXIMUM_STRENGTH..MAXIMUM_STRENGTH + 8].copy_from_slice(&50_i64.to_le_bytes());

@@ -18,6 +18,7 @@ history_changes = []
 engine-air-history.workspace = true
 engine-allocation.workspace = true
 engine-native.workspace = true
+engine-sites.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }

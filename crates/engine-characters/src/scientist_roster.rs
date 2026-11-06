@@ -323,11 +323,13 @@ impl<M: Memory> Reader<'_, M> {
             .map_err(|_| "scientist pointer overflow")
     }
 
-    fn vtable(&self, pointer: usize, rva: usize, reason: &'static str) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(rva)
-            .ok_or("module address overflow")? as u64;
+    fn vtable(
+        &self,
+        pointer: usize,
+        rva: engine_sites::Rva,
+        reason: &'static str,
+    ) -> Result<(), &'static str> {
+        let expected = engine_sites::at(self.base, rva).ok_or("module address overflow")? as u64;
         if read::<u64>(self.memory, pointer) == Some(expected) {
             Ok(())
         } else {
@@ -338,9 +340,7 @@ impl<M: Memory> Reader<'_, M> {
     fn character(&self, pointer: usize) -> Result<u32, &'static str> {
         let identity = read::<[u8; 16]>(self.memory, pointer)
             .ok_or("scientist character identity unreadable")?;
-        let expected = self
-            .base
-            .checked_add(ccharacter::VTABLE_RVA)
+        let expected = engine_sites::at(self.base, ccharacter::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected {
             return Err("scientist character vtable mismatch");
@@ -403,7 +403,7 @@ mod tests {
         p64(&mut bytes, COUNTRIES + 8, C1 as u64);
         p32(&mut bytes, LINKS, 0);
         p32(&mut bytes, LINKS + 4, 1);
-        p64(&mut bytes, C1, ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, C1, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, C1 + ccountry::ID, 1);
         p64(&mut bytes, C1 + ccountry::SCIENTIST_ROSTER, ROSTER as u64);
         vector(&mut bytes, ROSTER + ENTRIES, ENTRY_DATA, 2);
@@ -420,7 +420,7 @@ mod tests {
             CH2 as u64,
         );
         for (character, id, scientist) in [(CH1, 265, SC1), (CH2, 266, SC2)] {
-            p64(&mut bytes, character, ccharacter::VTABLE_RVA as u64);
+            p64(&mut bytes, character, ccharacter::VTABLE_RVA.0 as u64);
             p32(
                 &mut bytes,
                 character + ccharacter::TYPE,
@@ -432,7 +432,7 @@ mod tests {
                 character + ccharacter::SCIENTIST,
                 scientist as u64,
             );
-            p64(&mut bytes, scientist, cscientist::VTABLE_RVA as u64);
+            p64(&mut bytes, scientist, cscientist::VTABLE_RVA.0 as u64);
         }
         // The trait vector's capacity deliberately exceeds its count.
         p64(&mut bytes, SC1 + cscientist::TRAIT_DATA, 0x8800);

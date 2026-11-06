@@ -1,10 +1,11 @@
 //! Strategic-operative manager rooted in the game state when its feature is
 //! active. Layout alone does not establish hourly consistency.
 
+use engine_sites::Rva;
 /// Manager allocation size.
 pub const SIZE: usize = 0x68;
 /// Manager constructor installing its vtable.
-pub const CONSTRUCTOR_RVA: usize = 0x0f2_68a0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x0f2_68a0);
 /// Operative pointer-vector data.
 pub const OPERATIVES_DATA: usize = 0x08;
 /// Pointer-vector element width.

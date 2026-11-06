@@ -84,7 +84,8 @@ pub(super) fn capture(
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
     subunits(m, base, sink)?;
-    let db = pointer(m, base, db::SINGLETON_RVA)?;
+    let db = engine_sites::at(base, db::SINGLETON_RVA).ok_or("raid database withheld")?;
+    let db = pointer(m, db, 0)?;
     let types = Array::read(m, db + db::DEFINITIONS, 8).ok_or("raid definitions header invalid")?;
     for i in 0..types.count {
         let p = pointer(
@@ -138,13 +139,13 @@ mod tests {
                 bytes.insert(at + i, *b);
             }
         };
-        put(definition::DATABASE_RVA, &0x1000u64.to_le_bytes());
+        put(definition::DATABASE_RVA.0, &0x1000u64.to_le_bytes());
         put(0x1040, &0x2000u64.to_le_bytes());
         put(0x1048, &2u32.to_le_bytes());
         put(0x104c, &2u32.to_le_bytes());
         for (index, p, vt, token, active) in [
-            (0, 0x3000, definition::NULL_VTABLE_RVA, 0, 0),
-            (1, 0x4000, definition::VTABLE_RVA, 91, 255),
+            (0, 0x3000, definition::NULL_VTABLE_RVA.0, 0, 0),
+            (1, 0x4000, definition::VTABLE_RVA.0, 91, 255),
         ] {
             put(0x2000 + index * 8, &(p as u64).to_le_bytes());
             put(p, &(vt as u64).to_le_bytes());
@@ -186,7 +187,7 @@ mod tests {
             word(&mut bytes, node + 8, parent as u64);
             word(&mut bytes, node + 0x10, right as u64);
             word(&mut bytes, node + 0x20, equipment as u64);
-            word(&mut bytes, equipment, eq::VTABLE_RVA as u64);
+            word(&mut bytes, equipment, eq::VTABLE_RVA.0 as u64);
             word(&mut bytes, equipment + eq::TOKEN, token);
         }
         let run = |bytes: &[u8], rows: &mut [Row]| {

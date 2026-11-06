@@ -23,6 +23,7 @@ use crate::{
     Memory, ccountry, cpdx_array::Array, msvc_string::Descriptor, read, read_slice,
     research_inputs, research_inputs::Text, walk::Outcome,
 };
+use engine_sites::Rva;
 
 pub mod grants;
 mod sharing;
@@ -90,7 +91,12 @@ pub struct Row {
 }
 
 /// Minimum research speed, licence factor, sharing clamp and ahead-of-time factor.
-const DEFINES: [usize; 4] = [0x033e_4658, 0x033e_4328, 0x033e_4280, 0x033e_4138];
+const DEFINES: [Rva; 4] = [
+    Rva(0x033e_4658),
+    Rva(0x033e_4328),
+    Rva(0x033e_4280),
+    Rva(0x033e_4138),
+];
 #[derive(Clone, Copy)]
 pub struct Context {
     minimum: i64,
@@ -103,7 +109,7 @@ impl Context {
         let mut bytes = [[0; 8]; 4];
         let mut addresses = [0; 4];
         for (address, rva) in addresses.iter_mut().zip(DEFINES) {
-            *address = at(base, rva)?;
+            *address = site(base, rva)?;
         }
         if memory.copy_scattered_prefetched(addresses, &mut bytes.each_mut().map(|v| &mut v[..]))
             != 4
@@ -503,7 +509,7 @@ fn walk_country_buffer_with_roster<M: Memory>(
                 if raw != 0 {
                     let idea = pointer_from(&bytes[8..])?;
                     if read::<u64>(&idea_memory, idea)
-                        != Some(at(base, crate::cidea::VTABLE_RVA)? as u64)
+                        != Some(site(base, crate::cidea::VTABLE_RVA)? as u64)
                     {
                         return Err("research idea identity mismatch");
                     }
@@ -837,7 +843,7 @@ fn scientist_bonus<M: Memory>(
                         let identity = read::<[u8; 16]>(memory, source)
                             .ok_or("research scientist identity unreadable")?;
                         if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                            != at(base, crate::cscientist::VTABLE_RVA)? as u64
+                            != site(base, crate::cscientist::VTABLE_RVA)? as u64
                         {
                             return Err("research scientist identity mismatch");
                         }
@@ -845,7 +851,7 @@ fn scientist_bonus<M: Memory>(
                         let identity = read::<[u8; 16]>(memory, character)
                             .ok_or("research scientist character unreadable")?;
                         if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                            != at(base, crate::ccharacter::VTABLE_RVA)? as u64
+                            != site(base, crate::ccharacter::VTABLE_RVA)? as u64
                             || u32::from_le_bytes(identity[8..12].try_into().unwrap())
                                 != crate::ccharacter::REFERENCE_TYPE
                             || pointer(memory, at(character, crate::ccharacter::SCIENTIST)?)?
@@ -890,6 +896,9 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)
         .ok_or("research modifier address overflow")
+}
+fn site(base: usize, key: engine_sites::Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("research modifier address overflow")
 }
 fn pointer_from(bytes: &[u8]) -> Result<usize, &'static str> {
     usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))

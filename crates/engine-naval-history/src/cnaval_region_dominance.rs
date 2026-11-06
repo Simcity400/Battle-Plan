@@ -1,7 +1,8 @@
 //! CNavalRegionDominance, owned by the strategic region (`cstrategic_region::NAVAL_DOMINANCE`).
 
+use engine_sites::Rva;
 /// CNavalRegionDominance primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_1090;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_1090);
 /// CNavalRegionDominance owning CStrategicRegion pointer.
 pub const REGION: usize = 0x08;
 /// CNavalRegionDominance country/value entry array.
@@ -79,17 +80,13 @@ fn walk_inner(
         .and_then(|address| Array::read(memory, address, 8))
         .filter(|array| array.count != 0)
         .ok_or("naval supremacy region roster unreadable or invalid")?;
-    let region_vtable = base
-        .checked_add(cstrategic_region::VTABLE_RVA)
+    let region_vtable = engine_sites::at(base, cstrategic_region::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
-    let secondary_vtable = base
-        .checked_add(cstrategic_region::SECONDARY_VTABLE_RVA)
+    let secondary_vtable = engine_sites::at(base, cstrategic_region::SECONDARY_VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
-    let dominance_vtable = base
-        .checked_add(VTABLE_RVA)
+    let dominance_vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
-    let values_vtable = base
-        .checked_add(values::VTABLE_RVA)
+    let values_vtable = engine_sites::at(base, values::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
@@ -241,12 +238,12 @@ mod tests {
         put64(
             &mut bytes,
             REGION_OBJECT,
-            cstrategic_region::VTABLE_RVA as u64,
+            cstrategic_region::VTABLE_RVA.0 as u64,
         );
         put64(
             &mut bytes,
             REGION_OBJECT + cstrategic_region::SECONDARY,
-            cstrategic_region::SECONDARY_VTABLE_RVA as u64,
+            cstrategic_region::SECONDARY_VTABLE_RVA.0 as u64,
         );
         put32(
             &mut bytes,
@@ -263,7 +260,7 @@ mod tests {
             REGION_OBJECT + cstrategic_region::NAVAL_DOMINANCE,
             DOMINANCE as u64,
         );
-        put64(&mut bytes, DOMINANCE, VTABLE_RVA as u64);
+        put64(&mut bytes, DOMINANCE, VTABLE_RVA.0 as u64);
         put64(&mut bytes, DOMINANCE + REGION, REGION_OBJECT as u64);
         array(&mut bytes, DOMINANCE + ENTRIES, ROWS, 7, 2);
         for index in 0..2 {
@@ -271,7 +268,7 @@ mod tests {
             let object = outer + entry::VALUES;
             let country = if index == 0 { u32::MAX } else { 1 };
             put32(&mut bytes, outer + entry::COUNTRY_KEY, country);
-            put64(&mut bytes, object, values::VTABLE_RVA as u64);
+            put64(&mut bytes, object, values::VTABLE_RVA.0 as u64);
             put32(&mut bytes, object + values::COUNTRY, country);
             put64(&mut bytes, object + values::REGION, REGION_OBJECT as u64);
             for (offset, value) in [
@@ -333,7 +330,7 @@ mod tests {
             second_region + cstrategic_region::NAVAL_DOMINANCE,
             0x1b00,
         );
-        put64(&mut bytes, 0x1b00, VTABLE_RVA as u64);
+        put64(&mut bytes, 0x1b00, VTABLE_RVA.0 as u64);
         put64(&mut bytes, 0x1b00 + REGION, second_region as u64);
         array(&mut bytes, 0x1b00 + ENTRIES, 0x3000, 3, 3);
         let mut row = [Row::default(); 1];

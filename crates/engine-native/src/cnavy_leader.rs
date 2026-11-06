@@ -1,9 +1,10 @@
 //! CNavyLeader extends CUnitLeader with signed i32 skills.
 
+use engine_sites::Rva;
 /// CNavyLeader primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_2760;
+pub const VTABLE_RVA: Rva = Rva(0x029d_2760);
 /// CNavyLeader secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029d_2878;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029d_2878);
 /// CNavyLeader secondary subobject offset.
 pub const SECONDARY_BASE: usize = 0xf58;
 /// CNavyLeader attack i32.
@@ -17,4 +18,4 @@ pub const COORDINATION: usize = 0xf98;
 /// Navy-leader allocation extent, not an array stride.
 pub const SIZE: usize = 0xfc8;
 /// Navy-leader constructor installs both vtables and signed skill words.
-pub const CONSTRUCTOR_RVA: usize = 0x00c6_8380;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c6_8380);

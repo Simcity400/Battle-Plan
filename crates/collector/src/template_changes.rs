@@ -336,14 +336,17 @@ pub struct Hooks {
 }
 impl Hooks {
     /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel leaves the family uninstalled; DivisionTemplates
+    /// A withheld site leaves the family uninstalled; DivisionTemplates
     /// then reads every template's names afresh.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         BASE.store(base, Ordering::Release);
+        let mut located = [(0, [0; 16]); SITES];
         if cfg!(feature = "template_changes")
-            && MUTATIONS.iter().all(|(site, _)| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
+            && MUTATIONS.iter().zip(&mut located).all(|((site, _), slot)| {
+                crate::located_hook(base, site.rva)
+                    .map(|code| *slot = code)
+                    .is_ok()
             })
         {
             let callbacks: [usize; SITES] = [
@@ -408,8 +411,8 @@ impl Hooks {
                 add_template_effect as *const () as usize,
                 add_colonial_template_effect as *const () as usize,
             ];
-            for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+            for (index, &(at, original)) in located.iter().enumerate() {
+                let hook = unsafe { Hook::new(at, callbacks[index], original) }
                     .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);

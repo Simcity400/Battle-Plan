@@ -5,13 +5,14 @@ use crate::{
     Memory, allocation, cequipment_variant_pool as pool, cpdx_array::Array, equipment_entry,
     ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as group, read, read_slice,
 };
+use engine_sites::Rva;
 
 pub const ENEMY_KIND: u8 = 5;
 pub const MANPOWER: usize = 0x98;
 pub const TEMPLATES: usize = 0xb0;
 pub const REFERENCES: usize = 0xc8;
-pub const MANPOWER_VTABLE_RVA: usize = 0x029d_9f40;
-pub const TEMPLATE_VTABLE_RVA: usize = 0x029d_a1c0;
+pub const MANPOWER_VTABLE_RVA: Rva = Rva(0x029d_9f40);
+pub const TEMPLATE_VTABLE_RVA: Rva = Rva(0x029d_a1c0);
 pub const MANPOWER_SIZE: usize = 0x38;
 pub const TEMPLATE_SIZE: usize = 0x38;
 pub const TEMPLATE_REFERENCE: usize = 0x08;
@@ -72,6 +73,9 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("combat log history address overflow")
 }
+fn module(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("combat log history address overflow")
+}
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
@@ -83,7 +87,7 @@ fn header<const N: usize>(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<[u8; N], &'static str> {
     if pointer == 0 {
         return Err("combat log history object null");
@@ -92,7 +96,7 @@ fn header<const N: usize>(
     if !read_slice(memory, pointer, &mut bytes) {
         return Err("combat log history object unreadable");
     }
-    if word(&bytes, 0) != at(base, vtable)? as u64 {
+    if word(&bytes, 0) != module(base, vtable)? as u64 {
         return Err("combat log history vtable mismatch");
     }
     Ok(bytes)
@@ -129,7 +133,7 @@ pub fn read_group(
     base: usize,
     bytes: &[u8],
 ) -> Result<History, &'static str> {
-    if bytes.len() != group::SIZE || word(bytes, 0) != at(base, group::VTABLE_RVA)? as u64 {
+    if bytes.len() != group::SIZE || word(bytes, 0) != module(base, group::VTABLE_RVA)? as u64 {
         return Err("combat log history group header invalid");
     }
     let mut output = History::default();
@@ -141,7 +145,7 @@ pub fn read_group(
         };
         pointers(memory, bytes, offset, |pointer| {
             let entry = header::<{ loss::SIZE }>(memory, base, pointer, loss::VTABLE_RVA)?;
-            if word(&entry, loss::POOL) != at(base, pool::VTABLE_RVA)? as u64 {
+            if word(&entry, loss::POOL) != module(base, pool::VTABLE_RVA)? as u64 {
                 return Err("combat log history equipment pool vtable mismatch");
             }
             let mut month = EquipmentMonth {
@@ -217,12 +221,12 @@ pub fn read_group(
 /// Shared settled battle-pool operands. A pool index is reusable; it is not
 /// the live combat reference. Callers ask only for indices a native reference
 /// append/release or the initial retained group history reaches.
-pub const BATTLE_POOL_RVA: usize = 0x033e_a870;
-pub const BATTLE_COUNTS_RVA: usize = 0x033e_a888;
-pub const BATTLE_USED_RVA: usize = 0x033e_a8a0;
+pub const BATTLE_POOL_RVA: Rva = Rva(0x033e_a870);
+pub const BATTLE_COUNTS_RVA: Rva = Rva(0x033e_a888);
+pub const BATTLE_USED_RVA: Rva = Rva(0x033e_a8a0);
 pub const BATTLE_SIZE: usize = 0x448;
-pub const BATTLE_VTABLE_RVA: usize = 0x029d_a120;
-pub const SIDE_VTABLE_RVA: usize = 0x029d_9fe0;
+pub const BATTLE_VTABLE_RVA: Rva = Rva(0x029d_a120);
+pub const SIDE_VTABLE_RVA: Rva = Rva(0x029d_9fe0);
 pub const SIDE_SIZE: usize = 0x210;
 pub const BATTLE_ATTACKER: usize = 0x08;
 pub const BATTLE_DEFENDER: usize = 0x218;
@@ -279,7 +283,7 @@ fn read_pool(
     bytes: &[u8],
     offset: usize,
 ) -> Result<Pool, &'static str> {
-    if word(bytes, offset) != at(base, pool::VTABLE_RVA)? as u64 {
+    if word(bytes, offset) != module(base, pool::VTABLE_RVA)? as u64 {
         return Err("combat log battle pool vtable mismatch");
     }
     let mut output = Pool {
@@ -322,7 +326,7 @@ fn read_pool(
 }
 
 fn read_side(memory: &impl Memory, base: usize, bytes: &[u8]) -> Result<SideData, &'static str> {
-    if bytes.len() != SIDE_SIZE || word(bytes, 0) != at(base, SIDE_VTABLE_RVA)? as u64 {
+    if bytes.len() != SIDE_SIZE || word(bytes, 0) != module(base, SIDE_VTABLE_RVA)? as u64 {
         return Err("combat log battle side vtable mismatch");
     }
     let mut output = SideData {
@@ -365,11 +369,11 @@ pub struct BattlePool {
 }
 impl BattlePool {
     pub fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
-        let records = Array::read(memory, at(base, BATTLE_POOL_RVA)?, BATTLE_SIZE)
+        let records = Array::read(memory, module(base, BATTLE_POOL_RVA)?, BATTLE_SIZE)
             .ok_or("combat log battle array invalid")?;
-        let counts = Array::read(memory, at(base, BATTLE_COUNTS_RVA)?, 2)
+        let counts = Array::read(memory, module(base, BATTLE_COUNTS_RVA)?, 2)
             .ok_or("combat log battle reference-count array invalid")?;
-        let used = Array::read(memory, at(base, BATTLE_USED_RVA)?, 1)
+        let used = Array::read(memory, module(base, BATTLE_USED_RVA)?, 1)
             .ok_or("combat log battle occupancy array invalid")?;
         if records.count != counts.count || records.count != used.count {
             return Err("combat log battle arrays have different lengths");
@@ -431,7 +435,7 @@ impl BattlePool {
     }
 }
 
-pub const MODIFIER_HOURS_VTABLE_RVA: usize = 0x029d_9f90;
+pub const MODIFIER_HOURS_VTABLE_RVA: Rva = Rva(0x029d_9f90);
 
 #[cfg(test)]
 mod tests {
@@ -483,7 +487,7 @@ mod tests {
         }
         fn group(&mut self) -> usize {
             let p = self.alloc(group::SIZE);
-            self.u64(p, (BASE + group::VTABLE_RVA) as u64);
+            self.u64(p, (BASE + group::VTABLE_RVA.0) as u64);
             p
         }
         fn group_bytes(&self, pointer: usize) -> [u8; group::SIZE] {
@@ -493,10 +497,10 @@ mod tests {
         }
         fn month(&mut self, reason: i32, date: i32) -> usize {
             let p = self.alloc(loss::SIZE);
-            self.u64(p, (BASE + loss::VTABLE_RVA) as u64);
+            self.u64(p, (BASE + loss::VTABLE_RVA.0) as u64);
             self.i32(p + loss::REASON, reason);
             self.i32(p + loss::DATE, date);
-            self.u64(p + loss::POOL, (BASE + pool::VTABLE_RVA) as u64);
+            self.u64(p + loss::POOL, (BASE + pool::VTABLE_RVA.0) as u64);
             p
         }
     }
@@ -506,8 +510,8 @@ mod tests {
         let mut f = Fixture::default();
         let counts = 0x9000;
         let used = 0xa000;
-        f.array(BASE + BATTLE_COUNTS_RVA, counts, 5000);
-        f.array(BASE + BATTLE_USED_RVA, used, 5000);
+        f.array(BASE + BATTLE_COUNTS_RVA.0, counts, 5000);
+        f.array(BASE + BATTLE_USED_RVA.0, used, 5000);
         // Every unrequested slot and every record payload is unreadable.
         f.put(counts + 4999 * 2, &2_i16.to_le_bytes());
         f.put(used + 4999, &[1]);
@@ -553,7 +557,7 @@ mod tests {
         use crate::combat_log_events as events;
         let mut f = Fixture::default();
         let t = f.alloc(TEMPLATE_SIZE);
-        f.u64(t, (BASE + TEMPLATE_VTABLE_RVA) as u64);
+        f.u64(t, (BASE + TEMPLATE_VTABLE_RVA.0) as u64);
         f.u64(t + TEMPLATE_REFERENCE, 0xabc0_1234_0000_0036);
         f.i32(t + TEMPLATE_WINS, -17);
         f.i32(t + TEMPLATE_TOTAL, i32::MAX);
@@ -576,7 +580,7 @@ mod tests {
         let own = f.month(2, 60_000_001);
         f.pointer_array(p + group::REASONS + 2 * group::REASON_STRIDE, own);
         let mp = f.alloc(MANPOWER_SIZE);
-        f.u64(mp, (BASE + MANPOWER_VTABLE_RVA) as u64);
+        f.u64(mp, (BASE + MANPOWER_VTABLE_RVA.0) as u64);
         f.i32(mp + loss::REASON, 0);
         f.i32(mp + loss::DATE, 60_000_002);
         for (i, v) in [i32::MIN, 0, i32::MAX].iter().enumerate() {
@@ -584,7 +588,7 @@ mod tests {
         }
         f.pointer_array(p + MANPOWER, mp);
         let t = f.alloc(TEMPLATE_SIZE);
-        f.u64(t, (BASE + TEMPLATE_VTABLE_RVA) as u64);
+        f.u64(t, (BASE + TEMPLATE_VTABLE_RVA.0) as u64);
         f.u64(t + TEMPLATE_REFERENCE, 7 << 32 | 52);
         f.i32(t + TEMPLATE_WINS, -1);
         f.i32(t + TEMPLATE_TOTAL, 5);
@@ -626,7 +630,7 @@ mod tests {
     fn omitted_side_pool_does_not_demand_unserialized_variant_payload() {
         let mut f = Fixture::default();
         let p = f.alloc(64);
-        f.u64(p, (BASE + pool::VTABLE_RVA) as u64);
+        f.u64(p, (BASE + pool::VTABLE_RVA.0) as u64);
         f.array(p + pool::ITEMS, 0xdead_0000, 1);
         let mut bytes = [0; 64];
         assert!(f.copy(p, &mut bytes));
@@ -650,7 +654,7 @@ mod tests {
         let variant = f.alloc(16);
         f.u64(
             variant,
-            (BASE + crate::cequipment_variant::VTABLE_RVA) as u64,
+            (BASE + crate::cequipment_variant::VTABLE_RVA.0) as u64,
         );
         let handle =
             u64::from(u32::MAX) << 32 | u64::from(crate::cequipment_variant::REFERENCE_TYPE);
@@ -693,9 +697,9 @@ mod tests {
         let records = f.alloc(2 * BATTLE_SIZE);
         let counts = f.alloc(4);
         let used = f.alloc(2);
-        f.array(BASE + BATTLE_POOL_RVA, records, 2);
-        f.array(BASE + BATTLE_COUNTS_RVA, counts, 2);
-        f.array(BASE + BATTLE_USED_RVA, used, 2);
+        f.array(BASE + BATTLE_POOL_RVA.0, records, 2);
+        f.array(BASE + BATTLE_COUNTS_RVA.0, counts, 2);
+        f.array(BASE + BATTLE_USED_RVA.0, used, 2);
         // Slot zero is deliberately unreadable. Reading slot one cannot demand it.
         for i in 0..BATTLE_SIZE {
             f.bytes.remove(&(records + i));
@@ -703,14 +707,14 @@ mod tests {
         f.put(counts + 2, &2_i16.to_le_bytes());
         f.put(used + 1, &[1]);
         let p = records + BATTLE_SIZE;
-        f.u64(p, (BASE + BATTLE_VTABLE_RVA) as u64);
+        f.u64(p, (BASE + BATTLE_VTABLE_RVA.0) as u64);
         f.i32(p + BATTLE_DATE, 60_000_000);
         f.i32(p + BATTLE_PROVINCE, 9);
         f.put(p + BATTLE_FLAGS, &[1, 0, 1, 0]);
         for offset in [BATTLE_ATTACKER, BATTLE_DEFENDER] {
-            f.u64(p + offset, (BASE + SIDE_VTABLE_RVA) as u64);
+            f.u64(p + offset, (BASE + SIDE_VTABLE_RVA.0) as u64);
             for pool_offset in [SIDE_EQUIPMENT, SIDE_CAPTURED_BY_ENEMY, SIDE_RECOVERED] {
-                f.u64(p + offset + pool_offset, (BASE + pool::VTABLE_RVA) as u64);
+                f.u64(p + offset + pool_offset, (BASE + pool::VTABLE_RVA.0) as u64);
             }
         }
         let pool = BattlePool::read(&f, BASE).unwrap();

@@ -85,7 +85,7 @@ impl Image {
     }
     fn date(&mut self, address: usize, hour: i32) {
         self.bytes(address, &[0; 24]);
-        self.u64(address, (BASE + cgame_date::VTABLE_RVA) as u64);
+        self.u64(address, (BASE + cgame_date::VTABLE_RVA.0) as u64);
         self.i32(address + cgame_date::DATE_BASE, hour);
     }
 }
@@ -97,13 +97,13 @@ fn fixture() -> Image {
         (FORMATION, FORMATION_HANDLE, carmy_group::VTABLE_RVA),
     ] {
         image.bytes(pointer, &[0; 0x240]);
-        image.u64(pointer, (BASE + vtable) as u64);
+        image.u64(pointer, (BASE + vtable.0) as u64);
         image.u64(pointer + corders_group::HANDLE, handle);
         image.i32(pointer + corders_group::COUNTRY, 1);
     }
     image.u64(GROUP + LEADER, LEADER_POINTER as u64);
     image.bytes(LEADER_POINTER, &[0; carmy_leader::SIZE]);
-    image.u64(LEADER_POINTER, (BASE + carmy_leader::VTABLE_RVA) as u64);
+    image.u64(LEADER_POINTER, (BASE + carmy_leader::VTABLE_RVA.0) as u64);
     image.u64(LEADER_POINTER + cunit_leader::TYPE, LEADER_HANDLE);
     image.i32(LEADER_POINTER + COOLDOWN_TYPE, 4);
     image.date(LEADER_POINTER + COOLDOWN_END, 1073);
@@ -117,29 +117,29 @@ fn fixture() -> Image {
     image.bytes(TEMPLATE, &[0; 0x240]);
     image.u64(
         TEMPLATE,
-        (BASE + creferenced_division_template::VTABLE_RVA) as u64,
+        (BASE + creferenced_division_template::VTABLE_RVA.0) as u64,
     );
     image.u64(
         TEMPLATE + creferenced_division_template::TYPE,
         TEMPLATE_HANDLE,
     );
     image.i32(TEMPLATE + TEMPLATE_MANPOWER, 1000);
-    image.i32(BASE + DEPLOY_DAYS_RVA, 10);
-    image.i32(BASE + DEPLOY_MIN_RVA, 3);
-    image.u64(BASE + REFERENCE_MANPOWER_RVA, 100_000_000);
-    image.u64(BASE + MANPOWER_EXPONENT_RVA, 100_000);
+    image.i32(BASE + DEPLOY_DAYS_RVA.0, 10);
+    image.i32(BASE + DEPLOY_MIN_RVA.0, 3);
+    image.u64(BASE + REFERENCE_MANPOWER_RVA.0, 100_000_000);
+    image.u64(BASE + MANPOWER_EXPONENT_RVA.0, 100_000);
     image.registered(
-        registry::HIGH_ROOT_RVA,
+        registry::HIGH_ROOT_RVA.0,
         0x10000,
         &[(LEADER_HANDLE, LEADER_POINTER)],
     );
     image.registered(
-        registry::LOW_ROOTS_RVA + 53 * 8,
+        registry::LOW_ROOTS_RVA.0 + 53 * 8,
         0x11000,
         &[(GROUP_HANDLE, GROUP), (FORMATION_HANDLE, FORMATION)],
     );
     image.registered(
-        registry::LOW_ROOTS_RVA + 52 * 8,
+        registry::LOW_ROOTS_RVA.0 + 52 * 8,
         0x12000,
         &[(TEMPLATE_HANDLE, TEMPLATE)],
     );
@@ -282,14 +282,14 @@ fn suffix_faults_preserve_every_group_prefix_and_independent_fields() {
 fn pending_deployment_uses_native_zero_and_minimum_branches() {
     let mut image = fixture();
     assert_eq!(deployment_days(&image, BASE, -1), Ok(10));
-    image.i32(BASE + DEPLOY_DAYS_RVA, 5);
-    image.i32(BASE + DEPLOY_MIN_RVA, -1);
-    image.u64(BASE + MANPOWER_EXPONENT_RVA, 0);
+    image.i32(BASE + DEPLOY_DAYS_RVA.0, 5);
+    image.i32(BASE + DEPLOY_MIN_RVA.0, -1);
+    image.u64(BASE + MANPOWER_EXPONENT_RVA.0, 0);
     assert_eq!(deployment_days(&image, BASE, 1), Ok(5));
-    image.i32(BASE + DEPLOY_MIN_RVA, 7);
+    image.i32(BASE + DEPLOY_MIN_RVA.0, 7);
     assert_eq!(deployment_days(&image, BASE, 1000), Ok(7));
-    image.i32(BASE + DEPLOY_DAYS_RVA, 0);
-    image.hole = Some((BASE + REFERENCE_MANPOWER_RVA, 8));
+    image.i32(BASE + DEPLOY_DAYS_RVA.0, 0);
+    image.hole = Some((BASE + REFERENCE_MANPOWER_RVA.0, 8));
     assert_eq!(deployment_days(&image, BASE, 500), Ok(0));
 }
 
@@ -332,9 +332,9 @@ fn a_counter_pass_reads_each_registry_header_once() {
     );
     let reads = image.reads.borrow();
     for root in [
-        registry::HIGH_ROOT_RVA,
-        registry::LOW_ROOTS_RVA + 53 * 8,
-        registry::LOW_ROOTS_RVA + 52 * 8,
+        registry::HIGH_ROOT_RVA.0,
+        registry::LOW_ROOTS_RVA.0 + 53 * 8,
+        registry::LOW_ROOTS_RVA.0 + 52 * 8,
     ] {
         assert_eq!(
             reads.iter().filter(|read| read.0 == BASE + root).count(),

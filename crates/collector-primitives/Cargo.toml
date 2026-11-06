@@ -13,6 +13,7 @@ doctest = false
 test-support = []
 
 [dependencies]
+engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true

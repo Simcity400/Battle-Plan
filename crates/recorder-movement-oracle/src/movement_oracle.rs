@@ -17,6 +17,7 @@ use std::{
 };
 
 use engine_dlc::{cdlc_manager, cdlc_manager::mounts_match};
+use engine_executable::build::hash_executable;
 use engine_native::{
     capture_text::Owned as Descriptor, province_definition::MovementCensus,
     province_definition::read_movement_census, walk::Outcome,
@@ -63,13 +64,10 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     };
     // Read-only rights: the oracle never writes to or injects into the game.
     let process = Process::open(pid, false)?;
-    let tables = engine_executable::executable_tables::initialize_executable(&process.path)
+    engine_executable::executable_tables::initialize_executable(&process.path)
         .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
-    if let Some(warning) = tables.build_warning() {
-        return Err(format!(
-            "the movement oracle is withheld: it reads the recognised build's memory layout. {warning}"
-        ));
-    }
+    let file = fs::read(&process.path).map_err(|e| e.to_string())?;
+    let exe = hash_executable(file.as_slice()).map_err(|e| e.to_string())?;
     let name = process
         .path
         .file_name()
@@ -79,6 +77,11 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         .find(|module| module.path.file_name() == Some(name))
         .ok_or("game module not found")?
         .base;
+    // Game sites resolve only through the executable located for this process.
+    engine_sites::install_file(&file, &exe.sha256, base)
+        .map_err(|w| w.to_string())?
+        .layouts()
+        .map_err(|withheld| format!("the movement oracle is withheld: {withheld}"))?;
     let user = match user {
         Some(user) => user,
         None => crate::directories::resolve_user_directory()?,
@@ -712,7 +715,7 @@ mod tests {
         let mut image = vec![0_u8; 0x20_000];
         let start = image.as_ptr() as usize;
         let base = start
-            .checked_sub(cgame_state::SINGLETON_RVA)
+            .checked_sub(cgame_state::SINGLETON_RVA.0)
             .expect("heap image above the module RVA");
         let mut put = |at: usize, bytes: &[u8]| {
             image[at..at + bytes.len()].copy_from_slice(bytes);
@@ -742,7 +745,7 @@ mod tests {
             );
             put(
                 province,
-                &((base + cprovince::VTABLE_RVA) as u64).to_le_bytes(),
+                &((base + cprovince::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(province + cprovince::ID, &id.to_le_bytes());
             put(
@@ -760,7 +763,7 @@ mod tests {
             );
             put(
                 terrain,
-                &((base + cterrain_type::VTABLE_RVA) as u64).to_le_bytes(),
+                &((base + cterrain_type::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 terrain + cterrain_type::DATABASE_INDEX,

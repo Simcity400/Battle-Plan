@@ -222,7 +222,7 @@ fn world(shape: &Shape) -> Built {
     let slots = shape.countries as usize + 1;
     // Module data: the definition table, defines and singletons.
     let table = w.alloc(0x78 * 0x300);
-    w.u64(modifier_definition::TABLE_RVA, table as u64);
+    w.u64(modifier_definition::TABLE_RVA.0, table as u64);
     for key in [0x2b_usize, 0x5e, 0x17f, 0x1e9, 0xfb, 0x10f, TOKEN as usize] {
         w.u32(
             table + key * modifier_definition::STRIDE + modifier_definition::FLAGS,
@@ -230,7 +230,7 @@ fn world(shape: &Shape) -> Built {
         );
     }
     let database = w.alloc(0x400);
-    w.u64(cbuilding_database::SINGLETON_RVA, database as u64);
+    w.u64(cbuilding_database::SINGLETON_RVA.0, database as u64);
     let definition = w.alloc(0x400);
     w.u64(database + 0x3b0, definition as u64);
     // Countries, links and an authenticated roster.
@@ -255,10 +255,10 @@ fn world(shape: &Shape) -> Built {
     let mut diplomacies = Vec::new();
     let mut objects = Vec::new();
     let mut regional_data = Vec::new();
-    w.u32(modifier_definition::TRADE_FEATURE_FLAGS_RVA, 1 << 4);
+    w.u32(modifier_definition::TRADE_FEATURE_FLAGS_RVA.0, 1 << 4);
     let definitions = w.alloc(0x100);
     w.u64(0x033d_e590, definitions as u64);
-    let static_modifier = w.object(0x100, crate::cstatic_modifier::VTABLE_RVA);
+    let static_modifier = w.object(0x100, crate::cstatic_modifier::VTABLE_RVA.0);
     w.accumulator(
         static_modifier + crate::cstatic_modifier::ACCUMULATOR,
         &[(0x29, 6)],
@@ -268,7 +268,7 @@ fn world(shape: &Shape) -> Built {
         table + 0x29 * modifier_definition::STRIDE + modifier_definition::CATEGORY_MASK,
         5,
     );
-    let navy_manager = w.object(0x100, crate::cstrategic_navy_manager::VTABLE_RVA);
+    let navy_manager = w.object(0x100, crate::cstrategic_navy_manager::VTABLE_RVA.0);
     w.u64(
         GAME + cgame_state::STRATEGIC_NAVY_MANAGER,
         navy_manager as u64,
@@ -281,7 +281,7 @@ fn world(shape: &Shape) -> Built {
     );
     for owner in 0..shape.owners {
         let slot = 1 + owner * (slots - 1) / shape.owners.max(1);
-        let country = w.object(0x1000, ccountry::VTABLE_RVA);
+        let country = w.object(0x1000, ccountry::VTABLE_RVA.0);
         w.u32(country + ccountry::ID, slot as u32);
         w.u64(countries + slot * 8, country as u64);
         w.accumulator(
@@ -295,7 +295,7 @@ fn world(shape: &Shape) -> Built {
                 (0x1e9, 13),
             ],
         );
-        let diplomacy = w.object(0x300, crate::cdiplomacy_status::VTABLE_RVA);
+        let diplomacy = w.object(0x300, crate::cdiplomacy_status::VTABLE_RVA.0);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         w.u64(
             diplomacy + crate::cdiplomacy_status::COUNTRY,
@@ -308,10 +308,10 @@ fn world(shape: &Shape) -> Built {
             country + ccountry::FOG_NETWORK_TABLE_COUNT,
             u32::from(owner % 4 != 3),
         );
-        let navy = w.object(0x100, crate::cstrategic_navy::VTABLE_RVA);
+        let navy = w.object(0x100, crate::cstrategic_navy::VTABLE_RVA.0);
         w.u64(
             navy + 8,
-            crate::cstrategic_navy::SECONDARY_VTABLE_RVA as u64,
+            crate::cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         w.u32(navy + crate::cstrategic_navy::OWNER, slot as u32);
         let regional = w.alloc(16);
@@ -353,7 +353,7 @@ fn world(shape: &Shape) -> Built {
     let mut intel_tables = Vec::new();
     let mut enemy_lists = Vec::new();
     for (index, (&country, &diplomacy)) in objects.iter().zip(&diplomacies).enumerate() {
-        let intel = w.object(0x100, crate::ccountry_intel::VTABLE_RVA);
+        let intel = w.object(0x100, crate::ccountry_intel::VTABLE_RVA.0);
         w.u32(intel + crate::ccountry_intel::OWNER, owners[index]);
         let rows = w.alloc(slots * crate::country_intel_row::STRIDE);
         for (other, &slot) in owners.iter().enumerate() {
@@ -403,7 +403,7 @@ fn world(shape: &Shape) -> Built {
             if to == from {
                 continue;
             }
-            let tuple = w.object(0x300, crate::crelation_status::VTABLE_RVA);
+            let tuple = w.object(0x300, crate::crelation_status::VTABLE_RVA.0);
             w.u64(
                 tuple + crate::crelation_status::DIPLOMACY_STATUS,
                 diplomacy as u64,
@@ -418,17 +418,17 @@ fn world(shape: &Shape) -> Built {
         Array::read(&w, GAME + cgame_state::COUNTRY_LINKS, 4).unwrap(),
     ]);
     // Weather: no province records; two strategic regions with records.
-    let weather = w.object(0x100, cweather_manager::VTABLE_RVA);
+    let weather = w.object(0x100, cweather_manager::VTABLE_RVA.0);
     w.u64(GAME + cgame_state::WEATHER_MANAGER, weather as u64);
     let records = w.alloc(sweather_per_region::STRIDE * 2);
     w.array(weather + cweather_manager::REGIONS, records, 2);
     let mut regions = Vec::new();
     for id in 0..2_u32 {
         let record = records + id as usize * sweather_per_region::STRIDE;
-        w.u64(record, sweather_per_region::VTABLE_RVA as u64);
+        w.u64(record, sweather_per_region::VTABLE_RVA.0 as u64);
         w.u32(record + sweather_per_region::ID, id);
         w.accumulator(record + sweather_per_region::MODIFIERS, &[(0x29, 3)]);
-        let region = w.object(0x100, cstrategic_region::VTABLE_RVA);
+        let region = w.object(0x100, cstrategic_region::VTABLE_RVA.0);
         w.u32(region + cstrategic_region::ID, id);
         w.u32(region + 0x60, id + 1);
         regions.push(region);
@@ -436,7 +436,7 @@ fn world(shape: &Shape) -> Built {
     // Sub-units, half with a priority token and categories, and templates.
     let subunits: Vec<usize> = (0..6)
         .map(|index| {
-            let unit = w.object(0x600, csub_unit_definition::VTABLE_RVA);
+            let unit = w.object(0x600, csub_unit_definition::VTABLE_RVA.0);
             w.u32(unit + 8, 40 + index);
             w.u64(unit + 0x58, 200_000 + u64::from(index) * 50_000);
             if index % 2 == 0 {
@@ -454,7 +454,7 @@ fn world(shape: &Shape) -> Built {
         .collect();
     let templates: Vec<usize> = (0..shape.templates)
         .map(|index| {
-            let t = w.object(0x600, template::VTABLE_RVA);
+            let t = w.object(0x600, template::VTABLE_RVA.0);
             w.u64(
                 t + 8,
                 ((index as u64 + 1) << 32) | u64::from(template::REFERENCE_TYPE),
@@ -473,7 +473,7 @@ fn world(shape: &Shape) -> Built {
     // States and provinces, registered by id.
     let states: Vec<usize> = (0..shape.states)
         .map(|index| {
-            let state = w.object(0x1000, cstate::VTABLE_RVA);
+            let state = w.object(0x1000, cstate::VTABLE_RVA.0);
             w.u32(state + cstate::ID, 500 + index as u32);
             w.u32(state + cstate::CONTROLLER, owners[index % owners.len()]);
             let buckets = w.alloc(0x40);
@@ -495,7 +495,7 @@ fn world(shape: &Shape) -> Built {
     let provinces: Vec<usize> = (0..shape.provinces)
         .map(|index| {
             let id = first_province + index;
-            let province = w.object(0x200, cprovince::VTABLE_RVA);
+            let province = w.object(0x200, cprovince::VTABLE_RVA.0);
             let definition = w.alloc(0x100);
             w.u32(province + cprovince::ID, id as u32);
             w.u32(definition + province_definition::ID, id as u32);
@@ -525,7 +525,7 @@ fn world(shape: &Shape) -> Built {
     // Army leaders, each in its own orders group.
     let groups: Vec<usize> = (0..shape.leaders)
         .map(|index| {
-            let leader = w.object(0x1000, crate::carmy_leader::VTABLE_RVA);
+            let leader = w.object(0x1000, crate::carmy_leader::VTABLE_RVA.0);
             w.u64(
                 leader + cunit_leader::TYPE,
                 ((index as u64 + 1) << 32) | u64::from(cunit_leader::REFERENCE_TYPE),
@@ -534,7 +534,7 @@ fn world(shape: &Shape) -> Built {
                 leader + crate::carmy_leader::MOVEMENT_MODIFIER + 0x10,
                 &[(0x2b, 21), (0x5e, -22), (0x10f, 23), (0x17f, 24)],
             );
-            let group = w.object(0x200, corders_group::VTABLE_RVA);
+            let group = w.object(0x200, corders_group::VTABLE_RVA.0);
             w.u64(
                 group + corders_group::HANDLE,
                 ((index as u64 + 1) << 32) | u64::from(corders_group::REFERENCE_TYPE),
@@ -553,10 +553,10 @@ fn world(shape: &Shape) -> Built {
         .collect();
     let mut divisions = Vec::new();
     for index in 0..shape.divisions {
-        let army = w.object(0x800, carmy::VTABLE_RVA);
+        let army = w.object(0x800, carmy::VTABLE_RVA.0);
         let handle = ((index as u64 + 1) << 32) | 3;
         w.u64(army + cunit::HANDLE, handle);
-        let stats = w.object(0x600, csub_unit_definition::VTABLE_RVA);
+        let stats = w.object(0x600, csub_unit_definition::VTABLE_RVA.0);
         w.u64(army + cunit::STAT_BLOCK, stats as u64);
         let province = provinces[(index * 7) % provinces.len()];
         w.u64(army + cunit::LOCATION, province as u64);
@@ -571,7 +571,7 @@ fn world(shape: &Shape) -> Built {
         // nonzero type every other division; neither reads further.
         let name = w.alloc(0x100);
         w.u64(army + inputs::NAME_GROUP_MEMBER, name as u64);
-        w.u64(name, crate::cname_group_member::VTABLE_RVA as u64);
+        w.u64(name, crate::cname_group_member::VTABLE_RVA.0 as u64);
         w.u32(name + crate::cname_group_member::TYPE, (index % 2) as u32);
         w.u32(name + crate::cname_group_member::ORDER, index as u32);
         w.put(name + crate::cname_group_member::FLAG_B, &[1]);

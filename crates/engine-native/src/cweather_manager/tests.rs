@@ -4,7 +4,7 @@ use crate::memory::SliceMemory;
 #[test]
 fn held_daylight_direction_keeps_signed_words_and_refuses_short_spans() {
     let mut bytes = vec![0_u8; DAYLIGHT_DIRECTION + 24];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     let direction = [i64::MIN, -1, i64::MAX];
     for (index, value) in direction.into_iter().enumerate() {
         bytes[DAYLIGHT_DIRECTION + index * 8..DAYLIGHT_DIRECTION + index * 8 + 8]
@@ -35,7 +35,7 @@ fn held_daylight_direction_keeps_signed_words_and_refuses_short_spans() {
 #[test]
 fn suspension_flags_keep_raw_bytes_and_refuse_short_reads() {
     let mut bytes = vec![0; SUSPEND_FLAGS + 2];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[SUSPEND_FLAGS..].copy_from_slice(&[3, 255]);
     let memory = SliceMemory {
         base: 0x1000,
@@ -57,7 +57,7 @@ fn suspension_flags_keep_raw_bytes_and_refuse_short_reads() {
 #[test]
 fn temperature_pass_words_keep_native_widths_and_refuse_short_reads() {
     let mut bytes = vec![0; SEED + 4];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[UPDATE_CURSOR..UPDATE_CURSOR + 4].copy_from_slice(&13_413_i32.to_le_bytes());
     bytes[PROVINCES_PER_UPDATE..PROVINCES_PER_UPDATE + 4].copy_from_slice(&(-1_i32).to_le_bytes());
     bytes[SEED..SEED + 4].copy_from_slice(&u32::MAX.to_le_bytes());
@@ -86,13 +86,13 @@ fn custom_sea_reads_only_the_live_regions_ordered_active_words() {
     let mut put = |address: usize, value: &[u8]| {
         bytes[address - START..address - START + value.len()].copy_from_slice(value);
     };
-    put(MANAGER, &((IMAGE + VTABLE_RVA) as u64).to_le_bytes());
+    put(MANAGER, &((IMAGE + VTABLE_RVA.0) as u64).to_le_bytes());
     put(MANAGER + REGIONS, &(ROWS as u64).to_le_bytes());
     put(MANAGER + REGIONS_COUNT, &3_i32.to_le_bytes());
     let selected = ROWS + 2 * sweather_per_region::STRIDE;
     put(
         selected,
-        &((IMAGE + sweather_per_region::VTABLE_RVA) as u64).to_le_bytes(),
+        &((IMAGE + sweather_per_region::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(selected + sweather_per_region::ID, &2_i32.to_le_bytes());
     put(selected + 0x30, &(VALUES as u64).to_le_bytes());
@@ -368,7 +368,7 @@ fn fixture() -> Vec<u8> {
         0x1000 + cgame_state::WEATHER_MANAGER,
         &0x2000_u64.to_le_bytes(),
     );
-    put(&mut bytes, 0x2000, &(VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, 0x2000, &(VTABLE_RVA.0 as u64).to_le_bytes());
     put(
         &mut bytes,
         0x2000 + MAX_SNOW,
@@ -381,7 +381,7 @@ fn fixture() -> Vec<u8> {
             3_i32,
             5_i32,
             sweather_per_province::STRIDE,
-            sweather_per_province::VTABLE_RVA,
+            sweather_per_province::VTABLE_RVA.0,
         ),
         (
             REGIONS,
@@ -389,7 +389,7 @@ fn fixture() -> Vec<u8> {
             2_i32,
             4_i32,
             sweather_per_region::STRIDE,
-            sweather_per_region::VTABLE_RVA,
+            sweather_per_region::VTABLE_RVA.0,
         ),
     ] {
         put(&mut bytes, 0x2000 + offset, &address.to_le_bytes());
@@ -464,7 +464,7 @@ fn movement_weather_uses_authored_region_id_and_native_absence() {
     put(
         &mut bytes,
         region,
-        &(crate::cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,

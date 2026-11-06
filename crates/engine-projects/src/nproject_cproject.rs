@@ -11,9 +11,10 @@ use crate::{
     nproject_sproject_history as history,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Project primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_f400;
+pub const VTABLE_RVA: Rva = Rva(0x029f_f400);
 /// Project reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 86;
 /// Contiguous project-pool stride.
@@ -45,10 +46,10 @@ pub const VARIABLES: usize = 0x138;
 /// Nullable authored prototype reward awaiting a choice.
 pub const PENDING_REWARD: usize = 0x190;
 pub const REWARD_TOKEN: usize = 0x08;
-pub const REWARD_VTABLE_RVA: usize = 0x2799268;
+pub const REWARD_VTABLE_RVA: Rva = Rva(0x2799268);
 const DEFINITION_DATA: usize = 0x20;
 const TEMPLATE_DATA: usize = 0x18;
-const TEMPLATE_VTABLE_RVA: usize = 0x29b_dee8;
+const TEMPLATE_VTABLE_RVA: Rva = Rva(0x29b_dee8);
 const TEMPLATE_REWARDS: usize = 0x358;
 
 /// The pending object's occurrence in this project's retained template. The
@@ -69,11 +70,9 @@ pub fn pending_reward_ordinal(
     let template = definition
         .checked_sub(TEMPLATE_DATA)
         .ok_or("pending reward template address invalid")?;
-    if crate::read::<u64>(memory, template)
-        != base
-            .checked_add(TEMPLATE_VTABLE_RVA)
-            .map(|value| value as u64)
-    {
+    let expected = engine_sites::at(base, TEMPLATE_VTABLE_RVA)
+        .ok_or("pending reward template identity mismatch")?;
+    if crate::read::<u64>(memory, template) != Some(expected as u64) {
         return Err("pending reward template identity mismatch");
     }
     let rewards = definition
@@ -313,9 +312,7 @@ fn walk_tables_report(
     let mut machine_pointers = [0; BATCH];
     let mut phase_pointers = [0; BATCH];
     let result = (|| {
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("project vtable overflow")? as u64;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("project vtable overflow")? as u64;
         let decoder = machine::Decoder::new(base)?;
         for_each_pool(
             memory,
@@ -616,7 +613,7 @@ mod tests {
             PROJECT + DEFINITION_DATA,
             (template + TEMPLATE_DATA) as u64,
         );
-        put64(&mut bytes, template, TEMPLATE_VTABLE_RVA as u64);
+        put64(&mut bytes, template, TEMPLATE_VTABLE_RVA.0 as u64);
         array(
             &mut bytes,
             template + TEMPLATE_DATA + TEMPLATE_REWARDS,
@@ -663,7 +660,7 @@ mod tests {
             put64(&mut bytes, COUNTRIES + slot * 8, COUNTRY as u64);
             put32(&mut bytes, LINKS + slot * 4, 1);
         }
-        put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         put32(&mut bytes, COUNTRY + ccountry::ID, 3);
         put64(
             &mut bytes,
@@ -673,12 +670,12 @@ mod tests {
         put64(
             &mut bytes,
             STATUS,
-            nproject_cprogram_status::VTABLE_RVA as u64,
+            nproject_cprogram_status::VTABLE_RVA.0 as u64,
         );
         put64(
             &mut bytes,
             STATUS + 8,
-            nproject_cprogram_status::SECONDARY_VTABLE_RVA as u64,
+            nproject_cprogram_status::SECONDARY_VTABLE_RVA.0 as u64,
         );
         put32(&mut bytes, STATUS + nproject_cprogram_status::OWNER, 3);
         put64(
@@ -686,14 +683,18 @@ mod tests {
             STATUS + nproject_cprogram_status::PROJECT_POOL,
             POOL as u64,
         );
-        put64(&mut bytes, POOL, nproject_cproject_pool::VTABLE_RVA as u64);
+        put64(
+            &mut bytes,
+            POOL,
+            nproject_cproject_pool::VTABLE_RVA.0 as u64,
+        );
         array(
             &mut bytes,
             POOL + nproject_cproject_pool::PROJECTS,
             PROJECT,
             1,
         );
-        put64(&mut bytes, PROJECT, VTABLE_RVA as u64);
+        put64(&mut bytes, PROJECT, VTABLE_RVA.0 as u64);
         put32(&mut bytes, PROJECT + TYPE, REFERENCE_TYPE);
         put32(&mut bytes, PROJECT + ID, 17);
         put32(&mut bytes, PROJECT + DEFINITION_HANDLE, 45);
@@ -705,7 +706,7 @@ mod tests {
         put64(
             &mut bytes,
             MACHINE,
-            nproject_cproject_state_machine::VTABLE_RVA as u64,
+            nproject_cproject_state_machine::VTABLE_RVA.0 as u64,
         );
         put64(
             &mut bytes,
@@ -719,7 +720,7 @@ mod tests {
             } else {
                 simple::VTABLE_RVA
             };
-            put64(&mut bytes, MACHINE + offset, vtable as u64);
+            put64(&mut bytes, MACHINE + offset, vtable.0 as u64);
             put32(
                 &mut bytes,
                 MACHINE + offset + simple::STATE_ENUM,
@@ -727,11 +728,11 @@ mod tests {
             );
         }
         put64(&mut bytes, MACHINE + 0x168 + simple::PHASE_PROGRESS, 7);
-        put64(&mut bytes, HISTORY_ROW, history::VTABLE_RVA as u64);
+        put64(&mut bytes, HISTORY_ROW, history::VTABLE_RVA.0 as u64);
         put64(
             &mut bytes,
             HISTORY_ROW + history::CONTEXT,
-            nproject_sproject_context::VTABLE_RVA as u64,
+            nproject_sproject_context::VTABLE_RVA.0 as u64,
         );
         bytes
     }

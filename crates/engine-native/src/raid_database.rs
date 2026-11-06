@@ -1,13 +1,14 @@
 //! Raid-definition database used by country-raid selection, distinct from the raid-system object.
 
+use engine_sites::Rva;
 /// Raid-definition database global pointer, required to be nonnull.
-pub const SINGLETON_RVA: usize = 0x033d_d448;
+pub const SINGLETON_RVA: Rva = Rva(0x033d_d448);
 /// Raid-definition pointer-array data.
 pub const DEFINITIONS: usize = 0xb0;
 /// Raid-definition signed i32 count.
 pub const DEFINITIONS_COUNT: usize = 0xbc;
 /// Raid-type definition primary vtable.
-pub const TYPE_VTABLE_RVA: usize = 0x029b_e3f8;
+pub const TYPE_VTABLE_RVA: Rva = Rva(0x029b_e3f8);
 /// Raid type definition's lexer token.
 pub const TYPE_TOKEN: usize = 0x08;
 /// A raid type's `essential_equipment` map, passed to stockpile requirement checking.

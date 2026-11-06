@@ -8,6 +8,7 @@ use crate::{
     Memory, cair_wing, carmy, cpdx_array::Array, craid_instance, creference_registry, cunit,
     raid_speed_inputs, read, walk::Outcome,
 };
+use engine_sites::Rva;
 
 mod context;
 mod names;
@@ -189,7 +190,7 @@ fn unit(
     memory: &impl Memory,
     base: usize,
     handle: u64,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<Option<usize>, &'static str> {
     let Some(pointer) = creference_registry::resolve(memory, base, handle)?
         .and_then(|p| p.checked_sub(0x10))
@@ -197,11 +198,7 @@ fn unit(
     else {
         return Ok(None);
     };
-    if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(vtable)
-            .ok_or("raid tooltip vtable overflow")? as u64
-    {
+    if Some(field::<u64>(memory, pointer, 0)?) != engine_sites::at(base, vtable).map(|a| a as u64) {
         return Err("raid tooltip unit vtable mismatch");
     }
     Ok(Some(pointer))
@@ -353,7 +350,8 @@ fn object(
     };
     let pointer = field::<u64>(memory, at, 0)? as usize;
     if pointer != 0
-        && (field::<u64>(memory, pointer, 0)? != (base + vtable) as u64
+        && (Some(field::<u64>(memory, pointer, 0)?)
+            != engine_sites::at(base, vtable).map(|a| a as u64)
             || field::<u32>(memory, pointer, id_offset)? != id)
     {
         return Err("raid tooltip target identity mismatch");

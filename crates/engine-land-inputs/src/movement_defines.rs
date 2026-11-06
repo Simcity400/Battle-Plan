@@ -3,17 +3,18 @@
 //! live global, so a define reload or a mod's value is the recorded one. Each leaf is
 //! attempted once and refused alone.
 use crate::{Memory, carmy_attrition, read};
+use engine_sites::Rva;
 
 /// One loaded define: its recorded name, global and width.
 #[derive(Clone, Copy, Debug)]
 pub struct Define {
     pub name: &'static str,
-    pub rva: usize,
+    pub rva: Rva,
     /// A signed 32-bit global, sign-extended; otherwise a signed fixed5 word.
     pub narrow: bool,
 }
 
-const fn wide(name: &'static str, rva: usize) -> Define {
+const fn wide(name: &'static str, rva: Rva) -> Define {
     Define {
         name,
         rva,
@@ -60,24 +61,22 @@ pub const DEFINES: [Define; 11] = [
 ];
 
 /// The out-of-supply speed penalty at full severity.
-pub const OUT_OF_SUPPLY_SPEED_RVA: usize = 0x033e_3990;
+pub const OUT_OF_SUPPLY_SPEED_RVA: Rva = Rva(0x033e_3990);
 /// The retreating speed term.
-pub const RETREAT_SPEED_RVA: usize = 0x033e_3c20;
+pub const RETREAT_SPEED_RVA: Rva = Rva(0x033e_3c20);
 /// The term a withdrawing (non-retreating) division adds.
-pub const WITHDRAWAL_SPEED_RVA: usize = 0x033e_3cb8;
+pub const WITHDRAWAL_SPEED_RVA: Rva = Rva(0x033e_3cb8);
 /// The fuel ratio's floor.
-pub const OUT_OF_FUEL_SPEED_RVA: usize = 0x033e_4690;
+pub const OUT_OF_FUEL_SPEED_RVA: Rva = Rva(0x033e_4690);
 /// The scale of the stat block's fuel word into the fuel ratio's capacity.
-pub const FUEL_CAPACITY_SCALE_RVA: usize = 0x033e_3e60;
+pub const FUEL_CAPACITY_SCALE_RVA: Rva = Rva(0x033e_3e60);
 /// The enemy air superiority speed scale.
-pub const AIR_SPEED_RVA: usize = 0x033e_1850;
+pub const AIR_SPEED_RVA: Rva = Rva(0x033e_1850);
 
 /// Each define's value, refused alone.
 pub fn capture(memory: &impl Memory, base: usize) -> [Result<i64, &'static str>; DEFINES.len()] {
     DEFINES.map(|define| {
-        let at = base
-            .checked_add(define.rva)
-            .ok_or("movement define address overflow")?;
+        let at = engine_sites::at(base, define.rva).ok_or("movement define address overflow")?;
         if define.narrow {
             read::<i32>(memory, at).map(i64::from)
         } else {
@@ -99,7 +98,7 @@ mod tests {
     impl Memory for Source {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.borrow_mut().push((address, output.len()));
-            let Some(index) = DEFINES.iter().position(|define| define.rva == address) else {
+            let Some(index) = DEFINES.iter().position(|define| define.rva.0 == address) else {
                 return false;
             };
             if index == self.refuse {
@@ -128,7 +127,7 @@ mod tests {
             for (index, (define, value)) in DEFINES.iter().zip(values).enumerate() {
                 assert_eq!(
                     calls[index],
-                    (define.rva, if define.narrow { 4 } else { 8 })
+                    (define.rva.0, if define.narrow { 4 } else { 8 })
                 );
                 if index == refuse {
                     assert!(value.is_err());

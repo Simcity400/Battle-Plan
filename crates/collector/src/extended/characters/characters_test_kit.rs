@@ -90,7 +90,7 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         LEAD_ROLE,
-        ((IMAGE + ccountry_leader::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + ccountry_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     pointer(
         &mut bytes,
@@ -127,7 +127,7 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         ADV_ROLE,
-        ((IMAGE + cadvisor::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + cadvisor::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     pointer(&mut bytes, ADV_ROLE + cadvisor::CHARACTER, CHARACTERS[0]);
     literal(&mut bytes, ADV_ROLE + cadvisor::IDEA_TOKEN, b"idea");
@@ -136,7 +136,7 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         SKILL0,
-        ((IMAGE + cunit_leader_skill::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + cunit_leader_skill::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     bytes[SKILL0 + cunit_leader_skill::VALID] = 1;
     put(
@@ -159,7 +159,7 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         UNITS[1],
-        ((IMAGE + carmy_leader::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + carmy_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -185,7 +185,7 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         CHAR2,
-        ((IMAGE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -207,7 +207,7 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         UNIT2,
-        ((IMAGE + cnavy_leader::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + cnavy_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,

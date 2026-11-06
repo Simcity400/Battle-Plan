@@ -3,6 +3,7 @@
 //! count is tested for nonzero without reading the sorted pair vector.
 //! Indexed arrays size from definition neighbours and serialize in full.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cpdx_array::Array, cprovince_railway_info as info, province_definition, read,
     read_slice, walk::Buffer,
@@ -38,9 +39,8 @@ pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Input<usize> {
             .and_then(|pointer| usize::try_from(pointer).ok())
             .ok_or("selected railway sizing pointer unreadable or overflow")
     };
-    let identity = |pointer: usize, rva: usize| -> Input<()> {
-        let expected = base
-            .checked_add(rva)
+    let identity = |pointer: usize, key: Rva| -> Input<()> {
+        let expected = engine_sites::at(base, key)
             .ok_or("selected railway sizing module address overflow")?;
         if pointer == 0 || read::<u64>(memory, pointer) != Some(expected as u64) {
             return Err("selected railway sizing identity unreadable or unsupported");

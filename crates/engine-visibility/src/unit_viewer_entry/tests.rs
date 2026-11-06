@@ -53,7 +53,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY,
-        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, COUNTRY + ccountry::ID, &2_u32.to_le_bytes());
     put(
@@ -91,7 +91,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         FLEET,
-        &(cfleet::VTABLE_RVA as u64).to_le_bytes(),
+        &(cfleet::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -112,7 +112,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         DIVISION,
-        &(carmy::VTABLE_RVA as u64).to_le_bytes(),
+        &(carmy::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -133,7 +133,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         TASK_FORCE,
-        &(ctask_force::VTABLE_RVA as u64).to_le_bytes(),
+        &(ctask_force::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -194,7 +194,7 @@ fn railway_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         second_country,
-        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -261,7 +261,7 @@ fn railway_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             gun,
-            &(crailway_gun::VTABLE_RVA as u64).to_le_bytes(),
+            &(crailway_gun::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -764,7 +764,11 @@ fn scale_fixture(count: usize) -> (Vec<u8>, Vec<DivisionSource>) {
     for i in 0..count {
         let unit = start + i * UNIT;
         let viewers = i % 40;
-        put(&mut bytes, unit, &(carmy::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            unit,
+            &(carmy::VTABLE_RVA.0 as u64).to_le_bytes(),
+        );
         put(
             &mut bytes,
             unit + cunit::HANDLE,

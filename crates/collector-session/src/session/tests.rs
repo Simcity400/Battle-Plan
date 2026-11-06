@@ -23,7 +23,7 @@ fn source(bytes: &mut [u8], at: usize, current: i64, reason: &[u8]) {
     put(
         bytes,
         at,
-        &(cthreat_source::VTABLE_RVA as u64).to_le_bytes(),
+        &(cthreat_source::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(bytes, at + cthreat_source::COUNTRY, &u32::MAX.to_le_bytes());
     put(
@@ -58,7 +58,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         MANAGER,
-        &(cworld_threat::VTABLE_RVA as u64).to_le_bytes(),
+        &(cworld_threat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,

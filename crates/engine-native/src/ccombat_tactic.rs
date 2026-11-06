@@ -4,9 +4,10 @@ use crate::{
     Memory, ccountry, cdynamic_modifier, cnull_combat_tactic, modifier_accumulator,
     modifier_definition, read, read_slice, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Tactic primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_3970;
+pub const VTABLE_RVA: Rva = Rva(0x0286_3970);
 /// Token string.
 pub const TOKEN: usize = 0x10;
 /// Name string.
@@ -18,7 +19,7 @@ pub const COUNTER_ID: usize = 0x90;
 /// Modifier-metadata key, u32.
 pub const MODIFIER_KEY: usize = 0x174;
 /// Tactic-database singleton, lazily created by the game; recording never creates it.
-pub const DATABASE_RVA: usize = 0x033d_f180;
+pub const DATABASE_RVA: Rva = Rva(0x033d_f180);
 /// Tactic-pointer array in id order, with a null entry at index zero.
 pub const DATABASE_ENTRIES: usize = 0x10;
 
@@ -54,12 +55,9 @@ fn selection(
         .filter(|p| *p != 0)
         .ok_or("preferred tactic pointer unreadable or null")?;
     let vtable = read::<u64>(memory, pointer).ok_or("preferred tactic vtable unreadable")?;
-    let null_vtable = base
-        .checked_add(cnull_combat_tactic::VTABLE_RVA)
-        .ok_or("module address overflow")?;
-    let selected_vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let null_vtable =
+        engine_sites::at(base, cnull_combat_tactic::VTABLE_RVA).ok_or("module address overflow")?;
+    let selected_vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if vtable == null_vtable as u64 {
         return Ok((pointer, None));
     }
@@ -190,12 +188,13 @@ pub struct WeightContext {
 
 impl WeightContext {
     pub fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
-        let country_factor_raw = base
-            .checked_add(modifier_definition::COUNTRY_PREFERRED_TACTIC_FACTOR_RVA)
-            .and_then(|p| read::<i64>(memory, p))
-            .ok_or("preferred tactic country factor unreadable")?;
-        let metadata = base
-            .checked_add(modifier_definition::TABLE_RVA)
+        let country_factor_raw = engine_sites::at(
+            base,
+            modifier_definition::COUNTRY_PREFERRED_TACTIC_FACTOR_RVA,
+        )
+        .and_then(|p| read::<i64>(memory, p))
+        .ok_or("preferred tactic country factor unreadable")?;
+        let metadata = engine_sites::at(base, modifier_definition::TABLE_RVA)
             .and_then(|p| read::<u64>(memory, p))
             .and_then(|p| usize::try_from(p).ok())
             .filter(|p| *p != 0)
@@ -285,7 +284,7 @@ mod tests {
         put(
             &mut bytes,
             0x2800,
-            ((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+            ((BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x2800 + ID, 7_i32.to_le_bytes());
         put(&mut bytes, 0x2800 + TOKEN, [b'a', 0xff, 0]);
@@ -332,7 +331,7 @@ mod tests {
         put(
             &mut bytes,
             0x2800,
-            ((BASE + cnull_combat_tactic::VTABLE_RVA) as u64).to_le_bytes(),
+            ((BASE + cnull_combat_tactic::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         let result = preferred(
             &SliceMemory {

@@ -1151,26 +1151,26 @@ mod tests {
         }
         use engine_native::{carmy, ccountry, cgame_state, cland_combat, cprovince, cunit};
         let mut m = Memory::default();
-        m.q(engine_native::cgame_state::SINGLETON_RVA, 0x1000);
+        m.q(engine_native::cgame_state::SINGLETON_RVA.0, 0x1000);
         m.d(0x1000 + engine_native::cgame_state::CURRENT_HOUR, 80);
         m.array(0x1000 + cgame_state::COUNTRIES, 0x9000, 2);
         m.array(0x1000 + cgame_state::COUNTRY_LINKS, 0xa000, 2);
         m.q(0x9008, 0xb000);
         m.d(0xa004, 1);
-        m.q(0xb000, ccountry::VTABLE_RVA as u64);
+        m.q(0xb000, ccountry::VTABLE_RVA.0 as u64);
         m.d(0xb000 + ccountry::ID, 1);
-        m.q(0x2000, carmy::VTABLE_RVA as u64);
+        m.q(0x2000, carmy::VTABLE_RVA.0 as u64);
         m.q(0x2000 + cunit::HANDLE, 0x8000_0001_0000_1269);
         m.d(0x2000 + cunit::ROSTER_OWNER, 1);
         m.d(0x2000 + cunit::LOGICAL_OWNER, 1);
         for (p, id) in [(0x3000, 7), (0x4000, 8)] {
-            m.q(p, cprovince::VTABLE_RVA as u64);
+            m.q(p, cprovince::VTABLE_RVA.0 as u64);
             m.d(p + cprovince::ID, id);
             m.d(p + cprovince::CONTROLLER, 1);
         }
         m.array(0x2000 + cunit::COMBAT_REFERENCE_DATA, 0x6000, 1);
         m.q(0x6000, 0x7000);
-        m.q(0x7000, cland_combat::VTABLE_RVA as u64);
+        m.q(0x7000, cland_combat::VTABLE_RVA.0 as u64);
         m.q(0x7000 + cland_combat::HANDLE, 0x8000_0003_0000_003e);
         let plan = engine_land_inputs::land_events::DestructionPlan::read(
             &m, 0, 0x3000, 0x4000, 0x2000, 0,

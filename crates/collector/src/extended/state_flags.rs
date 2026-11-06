@@ -268,7 +268,7 @@ mod tests {
         bytes[root + 12..root + 16].copy_from_slice(&2_u32.to_le_bytes());
         bytes[0x1808..0x1810].copy_from_slice(&(SOURCE.pointer as u64).to_le_bytes());
         bytes[SOURCE.pointer..SOURCE.pointer + 8]
-            .copy_from_slice(&(cstate::VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(cstate::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[SOURCE.pointer + cstate::ID..SOURCE.pointer + cstate::ID + 4]
             .copy_from_slice(&SOURCE.id.to_le_bytes());
         bytes[SOURCE.pointer + cstate::DEMILITARIZED] = 255;
@@ -495,7 +495,7 @@ mod tests {
         bytes[root + 8..root + 12].copy_from_slice(&4_u32.to_le_bytes());
         bytes[root + 12..root + 16].copy_from_slice(&4_u32.to_le_bytes());
         bytes[0x1818..0x1820].copy_from_slice(&0x4000_u64.to_le_bytes());
-        bytes[0x4000..0x4008].copy_from_slice(&(cstate::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x4000..0x4008].copy_from_slice(&(cstate::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x4000 + cstate::ID..0x4004 + cstate::ID].copy_from_slice(&3_u32.to_le_bytes());
         bytes[0x4000 + cstate::DEMILITARIZED] = 2;
         empty_names(&mut bytes, 0x4000);
@@ -709,7 +709,7 @@ mod tests {
                     let slot = (at - OBJECTS) / 0x1000;
                     let within = (at - OBJECTS) % 0x1000;
                     if within < 8 {
-                        (cstate::VTABLE_RVA as u64).to_le_bytes()[within]
+                        (cstate::VTABLE_RVA.0 as u64).to_le_bytes()[within]
                     } else if (cstate::ID..cstate::ID + 4).contains(&within) {
                         (slot as u32).to_le_bytes()[within - cstate::ID]
                     } else if within == cstate::DEMILITARIZED {

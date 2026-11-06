@@ -465,7 +465,7 @@ mod tests {
     struct Fixture(Vec<u8>);
     impl Memory for Fixture {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == definition::TABLE_RVA && output.len() == 8 {
+            if address == definition::TABLE_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
                 return true;
             }

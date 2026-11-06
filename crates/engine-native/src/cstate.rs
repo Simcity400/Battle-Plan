@@ -5,9 +5,10 @@ use crate::{
     read,
     walk::{self, Outcome},
 };
+use engine_sites::Rva;
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029b_4d58;
+pub const VTABLE_RVA: Rva = Rva(0x029b_4d58);
 /// State ID, u32, copied from the template and used as its roster slot.
 pub const ID: usize = 0x58;
 
@@ -101,13 +102,13 @@ const MANPOWER_SPAN: usize = POPULATION + 4 - MANPOWER_AVAILABLE;
 /// replace it, and the save writes its definition's name as `state_category`.
 pub const CATEGORY: usize = 0x898;
 /// State category definition vtable.
-pub const CATEGORY_VTABLE_RVA: usize = 0x02a3_5798;
+pub const CATEGORY_VTABLE_RVA: Rva = Rva(0x02a3_5798);
 /// The category definition's lexer token id, u32, beside its vtable.
 pub const CATEGORY_TOKEN: usize = 0x08;
 /// State constructor establishing template and ID.
-pub const CONSTRUCTOR_RVA: usize = 0x00a1_a8a0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00a1_a8a0);
 /// Owner setter updating the raw country reference before ownership notifications.
-pub const SET_OWNER_RVA: usize = 0x00a2_9290;
+pub const SET_OWNER_RVA: Rva = Rva(0x00a2_9290);
 /// Sorted conflict-tree head storing border combats. Predicates inspect
 /// side countries and intersect tree values.
 pub const BORDER_CONFLICT_TREE: usize = 0x8a0;
@@ -195,6 +196,16 @@ fn movement_field<T: crate::memory::Raw>(
         .ok_or("state movement input unreadable")
 }
 
+fn movement_global<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    engine_sites::at(base, key)
+        .and_then(|address| read(memory, address))
+        .ok_or("state movement input unreadable")
+}
+
 fn movement_state(memory: &impl Memory, base: usize, state: usize) -> Result<(), &'static str> {
     movement_state_vtable(base, state, read::<u64>(memory, state))
 }
@@ -205,7 +216,7 @@ fn movement_state_vtable(
     state: usize,
     vtable: Option<u64>,
 ) -> Result<(), &'static str> {
-    if state == 0 || vtable != base.checked_add(VTABLE_RVA).map(|address| address as u64) {
+    if state == 0 || vtable != engine_sites::at(base, VTABLE_RVA).map(|address| address as u64) {
         return Err("state movement identity invalid");
     }
     Ok(())
@@ -458,7 +469,14 @@ fn movement_infrastructure_shared(
         // The state's identity and the database root are one guarded call.
         let heads = movement_fields(
             memory,
-            [(state, 0, 8), (base, cbuilding_database::SINGLETON_RVA, 8)],
+            [
+                (state, 0, 8),
+                (
+                    engine_sites::at(base, cbuilding_database::SINGLETON_RVA).unwrap_or(0),
+                    0,
+                    8,
+                ),
+            ],
         );
         movement_state_vtable(base, state, heads.get(memory, 0))?;
         let database = movement_batched::<u64, 2>(memory, &heads, 1)? as usize;
@@ -483,7 +501,7 @@ fn movement_infrastructure_shared(
         if maximum < 1 {
             maximum = movement_field::<i32>(memory, definition, 0x2b8)?;
             if maximum < 1 {
-                maximum = movement_field::<i32>(memory, base, 0x033e_5274)?;
+                maximum = movement_global::<i32>(memory, base, Rva(0x033e_5274))?;
             }
         }
         (definition, maximum, Lookup::Gathered(fields))
@@ -562,7 +580,7 @@ fn movement_infrastructure_shared(
     }
     let per_level = match shared {
         Some(inputs) => inputs.per_level,
-        None => movement_field::<i64>(memory, base, 0x033e_5080)?,
+        None => movement_global::<i64>(memory, base, Rva(0x033e_5080))?,
     };
     // A failed state read never installs a partial set of shared operands.
     *shared = Some(InfrastructureInputs {
@@ -726,9 +744,7 @@ fn walk_with_buffer(
     // World reset sizes slots from the live state database.
     let outcome = walk::pointers_buffer(memory, array, output, |index, pointer| {
         let at = |offset| pointer.checked_add(offset).ok_or("state address overflow");
-        let vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(memory, pointer) != Some(vtable as u64) {
             return Err("state vtable mismatch");
         }
@@ -792,13 +808,12 @@ pub fn read_continents_selected(
 ) {
     let database = (|| {
         // State database singleton and constructor layout.
-        let database = base
-            .checked_add(0x033d_d4b8)
+        let database = engine_sites::at(base, Rva(0x033d_d4b8))
             .and_then(|address| read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())?;
         if database == 0
             || read::<u64>(memory, database)
-                != base.checked_add(0x029c_0988).map(|address| address as u64)
+                != engine_sites::at(base, Rva(0x029c_0988)).map(|address| address as u64)
         {
             return None;
         }
@@ -829,8 +844,7 @@ pub fn read_continents_selected(
             if state == 0
                 || template == 0
                 || read::<u64>(memory, template)
-                    != base
-                        .checked_add(crate::cstate_template::VTABLE_RVA)
+                    != engine_sites::at(base, crate::cstate_template::VTABLE_RVA)
                         .map(|address| address as u64)
             {
                 return None;
@@ -1128,9 +1142,7 @@ pub fn name_demand(
         .and_then(|address| Array::read(memory, address, 8))
         .filter(|array| array.count >= 2)
         .ok_or("state name demand root invalid")?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let mut required = 0_usize;
     crate::cpdx_array::pointers(
         memory,
@@ -1195,9 +1207,7 @@ pub fn read_flags(
         let array = Array::read(memory, root, 8)
             .filter(|a| a.count >= 2)
             .ok_or("state source root invalid")?;
-        let vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
+        let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
         let mut previous = 0;
         let len = sources.len().min(output.len());
         for (source, row) in sources.iter().take(len).zip(output.iter_mut()) {
@@ -1275,7 +1285,7 @@ pub fn globals(memory: &impl Memory, base: usize) -> Option<Globals> {
         at += value.len();
     };
     let field = |pointer: usize, offset: usize| pointer.checked_add(offset);
-    let building_database = read::<u64>(memory, field(base, database::SINGLETON_RVA)?)
+    let building_database = read::<u64>(memory, engine_sites::at(base, database::SINGLETON_RVA)?)
         .filter(|&pointer| pointer != 0)?;
     put(&building_database.to_le_bytes());
     let building_database = usize::try_from(building_database).ok()?;
@@ -1304,10 +1314,16 @@ pub fn globals(memory: &impl Memory, base: usize) -> Option<Globals> {
         memory,
         field(building_database, database::TEMPLATES)?,
     )?);
-    put(&read::<[u8; 8]>(memory, field(base, 0x033e_5080)?)?);
-    put(&read::<[u8; 4]>(memory, field(base, 0x033e_5274)?)?);
+    put(&read::<[u8; 8]>(
+        memory,
+        engine_sites::at(base, Rva(0x033e_5080))?,
+    )?);
+    put(&read::<[u8; 4]>(
+        memory,
+        engine_sites::at(base, Rva(0x033e_5274))?,
+    )?);
     // The state database singleton, as read_continents reads it.
-    let state_database = field(base, 0x033d_d4b8)
+    let state_database = engine_sites::at(base, Rva(0x033d_d4b8))
         .and_then(|address| read::<u64>(memory, address))
         .unwrap_or(0);
     put(&state_database.to_le_bytes());
@@ -1419,9 +1435,8 @@ pub fn category_token(
     base: usize,
     category: u64,
 ) -> Result<u32, &'static str> {
-    let vtable = base
-        .checked_add(CATEGORY_VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let vtable =
+        engine_sites::at(base, CATEGORY_VTABLE_RVA).ok_or("module address overflow")? as u64;
     let bytes = read::<[u8; CATEGORY_TOKEN + 4]>(memory, category as usize)
         .ok_or("state category unreadable")?;
     if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != vtable {
@@ -1448,9 +1463,7 @@ pub fn read_manpower(
     if pointers.len() != ids.len() || pointers.len() != output.len() {
         return Err("state manpower destination does not match sources");
     }
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let mut bytes = [0_u8; BATCH * MANPOWER_RECORD];
     for ((pointers, ids), output) in pointers
         .chunks(BATCH)

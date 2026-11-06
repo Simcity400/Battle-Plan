@@ -3,6 +3,7 @@
 //! account array already obtained by the selecting faction census and visit
 //! only the accounts selected by writer notifications.
 
+use engine_sites::Rva;
 use crate::{Memory, allocation, cpdx_array::Array, read};
 
 pub const ACCOUNTS: usize = 0x08;
@@ -19,7 +20,7 @@ pub const CONTRIBUTION: usize = 0x78;
 pub const CONTRIBUTION_GAIN: usize = 0x80;
 pub const PREVIOUS_WAR_SCORE: usize = 0xb0;
 pub const COMPLETED_GOALS: usize = 0xb8;
-pub const UPGRADE_VTABLE_RVA: usize = 0x0279_7c10;
+pub const UPGRADE_VTABLE_RVA: Rva = Rva(0x0279_7c10);
 
 /// A selected member upgrade, keyed by the group's native identity. The save
 /// orders these identities before emitting the selected definition tokens.
@@ -137,9 +138,9 @@ pub fn read_upgrades(
         let group = word(memory, node, GROUP)?;
         let definition = usize::try_from(word::<u64>(memory, node, VALUE)?)
             .map_err(|_| "faction member upgrade pointer invalid")?;
-        if definition == 0
-            || read::<u64>(memory, definition) != Some(at(base, UPGRADE_VTABLE_RVA)? as u64)
-        {
+        let vtable = engine_sites::at(base, UPGRADE_VTABLE_RVA)
+            .ok_or("faction member upgrade definition vtable mismatch")?;
+        if definition == 0 || read::<u64>(memory, definition) != Some(vtable as u64) {
             return Err("faction member upgrade definition vtable mismatch");
         }
         output[len] = Upgrade {
@@ -215,9 +216,10 @@ pub fn read_selections_into(
         *value = if definition == 0 {
             None
         } else {
-            if read::<u64>(memory, definition)
-                != Some(at(base, crate::cfaction_goal_status::DEFINITION_VTABLE_RVA)? as u64)
-            {
+            let vtable =
+                engine_sites::at(base, crate::cfaction_goal_status::DEFINITION_VTABLE_RVA)
+                    .ok_or("faction member completed goal definition vtable mismatch")?;
+            if read::<u64>(memory, definition) != Some(vtable as u64) {
                 return Err("faction member completed goal definition vtable mismatch");
             }
             Some(word(
@@ -259,15 +261,21 @@ mod tests;
 
 /// Loaded projection coefficients are immutable for the authenticated content
 /// lifetime. They are read once on first demanded derivation, in the worker.
-pub const PROJECTION_FACTORS: [usize; 7] = [
-    0x33e4be0, 0x33e4cf0, 0x33e4dc8, 0x33e5098, 0x33e5168, 0x33e4ec0, 0x33e4f90,
+pub const PROJECTION_FACTORS: [Rva; 7] = [
+    Rva(0x33e4be0),
+    Rva(0x33e4cf0),
+    Rva(0x33e4dc8),
+    Rva(0x33e5098),
+    Rva(0x33e5168),
+    Rva(0x33e4ec0),
+    Rva(0x33e4f90),
 ];
 pub fn projection_factors(memory: &impl Memory, base: usize) -> Result<[i64; 7], &'static str> {
     let mut values = [0; 7];
     for (target, offset) in values.iter_mut().zip(PROJECTION_FACTORS) {
         *target = read(
             memory,
-            base.checked_add(offset)
+            engine_sites::at(base, offset)
                 .ok_or("faction projection coefficient address overflow")?,
         )
         .ok_or("faction projection coefficient unreadable")?;

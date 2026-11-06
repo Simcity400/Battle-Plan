@@ -5,6 +5,7 @@
 //! Synthetic fixtures preserve raw words, reject short reads and verify the
 //! constant guarded read cost.
 
+use engine_sites::Rva;
 use crate::{
     Memory,
     capture_text::{Owned, Value},
@@ -13,10 +14,10 @@ use crate::{
 };
 
 /// CGameState singleton.
-pub const SINGLETON_RVA: usize = 0x033d_d6b0;
+pub const SINGLETON_RVA: Rva = Rva(0x033d_d6b0);
 
 /// Play-session start Unix seconds.
-pub const PLAY_SESSION_STARTED_AT_RVA: usize = 0x033d_d888;
+pub const PLAY_SESSION_STARTED_AT_RVA: Rva = Rva(0x033d_d888);
 /// CGameState current date (`CURRENT_DATE`), its raw i32 hour.
 pub const CURRENT_HOUR: usize = 0x468;
 /// CGameState persisted u64 play time.
@@ -168,12 +169,13 @@ impl AiControl {
             .checked_add(PLAYER_RECORDS)
             .and_then(|p| Array::read(memory, p, chuman::STRIDE))
             .ok_or("live players invalid")?;
+        let vtable =
+            engine_sites::at(base, chuman::VTABLE_RVA).ok_or("live player identity mismatch")?;
         for index in 0..players.count {
             let player = players
                 .element(index, chuman::STRIDE)
                 .ok_or("live player overflow")?;
-            if read::<u64>(memory, player) != base.checked_add(chuman::VTABLE_RVA).map(|p| p as u64)
-            {
+            if read::<u64>(memory, player) != Some(vtable as u64) {
                 return Err("live player identity mismatch");
             }
             let tag = read::<u32>(memory, player + chuman::COUNTRY_TAG)
@@ -297,9 +299,9 @@ pub const WORLD_THREAT: usize = 0x6b0;
 /// It does not establish world readiness.
 pub const PLAYER_INPUT_ELIGIBLE: usize = 0xa39;
 /// Game-state constructor/reset initializes input state.
-pub const RESET_RVA: usize = 0x001f_6610;
+pub const RESET_RVA: Rva = Rva(0x001f_6610);
 /// Load setup sets eligibility before remaining calls; it does not establish world readiness.
-pub const LOAD_SETUP_RVA: usize = 0x00e4_7560;
+pub const LOAD_SETUP_RVA: Rva = Rva(0x00e4_7560);
 
 /// CGameState global scripted flag-manager pointer.
 pub const GLOBAL_FLAGS: usize = 0x258;
@@ -385,7 +387,7 @@ pub const NAVAL_RESULTS_MAP_MASK: usize = 0x608;
 /// all commands drained and tick_busy zero, before this tick increments the
 /// date. Command drain uses server polymorphic dispatch; this fixed entry
 /// fires once per game hour.
-pub const HOURLY_UPDATE_RVA: usize = 0x001f_34d0;
+pub const HOURLY_UPDATE_RVA: Rva = Rva(0x001f_34d0);
 /// Exact hourly-update entry bytes.
 pub const HOURLY_UPDATE_SENTINEL: [u8; 16] = [
     0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xac,
@@ -450,8 +452,7 @@ pub fn read_clock_prepared<'a>(
     let at = |offset| state.checked_add(offset).ok_or("clock address overflow");
     let hour = read(memory, at(CURRENT_HOUR)?).ok_or("clock hour unreadable")?;
     let play_time = read(memory, at(PLAY_TIME)?).ok_or("clock play time unreadable")?;
-    let play_session_started_at = base
-        .checked_add(PLAY_SESSION_STARTED_AT_RVA)
+    let play_session_started_at = engine_sites::at(base, PLAY_SESSION_STARTED_AT_RVA)
         .and_then(|address| read(memory, address))
         .ok_or("clock load signal unreadable")?;
     let seed = read(memory, at(CAMPAIGN_SEED)?).ok_or("clock seed unreadable")?;
@@ -468,15 +469,21 @@ pub fn read_clock_prepared<'a>(
     })
 }
 
+/// The clock's globals resolve, or the first withheld one's reason: a withheld clock is never
+/// mistaken for a campaign that has not loaded.
+pub fn clock_sites(base: usize) -> Result<(), &'static str> {
+    engine_sites::require(base, &[SINGLETON_RVA, PLAY_SESSION_STARTED_AT_RVA])
+}
+
 pub fn read_clock(memory: &impl Memory, base: usize) -> Option<Clock> {
-    let game_state = read::<u64>(memory, base.checked_add(SINGLETON_RVA)?)?;
+    let game_state = read::<u64>(memory, engine_sites::at(base, SINGLETON_RVA)?)?;
     let ptr = usize::try_from(game_state).ok().filter(|ptr| *ptr != 0)?;
     let at = |offset| ptr.checked_add(offset);
     Some(Clock {
         game_state,
         hour: read(memory, at(CURRENT_HOUR)?)?,
         play_time: read(memory, at(PLAY_TIME)?)?,
-        play_session_started_at: read(memory, base.checked_add(PLAY_SESSION_STARTED_AT_RVA)?)?,
+        play_session_started_at: read(memory, engine_sites::at(base, PLAY_SESSION_STARTED_AT_RVA)?)?,
         seed: read(memory, at(CAMPAIGN_SEED)?)?,
         campaign_id: Owned::read(memory, at(CAMPAIGN_ID)?, false).ok()?,
         speed: read(memory, at(SPEED)?)?,
@@ -528,7 +535,7 @@ pub fn read_strategic_region_count(memory: &impl Memory, base: usize) -> Option<
 }
 
 fn singleton(memory: &impl Memory, base: usize) -> Option<usize> {
-    let game_state = read::<u64>(memory, base.checked_add(SINGLETON_RVA)?)?;
+    let game_state = read::<u64>(memory, engine_sites::at(base, SINGLETON_RVA)?)?;
     usize::try_from(game_state).ok().filter(|ptr| *ptr != 0)
 }
 
@@ -576,7 +583,7 @@ mod tests {
         struct RootMemory<'a>(&'a [u8]);
         impl Memory for RootMemory<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == SINGLETON_RVA && output.len() == 8 {
+                if address == SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&0x1000_u64.to_le_bytes());
                     true
                 } else {
@@ -621,10 +628,10 @@ mod tests {
         struct RootMemory<'a>(&'a [u8]);
         impl Memory for RootMemory<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == SINGLETON_RVA && output.len() == 8 {
+                if address == SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&0x1000_u64.to_le_bytes());
                     true
-                } else if address == PLAY_SESSION_STARTED_AT_RVA && output.len() == 8 {
+                } else if address == PLAY_SESSION_STARTED_AT_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&1_778_888_888_i64.to_le_bytes());
                     true
                 } else {
@@ -661,10 +668,10 @@ mod tests {
             }) {
                 return false;
             }
-            if address == SINGLETON_RVA && output.len() == 8 {
+            if address == SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x1000_u64.to_le_bytes());
                 true
-            } else if address == PLAY_SESSION_STARTED_AT_RVA && output.len() == 8 {
+            } else if address == PLAY_SESSION_STARTED_AT_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&19_i64.to_le_bytes());
                 true
             } else {

@@ -544,14 +544,14 @@ pub struct Hooks {
 
 impl Hooks {
     /// Construct every family whose site authenticates; a family whose
-    /// sentinel differs stays unavailable and the others install.
+    /// site is withheld stays unavailable and the others install.
     ///
     /// # Safety
     /// The memory source and base identify the authenticated executable in
     /// this process. The caller owns these sites exclusively and must restore
     /// them and wait for [`active`] to drain before releasing code.
     pub unsafe fn new(
-        memory: &impl Memory,
+        _memory: &impl Memory,
         base: usize,
         selected: impl Fn(Family) -> bool,
     ) -> Self {
@@ -561,13 +561,24 @@ impl Hooks {
         for family in Family::ALL.into_iter().filter(|family| !selected(*family)) {
             let _ = UNHOOKED[family.index()].set("map event family disabled by attach config");
         }
-        let sentinel = |rva: usize, sentinel: [u8; 16]| {
-            crate::hook::installation::sentinel(memory, base + rva, sentinel)
+        let located = |family: Family, key| match engine_sites::hook(base, key)
+            .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+        {
+            Ok(located) => Some(located),
+            Err(cause) => {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Sentinel,
+                    None,
+                    cause,
+                );
+                let _ = UNHOOKED[family.index()].set(cause);
+                None
+            }
         };
         // A call site's target is its rel32 destination.
-        let call_target = |rva: usize, sentinel: [u8; 16]| {
-            let displacement = i32::from_le_bytes(sentinel[1..5].try_into().unwrap());
-            (base + rva + 5).wrapping_add_signed(displacement as isize)
+        let call_target = |site: usize, original: [u8; 16]| {
+            let displacement = i32::from_le_bytes(original[1..5].try_into().unwrap());
+            (site + 5).wrapping_add_signed(displacement as isize)
         };
         let mut add = |family: Family, built: Result<Hook, String>| match built {
             Ok(hook) => {
@@ -578,25 +589,22 @@ impl Hooks {
                 let _ = UNHOOKED[family.index()].set("map event hook construction failed");
             }
         };
-        for (family, rva, sentinel_bytes, callback, target) in [
+        for (family, key, callback, target) in [
             (
                 Family::FakeDivisionRevealed,
                 site::FAKE_REVEAL_VISIBILITY_CALL_RVA,
-                site::FAKE_REVEAL_VISIBILITY_CALL_SENTINEL,
                 fake_reveal as *const () as usize,
                 &FAKE_TARGET,
             ),
             (
                 Family::GeneralCaptured,
                 site::GENERAL_CAPTURE_CALL_RVA,
-                site::GENERAL_CAPTURE_CALL_SENTINEL,
                 general_captured as *const () as usize,
                 &GENERAL_TARGET,
             ),
             (
                 Family::ParadropLanding,
                 site::PARADROP_LANDING_CALL_RVA,
-                site::PARADROP_LANDING_CALL_SENTINEL,
                 paradrop_landing as *const () as usize,
                 &PARADROP_TARGET,
             ),
@@ -604,34 +612,28 @@ impl Hooks {
             if !selected(family) {
                 continue;
             }
-            if !sentinel(rva, sentinel_bytes) {
-                let _ = UNHOOKED[family.index()].set("map event call sentinel differs");
+            let Some((at, original)) = located(family, key) else {
                 continue;
-            }
-            target.store(call_target(rva, sentinel_bytes), Ordering::Release);
-            add(family, unsafe {
-                Hook::new_call(base + rva, callback, sentinel_bytes)
-            });
+            };
+            target.store(call_target(at, original), Ordering::Release);
+            add(family, unsafe { Hook::new_call(at, callback, original) });
         }
-        for (family, rva, sentinel_bytes, callback, original) in [
+        for (family, key, callback, trampoline) in [
             (
                 Family::RailwayGunOverrun,
                 site::RAILWAY_OVERRUN_RVA,
-                site::RAILWAY_OVERRUN_SENTINEL,
                 railway_overrun as *const () as usize,
                 &RAILWAY_ORIGINAL,
             ),
             (
                 Family::ResistanceActivity,
                 site::RESISTANCE_ACTIVITY_RVA,
-                site::RESISTANCE_ACTIVITY_SENTINEL,
                 resistance_activity as *const () as usize,
                 &RESISTANCE_ORIGINAL,
             ),
             (
                 Family::BuildingDamage,
                 site::BUILDING_NOTIFICATION_RVA,
-                site::BUILDING_NOTIFICATION_SENTINEL,
                 building_notification as *const () as usize,
                 &BUILDING_ORIGINAL,
             ),
@@ -639,30 +641,20 @@ impl Hooks {
             if !selected(family) {
                 continue;
             }
-            if !sentinel(rva, sentinel_bytes) {
-                let _ = UNHOOKED[family.index()].set("map event entry sentinel differs");
+            let Some((at, original)) = located(family, key) else {
                 continue;
-            }
-            let built = unsafe { Hook::new(base + rva, callback, sentinel_bytes) };
+            };
+            let built = unsafe { Hook::new(at, callback, original) };
             if let Ok(hook) = &built {
-                original.store(hook.trampoline(), Ordering::Release);
+                trampoline.store(hook.trampoline(), Ordering::Release);
             }
             add(family, built);
         }
         let family = Family::CriticalShoreBombardment;
-        if !selected(family) {
-        } else if sentinel(
-            site::CRITICAL_BOMBARDMENT_TAP_RVA,
-            site::CRITICAL_BOMBARDMENT_TAP_SENTINEL,
-        ) {
-            match unsafe {
-                Tap::new(
-                    base + site::CRITICAL_BOMBARDMENT_TAP_RVA,
-                    critical_bombardment,
-                    0,
-                    site::CRITICAL_BOMBARDMENT_TAP_SENTINEL,
-                )
-            } {
+        if selected(family)
+            && let Some((at, original)) = located(family, site::CRITICAL_BOMBARDMENT_TAP_RVA)
+        {
+            match unsafe { Tap::new(at, critical_bombardment, 0, original) } {
                 Ok(tap) => {
                     INSTALLED[family.index()].store(true, Ordering::SeqCst);
                     taps.push((family, tap));
@@ -671,40 +663,21 @@ impl Hooks {
                     let _ = UNHOOKED[family.index()].set("map event tap construction failed");
                 }
             }
-        } else {
-            let _ = UNHOOKED[family.index()].set("map event tap sentinel differs");
         }
         let family = Family::ScriptedMapRefresh;
-        if selected(family) {
-            if sentinel(
-                site::SCRIPTED_REFRESH_CALL_RVA,
-                site::SCRIPTED_REFRESH_CALL_SENTINEL,
-            ) {
-                SCRIPTED_REFRESH_TARGET.store(
-                    call_target(
-                        site::SCRIPTED_REFRESH_CALL_RVA,
-                        site::SCRIPTED_REFRESH_CALL_SENTINEL,
-                    ),
-                    Ordering::Release,
-                );
-                match unsafe {
-                    Hook::new_call(
-                        base + site::SCRIPTED_REFRESH_CALL_RVA,
-                        scripted_refresh as *const () as usize,
-                        site::SCRIPTED_REFRESH_CALL_SENTINEL,
-                    )
-                } {
-                    Ok(hook) => {
-                        INSTALLED[family.index()].store(true, Ordering::SeqCst);
-                        hooks.push((family, hook));
-                    }
-                    Err(_) => {
-                        let _ = UNHOOKED[family.index()]
-                            .set("scripted map refresh call hook construction failed");
-                    }
+        if selected(family)
+            && let Some((at, original)) = located(family, site::SCRIPTED_REFRESH_CALL_RVA)
+        {
+            SCRIPTED_REFRESH_TARGET.store(call_target(at, original), Ordering::Release);
+            match unsafe { Hook::new_call(at, scripted_refresh as *const () as usize, original) } {
+                Ok(hook) => {
+                    INSTALLED[family.index()].store(true, Ordering::SeqCst);
+                    hooks.push((family, hook));
                 }
-            } else {
-                let _ = UNHOOKED[family.index()].set("scripted map refresh call sentinel differs");
+                Err(_) => {
+                    let _ = UNHOOKED[family.index()]
+                        .set("scripted map refresh call hook construction failed");
+                }
             }
         }
         Self { hooks, taps }

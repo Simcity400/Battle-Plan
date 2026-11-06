@@ -12,6 +12,7 @@ use crate::{
     read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AirState {
@@ -87,10 +88,10 @@ fn vtable(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    rva: usize,
+    rva: Rva,
     error: &'static str,
 ) -> Result<(), &'static str> {
-    let expected = base.checked_add(rva).ok_or(error)?;
+    let expected = engine_sites::at(base, rva).ok_or(error)?;
     if pointer == 0 || read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err(error);
     }
@@ -590,7 +591,7 @@ fn read_fleet_batch(
         gathered[start..start + whole].fill(true);
         start += whole + 1;
     }
-    let expected = base.checked_add(cfleet::VTABLE_RVA);
+    let expected = engine_sites::at(base, cfleet::VTABLE_RVA);
     for (index, row) in output.iter_mut().enumerate() {
         if !gathered[index] || pointers[index] == 0 {
             *row = read_fleet_count(memory, base, pointers[index]).unwrap_or_else(failed);
@@ -625,7 +626,7 @@ pub fn read_fleet_count(
     }
     let identity =
         read::<[u8; 16]>(memory, pointer).ok_or("game score fleet identity unreadable")?;
-    if base.checked_add(cfleet::VTABLE_RVA)
+    if engine_sites::at(base, cfleet::VTABLE_RVA)
         != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()) as usize)
     {
         return Err("game score fleet vtable mismatch");
@@ -823,7 +824,7 @@ fn read_site_batch(
         gathered[start..start + whole].fill(true);
         start += whole + 1;
     }
-    let expected = base.checked_add(cair_base::VTABLE_RVA);
+    let expected = engine_sites::at(base, cair_base::VTABLE_RVA);
     // Sites whose access word is read, with its address.
     let mut access_rows = [0_usize; SITE_BATCH];
     let mut access_at = [0_usize; SITE_BATCH];
@@ -926,7 +927,7 @@ pub fn read_air_site(
     }
     let identity =
         read::<[u8; 16]>(memory, pointer).ok_or("game score air-site identity unreadable")?;
-    if base.checked_add(cair_base::VTABLE_RVA)
+    if engine_sites::at(base, cair_base::VTABLE_RVA)
         != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()) as usize)
     {
         return Err("game score air-site vtable mismatch");
@@ -1024,52 +1025,63 @@ pub struct Multipliers {
 }
 
 /// NDefines.NCountry.COUNTRY_SCORE_MULTIPLIER, fixed5.
-pub const COUNTRY_SCORE_MULTIPLIER_RVA: usize = 0x033e_1f00;
+pub const COUNTRY_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_1f00);
 /// NDefines.NCountry.ARMY_SCORE_MULTIPLIER, fixed5.
-pub const ARMY_SCORE_MULTIPLIER_RVA: usize = 0x033e_1f98;
+pub const ARMY_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_1f98);
 /// NDefines.NCountry.NAVY_SCORE_MULTIPLIER, fixed5.
-pub const NAVY_SCORE_MULTIPLIER_RVA: usize = 0x033e_2038;
+pub const NAVY_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_2038);
 /// NDefines.NCountry.AIR_SCORE_MULTIPLIER, fixed5.
-pub const AIR_SCORE_MULTIPLIER_RVA: usize = 0x033e_20c8;
+pub const AIR_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_20c8);
 /// NDefines.NCountry.INDUSTRY_SCORE_MULTIPLIER, fixed5.
-pub const INDUSTRY_SCORE_MULTIPLIER_RVA: usize = 0x033e_2158;
+pub const INDUSTRY_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_2158);
 /// NDefines.NCountry.PROVINCE_SCORE_MULTIPLIER, fixed5.
-pub const PROVINCE_SCORE_MULTIPLIER_RVA: usize = 0x033e_21f8;
+pub const PROVINCE_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_21f8);
+
+fn global(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+    error: &'static str,
+) -> Result<i64, &'static str> {
+    engine_sites::at(base, key)
+        .and_then(|at| read(memory, at))
+        .ok_or(error)
+}
 
 /// Content-loaded fixed5 score globals; read each independently.
 pub fn read_multipliers(memory: &impl Memory, base: usize) -> Multipliers {
     Multipliers {
-        total_raw: field(
+        total_raw: global(
             memory,
             base,
             COUNTRY_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.COUNTRY_SCORE_MULTIPLIER unreadable",
         ),
-        army_raw: field(
+        army_raw: global(
             memory,
             base,
             ARMY_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.ARMY_SCORE_MULTIPLIER unreadable",
         ),
-        navy_raw: field(
+        navy_raw: global(
             memory,
             base,
             NAVY_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.NAVY_SCORE_MULTIPLIER unreadable",
         ),
-        air_raw: field(
+        air_raw: global(
             memory,
             base,
             AIR_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.AIR_SCORE_MULTIPLIER unreadable",
         ),
-        industry_raw: field(
+        industry_raw: global(
             memory,
             base,
             INDUSTRY_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.INDUSTRY_SCORE_MULTIPLIER unreadable",
         ),
-        land_raw: field(
+        land_raw: global(
             memory,
             base,
             PROVINCE_SCORE_MULTIPLIER_RVA,

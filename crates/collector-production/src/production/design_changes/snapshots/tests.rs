@@ -965,7 +965,7 @@ fn changing_source_shapes(count: usize) -> Batch {
         put(
             &mut bytes,
             pointer,
-            &(native::SPECIFIC_BONUS_VTABLE_RVA as u64).to_le_bytes(),
+            &(native::SPECIFIC_BONUS_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         let stats = kit::BASE + bytes.len();
         bytes.extend_from_slice(&0_u64.to_le_bytes());

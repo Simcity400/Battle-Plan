@@ -58,13 +58,13 @@ fn world() -> Vec<u8> {
     for index in 0..COUNTRIES {
         let at = index * REGION;
         let b = &mut bytes;
-        word(b, at + 0x100, ccountry::VTABLE_RVA as u64);
+        word(b, at + 0x100, ccountry::VTABLE_RVA.0 as u64);
         word(
             b,
             at + 0x100 + ccountry::POLITICAL_STATUS,
             status(index) as u64,
         );
-        word(b, status(index), cpolitical_status::VTABLE_RVA as u64);
+        word(b, status(index), cpolitical_status::VTABLE_RVA.0 as u64);
         word(
             b,
             status(index) + cpolitical_status::COUNTRY,
@@ -99,10 +99,10 @@ fn world() -> Vec<u8> {
             let party = party(index, which);
             let ideology = at + 0x700 + which * 0x80;
             word(b, at + 0x400 + which * 8, party as u64);
-            word(b, party, cpolitical_party::VTABLE_RVA as u64);
+            word(b, party, cpolitical_party::VTABLE_RVA.0 as u64);
             word(b, party + cpolitical_party::ID, id);
             word(b, party + cpolitical_party::IDEOLOGY_GROUP, ideology as u64);
-            word(b, ideology, cideology_group::VTABLE_RVA as u64);
+            word(b, ideology, cideology_group::VTABLE_RVA.0 as u64);
             word(b, ideology + cideology_group::ID, id);
             string(
                 b,
@@ -120,7 +120,7 @@ fn world() -> Vec<u8> {
             set_popularity(b, index, which, 50_000 * (which as i64 + 1));
             let idea = idea(index, which);
             word(b, at + 0x480 + which * 8, idea as u64);
-            word(b, idea, cidea::VTABLE_RVA as u64);
+            word(b, idea, cidea::VTABLE_RVA.0 as u64);
             string(
                 b,
                 idea + cidea::TOKEN,

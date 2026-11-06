@@ -77,7 +77,7 @@ impl Synthetic {
         let table = 0x300000 + kind as usize * 0x1000;
         let entries = table + 0x100;
         self.u64(
-            MODULE + registry::LOW_ROOTS_RVA + kind as usize * 8,
+            MODULE + registry::LOW_ROOTS_RVA.0 + kind as usize * 8,
             table as u64,
         );
         self.u64(table + registry::ENTRIES, entries as u64);
@@ -138,12 +138,12 @@ fn fixture() -> Synthetic {
     memory.u32(0x2104, 1);
     memory.u32(0x2108, 2);
     for (country, id) in [(COUNTRY, 1), (ACE_OWNER, 2)] {
-        memory.object(country, ccountry::VTABLE_RVA);
+        memory.object(country, ccountry::VTABLE_RVA.0);
         memory.u32(country + ccountry::ID, id);
         memory.array(country + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
     }
     memory.u32(AIR + cstrategic_air::COUNTRY, 1);
-    memory.object(WING + cair_wing::MISSION, air_mission::VTABLE_RVA);
+    memory.object(WING + cair_wing::MISSION, air_mission::VTABLE_RVA.0);
     memory.i32(WING + cair_wing::MISSION + air_mission::CURRENT_TYPE, 2);
     memory.i32(WING + MISSION_PLANES, 2);
     memory.i32(WING + cair_wing::PLANE_COUNT, 3);
@@ -153,15 +153,18 @@ fn fixture() -> Synthetic {
     memory.put(WING + cair_wing::MISSION + air_mission::CONTEXT_MODE, &[2]);
     memory.u64(WING + cair_wing::MISSION + air_mission::REGION, 0);
     // The saved active field deliberately unmapped: current fuel never reads it.
-    memory.array(MODULE + defines::MISSION_COSTS_RVA, COSTS, 19);
+    memory.array(MODULE + defines::MISSION_COSTS_RVA.0, COSTS, 19);
     for index in 0..19 {
         memory.i64(COSTS + index * 8, 100000);
     }
     memory.i64(COSTS + 8, 200000);
     memory.i64(COSTS + 18 * 8, 9000000);
-    memory.i64(MODULE + defines::AIR_WEIGHT_RVA, 100000);
-    memory.u64(MODULE + modifier_definition::TABLE_RVA, DEFINITIONS as u64);
-    memory.array(MODULE + defines::CAPACITY_THRESHOLDS_RVA, THRESHOLDS, 1);
+    memory.i64(MODULE + defines::AIR_WEIGHT_RVA.0, 100000);
+    memory.u64(
+        MODULE + modifier_definition::TABLE_RVA.0,
+        DEFINITIONS as u64,
+    );
+    memory.array(MODULE + defines::CAPACITY_THRESHOLDS_RVA.0, THRESHOLDS, 1);
     memory.i64(THRESHOLDS, 50000);
     memory
 }
@@ -247,7 +250,9 @@ fn transport_plane_union_reads_only_an_originally_unreached_plane_leaf() {
     let mut memory = fixture();
     memory.i32(WING + cair_wing::MISSION + air_mission::CURRENT_TYPE, 0);
     memory.u32(WING + cair_wing::MISSION + air_mission::ENABLED_MASK, 0);
-    memory.bytes.remove(&(MODULE + defines::MISSION_COSTS_RVA));
+    memory
+        .bytes
+        .remove(&(MODULE + defines::MISSION_COSTS_RVA.0));
     let (fuel, planes) = capture_with_planes(&memory);
     assert_eq!(planes, Ok(3));
     assert_eq!((fuel.current, fuel.maximum), (Some(0), None));
@@ -260,10 +265,10 @@ fn region(memory: &mut Synthetic, province_count: u32) {
         WING + cair_wing::MISSION + air_mission::REGION,
         REGION as u64,
     );
-    memory.object(REGION, cstrategic_region::VTABLE_RVA);
+    memory.object(REGION, cstrategic_region::VTABLE_RVA.0);
     memory.object(
         REGION + cstrategic_region::SECONDARY,
-        cstrategic_region::SECONDARY_VTABLE_RVA,
+        cstrategic_region::SECONDARY_VTABLE_RVA.0,
     );
     memory.u32(REGION + cstrategic_region::RUNTIME_SLOT, 0);
     memory.array(GAME + cgame_state::STRATEGIC_REGIONS, 0x80000, 1);
@@ -276,21 +281,21 @@ fn region(memory: &mut Synthetic, province_count: u32) {
     for index in 0..province_count {
         memory.u64(0x81000 + index as usize * 8, PROVINCE as u64);
     }
-    memory.i64(MODULE + defines::CONTEXT_THRESHOLD_RVA, 50000);
+    memory.i64(MODULE + defines::CONTEXT_THRESHOLD_RVA.0, 50000);
 }
 
 fn weather(memory: &mut Synthetic) {
     memory.u64(GAME + cgame_state::WEATHER_MANAGER, WEATHER as u64);
-    memory.object(WEATHER, cweather_manager::VTABLE_RVA);
+    memory.object(WEATHER, cweather_manager::VTABLE_RVA.0);
     memory.i64(WEATHER + FORECAST_COEFFICIENTS, 100000);
     memory.i64(WEATHER + FORECAST_COEFFICIENTS + 8, 0);
     memory.i64(WEATHER + FORECAST_COEFFICIENTS + 16, 0);
-    memory.i64(MODULE + defines::CONTEXT_SUBTRACT_RVA, 0);
-    memory.i64(MODULE + defines::CONTEXT_SCALE_RVA, 100000);
+    memory.i64(MODULE + defines::CONTEXT_SUBTRACT_RVA.0, 0);
+    memory.i64(MODULE + defines::CONTEXT_SCALE_RVA.0, 100000);
     memory.array(WEATHER + cweather_manager::PROVINCE_CLOCKS, CLOCK, 1);
     memory.array(GAME + cgame_state::PROVINCES, 0x82000, 1);
     memory.u64(0x82000, PROVINCE as u64);
-    memory.object(PROVINCE, cprovince::VTABLE_RVA);
+    memory.object(PROVINCE, cprovince::VTABLE_RVA.0);
     memory.i32(PROVINCE + cprovince::ID, 0);
     for hour in 0..24 {
         memory.i64(CLOCK + hour * 24, if hour < 6 { 100000 } else { 0 });
@@ -312,12 +317,12 @@ fn training(memory: &mut Synthetic) {
     memory.u64(WING + cair_wing::MISSION + air_mission::WING, WING as u64);
     memory.i32(WING + cair_wing::MISSION + air_mission::CAPACITY_CLASS, 0);
     memory.reference(input(1).base_reference, BASE);
-    memory.object(BASE, cair_base::VTABLE_RVA);
+    memory.object(BASE, cair_base::VTABLE_RVA.0);
     memory.u64(BASE + cair_base::HANDLE, input(1).base_reference);
     memory.u64(BASE + cair_base::STATE, 0);
     let host_reference = (17_u64 << 32) | 51;
     memory.reference(host_reference, HOST);
-    memory.object(HOST, cship::VTABLE_RVA);
+    memory.object(HOST, cship::VTABLE_RVA.0);
     memory.u64(HOST + cship::HANDLE, host_reference);
     memory.u64(BASE + cair_base::HOST_REFERENCE, host_reference);
     memory.put(HOST + cship::FORMATION_FLAGS, &[0x80]);
@@ -328,7 +333,9 @@ fn training(memory: &mut Synthetic) {
 #[test]
 fn empty_pool_is_known_zero_without_any_fuel_or_forecast_queries() {
     let mut memory = fixture();
-    memory.bytes.remove(&(MODULE + defines::MISSION_COSTS_RVA));
+    memory
+        .bytes
+        .remove(&(MODULE + defines::MISSION_COSTS_RVA.0));
     let packet = capture(&memory, &[]);
     assert_eq!(
         packet,
@@ -338,7 +345,7 @@ fn empty_pool_is_known_zero_without_any_fuel_or_forecast_queries() {
             ..Packet::default()
         }
     );
-    assert_eq!(memory.times(MODULE + defines::MISSION_COSTS_RVA, 16), 0);
+    assert_eq!(memory.times(MODULE + defines::MISSION_COSTS_RVA.0, 16), 0);
 }
 
 #[test]
@@ -457,7 +464,7 @@ fn dirty_host(memory: &mut Synthetic) {
     //801 is deliberately missing: a dirty query must never consume it.
     memory.object(
         HOST + cship::EQUIPMENT_POOL,
-        cequipment_variant_pool::VTABLE_RVA,
+        cequipment_variant_pool::VTABLE_RVA.0,
     );
     memory.array(
         HOST + cship::EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
@@ -467,7 +474,7 @@ fn dirty_host(memory: &mut Synthetic) {
     for index in 0..2 {
         let variant = 0x650000 + index * 0x1000;
         memory.u64(0x640000 + index * 16, variant as u64);
-        memory.object(variant, cequipment_variant::VTABLE_RVA);
+        memory.object(variant, cequipment_variant::VTABLE_RVA.0);
         memory.u64(
             variant + cequipment_variant::TYPE,
             (21 + index as u64) << 32 | 70,
@@ -479,7 +486,7 @@ fn dirty_host(memory: &mut Synthetic) {
         );
     }
     memory.u64(0x670008, 0x680000);
-    memory.object(0x680000, cequipment_module::VTABLE_RVA);
+    memory.object(0x680000, cequipment_module::VTABLE_RVA.0);
     memory.put(0x680000 + MODULE_CARRIER_FLAG, &[1]);
     memory.i32(SUBTYPE + SUBTYPE_CAPACITIES + 8, 6);
 }
@@ -518,20 +525,20 @@ fn effective_ace_uses_fresh_assigned_count_and_ace_owner_effectiveness() {
     let wing_reference = (23_u64 << 32) | 69;
     memory.reference(reference, ACE);
     memory.reference(wing_reference, ASSIGNED + cair_wing::SECONDARY);
-    memory.object(ACE, cace::VTABLE_RVA);
+    memory.object(ACE, cace::VTABLE_RVA.0);
     memory.u64(ACE + cace::REFERENCE, reference);
     memory.put(ACE + cace::ALIVE, &[1]);
     memory.u64(ACE + cace::ASSIGNED_WING_REFERENCE, wing_reference);
     memory.u64(ACE + cace::OWNER_COUNTRY, ACE_OWNER as u64);
-    memory.object(ASSIGNED, cair_wing::VTABLE_RVA);
+    memory.object(ASSIGNED, cair_wing::VTABLE_RVA.0);
     memory.object(
         ASSIGNED + cair_wing::SECONDARY,
-        cair_wing::SECONDARY_VTABLE_RVA,
+        cair_wing::SECONDARY_VTABLE_RVA.0,
     );
     memory.u64(ASSIGNED + cair_wing::REFERENCE_TYPE, wing_reference);
     memory.i32(ASSIGNED + cair_wing::PLANE_COUNT, 5);
-    memory.i64(MODULE + defines::ACE_COUNT_RVA, 2000000);
-    memory.i64(MODULE + defines::ACE_CAP_RVA, 1000000);
+    memory.i64(MODULE + defines::ACE_COUNT_RVA.0, 2000000);
+    memory.i64(MODULE + defines::ACE_CAP_RVA.0, 1000000);
     memory.modifier(ACE, cace::MODIFIERS, FUEL_KEY, 10000);
     memory.modifier(ACE_OWNER, ccountry::MODIFIER_ACCUMULATOR, ACE_KEY, 50000);
     memory.u64(WING + cair_wing::ACE_REFERENCE, reference);
@@ -546,7 +553,7 @@ fn effective_ace_uses_fresh_assigned_count_and_ace_owner_effectiveness() {
     assert_eq!(memory.times(ASSIGNED + cair_wing::PLANE_COUNT, 4), 1);
     // Assigned count0 follows the native unscaled fallback, not a division.
     memory.i32(ASSIGNED + cair_wing::PLANE_COUNT, 0);
-    memory.bytes.remove(&(MODULE + defines::ACE_COUNT_RVA));
+    memory.bytes.remove(&(MODULE + defines::ACE_COUNT_RVA.0));
     assert_eq!(capture(&memory, &[WING]).maximum, Some(690000));
     memory.u64(ASSIGNED + cair_wing::SECONDARY, 0);
     assert_eq!(capture(&memory, &[WING]).maximum, None);

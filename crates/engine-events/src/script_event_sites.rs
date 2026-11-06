@@ -1,11 +1,11 @@
 //! Script event observations after native admission, with stack-independent
 //! tap instructions. These sites do not reevaluate fire-once or option gates.
 
+use engine_sites::Rva;
 #[derive(Debug, Clone, Copy)]
 pub struct Site {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 
 /// Common dispatch has passed world and fire-once gates. The definition is
@@ -13,10 +13,7 @@ pub struct Site {
 /// and the bound scope pointer in its fifth-argument slot.
 pub const ACCEPTED: Site = Site {
     name: "ScriptEventAccepted",
-    rva: 0x00a5_b163,
-    sentinel: [
-        0x4c, 0x8b, 0xbd, 0xb0, 0x01, 0, 0, 0x44, 0x0f, 0xb6, 0xa5, 0xb8, 0x01, 0, 0, 0x45,
-    ],
+    rva: Rva(0x00a5_b163),
 };
 pub const DISPATCH_ACTOR_HOME: usize = 0x1a0;
 pub const DISPATCH_SCOPE_HOME: usize = 0x1b0;
@@ -25,30 +22,21 @@ pub const DISPATCH_SCOPE_HOME: usize = 0x1b0;
 /// EDI holds the native instance word; the definition and frame remain live.
 pub const EXISTING_INSTANCE: Site = Site {
     name: "ScriptEventExistingInstance",
-    rva: 0x00a5_b389,
-    sentinel: [
-        0x48, 0x8b, 0x9d, 0xa0, 0x01, 0, 0, 0x49, 0x8b, 0xcd, 0xe8, 0x58, 0xc8, 0x1a, 0, 0x48,
-    ],
+    rva: Rva(0x00a5_b389),
 };
 
 /// Selected nonnegative option after both native ordinal gates. RBX is the
 /// event, RSI its command-owned scope, EDI the admitted option ordinal.
 pub const OPTION: Site = Site {
     name: "ScriptEventOption",
-    rva: 0x0120_c6c2,
-    sentinel: [
-        0x48, 0x8b, 0x83, 0x68, 0x03, 0, 0, 0x48, 0x8b, 0xd6, 0x48, 0x8b, 0x0c, 0xf8, 0xe8, 0x6b,
-    ],
+    rva: Rva(0x0120_c6c2),
 };
 /// A negative native option ordinal executes the event's immediate option.
 pub const IMMEDIATE_OPTION: Site = Site {
     name: "ScriptEventImmediateOption",
-    rva: 0x0120_c67d,
-    sentinel: [
-        0x48, 0x8d, 0x8b, 0x18, 0x01, 0, 0, 0x48, 0x8b, 0xd6, 0xe8, 0xb4, 0x87, 0x3c, 0, 0x90,
-    ],
+    rva: Rva(0x0120_c67d),
 };
-pub const OPTION_COMMAND_VTABLE_RVA: usize = 0x029b_6ce0;
+pub const OPTION_COMMAND_VTABLE_RVA: Rva = Rva(0x029b_6ce0);
 pub const OPTION_COMMAND_SCOPE: usize = 0x38;
 pub const OPTION_COMMAND_INSTANCE: usize = 0x28;
 pub const OPTION_COMMAND_ACTOR: usize = 0x34;
@@ -57,80 +45,46 @@ pub const OPTION_COMMAND_ACTOR: usize = 0x34;
 /// returns the actual native instance in the low word of RAX.
 pub const REGISTER: Site = Site {
     name: "ScriptEventRegistered",
-    rva: 0x001e_1650,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
-        0x57,
-    ],
+    rva: Rva(0x001e_1650),
 };
 
 pub const REMOVE_PENDING: Site = Site {
     name: "RemovePendingEvent",
-    rva: 0x0020_1bd0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x63, 0x81, 0x6c, 0x05, 0,
-    ],
+    rva: Rva(0x0020_1bd0),
 };
 pub const RETIRE_PENDING: Site = Site {
     name: "RetirePendingEvent",
-    rva: 0x0020_62b0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
-        0x57,
-    ],
+    rva: Rva(0x0020_62b0),
 };
 pub const INSERT_FIRED: Site = Site {
     name: "InsertFiredEvent",
-    rva: 0x001e_0810,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x20,
-        0x48,
-    ],
+    rva: Rva(0x001e_0810),
 };
 
 pub const REGISTRY_ENTRIES: [Site; 4] = [REGISTER, REMOVE_PENDING, RETIRE_PENDING, INSERT_FIRED];
 pub const DELAYED_SCHEDULE: Site = Site {
     name: "ScheduleDelayedEvent",
-    rva: 0x0071_83d0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
-        0x57,
-    ],
+    rva: Rva(0x0071_83d0),
 };
 pub const DELAYED_DESTROY: Site = Site {
     name: "DestroyDelayedEvent",
-    rva: 0x0071_6ae0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf9, 0x8b, 0xda,
-        0x48,
-    ],
+    rva: Rva(0x0071_6ae0),
 };
 /// Delayed pass entry: anchor once, then observe only sparse cursor boundaries.
 pub const DELAYED_PASS: Site = Site {
     name: "DelayedEventPass",
-    rva: 0x0074_4760,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
-        0x57,
-    ],
+    rva: Rva(0x0074_4760),
 };
 /// A timer reached its fire evaluation after decrement. RSI is its native
 /// ordinal, RBX the timer and RDI the owner; quiet timers never reach this site.
 pub const DELAYED_FIRE_BOUNDARY: Site = Site {
     name: "DelayedEventFireBoundary",
-    rva: 0x0074_4856,
-    sentinel: [
-        0x4c, 0x8b, 0x7b, 0x08, 0x48, 0x8b, 0xcb, 0xe8, 0xbe, 0x57, 0xaf, 0xff, 0x4c, 0x8b, 0xe0,
-        0x48,
-    ],
+    rva: Rva(0x0074_4856),
 };
 /// Native expiry/invalid-entry removal, before its swap-removal stores.
 pub const DELAYED_RETIRE: Site = Site {
     name: "RetireDelayedEvent",
-    rva: 0x0074_4912,
-    sentinel: [
-        0x48, 0x8b, 0x97, 0x90, 0x12, 0, 0, 0x48, 0x63, 0x87, 0x9c, 0x12, 0, 0, 0x48, 0x8b,
-    ],
+    rva: Rva(0x0074_4912),
 };
 pub const DELAYED_TAPS: [Site; 2] = [DELAYED_FIRE_BOUNDARY, DELAYED_RETIRE];
 pub const DELAYED_ENTRIES: [Site; 3] = [DELAYED_SCHEDULE, DELAYED_DESTROY, DELAYED_PASS];
@@ -141,68 +95,44 @@ pub const DELAYED_ENTRIES: [Site; 3] = [DELAYED_SCHEDULE, DELAYED_DESTROY, DELAY
 /// [`decisions::REPLACE_EVENT_RETIREMENT_CALL`].
 pub const ERASE_FIRED: Site = Site {
     name: "EraseFiredEvent",
-    rva: 0x001f_061f,
-    sentinel: [
-        0xff, 0x8e, 0x38, 0x05, 0, 0, 0x48, 0x63, 0x86, 0x6c, 0x05, 0, 0, 0x8b, 0xd3, 0x85,
-    ],
+    rva: Rva(0x001f_061f),
 };
 
 /// Automatic mission activation after its native append has returned. RBP
 /// owns the decision status, RSI the definition and R12D the admitted days.
 pub const MISSION_APPENDED: Site = Site {
     name: "MissionAppended",
-    rva: 0x0077_fa2b,
-    sentinel: [
-        0x48, 0x8b, 0xd6, 0x48, 0x8b, 0xcd, 0xe8, 0x1a, 0xe8, 0xfe, 0xff, 0xc6, 0x85, 0xc0, 0x01, 0,
-    ],
+    rva: Rva(0x0077_fa2b),
 };
 /// The automatic writer found a retained mission and selected reactivation.
 /// Its next member stores set the days and native active lifecycle code. A
 /// witness only, staged for [`decisions::AUTO_MISSION_ACTIVATION`].
 pub const MISSION_REACTIVATED: Site = Site {
     name: "MissionReactivated",
-    rva: 0x0077_fa7d,
-    sentinel: [
-        0x44, 0x89, 0x67, 0x18, 0x45, 0x33, 0xf6, 0x44, 0x89, 0x77, 0x1c, 0xeb, 0xb6, 0x48, 0x8d,
-        0x0d,
-    ],
+    rva: Rva(0x0077_fa7d),
 };
 /// Scripted mission activation handles both insertion and reactivation;
 /// returning normally proves its native member stores/append completed.
 pub const ACTIVATE_MISSION: Site = Site {
     name: "ActivateMission",
-    rva: 0x0076_dfd0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x41,
-        0x56,
-    ],
+    rva: Rva(0x0076_dfd0),
 };
 /// Targeted activation's helper returns after the new instance was appended
 /// to the native ordinary or timed targeted container.
 pub const ACTIVATE_TARGETED: Site = Site {
     name: "ActivateTargetedDecision",
-    rva: 0x0076_de20,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
-        0x57,
-    ],
+    rva: Rva(0x0076_de20),
 };
 
 pub const SCRIPTED_MISSION_APPENDED: Site = Site {
     name: "ScriptedMissionAppended",
-    rva: 0x0076_e082,
-    sentinel: [
-        0x49, 0x8b, 0xd6, 0x49, 0x8b, 0xcf, 0xe8, 0xc3, 1, 0, 0, 0x41, 0xc6, 0x87, 0xc0, 1,
-    ],
+    rva: Rva(0x0076_e082),
 };
 /// Scripted reactivation of an existing mission: a witness only, staged for
 /// [`ACTIVATE_MISSION`], which publishes the stored days and state.
 pub const SCRIPTED_MISSION_REACTIVATED: Site = Site {
     name: "ScriptedMissionReactivated",
-    rva: 0x0076_e0b0,
-    sentinel: [
-        0xc7, 0x47, 0x1c, 0, 0, 0, 0, 0xeb, 0xdc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
-    ],
+    rva: Rva(0x0076_e0b0),
 };
 pub const TAPS: [Site; 9] = [
     ACCEPTED,
@@ -220,150 +150,89 @@ pub const TAPS: [Site; 9] = [
 /// remove effects. RBX is the definition and RDI the owning status.
 pub const DECISION_EXPIRED: Site = Site {
     name: "DecisionExpired",
-    rva: 0x0077_f79a,
-    sentinel: [
-        0x48, 0x8b, 0x57, 8, 0x48, 0x8b, 0xcb, 0x48, 0x83, 0xc2, 8, 0xe8, 0x66, 0x3d, 0xff, 0xff,
-    ],
+    rva: Rva(0x0077_f79a),
 };
 /// Timed targeted cooldown has expired; the next native store reenables the
 /// selected instance. RBX is the instance and RBP owns the status.
 pub const TARGETED_MISSION_REENABLED: Site = Site {
     name: "TargetedMissionReenabled",
-    rva: 0x0077_ef1a,
-    sentinel: [
-        0xc7, 0x43, 0x28, 0, 0, 0, 0, 0xe9, 0xcd, 1, 0, 0, 0x48, 0x8b, 3, 0x48,
-    ],
+    rva: Rva(0x0077_ef1a),
 };
 pub const REMOVE_DECISION: Site = Site {
     name: "RemoveSelectedDecision",
-    rva: 0x0077_d520,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 8, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf9, 0x45, 0x33, 0xc0,
-    ],
+    rva: Rva(0x0077_d520),
 };
 pub const REMOVE_MISSION: Site = Site {
     name: "RemoveSelectedMission",
-    rva: 0x0077_d840,
-    sentinel: [
-        0x40, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x57, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x63, 0xb9,
-        0xac,
-    ],
+    rva: Rva(0x0077_d840),
 };
 /// Timed mission result is stored before execution. RSI owns the status and
 /// RBX the selected timed instance; effects may subsequently reactivate it.
 pub const MISSION_COMPLETED: Site = Site {
     name: "MissionCompleted",
-    rva: 0x0077_f3e9,
-    sentinel: [
-        0x48, 0x8b, 0x6e, 8, 0x48, 0x8b, 0x4b, 0x10, 0x48, 0x8b, 0xd5, 0xe8, 0x87, 8, 0xff, 0xff,
-    ],
+    rva: Rva(0x0077_f3e9),
 };
 pub const MISSION_TIMED_OUT: Site = Site {
     name: "MissionTimedOut",
-    rva: 0x0077_f4b8,
-    sentinel: [
-        0x48, 0x8b, 0x17, 0x48, 0x8b, 0x4b, 0x10, 0xe8, 0x9c, 0x1d, 0xff, 0xff, 0x83, 0x7b, 0x1c, 1,
-    ],
+    rva: Rva(0x0077_f4b8),
 };
 /// Ordinary targeted cooldown has finished. R12D is the native zero result;
 /// RSI owns the status and RBX the selected instance. The complete store and
 /// its terminal jump are one admitted relocation.
 pub const TARGETED_DECISION_REENABLED: Site = Site {
     name: "TargetedDecisionReenabled",
-    rva: 0x0077_ed46,
-    sentinel: [
-        0x44, 0x89, 0x63, 0x28, 0xe9, 0x97, 0, 0, 0, 0x48, 0x8b, 0x56, 8, 0x48, 0x8b, 0xcb,
-    ],
+    rva: Rva(0x0077_ed46),
 };
 /// Ordinary cooldown membership was removed. R8 is the selected, still-live
 /// cooldown and RBP its status owner, immediately before native destruction.
 pub const DECISION_COOLDOWN_FINISHED: Site = Site {
     name: "DecisionCooldownFinished",
-    rva: 0x0077_7f51,
-    sentinel: [
-        0x49, 0x8b, 0x00, 0xba, 1, 0, 0, 0, 0x49, 0x8b, 0xc8, 0xff, 0x10, 0x44, 0x8b, 0x45,
-    ],
+    rva: Rva(0x0077_7f51),
 };
 /// Taken membership is gone, before optional effects; RDI definition, RSI status.
 pub const TAKEN_DECISION_REMOVED: Site = Site {
     name: "TakenDecisionRemoved",
-    rva: 0x007802c5,
-    sentinel: [
-        0x48, 0x8b, 0x56, 0x08, 0x48, 0x83, 0xc2, 0x08, 0x48, 0x8b, 0xcf, 0xe8, 0x3b, 0x32, 0xff,
-        0xff,
-    ],
+    rva: Rva(0x007802c5),
 };
 /// Refresh removed its selected cooldown; R8 instance and R14 status.
 pub const REFRESH_COOLDOWN_FINISHED: Site = Site {
     name: "RefreshCooldownFinished",
-    rva: 0x0077f59d,
-    sentinel: [
-        0x49, 0x8b, 0x00, 0xba, 0x01, 0x00, 0x00, 0x00, 0x49, 0x8b, 0xc8, 0xff, 0x10, 0x45, 0x8b,
-        0x46,
-    ],
+    rva: Rva(0x0077f59d),
 };
 /// The reached terminal store follows the post-effect reactivation check. RBX instance, RSI status.
 pub const MISSION_REMOVED: Site = Site {
     name: "MissionRemoved",
-    rva: 0x0077f23a,
-    sentinel: [
-        0xc7, 0x43, 0x1c, 0x04, 0x00, 0x00, 0x00, 0xff, 0x10, 0x48, 0x8d, 0x88, 0x40, 0x03, 0x00,
-        0x00,
-    ],
+    rva: Rva(0x0077f23a),
 };
 /// Cancellation stores its terminal lifecycle; days were stored immediately before. RBX instance, RSI status.
 pub const MISSION_CANCELLED: Site = Site {
     name: "MissionCancelled",
-    rva: 0x0077f371,
-    sentinel: [
-        0xc7, 0x43, 0x1c, 0x04, 0x00, 0x00, 0x00, 0xff, 0x10, 0x48, 0x8d, 0x88, 0x40, 0x03, 0x00,
-        0x00,
-    ],
+    rva: Rva(0x0077f371),
 };
 /// After actual state and duration stores; RBX instance, RSI status.
 pub const TARGETED_DECISION_REMOVED: Site = Site {
     name: "TargetedDecisionRemoved",
-    rva: 0x0077edca,
-    sentinel: [
-        0x48, 0x8b, 0xcb, 0x48, 0x8b, 0x03, 0xff, 0x10, 0x48, 0x8d, 0x88, 0x40, 0x03, 0x00, 0x00,
-        0xe8,
-    ],
+    rva: Rva(0x0077edca),
 };
 /// After actual state and duration stores; RBX instance, RBP status.
 pub const TARGETED_MISSION_REMOVED: Site = Site {
     name: "TargetedMissionRemoved",
-    rva: 0x0077eebf,
-    sentinel: [
-        0x48, 0x8b, 0xcb, 0x48, 0x8b, 0x03, 0xff, 0x10, 0x48, 0x8d, 0x88, 0x40, 0x03, 0x00, 0x00,
-        0xe8,
-    ],
+    rva: Rva(0x0077eebf),
 };
 /// Actual cancellation duration store and terminal jump; state is already stored. RBX instance, RBP status.
 pub const TARGETED_MISSION_CANCELLED: Site = Site {
     name: "TargetedMissionCancelled",
-    rva: 0x0077efe9,
-    sentinel: [
-        0x89, 0x43, 0x30, 0xe9, 0x02, 0x01, 0x00, 0x00, 0x48, 0x8b, 0x43, 0x10, 0x48, 0x8d, 0x75,
-        0x08,
-    ],
+    rva: Rva(0x0077efe9),
 };
 /// Actual admitted completion lifecycle in ECX; RBX instance, RBP status. Effects have not run.
 pub const TARGETED_MISSION_COMPLETED: Site = Site {
     name: "TargetedMissionCompleted",
-    rva: 0x0077f03f,
-    sentinel: [
-        0x89, 0x4b, 0x28, 0x48, 0x8b, 0x55, 0x08, 0x48, 0x8b, 0x4b, 0x10, 0xe8, 0x71, 0x18, 0xff,
-        0xff,
-    ],
+    rva: Rva(0x0077f03f),
 };
 /// Actual timeout lifecycle in ECX; RBX instance, RBP status. Effects have not run.
 pub const TARGETED_MISSION_TIMED_OUT: Site = Site {
     name: "TargetedMissionTimedOut",
-    rva: 0x0077f079,
-    sentinel: [
-        0x89, 0x4b, 0x28, 0x48, 0x8b, 0x16, 0x48, 0x8b, 0x4b, 0x10, 0xe8, 0x78, 0x1e, 0xff, 0xff,
-        0x83,
-    ],
+    rva: Rva(0x0077f079),
 };
 /// Common boundary after a final duration store or the reactivation bypass.
 /// RBX is the instance and RBP the status. State zero proves the bypass and
@@ -371,11 +240,7 @@ pub const TARGETED_MISSION_TIMED_OUT: Site = Site {
 /// never the interior of its relocated register-only instruction.
 pub const TARGETED_DURATION_CHANGED: Site = Site {
     name: "TargetedDurationChanged",
-    rva: 0x0077_f0ed,
-    sentinel: [
-        0x41, 0xbf, 0x01, 0x00, 0x00, 0x00, 0x49, 0xff, 0xc4, 0x4d, 0x3b, 0xe5, 0x0f, 0x8c, 0x61,
-        0xfd,
-    ],
+    rva: Rva(0x0077_f0ed),
 };
 pub const LIFECYCLE_TAPS: [Site; 16] = [
     DECISION_EXPIRED,
@@ -398,20 +263,12 @@ pub const LIFECYCLE_TAPS: [Site; 16] = [
 /// Explicit clear of matching re-enable/removal timers and taken membership; status, definition ABI.
 pub const CLEAR_COOLDOWN_DECISION: Site = Site {
     name: "ClearCooldownDecision",
-    rva: 0x0077d5f0,
-    sentinel: [
-        0x40, 0x53, 0x55, 0x56, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x59, 0x64, 0x48, 0x8b, 0xea, 0x83,
-        0xeb,
-    ],
+    rva: Rva(0x0077d5f0),
 };
 /// Final ordinary mission display-duration helper; selected instance and owner country-tag pointer ABI.
 pub const MISSION_DISPLAY_DURATION: Site = Site {
     name: "MissionDisplayDuration",
-    rva: 0x0077e200,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x83, 0x79, 0x1c, 0x01, 0x48,
-        0x8b,
-    ],
+    rva: Rva(0x0077e200),
 };
 pub const LIFECYCLE_ENTRIES: [Site; 4] = [
     REMOVE_DECISION,
@@ -423,20 +280,12 @@ pub const LIFECYCLE_ENTRIES: [Site; 4] = [
 /// Unconditional timeout add follows these five bytes; RDI selected mission, R15 scope, EAX signed days.
 pub const EXTEND_MISSION_TIMEOUT: Site = Site {
     name: "ExtendMissionTimeout",
-    rva: 0x003623dc,
-    sentinel: [
-        0x8b, 0xd0, 0x48, 0x8b, 0xcf, 0xe8, 0xea, 0xbc, 0x40, 0x00, 0x48, 0x8b, 0x7c, 0x24, 0x68,
-        0x48,
-    ],
+    rva: Rva(0x003623dc),
 };
 /// Unconditional removal-timer add follows these six bytes; RAX selected timer, RSI scope, RBX effect.
 pub const EXTEND_DECISION_REMOVAL: Site = Site {
     name: "ExtendDecisionRemoval",
-    rva: 0x00362456,
-    sentinel: [
-        0x8b, 0x53, 0x78, 0x48, 0x8b, 0xc8, 0xe8, 0x5f, 0xbc, 0x40, 0x00, 0x48, 0x8b, 0x5c, 0x24,
-        0x30,
-    ],
+    rva: Rva(0x00362456),
 };
 /// Descriptors only, no longer installed: these taps ran before the scalar
 /// add. [`decisions::EXTEND_MISSION_TIMEOUT_CALL`] and
@@ -448,8 +297,6 @@ mod tests {
     use super::*;
     #[test]
     fn duration_sites_end_at_the_unconditional_helper_call_boundary() {
-        assert_eq!(EXTEND_MISSION_TIMEOUT.sentinel[5], 0xe8);
-        assert_eq!(EXTEND_DECISION_REMOVAL.sentinel[6], 0xe8);
         assert_eq!(
             DURATION_TAPS.map(|site| site.name),
             ["ExtendMissionTimeout", "ExtendDecisionRemoval"]
@@ -464,15 +311,6 @@ mod tests {
                 .iter()
                 .any(|site| site.name == "MissionDisplayDuration")
         );
-    }
-    #[test]
-    fn installed_taps_use_one_complete_frame_independent_move() {
-        for site in [ACCEPTED, EXISTING_INSTANCE, OPTION, IMMEDIATE_OPTION] {
-            assert!(matches!(site.sentinel[0], 0x48 | 0x4c));
-            assert!(matches!(site.sentinel[1], 0x8b | 0x8d));
-            assert_eq!(site.sentinel[2] >> 6, 2);
-            assert_ne!(site.sentinel[2] & 7, 4);
-        }
     }
 }
 

@@ -1,8 +1,9 @@
 //! CFEXGroup layout. Forward side vectors can omit groups; `OPPONENT_GROUP` links the opposing
 //! group and `SIDE` authenticates the owning side.
 
+use engine_sites::Rva;
 /// CFEXGroup vtable.
-pub const VTABLE_RVA: usize = 0x02ad_10f0;
+pub const VTABLE_RVA: Rva = Rva(0x02ad_10f0);
 /// CFEXGroup CFEXMember pointer array.
 pub const MEMBERS: usize = 0x08;
 /// CFEXGroup opposing group pointer.

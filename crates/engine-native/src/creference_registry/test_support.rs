@@ -19,11 +19,11 @@ impl Fixture {
 
     pub(super) fn root(kind: u32) -> usize {
         if kind < LOW_ROOT_COUNT {
-            LOW_ROOTS_RVA + kind as usize * 8
+            LOW_ROOTS_RVA.0 + kind as usize * 8
         } else if kind < MID_TYPE_LIMIT {
-            MID_ROOT_RVA
+            MID_ROOT_RVA.0
         } else {
-            HIGH_ROOT_RVA
+            HIGH_ROOT_RVA.0
         }
     }
 

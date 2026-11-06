@@ -7,7 +7,7 @@ use crate::{cgame_state, read, walk::Outcome};
 fn reserved_observation_does_not_preauthenticate_unrelated_positive_objects() {
     let source = Synthetic::countries();
     source.put(0x1500, &0x2800_u64.to_le_bytes());
-    source.put(0x2800, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    source.put(0x2800, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     source.put(0x2800 + ccountry::ID, &0_u32.to_le_bytes());
     let reader = ccountry::Reader::new(&source, 0, 0x1000).unwrap();
     assert!(reader.at(1).unwrap().is_some());
@@ -63,7 +63,7 @@ fn lazy_physical_id_zero_preserves_only_the_equal_selected_root_error() {
         source.put(0x1500, &(selected as u64).to_le_bytes());
         source.put(0x1508, &0x2800_u64.to_le_bytes());
         for pointer in [0x2800, 0x2c00] {
-            source.put(pointer, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+            source.put(pointer, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
             source.put(pointer + ccountry::ID, &0_u32.to_le_bytes());
         }
         let memory = FaultAt {
@@ -97,7 +97,7 @@ fn lazy_physical_id_zero_preserves_only_the_equal_selected_root_error() {
 fn reserved_failed_selection_is_scoped_and_reprepare_retires_it() {
     let source = Synthetic::countries();
     source.put(0x1500, &0x2800_u64.to_le_bytes());
-    source.put(0x2800, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    source.put(0x2800, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     source.put(0x2800 + ccountry::ID, &0_u32.to_le_bytes());
     source.fault.set(Some(0x2800));
     let mut cache = Cache::with_capacity(64);
@@ -136,7 +136,7 @@ fn reserved_failed_selection_is_scoped_and_reprepare_retires_it() {
     // refusal can survive into its new immutable snapshot.
     source.fault.set(None);
     source.put(0x1500, &0x2c00_u64.to_le_bytes());
-    source.put(0x2c00, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    source.put(0x2c00, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     source.put(0x2c00 + ccountry::ID, &0_u32.to_le_bytes());
     let view = cache.prepare(&source, 0, 0x1000);
     assert_eq!(view.seed_status(), SeedStatus::Ready);
@@ -220,7 +220,7 @@ fn roster_view_keeps_scoped_authentication_and_fresh_faulted_byte_reads() {
             memory.copy_scattered(addresses, &mut destinations)
         };
         assert_eq!(completed, 1);
-        assert_eq!(first, (ccountry::VTABLE_RVA as u64).to_le_bytes());
+        assert_eq!(first, (ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
         assert_eq!(failed, [0x7e, 0x55, 0x55, 0x55]);
         assert_eq!(later, [0x66; 4]);
     }
@@ -387,7 +387,7 @@ fn front_filter_collision_never_serves_wrong_bytes_or_masks_source_failure() {
     let source = Synthetic::countries();
     let mut cache = Cache::with_capacity(64);
     cache.status = SeedStatus::Ready;
-    let bytes = (ccountry::VTABLE_RVA as u64).to_le_bytes();
+    let bytes = (ccountry::VTABLE_RVA.0 as u64).to_le_bytes();
     cache.observe(0x2000, &bytes);
     let key = cache.front_filter_bit(0x2000, 8);
     let collision = (1..=(cache.filter_mask + 1) * 8)
@@ -494,7 +494,7 @@ impl Synthetic {
         for link in [1, 2, 7] {
             memory.put(0x1700 + link * 4, &1_u32.to_le_bytes());
         }
-        memory.put(0x2000, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(0x2000, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(0x2000 + ccountry::ID, &7_u32.to_le_bytes());
         memory.put(0x2000 + ccountry::COMMAND_POWER, &11_i64.to_le_bytes());
         memory
@@ -674,7 +674,7 @@ fn preparations_replace_all_negative_filter_bits_and_old_keys() {
     for slot in [1, 2] {
         source.put(0x1500 + slot * 8, &0x2800_u64.to_le_bytes());
     }
-    source.put(0x2800, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    source.put(0x2800, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     source.put(0x2808, &7_u32.to_le_bytes());
     source.put(0x2008, &99_u32.to_le_bytes());
     let memory = cache.prepare(&source, 0, 0x1000);
@@ -1125,7 +1125,7 @@ fn authenticated_roster_reprepare_replaces_aliases_nulls_and_short_storage() {
     // A new object/id with one now-null alias cannot retain the old object.
     source.put(0x1508, &0x2800_u64.to_le_bytes());
     source.put(0x1510, &0_u64.to_le_bytes());
-    source.put(0x2800, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    source.put(0x2800, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     source.put(0x2808, &1_u32.to_le_bytes());
     let memory = cache.prepare(&source, 0, 0x1000);
     let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();

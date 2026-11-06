@@ -1,19 +1,19 @@
 //! COccupationLaw layout. Preserve its string token as identity.
 
+use engine_sites::Rva;
 /// COccupationLaw vtable.
-pub const VTABLE_RVA: usize = 0x029b_c290;
+pub const VTABLE_RVA: Rva = Rva(0x029b_c290);
 /// COccupationLaw embedded MSVC string token.
 pub const NAME: usize = 0x10;
 
 /// Occupation-policy database singleton pointer.
-pub const DATABASE_RVA: usize = 0x033d_d3e0;
+pub const DATABASE_RVA: Rva = Rva(0x033d_d3e0);
 pub const DATABASE_FALLBACK: usize = 0x48;
 
 use crate::{Memory, msvc_string, read, read_slice};
 
 pub(crate) fn fallback(memory: &impl Memory, base: usize) -> Result<Literal, &'static str> {
-    let database = base
-        .checked_add(DATABASE_RVA)
+    let database = engine_sites::at(base, DATABASE_RVA)
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
@@ -39,9 +39,7 @@ pub(crate) fn literal(
     base: usize,
     pointer: usize,
 ) -> Result<Literal, &'static str> {
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(vtable as u64) {
         return Err("occupation law vtable mismatch");
     }
@@ -132,7 +130,7 @@ mod tests {
     #[test]
     fn literal_law_bytes_are_preserved_and_capacity_omits_whole_tokens() {
         let mut bytes = [0; 0x60];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[NAME..NAME + 4].copy_from_slice(&[b'l', 0, 255, b'w']);
         bytes[NAME + 16..NAME + 24].copy_from_slice(&4_u64.to_le_bytes());
         bytes[NAME + 24..NAME + 32].copy_from_slice(&15_u64.to_le_bytes());

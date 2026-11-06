@@ -24,6 +24,10 @@ use crate::{
     walk::Outcome,
 };
 
+fn site(base: usize, key: engine_sites::Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("character address overflow")
+}
+
 /// The role a trait array belongs to.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -317,7 +321,7 @@ fn walk_storage(
     let mut page_heads = [0_usize; PAGE * MAPS.len()];
     let mut page_sentinels = [0_u8; PAGE * MAPS.len() * SENTINEL];
     let result = (|| {
-        let character_vtable = at(base, ccharacter::VTABLE_RVA)? as u64;
+        let character_vtable = site(base, ccharacter::VTABLE_RVA)? as u64;
         let roster = Roster::read(memory, base, game_state)?;
         for (array, _) in roster.sections() {
             let mut first = 0;
@@ -802,11 +806,11 @@ fn map_role_traits(
     [leaders, advisors]: [([u8; 16], [u8; SENTINEL]); 2],
     table: &mut Table<'_, TraitRow, Trait>,
 ) -> Result<(), &'static str> {
-    let country_leader_trait = at(base, ccountry_leader::TRAIT_VTABLE_RVA)? as u64;
+    let country_leader_trait = site(base, ccountry_leader::TRAIT_VTABLE_RVA)? as u64;
     let mut leaders = RoleTree::from_parts(leaders.0, leaders.1)?;
     let mut advisors = RoleTree::from_parts(advisors.0, advisors.1)?;
     if leaders.count() != 0 {
-        let vtable = at(base, ccountry_leader::VTABLE_RVA)? as u64;
+        let vtable = site(base, ccountry_leader::VTABLE_RVA)? as u64;
         while let Some(node) = leaders.next(memory)? {
             let value = read::<[u8; 16]>(memory, at(node, character_leader_node::IDEOLOGY)?)
                 .ok_or("country leader ideology unreadable")?;
@@ -833,7 +837,7 @@ fn map_role_traits(
         }
     }
     if advisors.count() != 0 {
-        let vtable = at(base, cadvisor::VTABLE_RVA)? as u64;
+        let vtable = site(base, cadvisor::VTABLE_RVA)? as u64;
         let mut ordinal = 0;
         while let Some(node) = advisors.next(memory)? {
             let role = read::<u64>(memory, at(node, character_advisor_node::ADVISOR)?)
@@ -872,7 +876,7 @@ fn scientist_traits(
 ) -> Result<(), &'static str> {
     if scientist != 0 {
         let scientist = non_null(scientist, "scientist pointer overflow")?;
-        if read::<u64>(memory, scientist) != Some(at(base, cscientist::VTABLE_RVA)? as u64) {
+        if read::<u64>(memory, scientist) != Some(site(base, cscientist::VTABLE_RVA)? as u64) {
             return Err("scientist vtable mismatch");
         }
         let array = Array::read(memory, at(scientist, cscientist::TRAIT_DATA)?, 8)
@@ -880,7 +884,7 @@ fn scientist_traits(
         push_traits(
             memory,
             array,
-            at(base, cscientist::TRAIT_VTABLE_RVA)? as u64,
+            site(base, cscientist::TRAIT_VTABLE_RVA)? as u64,
             false,
             table,
             character,
@@ -1052,8 +1056,14 @@ fn operative(
         }
         // Read the skill level of either leader class.
         let vtable = u64::from_le_bytes(vtable);
-        if vtable != at(base, cunit_leader_skill::VTABLE_RVA)? as u64
-            && vtable != at(base, null_unit_leader_skill::VTABLE_RVA)? as u64
+        let skills = [
+            cunit_leader_skill::VTABLE_RVA,
+            null_unit_leader_skill::VTABLE_RVA,
+        ];
+        if usize::try_from(vtable)
+            .ok()
+            .and_then(|vtable| engine_sites::which(base, vtable, &skills))
+            .is_none()
         {
             return Err("operative skill vtable mismatch");
         }
@@ -1108,7 +1118,7 @@ fn operative(
     let Some(start) = table.reserve(len)? else {
         return Ok(());
     };
-    let trait_vtable = at(base, cunit_leader_trait::VTABLE_RVA)? as u64;
+    let trait_vtable = site(base, cunit_leader_trait::VTABLE_RVA)? as u64;
     elements(
         memory,
         array,
@@ -1248,7 +1258,7 @@ mod tests {
             self.u64(at + 8, token_or_parent);
         }
         fn character(&mut self, at: usize, id: u32) {
-            self.u64(at, ccharacter::VTABLE_RVA as u64);
+            self.u64(at, ccharacter::VTABLE_RVA.0 as u64);
             self.u32(at + ccharacter::TYPE, ccharacter::REFERENCE_TYPE);
             self.u32(at + ccharacter::ID, id);
             self.put(at + ccharacter::LEADER_MAP_HEAD, &[0; ROLE_SPAN]);
@@ -1283,7 +1293,7 @@ mod tests {
     fn world() -> Sparse {
         let mut m = Sparse::default();
         m.u64(GS + cgame_state::CHARACTER_MANAGER, MANAGER as u64);
-        m.u64(MANAGER, ccharacter_manager::VTABLE_RVA as u64);
+        m.u64(MANAGER, ccharacter_manager::VTABLE_RVA.0 as u64);
         m.array(
             MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
             0x2100,
@@ -1300,28 +1310,28 @@ mod tests {
                 m.empty_map(at, offset, 0x4800 + (index * 2 + map) * 0x40);
             }
         }
-        let leader_trait = ccountry_leader::TRAIT_VTABLE_RVA;
+        let leader_trait = ccountry_leader::TRAIT_VTABLE_RVA.0;
         m.object(0x6000, leader_trait, 101);
         m.object(0x6100, leader_trait, 102);
         m.u32(0x6000 + ccountry_leader::TRAIT_ORDINAL, 1);
         m.u32(0x6100 + ccountry_leader::TRAIT_ORDINAL, 2);
-        m.object(0x6200, cscientist::TRAIT_VTABLE_RVA, 201);
+        m.object(0x6200, cscientist::TRAIT_VTABLE_RVA.0, 201);
         m.one_node(A, ccharacter::LEADER_MAP_HEAD, 0x4000, 0x4040);
         m.u64(0x4040 + character_leader_node::IDEOLOGY, 5);
         m.u64(0x4040 + character_leader_node::LEADER, 0x5000);
-        m.object(0x5000, ccountry_leader::VTABLE_RVA, A as u64);
+        m.object(0x5000, ccountry_leader::VTABLE_RVA.0, A as u64);
         m.array(0x5000 + ccountry_leader::TRAITS, 0x5100, &[0x6000, 0x6100]);
         m.one_node(A, ccharacter::ADVISOR_MAP_HEAD, 0x4100, 0x4140);
         m.u64(0x4140 + character_advisor_node::ADVISOR, 0x5200);
-        m.object(0x5200, cadvisor::VTABLE_RVA, 0);
+        m.object(0x5200, cadvisor::VTABLE_RVA.0, 0);
         m.u64(0x5200 + cadvisor::CHARACTER, A as u64);
         m.array(0x5200 + cadvisor::TRAITS, 0x5300, &[0x6100]);
         m.u64(A + ccharacter::SCIENTIST, 0x5400);
-        m.u64(0x5400, cscientist::VTABLE_RVA as u64);
+        m.u64(0x5400, cscientist::VTABLE_RVA.0 as u64);
         m.array(0x5400 + cscientist::TRAIT_DATA, 0x5500, &[0x6200]);
         m.u64(B + ccharacter::OPERATIVE, RESOLVED);
         m.u64(C + ccharacter::OPERATIVE, DANGLING);
-        m.u64(creference_registry::HIGH_ROOT_RVA, TABLE as u64);
+        m.u64(creference_registry::HIGH_ROOT_RVA.0, TABLE as u64);
         m.u64(TABLE + creference_registry::ENTRIES, ENTRIES as u64);
         m.u32(TABLE + creference_registry::COUNT, 1);
         m.u32(TABLE + creference_registry::MASK, 7);
@@ -1329,7 +1339,7 @@ mod tests {
         m.put(ENTRIES, &[0; 14 * bucket::STRIDE]);
         m.put(ENTRIES + 13 * bucket::STRIDE + bucket::DISTANCE, &[255]);
         m.bucket(RESOLVED, OPERATIVE);
-        m.u64(OPERATIVE, coperative_leader::VTABLE_RVA as u64);
+        m.u64(OPERATIVE, coperative_leader::VTABLE_RVA.0 as u64);
         m.u32(OPERATIVE + cunit_leader::TYPE, cunit_leader::REFERENCE_TYPE);
         m.u32(OPERATIVE + cunit_leader::ID, 77);
         m.u32(OPERATIVE + cunit_leader::OWNER, 9);
@@ -1342,16 +1352,16 @@ mod tests {
         m.u64(OPERATIVE + cunit_leader::NAME + 24, 15);
         let member = OPERATIVE + coperative_leader::CODENAME;
         m.put(member, &[0; crate::cname_group_member::INPUT_SPAN]);
-        m.u64(member, crate::cname_group_member::VTABLE_RVA as u64);
+        m.u64(member, crate::cname_group_member::VTABLE_RVA.0 as u64);
         m.u32(member + crate::cname_group_member::TYPE, 2);
         m.put(member + 0x10, b"GROUP");
         m.u64(member + 0x20, 5);
         m.u64(member + 0x28, 15);
         m.u64(member + 0xa0, 15);
         m.put(member + 0xa8, &[1]);
-        m.u64(0x7200, cunit_leader_trait::VTABLE_RVA as u64);
+        m.u64(0x7200, cunit_leader_trait::VTABLE_RVA.0 as u64);
         m.u32(0x7200 + cunit_leader_trait::ORDINAL, 3);
-        m.u64(0x7300, cunit_leader_skill::VTABLE_RVA as u64);
+        m.u64(0x7300, cunit_leader_skill::VTABLE_RVA.0 as u64);
         m.u32(0x7300 + cunit_leader_skill::LEVEL, 4);
         m
     }

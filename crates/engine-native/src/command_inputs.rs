@@ -1,62 +1,52 @@
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state, chuman, cpdx_array::Array, msvc_string::Descriptor, read,
 };
 
 pub struct Site {
-    pub rva: usize,
-    pub fingerprint: u64,
+    pub rva: Rva,
     pub span: usize,
 }
 
 pub const SITES: [Site; 10] = [
     Site {
-        rva: 0x022c_64a4,
-        fingerprint: 0x18e3_1c8b_8cd1_4863,
+        rva: Rva(0x022c_64a4),
         span: 5,
     },
     Site {
-        rva: 0x022c_6d07,
-        fingerprint: 0xe5ba_ea5b_4c5c_b671,
+        rva: Rva(0x022c_6d07),
         span: 6,
     },
     Site {
-        rva: 0x022c_4847,
-        fingerprint: 0x8116_36c1_6581_b6eb,
+        rva: Rva(0x022c_4847),
         span: 6,
     },
     Site {
-        rva: 0x00e4_8dd9,
-        fingerprint: 0xd8a2_97a9_b64f_7e6d,
+        rva: Rva(0x00e4_8dd9),
         span: 7,
     },
     Site {
-        rva: 0x00e4_79c2,
-        fingerprint: 0xefb0_68dc_6518_7020,
+        rva: Rva(0x00e4_79c2),
         span: 10,
     },
     Site {
-        rva: 0x00e4_ae94,
-        fingerprint: 0x7203_3f4d_f3e2_018f,
+        rva: Rva(0x00e4_ae94),
         span: 7,
     },
     Site {
-        rva: 0x00e4_b6a6,
-        fingerprint: 0xb93b_9f97_0b5d_bf13,
+        rva: Rva(0x00e4_b6a6),
         span: 5,
     },
     Site {
-        rva: 0x00e4_cac5,
-        fingerprint: 0x8655_3c76_6857_374b,
+        rva: Rva(0x00e4_cac5),
         span: 7,
     },
     Site {
-        rva: 0x00e4_e17d,
-        fingerprint: 0x8f9c_fe19_3632_808c,
+        rva: Rva(0x00e4_e17d),
         span: 6,
     },
     Site {
-        rva: 0x00e4_e643,
-        fingerprint: 0xc7ba_35f1_aee1_2fab,
+        rva: Rva(0x00e4_e643),
         span: 7,
     },
 ];
@@ -65,17 +55,20 @@ pub const SESSION_STATE: usize = 0x30;
 pub const SESSION_PLAYER: usize = 0x84;
 /// Session-player key named by a player-removal command.
 pub const REMOVED_PLAYER_KEY: usize = 0x2c;
-const HUMAN_COUNTRY_AUTOMATION_RVA: usize = 0x033d_daa9;
-pub const IDLER_RVA: usize = 0x033d_db08;
-pub const IN_GAME_IDLER_VTABLE_RVA: usize = 0x029e_58d8;
+const HUMAN_COUNTRY_AUTOMATION_RVA: Rva = Rva(0x033d_daa9);
+pub const IDLER_RVA: Rva = Rva(0x033d_db08);
+pub const IN_GAME_IDLER_VTABLE_RVA: Rva = Rva(0x029e_58d8);
 pub const IDLER_PAUSED: usize = 0x6c1;
 
 pub fn paused(memory: &impl Memory, base: usize) -> Result<Option<bool>, &'static str> {
-    let Some(idler) = read::<u64>(memory, base + IDLER_RVA).filter(|&pointer| pointer != 0) else {
+    let slot = engine_sites::at(base, IDLER_RVA).ok_or("command pause state unreadable")?;
+    let in_game = engine_sites::at(base, IN_GAME_IDLER_VTABLE_RVA)
+        .ok_or("command pause state unreadable")? as u64;
+    let Some(idler) = read::<u64>(memory, slot).filter(|&pointer| pointer != 0) else {
         return Ok(None);
     };
     let idler = idler as usize;
-    if read::<u64>(memory, idler) != Some((base + IN_GAME_IDLER_VTABLE_RVA) as u64) {
+    if read::<u64>(memory, idler) != Some(in_game) {
         return Ok(None);
     }
     match read::<u8>(memory, idler + IDLER_PAUSED) {
@@ -114,7 +107,8 @@ pub fn manual_country(
     command_country: u32,
     actor_country: u32,
 ) -> Result<bool, &'static str> {
-    if read::<u8>(memory, base + HUMAN_COUNTRY_AUTOMATION_RVA)
+    if engine_sites::at(base, HUMAN_COUNTRY_AUTOMATION_RVA)
+        .and_then(|address| read::<u8>(memory, address))
         .ok_or("human-country automation mode unreadable")?
         != 0
     {
@@ -129,12 +123,6 @@ pub fn manual_country(
     let countries = ccountry::Reader::new(memory, base, state)?;
     Ok(countries.resolve(command_country)?.canonical_slot
         == countries.resolve(actor_country)?.canonical_slot)
-}
-
-pub fn fingerprint(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
-    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -179,9 +167,8 @@ pub fn player(
         chuman::STRIDE,
     )
     .ok_or("player roster unreadable")?;
-    let vtable = base
-        .checked_add(chuman::VTABLE_RVA)
-        .ok_or("player identity overflow")? as u64;
+    let vtable =
+        engine_sites::at(base, chuman::VTABLE_RVA).ok_or("player identity overflow")? as u64;
     for index in 0..players.count {
         let pointer = players
             .element(index, chuman::STRIDE)
@@ -204,7 +191,8 @@ pub fn player_at(
     base: usize,
     pointer: usize,
 ) -> Result<Player, &'static str> {
-    if read::<u64>(memory, pointer) != Some((base + chuman::VTABLE_RVA) as u64) {
+    let vtable = engine_sites::at(base, chuman::VTABLE_RVA).ok_or("player identity mismatch")?;
+    if read::<u64>(memory, pointer) != Some(vtable as u64) {
         return Err("player identity mismatch");
     }
     Ok(Player {
@@ -250,11 +238,13 @@ pub fn autonomous(
     }
     let players = Array::read(memory, state + cgame_state::PLAYER_RECORDS, chuman::STRIDE)
         .ok_or("command fallback roster unreadable")?;
+    let vtable = engine_sites::at(base, chuman::VTABLE_RVA)
+        .ok_or("command fallback player identity mismatch")? as u64;
     for index in 0..players.count {
         let at = players
             .element(index, chuman::STRIDE)
             .ok_or("command fallback player overflow")?;
-        if read::<u64>(memory, at) != Some((base + chuman::VTABLE_RVA) as u64) {
+        if read::<u64>(memory, at) != Some(vtable) {
             return Err("command fallback player identity mismatch");
         }
         let country = read::<u32>(memory, at + chuman::COUNTRY_TAG)

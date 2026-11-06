@@ -2,10 +2,11 @@
 //! The shared layout requires both vtables to authenticate. Its reference
 //! type is runtime minted, independently of ordinary land-combat type 62.
 
+use engine_sites::Rva;
 /// CLandBorderWarCombat primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_71b0;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_71b0);
 /// CLandBorderWarCombat secondary vtable (`BODY`).
-pub const BODY_VTABLE_RVA: usize = 0x02a3_7290;
+pub const BODY_VTABLE_RVA: Rva = Rva(0x02a3_7290);
 /// CLandBorderWarCombat secondary-base displacement.
 pub const BODY: usize = 0x10;
 /// Signed fixed5 configured base combat width, initially zero. Save and load use this value.

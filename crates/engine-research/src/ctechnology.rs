@@ -2,14 +2,15 @@
 //! The template is a separate object with its own definition id.
 //! These layouts do not establish hourly coherence.
 
+use engine_sites::Rva;
 /// CTechnology vtable.
-pub const VTABLE_RVA: usize = 0x029f_17a0;
+pub const VTABLE_RVA: Rva = Rva(0x029f_17a0);
 /// The technology's listener subobject, whose vtable [`LISTENER_VTABLE_RVA`] maps slot 2 to
 /// observer propagation on the owning technology (the object enclosing it).
 pub const LISTENER: usize = 0x10;
 /// The technology listener vtable at [`LISTENER`], the technology's second
 /// vtable.
-pub const LISTENER_VTABLE_RVA: usize = 0x029f_17f0;
+pub const LISTENER_VTABLE_RVA: Rva = Rva(0x029f_17f0);
 /// The listeners classifier propagation notifies after a classifier change (pointer array with its
 /// count): dependency-list rebuilding registers each technology's [`LISTENER`] with the
 /// technologies of its template's three dependency lists, so a listener need not be a dependent
@@ -45,13 +46,13 @@ pub const CLASSIFIER_COMPLETED: u32 = 4;
 pub const CLASSIFIER_ACTIVE: u32 = 5;
 
 /// CTechnology constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00f4_f5d0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f4_f5d0);
 /// Technology base-cost debug byte.
-pub const BASE_COST_DEBUG_FLAG_RVA: usize = 0x033d_dad1;
+pub const BASE_COST_DEBUG_FLAG_RVA: Rva = Rva(0x033d_dad1);
 /// Technology base-cost scale i64 fixed5.
-pub const BASE_COST_SCALE_RVA: usize = 0x033e_41e0;
+pub const BASE_COST_SCALE_RVA: Rva = Rva(0x033e_41e0);
 /// Live ahead-of-time penalty factor, i64 fixed5.
-pub const BASE_YEAR_AHEAD_PENALTY_FACTOR_RVA: usize = 0x033e_4138;
+pub const BASE_YEAR_AHEAD_PENALTY_FACTOR_RVA: Rva = Rva(0x033e_4138);
 
 /// Portable current state; classifier values and fixed-point operands are not narrowed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -183,9 +184,7 @@ pub fn decode_batch(
     bytes: &[u8],
     mut visit: impl FnMut(Instance) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     for bytes in bytes.chunks_exact(INSTANCE_BYTES) {
         // Decode directly into the caller's final row: no intermediate row
         // array, source padding copy, or per-record scatter metadata is needed.
@@ -214,9 +213,7 @@ pub fn decode_one(
     country: u32,
     bytes: &[u8; INSTANCE_BYTES],
 ) -> Result<Instance, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     decode(expected, status, country, bytes)
 }
 

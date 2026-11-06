@@ -8,6 +8,7 @@ use engine_native::{
     Memory, allocation, ccountry, cequipment_type, cequipment_variant_pool, cpdx_array::Array,
     equipment_entry, msvc_string, msvc_tree_node::Cursor, read, walk::Buffer,
 };
+use engine_sites::Rva;
 
 use crate::{cequipment_market_status as status, cpurchase_contract as contract};
 
@@ -29,7 +30,7 @@ pub const SUBSIDY_ARCHETYPE: usize = 8;
 pub const SUBSIDY_CONDITION: usize = 0x10;
 pub const SUBSIDY_KIND: usize = 0x28;
 pub const SUBSIDY_TRIGGER_NAME: usize = 0x60;
-pub const SUBSIDY_TRIGGER_VTABLE_RVA: usize = 0x29c00e8;
+pub const SUBSIDY_TRIGGER_VTABLE_RVA: Rva = Rva(0x29c00e8);
 pub const PRICE_VARIANT: usize = 0x1c;
 pub const PRICE_LEVEL: usize = 0x24;
 pub const CONTRACT_VARIABLES: usize = 0x2f0;
@@ -48,9 +49,9 @@ pub const CONTRACT_HISTORY_COLLECTED: usize = 0x240;
 pub const DEFINITION_TOTAL_COST: usize = 0xd0;
 pub const DEFINITION_COST_VALID: usize = 0xc0;
 pub const VARIANT_MARKET_PRICE: usize = 0x3d0;
-pub const LOW_PRICE_FACTOR_RVA: usize = 0x33e3350;
-pub const HIGH_PRICE_FACTOR_RVA: usize = 0x33e3460;
-pub const MARKET_PRICE_FACTOR_RVA: usize = 0x33e31c8;
+pub const LOW_PRICE_FACTOR_RVA: Rva = Rva(0x33e3350);
+pub const HIGH_PRICE_FACTOR_RVA: Rva = Rva(0x33e3460);
+pub const MARKET_PRICE_FACTOR_RVA: Rva = Rva(0x33e31c8);
 pub const LOW_PRICE_TOKEN: u32 = 0x4ba5;
 pub const NORMAL_PRICE_TOKEN: u32 = 0x77;
 pub const HIGH_PRICE_TOKEN: u32 = 0x4ba7;
@@ -240,10 +241,8 @@ pub fn contract_terms(
     terms: &mut Draft,
     agreed_prices: &mut Pool,
 ) -> Result<(), &'static str> {
-    if base
-        .checked_add(contract::VTABLE_RVA)
-        .map(|value| value as u64)
-        != read(memory, address)
+    if engine_sites::at(base, contract::VTABLE_RVA)
+        .is_none_or(|value| read(memory, address) != Some(value as u64))
         || read::<u64>(memory, at(address, contract::ID_TYPE)?) != Some(id)
         || id as u32 != contract::TYPE
         || id >> 32 == 0
@@ -334,13 +333,11 @@ pub fn subsidies(
             read(memory, at(entry, SUBSIDY_CIC)?).ok_or("market subsidy CIC unreadable")?;
         let archetype = pointer(memory, at(entry, SUBSIDY_ARCHETYPE)?)?;
         let vtable = read::<u64>(memory, archetype).ok_or("market subsidy archetype unreadable")?;
-        if ![
+        let candidates = [
             cequipment_type::VTABLE_RVA,
             cequipment_type::NULL_VTABLE_RVA,
-        ]
-        .into_iter()
-        .any(|rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
-        {
+        ];
+        if engine_sites::which(base, vtable as usize, &candidates).is_none() {
             return Err("market subsidy archetype vtable mismatch");
         }
         row.archetype = read(memory, at(archetype, cequipment_type::TOKEN)?)
@@ -366,10 +363,8 @@ pub fn subsidies(
             1 => {
                 row.targets.clear();
                 let trigger = pointer(memory, at(entry, SUBSIDY_CONDITION)?)?;
-                if base
-                    .checked_add(SUBSIDY_TRIGGER_VTABLE_RVA)
-                    .map(|p| p as u64)
-                    != read(memory, trigger)
+                if engine_sites::at(base, SUBSIDY_TRIGGER_VTABLE_RVA)
+                    .is_none_or(|p| read(memory, trigger) != Some(p as u64))
                 {
                     return Err("market subsidy trigger vtable mismatch");
                 }

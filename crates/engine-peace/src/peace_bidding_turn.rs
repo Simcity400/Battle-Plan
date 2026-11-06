@@ -1,9 +1,10 @@
 //! Peace bidding turn owned by one conference history node until destruction.
 
+use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, read};
 
 /// Bidding-turn primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_aec0;
+pub const VTABLE_RVA: Rva = Rva(0x029e_aec0);
 /// Serialized raw country reference.
 pub const COUNTRY: usize = 0x08;
 /// Ordered owning action-pointer array, serialized before destruction.
@@ -16,7 +17,7 @@ pub fn copy(
 ) -> Result<(u32, Array), &'static str> {
     let identity =
         read::<[u8; 12]>(memory, pointer).ok_or("peace bidding turn identity unreadable")?;
-    if base.checked_add(VTABLE_RVA).map(|value| value as u64)
+    if engine_sites::at(base, VTABLE_RVA).map(|value| value as u64)
         != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
     {
         return Err("peace bidding turn vtable mismatch");

@@ -13,6 +13,7 @@ use crate::{
     cunit, read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 mod fresh_eta;
 pub use fresh_eta::{
@@ -25,9 +26,9 @@ pub use cached_name::{cached_name, cached_name_demand};
 pub mod port_mission;
 
 /// Primary vtable at displacement zero.
-pub const VTABLE_RVA: usize = 0x029d_f900;
+pub const VTABLE_RVA: Rva = Rva(0x029d_f900);
 /// Secondary vtable at `SECONDARY_BASE`.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029d_fae0;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029d_fae0);
 /// Supply-consumer/reference-object secondary base.
 pub const SECONDARY_BASE: usize = 0x10;
 /// Default reference type assigned through fleet-ID minting.
@@ -57,9 +58,9 @@ pub const REPAIR_TARGET: usize = 0x4c0;
 /// Current fuel usage, i64, read from fleet-vector task forces.
 pub const CURRENT_FUEL_USAGE: usize = 0x500;
 /// Constructor installing all task-force interface identities.
-pub const CONSTRUCTOR_RVA: usize = 0x00dc_96e0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00dc_96e0);
 /// Destructor restoring the same interface identities.
-pub const DESTRUCTOR_RVA: usize = 0x00dc_99e0;
+pub const DESTRUCTOR_RVA: Rva = Rva(0x00dc_99e0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -94,14 +95,9 @@ impl<M: Memory> Reader<'_, M> {
                 .checked_add(offset)
                 .ok_or("task force address overflow")
         };
-        let primary = self
-            .base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
-        let secondary = self
-            .base
-            .checked_add(SECONDARY_VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let primary = engine_sites::at(self.base, VTABLE_RVA).ok_or("module address overflow")?;
+        let secondary =
+            engine_sites::at(self.base, SECONDARY_VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(self.memory, pointer) != Some(primary as u64)
             || read::<u64>(self.memory, at(SECONDARY_BASE)?) != Some(secondary as u64)
         {
@@ -281,9 +277,7 @@ pub(crate) fn authenticate_mission(
     task: usize,
 ) -> Result<(), &'static str> {
     use crate::cnaval_mission as mission;
-    let vtable = base
-        .checked_add(mission::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let vtable = engine_sites::at(base, mission::VTABLE_RVA).ok_or("module address overflow")?;
     let word = |at: usize| {
         header
             .get(at..at + 8)
@@ -347,8 +341,7 @@ pub(crate) fn read_counter_inputs(
     let bombardment_region = if region == 0 {
         0
     } else {
-        let expected = base
-            .checked_add(cstrategic_region::VTABLE_RVA)
+        let expected = engine_sites::at(base, cstrategic_region::VTABLE_RVA)
             .ok_or("module address overflow")?;
         if read::<u64>(memory, region) != Some(expected as u64) {
             return Err("bombardment region vtable mismatch");

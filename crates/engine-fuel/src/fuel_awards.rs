@@ -6,87 +6,36 @@ use crate::{
     cgame_state, cpdx_array::Array, creference_registry, cstrategic_air, cstrategic_air_manager,
     cunit, msvc_string, read,
 };
+use engine_sites::Rva;
 
 /// Before the normal pending-gain increment, after refresh and incoming LL.
 /// The overwritten MOV+ADD is eight bytes, with no incoming interior branch.
-pub const BEGIN: (usize, [u8; 16]) = (
-    0x0117_e3a3,
-    [
-        0x48, 0x8b, 0x5e, 0x18, 0x48, 0x03, 0x5e, 0x20, 0x4c, 0x39, 0x6e, 0x38, 0x7d, 0x14, 0x48,
-        0x8b,
-    ],
-);
+pub const BEGIN: Rva = Rva(0x0117_e3a3);
 /// All awards and Q15 consumer debits have settled, before pending/ring clear.
 /// Post-update eight-byte load span before the original clear continuation.
-pub const END: (usize, [u8; 16]) = (
-    0x0117_f1b3,
-    [
-        0x48, 0x8b, 0x4b, 0x48, 0x48, 0x8b, 0x41, 0x40, 0x48, 0x01, 0x83, 0xa8, 0, 0, 0, 0x48,
-    ],
-);
+pub const END: Rva = Rva(0x0117_f1b3);
 /// Division receipt writes, including unrolled and residual paths. RAX is the division, RDX the
 /// actual signed fixed5 receipt with parity rounding. Chained unwind entries lead to a handler-free
 /// body; each five-byte return point remains in its original entry.
-pub const LAND: [(usize, [u8; 16]); 5] = [
-    (
-        0x0117_9d7d,
-        [
-            0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x49, 0x81, 0xf9, 0xa0, 0x86, 1,
-        ],
-    ),
-    (
-        0x0117_9dc2,
-        [
-            0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x49, 0x81, 0xf9, 0xa0, 0x86, 1,
-        ],
-    ),
-    (
-        0x0117_9e07,
-        [
-            0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x49, 0x81, 0xf9, 0xa0, 0x86, 1,
-        ],
-    ),
-    (
-        0x0117_9e4d,
-        [
-            0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x48, 0x83, 0xed, 1, 0x0f, 0x85,
-        ],
-    ),
-    (
-        0x0117_9eba,
-        [
-            0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x48, 0x83, 0xef, 1, 0x75, 0xb2,
-        ],
-    ),
+pub const LAND: [Rva; 5] = [
+    Rva(0x0117_9d7d),
+    Rva(0x0117_9dc2),
+    Rva(0x0117_9e07),
+    Rva(0x0117_9e4d),
+    Rva(0x0117_9eba),
 ];
 /// Complete receipt addition, preserving the original return. RCX task force,
 /// RDX signed fixed5 receipt. This leaf has no unwind entry or handler.
-pub const NAVAL: (usize, [u8; 16]) = (
-    0x00dc_ab00,
-    [
-        0x48, 1, 0x91, 0xf8, 4, 0, 0, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
-    ],
-);
+pub const NAVAL: Rva = Rva(0x00dc_ab00);
 /// Non-null-container receipt store: RDI base, RDX container, RBX receipt. The seven-byte store
 /// ends before register restoration; the five-byte return point remains inside the handler-free
 /// body.
-pub const AIR: (usize, [u8; 16]) = (
-    0x00ca_8df1,
-    [
-        0x48, 0x89, 0x9a, 0xf0, 0, 0, 0, 0x48, 0x8b, 0x5c, 0x24, 0x30, 0x48, 0x83, 0xc4, 0x20,
-    ],
-);
+pub const AIR: Rva = Rva(0x00ca_8df1);
 /// Unconditional fuel-reset prefix, RSI status. Appearance reset reaches it during runtime reset,
 /// country reuse and initialization; a pointer and zero identity can recur. The eight-byte span
 /// follows the handler-free prologue and contains no interior branch or return address. The
 /// five-byte return point shares its unwind state.
-pub const RESET: (usize, [u8; 16]) = (
-    0x0117_9839,
-    [
-        0x48, 0x89, 0x46, 0x30, 0x48, 0x89, 0x6e, 0x38, 0x48, 0x89, 0x6e, 0x40, 0x89, 0x6e, 0x54,
-        0x8b,
-    ],
-);
+pub const RESET: Rva = Rva(0x0117_9839);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Started {
@@ -134,9 +83,23 @@ fn value<T: crate::memory::Raw>(
         .and_then(|p| read(memory, p))
         .ok_or("fuel award operand unreadable or overflowed")
 }
-fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: usize) -> Result<(), &'static str> {
-    if pointer == 0 || base.checked_add(rva).map(|p| p as u64) != read::<u64>(memory, pointer) {
-        return Err("fuel award object identity mismatch");
+fn global<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    engine_sites::at(base, key)
+        .and_then(|p| read(memory, p))
+        .ok_or("fuel award operand unreadable or overflowed")
+}
+fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(), &'static str> {
+    const MISMATCH: &str = "fuel award object identity mismatch";
+    if pointer == 0 {
+        return Err(MISMATCH);
+    }
+    let expected = engine_sites::at(base, rva).ok_or(MISMATCH)?;
+    if read::<u64>(memory, pointer) != Some(expected as u64) {
+        return Err(MISMATCH);
     }
     Ok(())
 }
@@ -194,7 +157,7 @@ pub fn start_held(
     held: Option<&Located>,
 ) -> Result<(Started, Located, bool), &'static str> {
     auth(memory, base, status, fuel::VTABLE_RVA)?;
-    let game_state = value::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
+    let game_state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let owner = value::<u64>(memory, status, fuel::COUNTRY)? as usize;
     let (country, taken) = match held {
@@ -445,7 +408,7 @@ pub fn air_held(
     {
         return Err("fuel air base registry identity mismatch");
     }
-    let game_state = value::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
+    let game_state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let owner = value::<u32>(memory, container, ccountry_air_container::COUNTRY)?;
     let country = match held {

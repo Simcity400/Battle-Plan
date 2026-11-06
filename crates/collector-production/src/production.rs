@@ -135,6 +135,10 @@ impl Capacities {
         crate::table_capture::grow_capacity(&mut self.rows[16], required(licenses.outcome)?);
         let countries = ccountry::Reader::new(memory, base, state)?;
         let mut demand = [0_usize; 5];
+        let army_vtables = (
+            engine_sites::at(base, engine_native::carmy::VTABLE_RVA),
+            engine_sites::at(base, engine_native::carmy::SECONDARY_VTABLE_RVA),
+        );
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -157,16 +161,14 @@ impl Capacities {
                             .checked_add(offset)
                             .ok_or("division detail sizing address overflow")
                     };
-                    if engine_native::read::<u64>(memory, pointer)
-                        != base
-                            .checked_add(engine_native::carmy::VTABLE_RVA)
-                            .map(|value| value as u64)
+                    let (Some(primary), Some(secondary)) = army_vtables else {
+                        return Err("division detail sizing army identity invalid");
+                    };
+                    if engine_native::read::<u64>(memory, pointer) != Some(primary as u64)
                         || engine_native::read::<u64>(
                             memory,
                             at(engine_native::carmy::SECONDARY_BASE)?,
-                        ) != base
-                            .checked_add(engine_native::carmy::SECONDARY_VTABLE_RVA)
-                            .map(|value| value as u64)
+                        ) != Some(secondary as u64)
                     {
                         return Err("division detail sizing army identity invalid");
                     }

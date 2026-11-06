@@ -114,17 +114,17 @@ fn fixture() -> Fixture {
     memory.array(STATE + crate::cgame_state::COUNTRY_LINKS, 0x900, 2);
     memory.u64(0x808, COUNTRY as u64);
     memory.u32(0x904, 1);
-    memory.u64(COUNTRY, ccountry::VTABLE_RVA as u64);
+    memory.u64(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     memory.u32(COUNTRY + ccountry::ID, 1);
     memory.u32(TASK + cunit::ROSTER_OWNER, 1);
     memory.u32(TASK + cunit::LOGICAL_OWNER, 7); // Never selects common modifiers.
     memory.u64(TASK + cunit::STAT_BLOCK, STATS as u64);
-    memory.u64(STATS, csub_unit_definition::VTABLE_RVA as u64);
+    memory.u64(STATS, csub_unit_definition::VTABLE_RVA.0 as u64);
     memory.u32(STATS + 8, u32::MAX);
     memory.i64(STATS + 0x1a8, 700_001);
     memory.i64(STATS + mission::STAT_RANGE, 1_000_000);
     memory.put(TASK + cunit::EXILED, &[0xfe, 0xff]);
-    memory.u64(metadata::TABLE_RVA, META as u64);
+    memory.u64(metadata::TABLE_RVA.0, META as u64);
     memory
 }
 
@@ -520,13 +520,13 @@ impl<M: Memory> Reader<'_, M> {
         // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the
         // deficit branch.
         let observed_speed_modifier = terms[0].and_then(|value| {
-            self.deficit(fuel, 0x033d_f978)
+            self.deficit(fuel, Rva(0x033d_f978))
                 .map(|deficit| value.wrapping_add(deficit))
         });
         let speed_modifier = self.modifier_guard.and(observed_speed_modifier);
         let modified_range = range_base.and_then(|base| {
             let additive = terms[1]?;
-            let factor = terms[2]?.wrapping_add(self.deficit(fuel, 0x033d_fa08)?);
+            let factor = terms[2]?.wrapping_add(self.deficit(fuel, Rva(0x033d_fa08))?);
             let underway = self.underway(task, roster?, country_values)?;
             Ok(base
                 .wrapping_add(additive)
@@ -651,7 +651,7 @@ fn stats_root_failure_keeps_common_and_simulation_flags_available() {
 fn metadata_component_and_shared_root_failures_are_retained_without_retry() {
     for fault in [
         META + KEYS[0] as usize * metadata::STRIDE + metadata::FLAGS,
-        metadata::TABLE_RVA,
+        metadata::TABLE_RVA.0,
     ] {
         let mut memory = fixture();
         memory.accumulator(
@@ -666,14 +666,14 @@ fn metadata_component_and_shared_root_failures_are_retained_without_retry() {
         let second = reader.capture(TASK, 2).0;
         assert!(first.speed_modifier.is_err() && second.speed_modifier.is_err());
         assert_eq!(first.base_speed, Ok(700_001));
-        if fault == metadata::TABLE_RVA {
+        if fault == metadata::TABLE_RVA.0 {
             assert!(first.modified_range.is_err() && second.modified_range.is_err());
         } else {
             assert_eq!(first.modified_range, Ok(100_000));
             assert_eq!(second.modified_range, first.modified_range);
         }
         assert_eq!(memory.calls(fault), 1);
-        assert_eq!(memory.calls(metadata::TABLE_RVA), 1);
+        assert_eq!(memory.calls(metadata::TABLE_RVA.0), 1);
     }
 }
 
@@ -879,33 +879,33 @@ fn fuel_uses_native_full_default_skips_and_independent_deficit_defines() {
 fn located_fixture() -> Fixture {
     let mut memory = fixture();
     // The shared terrain selector authenticates against a nonzero module image.
-    memory.u64(COUNTRY, (TERRAIN_IMAGE + ccountry::VTABLE_RVA) as u64);
+    memory.u64(COUNTRY, (TERRAIN_IMAGE + ccountry::VTABLE_RVA.0) as u64);
     memory.u64(
         STATS,
-        (TERRAIN_IMAGE + csub_unit_definition::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + csub_unit_definition::VTABLE_RVA.0) as u64,
     );
-    memory.u64(TERRAIN_IMAGE + metadata::TABLE_RVA, META as u64);
+    memory.u64(TERRAIN_IMAGE + metadata::TABLE_RVA.0, META as u64);
     let (location, region, template, terrain) = (0x5000, 0x5800, 0x6000, 0x7000);
     memory.u64(TASK + cunit::LOCATION, location as u64);
     memory.u64(
         location,
-        (TERRAIN_IMAGE + crate::cprovince::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cprovince::VTABLE_RVA.0) as u64,
     );
     memory.u64(location + crate::cprovince::STRATEGIC_REGION, region as u64);
     memory.u64(
         region,
-        (TERRAIN_IMAGE + crate::cstrategic_region::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cstrategic_region::VTABLE_RVA.0) as u64,
     );
     memory.u32(region + crate::cstrategic_region::ID, 3);
     memory.u64(region + crate::cstrategic_region::TEMPLATE, template as u64);
     memory.u64(
         template,
-        (TERRAIN_IMAGE + crate::cstrategic_region::TEMPLATE_VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cstrategic_region::TEMPLATE_VTABLE_RVA.0) as u64,
     );
     memory.u64(template + 0x130, terrain as u64);
     memory.u64(
         terrain,
-        (TERRAIN_IMAGE + crate::cterrain_type::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64,
     );
     memory.put(terrain + 0x10, &[1]);
     memory.u64(terrain + 0x1b8, 0x8500);
@@ -929,14 +929,14 @@ fn located_fixture() -> Fixture {
     for (index, class) in [2, 2, 3].into_iter().enumerate() {
         let ship = 0xb000 + index * 0x1000;
         memory.u64(0xa000 + index * 8, ship as u64);
-        memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA) as u64);
+        memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA.0) as u64);
         memory.u64(ship + cship::TASK_FORCE, TASK as u64);
         memory.u32(ship + cship::CLASS_DATABASE_ID, class);
     }
     memory.u64(STATE + crate::cgame_state::WEATHER_MANAGER, 0xe000);
     memory.u64(
         0xe000,
-        (TERRAIN_IMAGE + cweather_manager::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + cweather_manager::VTABLE_RVA.0) as u64,
     );
     // Region outside an authenticated zero-count weather roster: native absent.
     memory
@@ -976,7 +976,7 @@ fn eta_roster_ships_share_a_guarded_record_batch() {
     let mut four = located_fixture();
     four.array(TASK + ctask_force::SHIPS, 0xa000, 4);
     four.u64(0xa018, FOURTH as u64);
-    four.u64(FOURTH, (TERRAIN_IMAGE + cship::VTABLE_RVA) as u64);
+    four.u64(FOURTH, (TERRAIN_IMAGE + cship::VTABLE_RVA.0) as u64);
     four.u64(FOURTH + cship::TASK_FORCE, TASK as u64);
     four.u32(FOURTH + cship::CLASS_DATABASE_ID, 3);
     let (speed, with_three) = capture(&three);
@@ -1002,7 +1002,7 @@ fn roster_fixture(count: usize) -> Fixture {
     for ordinal in 0..count {
         let ship = 0x40000 + ordinal * cship::SIZE;
         memory.u64(0xa000 + ordinal * 8, ship as u64);
-        memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA) as u64);
+        memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA.0) as u64);
         memory.u64(ship + cship::TASK_FORCE, TASK as u64);
         memory.u32(ship + cship::CLASS_DATABASE_ID, 3);
         memory.u64(
@@ -1082,7 +1082,7 @@ fn counter_source_world(countries: usize) -> (Fixture, Vec<usize>) {
     let rosters = tasks + countries * 0x800;
     let ships = rosters + countries * 24;
     memory.bytes.resize(ships + countries * 3 * cship::SIZE, 0);
-    memory.u64(TERRAIN_IMAGE + metadata::TABLE_RVA, META as u64);
+    memory.u64(TERRAIN_IMAGE + metadata::TABLE_RVA.0, META as u64);
     memory.array(
         STATE + crate::cgame_state::COUNTRIES,
         table,
@@ -1101,9 +1101,9 @@ fn counter_source_world(countries: usize) -> (Fixture, Vec<usize>) {
         let id = ordinal as u32 + 1;
         memory.u64(table + id as usize * 8, owner as u64);
         memory.u32(links + id as usize * 4, id);
-        memory.u64(owner, (TERRAIN_IMAGE + ccountry::VTABLE_RVA) as u64);
+        memory.u64(owner, (TERRAIN_IMAGE + ccountry::VTABLE_RVA.0) as u64);
         memory.u32(owner + ccountry::ID, id);
-        memory.u64(task, (TERRAIN_IMAGE + ctask_force::VTABLE_RVA) as u64);
+        memory.u64(task, (TERRAIN_IMAGE + ctask_force::VTABLE_RVA.0) as u64);
         memory.u32(task + cunit::ROSTER_OWNER, id);
         memory.u64(task + cunit::STAT_BLOCK, STATS as u64);
         memory.u64(task + cunit::LOCATION, 0x5000);
@@ -1111,7 +1111,7 @@ fn counter_source_world(countries: usize) -> (Fixture, Vec<usize>) {
         for (member, class) in [2, 2, 3].into_iter().enumerate() {
             let ship = ships + (ordinal * 3 + member) * cship::SIZE;
             memory.u64(roster + member * 8, ship as u64);
-            memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA) as u64);
+            memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA.0) as u64);
             memory.u64(ship + cship::TASK_FORCE, task as u64);
             memory.u32(ship + cship::CLASS_DATABASE_ID, class);
             memory.u64(
@@ -1241,11 +1241,11 @@ fn eligibility_global_failure_is_not_healed_by_a_later_present_key() {
         );
     }
     memory.u64(
-        metadata::ELIGIBILITY_CALLBACK_RVA,
-        metadata::ELIGIBILITY_FLAGS_GETTER_RVA as u64,
+        metadata::ELIGIBILITY_CALLBACK_RVA.0,
+        metadata::ELIGIBILITY_FLAGS_GETTER_RVA.0 as u64,
     );
-    memory.u32(metadata::TRADE_FEATURE_FLAGS_RVA, 4);
-    memory.fault = Some((metadata::TRADE_FEATURE_FLAGS_RVA, 4));
+    memory.u32(metadata::TRADE_FEATURE_FLAGS_RVA.0, 4);
+    memory.fault = Some((metadata::TRADE_FEATURE_FLAGS_RVA.0, 4));
     memory.fail_once = true;
     let mut reader = verified_reader(&memory);
     for hour in [1, 2] {
@@ -1253,8 +1253,8 @@ fn eligibility_global_failure_is_not_healed_by_a_later_present_key() {
         assert!(row.speed_modifier.is_err() && row.modified_range.is_err());
         assert_eq!(row.base_speed, Ok(700_001));
     }
-    assert_eq!(memory.calls(metadata::ELIGIBILITY_CALLBACK_RVA), 1);
-    assert_eq!(memory.calls(metadata::TRADE_FEATURE_FLAGS_RVA), 1);
+    assert_eq!(memory.calls(metadata::ELIGIBILITY_CALLBACK_RVA.0), 1);
+    assert_eq!(memory.calls(metadata::TRADE_FEATURE_FLAGS_RVA.0), 1);
     // A new capture expires the failure observation.
     let row = verified_reader(&memory).capture(TASK, 3).0;
     assert_eq!(row.speed_modifier, Ok(123));
@@ -1267,8 +1267,8 @@ fn headquarters_fixture() -> Fixture {
     let (table, entries) = (0x25000, 0x26000);
     let leader_ref = (7_u64 << 32) | u64::from(crate::cunit_leader::REFERENCE_TYPE);
     let characters = [(2_u64 << 32) | 73, (3_u64 << 32) | 73];
-    memory.u64(registry::HIGH_ROOT_RVA, table as u64);
-    memory.u64(registry::LOW_ROOTS_RVA + 73 * 8, table as u64);
+    memory.u64(registry::HIGH_ROOT_RVA.0, table as u64);
+    memory.u64(registry::LOW_ROOTS_RVA.0 + 73 * 8, table as u64);
     memory.u64(table + registry::ENTRIES, entries as u64);
     memory.u32(table + registry::COUNT, 3);
     memory.u32(table + registry::MASK, 7);
@@ -1297,9 +1297,9 @@ fn headquarters_fixture() -> Fixture {
         memory.u64(bucket + 16, pointer);
     }
     memory.u64(TASK + ctask_force::FLEET, 0x7000);
-    memory.u64(0x7000, cfleet::VTABLE_RVA as u64);
+    memory.u64(0x7000, cfleet::VTABLE_RVA.0 as u64);
     memory.u64(0x7000 + cfleet::LEADER, leader_ref);
-    memory.u64(0x8000, crate::cnavy_leader::VTABLE_RVA as u64);
+    memory.u64(0x8000, crate::cnavy_leader::VTABLE_RVA.0 as u64);
     memory.u64(0x8008, leader_ref);
     memory.accumulator(
         0x8000 + mission::LEADER_MODIFIERS,
@@ -1317,10 +1317,10 @@ fn headquarters_fixture() -> Fixture {
         memory.u64(0x9000 + index * 8, head as u64);
         memory.u64(head + mission::HEADQUARTERS_COMMANDER, commander as u64);
         memory.u64(commander + mission::COMMANDER_CHARACTER, character_ref);
-        memory.u64(character, crate::ccharacter::VTABLE_RVA as u64);
+        memory.u64(character, crate::ccharacter::VTABLE_RVA.0 as u64);
         memory.u64(character + 8, character_ref);
         memory.u64(character + mission::CHARACTER_UNIT_LEADER, leader as u64);
-        memory.u64(leader, crate::cnavy_leader::VTABLE_RVA as u64);
+        memory.u64(leader, crate::cnavy_leader::VTABLE_RVA.0 as u64);
         memory.u32(leader + mission::UNIT_LEADER_KIND, 2);
         for (ordinal, offset) in mission::UNIT_LEADER_SOURCES.into_iter().enumerate() {
             let source = 0xe000 + index * 0x1000 + ordinal * 0x200;
@@ -1398,7 +1398,7 @@ fn motion_capture_reads_fresh_operands_only_for_admitted_current_hour_native_dem
         memory.u32(0x4800, 2);
         if target {
             memory.u64(0x980 + 2 * 8, 0x5000);
-            memory.u64(0x5000, crate::cprovince::VTABLE_RVA as u64);
+            memory.u64(0x5000, crate::cprovince::VTABLE_RVA.0 as u64);
             memory.u32(0x5000 + crate::cprovince::ID, 2);
             memory.u64(TASK + cunit::MOVEMENT_TARGET, 0x5000);
         }
@@ -1504,7 +1504,7 @@ const RISK_TERRAIN: usize = 0x33000;
 const RISK_CLASS_TREE: usize = 0x34138;
 const RISK_WEATHER_RECORD: usize = 0x39000 + 3 * crate::sweather_per_region::STRIDE;
 const RISK_COMBINED: i64 = -116_351;
-const RISK_METADATA_ROOT: usize = TERRAIN_IMAGE + metadata::TABLE_RVA;
+const RISK_METADATA_ROOT: usize = TERRAIN_IMAGE + metadata::TABLE_RVA.0;
 
 fn mission_risk_fixture() -> Fixture {
     use crate::creference_registry as registry;
@@ -1513,29 +1513,29 @@ fn mission_risk_fixture() -> Fixture {
     // Keep baseline HQ fixtures at image zero. This terrain-bearing risk
     // fixture authenticates every reached object and global root against the
     // same nonzero image as the separately reviewed terrain fixture.
-    memory.u64(COUNTRY, (TERRAIN_IMAGE + ccountry::VTABLE_RVA) as u64);
+    memory.u64(COUNTRY, (TERRAIN_IMAGE + ccountry::VTABLE_RVA.0) as u64);
     memory.u64(
         STATS,
-        (TERRAIN_IMAGE + csub_unit_definition::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + csub_unit_definition::VTABLE_RVA.0) as u64,
     );
     memory.u64(RISK_METADATA_ROOT, META as u64);
-    memory.u64(TERRAIN_IMAGE + registry::HIGH_ROOT_RVA, 0x25000);
-    memory.u64(TERRAIN_IMAGE + registry::LOW_ROOTS_RVA + 73 * 8, 0x25000);
-    memory.u64(0x7000, (TERRAIN_IMAGE + cfleet::VTABLE_RVA) as u64);
+    memory.u64(TERRAIN_IMAGE + registry::HIGH_ROOT_RVA.0, 0x25000);
+    memory.u64(TERRAIN_IMAGE + registry::LOW_ROOTS_RVA.0 + 73 * 8, 0x25000);
+    memory.u64(0x7000, (TERRAIN_IMAGE + cfleet::VTABLE_RVA.0) as u64);
     memory.u64(
         0x8000,
-        (TERRAIN_IMAGE + crate::cnavy_leader::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64,
     );
     for index in 0..2 {
         let character = 0xa000 + index * 0x1000;
         let leader = 0xc000 + index * 0x1000;
         memory.u64(
             character,
-            (TERRAIN_IMAGE + crate::ccharacter::VTABLE_RVA) as u64,
+            (TERRAIN_IMAGE + crate::ccharacter::VTABLE_RVA.0) as u64,
         );
         memory.u64(
             leader,
-            (TERRAIN_IMAGE + crate::cnavy_leader::VTABLE_RVA) as u64,
+            (TERRAIN_IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64,
         );
     }
     // Native accumulator keys stay sorted: 29, 2A, 8A, 8B, 248.
@@ -1553,7 +1553,7 @@ fn mission_risk_fixture() -> Fixture {
     memory.u64(TASK + cunit::LOCATION, RISK_LOCATION as u64);
     memory.u64(
         RISK_LOCATION,
-        (TERRAIN_IMAGE + crate::cprovince::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cprovince::VTABLE_RVA.0) as u64,
     );
     memory.u64(
         RISK_LOCATION + crate::cprovince::STRATEGIC_REGION,
@@ -1561,18 +1561,18 @@ fn mission_risk_fixture() -> Fixture {
     );
     memory.u64(
         region,
-        (TERRAIN_IMAGE + crate::cstrategic_region::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cstrategic_region::VTABLE_RVA.0) as u64,
     );
     memory.u32(region + crate::cstrategic_region::ID, 3);
     memory.u64(region + crate::cstrategic_region::TEMPLATE, template as u64);
     memory.u64(
         template,
-        (TERRAIN_IMAGE + crate::cstrategic_region::TEMPLATE_VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cstrategic_region::TEMPLATE_VTABLE_RVA.0) as u64,
     );
     memory.u64(template + 0x130, RISK_TERRAIN as u64);
     memory.u64(
         RISK_TERRAIN,
-        (TERRAIN_IMAGE + crate::cterrain_type::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64,
     );
     memory.put(RISK_TERRAIN + 0x10, &[1]);
     memory.u64(RISK_TERRAIN + 0x1b8, 0x34000);
@@ -1605,7 +1605,7 @@ fn mission_risk_fixture() -> Fixture {
     for (index, class) in [2, 2, 3].into_iter().enumerate() {
         let ship = 0x35000 + index * 0x1000;
         memory.u64(0x34400 + index * 8, ship as u64);
-        memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA) as u64);
+        memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA.0) as u64);
         memory.u64(ship + cship::TASK_FORCE, TASK as u64);
         memory.u32(ship + cship::CLASS_DATABASE_ID, class);
     }
@@ -1613,12 +1613,12 @@ fn mission_risk_fixture() -> Fixture {
     memory.u64(STATE + crate::cgame_state::WEATHER_MANAGER, manager as u64);
     memory.u64(
         manager,
-        (TERRAIN_IMAGE + cweather_manager::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + cweather_manager::VTABLE_RVA.0) as u64,
     );
     memory.array(manager + cweather_manager::REGIONS, 0x39000, 4);
     memory.u64(
         RISK_WEATHER_RECORD,
-        (TERRAIN_IMAGE + crate::sweather_per_region::VTABLE_RVA) as u64,
+        (TERRAIN_IMAGE + crate::sweather_per_region::VTABLE_RVA.0) as u64,
     );
     memory.u32(RISK_WEATHER_RECORD + crate::sweather_per_region::ID, 3);
     memory.accumulator(
@@ -1979,7 +1979,7 @@ fn targeted_spotting_uses_original_roster_and_native_zero_or_unlinked_slot() {
         memory.u64(COUNTRY + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         memory.u64(
             diplomacy,
-            (TERRAIN_IMAGE + crate::cdiplomacy_status::VTABLE_RVA) as u64,
+            (TERRAIN_IMAGE + crate::cdiplomacy_status::VTABLE_RVA.0) as u64,
         );
         memory.u64(
             diplomacy + crate::cdiplomacy_status::COUNTRY,
@@ -1989,7 +1989,7 @@ fn targeted_spotting_uses_original_roster_and_native_zero_or_unlinked_slot() {
         memory.u64(0x45000, status as u64);
         memory.u64(
             status,
-            (TERRAIN_IMAGE + crate::crelation_status::VTABLE_RVA) as u64,
+            (TERRAIN_IMAGE + crate::crelation_status::VTABLE_RVA.0) as u64,
         );
         memory.u64(
             status + crate::crelation_status::DIPLOMACY_STATUS,
@@ -2125,7 +2125,7 @@ fn eta_source_reuse_keeps_changed_risk_demand_and_explicit_speed_class() {
 #[test]
 fn mission_risk_metadata_failures_remain_cached_without_poisoning_independent_eta_keys() {
     let risk_flags = META + keys::NAVAL_DETECTION as usize * metadata::STRIDE + metadata::FLAGS;
-    for fault in [risk_flags, metadata::TABLE_RVA] {
+    for fault in [risk_flags, metadata::TABLE_RVA.0] {
         let mut memory = fixture();
         memory.accumulator(
             COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
@@ -2148,7 +2148,7 @@ fn mission_risk_metadata_failures_remain_cached_without_poisoning_independent_et
             }
         }
         assert_eq!(memory.calls(fault), 1);
-        assert_eq!(memory.calls(metadata::TABLE_RVA), 1);
+        assert_eq!(memory.calls(metadata::TABLE_RVA.0), 1);
         let (_, _, risk) =
             verified_reader(&memory).capture_with_mission_risk(TASK, 3, Ok(true), Ok(()));
         assert_eq!(risk.combined_detection, Ok(Some(123)));

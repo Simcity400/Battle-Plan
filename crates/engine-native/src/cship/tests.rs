@@ -27,15 +27,15 @@ fn inline(bytes: &mut [u8], at: usize, text: &[u8]) {
 
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x6000];
-    word(&mut bytes, 0, VTABLE_RVA as u64);
+    word(&mut bytes, 0, VTABLE_RVA.0 as u64);
     word(&mut bytes, HANDLE, SHIP_ID);
     word(&mut bytes, TASK_FORCE, (BASE + PARENT) as u64);
-    word(&mut bytes, PARENT, ctask_force::VTABLE_RVA as u64);
+    word(&mut bytes, PARENT, ctask_force::VTABLE_RVA.0 as u64);
     word(&mut bytes, PARENT + cunit::HANDLE, PARENT_ID);
     word(
         &mut bytes,
         EQUIPMENT_POOL,
-        cequipment_variant_pool::VTABLE_RVA as u64,
+        cequipment_variant_pool::VTABLE_RVA.0 as u64,
     );
     word(
         &mut bytes,
@@ -58,7 +58,7 @@ fn fixture() -> Vec<u8> {
     for index in 0..2 {
         let variant = VARIANTS[index];
         let definition = DEFINITIONS[index];
-        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
         word(&mut bytes, variant + 8, ((index as u64 + 1) << 32) | 70);
         dword(
             &mut bytes,
@@ -70,7 +70,7 @@ fn fixture() -> Vec<u8> {
             variant + cequipment_variant::DEFINITION,
             (BASE + definition) as u64,
         );
-        word(&mut bytes, definition, cequipment_type::VTABLE_RVA as u64);
+        word(&mut bytes, definition, cequipment_type::VTABLE_RVA.0 as u64);
         dword(
             &mut bytes,
             definition + cequipment_type::TOKEN,
@@ -181,7 +181,7 @@ fn counter_flags_include_all_positive_variants_and_preserve_raw_maximum_and_airb
     word(&mut bytes, MAXIMUM_STRENGTH, i64::MIN as u64);
     word(&mut bytes, CARRIER_AIR_BASE, (BASE + 0x5800) as u64);
     word(&mut bytes, ANTI_AIR_BASE, i64::MIN as u64);
-    word(&mut bytes, 0x5800, crate::cair_base::VTABLE_RVA as u64);
+    word(&mut bytes, 0x5800, crate::cair_base::VTABLE_RVA.0 as u64);
     word(&mut bytes, 0x5808, (7 << 32) | 65);
     word(&mut bytes, 0x5860, SHIP_ID);
     let row = model(&bytes).unwrap();
@@ -423,7 +423,7 @@ fn subunit_index_preserves_signed_words_and_authenticates_the_embedded_copy() {
         word(
             &mut bytes,
             SUBUNIT_DEFINITION,
-            crate::csub_unit_definition::VTABLE_RVA as u64,
+            crate::csub_unit_definition::VTABLE_RVA.0 as u64,
         );
         dword(&mut bytes, CLASS_DATABASE_ID, token);
         bytes[DEFINITION_VALID] = valid;
@@ -470,7 +470,7 @@ fn subunit_index_guard_faults_never_retry_or_return_partial_words() {
     word(
         &mut bytes,
         SUBUNIT_DEFINITION,
-        crate::csub_unit_definition::VTABLE_RVA as u64,
+        crate::csub_unit_definition::VTABLE_RVA.0 as u64,
     );
     dword(&mut bytes, SUBUNIT_INDEX, i32::MIN as u32);
     let memory = SliceMemory {
@@ -678,7 +678,7 @@ fn full_model_fixture() -> Vec<u8> {
     bytes[DEFINITION_VALID] = 255;
     word(&mut bytes, MAXIMUM_STRENGTH, i64::MIN as u64);
     word(&mut bytes, CARRIER_AIR_BASE, (BASE + AIR) as u64);
-    word(&mut bytes, AIR, crate::cair_base::VTABLE_RVA as u64);
+    word(&mut bytes, AIR, crate::cair_base::VTABLE_RVA.0 as u64);
     word(&mut bytes, AIR + crate::cair_base::HANDLE, (7 << 32) | 65);
     word(&mut bytes, AIR + crate::cair_base::HOST_REFERENCE, SHIP_ID);
     bytes
@@ -1464,7 +1464,7 @@ struct NativeNullModelMemory<'a> {
 
 impl Memory for NativeNullModelMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == hull_variant::NULL_DEFINITION_SINGLETON_RVA && output.len() == 8 {
+        if address == hull_variant::NULL_DEFINITION_SINGLETON_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&self.singleton.to_le_bytes());
             true
         } else {
@@ -1482,7 +1482,7 @@ fn native_null_model_fixture() -> Vec<u8> {
     word(
         &mut bytes,
         DEFINITIONS[0],
-        hull_variant::NULL_DEFINITION_VTABLE_RVA as u64,
+        hull_variant::NULL_DEFINITION_VTABLE_RVA.0 as u64,
     );
     dword(
         &mut bytes,
@@ -1535,7 +1535,7 @@ fn registered_variant_null_type_keeps_handle_and_reads_its_actual_empty_sprite()
     let spans = trace.reads.into_inner();
     let singleton = spans
         .iter()
-        .position(|&(at, _)| at == hull_variant::NULL_DEFINITION_SINGLETON_RVA)
+        .position(|&(at, _)| at == hull_variant::NULL_DEFINITION_SINGLETON_RVA.0)
         .unwrap();
     assert_eq!(
         spans[singleton + 1],
@@ -1631,7 +1631,7 @@ fn a_warm_null_sprite_memo_still_requires_each_selected_variant_to_be_registered
             .reads
             .borrow()
             .iter()
-            .any(|&(at, _)| at == hull_variant::NULL_DEFINITION_SINGLETON_RVA)
+            .any(|&(at, _)| at == hull_variant::NULL_DEFINITION_SINGLETON_RVA.0)
     );
 }
 

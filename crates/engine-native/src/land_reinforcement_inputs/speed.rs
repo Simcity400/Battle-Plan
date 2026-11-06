@@ -11,6 +11,7 @@
 
 use super::{AcclimatizationTerm, ContextRow, ModifierTerm, SupplyTerm, TransportTerm};
 use crate::{Memory, combat_sources::Sources, walk::Buffer};
+use engine_sites::Rva;
 
 const ONE: i64 = 100_000;
 /// The positive sentinel the native fixed5 division returns for a zero
@@ -18,7 +19,7 @@ const ONE: i64 = 100_000;
 const EXCEPTIONAL: i64 = 0xffff_ffff;
 /// `NDefines::NMilitary::SLOWEST_SPEED`, read live: a define reload or a mod's
 /// value is the reinforcement speed denominator.
-pub const SLOWEST_SPEED_RVA: usize = 0x033e_1ac8;
+pub const SLOWEST_SPEED_RVA: Rva = Rva(0x033e_1ac8);
 /// The reinforcement share's native bounds, zero and two in fixed5.
 pub const SHARE_MAXIMUM: i64 = 2 * ONE;
 
@@ -555,8 +556,9 @@ fn observe(
     )?;
     let slowest = sources.field::<i64>(
         memory,
-        base,
-        SLOWEST_SPEED_RVA,
+        engine_sites::at(base, SLOWEST_SPEED_RVA)
+            .ok_or("the SLOWEST_SPEED define is unreadable")?,
+        0,
         "the SLOWEST_SPEED define is unreadable",
     )?;
     Ok(Observation {

@@ -50,6 +50,7 @@
 //! the functions above.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// The first [`COUNTRY_SITES`] sites receive a country in `rcx`; the rest
 /// receive the unit leader (full object). The collector's callbacks follow
@@ -59,59 +60,31 @@ pub const COUNTRY_SITES: usize = 2;
 pub const MUTATIONS: [MutationSite; 7] = [
     MutationSite {
         name: "recalculate_modifiers",
-        rva: 0x722930,
-        sentinel: [
-            0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
-            0x56, 0x41,
-        ],
+        rva: Rva(0x722930),
     },
     MutationSite {
         name: "reset_country_appearance",
-        rva: 0x72a990,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24,
-            0x20, 0x55,
-        ],
+        rva: Rva(0x72a990),
     },
     MutationSite {
         name: "recalculate_leader_modifiers",
-        rva: 0xc77590,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-            0x20, 0x57,
-        ],
+        rva: Rva(0xc77590),
     },
     MutationSite {
         name: "update_hq_scaled_modifiers",
-        rva: 0xc77be0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-            0x20, 0x57,
-        ],
+        rva: Rva(0xc77be0),
     },
     MutationSite {
         name: "construct_leader",
-        rva: 0xc61da0,
-        sentinel: [
-            0x48, 0x89, 0x4c, 0x24, 0x08, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48,
-            0x83, 0xc1,
-        ],
+        rva: Rva(0xc61da0),
     },
     MutationSite {
         name: "copy_construct_leader",
-        rva: 0xc61d00,
-        sentinel: [
-            0x48, 0x89, 0x4c, 0x24, 0x08, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48,
-            0x83, 0xc1,
-        ],
+        rva: Rva(0xc61d00),
     },
     MutationSite {
         name: "destroy_leader",
-        rva: 0xc62e40,
-        sentinel: [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0xe3, 0xf6, 0xd6, 0x01, 0xc7,
-            0x81, 0x7c,
-        ],
+        rva: Rva(0xc62e40),
     },
 ];
 
@@ -120,15 +93,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sites_are_distinct_and_each_sentinel_starts_its_function() {
-        let mut rvas: Vec<usize> = MUTATIONS.iter().map(|site| site.rva).collect();
+    fn sites_are_distinct() {
+        let mut rvas: Vec<Rva> = MUTATIONS.iter().map(|site| site.rva).collect();
         rvas.sort_unstable();
         rvas.dedup();
         assert_eq!(rvas.len(), MUTATIONS.len());
-        // Every sentinel opens with a prologue store or push.
-        for site in &MUTATIONS {
-            assert!(matches!(site.sentinel[0], 0x48 | 0x40), "{}", site.name);
-        }
         assert_eq!(MUTATIONS[..COUNTRY_SITES].len(), 2);
         assert_eq!(
             MUTATIONS[COUNTRY_SITES].name,

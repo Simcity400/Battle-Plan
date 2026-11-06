@@ -5,7 +5,7 @@ use crate::memory::SliceMemory;
 struct Fixture(Vec<u8>);
 impl Memory for Fixture {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == csub_unit_definition::DATABASE_RVA && output.len() == 8 {
+        if address == csub_unit_definition::DATABASE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x9800_u64.to_le_bytes());
             return true;
         }
@@ -29,7 +29,7 @@ impl Fixture {
         self.put(at + 12, &count.to_le_bytes());
     }
     fn subunit(&mut self, at: usize, token: u32, requirements: &[(u64, i64)]) {
-        self.word(at, csub_unit_definition::VTABLE_RVA as u64);
+        self.word(at, csub_unit_definition::VTABLE_RVA.0 as u64);
         self.put(at + csub_unit_definition::TOKEN, &token.to_le_bytes());
         self.0[at + csub_unit_definition::IS_REAL] = 1;
         self.put(
@@ -60,10 +60,10 @@ fn fixture() -> Fixture {
     memory.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0x2100, 2);
     memory.word(0x2008, 0x3000);
     memory.put(0x2104, &1_u32.to_le_bytes());
-    memory.word(0x3000, ccountry::VTABLE_RVA as u64);
+    memory.word(0x3000, ccountry::VTABLE_RVA.0 as u64);
     memory.put(0x3000 + ccountry::ID, &1_u32.to_le_bytes());
     memory.word(0x3000 + ccountry::DEPLOYMENT_MANAGER, 0x3800);
-    memory.word(0x3800, VTABLE_RVA as u64);
+    memory.word(0x3800, VTABLE_RVA.0 as u64);
     memory.word(0x3800 + OWNER, 0x3000);
     memory.array(0x3800 + LOCAL_SUBUNITS, 0x3a00, 2);
     memory.word(0x3a00, 0x5000);
@@ -74,7 +74,7 @@ fn fixture() -> Fixture {
     memory.array(0x9800 + csub_unit_definition::DATABASE_VECTOR, 0x9900, 2);
     memory.word(0x9908, 0x4000);
     for (at, token) in [(ARCHETYPE as usize, 71_u32), (OTHER as usize, 72)] {
-        memory.word(at, crate::cequipment_type::VTABLE_RVA as u64);
+        memory.word(at, crate::cequipment_type::VTABLE_RVA.0 as u64);
         memory.put(at + crate::cequipment_type::TOKEN, &token.to_le_bytes());
         memory.0[at + crate::cequipment_type::ACTIVE] = 1;
     }

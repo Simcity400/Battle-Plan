@@ -3,8 +3,9 @@
 //! without changing the final header; rereading a header does not establish
 //! an exhaustive writer or thread lifetime.
 
+use engine_sites::Rva;
 /// CLandCombatant primary vtable.
-pub const VTABLE_RVA: usize = 0x02a2_36a0;
+pub const VTABLE_RVA: Rva = Rva(0x02a2_36a0);
 /// CLandCombatant u32 indicator flags.
 pub const FLAGS: usize = 0x08;
 /// CLandCombatant parent CLandCombat pointer.

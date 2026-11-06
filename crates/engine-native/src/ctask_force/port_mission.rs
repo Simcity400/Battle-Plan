@@ -468,7 +468,7 @@ fn generic_owner(
         _ => return Err("port searcher CUnit class unsupported"),
     };
     let expected = |rva| {
-        base.checked_add(rva)
+        engine_sites::at(base, rva)
             .map(|pointer| pointer as u64)
             .ok_or("port searcher module address overflow")
     };

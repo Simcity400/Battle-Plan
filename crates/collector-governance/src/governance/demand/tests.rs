@@ -55,14 +55,14 @@ impl World {
         let ideologies: Vec<_> = (0..PARTIES)
             .map(|ordinal| {
                 let address = world.alloc(0x40);
-                world.u64(address, (BASE + cideology_group::VTABLE_RVA) as u64);
+                world.u64(address, (BASE + cideology_group::VTABLE_RVA.0) as u64);
                 world.u32(address + cideology_group::ID, ordinal as u32);
                 world.text(address + cideology_group::TOKEN);
                 address
             })
             .collect();
         let idea = world.alloc(cidea::TOKEN + 32);
-        world.u64(idea, (BASE + cidea::VTABLE_RVA) as u64);
+        world.u64(idea, (BASE + cidea::VTABLE_RVA.0) as u64);
         world.text(idea + cidea::TOKEN);
         let active_ideas = world.alloc(2 * 8);
         world.u64(active_ideas, idea as u64);
@@ -72,26 +72,26 @@ impl World {
             let entry = timed_ideas + ordinal * cpolitical_status::TIMED_IDEA_STRIDE;
             world.u64(
                 entry,
-                (BASE + cpolitical_status::TIMED_IDEA_VTABLE_RVA) as u64,
+                (BASE + cpolitical_status::TIMED_IDEA_VTABLE_RVA.0) as u64,
             );
             world.u64(entry + 8, idea as u64);
             world.u32(entry + 16, [i32::MIN as u32, 17][ordinal]);
         }
         let leader = world.alloc(ccountry_leader::LEADER_ID + 4);
-        world.u64(leader, (BASE + ccountry_leader::VTABLE_RVA) as u64);
+        world.u64(leader, (BASE + ccountry_leader::VTABLE_RVA.0) as u64);
         world.u32(leader + ccountry_leader::LEADER_ID, (-17_i32) as u32);
         let leaders = world.alloc(2 * 8);
         world.u64(leaders, leader as u64);
         world.u64(leaders + 8, leader as u64);
         let definition = world.alloc(0x200);
-        world.u64(definition, (BASE + cdynamic_modifier::VTABLE_RVA) as u64);
+        world.u64(definition, (BASE + cdynamic_modifier::VTABLE_RVA.0) as u64);
         world.text(definition + cdynamic_modifier::ID);
         world.u32(definition + cdynamic_modifier::VALUE_COUNT, 7);
         let entries = world.alloc(MODIFIERS * dynamic_modifier_entry::STRIDE);
         let values = world.alloc(7 * 8);
         for ordinal in 0..MODIFIERS {
             let entry = entries + ordinal * dynamic_modifier_entry::STRIDE;
-            world.u64(entry, (BASE + dynamic_modifier_entry::VTABLE_RVA) as u64);
+            world.u64(entry, (BASE + dynamic_modifier_entry::VTABLE_RVA.0) as u64);
             world.u64(
                 entry + dynamic_modifier_entry::DEFINITION,
                 definition as u64,
@@ -103,11 +103,11 @@ impl World {
             world.countries.push(country);
             world.u64(table + id * 8, country as u64);
             world.u32(links + id * 4, id as u32);
-            world.u64(country, (BASE + ccountry::VTABLE_RVA) as u64);
+            world.u64(country, (BASE + ccountry::VTABLE_RVA.0) as u64);
             world.u32(country + ccountry::ID, id as u32);
             let status = world.alloc(0x110);
             world.u64(country + ccountry::POLITICAL_STATUS, status as u64);
-            world.u64(status, (BASE + cpolitical_status::VTABLE_RVA) as u64);
+            world.u64(status, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
             world.u64(status + cpolitical_status::COUNTRY, country as u64);
             world.array(status + cpolitical_status::IDEAS, active_ideas, 2);
             world.array(status + cpolitical_status::TIMED_IDEAS, timed_ideas, 2);
@@ -116,7 +116,7 @@ impl World {
             for (ordinal, &ideology) in ideologies.iter().enumerate() {
                 let party = world.alloc(0xa0);
                 world.u64(parties + ordinal * 8, party as u64);
-                world.u64(party, (BASE + cpolitical_party::VTABLE_RVA) as u64);
+                world.u64(party, (BASE + cpolitical_party::VTABLE_RVA.0) as u64);
                 world.u32(party + cpolitical_party::ID, ordinal as u32);
                 world.u64(party + cpolitical_party::IDEOLOGY_GROUP, ideology as u64);
                 world.u32(party + cpolitical_party::TAG, id as u32);
@@ -128,16 +128,16 @@ impl World {
             let random = world.alloc(cdecision_status::RANDOM_ITEM_STRIDE * 2);
             let definition = world.alloc(cdecision::TOKEN + 32);
             world.u64(country + ccountry::DECISION_STATUS, decisions as u64);
-            world.u64(decisions, (BASE + cdecision_status::VTABLE_RVA) as u64);
+            world.u64(decisions, (BASE + cdecision_status::VTABLE_RVA.0) as u64);
             world.u64(decisions + cdecision_status::COUNTRY, country as u64);
             world.array(decisions + cdecision_status::RANDOM_ITEMS, random, 2);
-            world.u64(definition, (BASE + cdecision::VTABLE_RVA) as u64);
+            world.u64(definition, (BASE + cdecision::VTABLE_RVA.0) as u64);
             world.text(definition + cdecision::TOKEN);
             for ordinal in 0..2 {
                 let entry = random + ordinal * cdecision_status::RANDOM_ITEM_STRIDE;
                 world.u64(
                     entry,
-                    (BASE + cdecision_status::RANDOM_ITEM_VTABLE_RVA) as u64,
+                    (BASE + cdecision_status::RANDOM_ITEM_VTABLE_RVA.0) as u64,
                 );
                 world.u64(
                     entry + cdecision_status::RANDOM_ITEM_DEFINITION,
@@ -149,7 +149,7 @@ impl World {
             let container = country + ccountry::DYNAMIC_MODIFIERS;
             world.u64(
                 container,
-                (BASE + cdynamic_modifier_container::VTABLE_RVA) as u64,
+                (BASE + cdynamic_modifier_container::VTABLE_RVA.0) as u64,
             );
             world.u64(
                 container + cdynamic_modifier_container::COUNTRY,

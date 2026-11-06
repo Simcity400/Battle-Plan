@@ -17,7 +17,7 @@ impl Image {
             fault: None,
         };
         for n in 0..count {
-            image.word(n, 0, BASE + VTABLE_RVA);
+            image.word(n, 0, BASE + VTABLE_RVA.0);
             for offset in [ROOT, FROM, PREV] {
                 image.word(n, offset, START + n * SIZE);
             }

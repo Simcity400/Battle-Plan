@@ -31,9 +31,9 @@ fn vtable(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    expected: usize,
+    expected: Rva,
 ) -> Result<(), &'static str> {
-    if pointer == 0 || field::<u64>(memory, pointer, 0)? != at(base, expected)? as u64 {
+    if pointer == 0 || field::<u64>(memory, pointer, 0)? != module_at(base, expected)? as u64 {
         return Err("fuel demand graph vtable mismatch");
     }
     Ok(())
@@ -240,13 +240,13 @@ pub(super) fn context(
                                 }))
                             })
                         },
-                        subtract: field(memory, base, defines::CONTEXT_SUBTRACT_RVA)?,
-                        scale: field(memory, base, defines::CONTEXT_SCALE_RVA)?,
+                        subtract: global(memory, base, defines::CONTEXT_SUBTRACT_RVA)?,
+                        scale: global(memory, base, defines::CONTEXT_SCALE_RVA)?,
                     })?;
                 }
             }
             // The threshold is reached after each complete slot average.
-            result.thresholds[slot] = field(memory, base, defines::CONTEXT_THRESHOLD_RVA)?;
+            result.thresholds[slot] = global(memory, base, defines::CONTEXT_THRESHOLD_RVA)?;
         }
         Ok(())
     })();
@@ -304,7 +304,7 @@ fn inputs<M: Memory>(
             wing,
             cair_wing::MISSION + crate::air_mission::CAPACITY_CLASS,
         )?;
-        let thresholds = field::<u64>(memory, base, defines::CAPACITY_THRESHOLDS_RVA)? as usize;
+        let thresholds = global::<u64>(memory, base, defines::CAPACITY_THRESHOLDS_RVA)? as usize;
         let selected = thresholds
             .checked_add_signed(class as isize * 8)
             .ok_or("fuel demand capacity threshold address overflow")?;
@@ -334,7 +334,7 @@ fn inputs<M: Memory>(
         result.active_count = field(memory, wing, 0x170)?;
         (31 - result.mission_selected.leading_zeros()) as usize
     };
-    let costs = field::<u64>(memory, base, defines::MISSION_COSTS_RVA)? as usize;
+    let costs = global::<u64>(memory, base, defines::MISSION_COSTS_RVA)? as usize;
     result.mission_cost = field(memory, costs, index * 8)?;
     // Read base fuel before ace and owner modifiers.
     result.base_fuel = field(memory, wing, cair_wing::BASE_FUEL)?;
@@ -358,8 +358,8 @@ fn inputs<M: Memory>(
                 vtable(memory, base, assigned, cair_wing::VTABLE_RVA)?;
                 result.ace_assigned_planes = Some(field(memory, assigned, cair_wing::PLANE_COUNT)?);
                 if result.ace_assigned_planes != Some(0) {
-                    result.ace_count = field(memory, base, defines::ACE_COUNT_RVA)?;
-                    result.ace_cap = field(memory, base, defines::ACE_CAP_RVA)?;
+                    result.ace_count = global(memory, base, defines::ACE_COUNT_RVA)?;
+                    result.ace_cap = global(memory, base, defines::ACE_CAP_RVA)?;
                 }
             }
             let owner = field::<u64>(memory, ace, crate::cace::OWNER_COUNTRY)? as usize;
@@ -401,7 +401,7 @@ fn inputs<M: Memory>(
         0x19e,
     )?;
     result.period = field(memory, wing, 0xa8)?; // One sample, after helper, before weight.
-    result.air_weight = field(memory, base, defines::AIR_WEIGHT_RVA)?;
+    result.air_weight = global(memory, base, defines::AIR_WEIGHT_RVA)?;
     let region = field::<u64>(
         memory,
         wing,

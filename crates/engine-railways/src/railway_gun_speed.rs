@@ -5,6 +5,7 @@
 //! bonus census is inferred. Collections retain order and first-match semantics. Reads are fixed
 //! for callbacks or growing for workers; unreadable inputs refuse the ETA.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cequipment_module, cequipment_type, cequipment_upgrade,
     cequipment_upgrades_instance, cequipment_variant, cpdx_array::Array, cproduction_status,
@@ -26,15 +27,15 @@ const NAMED_BONUSES: usize = 0x178;
 const NAMED_STRIDE: usize = 0xc8;
 const NAMED_HANDLE: usize = 0xc0;
 // Embedded equipment bonuses start at one of two places; their entry arrays follow their headers.
-const SPECIFIC_VTABLE_RVA: usize = 0x0279_69f0;
-const BONUS_VTABLE_RVA: usize = 0x0279_6998;
-const NAMED_VTABLE_RVA: usize = 0x029e_cff8;
+const SPECIFIC_VTABLE_RVA: Rva = Rva(0x0279_69f0);
+const BONUS_VTABLE_RVA: Rva = Rva(0x0279_6998);
+const NAMED_VTABLE_RVA: Rva = Rva(0x029e_cff8);
 // The industrial-organisation trait bonus embedded in the variant.
 const MIO_BONUS: usize = 0x490;
-const MIO_VTABLE_RVA: usize = 0x0279_6c00;
+const MIO_VTABLE_RVA: Rva = Rva(0x0279_6c00);
 // Upgrade and module stat groups are embedded in the variant.
-const GROUP_VTABLE_RVA: usize = 0x029b_5d78;
-const STATS_VTABLE_RVA: usize = 0x0279_6940;
+const GROUP_VTABLE_RVA: Rva = Rva(0x029b_5d78);
+const STATS_VTABLE_RVA: Rva = Rva(0x0279_6940);
 
 /// Reused caller-owned storage for selected named-bonus pointers. All
 /// handles are collected before any selected stat array is read. Fixed
@@ -100,10 +101,9 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(vtable)
+    let expected = engine_sites::at(base, vtable)
         .ok_or("railway speed module address overflow")?;
     if field::<u64>(memory, object, 0)? != expected as u64 {
         return Err("railway speed dependency vtable mismatch");

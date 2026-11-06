@@ -16,6 +16,7 @@ bench = false
 test-support = ["dep:engine-executable", "dep:engine-native", "dep:engine-research", "dep:engine-focus", "engine-native/batch-fallback-test-counts"]
 
 [dependencies]
+engine-sites.workspace = true
 engine-executable = { workspace = true, optional = true }
 engine-native = { workspace = true, optional = true }
 engine-research = { workspace = true, optional = true }

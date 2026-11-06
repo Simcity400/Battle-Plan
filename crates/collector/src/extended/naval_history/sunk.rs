@@ -122,11 +122,11 @@ fn copy_sunk_class(
         None => return false,
     };
     let vtable = sunk_pool_u64(log, header);
-    let expected = match base.checked_add(csub_unit_definition::VTABLE_RVA) {
+    let expected = match engine_sites::at(base, csub_unit_definition::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_null = match base.checked_add(csub_unit_definition::NULL_VTABLE_RVA) {
+    let expected_null = match engine_sites::at(base, csub_unit_definition::NULL_VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
@@ -221,18 +221,18 @@ fn copy_sunk_record(
     staged.copy_from_slice(&log.bytes[record..record + csunk_ship_info::SIZE]);
     let u64_at = |offset: usize| u64::from_le_bytes(staged[offset..offset + 8].try_into().unwrap());
     let u32_at = |offset: usize| u32::from_le_bytes(staged[offset..offset + 4].try_into().unwrap());
-    let expected = match base.checked_add(csunk_ship_info::VTABLE_RVA) {
+    let expected = match engine_sites::at(base, csunk_ship_info::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
     if u64_at(0) != expected {
         return false;
     }
-    let expected_date = match base.checked_add(cgame_date::VTABLE_RVA) {
+    let expected_date = match engine_sites::at(base, cgame_date::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_persistent = match base.checked_add(cgame_date::PERSISTENT_VTABLE_RVA) {
+    let expected_persistent = match engine_sites::at(base, cgame_date::PERSISTENT_VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
@@ -277,7 +277,7 @@ fn copy_sunk_record(
             Some(start) => start,
             None => return false,
         };
-        let expected_province = match base.checked_add(cprovince::VTABLE_RVA) {
+        let expected_province = match engine_sites::at(base, cprovince::VTABLE_RVA) {
             Some(expected) => expected as u64,
             None => return false,
         };

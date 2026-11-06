@@ -31,6 +31,7 @@ use crate::{
     read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 use std::sync::Arc;
 
 mod menu;
@@ -50,7 +51,7 @@ const ENTRY: usize = ENEMY_MISSIONS + 2;
 /// Raw fixed5 normalization applied to regional aircraft spotting.
 const AIR_SPOTTING_SCALE: usize = 0x80;
 /// Loaded signed i32 combat delay, doubled for the phase period.
-pub const COMBAT_DELAY_RVA: usize = 0x033e_0bbc;
+pub const COMBAT_DELAY_RVA: Rva = Rva(0x033e_0bbc);
 /// Epoch subtracted from the game hour before signed remainder.
 const HOUR_EPOCH: i32 = 43_800_000;
 
@@ -299,8 +300,7 @@ fn read_table(
     output: &mut Buffer<'_, Row>,
     walk: &mut Walk,
 ) -> Result<(usize, i32), &'static str> {
-    let delay = base
-        .checked_add(COMBAT_DELAY_RVA)
+    let delay = engine_sites::at(base, COMBAT_DELAY_RVA)
         .and_then(|at| read::<i32>(memory, at))
         .ok_or("air combat delay define unreadable")?;
     // Signed division traps when no remainder exists.
@@ -443,8 +443,7 @@ fn read_regions(
     regions: &mut [Region],
 ) -> Result<(), &'static str> {
     const BATCH: usize = 64;
-    let expected = base
-        .checked_add(cstrategic_region::VTABLE_RVA)
+    let expected = engine_sites::at(base, cstrategic_region::VTABLE_RVA)
         .ok_or("raid air region vtable address overflow")? as u64;
     let mut raw = [0_u8; BATCH * 8];
     let mut pointers = [0_usize; BATCH];
@@ -715,7 +714,12 @@ fn carry(
         for (menu, row) in menus.iter_mut().zip(&previous) {
             *menu = row.and_then(|row| row.menu.as_ref());
         }
-        let reads = menu::read(memory, &addresses[..batch.len()], &menus[..batch.len()], scratch);
+        let reads = menu::read(
+            memory,
+            &addresses[..batch.len()],
+            &menus[..batch.len()],
+            scratch,
+        );
         for (index, ((slot, pair), read)) in batch
             .iter()
             .zip(bytes[..batch.len() * ENTRY].chunks_exact(ENTRY))
@@ -728,7 +732,15 @@ fn carry(
                     carry_row(output, len, row)?;
                 }
             }
-            target.push(*slot as usize, pair, scales[index], read, previous[index], output, len)?;
+            target.push(
+                *slot as usize,
+                pair,
+                scales[index],
+                read,
+                previous[index],
+                output,
+                len,
+            )?;
         }
     }
     for row in &held[next..] {
@@ -745,7 +757,7 @@ mod tests {
     use crate::memory::SliceMemory;
 
     const MEMORY: usize = 0x1000_0000;
-    const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA;
+    const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA.0;
     const GAME: usize = MEMORY + 0x1000;
     /// Synthetic phase-three hour with combat delay four and period eight.
     const HOUR: i32 = 43_800_000 + 8 * 1_000 + 3;
@@ -780,7 +792,7 @@ mod tests {
             world.header(0x1000 + cgame_state::COUNTRIES, countries_at, slots);
             world.header(0x1000 + cgame_state::COUNTRY_LINKS, links_at, slots);
             world.put(0x1000 + cgame_state::STRATEGIC_AIR_MANAGER, MEMORY + 0x2000);
-            world.put(0x2000, BASE + crate::cstrategic_air_manager::VTABLE_RVA);
+            world.put(0x2000, BASE + crate::cstrategic_air_manager::VTABLE_RVA.0);
             world.header(
                 0x2000 + crate::cstrategic_air_manager::COUNTRY_AIR,
                 air_at,
@@ -794,7 +806,7 @@ mod tests {
             for slot in 1..regions {
                 let region = world.region(slot);
                 world.put(region_list + slot * 8, MEMORY + region);
-                world.put(region, BASE + cstrategic_region::VTABLE_RVA);
+                world.put(region, BASE + cstrategic_region::VTABLE_RVA.0);
                 world.put32(region + cstrategic_region::PROVINCES_COUNT, 1);
                 world.put32(region + cstrategic_region::ID, 1_000 + slot as u32);
                 world.put32(region + cstrategic_region::RUNTIME_SLOT, slot as u32);
@@ -809,10 +821,10 @@ mod tests {
                 let air = world.air(slot);
                 world.put(countries_at + slot * 8, MEMORY + air - 0x20);
                 world.put32(links_at + slot * 4, slot as u32);
-                world.put(air - 0x20, BASE + crate::ccountry::VTABLE_RVA);
+                world.put(air - 0x20, BASE + crate::ccountry::VTABLE_RVA.0);
                 world.put(air - 0x20 + crate::ccountry::ID, slot);
                 world.put(air_at + slot * 8, MEMORY + air);
-                world.put(air, BASE + cstrategic_air::VTABLE_RVA);
+                world.put(air, BASE + cstrategic_air::VTABLE_RVA.0);
                 world.put(air + cstrategic_air::COUNTRY, slot);
                 world.header(air + SCORES, air + 0x1e0, regions);
                 for region in 0..regions {
@@ -902,7 +914,13 @@ mod tests {
         }
 
         /// A fresh balanced contribution map for one side of an entry's menu.
-        fn contributions(&mut self, country: usize, slot: usize, side: usize, entries: &[(u32, i64)]) {
+        fn contributions(
+            &mut self,
+            country: usize,
+            slot: usize,
+            side: usize,
+            entries: &[(u32, i64)],
+        ) {
             let head = self.bytes.len();
             let nodes = head + 0x30;
             self.bytes.resize(nodes + entries.len() * 0x30, 0);
@@ -1031,14 +1049,20 @@ mod tests {
 
         // A node that does not name its parent makes the menu unreadable, never empty.
         let at = world.entry(1, 3) + 0x50;
-        let head = u64::from_le_bytes(world.bytes[at..at + 8].try_into().unwrap()) as usize - MEMORY;
-        let root = u64::from_le_bytes(world.bytes[head + 8..head + 16].try_into().unwrap()) as usize - MEMORY;
+        let head =
+            u64::from_le_bytes(world.bytes[at..at + 8].try_into().unwrap()) as usize - MEMORY;
+        let root = u64::from_le_bytes(world.bytes[head + 8..head + 16].try_into().unwrap())
+            as usize
+            - MEMORY;
         world.put(root + 8, MEMORY + root);
         for hour in HOUR + 9..HOUR + 16 {
             world.walk(hour, &mut held, &mut rows);
         }
         let broken = world.walk(HOUR + 16, &mut held, &mut rows);
-        let row = rows[..broken.outcome.len()].iter().find(|row| row.slot == 3).unwrap();
+        let row = rows[..broken.outcome.len()]
+            .iter()
+            .find(|row| row.slot == 3)
+            .unwrap();
         assert_eq!((row.friendly, row.menu.clone()), (5, None));
     }
 

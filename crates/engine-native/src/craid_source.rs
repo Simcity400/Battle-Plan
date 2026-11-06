@@ -103,9 +103,8 @@ pub(crate) fn read_row(
     let province = if province_pointer == 0 {
         0
     } else {
-        let expected = base
-            .checked_add(cprovince::VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected =
+            engine_sites::at(base, cprovince::VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(memory, province_pointer) != Some(expected as u64) {
             return Err("raid source province vtable mismatch");
         }

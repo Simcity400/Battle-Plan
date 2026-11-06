@@ -309,7 +309,7 @@ fn world(shape: &Shape) -> Built {
     let slots = shape.countries as usize + 1;
     // Module data: definitions, defines and singletons.
     let table = w.alloc(0x78 * 0x300);
-    w.u64(modifier_definition::TABLE_RVA, table as u64);
+    w.u64(modifier_definition::TABLE_RVA.0, table as u64);
     for key in [0x2b_usize, 0x5e, 0x17f, 0x1e9, 0xfb, 0x10f] {
         w.u32(
             table + key * modifier_definition::STRIDE + modifier_definition::FLAGS,
@@ -317,16 +317,16 @@ fn world(shape: &Shape) -> Built {
         );
     }
     let database = w.alloc(0x400);
-    w.u64(cbuilding_database::SINGLETON_RVA, database as u64);
+    w.u64(cbuilding_database::SINGLETON_RVA.0, database as u64);
     let definition = w.alloc(0x400);
     w.u64(database + 0x3b0, definition as u64);
     // The tactic database: its null entry and `tactics` definitions.
     let tactics = w.alloc(0x100);
-    w.u64(ccombat_tactic::DATABASE_RVA, tactics as u64);
+    w.u64(ccombat_tactic::DATABASE_RVA.0, tactics as u64);
     let entries = w.alloc((shape.tactics as usize + 1) * 8);
     w.array(tactics + 0x10, entries, shape.tactics + 1);
     for id in 1..=shape.tactics {
-        let tactic = w.object(0x200, ccombat_tactic::VTABLE_RVA);
+        let tactic = w.object(0x200, ccombat_tactic::VTABLE_RVA.0);
         w.u32(tactic + ccombat_tactic::ID, id);
         w.text(
             tactic + ccombat_tactic::TOKEN,
@@ -361,7 +361,7 @@ fn world(shape: &Shape) -> Built {
     let mut diplomacies = Vec::new();
     for owner in 0..shape.owners {
         let slot = 1 + owner * (slots - 1) / shape.owners.max(1);
-        let country = w.object(0x1000, ccountry::VTABLE_RVA);
+        let country = w.object(0x1000, ccountry::VTABLE_RVA.0);
         w.u32(country + ccountry::ID, slot as u32);
         w.u64(countries + slot * 8, country as u64);
         w.accumulator(
@@ -374,7 +374,7 @@ fn world(shape: &Shape) -> Built {
                 (0x1e9, 13),
             ],
         );
-        let diplomacy = w.object(0x300, engine_native::cdiplomacy_status::VTABLE_RVA);
+        let diplomacy = w.object(0x300, engine_native::cdiplomacy_status::VTABLE_RVA.0);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         w.u64(
             diplomacy + engine_native::cdiplomacy_status::COUNTRY,
@@ -426,7 +426,7 @@ fn world(shape: &Shape) -> Built {
             if to == from {
                 continue;
             }
-            let tuple = w.object(0x300, engine_native::crelation_status::VTABLE_RVA);
+            let tuple = w.object(0x300, engine_native::crelation_status::VTABLE_RVA.0);
             w.u64(
                 tuple + engine_native::crelation_status::DIPLOMACY_STATUS,
                 diplomacy as u64,
@@ -440,17 +440,17 @@ fn world(shape: &Shape) -> Built {
         }
     }
     // Weather: two strategic regions with records.
-    let weather = w.object(0x100, cweather_manager::VTABLE_RVA);
+    let weather = w.object(0x100, cweather_manager::VTABLE_RVA.0);
     w.u64(GAME + cgame_state::WEATHER_MANAGER, weather as u64);
     let records = w.alloc(sweather_per_region::STRIDE * 2);
     w.array(weather + cweather_manager::REGIONS, records, 2);
     let mut regions = Vec::new();
     for id in 0..2_u32 {
         let record = records + id as usize * sweather_per_region::STRIDE;
-        w.u64(record, sweather_per_region::VTABLE_RVA as u64);
+        w.u64(record, sweather_per_region::VTABLE_RVA.0 as u64);
         w.u32(record + sweather_per_region::ID, id);
         w.accumulator(record + sweather_per_region::MODIFIERS, &[(0x29, 3)]);
-        let region = w.object(0x100, cstrategic_region::VTABLE_RVA);
+        let region = w.object(0x100, cstrategic_region::VTABLE_RVA.0);
         w.u32(region + cstrategic_region::ID, id);
         w.u32(region + 0x60, id + 1);
         regions.push(region);
@@ -458,7 +458,7 @@ fn world(shape: &Shape) -> Built {
     // Sub-units and templates.
     let subunits: Vec<usize> = (0..6)
         .map(|index| {
-            let unit = w.object(0x600, csub_unit_definition::VTABLE_RVA);
+            let unit = w.object(0x600, csub_unit_definition::VTABLE_RVA.0);
             w.u32(unit + 8, 40 + index);
             w.u64(unit + 0x58, 200_000 + u64::from(index) * 50_000);
             unit
@@ -466,7 +466,7 @@ fn world(shape: &Shape) -> Built {
         .collect();
     let templates: Vec<usize> = (0..shape.templates)
         .map(|index| {
-            let t = w.object(0x600, template::VTABLE_RVA);
+            let t = w.object(0x600, template::VTABLE_RVA.0);
             w.u64(
                 t + 8,
                 ((index as u64 + 1) << 32) | u64::from(template::REFERENCE_TYPE),
@@ -492,7 +492,7 @@ fn world(shape: &Shape) -> Built {
     // generated names store one group key between them.
     let name_groups: Vec<usize> = (0..3)
         .map(|index| {
-            let group = w.object(0x40, engine_native::cname_group_member::GROUP_VTABLE_RVA);
+            let group = w.object(0x40, engine_native::cname_group_member::GROUP_VTABLE_RVA.0);
             w.text(
                 group + engine_native::cname_group_member::GROUP_KEY,
                 format!("GROUP_{index}").as_bytes(),
@@ -509,7 +509,7 @@ fn world(shape: &Shape) -> Built {
     // States, terrain and provinces, registered by id.
     let states: Vec<usize> = (0..shape.states)
         .map(|index| {
-            let state = w.object(0x1000, cstate::VTABLE_RVA);
+            let state = w.object(0x1000, cstate::VTABLE_RVA.0);
             w.u32(state + cstate::ID, 500 + index as u32);
             w.u32(state + cstate::CONTROLLER, owners[index % owners.len()]);
             let cores = w.alloc(4);
@@ -526,7 +526,7 @@ fn world(shape: &Shape) -> Built {
         .collect();
     let terrains: Vec<usize> = (0..2)
         .map(|index| {
-            let terrain = w.object(0x100, cterrain_type::VTABLE_RVA);
+            let terrain = w.object(0x100, cterrain_type::VTABLE_RVA.0);
             w.put(terrain + cterrain_type::VALID, &[1]);
             w.text(
                 terrain + cterrain_type::NAME,
@@ -548,7 +548,7 @@ fn world(shape: &Shape) -> Built {
     );
     let provinces: Vec<usize> = (0..shape.provinces)
         .map(|index| {
-            let province = w.object(0x200, cprovince::VTABLE_RVA);
+            let province = w.object(0x200, cprovince::VTABLE_RVA.0);
             let definition = w.alloc(0x100);
             let id = first_province + index;
             w.u32(province + cprovince::ID, id as u32);
@@ -574,14 +574,14 @@ fn world(shape: &Shape) -> Built {
     let total = shape.combats * shape.divisions;
     let mut armies = Vec::new();
     for index in 0..total {
-        let army = w.object(0x800, carmy::VTABLE_RVA);
+        let army = w.object(0x800, carmy::VTABLE_RVA.0);
         w.u64(
             army + carmy::SECONDARY_BASE,
-            carmy::SECONDARY_VTABLE_RVA as u64,
+            carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         let handle = ((index as u64 + 1) << 32) | 3;
         w.u64(army + cunit::HANDLE, handle);
-        let stats = w.object(0x600, csub_unit_definition::VTABLE_RVA);
+        let stats = w.object(0x600, csub_unit_definition::VTABLE_RVA.0);
         w.u64(army + cunit::STAT_BLOCK, stats as u64);
         let province = provinces[(index * 7) % provinces.len()];
         w.u64(army + cunit::LOCATION, province as u64);
@@ -597,7 +597,7 @@ fn world(shape: &Shape) -> Built {
         // type (which reads nothing further).
         let name = w.alloc(0x100);
         w.u64(army + inputs::NAME_GROUP_MEMBER, name as u64);
-        w.u64(name, engine_native::cname_group_member::VTABLE_RVA as u64);
+        w.u64(name, engine_native::cname_group_member::VTABLE_RVA.0 as u64);
         w.u32(
             name + engine_native::cname_group_member::ORDER,
             index as u32,
@@ -648,16 +648,16 @@ fn world(shape: &Shape) -> Built {
         registry,
         shape.combats as u32 + 1,
     );
-    let naval = w.object(0x100, cnaval_combat::VTABLE_RVA);
+    let naval = w.object(0x100, cnaval_combat::VTABLE_RVA.0);
     w.u64(registry, naval as u64);
     let mut combats = Vec::new();
     let mut members = Vec::new();
     let mut all_sides = Vec::new();
     for combat in 0..shape.combats {
-        let object = w.object(0x600, cland_combat::VTABLE_RVA);
+        let object = w.object(0x600, cland_combat::VTABLE_RVA.0);
         w.u64(
             object + cland_combat::BODY,
-            cland_combat::BODY_VTABLE_RVA as u64,
+            cland_combat::BODY_VTABLE_RVA.0 as u64,
         );
         w.u64(
             object + cland_combat::HANDLE,
@@ -680,7 +680,7 @@ fn world(shape: &Shape) -> Built {
             .into_iter()
             .enumerate()
         {
-            let side = w.object(0x600, cland_combatant::VTABLE_RVA);
+            let side = w.object(0x600, cland_combatant::VTABLE_RVA.0);
             w.u64(side + cland_combatant::COMBAT, object as u64);
             w.put(side + cland_combatant::IS_ATTACKER, &[is_attacker]);
             w.u32(side + cland_combatant::FLAGS, (combat * 2 + index) as u32);
@@ -733,7 +733,7 @@ fn register_templates(w: &mut World, templates: &[usize]) {
     let table = w.alloc(0x40);
     let entries = w.alloc((mask as usize + 1 + overflow as usize + 1) * bucket::STRIDE);
     w.u64(
-        registry::LOW_ROOTS_RVA + template::REFERENCE_TYPE as usize * 8,
+        registry::LOW_ROOTS_RVA.0 + template::REFERENCE_TYPE as usize * 8,
         table as u64,
     );
     w.u64(table + registry::ENTRIES, entries as u64);
@@ -821,12 +821,12 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
     if count == 0 {
         return Vec::new();
     }
-    let skill = w.object(0x200, cunit_leader_skill::VTABLE_RVA);
+    let skill = w.object(0x200, cunit_leader_skill::VTABLE_RVA.0);
     w.u32(skill + cunit_leader_skill::LEVEL, 3);
     w.u32(skill + cunit_leader_skill::CATEGORY, 2);
     let skills = w.alloc(0x200);
     w.u64(
-        engine_native::naval_commander_inputs::SKILL_DATABASE_RVA,
+        engine_native::naval_commander_inputs::SKILL_DATABASE_RVA.0,
         skills as u64,
     );
     let levels = w.alloc(8 * 5);
@@ -834,12 +834,12 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
         w.u64(levels + level * 8, skill as u64);
     }
     w.array(skills + 0xe8 + 2 * 0x18, levels, 5);
-    let preferred = w.object(0x100, cnull_combat_tactic::VTABLE_RVA);
+    let preferred = w.object(0x100, cnull_combat_tactic::VTABLE_RVA.0);
     // One bucket per leader in a 64-slot table, without collisions.
     let (mask, overflow) = (63_u32, 8_u8);
     let table = w.alloc(0x40);
     let entries = w.alloc((mask as usize + 1 + overflow as usize + 1) * bucket::STRIDE);
-    w.u64(registry::HIGH_ROOT_RVA, table as u64);
+    w.u64(registry::HIGH_ROOT_RVA.0, table as u64);
     w.u64(table + registry::ENTRIES, entries as u64);
     w.u32(table + registry::COUNT, count as u32);
     w.u32(table + registry::MASK, mask);
@@ -862,7 +862,7 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
             continue;
         }
         used.push(slot);
-        let leader = w.object(0x1100, carmy_leader::VTABLE_RVA);
+        let leader = w.object(0x1100, carmy_leader::VTABLE_RVA.0);
         w.u64(leader + cunit_leader::TYPE, handle);
         w.u64(leader + cunit_leader::SKILL, skill as u64);
         w.u32(leader + cunit_leader::CATEGORY, 2);
@@ -896,7 +896,7 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
         w.put(cell + bucket::DISTANCE, &[1]);
         w.u64(cell + 8, handle);
         w.u64(cell + 16, leader as u64);
-        let group = w.object(corders_group::SIZE, corders_group::VTABLE_RVA);
+        let group = w.object(corders_group::SIZE, corders_group::VTABLE_RVA.0);
         w.u64(
             group + corders_group::HANDLE,
             (id << 32) | u64::from(corders_group::REFERENCE_TYPE),
@@ -1058,7 +1058,7 @@ fn run_reference(world: &impl Memory, c: Capacities) -> Observed {
 #[test]
 fn deferred_reserve_arithmetic_preserves_rows_refusals_and_native_read_order() {
     let mut built = world(&Shape::small());
-    for fault in [None, Some((reserve_speed::SLOWEST_SPEED_RVA, 8))] {
+    for fault in [None, Some((reserve_speed::SLOWEST_SPEED_RVA.0, 8))] {
         built.world.poisoned = fault.into_iter().collect();
         *built.world.log.lock().unwrap() = Some(Vec::new());
         let expected = run(&built.world, roomy());
@@ -1480,7 +1480,7 @@ fn border_war_hooks_after_neighbouring_text(reference: bool) {
         let w = &mut built.world;
         heap_text(w, pointer + leader::TOKEN, name);
         heap_text(w, pointer + leader::DESCRIPTION_TOKEN, description);
-        let trait_pointer = w.object(0xb00, trait_::VTABLE_RVA);
+        let trait_pointer = w.object(0xb00, trait_::VTABLE_RVA.0);
         w.u32(trait_pointer + trait_::TOKEN_ID, 80);
         w.u32(trait_pointer + trait_::ORDINAL, 1);
         heap_text(w, trait_pointer + trait_::TOKEN, trait_token);
@@ -1496,11 +1496,11 @@ fn border_war_hooks_after_neighbouring_text(reference: bool) {
     for index in 1..shape.combats {
         let pointer = built.combats[index];
         let w = &mut built.world;
-        w.u64(pointer, combat::VTABLE_RVA as u64);
-        w.u64(pointer + combat::BODY, combat::BODY_VTABLE_RVA as u64);
+        w.u64(pointer, combat::VTABLE_RVA.0 as u64);
+        w.u64(pointer + combat::BODY, combat::BODY_VTABLE_RVA.0 as u64);
         for (ordinal, pointer) in built.sides[index].into_iter().enumerate() {
-            w.u64(pointer, side::VTABLE_RVA as u64);
-            let state = w.object(0x100, cstate::VTABLE_RVA);
+            w.u64(pointer, side::VTABLE_RVA.0 as u64);
+            let state = w.object(0x100, cstate::VTABLE_RVA.0);
             w.u32(state + cstate::ID, ordinal as u32 + 1);
             w.u64(pointer + side::STATE, state as u64);
             w.u32(pointer + side::COUNTRY, ordinal as u32 + 1);

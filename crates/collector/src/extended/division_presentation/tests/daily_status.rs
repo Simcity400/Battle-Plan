@@ -171,8 +171,8 @@ fn footer_daily_cache_requires_the_complete_occurrence_and_preserves_ordered_ori
         division: 7,
         handle: Some(7),
         class: Some(0),
-        primary_vtable: Some(carmy::VTABLE_RVA as u64),
-        secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
+        primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
+        secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA.0 as u64),
         ..Default::default()
     };
     let origins = [supply::Origin {

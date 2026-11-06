@@ -52,7 +52,7 @@ impl StatusPacket {
                 return Err("division model input packet capacity exceeded");
             }
             let countries = ccountry::Reader::new(memory, base, state);
-            let identity = base.checked_add(VTABLE_RVA).map(|at| at as u64);
+            let identity = engine_sites::at(base, VTABLE_RVA).map(|at| at as u64);
             let len = seeds.len().min(output.len());
             let mut entries = self.acclimatization.take();
             for (unit, seed) in seeds[..len].iter().enumerate() {

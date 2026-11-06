@@ -95,11 +95,11 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         pointers: Vec::new(),
     };
     let state = h.alloc(0x1000);
-    h.u64(carmy::COUNTER_ATTRITION_THRESHOLD_RVA, 500);
+    h.u64(carmy::COUNTER_ATTRITION_THRESHOLD_RVA.0, 500);
     let variants: Vec<_> = (1..=3)
         .map(|id| {
             let p = h.alloc(16);
-            h.ptr(p, variant::VTABLE_RVA);
+            h.ptr(p, variant::VTABLE_RVA.0);
             h.u64(
                 p + variant::TYPE,
                 (id << 32) | variant::REFERENCE_TYPE as u64,
@@ -110,14 +110,14 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
     let provinces: Vec<_> = (0..shape.countries + 1)
         .map(|id| {
             let p = h.alloc(0x200);
-            h.ptr(p, cprovince::VTABLE_RVA);
+            h.ptr(p, cprovince::VTABLE_RVA.0);
             h.u32(p + cprovince::ID, id as u32);
             p
         })
         .collect();
     h.array(state + cgame_state::PROVINCES, &provinces);
     let manager = h.alloc(0x200);
-    h.ptr(manager, air_manager::VTABLE_RVA);
+    h.ptr(manager, air_manager::VTABLE_RVA.0);
     h.ptr(state + cgame_state::STRATEGIC_AIR_MANAGER, manager);
     let mut countries = vec![0];
     let mut air_countries = vec![0];
@@ -128,11 +128,11 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
     for slot in 1..=shape.countries {
         let country =
             h.alloc(ccountry::MODIFIER_ACCUMULATOR.max(ccountry::DIVISION_TEMPLATES) + 0x100);
-        h.ptr(country, ccountry::VTABLE_RVA);
+        h.ptr(country, ccountry::VTABLE_RVA.0);
         h.u32(country + ccountry::ID, slot as u32);
         countries.push(country);
         let tpl = h.alloc(0x500);
-        h.ptr(tpl, template::VTABLE_RVA);
+        h.ptr(tpl, template::VTABLE_RVA.0);
         h.u64(
             tpl + template::TYPE,
             ((slot as u64) << 32) | template::REFERENCE_TYPE as u64,
@@ -141,8 +141,8 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         let mut roster = Vec::new();
         for _ in share(shape.divisions, shape.countries, slot) {
             let army = h.alloc(0x800);
-            h.ptr(army, carmy::VTABLE_RVA);
-            h.ptr(army + carmy::SECONDARY_BASE, carmy::SECONDARY_VTABLE_RVA);
+            h.ptr(army, carmy::VTABLE_RVA.0);
+            h.ptr(army + carmy::SECONDARY_BASE, carmy::SECONDARY_VTABLE_RVA.0);
             h.u64(army + cunit::HANDLE, ((armies.len() as u64 + 1) << 32) | 51);
             h.u32(army + cunit::ROSTER_OWNER, slot as u32);
             h.u32(army + cunit::LOGICAL_OWNER, slot as u32);
@@ -159,7 +159,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
                 h.ptr(army + carmy::MOVEMENT_SOURCE, provinces[slot]);
             }
             h.ptr(army + carmy::STANDARD_TEMPLATE, tpl);
-            h.ptr(army + carmy::EQUIPMENT_POOL, equipment::VTABLE_RVA);
+            h.ptr(army + carmy::EQUIPMENT_POOL, equipment::VTABLE_RVA.0);
             let entries = h.alloc(3 * 16);
             h.ptr(army + carmy::EQUIPMENT_POOL + equipment::ITEMS, entries);
             h.u32(army + carmy::EQUIPMENT_POOL + equipment::CAPACITY, 3);
@@ -169,13 +169,13 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
                 h.u64(entries + i * 16 + 8, 100_000);
             }
             let stat = h.alloc(0x300);
-            h.ptr(stat, stats::VTABLE_RVA);
+            h.ptr(stat, stats::VTABLE_RVA.0);
             h.u64(stat + stats::MAXIMUM_STRENGTH, 100_000);
             h.u64(stat + stats::MAXIMUM_ORGANISATION, 100_000);
             h.ptr(army + cunit::STAT_BLOCK, stat);
             h.ptr(
                 army + carmy::ACCLIMATIZATION,
-                engine_native::acclimatization_data::VTABLE_RVA,
+                engine_native::acclimatization_data::VTABLE_RVA.0,
             );
             let viewers = h.alloc(3 * engine_visibility::unit_viewer_entry::STRIDE);
             h.ptr(army + cunit::VIEWER_DATA, viewers);
@@ -193,10 +193,10 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
             let requests = h.alloc(0x100);
             h.ptr(army + carmy::REQUESTS, requests);
             let group = requests + upgrades::IN_ARMY_REQUESTS;
-            h.ptr(group, upgrades::VTABLE_RVA);
+            h.ptr(group, upgrades::VTABLE_RVA.0);
             h.ptr(
                 group + upgrades::PERSISTENT_SUBOBJECT,
-                upgrades::PERSISTENT_VTABLE_RVA,
+                upgrades::PERSISTENT_VTABLE_RVA.0,
             );
             h.ptr(group + upgrades::ARMY, army);
             h.u64(army + carmy::STRENGTH, 100_000);
@@ -206,19 +206,19 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         }
         h.array(country + ccountry::DIVISIONS, &roster);
         let air = h.alloc(cstrategic_air::SIZE);
-        h.ptr(air, cstrategic_air::VTABLE_RVA);
+        h.ptr(air, cstrategic_air::VTABLE_RVA.0);
         h.u32(air + cstrategic_air::COUNTRY, slot as u32);
         air_countries.push(air);
         let pool = h.alloc(cair_wing_pool::SIZE);
-        h.ptr(pool, cair_wing_pool::VTABLE_RVA);
+        h.ptr(pool, cair_wing_pool::VTABLE_RVA.0);
         h.ptr(pool + cair_wing_pool::OWNER, air);
         h.array(air + cstrategic_air::POOLS, &[pool]);
         let mut wings = Vec::new();
         for _ in share(shape.wings, shape.countries, slot) {
             let wing = h.alloc(cair_wing::COUNTRY_OVERRIDE + 16);
             wing_id += 1;
-            h.ptr(wing, cair_wing::VTABLE_RVA);
-            h.ptr(wing + cair_wing::SECONDARY, cair_wing::SECONDARY_VTABLE_RVA);
+            h.ptr(wing, cair_wing::VTABLE_RVA.0);
+            h.ptr(wing + cair_wing::SECONDARY, cair_wing::SECONDARY_VTABLE_RVA.0);
             h.u64(
                 wing + cair_wing::REFERENCE_TYPE,
                 (wing_id << 32) | cair_wing::TYPE as u64,
@@ -233,7 +233,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
                 engine_native::msvc_string::INLINE_CAPACITY,
             );
             h.ptr(wing + cair_wing::POOL, pool);
-            h.ptr(wing + cair_wing::EQUIPMENT_POOL, equipment::VTABLE_RVA);
+            h.ptr(wing + cair_wing::EQUIPMENT_POOL, equipment::VTABLE_RVA.0);
             let bank = h.alloc(16);
             h.ptr(bank, variants[0]);
             h.u64(bank + 8, (shape.planes / shape.wings) as u64 * 100_000);
@@ -248,7 +248,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         }
         h.array(pool + cair_wing_pool::WINGS, &wings);
         let base = h.alloc(cair_base::SIZE);
-        h.ptr(base, cair_base::VTABLE_RVA);
+        h.ptr(base, cair_base::VTABLE_RVA.0);
         h.u64(
             base + cair_base::HANDLE,
             ((slot as u64) << 32) | cair_base::TYPE as u64,
@@ -260,7 +260,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         h.u32(base + cair_base::CAPACITY, wings.len() as u32 * 10);
         // One occupied container in the native country-slot-sized base array.
         let container = h.alloc(engine_native::ccountry_air_container::SIZE);
-        h.ptr(container, engine_native::ccountry_air_container::VTABLE_RVA);
+        h.ptr(container, engine_native::ccountry_air_container::VTABLE_RVA.0);
         h.u32(
             container + engine_native::ccountry_air_container::COUNTRY,
             slot as u32,
@@ -275,7 +275,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         h.array(base + cair_base::REGISTERED_CONTAINERS, &[container]);
         bases.push(base);
         let fleet = h.alloc(0x140);
-        h.ptr(fleet, cfleet::VTABLE_RVA);
+        h.ptr(fleet, cfleet::VTABLE_RVA.0);
         h.u64(
             fleet + cfleet::HANDLE,
             ((slot as u64) << 32) | cfleet::HANDLE_TYPE as u64,
@@ -283,10 +283,10 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         h.ptr(fleet + cfleet::OWNER, country);
         h.array(country + ccountry::FLEETS, &[fleet]);
         let task = h.alloc(0x520);
-        h.ptr(task, ctask_force::VTABLE_RVA);
+        h.ptr(task, ctask_force::VTABLE_RVA.0);
         h.ptr(
             task + ctask_force::SECONDARY_BASE,
-            ctask_force::SECONDARY_VTABLE_RVA,
+            ctask_force::SECONDARY_VTABLE_RVA.0,
         );
         h.u64(
             task + cunit::HANDLE,
@@ -299,7 +299,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         for _ in share(shape.ships, shape.countries, slot) {
             let ship = h.alloc(cship::SIZE);
             ship_id += 1;
-            h.ptr(ship, cship::VTABLE_RVA);
+            h.ptr(ship, cship::VTABLE_RVA.0);
             h.u64(
                 ship + cship::HANDLE,
                 (ship_id << 32) | cship::HANDLE_TYPE as u64,
@@ -315,8 +315,8 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         // Ten percent fighting, one distinct attacker and defender per battle.
         for pair in armies[..(shape.divisions / 20) * 2].chunks_exact(2) {
             let battle = h.alloc(0x100);
-            h.ptr(battle, combat::VTABLE_RVA);
-            h.ptr(battle + combat::BODY, combat::BODY_VTABLE_RVA);
+            h.ptr(battle, combat::VTABLE_RVA.0);
+            h.ptr(battle + combat::BODY, combat::BODY_VTABLE_RVA.0);
             h.u64(
                 battle + combat::HANDLE,
                 (((combats.len() + 1) as u64) << 32) | combat::TYPE_WORD as u64,
@@ -327,7 +327,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
             );
             for (index, unit) in pair.iter().enumerate() {
                 let participant = h.alloc(side::IS_ATTACKER + 16);
-                h.ptr(participant, side::VTABLE_RVA);
+                h.ptr(participant, side::VTABLE_RVA.0);
                 h.ptr(participant + side::COMBAT, battle);
                 h.bytes[participant + side::IS_ATTACKER] = u8::from(index == 0);
                 h.array(participant + side::UNITS, &[*unit]);

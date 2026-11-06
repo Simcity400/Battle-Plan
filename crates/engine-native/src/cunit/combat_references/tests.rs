@@ -26,7 +26,7 @@ impl Memory for Image {
         if self.fault == Some((address, output.len())) {
             return false;
         }
-        if address == registry::HIGH_ROOT_RVA && output.len() == 8 {
+        if address == registry::HIGH_ROOT_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(TABLE as u64).to_le_bytes());
             return true;
         }
@@ -67,14 +67,14 @@ fn fixture() -> (Image, [u8; 16]) {
     bytes[BUCKETS + 13 * reference_bucket::STRIDE + reference_bucket::DISTANCE] = 255;
     let classes = [
         (
-            crate::cland_combat::VTABLE_RVA,
-            crate::cland_combat::BODY_VTABLE_RVA,
+            crate::cland_combat::VTABLE_RVA.0,
+            crate::cland_combat::BODY_VTABLE_RVA.0,
         ),
         (
-            crate::cland_border_war_combat::VTABLE_RVA,
-            crate::cland_border_war_combat::BODY_VTABLE_RVA,
+            crate::cland_border_war_combat::VTABLE_RVA.0,
+            crate::cland_border_war_combat::BODY_VTABLE_RVA.0,
         ),
-        (crate::cnaval_combat::VTABLE_RVA, 0x02a5_6e70),
+        (crate::cnaval_combat::VTABLE_RVA.0, 0x02a5_6e70),
     ];
     for ((pointer, handle), (primary, secondary)) in OBJECTS.into_iter().zip(HANDLES).zip(classes) {
         word(&mut bytes, pointer, primary as u64);
@@ -219,7 +219,7 @@ fn unreadable_tail_keeps_first_refusal_and_never_claims_complete() {
 
 #[test]
 fn later_identity_and_registry_faults_do_not_become_empty_or_class_guesses() {
-    for fault in [(OBJECTS[1], 32), (registry::HIGH_ROOT_RVA, 8)] {
+    for fault in [(OBJECTS[1], 32), (registry::HIGH_ROOT_RVA.0, 8)] {
         let (mut image, value) = fixture();
         image.fault = Some(fault);
         let mut output = [MapCombatReference::default(); 4];
@@ -279,7 +279,7 @@ fn pointer_null_and_unsupported_class_keep_independent_static_refusals() {
     word(
         &mut image.bytes,
         OBJECTS[1],
-        crate::carmy::VTABLE_RVA as u64,
+        crate::carmy::VTABLE_RVA.0 as u64,
     );
     assert_eq!(
         capture(&image, value, &mut [MapCombatReference::default(); 4]),
@@ -484,7 +484,7 @@ fn movement_memo_keeps_header_rechecks_and_uncached_fallback_refusals() {
             1 => word(
                 &mut image.bytes,
                 OBJECTS[1],
-                crate::carmy::VTABLE_RVA as u64,
+                crate::carmy::VTABLE_RVA.0 as u64,
             ),
             2 => word(&mut image.bytes, OBJECTS[1] + 0x10, 0),
             3 => word(&mut image.bytes, VECTOR + 8, 0),

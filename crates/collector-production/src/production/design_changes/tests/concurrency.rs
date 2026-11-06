@@ -1037,7 +1037,7 @@ fn saved_source() -> (Space, Vec<native::RegistryRow>, Variants, usize) {
         std::ptr::write_bytes(source as *mut u8, 0, 0x100);
         std::ptr::write_unaligned(
             source as *mut u64,
-            (space.base + native::SPECIFIC_BONUS_VTABLE_RVA) as u64,
+            (space.base + native::SPECIFIC_BONUS_VTABLE_RVA.0) as u64,
         );
         std::ptr::write_unaligned((source + native::BONUS_STATS) as *mut usize, source + 0x80);
         std::ptr::write_unaligned(
@@ -1157,7 +1157,7 @@ fn contended_author_roster_keeps_its_occurrence_and_frozen_designs() {
     use engine_production::nindustrial_organisation_corganisation as organisation;
     let (space, registry, baseline) = setup(1);
     let mut bytes = [0u8; organisation::REFERENCE + 8];
-    bytes[..8].copy_from_slice(&((space.base + organisation::VTABLE_RVA) as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&((space.base + organisation::VTABLE_RVA.0) as u64).to_le_bytes());
     bytes[organisation::REFERENCE..organisation::REFERENCE + 8]
         .copy_from_slice(&1u64.to_le_bytes());
     let pointer = bytes.as_ptr() as usize;

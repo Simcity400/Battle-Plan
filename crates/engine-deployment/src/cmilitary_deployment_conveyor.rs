@@ -11,9 +11,10 @@
 use crate::{
     Memory, cpdx_array::Array, creferenced_division_template, msvc_string, read, read_slice,
 };
+use engine_sites::Rva;
 
 /// CMilitaryDeploymentConveyor primary vtable.
-pub const VTABLE_RVA: usize = 0x29daa08;
+pub const VTABLE_RVA: Rva = Rva(0x29daa08);
 /// CMilitaryDeploymentConveyor reference kind.
 pub const REFERENCE_TYPE: u32 = 64;
 /// CMilitaryDeploymentConveyor reference type word, u32.
@@ -42,7 +43,7 @@ pub const CLOSED: usize = 0x94;
 /// Capture retains the raw positive word and reports None otherwise.
 pub const GATED_COUNTRY: usize = 0x98;
 /// Deployment-conveyor constructor.
-pub const CONSTRUCT_RVA: usize = 0x00d4_6e00;
+pub const CONSTRUCT_RVA: Rva = Rva(0x00d4_6e00);
 
 /// One queue entry. `name` indexes the caller's arena; empty names are valid.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -94,9 +95,8 @@ pub(crate) fn read_row_buffer(
     names: &mut crate::walk::Buffer<'_, u8>,
     used: usize,
 ) -> Result<Read, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("deployment conveyor module address overflow")?;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("deployment conveyor module address overflow")?;
     let head =
         read::<[u8; 0x9c]>(memory, pointer).ok_or("deployment conveyor fields unreadable")?;
     let quad = |offset: usize| u64::from_le_bytes(head[offset..offset + 8].try_into().unwrap());

@@ -453,7 +453,7 @@ mod tests {
         array(&mut bytes, STATE + engine_native::cgame_state::PROVINCES, SLOTS, 4);
         for (index, province) in PROVINCES.into_iter().enumerate() {
             put(&mut bytes, SLOTS + 8 + index * 8, &(province as u64).to_le_bytes());
-            put(&mut bytes, province, &(cprovince::VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, province, &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
             put(&mut bytes, province + cprovince::ID, &(index as u32 + 1).to_le_bytes());
             let count = u32::from(with.contains(&(index + 1)));
             array(&mut bytes, province + cprovince::COMBATS, VECTORS[index], count);
@@ -462,7 +462,7 @@ mod tests {
         put(
             &mut bytes,
             NAVAL,
-            &(engine_native::cnaval_combat::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::cnaval_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

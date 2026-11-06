@@ -9,7 +9,7 @@ fn fixture(kind: u32, parties: [u32; 2]) -> Vec<u8> {
     bytes[STATUS + SUBJECT_RELATION..STATUS + SUBJECT_RELATION + 8]
         .copy_from_slice(&(SUBJECT as u64).to_le_bytes());
     bytes[SUBJECT..SUBJECT + 8]
-        .copy_from_slice(&(csubject_relation::VTABLE_RVA as u64).to_le_bytes());
+        .copy_from_slice(&(csubject_relation::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[SUBJECT + crelation::TYPE_ID..SUBJECT + crelation::TYPE_ID + 4]
         .copy_from_slice(&kind.to_le_bytes());
     for (index, party) in parties.into_iter().enumerate() {

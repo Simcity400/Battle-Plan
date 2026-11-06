@@ -24,7 +24,7 @@ fn faction_companions_keep_programme_handles_and_rules_in_native_order() {
     put(
         &mut bytes,
         status,
-        (programs::VTABLE_RVA as u64).to_le_bytes(),
+        (programs::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(&mut bytes, status + programs::PROGRAMS, DATA, 4);
     let expected = [0_u64, 0x8000_ffff_1234_5678, 17, 17];
@@ -45,7 +45,7 @@ fn faction_companions_keep_programme_handles_and_rules_in_native_order() {
     assert_eq!(references, expected);
 
     let status = FACTION + rules::STATUS;
-    put(&mut bytes, status, (rules::VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, status, (rules::VTABLE_RVA.0 as u64).to_le_bytes());
     put(
         &mut bytes,
         status + rules::OWNER,
@@ -62,7 +62,7 @@ fn faction_companions_keep_programme_handles_and_rules_in_native_order() {
     put(
         &mut bytes,
         DATA + 0x200,
-        (rules::DEFINITION_VTABLE_RVA as u64).to_le_bytes(),
+        (rules::DEFINITION_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -103,7 +103,7 @@ fn faction_companions_retain_sharing_bonuses_country_aliases_and_doctrine_folder
     put(
         &mut bytes,
         status,
-        (research::VTABLE_RVA as u64).to_le_bytes(),
+        (research::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -157,7 +157,7 @@ fn faction_companions_retain_sharing_bonuses_country_aliases_and_doctrine_folder
     put(
         &mut bytes,
         status,
-        (doctrine::VTABLE_RVA as u64).to_le_bytes(),
+        (doctrine::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(&mut bytes, status + doctrine::FOLDERS, DATA + 0x200, 3);
     for ordinal in 0..3 {
@@ -170,7 +170,7 @@ fn faction_companions_retain_sharing_bonuses_country_aliases_and_doctrine_folder
     put(
         &mut bytes,
         DATA + 0x300,
-        (folder::VTABLE_RVA as u64).to_le_bytes(),
+        (folder::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -198,7 +198,7 @@ fn faction_companions_preserve_signed_manpower_contributions() {
     put(
         &mut bytes,
         pool,
-        (crate::carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes(),
+        (crate::carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -261,7 +261,7 @@ fn faction_companions_allow_empty_arrays_without_reading_a_data_pointer() {
         (rules::STATUS, rules::VTABLE_RVA, rules::RULES),
     ] {
         let status = FACTION + offset;
-        put(&mut bytes, status, (vtable as u64).to_le_bytes());
+        put(&mut bytes, status, (vtable.0 as u64).to_le_bytes());
         array(&mut bytes, status + array_offset, usize::MAX, 0);
     }
     put(

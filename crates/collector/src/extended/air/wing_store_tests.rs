@@ -41,7 +41,7 @@ fn world() -> Vec<u8> {
         put(
             &mut bytes,
             pool,
-            &(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes(),
+            &(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -61,7 +61,7 @@ fn world() -> Vec<u8> {
         put(
             &mut bytes,
             variant,
-            &(cequipment_variant::VTABLE_RVA as u64).to_le_bytes(),
+            &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         // The reference type word, then the variant id.
         put(

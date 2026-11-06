@@ -45,6 +45,7 @@
 //!   certificate.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// How a site names the written deployment status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,11 +74,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "ensure_local_subunit",
-            rva: 0xd6_f9c0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
-                0x48, 0x83,
-            ],
+            rva: Rva(0xd6_f9c0),
         },
         Receiver::Status,
     ),
@@ -86,11 +83,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "rebuild_local_subunit",
-            rva: 0x10a_1060,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0x10a_1060),
         },
         Receiver::BonusList,
     ),
@@ -98,11 +91,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "clear_local_subunits",
-            rva: 0xd7_0550,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x48,
-            ],
+            rva: Rva(0xd7_0550),
         },
         Receiver::Status,
     ),
@@ -110,11 +99,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "initialize_default_subunits",
-            rva: 0xd7_5560,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-                0x41, 0x57,
-            ],
+            rva: Rva(0xd7_5560),
         },
         Receiver::Status,
     ),
@@ -124,11 +109,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "find_or_create_subunit_definition",
-            rva: 0xb1_5120,
-            sentinel: [
-                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55,
-                0x41, 0x56,
-            ],
+            rva: Rva(0xb1_5120),
         },
         Receiver::Unnamed,
     ),
@@ -136,11 +117,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "reload_equipment_content",
-            rva: 0x17_e760,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x17_e760),
         },
         Receiver::Unnamed,
     ),
@@ -150,18 +127,8 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
 mod tests {
     use super::*;
 
-    /// Each sentinel opens with the RBX spill the hook relocates: five bytes,
-    /// or seven with the preceding stack-pointer copy to RAX. Sites are distinct.
     #[test]
-    fn sentinels_open_with_the_relocated_spill() {
-        for (site, _) in MUTATIONS {
-            // RBX spills through RAX after a stack-pointer copy, otherwise through RSP.
-            let spill = match site.sentinel[..3] {
-                [0x48, 0x8b, 0xc4] => (&site.sentinel[3..6], [0x48, 0x89, 0x58]),
-                _ => (&site.sentinel[..3], [0x48, 0x89, 0x5c]),
-            };
-            assert_eq!(spill.0, spill.1.as_slice(), "{}", site.name);
-        }
+    fn sites_are_distinct() {
         let mut rvas = MUTATIONS.map(|(site, _)| site.rva);
         rvas.sort_unstable();
         assert!(rvas.windows(2).all(|pair| pair[0] != pair[1]));

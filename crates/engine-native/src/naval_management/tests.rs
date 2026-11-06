@@ -42,7 +42,7 @@ fn naval_management_composition_retains_every_preference_and_native_order() {
     let mut memory = Fixture::default();
     const OBJECT: usize = 0x1000;
     const DATA: usize = 0x2000;
-    memory.word(OBJECT, ENTRIES_VTABLE_RVA as u64);
+    memory.word(OBJECT, ENTRIES_VTABLE_RVA.0 as u64);
     memory.array(OBJECT + COMPOSITION_ENTRIES, DATA, 3);
     let values = [(19, 7, -1, 0), (19, 7, 42, -5), (3, -2, i32::MAX, i32::MIN)];
     for (index, (sub_unit, role, definition, amount)) in values.into_iter().enumerate() {
@@ -79,7 +79,7 @@ fn naval_management_composition_grows_to_live_demand_without_a_chosen_limit() {
     const OBJECT: usize = 0x1000;
     const DATA: usize = 0x2000;
     let mut memory = Fixture::default();
-    memory.word(OBJECT, ENTRIES_VTABLE_RVA as u64);
+    memory.word(OBJECT, ENTRIES_VTABLE_RVA.0 as u64);
     memory.array(OBJECT + COMPOSITION_ENTRIES, DATA, 5_000);
     for index in 0..5_000 {
         memory.put(
@@ -98,7 +98,7 @@ fn naval_management_repair_queue_preserves_typed_handles_repeats_and_empty() {
     const OBJECT: usize = 0x1000;
     const DATA: usize = 0x2000;
     let mut memory = Fixture::default();
-    memory.word(OBJECT, crate::cnaval_base::VTABLE_RVA as u64);
+    memory.word(OBJECT, crate::cnaval_base::VTABLE_RVA.0 as u64);
     memory.integer(OBJECT + BASE_REPAIR_PRIORITY, -9);
     memory.integer(OBJECT + BASE_REPAIR_DOCKYARDS, 17);
     memory.array(OBJECT + BASE_REPAIR_QUEUE, DATA, 3);
@@ -132,7 +132,7 @@ fn naval_management_task_controls_keep_independent_refit_designs_and_target() {
     let mut memory = Fixture::default();
     memory.array(STATE + crate::cgame_state::PROVINCES, PROVINCES, 3);
     memory.word(PROVINCES + 2 * 8, TARGET as u64);
-    memory.word(TARGET, crate::cprovince::VTABLE_RVA as u64);
+    memory.word(TARGET, crate::cprovince::VTABLE_RVA.0 as u64);
     memory.put(TARGET + crate::cprovince::ID, &2_u32.to_le_bytes());
     memory.word(TASK + crate::ctask_force::REPAIR_TARGET, TARGET as u64);
     // No registry is present: even an unresolved rejoin reference is retained raw.
@@ -143,7 +143,7 @@ fn naval_management_task_controls_keep_independent_refit_designs_and_target() {
     memory.put(TASK + AUTO_REINFORCEMENT, &[0]);
     memory.word(TASK + REFIT_VARIANT, 0);
     memory.word(TASK + REFIT_AFTER_REPAIR, VARIANT as u64);
-    memory.word(VARIANT, crate::cequipment_variant::VTABLE_RVA as u64);
+    memory.word(VARIANT, crate::cequipment_variant::VTABLE_RVA.0 as u64);
     let design = u64::from(crate::cequipment_variant::REFERENCE_TYPE) | (u64::from(u32::MAX) << 32);
     memory.word(VARIANT + crate::cequipment_variant::TYPE, design);
     memory.put(TASK + COMPOSITION_TOKEN, &0xfedc_ba98_u32.to_le_bytes());
@@ -192,7 +192,7 @@ fn naval_management_budgets_and_refit_absence_keep_native_signed_values() {
     assert_eq!(max_factories_for_repair(&memory, 0x1000).unwrap(), i32::MIN);
     assert_eq!(repair_dockyards(&memory, 0x2000).unwrap(), (-1, i32::MAX));
     let absent = u64::MAX;
-    memory.word(crate::creference_registry::INVALID_REFERENCE_RVA, absent);
+    memory.word(crate::creference_registry::INVALID_REFERENCE_RVA.0, absent);
     memory.word(0x3000 + SHIP_REFIT_LINE, absent);
     assert_eq!(ship_refit_line(&memory, 0, 0x3000).unwrap(), 0);
     memory.word(0x3000 + SHIP_REFIT_LINE, 71 | (19 << 32));

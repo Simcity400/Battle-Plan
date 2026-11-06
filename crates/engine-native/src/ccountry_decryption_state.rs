@@ -1,7 +1,8 @@
 //! CCountryDecryptionState inline rows in CCryptology.
 
+use engine_sites::Rva;
 /// Decryption-state vtable.
-pub const VTABLE_RVA: usize = 0x02a3_7ea0;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_7ea0);
 /// Decryption-state array stride.
 pub const STRIDE: usize = 0x38;
 /// Target country reference, u32.

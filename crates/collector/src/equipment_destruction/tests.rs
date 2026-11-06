@@ -47,12 +47,12 @@ impl World {
             storage: vec![0; (0x600 + designs * 0x40) / 8],
             designs,
         };
-        world.word(0, carmy::VTABLE_RVA as u64);
-        world.word(carmy::SECONDARY_BASE, carmy::SECONDARY_VTABLE_RVA as u64);
+        world.word(0, carmy::VTABLE_RVA.0 as u64);
+        world.word(carmy::SECONDARY_BASE, carmy::SECONDARY_VTABLE_RVA.0 as u64);
         world.word(engine_native::cunit::HANDLE, 0xe00100004b01);
         world.owner(1);
         let p = world.army() + carmy::EQUIPMENT_POOL;
-        world.word(carmy::EQUIPMENT_POOL, pool::VTABLE_RVA as u64);
+        world.word(carmy::EQUIPMENT_POOL, pool::VTABLE_RVA.0 as u64);
         world.word(
             carmy::EQUIPMENT_POOL + pool::ITEMS,
             (world.army() + 0x600) as u64,
@@ -64,7 +64,10 @@ impl World {
         for d in 0..designs {
             let v = world.design(d);
             world.word(0x600 + d * 16, v as u64);
-            world.word(0x600 + designs * 16 + d * 0x30, variant::VTABLE_RVA as u64);
+            world.word(
+                0x600 + designs * 16 + d * 0x30,
+                variant::VTABLE_RVA.0 as u64,
+            );
             world.word(
                 0x600 + designs * 16 + d * 0x30 + 8,
                 ((d as u64 + 0xf000) << 32) | variant::REFERENCE_TYPE as u64,
@@ -91,16 +94,16 @@ impl World {
         *word = (*word & !(u64::from(u32::MAX) << shift)) | (u64::from(value) << shift);
     }
     fn rebase(&mut self, base: usize) {
-        self.word(0, (base + carmy::VTABLE_RVA) as u64);
+        self.word(0, (base + carmy::VTABLE_RVA.0) as u64);
         self.word(
             carmy::SECONDARY_BASE,
-            (base + carmy::SECONDARY_VTABLE_RVA) as u64,
+            (base + carmy::SECONDARY_VTABLE_RVA.0) as u64,
         );
-        self.word(carmy::EQUIPMENT_POOL, (base + pool::VTABLE_RVA) as u64);
+        self.word(carmy::EQUIPMENT_POOL, (base + pool::VTABLE_RVA.0) as u64);
         for d in 0..self.designs {
             self.word(
                 0x600 + self.designs * 16 + d * 0x30,
-                (base + variant::VTABLE_RVA) as u64,
+                (base + variant::VTABLE_RVA.0) as u64,
             );
         }
     }
@@ -111,7 +114,7 @@ impl World {
         self.word(0x600 + d * 16 + 8, amount as u64);
     }
     fn restore_pool(&mut self) {
-        self.word(carmy::EQUIPMENT_POOL, pool::VTABLE_RVA as u64);
+        self.word(carmy::EQUIPMENT_POOL, pool::VTABLE_RVA.0 as u64);
         self.word(
             carmy::EQUIPMENT_POOL + pool::ITEMS,
             (self.army() + 0x600) as u64,
@@ -137,9 +140,9 @@ impl ReserveWorld {
         let world = World::new(designs);
         let mut manager = vec![0u64; 0x300 / 8];
         let mut country = vec![0u64; (ccountry::PRODUCTION_STATUS + 8) / 8];
-        manager[0] = cproduction_status::VTABLE_RVA as u64;
+        manager[0] = cproduction_status::VTABLE_RVA.0 as u64;
         manager[cproduction_status::COUNTRY / 8] = country.as_ptr() as u64;
-        country[0] = ccountry::VTABLE_RVA as u64;
+        country[0] = ccountry::VTABLE_RVA.0 as u64;
         country[ccountry::ID / 8] = u64::from(owner);
         country[ccountry::PRODUCTION_STATUS / 8] = manager.as_ptr() as u64;
         let offset = cproduction_status::STOCKPILE_POOL / 8;
@@ -155,10 +158,10 @@ impl ReserveWorld {
     fn for_source(source: &World, base: usize, owner: u32, initial: i64) -> Self {
         let mut reserves = Self::new(source.designs, owner);
         reserves.world.rebase(base);
-        reserves.manager[0] = (base + engine_native::cproduction_status::VTABLE_RVA) as u64;
-        reserves._country[0] = (base + engine_native::ccountry::VTABLE_RVA) as u64;
+        reserves.manager[0] = (base + engine_native::cproduction_status::VTABLE_RVA.0) as u64;
+        reserves._country[0] = (base + engine_native::ccountry::VTABLE_RVA.0) as u64;
         reserves.manager[engine_native::cproduction_status::STOCKPILE_POOL / 8] =
-            (base + pool::VTABLE_RVA) as u64;
+            (base + pool::VTABLE_RVA.0) as u64;
         for index in 0..source.designs {
             reserves.world.word(
                 0x600 + index * equipment_entry::STRIDE,
@@ -212,14 +215,14 @@ impl StateMemory {
             let army = &mut self.armies[index * 0x500 / 8..][..0x500 / 8];
             *pointer = army.as_ptr() as u64;
             let pool = &mut army[carmy::EQUIPMENT_POOL / 8..];
-            pool[0] = pool::VTABLE_RVA as u64;
+            pool[0] = pool::VTABLE_RVA.0 as u64;
             pool[pool::ITEMS / 8] = pool.as_ptr() as u64;
             pool[pool::CAPACITY / 8] = designs;
         }
         let mut roster_slot = 0;
         for (index, &count) in counts.iter().enumerate() {
             let country = &mut self.country[index * 0x1000 / 8..][..0x1000 / 8];
-            country[0] = engine_native::ccountry::VTABLE_RVA as u64;
+            country[0] = engine_native::ccountry::VTABLE_RVA.0 as u64;
             country[engine_native::ccountry::ID / 8] = index as u64 + 1;
             country[engine_native::ccountry::DIVISIONS / 8] =
                 (self.roster.as_ptr() as usize + roster_slot * 8) as u64;
@@ -237,7 +240,7 @@ impl StateMemory {
     fn stockpile(&mut self, count: u32) {
         self.reserve.resize(0x300 / 8, 0);
         let pool = &mut self.reserve[engine_native::cproduction_status::STOCKPILE_POOL / 8..];
-        pool[0] = pool::VTABLE_RVA as u64;
+        pool[0] = pool::VTABLE_RVA.0 as u64;
         pool[pool::ITEMS / 8] = pool.as_ptr() as u64;
         pool[pool::CAPACITY / 8] = u64::from(count) | (u64::from(count) << 32);
         self.country[engine_native::ccountry::PRODUCTION_STATUS / 8] = self.reserve.as_ptr() as u64;
@@ -251,13 +254,13 @@ impl StateMemory {
         let state = self.state.as_ptr() as usize;
         self.state[0] = state as u64;
         state
-            .checked_sub(engine_native::cgame_state::SINGLETON_RVA)
+            .checked_sub(engine_native::cgame_state::SINGLETON_RVA.0)
             .unwrap()
     }
 }
 impl Memory for StateMemory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        if address == engine_native::cgame_state::SINGLETON_RVA && destination.len() == 8 {
+        if address == engine_native::cgame_state::SINGLETON_RVA.0 && destination.len() == 8 {
             destination.copy_from_slice(&(self.state.as_ptr() as u64).to_le_bytes());
             true
         } else {
@@ -331,7 +334,7 @@ unsafe extern "system-unwind" fn cleanup_delete(
     *OBSERVED_DELETION.lock().unwrap() = DELETION.get();
     assert!(crate::runtime::observers_active());
     assert_eq!(state, unsafe {
-        *((BASE.load(Ordering::Relaxed) + engine_native::cgame_state::SINGLETON_RVA)
+        *((BASE.load(Ordering::Relaxed) + engine_native::cgame_state::SINGLETON_RVA.0)
             as *const usize)
     });
     let bank = army + carmy::EQUIPMENT_POOL;
@@ -343,10 +346,10 @@ unsafe extern "system-unwind" fn cleanup_delete(
         let mut reserve = ReserveWorld::new(design_count, 1);
         let base = BASE.load(Ordering::Relaxed);
         reserve.world.rebase(base);
-        reserve.manager[0] = (base + engine_native::cproduction_status::VTABLE_RVA) as u64;
-        reserve._country[0] = (base + engine_native::ccountry::VTABLE_RVA) as u64;
+        reserve.manager[0] = (base + engine_native::cproduction_status::VTABLE_RVA.0) as u64;
+        reserve._country[0] = (base + engine_native::ccountry::VTABLE_RVA.0) as u64;
         reserve.manager[engine_native::cproduction_status::STOCKPILE_POOL / 8] =
-            (base + pool::VTABLE_RVA) as u64;
+            (base + pool::VTABLE_RVA.0) as u64;
         for index in 0..design_count {
             let source =
                 engine_native::read::<u64>(&memory, items + index * equipment_entry::STRIDE)
@@ -369,7 +372,7 @@ unsafe extern "system-unwind" fn cleanup_delete(
             0,
             0,
             0,
-            BASE.load(Ordering::Relaxed) + native::LAND_COMBAT_RETURN,
+            BASE.load(Ordering::Relaxed) + native::LAND_COMBAT_RETURN.0,
         );
         division_free(army, 1);
     }
@@ -570,7 +573,7 @@ fn record_land_gain(before: i64, damage: i64, expected: i64) {
             0,
             0,
             0,
-            native::LAND_COMBAT_RETURN,
+            native::LAND_COMBAT_RETURN.0,
         );
     }
     assert_signed_row(expected, native::Cause::LandCombat, 0xf00000000046);
@@ -629,7 +632,7 @@ fn negative_air_request_records_signed_gain_without_poison() {
     world.amount(0, 1000000);
     let mut wing = vec![0u64; 0xa00 / 8];
     let pool_offset = engine_native::cair_wing::EQUIPMENT_POOL;
-    wing[pool_offset / 8] = pool::VTABLE_RVA as u64;
+    wing[pool_offset / 8] = pool::VTABLE_RVA.0 as u64;
     wing[(pool_offset + pool::ITEMS) / 8] = (world.army() + 0x600) as u64;
     wing[(pool_offset + pool::CAPACITY) / 8] = (1u64 << 32) | 1;
     let address = wing.as_mut_ptr() as usize;
@@ -1397,22 +1400,22 @@ fn enabled_land_shim_passes_caller_pc_and_records_stable_causes() {
     let invoke: ArmyFn = unsafe { std::mem::transmute(destruction_land_test_caller as *const ()) };
     for (return_rva, cause, recorded_cause) in [
         (
-            native::LAND_COMBAT_RETURN,
+            native::LAND_COMBAT_RETURN.0,
             native::Cause::LandCombat,
             EquipmentDestructionCause::LandCombat,
         ),
         (
-            native::NAVAL_TRANSPORT_RETURN,
+            native::NAVAL_TRANSPORT_RETURN.0,
             native::Cause::NavalTransport,
             EquipmentDestructionCause::NavalTransport,
         ),
         (
-            native::IMMEDIATE_RETURN,
+            native::IMMEDIATE_RETURN.0,
             native::Cause::Immediate,
             EquipmentDestructionCause::Immediate,
         ),
         (
-            native::LAND_COMBAT_RETURN + 1,
+            native::LAND_COMBAT_RETURN.0 + 1,
             native::Cause::Unknown,
             EquipmentDestructionCause::Unknown,
         ),
@@ -1496,7 +1499,7 @@ fn real_delete_entry_preserves_four_slots_and_classifies_its_stack_return_pc() {
     boundary(clock(1, 1));
     boundary(clock(2, 1));
     let caller = destruction_delete_test_return as *const () as usize;
-    BASE.store(caller - native::READ_CONTEXT_RETURN, Ordering::Relaxed);
+    BASE.store(caller - native::READ_CONTEXT_RETURN.0, Ordering::Relaxed);
     let invoke: unsafe extern "system-unwind" fn(usize, usize, usize, usize) =
         unsafe { std::mem::transmute(destruction_delete_test_caller as *const ()) };
     let slots = [usize::MAX, usize::MAX - 1, usize::MAX - 2, usize::MAX - 3];
@@ -1584,7 +1587,7 @@ fn real_queue_entry_preserves_slots_and_replaces_r8_with_the_stack_return_pc() {
         invoke(
             state.state.as_ptr() as usize,
             world.army(),
-            base + native::HQ_PROVIDER_RETURN,
+            base + native::HQ_PROVIDER_RETURN.0,
         )
     };
     assert_eq!(
@@ -1704,8 +1707,8 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
     }
     // Ignored load/reset objects need not have a valid handle, owner or pool.
     for (caller, reset) in [
-        (native::READ_CONTEXT_RETURN, false),
-        (native::FAILED_CREATE_RETURN, false),
+        (native::READ_CONTEXT_RETURN.0, false),
+        (native::FAILED_CREATE_RETURN.0, false),
         (0, true),
     ] {
         setup(100, 1);
@@ -1757,7 +1760,7 @@ fn merge_transfers_suppress_source_flush_and_record_signed_uncredited_equipment(
                 0,
                 0,
                 0,
-                native::LAND_COMBAT_RETURN,
+                native::LAND_COMBAT_RETURN.0,
             );
             division_free(world.army(), 1);
         }
@@ -1791,7 +1794,7 @@ fn queued_deletion_provenance_is_bounded_exact_and_unknown_on_conflict() {
             0,
             memory.state.as_ptr() as usize,
             world.army(),
-            native::QUEUED_DELETE_RETURN,
+            native::QUEUED_DELETE_RETURN.0,
         )
         .unwrap()
         .unwrap();
@@ -1858,7 +1861,10 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
             native::QueuedContext::Transfer(native::Disposition::HqTransferred),
         ],
     ] {
-        for caller in [native::QUEUED_DELETE_RETURN, native::COMBAT_DELETION_RETURN] {
+        for caller in [
+            native::QUEUED_DELETE_RETURN.0,
+            native::COMBAT_DELETION_RETURN.0,
+        ] {
             setup(100, 1);
             boundary(clock(1, 1));
             boundary(clock(2, 1));
@@ -1904,7 +1910,7 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
                     0,
                     0,
                     0,
-                    native::LAND_COMBAT_RETURN,
+                    native::LAND_COMBAT_RETURN.0,
                 );
                 division_free(world.army(), 1);
             }
@@ -1954,7 +1960,7 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
         0,
         memory.state.as_ptr() as usize,
         world.army(),
-        native::QUEUED_DELETE_RETURN,
+        native::QUEUED_DELETE_RETURN.0,
     )
     .unwrap()
     .unwrap();
@@ -2005,7 +2011,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
                         0,
                         0,
                         0,
-                        base + native::LAND_COMBAT_RETURN,
+                        base + native::LAND_COMBAT_RETURN.0,
                     ),
                     "attrition" => attrition(
                         world.army() + carmy::EQUIPMENT_POOL,
@@ -2029,7 +2035,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
                     world.army(),
                     0,
                     0,
-                    base + native::COMBAT_DELETION_RETURN,
+                    base + native::COMBAT_DELETION_RETURN.0,
                 )
             };
         } else {
@@ -2068,7 +2074,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
                         0,
                         0,
                         0,
-                        base + native::LAND_COMBAT_RETURN,
+                        base + native::LAND_COMBAT_RETURN.0,
                     ),
                     "attrition" => attrition(
                         world.army() + carmy::EQUIPMENT_POOL,
@@ -2126,7 +2132,7 @@ fn completed_disposal_retires_owned_metadata_without_reading_a_freed_unit() {
                     world.army(),
                     0,
                     0,
-                    base + native::READ_CONTEXT_RETURN,
+                    base + native::READ_CONTEXT_RETURN.0,
                 )
             };
         } else {
@@ -2205,7 +2211,7 @@ fn residual_follows_damage_flush_attrition_and_owner_cleanup_without_double_coun
                     0,
                     0,
                     0,
-                    native::LAND_COMBAT_RETURN,
+                    native::LAND_COMBAT_RETURN.0,
                 )
             };
         }
@@ -2384,7 +2390,7 @@ fn expeditionary_scope_owns_each_nested_army_writer_but_not_a_reused_handle() {
                         0,
                         0,
                         0,
-                        native::LAND_COMBAT_RETURN,
+                        native::LAND_COMBAT_RETURN.0,
                     ),
                     "attrition" => attrition(
                         world.army() + carmy::EQUIPMENT_POOL,
@@ -2436,7 +2442,7 @@ fn hq_transfer_provenance_survives_same_session_gap_and_clears_on_load() {
         0,
         memory.state.as_ptr() as usize,
         world.army(),
-        native::QUEUED_DELETE_RETURN,
+        native::QUEUED_DELETE_RETURN.0,
     )
     .unwrap()
     .unwrap();
@@ -2715,44 +2721,16 @@ fn hundred_division_burst_and_log_growth_preserve_pending_events_and_provenance(
 }
 
 #[test]
-fn sentinel_verification_keeps_the_original_and_supplemental_install_groups_independent() {
-    struct Sentinels {
-        broken: native::SiteId,
-    }
-    impl Memory for Sentinels {
-        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            let Some(site) = native::SITES.iter().find(|site| site.rva == address) else {
-                return false;
-            };
-            if destination.len() != site.sentinel.len() {
-                return false;
-            }
-            destination.copy_from_slice(&site.sentinel);
-            if site.id == self.broken {
-                destination[0] ^= 1;
-            }
-            true
-        }
-    }
-    for site in native::SITES {
-        let memory = Sentinels { broken: site.id };
-        assert!(
-            verify_sites(&memory, 0, site.id.is_supplemental())
-                .unwrap_err()
-                .contains(site.name)
-        );
-        assert!(verify_sites(&memory, 0, !site.id.is_supplemental()).is_ok());
-    }
-}
-
-#[test]
 fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
     let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
     let caller = destruction_queue_test_return as *const () as usize;
-    BASE.store(caller - native::FAKE_INTEL_QUEUE_RETURN, Ordering::Relaxed);
+    BASE.store(
+        caller - native::FAKE_INTEL_QUEUE_RETURN.0,
+        Ordering::Relaxed,
+    );
     let invoke: unsafe extern "system-unwind" fn(usize, usize) =
         unsafe { std::mem::transmute(destruction_queue_test_caller as *const ()) };
     // The excluded native PC applies even before a handle was attached.
@@ -2781,143 +2759,7 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
 }
 
 #[test]
-fn supplemental_install_refusal_keeps_real_original_hooks_and_incomplete_net_capture_available() {
-    use replay_data::{rows::EquipmentDestructionCoverage, rows::TableRows};
-    use replay_frame::frame::TableView;
-    use windows_sys::Win32::System::Memory::{
-        MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc, VirtualFree,
-    };
-
-    // The attachment-wide refusal is isolated from other fixture attachments.
-    const CHILD: &str = "BATTLE_PLAN_DESTRUCTION_INDEPENDENT_INSTALL_TEST";
-    if std::env::var_os(CHILD).is_none() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "equipment_destruction::tests::supplemental_install_refusal_keeps_real_original_hooks_and_incomplete_net_capture_available",
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .status()
-            .unwrap();
-        assert!(status.success());
-        return;
-    }
-    setup(8, 1);
-    boundary(clock(1, 1));
-    boundary(clock(2, 1));
-    let length = native::SITES
-        .iter()
-        .map(|site| site.rva + site.sentinel.len())
-        .max()
-        .unwrap();
-    let module = unsafe {
-        VirtualAlloc(
-            std::ptr::null(),
-            length,
-            MEM_RESERVE | MEM_COMMIT,
-            PAGE_EXECUTE_READWRITE,
-        )
-    };
-    assert!(
-        !module.is_null(),
-        "synthetic executable module allocation failed"
-    );
-    let base = module as usize;
-    for site in native::SITES
-        .into_iter()
-        .filter(|site| !site.id.is_supplemental())
-    {
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                site.sentinel.as_ptr(),
-                (base + site.rva) as *mut u8,
-                site.sentinel.len(),
-            );
-        }
-    }
-    // The real constructors patch only this synthetic module. No trampoline
-    // or copied native instructions execute; attrition uses the fixture stub.
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let mut hooks = unsafe { Hooks::new(&memory, base) };
-    assert_eq!(hooks.original.len(), 4);
-    assert!(hooks.supplemental.is_empty());
-    assert!(UNHOOKED.get().is_none());
-    let reason = SUPPLEMENTAL_UNHOOKED.get().unwrap();
-    assert!(reason.contains(native::DELETE.name));
-    assert!(reason.contains("sentinel"));
-    assert!(hooks.set_enabled(true).unwrap());
-    assert!(ENABLED.load(Ordering::SeqCst));
-    assert!(!SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst));
-    for site in native::SITES {
-        assert_eq!(
-            INSTALLED[site.id as usize].load(Ordering::Acquire),
-            !site.id.is_supplemental()
-        );
-        assert_eq!(
-            SITE_ENABLED[site.id as usize].load(Ordering::SeqCst),
-            !site.id.is_supplemental()
-        );
-    }
-    ORIGINAL[native::SiteId::Attrition as usize]
-        .store(subtract as *const () as usize, Ordering::Release);
-    let mut world = World::new(1);
-    world.rebase(base);
-    let mut captured = crate::extended::equipment_destruction::Captured::with_capacities(&8);
-    for amount_raw in [100000, 0] {
-        if amount_raw != 0 {
-            unsafe {
-                attrition(
-                    world.army() + carmy::EQUIPMENT_POOL,
-                    world.design(0),
-                    amount_raw,
-                )
-            };
-        }
-        captured.capture(&memory, base, 0);
-        let [
-            TableView::Complete(TableRows::EquipmentDestruction(rows)),
-            TableView::Unavailable {
-                reason: deletion_reason,
-            },
-        ] = captured.tables()
-        else {
-            panic!(
-                "original hooks must publish signed totals with unavailable supplemental coverage"
-            );
-        };
-        assert_eq!(rows.len(), 1 + usize::from(amount_raw != 0));
-        assert_eq!(
-            rows[0].coverage,
-            EquipmentDestructionCoverage::SupplementalUnavailable.into()
-        );
-        assert_eq!(
-            rows[0].unavailable_reason.require("reason").unwrap(),
-            reason.as_ref()
-        );
-        assert_eq!(deletion_reason, reason.as_ref());
-        if amount_raw != 0 {
-            assert_eq!(rows[1].amount_raw, amount_raw as i64);
-            assert_eq!(rows[1].country, 1);
-            assert_eq!(
-                rows[1].cause,
-                replay_data::rows::EquipmentDestructionCause::Attrition
-            );
-            assert_eq!(
-                rows[1].coverage,
-                EquipmentDestructionCoverage::Complete.into()
-            );
-        }
-        assert_eq!(active(), 0);
-        assert!(!POISONED.load(Ordering::SeqCst));
-    }
-    assert!(hooks.set_enabled(false).unwrap());
-    drop(hooks);
-    assert_ne!(unsafe { VirtualFree(module, 0, MEM_RELEASE) }, 0);
-}
-
-#[test]
-fn sentinel_install_refusal_withholds_both_tables() {
+fn withheld_site_install_refusal_withholds_both_tables() {
     // OnceLock is attachment-scoped. An isolated test process exercises the
     // real refusal without changing the other synthetic attachment fixtures.
     const CHILD: &str = "BATTLE_PLAN_DESTRUCTION_INSTALL_TEST";
@@ -2925,7 +2767,7 @@ fn sentinel_install_refusal_withholds_both_tables() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "equipment_destruction::tests::sentinel_install_refusal_withholds_both_tables",
+                "equipment_destruction::tests::withheld_site_install_refusal_withholds_both_tables",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -2937,22 +2779,14 @@ fn sentinel_install_refusal_withholds_both_tables() {
     setup(100, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
-    struct ValidSupplementalSites;
-    impl Memory for ValidSupplementalSites {
-        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if let Some(site) = native::SITES.iter().find(|site| {
-                site.id.is_supplemental()
-                    && site.rva == address
-                    && site.sentinel.len() == destination.len()
-            }) {
-                destination.copy_from_slice(&site.sentinel);
-                true
-            } else {
-                false
-            }
+    // Without a located executable every site is withheld.
+    struct Unreadable;
+    impl Memory for Unreadable {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
         }
     }
-    let memory = ValidSupplementalSites;
+    let memory = Unreadable;
     let mut hooks = unsafe { Hooks::new(&memory, 0) };
     assert!(hooks.original.is_empty());
     assert!(hooks.supplemental.is_empty());
@@ -2973,7 +2807,7 @@ fn sentinel_install_refusal_withholds_both_tables() {
         serde_json::to_value(status()).unwrap()["supplemental_enabled"],
         false
     );
-    assert!(UNHOOKED.get().unwrap().contains("sentinel"));
+    assert!(UNHOOKED.get().unwrap().contains("withheld"));
     assert!(SUPPLEMENTAL_UNHOOKED.get().unwrap().contains("original"));
     let mut captured = crate::extended::equipment_destruction::Captured::with_capacities(&100);
     captured.capture(&memory, 0, 0);
@@ -3612,82 +3446,6 @@ fn signed_pool_difference_is_shared_by_every_writer_independently_of_cause() {
 }
 
 #[test]
-fn supplemental_enable_byte_mismatch_rolls_back_published_members_and_keeps_original_capture() {
-    use windows_sys::Win32::System::Memory::{
-        MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc, VirtualFree,
-    };
-    const CHILD: &str = "BATTLE_PLAN_DESTRUCTION_ENABLE_ROLLBACK_TEST";
-    if std::env::var_os(CHILD).is_none() {
-        assert!(std::process::Command::new(std::env::current_exe().unwrap()).args([
-            "--exact", "equipment_destruction::tests::supplemental_enable_byte_mismatch_rolls_back_published_members_and_keeps_original_capture", "--nocapture",
-        ]).env(CHILD, "1").status().unwrap().success());
-        return;
-    }
-    setup(8, 1);
-    let length = native::SITES
-        .iter()
-        .map(|site| site.rva + site.sentinel.len())
-        .max()
-        .unwrap();
-    let module = unsafe {
-        VirtualAlloc(
-            std::ptr::null(),
-            length,
-            MEM_RESERVE | MEM_COMMIT,
-            PAGE_EXECUTE_READWRITE,
-        )
-    };
-    assert!(!module.is_null());
-    let base = module as usize;
-    for site in native::SITES {
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                site.sentinel.as_ptr(),
-                (base + site.rva) as *mut u8,
-                site.sentinel.len(),
-            );
-        }
-    }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let mut hooks = unsafe { Hooks::new(&memory, base) };
-    assert_eq!(hooks.original.len(), 4);
-    assert_eq!(hooks.supplemental.len(), native::SITES.len() - 4);
-    let foreign = (base + native::DIVISION_FREE.rva + 8) as *mut u8;
-    unsafe {
-        *foreign ^= 1;
-    }
-    assert!(hooks.set_enabled(true).unwrap());
-    assert!(ENABLED.load(Ordering::SeqCst));
-    assert!(!SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst));
-    assert!(SUPPLEMENTAL_UNHOOKED.get().is_some());
-    for site in native::SITES
-        .iter()
-        .filter(|site| site.id.is_supplemental())
-    {
-        assert!(!SITE_ENABLED[site.id as usize].load(Ordering::SeqCst));
-        if site.id != SiteId::DivisionFree {
-            assert_eq!(
-                engine_native::read::<[u8; 16]>(&memory, base + site.rva),
-                Some(site.sentinel)
-            );
-        }
-    }
-    assert_eq!(unsafe { *foreign }, native::DIVISION_FREE.sentinel[8] ^ 1);
-    assert!(hooks.set_enabled(false).unwrap());
-    for site in native::SITES
-        .iter()
-        .filter(|site| !site.id.is_supplemental())
-    {
-        assert_eq!(
-            engine_native::read::<[u8; 16]>(&memory, base + site.rva),
-            Some(site.sentinel)
-        );
-    }
-    drop(hooks);
-    assert_ne!(unsafe { VirtualFree(module, 0, MEM_RELEASE) }, 0);
-}
-
-#[test]
 fn scripted_reserve_fraction_captures_authentic_owner_and_all_designs() {
     let _serial = serial();
     setup(16, 2);
@@ -3777,7 +3535,7 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
             0,
             memory.state.as_ptr() as usize,
             world.army(),
-            native::QUEUED_DELETE_RETURN,
+            native::QUEUED_DELETE_RETURN.0,
         )
         .unwrap()
         .unwrap();
@@ -3807,7 +3565,7 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
             0,
             memory.state.as_ptr() as usize,
             world.army(),
-            native::QUEUED_DELETE_RETURN,
+            native::QUEUED_DELETE_RETURN.0,
         )
         .unwrap()
         .unwrap();
@@ -3825,7 +3583,7 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
                 0,
                 memory.state.as_ptr() as usize,
                 world.army(),
-                native::QUEUED_DELETE_RETURN,
+                native::QUEUED_DELETE_RETURN.0,
             )
             .unwrap()
             .unwrap();
@@ -3857,7 +3615,7 @@ fn poison_skipped_queue_opens_unproven_window_on_same_session_transition() {
     let memory = StateMemory::new(1);
     let world = World::new(1);
     poison();
-    unsafe { queue(0, world.army(), native::HQ_PROVIDER_RETURN) };
+    unsafe { queue(0, world.army(), native::HQ_PROVIDER_RETURN.0) };
     assert!(SKIPPED_QUEUE.load(Ordering::SeqCst));
     assert!(STORE.lock().unwrap().queued.is_empty());
     boundary(clock(4, 1));
@@ -3874,7 +3632,7 @@ fn poison_skipped_queue_opens_unproven_window_on_same_session_transition() {
         0,
         memory.state.as_ptr() as usize,
         world.army(),
-        native::QUEUED_DELETE_RETURN,
+        native::QUEUED_DELETE_RETURN.0,
     )
     .unwrap()
     .unwrap();
@@ -3906,7 +3664,7 @@ fn initial_partial_drain_clears_only_its_unproven_deletion() {
             0,
             memory.state.as_ptr() as usize,
             world.army(),
-            native::QUEUED_DELETE_RETURN,
+            native::QUEUED_DELETE_RETURN.0,
         )
         .unwrap()
         .unwrap();
@@ -4019,7 +3777,7 @@ fn callback_entering_claimed_boundary_marks_conflict_and_skips_provenance() {
     boundary(clock(2, 1));
     assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
     let claim = BoundaryClaim::try_enter().unwrap();
-    unsafe { queue(0, 0x1000, native::HQ_PROVIDER_RETURN) };
+    unsafe { queue(0, 0x1000, native::HQ_PROVIDER_RETURN.0) };
     assert!(SKIPPED_QUEUE.load(Ordering::SeqCst));
     assert!(STORE.lock().unwrap().queued.is_empty());
     // Even if the boundary cleared a producer's poison, its atomic claim
@@ -4643,14 +4401,14 @@ unsafe extern "system-unwind" fn merge_native_fixture(argument: usize) {
         cancel_native_requests(survivor, plan.reserve_manager, false);
     }
     let base = BASE.load(Ordering::Relaxed);
-    let state = unsafe { *((base + engine_native::cgame_state::SINGLETON_RVA) as *const usize) };
+    let state = unsafe { *((base + engine_native::cgame_state::SINGLETON_RVA.0) as *const usize) };
     unsafe {
         delete(
             state,
             plan.source,
             0,
             0,
-            base + native::MERGED_DELETION_RETURN,
+            base + native::MERGED_DELETION_RETURN.0,
         );
     }
 }
@@ -4671,7 +4429,7 @@ unsafe extern "system-unwind" fn merged_delete_fixture(_: usize, army: usize, _:
             0,
             0,
             0,
-            base + native::LAND_COMBAT_RETURN,
+            base + native::LAND_COMBAT_RETURN.0,
         );
         attrition(source_pool, variant, 100000);
         division_free(army, 1);
@@ -5311,7 +5069,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
                 survivor.army(),
                 0,
                 0,
-                base + native::QUEUED_DELETE_RETURN,
+                base + native::QUEUED_DELETE_RETURN.0,
             );
         }
         assert!(!POISONED.load(Ordering::SeqCst));
@@ -5701,7 +5459,7 @@ fn live_credited_survivor_can_later_merge_as_a_queued_hq_source() {
             recipient.army(),
             0,
             0,
-            base + native::COMBAT_DELETION_RETURN,
+            base + native::COMBAT_DELETION_RETURN.0,
         );
     }
     assert!(!POISONED.load(Ordering::SeqCst));

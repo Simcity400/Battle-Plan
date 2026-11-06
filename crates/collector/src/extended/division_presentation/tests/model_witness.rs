@@ -41,27 +41,27 @@ fn map_model_witness_equals_full_division_status_columns() {
     let world = &mut populated.world;
     put(
         world,
-        base + carmy::EXPERIENCE_THRESHOLDS_RVA,
+        base + carmy::EXPERIENCE_THRESHOLDS_RVA.0,
         &header(thresholds.as_ptr() as usize, 3),
     );
     put(
         world,
-        base + carmy::EXERCISE_MAXIMUM_LEVEL_RVA,
+        base + carmy::EXERCISE_MAXIMUM_LEVEL_RVA.0,
         &2_i32.to_le_bytes(),
     );
     put(
         world,
-        base + carmy::EXERCISE_MINIMUM_STRENGTH_RVA,
+        base + carmy::EXERCISE_MINIMUM_STRENGTH_RVA.0,
         &50_000_i64.to_le_bytes(),
     );
     put(
         world,
-        base + acclimatization::CAMO_SHOW_AT_RVA,
+        base + acclimatization::CAMO_SHOW_AT_RVA.0,
         &50_000_i64.to_le_bytes(),
     );
     put(
         world,
-        base + category::REGISTRY_RVA,
+        base + category::REGISTRY_RVA.0,
         &(registry.as_ptr() as u64).to_le_bytes(),
     );
     // A training group and an idle one.
@@ -70,7 +70,7 @@ fn map_model_witness_equals_full_division_status_columns() {
         .enumerate()
         .map(|(index, training)| {
             let mut object = Box::new([0; 0x200]);
-            object[..8].copy_from_slice(&((base + group::VTABLE_RVA) as u64).to_le_bytes());
+            object[..8].copy_from_slice(&((base + group::VTABLE_RVA.0) as u64).to_le_bytes());
             object[group::HANDLE..group::HANDLE + 8].copy_from_slice(
                 &((index as u64 + 1) << 32 | u64::from(group::REFERENCE_TYPE)).to_le_bytes(),
             );

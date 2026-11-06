@@ -13,9 +13,10 @@ use crate::{
     read, read_slice,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CDeploymentStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x29dc598;
+pub const VTABLE_RVA: Rva = Rva(0x29dc598);
 /// CDeploymentStatus conveyor CPdxArray.
 pub const CONVEYORS: usize = 0x48;
 /// CDeploymentStatus conveyor-array pointer stride.
@@ -148,9 +149,8 @@ pub(crate) fn manager(
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|pointer| *pointer != 0)
         .ok_or("deployment status pointer unreadable or null")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("deployment status module address overflow")?;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("deployment status module address overflow")?;
     let mut vtable = [0; 8];
     let mut owner = [0; 8];
     let copied = memory.copy_scattered(
@@ -519,9 +519,7 @@ fn archetype_token(
             .unwrap(),
     );
     if Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
-        != base
-            .checked_add(cequipment_type::VTABLE_RVA)
-            .map(|vtable| vtable as u64)
+        != engine_sites::at(base, cequipment_type::VTABLE_RVA).map(|vtable| vtable as u64)
         || identity[cequipment_type::ACTIVE] == 0
         || token == 0
     {
@@ -816,8 +814,7 @@ fn read_country(
     output: &mut LocalOutput<'_>,
     result: &mut LocalSubunitWalk,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(csub_unit_definition::VTABLE_RVA)
+    let expected = engine_sites::at(base, csub_unit_definition::VTABLE_RVA)
         .ok_or("local subunit module address overflow")? as u64;
     let mut slots = [0_u8; CLONE_BATCH * 8];
     let mut pointers = [0_usize; CLONE_BATCH];

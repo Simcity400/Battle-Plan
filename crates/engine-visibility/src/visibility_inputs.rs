@@ -10,6 +10,7 @@ use crate::{
     modifier_accumulator, read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Foreign-unit visibility scales its stored byte by the viewer's modifier 0x24B from the country's
 /// modifier accumulator.
@@ -205,9 +206,8 @@ pub fn states_buffer_extent(
         *extent = Some(array.count);
         // Fog rebuild visits the state registry.
         output.ensure(array.count as usize)?;
-        let vtable = base
-            .checked_add(cstate::VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
+        let vtable =
+            engine_sites::at(base, cstate::VTABLE_RVA).ok_or("module address overflow")? as u64;
         let (mut len, mut unread) = (0, 0);
         let mut slots = [0_u8; BATCH * 8];
         let mut pointers = [0_usize; BATCH];
@@ -282,27 +282,27 @@ pub fn states_buffer_extent(
 
 /// Human-AI debug byte ORed into every country AI verdict; console and
 /// debug UI actions toggle it.
-pub const HUMAN_AI_RVA: usize = 0x033d_daa9;
+pub const HUMAN_AI_RVA: Rva = Rva(0x033d_daa9);
 
 /// Debug byte used by removal delay and toggled by the console.
-pub const INSTANT_DECISIONS_RVA: usize = 0x033d_daa3;
+pub const INSTANT_DECISIONS_RVA: Rva = Rva(0x033d_daa3);
 
 pub fn instant_decisions(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
-    base.checked_add(INSTANT_DECISIONS_RVA)
+    engine_sites::at(base, INSTANT_DECISIONS_RVA)
         .and_then(|address| read(memory, address))
         .ok_or("instant decisions byte unreadable")
 }
 
 /// The `human_ai` byte.
 pub fn human_ai(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
-    base.checked_add(HUMAN_AI_RVA)
+    engine_sites::at(base, HUMAN_AI_RVA)
         .and_then(|address| read(memory, address))
         .ok_or("human_ai byte unreadable")
 }
 
 /// The simulation's DLC feature mask.
 pub fn dlc_mask(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
-    base.checked_add(dlc_feature_state::MASK_RVA)
+    engine_sites::at(base, dlc_feature_state::MASK_RVA)
         .and_then(|address| read(memory, address))
         .ok_or("simulation DLC mask unreadable")
 }
@@ -348,7 +348,7 @@ mod tests {
             put(
                 &mut bytes,
                 state,
-                &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+                &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

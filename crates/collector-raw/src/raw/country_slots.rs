@@ -26,7 +26,7 @@ impl CountrySlots {
         Some(Self {
             countries,
             links,
-            vtable: base.checked_add(ccountry::VTABLE_RVA)? as u64,
+            vtable: engine_sites::at(base, ccountry::VTABLE_RVA)? as u64,
             reserved: None,
         })
     }
@@ -191,7 +191,7 @@ mod tests {
         for (index, id) in [(0, 0_u32), (1, 1), (2, 4), (3, 0)] {
             put(
                 object(index),
-                &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(object(index) + ccountry::ID, &id.to_le_bytes());
         }

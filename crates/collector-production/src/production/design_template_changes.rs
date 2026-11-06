@@ -78,7 +78,7 @@ fn owner(
         Receiver::Status => first,
     };
     if engine_native::read::<u64>(memory, status)?
-        != base.checked_add(cproduction_status::VTABLE_RVA)? as u64
+        != engine_sites::at(base, cproduction_status::VTABLE_RVA)? as u64
     {
         return None;
     }
@@ -86,7 +86,7 @@ fn owner(
         engine_native::read::<u64>(memory, status.checked_add(cproduction_status::COUNTRY)?)?
             as usize;
     if engine_native::read::<u64>(memory, country)?
-        != base.checked_add(ccountry::VTABLE_RVA)? as u64
+        != engine_sites::at(base, ccountry::VTABLE_RVA)? as u64
     {
         return None;
     }
@@ -150,7 +150,7 @@ pub(super) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub(super) unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub(super) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         // Install an empty prepared bitmap before patch publication, while no
         // callback/consumer can run. A quiet session can then seed its baseline
@@ -165,13 +165,15 @@ impl Hooks {
             callback::<3> as *const () as usize,
         ];
         if MUTATIONS.iter().all(|site| {
-            base.checked_add(site.rva)
-                .and_then(|address| engine_native::read::<[u8; 16]>(memory, address))
-                == Some(site.sentinel)
+            engine_sites::hook(base, site.rva)
+                .and_then(|code| code.sentinel::<16>())
+                .is_ok()
         }) {
             for (index, site) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| HOOK_ERRORS[index])?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|_| HOOK_ERRORS[index])?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -228,10 +230,10 @@ mod tests {
     #[test]
     fn template_writer_receivers_authenticate_primary_owner_for_both_array_argument_positions() {
         let mut bytes = vec![0; 0x1000];
-        bytes[..8].copy_from_slice(&(cproduction_status::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(cproduction_status::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[cproduction_status::COUNTRY..cproduction_status::COUNTRY + 8]
             .copy_from_slice(&0x1800_u64.to_le_bytes());
-        bytes[0x800..0x808].copy_from_slice(&(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x800..0x808].copy_from_slice(&(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x808..0x80c].copy_from_slice(&5_000_u32.to_le_bytes());
         let memory = engine_native::memory::SliceMemory {
             base: 0x1000,

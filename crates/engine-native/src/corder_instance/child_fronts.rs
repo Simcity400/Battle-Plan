@@ -1,6 +1,7 @@
 //! Stored army-group child-front geometry. The first path province's controller
 //! area selects the small-area guard independently of UI state.
 
+use engine_sites::Rva;
 use super::{PlanRow, Row, TYPE_LINE, Visit, grow_payload, plan_field};
 use crate::{
     Memory, carmy_group, ccontroller_area, corders_group,
@@ -12,7 +13,7 @@ use crate::{
 };
 
 /// Serialized child-front record; stride 72 bytes.
-const ENTRY_VTABLE_RVA: usize = 0x02a0_2698;
+const ENTRY_VTABLE_RVA: Rva = Rva(0x02a0_2698);
 const DATA: usize = 0x380;
 const STRIDE: usize = 0x48;
 const BATCH: usize = 16;
@@ -159,9 +160,10 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     at: usize,
-    rva: usize,
+    key: Rva,
 ) -> Result<(), &'static str> {
-    if at == 0 || read::<u64>(memory, at) != base.checked_add(rva).map(|v| v as u64) {
+    let expected = engine_sites::at(base, key).map(|v| v as u64);
+    if at == 0 || expected.is_none() || read::<u64>(memory, at) != expected {
         return Err("child front dependency identity mismatch");
     }
     Ok(())
@@ -223,7 +225,7 @@ fn sections(
             }
             let raw = &bytes[index * 24..(index + 1) * 24];
             let vtable = u64::from_le_bytes(raw[..8].try_into().unwrap());
-            if Some(vtable) != base.checked_add(ENTRY_VTABLE_RVA).map(|v| v as u64) {
+            if Some(vtable) != engine_sites::at(base, ENTRY_VTABLE_RVA).map(|v| v as u64) {
                 return Err("child front entry vtable mismatch");
             }
             let pointer = u64::from_le_bytes(raw[8..16].try_into().unwrap()) as usize;

@@ -33,7 +33,7 @@ impl Fixture {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         };
         let store = nproject_cproject::VARIABLES;
-        put64(&mut bytes, store, variables::VTABLE_RVA as u64);
+        put64(&mut bytes, store, variables::VTABLE_RVA.0 as u64);
         bytes[store + variables::SEED..store + variables::SEED + 4]
             .copy_from_slice(&seed.to_le_bytes());
         put64(

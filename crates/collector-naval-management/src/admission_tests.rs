@@ -66,12 +66,12 @@ impl Census {
         memory.array(STATE + cgame_state::COUNTRY_LINKS, LISTS + 0x100, 8);
         memory.word(LISTS + 7 * 8, COUNTRY as u64);
         memory.integer(LISTS + 0x100 + 7 * 4, 7);
-        memory.word(COUNTRY, ccountry::VTABLE_RVA as u64);
+        memory.word(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         memory.integer(COUNTRY + ccountry::ID, 7);
         memory.word(COUNTRY + ccountry::PRODUCTION_STATUS, PRODUCTION as u64);
         memory.word(
             PRODUCTION,
-            engine_native::cproduction_status::VTABLE_RVA as u64,
+            engine_native::cproduction_status::VTABLE_RVA.0 as u64,
         );
         memory.word(
             PRODUCTION + engine_native::cproduction_status::COUNTRY,
@@ -79,21 +79,21 @@ impl Census {
         );
         memory.integer(PRODUCTION + native::MAX_FACTORIES_FOR_REPAIR, 3 + phase);
         memory.word(STATE + cgame_state::STRATEGIC_NAVY_MANAGER, MANAGER as u64);
-        memory.word(MANAGER, cstrategic_navy_manager::VTABLE_RVA as u64);
+        memory.word(MANAGER, cstrategic_navy_manager::VTABLE_RVA.0 as u64);
         memory.array(MANAGER + cstrategic_navy_manager::NAVIES, LISTS + 0x200, 8);
         memory.word(LISTS + 0x200 + 7 * 8, NAVY as u64);
-        memory.word(NAVY, cstrategic_navy::VTABLE_RVA as u64);
+        memory.word(NAVY, cstrategic_navy::VTABLE_RVA.0 as u64);
         memory.word(
             NAVY + cstrategic_navy::SECONDARY,
-            cstrategic_navy::SECONDARY_VTABLE_RVA as u64,
+            cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         memory.integer(NAVY + cstrategic_navy::OWNER, 7);
         memory.integer(NAVY + native::MAX_REPAIR_DOCKYARDS, 5 + phase);
         memory.integer(NAVY + native::USED_REPAIR_DOCKYARDS, 2 + phase);
-        memory.word(FLEET, engine_native::cfleet::VTABLE_RVA as u64);
+        memory.word(FLEET, engine_native::cfleet::VTABLE_RVA.0 as u64);
         memory.word(FLEET + engine_native::cfleet::HANDLE, FLEET_ID);
         memory.put(FLEET + native::AUTOMATED_HOMEBASE, &[(1 - phase) as u8]);
-        memory.word(TASK, engine_native::ctask_force::VTABLE_RVA as u64);
+        memory.word(TASK, engine_native::ctask_force::VTABLE_RVA.0 as u64);
         memory.word(TASK + engine_native::cunit::HANDLE, TASK_ID);
         memory.integer(TASK + native::REPAIR_MODE, -2 - phase);
         memory.put(TASK + native::REPAIR_SPLIT, &[(1 - phase) as u8]);
@@ -105,7 +105,7 @@ impl Census {
         memory.integer(TASK + native::COMPOSITION_TOKEN, 47 + phase);
         memory.array(STATE + cgame_state::PROVINCES, LISTS + 0x300, 32);
         memory.word(LISTS + 0x300 + (17 + phase as usize) * 8, TARGET as u64);
-        memory.word(TARGET, engine_native::cprovince::VTABLE_RVA as u64);
+        memory.word(TARGET, engine_native::cprovince::VTABLE_RVA.0 as u64);
         memory.integer(TARGET + engine_native::cprovince::ID, 17 + phase);
         memory.word(
             TASK + engine_native::ctask_force::REPAIR_TARGET,
@@ -118,7 +118,7 @@ impl Census {
             memory.word(TASK + offset, pointer as u64);
             memory.word(
                 pointer,
-                engine_native::cequipment_variant::VTABLE_RVA as u64,
+                engine_native::cequipment_variant::VTABLE_RVA.0 as u64,
             );
             memory.word(
                 pointer + engine_native::cequipment_variant::TYPE,
@@ -137,7 +137,7 @@ impl Census {
             .enumerate()
         {
             let data = LISTS + 0x600 + kind * 0x100;
-            memory.word(TASK + offset, native::ENTRIES_VTABLE_RVA as u64);
+            memory.word(TASK + offset, native::ENTRIES_VTABLE_RVA.0 as u64);
             memory.array(TASK + offset + native::COMPOSITION_ENTRIES, data, 2);
             for ordinal in 0..2 {
                 for (field, value) in [31 + phase, -3 - kind as i32, 59 + ordinal as i32, 5 + phase]
@@ -151,16 +151,19 @@ impl Census {
                 }
             }
         }
-        memory.word(SHIP, engine_native::cship::VTABLE_RVA as u64);
+        memory.word(SHIP, engine_native::cship::VTABLE_RVA.0 as u64);
         memory.word(SHIP + engine_native::cship::HANDLE, SHIP_ID);
         memory.word(SHIP + native::SHIP_REFIT_LINE, LINE_ID);
-        memory.word(engine_native::creference_registry::INVALID_REFERENCE_RVA, 0);
+        memory.word(
+            engine_native::creference_registry::INVALID_REFERENCE_RVA.0,
+            0,
+        );
         memory.refit_registry();
         memory.put(
             LINE + engine_native::cproduction_line::PRODUCED,
             &(12345_i64 + i64::from(phase)).to_le_bytes(),
         );
-        memory.word(BASE, engine_native::cnaval_base::VTABLE_RVA as u64);
+        memory.word(BASE, engine_native::cnaval_base::VTABLE_RVA.0 as u64);
         memory.integer(BASE + engine_native::cnaval_base::PROVINCE_ID, 17);
         memory.integer(BASE + native::BASE_REPAIR_PRIORITY, 2 + phase);
         memory.integer(BASE + native::BASE_REPAIR_DOCKYARDS, 3 + phase);
@@ -174,7 +177,7 @@ impl Census {
         const TABLE: usize = LISTS + 0x1000;
         const BUCKETS: usize = LISTS + 0x1100;
         self.word(
-            registry::LOW_ROOTS_RVA + LINE_ID as u32 as usize * 8,
+            registry::LOW_ROOTS_RVA.0 + LINE_ID as u32 as usize * 8,
             TABLE as u64,
         );
         self.word(TABLE + registry::ENTRIES, BUCKETS as u64);
@@ -193,7 +196,7 @@ impl Census {
         self.word(cell + bucket::OBJECT, LINE as u64);
         self.word(
             LINE,
-            engine_native::cship_refit_production_line::VTABLE_RVA as u64,
+            engine_native::cship_refit_production_line::VTABLE_RVA.0 as u64,
         );
         self.word(
             LINE + engine_native::cproduction_line::REFERENCE_TYPE,

@@ -58,7 +58,7 @@ mod batched_orders {
 
     fn world(countries: usize, orders: usize) -> (MemoryImage, Vec<corders_group::Root>) {
         let mut image = MemoryImage::default();
-        image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+        image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
         let mut groups = Vec::new();
         for country in 0..countries {
             let group = 0x1000_0000 + country * 0x1000;
@@ -273,7 +273,7 @@ impl MemoryImage {
     }
     fn order(&mut self, address: usize, instance: u32, kind: i32) {
         self.bytes(address, &[0; 0x400]);
-        self.u64(address, (BASE + VTABLE_RVA) as u64);
+        self.u64(address, (BASE + VTABLE_RVA.0) as u64);
         self.u64(address + OWNER, GROUP as u64);
         self.u32(address + ID, instance);
         self.u32(address + TYPE, kind as u32);
@@ -283,7 +283,7 @@ impl MemoryImage {
 fn fixture() -> MemoryImage {
     let mut image = MemoryImage::default();
     image.u64(
-        BASE + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8,
+        BASE + registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8,
         TABLE as u64,
     );
     image.bytes(TABLE, &[0; 32]);
@@ -300,7 +300,7 @@ fn fixture() -> MemoryImage {
         &[bucket::TERMINAL_DISTANCE],
     );
     image.bytes(GROUP, &[0; 0x240]);
-    image.u64(GROUP, (BASE + corders_group::VTABLE_RVA) as u64);
+    image.u64(GROUP, (BASE + corders_group::VTABLE_RVA.0) as u64);
     image.u64(GROUP + corders_group::HANDLE, HANDLE);
     image.u32(GROUP + corders_group::COUNTRY, 0xffff_fffe);
     // An empty inline group name: capacity 15, length 0.
@@ -345,7 +345,7 @@ fn capture(image: &MemoryImage, rows: &mut Vec<Row>, geometry: &mut Vec<u32>) ->
 fn invasion_allocation_authenticates_the_subscriber_and_reuses_the_plan_prefix() {
     let mut image = MemoryImage::default();
     image.order(FIRST, 1, TYPE_INVASION);
-    image.u64(FIRST + 8, (BASE + INVASION_SUBSCRIBER_VTABLE_RVA) as u64);
+    image.u64(FIRST + 8, (BASE + INVASION_SUBSCRIBER_VTABLE_RVA.0) as u64);
     for count in [0_i32, -3, i32::MIN, i32::MAX] {
         image.u32(FIRST + INVASION_TRANSPORTS, count as u32);
         let mut bytes = [0_u8; PLAN_STRIDE];
@@ -378,7 +378,7 @@ fn invasion_allocation_authenticates_the_subscriber_and_reuses_the_plan_prefix()
         None
     );
     assert_eq!(*image.1.borrow(), vec![(FIRST + 8, 8)]);
-    image.u64(FIRST + 8, (BASE + INVASION_SUBSCRIBER_VTABLE_RVA) as u64);
+    image.u64(FIRST + 8, (BASE + INVASION_SUBSCRIBER_VTABLE_RVA.0) as u64);
     image
         .0
         .get_mut(&FIRST)
@@ -417,7 +417,7 @@ fn native_geometry_counts_grow_only_after_readable_batches() {
 #[test]
 fn assigned_member_count_does_not_allocate_before_authentication() {
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     let mut groups = [corders_group::Root::default(); 8];
     let mut visits = Vec::new();
     let source = walk(
@@ -454,7 +454,7 @@ fn assigned_member_count_does_not_allocate_before_authentication() {
 #[test]
 fn named_arrows_record_their_name_strings_and_lines_record_none() {
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     // SECOND becomes a move order: inline prefix and name, a heap unique text.
     image.u32(SECOND + TYPE, TYPE_MOVE as u32);
     for offset in NAME_STRINGS {
@@ -523,7 +523,7 @@ fn named_arrows_record_their_name_strings_and_lines_record_none() {
 #[test]
 fn plans_preserve_raw_bytes_scoped_ids_members_and_grow_without_rereading() {
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     image.u64(FIRST + FRONT_BINDING, 17_u64 << 32 | 66);
     image.u32(FIRST + FRONT_SECTION, 9);
     image.u32(FIRST + SEGMENT_START, u32::MAX);
@@ -534,10 +534,10 @@ fn plans_preserve_raw_bytes_scoped_ids_members_and_grow_without_rereading() {
     image.u64(FIRST + OWNER_OVERRIDE, GROUP as u64);
     const UNIT: usize = 0x60000;
     image.bytes(UNIT, &[0; 0x100]);
-    image.u64(UNIT, (BASE + crate::carmy::VTABLE_RVA) as u64);
+    image.u64(UNIT, (BASE + crate::carmy::VTABLE_RVA.0) as u64);
     image.u64(
         UNIT + crate::carmy::SECONDARY_BASE,
-        (BASE + crate::carmy::SECONDARY_VTABLE_RVA) as u64,
+        (BASE + crate::carmy::SECONDARY_VTABLE_RVA.0) as u64,
     );
     image.u64(UNIT + crate::cunit::HANDLE, 0xffff_fffe_0000_0033);
     image.array(FIRST + ASSIGNED_MEMBER_DATA, 0x50000, 2);
@@ -695,7 +695,7 @@ fn plan_walks_hint_every_direct_read_ahead_and_change_no_read_or_row() {
         }
     }
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     // More successors than the hint distance, so the walk also hints
     // while it reads; each is a named move with empty inline strings.
     const MORE: usize = 0x80000;
@@ -829,7 +829,7 @@ fn plan_dependents_are_hinted_one_batch_before_their_reads() {
         }
     }
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     const MORE: usize = 0x80000;
     const LIST: usize = 0x45000;
     const TEXTS: usize = 0x200000;
@@ -986,7 +986,7 @@ fn group_plans_keep_the_native_root_order_as_census_ids() {
 #[test]
 fn plan_graphs_preserve_native_order_and_reject_references_outside_the_census() {
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     image.array(CHILD + PREDECESSOR_DATA, 0x44000, 3);
     image.bytes(0x44000, &[0; 24]);
     image.u64(0x44000, SECOND as u64);
@@ -1239,7 +1239,7 @@ fn census_successor_lists_give_the_rows_of_rereading_them() {
     const VIRTUAL_SUCCESSORS: usize = 0x46200;
     const FALLBACK_SUCCESSORS: usize = 0x46300;
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     // FIRST succeeds into CHILD and SECOND, SECOND into CHILD: the listed
     // vectors.
     image.array(FIRST + SUCCESSOR_DATA, CHILDREN_A, 2);
@@ -1770,7 +1770,7 @@ fn group_scratch_demand_counts_the_full_registry_and_does_not_invent_omitted_ord
         image.u64(slot + bucket::TYPE, handle);
         image.u64(slot + bucket::OBJECT, pointer as u64);
         image.bytes(pointer, &[0; 0x240]);
-        image.u64(pointer, (BASE + corders_group::VTABLE_RVA) as u64);
+        image.u64(pointer, (BASE + corders_group::VTABLE_RVA.0) as u64);
         image.u64(pointer + corders_group::HANDLE, handle);
         image.u32(pointer + corders_group::COUNTRY, 19);
     }
@@ -1896,7 +1896,7 @@ fn empty_native_order_lists_produce_a_complete_empty_table() {
         capture(&image, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Rows { len: 0 }
     );
-    let static_empty = BASE + registry::STATIC_EMPTY_RVA;
+    let static_empty = BASE + registry::STATIC_EMPTY_RVA.0;
     image.u64(TABLE + registry::ENTRIES, static_empty as u64);
     image.u32(TABLE + registry::COUNT, 0);
     image.u32(TABLE + registry::MASK, 0);
@@ -2115,16 +2115,16 @@ const PLAN_GROUP_NAME: usize = 0x70100;
 /// lengths of its two heap payloads.
 fn plan_fixture() -> (MemoryImage, [usize; 2]) {
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     const UNIT: usize = PLAN_UNIT;
     const MEMBERS: usize = PLAN_MEMBERS;
     const UNIQUE: usize = PLAN_UNIQUE;
     const GROUP_NAME: usize = PLAN_GROUP_NAME;
     image.bytes(UNIT, &[0; 0x100]);
-    image.u64(UNIT, (BASE + crate::carmy::VTABLE_RVA) as u64);
+    image.u64(UNIT, (BASE + crate::carmy::VTABLE_RVA.0) as u64);
     image.u64(
         UNIT + crate::carmy::SECONDARY_BASE,
-        (BASE + crate::carmy::SECONDARY_VTABLE_RVA) as u64,
+        (BASE + crate::carmy::SECONDARY_VTABLE_RVA.0) as u64,
     );
     image.u64(UNIT + crate::cunit::HANDLE, 0xffff_fffe_0000_0033);
     image.array(FIRST + ASSIGNED_MEMBER_DATA, MEMBERS, 3);
@@ -2738,7 +2738,7 @@ fn type_driven_name_records_match_per_field_reads_for_every_order_type() {
         -1,
     ] {
         let mut image = fixture();
-        image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+        image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
         image.bytes(UNIQUE, b"Synthetic Plan Alpha\0");
         for order in orders {
             image.u32(order + TYPE, kind as u32);
@@ -3369,7 +3369,7 @@ fn passes_meet_orders_in_census_order_whatever_the_table_layout() {
 /// image and each group's order pointers.
 fn groups_fixture(groups: usize, orders: usize) -> (MemoryImage, Vec<Vec<usize>>) {
     let mut image = fixture();
-    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
     image.u32(TABLE + registry::COUNT, groups as u32);
     let mut pointers = Vec::new();
     for group in 0..groups {
@@ -3380,7 +3380,7 @@ fn groups_fixture(groups: usize, orders: usize) -> (MemoryImage, Vec<Vec<usize>>
         image.u64(slot + bucket::TYPE, handle);
         image.u64(slot + bucket::OBJECT, pointer as u64);
         image.bytes(pointer, &[0; 0x240]);
-        image.u64(pointer, (BASE + corders_group::VTABLE_RVA) as u64);
+        image.u64(pointer, (BASE + corders_group::VTABLE_RVA.0) as u64);
         image.u64(pointer + corders_group::HANDLE, handle);
         image.u32(pointer + corders_group::COUNTRY, group as u32 + 1);
         let roster = 0x90000 + group * 0x100;
@@ -3441,10 +3441,10 @@ fn assign_members(image: &mut MemoryImage, order: usize, group: usize, index: us
     for member in 0..count {
         let unit = member_unit(group, index, member);
         image.bytes(unit, &[0; 0x100]);
-        image.u64(unit, (BASE + crate::carmy::VTABLE_RVA) as u64);
+        image.u64(unit, (BASE + crate::carmy::VTABLE_RVA.0) as u64);
         image.u64(
             unit + crate::carmy::SECONDARY_BASE,
-            (BASE + crate::carmy::SECONDARY_VTABLE_RVA) as u64,
+            (BASE + crate::carmy::SECONDARY_VTABLE_RVA.0) as u64,
         );
         image.u64(
             unit + crate::cunit::HANDLE,
@@ -4115,7 +4115,7 @@ fn a_one_shot_fault_two_parts_share_is_met_in_time_order_and_recorded_once() {
     let censuses = part_censuses(&image, groups, root_outcome, &ranges);
     let census = stitch_part_censuses(&censuses, &mut CensusStorage::default()).walk;
     assert_eq!(census.outcome, Outcome::Rows { len: 12 });
-    let at = BASE + registry::INVALID_REFERENCE_RVA;
+    let at = BASE + registry::INVALID_REFERENCE_RVA.0;
     let reason = "plan field unreadable or address overflow";
     // The single walk under the same fault.
     let serial = {

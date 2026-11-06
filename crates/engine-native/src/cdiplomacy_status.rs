@@ -2,11 +2,12 @@
 //! These fields do not establish hourly consistency.
 
 use crate::{Memory, ccountry, cpdx_array::Array, cwar_goal, read, walk::Outcome};
+use engine_sites::Rva;
 
 /// CDiplomacyStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_e5e8;
+pub const VTABLE_RVA: Rva = Rva(0x029d_e5e8);
 /// CDiplomacyStatus constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d9_6000;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d9_6000);
 /// CDiplomacyStatus CRelationStatus pointer matrix, indexed by resolved country ordinal.
 pub const RELATIONS: usize = 0x08;
 /// Relation-matrix signed-i32 capacity in its array header.
@@ -178,9 +179,8 @@ fn war_goals(
     if !recipients.ensure(end)? {
         return Ok(None);
     }
-    let vtable = base
-        .checked_add(cwar_goal::VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let vtable =
+        engine_sites::at(base, cwar_goal::VTABLE_RVA).ok_or("module address overflow")? as u64;
     for ordinal in 0..goals.count {
         let recipient = goals
             .element(ordinal, 8)
@@ -209,9 +209,7 @@ fn read_capitulation(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("capitulation diplomacy root unreadable or null")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, diplomacy) != Some(expected as u64) {
         return Err("capitulation diplomacy vtable mismatch");
     }
@@ -288,7 +286,7 @@ mod tests {
             put(
                 &mut bytes,
                 pointer,
-                &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(&mut bytes, pointer + ccountry::ID, &id.to_le_bytes());
             put(
@@ -299,7 +297,7 @@ mod tests {
             put(
                 &mut bytes,
                 diplomacy,
-                &((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -449,7 +447,7 @@ mod tests {
             put(
                 &mut bytes,
                 goal,
-                &((BASE + cwar_goal::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + cwar_goal::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

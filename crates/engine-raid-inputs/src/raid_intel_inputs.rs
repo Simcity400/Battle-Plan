@@ -17,16 +17,17 @@ use crate::{
     cstrategic_operative_manager as manager, modifier_accumulator, modifier_keys,
     operative_action as action, read, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Counterintelligence reference roster, distinct from the agency active roster.
 const MISSIONS: usize = 0x28;
 /// Counterintelligence modifier object, with its embedded accumulator.
 const OPERATIVE_MODIFIER: usize = 0x408;
 /// Bound static modifier selected when the subject occurs in sorted operative nationalities.
-const STATIC_DATABASE_RVA: usize = 0x033d_e590;
+const STATIC_DATABASE_RVA: Rva = Rva(0x033d_e590);
 const NATIONALITY_MODIFIER: usize = 0x130;
 /// Counterintelligence mission country-tag virtual dispatch.
-const MISSION_VTABLE_RVA: usize = 0x02a9_8f90;
+const MISSION_VTABLE_RVA: Rva = Rva(0x02a9_8f90);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
@@ -55,6 +56,9 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("raid intel address overflow")
 }
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("raid intel address overflow")
+}
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
@@ -78,9 +82,9 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    if object == 0 || field::<u64>(memory, object, 0)? != at(base, vtable)? as u64 {
+    if object == 0 || field::<u64>(memory, object, 0)? != site(base, vtable)? as u64 {
         return Err("raid intel object vtable mismatch");
     }
     Ok(())
@@ -321,7 +325,11 @@ fn contribution(
     }
     let mut context = 0;
     if has_nationality(memory, countries, object, country)? {
-        let database = pointer(memory, base, STATIC_DATABASE_RVA)?;
+        let database = usize::try_from(
+            read::<u64>(memory, site(base, STATIC_DATABASE_RVA)?)
+                .ok_or("raid intel field unreadable")?,
+        )
+        .map_err(|_| "raid intel pointer overflow")?;
         if database != 0 {
             let bound = pointer(memory, database, NATIONALITY_MODIFIER)?;
             if bound != 0 {
@@ -630,10 +638,10 @@ mod tests {
                 let strategic = country + 0x1000;
                 f.u64(roster + slot * 8, country as u64);
                 f.u32(links + slot * 4, slot as u32);
-                f.u64(country, ccountry::VTABLE_RVA as u64);
+                f.u64(country, ccountry::VTABLE_RVA.0 as u64);
                 f.u32(country + ccountry::ID, slot as u32);
                 f.u64(strategic_roster + slot * 8, strategic as u64);
-                f.u64(strategic, strategic::VTABLE_RVA as u64);
+                f.u64(strategic, strategic::VTABLE_RVA.0 as u64);
                 f.u32(strategic + strategic::OWNER, slot as u32);
                 f.array(strategic + MISSIONS, 0, 0);
             }
@@ -642,21 +650,21 @@ mod tests {
             let agency = f.country + 0x1100;
             let crypto = f.country + 0x1280;
             f.u64(f.country + ccountry::INTELLIGENCE_AGENCY, agency as u64);
-            f.u64(agency, agency::VTABLE_RVA as u64);
+            f.u64(agency, agency::VTABLE_RVA.0 as u64);
             f.u64(agency + agency::OWNER_COUNTRY, f.country as u64);
             f.u64(agency + agency::CRYPTOLOGY, crypto as u64);
-            f.u64(crypto, ccryptology::VTABLE_RVA as u64);
+            f.u64(crypto, ccryptology::VTABLE_RVA.0 as u64);
             f.u64(crypto + ccryptology::OWNER_COUNTRY, f.country as u64);
             f.accumulator(
                 f.country + ccountry::MODIFIER_ACCUMULATOR,
                 &[(DEFENSE, -125000), (CRYPTO, 249999)],
             );
-            f.block(definition::TABLE_RVA, 8);
-            f.u64(definition::TABLE_RVA, 0x0800_0000);
+            f.block(definition::TABLE_RVA.0, 8);
+            f.u64(definition::TABLE_RVA.0, 0x0800_0000);
             f.block(0x0800_0000, (CRYPTO as usize + 1) * definition::STRIDE);
             // Unclamped, ungated synthetic modifier definitions.
-            f.block(registry::LOW_ROOTS_RVA + 7 * 8, 8);
-            f.u64(registry::LOW_ROOTS_RVA + 7 * 8, (end + 0x100) as u64);
+            f.block(registry::LOW_ROOTS_RVA.0 + 7 * 8, 8);
+            f.u64(registry::LOW_ROOTS_RVA.0 + 7 * 8, (end + 0x100) as u64);
             f.u64(end + 0x100 + registry::ENTRIES, (end + 0x200) as u64);
             f.u32(end + 0x100 + registry::COUNT, 1);
             f.u32(end + 0x100 + registry::MASK, 7);
@@ -670,7 +678,7 @@ mod tests {
             f.put(cell + bucket::DISTANCE, &[1]);
             f.u64(cell + 8, HANDLE);
             f.u64(cell + 16, f.operative as u64);
-            f.u64(f.operative, operative::VTABLE_RVA as u64);
+            f.u64(f.operative, operative::VTABLE_RVA.0 as u64);
             f.u64(f.operative + operative::IDENTITY, HANDLE);
             f.u32(
                 f.operative + operative::ACTION + action::VARIANT,
@@ -680,7 +688,7 @@ mod tests {
                 f.operative + operative::ACTION + action::IMPLEMENTATION,
                 f.mission as u64,
             );
-            f.u64(f.mission, MISSION_VTABLE_RVA as u64);
+            f.u64(f.mission, MISSION_VTABLE_RVA.0 as u64);
             f.u32(
                 f.mission + crate::operative_action_implementation::TARGET_COUNTRY,
                 slots as u32,
@@ -691,10 +699,10 @@ mod tests {
             );
             f.array(f.operative + operative::NATIONALITIES, end + 0x4800, 1);
             f.u32(end + 0x4800, slots as u32);
-            f.block(STATIC_DATABASE_RVA, 8);
-            f.u64(STATIC_DATABASE_RVA, (end + 0x600) as u64);
+            f.block(STATIC_DATABASE_RVA.0, 8);
+            f.u64(STATIC_DATABASE_RVA.0, (end + 0x600) as u64);
             f.u64(end + 0x600 + NATIONALITY_MODIFIER, (end + 0x800) as u64);
-            f.u64(end + 0x800, crate::cstatic_modifier::VTABLE_RVA as u64);
+            f.u64(end + 0x800, crate::cstatic_modifier::VTABLE_RVA.0 as u64);
             f.accumulator(
                 end + 0x800 + crate::cmodifier::ACCUMULATOR,
                 &[(DEFENSE, -33333)],
@@ -790,7 +798,10 @@ mod tests {
             f.run(&mut rows, &mut [Operative::default(); 2]).outcome,
             Outcome::Rows { len: 1 }
         );
-        assert_eq!((rows[0].country_defense, rows[0].crypto_strength), (0, Some(0)));
+        assert_eq!(
+            (rows[0].country_defense, rows[0].crypto_strength),
+            (0, Some(0))
+        );
     }
 
     /// Reads only the copy makes (capacity, an unprobed entry, an ineligible value) refuse nothing.
@@ -800,14 +811,16 @@ mod tests {
         impl Memory for Holes<'_> {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
                 let end = at.saturating_add(out.len());
-                !self.1.iter().any(|hole| at < hole.end && hole.start < end)
-                    && self.0.copy(at, out)
+                !self.1.iter().any(|hole| at < hole.end && hole.start < end) && self.0.copy(at, out)
             }
         }
         let mut f = Fixture::new(1);
         let header = f.country + ccountry::MODIFIER_ACCUMULATOR;
         let data = header + 0x20;
-        f.accumulator(header, &[(DEFENSE, -125000), (CRYPTO, 249999), (CRYPTO + 1, 5)]);
+        f.accumulator(
+            header,
+            &[(DEFENSE, -125000), (CRYPTO, 249999), (CRYPTO + 1, 5)],
+        );
         let run = |f: &Fixture, holes: Vec<std::ops::Range<usize>>| {
             let mut rows = [Row::default()];
             let mut operatives = [Operative::default(); 2];
@@ -829,7 +842,7 @@ mod tests {
             0x0800_0000 + DEFENSE as usize * definition::STRIDE + definition::FEATURE_SELECTOR,
             1,
         );
-        f.block(definition::ELIGIBILITY_CALLBACK_RVA, 8);
+        f.block(definition::ELIGIBILITY_CALLBACK_RVA.0, 8);
         assert_eq!(
             run(&f, vec![data + 8..data + 16]),
             (Outcome::Rows { len: 1 }, 0, Some(249999))
@@ -959,7 +972,7 @@ mod tests {
                 reason: "raid intel object vtable mismatch"
             }
         );
-        f.u64(f.mission, MISSION_VTABLE_RVA as u64);
+        f.u64(f.mission, MISSION_VTABLE_RVA.0 as u64);
         f.u64(f.country + 0x1280 + ccryptology::OWNER_COUNTRY, 0);
         assert_eq!(
             f.run(&mut rows, &mut ops).outcome,
@@ -971,7 +984,7 @@ mod tests {
             f.country + 0x1280 + ccryptology::OWNER_COUNTRY,
             f.country as u64,
         );
-        f.regions.remove(&STATIC_DATABASE_RVA);
+        f.regions.remove(&STATIC_DATABASE_RVA.0);
         assert_eq!(
             f.run(&mut rows, &mut ops).outcome,
             Outcome::Unavailable {

@@ -76,8 +76,7 @@ impl Capacities {
         memory: &impl Memory,
         base: usize,
     ) -> Result<(), &'static str> {
-        let state = base
-            .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+        let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
             .and_then(|address| engine_native::read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|pointer| *pointer != 0)

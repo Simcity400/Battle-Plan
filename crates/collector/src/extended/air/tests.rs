@@ -582,7 +582,7 @@ fn equipment_capture_preserves_full_handles_order_and_exact_capacity() {
     let mut bytes = vec![0; 0x500];
     let pool = cair_wing::EQUIPMENT_POOL;
     bytes[pool..pool + 8]
-        .copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes());
+        .copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[pool + cequipment_variant_pool::ITEMS..pool + cequipment_variant_pool::ITEMS + 8]
         .copy_from_slice(&(ENTRIES as u64).to_le_bytes());
     bytes[pool + cequipment_variant_pool::CAPACITY..pool + cequipment_variant_pool::CAPACITY + 4]
@@ -590,7 +590,7 @@ fn equipment_capture_preserves_full_handles_order_and_exact_capacity() {
     bytes[pool + cequipment_variant_pool::COUNT..pool + cequipment_variant_pool::COUNT + 4]
         .copy_from_slice(&2_i32.to_le_bytes());
     bytes[VARIANT - WING..VARIANT - WING + 8]
-        .copy_from_slice(&(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+        .copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[VARIANT - WING + 8..VARIANT - WING + 16].copy_from_slice(&HANDLE.to_le_bytes());
     for (ordinal, amount) in [0_i64, i64::MIN].into_iter().enumerate() {
         let at = ENTRIES - WING + ordinal * equipment_entry::STRIDE;
@@ -961,12 +961,12 @@ fn wing_copy_includes_assigned_mission_region_and_skips_null_country_slots() {
     put(
         &mut bytes,
         region,
-        (kit::BASE + cstrategic_region::VTABLE_RVA) as u64,
+        (kit::BASE + cstrategic_region::VTABLE_RVA.0) as u64,
     );
     put(
         &mut bytes,
         region + cstrategic_region::SECONDARY,
-        (kit::BASE + cstrategic_region::SECONDARY_VTABLE_RVA) as u64,
+        (kit::BASE + cstrategic_region::SECONDARY_VTABLE_RVA.0) as u64,
     );
     bytes[region + cstrategic_region::ID..region + cstrategic_region::ID + 4]
         .copy_from_slice(&17u32.to_le_bytes());
@@ -2084,7 +2084,7 @@ fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
     put64(
         &mut bytes,
         MANAGER,
-        cstrategic_air_manager::VTABLE_RVA as u64,
+        cstrategic_air_manager::VTABLE_RVA.0 as u64,
     );
     header(
         &mut bytes,
@@ -2096,7 +2096,7 @@ fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
     put64(
         &mut bytes,
         HOST,
-        engine_native::cair_base::VTABLE_RVA as u64,
+        engine_native::cair_base::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut bytes,
@@ -2124,7 +2124,7 @@ fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
         let object = OBJECTS + slot as usize * 16;
         put64(&mut bytes, TABLE + slot as usize * 8, object as u64);
         put32(&mut bytes, LINKS + slot as usize * 4, slot);
-        put64(&mut bytes, object, ccountry::VTABLE_RVA as u64);
+        put64(&mut bytes, object, ccountry::VTABLE_RVA.0 as u64);
         put32(&mut bytes, object + ccountry::ID, slot);
     }
     let occupied = [1_u32, 2600, 5000];
@@ -2133,7 +2133,7 @@ fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
         put64(
             &mut bytes,
             container,
-            ccountry_air_container::VTABLE_RVA as u64,
+            ccountry_air_container::VTABLE_RVA.0 as u64,
         );
         put32(
             &mut bytes,

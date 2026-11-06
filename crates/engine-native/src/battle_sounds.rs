@@ -22,9 +22,10 @@ use crate::{
     cprovince, read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Global pointer to the battle-sound manager; null while the game holds none.
-pub const MANAGER_RVA: usize = 0x033d_ea38;
+pub const MANAGER_RVA: Rva = Rva(0x033d_ea38);
 /// The manager's spatial tree of battles.
 pub const MANAGER_TREE: usize = 0x08;
 /// The tree's node array header, relative to the tree.
@@ -175,9 +176,8 @@ fn walk_buffer(
 }
 
 fn list(memory: &impl Memory, base: usize, state: &mut State<'_>) -> Result<Outcome, &'static str> {
-    let global = base
-        .checked_add(MANAGER_RVA)
-        .ok_or("battle sound manager address overflow")?;
+    let global =
+        engine_sites::at(base, MANAGER_RVA).ok_or("battle sound manager address overflow")?;
     let manager = read::<u64>(memory, global).ok_or("battle sound manager pointer unreadable")?;
     if manager == 0 {
         return Ok(Outcome::Rows { len: 0 });
@@ -298,7 +298,7 @@ fn province_id(memory: &impl Memory, base: usize, province: usize) -> Result<u32
         return Err("battle sound member province null");
     }
     let vtable = read::<u64>(memory, province).ok_or("battle sound member province unreadable")?;
-    if usize::try_from(vtable).ok() != base.checked_add(cprovince::VTABLE_RVA) {
+    if usize::try_from(vtable).ok() != engine_sites::at(base, cprovince::VTABLE_RVA) {
         return Err("battle sound member is not a province");
     }
     let id = province

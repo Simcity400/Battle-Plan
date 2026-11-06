@@ -485,9 +485,9 @@ impl Dispatch {
         if self.combat == 0 {
             return Ok(None);
         }
-        let Some(role) = native::DISPATCH_LEADER_RETURNS
-            .iter()
-            .position(|rva| base.checked_add(*rva) == Some(caller))
+        let returns = native::DISPATCH_LEADER_RETURNS;
+        let Some(role) = engine_sites::which(base, caller, &returns)
+            .and_then(|key| returns.iter().position(|rva| *rva == key))
         else {
             return Ok(None);
         };
@@ -504,9 +504,9 @@ impl Border {
         if self.combat == 0 {
             return Ok(None);
         }
-        let Some(n) = native::BORDER_TERMINATE_RETURNS
-            .iter()
-            .position(|rva| base.checked_add(*rva) == Some(caller))
+        let returns = native::BORDER_TERMINATE_RETURNS;
+        let Some(n) = engine_sites::which(base, caller, &returns)
+            .and_then(|key| returns.iter().position(|rva| *rva == key))
         else {
             return Ok(None);
         };
@@ -1393,74 +1393,70 @@ impl Hooks {
             publication_attempted: false,
         }
     }
-    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, String> {
+    unsafe fn install(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, String> {
         let sites = [
             (
                 FINALIZE,
                 native::FINALIZE_RVA,
-                native::FINALIZE_SENTINEL,
                 finalize as *const () as usize,
             ),
             (
                 DESTROYED,
                 native::DESTROY_RVA,
-                native::DESTROY_SENTINEL,
                 destroyed as *const () as usize,
             ),
             (
                 BORDER_FINALIZE,
                 native::BORDER_FINALIZE_RVA,
-                native::BORDER_FINALIZE_SENTINEL,
                 border_finalize as *const () as usize,
             ),
             (
                 BORDER_TERMINATE,
                 native::BORDER_TERMINATE_RVA,
-                native::BORDER_TERMINATE_SENTINEL,
                 border_terminate_entry as *const () as usize,
             ),
             (
                 DISPATCH_ORIGINAL,
                 native::DISPATCH_RVA,
-                native::DISPATCH_SENTINEL,
                 dispatch as *const () as usize,
             ),
             (
                 DESTRUCTION_ORIGINAL,
                 native::DESTRUCTION_RVA,
-                native::DESTRUCTION_SENTINEL,
                 destruction as *const () as usize,
             ),
             (
                 WIPE_ORIGINAL,
                 engine_land_inputs::land_wipe::LIFECYCLE_RVA,
-                engine_land_inputs::land_wipe::LIFECYCLE_SENTINEL,
                 land_wipe_entry as *const () as usize,
             ),
         ];
-        for (_, rva, sentinel, _) in sites {
-            if !crate::hook::installation::sentinel(memory, base + rva, sentinel) {
-                return Err(format!("land event sentinel differs at RVA {rva:x}"));
-            }
+        engine_sites::require(base, &native::DISPATCH_LEADER_RETURNS)
+            .and_then(|()| engine_sites::require(base, &native::BORDER_TERMINATE_RETURNS))
+            .map_err(|cause| format!("land event caller withheld: {cause}"))?;
+        let mut located = [(0, [0; 16]); 7];
+        for ((_, rva, _), slot) in sites.into_iter().zip(&mut located) {
+            *slot = crate::located_hook(base, rva)
+                .map_err(|cause| format!("land event site withheld: {cause}"))?;
         }
-        let tap_sentinels = verify_leader_taps(memory, base)?;
+        let taps = verify_leader_taps(base)?;
         BASE.store(base, Ordering::Relaxed);
         let mut hooks = Vec::new();
-        for (slot, rva, sentinel, callback) in sites {
+        for ((slot, _, callback), (at, original)) in sites.into_iter().zip(located) {
             let hook = if slot == WIPE_ORIGINAL {
-                unsafe { Hook::new_push_frame(base + rva, callback, sentinel) }?
+                unsafe { Hook::new_push_frame(at, callback, original) }?
             } else {
-                unsafe { Hook::new(base + rva, callback, sentinel) }?
+                unsafe { Hook::new(at, callback, original) }?
             };
             ORIGINAL[slot].store(hook.trampoline(), Ordering::Release);
             hooks.push(hook);
         }
-        for (rva, sentinel) in native::DISPATCH_LEADER_CALLS.into_iter().zip(tap_sentinels) {
+        for (at, original) in taps {
             hooks.push(unsafe {
                 Hook::new_indirect_call(
-                    base + rva,
+                    at,
                     leader_tap_entry as *const () as usize,
-                    sentinel,
+                    original,
                     tap_safety(),
                 )
             }?);
@@ -1558,26 +1554,30 @@ pub fn status() -> impl serde::Serialize {
     })
 }
 
-fn verify_leader_taps(memory: &impl Memory, base: usize) -> Result<[[u8; 16]; 2], String> {
-    let mut sentinels = [[0; 16]; 2];
+/// Each leader call site with its verified bytes; it must still be the vtable-slot CALL it replaces.
+fn verify_leader_taps(base: usize) -> Result<[(usize, [u8; 16]); 2], String> {
+    let mut taps = [(0, [0; 16]); 2];
     for (n, &rva) in native::DISPATCH_LEADER_CALLS.iter().enumerate() {
-        crate::hook::installation::site(base + rva);
-        let sentinel = engine_native::read::<[u8; 16]>(memory, base + rva)
-            .filter(|bytes| bytes[..6] == native::DISPATCH_LEADER_CALL_SENTINEL)
-            .ok_or_else(|| {
-                crate::hook::installation::refused(
-                    crate::hook::installation::Kind::Sentinel,
-                    Some(base + rva),
-                    "land event leader-call sentinel differs",
-                );
-                format!(
-                    "land event call tap {} sentinel differs at RVA {rva:x}",
-                    native::DISPATCH_LEADER_CALL_NAMES[n]
-                )
-            })?;
-        sentinels[n] = sentinel;
+        let located = engine_sites::hook(base, rva).and_then(|code| {
+            crate::hook::installation::site(code.address);
+            if code.sentinel::<6>()? != native::DISPATCH_LEADER_CALL_SENTINEL {
+                return Err("land event leader call is not the expected vtable-slot CALL");
+            }
+            Ok((code.address, code.sentinel::<16>()?))
+        });
+        taps[n] = located.map_err(|cause| {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Sentinel,
+                None,
+                cause,
+            );
+            format!(
+                "land event call tap {} withheld: {cause}",
+                native::DISPATCH_LEADER_CALL_NAMES[n]
+            )
+        })?;
     }
-    Ok(sentinels)
+    Ok(taps)
 }
 
 #[cfg(test)]
@@ -2341,8 +2341,8 @@ mod tests {
         drain(&mut output, 10, true);
         let lost = test_support::thread_lost();
         let unknown_side = 0u64;
-        let land_side = engine_native::cland_combatant::VTABLE_RVA as u64;
-        let unsupported_unit = [engine_native::carmy::VTABLE_RVA as u64, 1];
+        let land_side = engine_native::cland_combatant::VTABLE_RVA.0 as u64;
+        let unsupported_unit = [engine_native::carmy::VTABLE_RVA.0 as u64, 1];
         unsafe {
             observe_wipe(&unknown_side as *const _ as usize, 0);
             observe_wipe(
@@ -2523,10 +2523,6 @@ mod tests {
         let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
             .try_into()
             .unwrap();
-        assert_eq!(
-            sentinel[..8],
-            engine_land_inputs::land_wipe::LIFECYCLE_SENTINEL[..8]
-        );
         let mut hook =
             unsafe { Hook::new_push_frame(site, land_wipe_entry as *const () as usize, sentinel) }
                 .unwrap();
@@ -2585,7 +2581,7 @@ mod tests {
         let mut vtable = [0usize; 30];
         let site = land_leader_tap_test_site as *const () as usize;
         let base = BASE.swap(
-            site + 6 - native::DISPATCH_LEADER_RETURNS[0],
+            site + 6 - native::DISPATCH_LEADER_RETURNS[0].0,
             Ordering::SeqCst,
         );
         let saved_dispatch = DISPATCH.get();
@@ -2671,7 +2667,7 @@ mod tests {
         const HITS: usize = 2048; // Benchmark batch, never an observation limit.
         let enabled = ENABLED.swap(true, Ordering::SeqCst);
         let site = land_leader_tap_test_site as *const () as usize;
-        let base = site + 6 - native::DISPATCH_LEADER_RETURNS[0];
+        let base = site + 6 - native::DISPATCH_LEADER_RETURNS[0].0;
         let saved_base = BASE.swap(base, Ordering::SeqCst);
         let saved_dispatch = DISPATCH.get();
         let sentinel = unsafe { ptr::read_unaligned(site as *const [u8; 16]) };
@@ -2689,7 +2685,7 @@ mod tests {
         let mut leader = vec![0u8; engine_native::cunit_leader::TYPE + 8];
         let pointer = leader.as_mut_ptr() as usize;
         leader[..8].copy_from_slice(
-            &((base + engine_native::carmy_leader::VTABLE_RVA) as u64).to_le_bytes(),
+            &((base + engine_native::carmy_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         leader[engine_native::cunit_leader::TYPE..].copy_from_slice(&17u64.to_le_bytes());
         // Both paths reset identical TLS context, so the paired delta includes
@@ -2782,42 +2778,6 @@ mod tests {
         DISPATCH.set(saved_dispatch);
         BASE.store(saved_base, Ordering::SeqCst);
         ENABLED.store(enabled, Ordering::SeqCst);
-    }
-    #[test]
-    fn verdict_tap_sentinel_mismatch_refuses_by_site_name() {
-        struct Bytes {
-            base: usize,
-            values: [[u8; 16]; 2],
-        }
-        impl Memory for Bytes {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                let Some(n) = native::DISPATCH_LEADER_CALLS
-                    .iter()
-                    .position(|rva| self.base + rva == address)
-                else {
-                    return false;
-                };
-                if output.len() != 16 {
-                    return false;
-                }
-                output.copy_from_slice(&self.values[n]);
-                true
-            }
-        }
-        let mut bytes = Bytes {
-            base: 0x140000000,
-            values: [[0; 16]; 2],
-        };
-        for value in &mut bytes.values {
-            value[..6].copy_from_slice(&native::DISPATCH_LEADER_CALL_SENTINEL);
-        }
-        assert!(verify_leader_taps(&bytes, bytes.base).is_ok());
-        for n in 0..2 {
-            bytes.values[n][5] = 1;
-            let refusal = verify_leader_taps(&bytes, bytes.base).unwrap_err();
-            assert!(refusal.contains(native::DISPATCH_LEADER_CALL_NAMES[n]));
-            bytes.values[n][5] = 0;
-        }
     }
     #[test]
     fn verdict_resolver_rust_unwind_retains_the_asm_owned_flight() {
@@ -2976,7 +2936,7 @@ mod tests {
             };
             let win = usize::from(winner == 2);
             for (role, n) in [(0, 1 - win), (1, win)] {
-                let caller = base + native::DISPATCH_LEADER_RETURNS[role];
+                let caller = base + native::DISPATCH_LEADER_RETURNS[role].0;
                 assert_eq!(dispatch.slot(dispatch.sides[n], caller, base), Ok(Some(n)));
                 assert!(dispatch.slot(dispatch.sides[1 - n], caller, base).is_err());
                 let mut seen = dispatch;
@@ -2995,7 +2955,7 @@ mod tests {
             ..NO_BORDER
         };
         for n in 0..2 {
-            let caller = base + native::BORDER_TERMINATE_RETURNS[n];
+            let caller = base + native::BORDER_TERMINATE_RETURNS[n].0;
             assert_eq!(border.slot(border.sides[n], caller, base), Ok(Some(n)));
             assert!(border.slot(border.sides[1 - n], caller, base).is_err());
             let mut queried = border;

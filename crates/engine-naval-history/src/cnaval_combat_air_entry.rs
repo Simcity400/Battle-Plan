@@ -1,5 +1,6 @@
 //! Retained naval-air result snapshot, 0x88 bytes. It copies variant,
 //! counts, country and name with three transferred hit arrays.
+use engine_sites::Rva;
 use crate::capture_text::Value;
 use crate::{
     Memory,
@@ -8,7 +9,7 @@ use crate::{
 };
 
 /// Naval-combat air-entry primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_a5d0;
+pub const VTABLE_RVA: Rva = Rva(0x029d_a5d0);
 pub const SIZE: usize = 0x88;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -37,8 +38,7 @@ pub fn capture_details(
     buffers: &mut HitBuffers<'_>,
 ) -> Result<DetailsRow, &'static str> {
     if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(VTABLE_RVA)
+        != engine_sites::at(base, VTABLE_RVA)
             .ok_or("naval result air module overflow")? as u64
     {
         return Err("naval result air vtable mismatch");
@@ -46,8 +46,7 @@ pub fn capture_details(
     let variant = field::<u64>(memory, pointer, 8)? as usize;
     if variant == 0
         || field::<u64>(memory, variant, 0)?
-            != base
-                .checked_add(crate::cequipment_variant::VTABLE_RVA)
+            != engine_sites::at(base, crate::cequipment_variant::VTABLE_RVA)
                 .ok_or("naval result air variant module overflow")? as u64
     {
         return Err("naval result air variant identity mismatch");

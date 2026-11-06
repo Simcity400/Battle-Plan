@@ -71,7 +71,7 @@ fn with_empty_characters(count: usize) -> Vec<u8> {
             put(
                 &mut bytes,
                 character + field,
-                &((BASE + vtable) as u64).to_le_bytes(),
+                &((BASE + vtable.0) as u64).to_le_bytes(),
             );
         }
         put(
@@ -409,7 +409,7 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     put(
         &mut bytes,
         character,
-        &((BASE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+        &((BASE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -424,7 +424,7 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     put(
         &mut bytes,
         character + ccharacter::FLAGS,
-        &((BASE + cflag_manager::VTABLE_RVA) as u64).to_le_bytes(),
+        &((BASE + cflag_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -688,7 +688,7 @@ fn a_marked_flag_read_refusal_never_publishes_the_held_table() {
     put(
         &mut bytes,
         MANAGERS[1],
-        &((BASE + cflag_manager::VTABLE_RVA) as u64).to_le_bytes(),
+        &((BASE + cflag_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     watches.boundary(false);
     let (recovered, _) = walk_with(&bytes, &mut store, &watches);

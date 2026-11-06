@@ -83,7 +83,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p32(&mut bytes, LTAB, 0);
     p32(&mut bytes, LTAB + 4, 1);
     p32(&mut bytes, LTAB + 8, 1);
-    p64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
+    p64(&mut bytes, C0, ccountry::VTABLE_RVA.0 as u64);
     p32(&mut bytes, C0 + ccountry::ID, 1);
     // A valid empty wing census is different from a missing manager.
     p64(
@@ -94,7 +94,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         0x40000,
-        engine_native::cstrategic_air_manager::VTABLE_RVA as u64,
+        engine_native::cstrategic_air_manager::VTABLE_RVA.0 as u64,
     );
     header(
         &mut bytes,
@@ -106,7 +106,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     header(&mut bytes, C0 + ccountry::THEATRES, 0x36000, 1);
     p64(&mut bytes, 0x36000, THEATRE as u64);
     header(&mut bytes, C0 + ccountry::AIR_THEATRES, 0x36100, 0);
-    p64(&mut bytes, THEATRE, ctheatre::VTABLE_RVA as u64);
+    p64(&mut bytes, THEATRE, ctheatre::VTABLE_RVA.0 as u64);
     p64(
         &mut bytes,
         THEATRE + ctheatre::HANDLE,
@@ -121,7 +121,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         1,
     );
     p64(&mut bytes, 0x36200, GROUP as u64);
-    p64(&mut bytes, GROUP, ctheater_group::VTABLE_RVA as u64);
+    p64(&mut bytes, GROUP, ctheater_group::VTABLE_RVA.0 as u64);
     p64(
         &mut bytes,
         GROUP + ctheater_group::HANDLE,
@@ -143,7 +143,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(&mut bytes, MEMBERS, MEMBER1 as u64);
     p64(&mut bytes, MEMBERS + 8, MEMBER2 as u64);
     for (member, id) in [(MEMBER1, 1u64), (MEMBER2, 2u64)] {
-        p64(&mut bytes, member, corders_group::VTABLE_RVA as u64);
+        p64(&mut bytes, member, corders_group::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             member + corders_group::HANDLE,
@@ -161,7 +161,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     const HANDLE: u64 = (u32::MAX as u64) << 32 | corders_group::REFERENCE_TYPE as u64;
     p64(
         &mut bytes,
-        BASE + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8,
+        BASE + registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8,
         OOB_TABLE as u64,
     );
     bytes[OOB_TABLE..OOB_TABLE + 32].fill(0);
@@ -182,7 +182,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         OOB_GROUP,
-        (BASE + corders_group::VTABLE_RVA) as u64,
+        (BASE + corders_group::VTABLE_RVA.0) as u64,
     );
     p64(&mut bytes, OOB_GROUP + corders_group::HANDLE, HANDLE);
     p32(&mut bytes, OOB_GROUP + corders_group::COUNTRY, 1);
@@ -197,11 +197,11 @@ pub(crate) fn fixture() -> Vec<u8> {
     );
     p64(&mut bytes, OOB_MEMBERS, OOB_MEMBER as u64);
     // Member host (division) with backlink.
-    p64(&mut bytes, OOB_UNIT, carmy::VTABLE_RVA as u64);
+    p64(&mut bytes, OOB_UNIT, carmy::VTABLE_RVA.0 as u64);
     p64(
         &mut bytes,
         OOB_UNIT + carmy::SECONDARY_BASE,
-        carmy::SECONDARY_VTABLE_RVA as u64,
+        carmy::SECONDARY_VTABLE_RVA.0 as u64,
     );
     p64(&mut bytes, OOB_UNIT + cunit::HANDLE, 0x4500_0001u64);
     let member_host = OOB_MEMBER;
@@ -716,7 +716,7 @@ fn naval_oob_copy_reads_only_typed_child_and_provider_dependencies() {
         } else {
             carmy_group::VTABLE_RVA
         };
-        p64(&mut bytes, OOB_GROUP, (BASE + vtable) as u64);
+        p64(&mut bytes, OOB_GROUP, (BASE + vtable.0) as u64);
         bytes[flag_address] = flag;
         header(
             &mut bytes,
@@ -725,7 +725,7 @@ fn naval_oob_copy_reads_only_typed_child_and_provider_dependencies() {
             1,
         );
         p64(&mut bytes, CHILDREN, CHILD as u64);
-        p64(&mut bytes, CHILD, (BASE + corders_group::VTABLE_RVA) as u64);
+        p64(&mut bytes, CHILD, (BASE + corders_group::VTABLE_RVA.0) as u64);
         p64(
             &mut bytes,
             CHILD + corders_group::HANDLE,
@@ -851,7 +851,7 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
     p64(
         &mut bytes,
         OOB_GROUP,
-        (BASE + engine_native::carmy_group::VTABLE_RVA) as u64,
+        (BASE + engine_native::carmy_group::VTABLE_RVA.0) as u64,
     );
     bytes[OOB_GROUP + corders_group::IS_ARMY_GROUP] = 1;
     header(
@@ -885,7 +885,7 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
     p64(
         &mut bytes,
         LEADER,
-        (BASE + engine_native::carmy_leader::VTABLE_RVA) as u64,
+        (BASE + engine_native::carmy_leader::VTABLE_RVA.0) as u64,
     );
     p64(&mut bytes, LEADER + 8, (9u64 << 32) | 4713);
     let spans = |job: &NavalJob| {

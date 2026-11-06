@@ -75,7 +75,7 @@ impl World {
         world.array(GS + gs::COUNTRIES, TABLE, slots, slots);
         world.array(GS + gs::COUNTRY_LINKS, LINKS, slots, slots);
         world.u64(GS + gs::STRATEGIC_AIR_MANAGER, MANAGER as u64);
-        world.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+        world.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA.0 as u64);
         world.array(
             MANAGER + cstrategic_air_manager::COUNTRY_AIR,
             ROSTER,
@@ -84,12 +84,12 @@ impl World {
         );
         for slot in 1..slots {
             let country = COUNTRY + slot as usize * 0x40;
-            world.u64(country, ccountry::VTABLE_RVA as u64);
+            world.u64(country, ccountry::VTABLE_RVA.0 as u64);
             world.u32(country + ccountry::ID, slot);
             world.u64(TABLE + slot as usize * 8, country as u64);
             world.u32(LINKS + slot as usize * 4, slot);
             world.u64(ROSTER + slot as usize * 8, air(slot) as u64);
-            world.u64(air(slot), cstrategic_air::VTABLE_RVA as u64);
+            world.u64(air(slot), cstrategic_air::VTABLE_RVA.0 as u64);
             world.u32(air(slot) + cstrategic_air::COUNTRY, slot);
             let regions: &[u32] = if slot % 2 == 1 { &[2, 5] } else { &[3] };
             for &region in regions {

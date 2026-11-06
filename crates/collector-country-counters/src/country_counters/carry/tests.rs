@@ -52,10 +52,10 @@ impl World {
             let root = country + DIPLOMACY;
             world.put64(COUNTRY_DATA + slot * 8, country as u64);
             world.put32(LINK_DATA + slot * 4, slot as u32);
-            world.put64(country, ccountry::VTABLE_RVA as u64);
+            world.put64(country, ccountry::VTABLE_RVA.0 as u64);
             world.put32(country + ccountry::ID, slot as u32);
             world.put64(country + ccountry::DIPLOMACY_STATUS, root as u64);
-            world.put64(root, diplomacy::VTABLE_RVA as u64);
+            world.put64(root, diplomacy::VTABLE_RVA.0 as u64);
             world.put64(root + diplomacy::COUNTRY, country as u64);
             let (matrix, cells) = if slot == 0 {
                 (reverse_matrix, countries + 1)
@@ -70,7 +70,7 @@ impl World {
                     country + FORWARD
                 };
                 world.put64(matrix + target * 8, status as u64);
-                world.put64(status, crelation_status::VTABLE_RVA as u64);
+                world.put64(status, crelation_status::VTABLE_RVA.0 as u64);
                 world.put64(status + crelation_status::DIPLOMACY_STATUS, root as u64);
                 world.put32(status + crelation_status::TARGET_COUNTRY, target as u32);
             }
@@ -111,7 +111,7 @@ impl World {
     fn characters(&mut self, slot: usize) {
         let object = block(slot) + CHARACTERS;
         self.put64(block(slot) + ccountry::CHARACTERS, object as u64);
-        self.put64(object, ccountry_characters::VTABLE_RVA as u64);
+        self.put64(object, ccountry_characters::VTABLE_RVA.0 as u64);
         self.put64(object + ccountry_characters::OWNER, block(slot) as u64);
     }
 
@@ -123,10 +123,10 @@ impl World {
         let entries = ship + 0x3000;
         let heap = ship + 0x4000;
         self.put64(block(slot) + ccountry::PRIDE_OF_THE_FLEET, PRIDE_HANDLE);
-        self.put64(ship, cship::VTABLE_RVA as u64);
+        self.put64(ship, cship::VTABLE_RVA.0 as u64);
         self.put64(ship + cship::HANDLE, PRIDE_HANDLE);
         self.put64(ship + cship::NAME_MEMBER, member as u64);
-        self.put64(member, cname_group_member::VTABLE_RVA as u64);
+        self.put64(member, cname_group_member::VTABLE_RVA.0 as u64);
         let string = member + cname_group_member::CACHED_NAME;
         self.put64(string + 16, text.len() as u64);
         if text.len() <= 15 {
@@ -180,7 +180,7 @@ impl Memory for Probe<'_> {
         {
             return false;
         }
-        let root = creference_registry::LOW_ROOTS_RVA + cship::HANDLE_TYPE as usize * 8;
+        let root = creference_registry::LOW_ROOTS_RVA.0 + cship::HANDLE_TYPE as usize * 8;
         if address == root && destination.len() == 8 {
             destination.copy_from_slice(&self.pride_table.to_le_bytes());
             return true;

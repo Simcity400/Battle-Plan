@@ -22,9 +22,10 @@ use crate::{
     cpdx_lexer, read, read_slice,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Country-character vtable.
-pub const VTABLE_RVA: usize = 0x02a0_6b48;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_6b48);
 /// Owning country pointer used for appointment scope.
 pub const OWNER: usize = 0x08;
 /// Appointed-advisor pointer array with signed capacity and count.
@@ -271,9 +272,8 @@ pub fn walk_records_buffer(
 ) -> [Outcome; 2] {
     let mut tables = [Records::new(active), Records::new(retired)];
     let result = (|| {
-        let characters_vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
+        let characters_vtable =
+            engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
@@ -519,9 +519,7 @@ fn demand_advisors(
     roster: usize,
     slots: bool,
 ) -> Result<(usize, usize), &'static str> {
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let mut rows = 0_usize;
     let mut bytes = 0_usize;
@@ -579,8 +577,8 @@ fn walk_inner(
     select: &dyn Fn(u32) -> bool,
 ) -> Result<NameWalk, &'static str> {
     let reason = |appointed, available| if slots { appointed } else { available };
-    let module = |rva: usize| {
-        base.checked_add(rva)
+    let module = |rva: Rva| {
+        engine_sites::at(base, rva)
             .map(|address| address as u64)
             .ok_or("module address overflow")
     };

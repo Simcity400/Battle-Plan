@@ -79,7 +79,7 @@ fn province_at(id: u32) -> usize {
 /// battles in array order.
 fn world(count: u32, placed: &[(u32, Vec<Battle>)]) -> World {
     let mut world = World::default();
-    world.put(MANAGER_RVA, &(MANAGER as u64).to_le_bytes());
+    world.put(MANAGER_RVA.0, &(MANAGER as u64).to_le_bytes());
     world.put(MANAGER, &[0; 0x78]);
     world.put(MANAGER + MANAGER_TREE, &3_i32.to_le_bytes());
     world.array(MANAGER + MANAGER_TREE + TREE_NODES, NODES, count, count);
@@ -109,7 +109,7 @@ fn world(count: u32, placed: &[(u32, Vec<Battle>)]) -> World {
             world.pointers(members, &provinces);
             for &id in &battle.members {
                 let mut province = vec![0; 0xa8];
-                province[..8].copy_from_slice(&(cprovince::VTABLE_RVA as u64).to_le_bytes());
+                province[..8].copy_from_slice(&(cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
                 province[cprovince::ID..cprovince::ID + 4]
                     .copy_from_slice(&(id as i32).to_le_bytes());
                 world.put(province_at(id), &province);
@@ -209,7 +209,7 @@ fn battles_follow_the_tree_preorder_with_exact_bits_and_member_order() {
 #[test]
 fn a_null_manager_holds_no_battles_and_an_unreadable_one_refuses() {
     let mut world = World::default();
-    world.put(MANAGER_RVA, &0_u64.to_le_bytes());
+    world.put(MANAGER_RVA.0, &0_u64.to_le_bytes());
     let walk = walk(&world, 0, &mut [], &mut []);
     assert_eq!(walk.outcome, Outcome::Rows { len: 0 });
     assert_eq!(walk.required, Demand::default());
@@ -313,7 +313,7 @@ fn invalid_objects_refuse_by_name() {
         "battle sound tree header invalid"
     );
     assert_eq!(
-        refused(&|world| world.put(MANAGER_RVA, &0x0910_0000_u64.to_le_bytes())),
+        refused(&|world| world.put(MANAGER_RVA.0, &0x0910_0000_u64.to_le_bytes())),
         "battle sound tree unreadable"
     );
 }

@@ -67,7 +67,7 @@ impl World {
             base: 0,
             observation: Box::new(UnsafeCell::new(Observation::default())),
         };
-        world.base = (&*world.root as *const u64 as usize) - cgame_state::SINGLETON_RVA;
+        world.base = (&*world.root as *const u64 as usize) - cgame_state::SINGLETON_RVA.0;
         *world.root = world.at(GAME) as u64;
         let (object, offset, id, scope) = if province_scope {
             (
@@ -86,22 +86,22 @@ impl World {
         };
         let status = object + offset;
         for (at, value) in [
-            (STATE, world.base + cstate::VTABLE_RVA),
-            (PROVINCE, world.base + cprovince::VTABLE_RVA),
+            (STATE, world.base + cstate::VTABLE_RVA.0),
+            (PROVINCE, world.base + cprovince::VTABLE_RVA.0),
             (PROVINCE + cprovince::STATE, world.at(STATE)),
-            (BUILDING, world.base + cbuilding::VTABLE_RVA),
+            (BUILDING, world.base + cbuilding::VTABLE_RVA.0),
             (BUILDING + cbuilding::BUILDING_STATUS, world.at(status)),
             (BUILDING + cbuilding::TEMPLATE, world.at(TEMPLATE)),
-            (status, world.base + cbuilding_status::VTABLE_RVA),
+            (status, world.base + cbuilding_status::VTABLE_RVA.0),
             (STATES + 3 * 8, world.at(STATE)),
             (PROVINCES + 4 * 8, world.at(PROVINCE)),
             (BUILDINGS, world.at(BUILDING)),
             (SOURCE + native::SOURCE_WING, world.at(WING)),
-            (WING, world.base + cair_wing::VTABLE_RVA),
+            (WING, world.base + cair_wing::VTABLE_RVA.0),
             (WING + cair_wing::POOL, world.at(POOL)),
-            (POOL, world.base + cair_wing_pool::VTABLE_RVA),
+            (POOL, world.base + cair_wing_pool::VTABLE_RVA.0),
             (POOL + cair_wing_pool::OWNER, world.at(OWNER)),
-            (OWNER, world.base + cstrategic_air::VTABLE_RVA),
+            (OWNER, world.base + cstrategic_air::VTABLE_RVA.0),
         ] {
             world.word(at, value as u64);
         }
@@ -158,7 +158,7 @@ impl World {
         let return_pc = native::CALLERS
             .iter()
             .find(|(_, cause)| *cause == caller)
-            .map_or(self.base + 0x12345, |(rva, _)| self.base + rva);
+            .map_or(self.base + 0x12345, |(rva, _)| self.base + rva.0);
         unsafe {
             before(
                 self.at(BUILDING),
@@ -370,17 +370,14 @@ unsafe extern "system" {
 #[test]
 fn building_damage_relocation_moves_exactly_the_five_byte_home_space_store() {
     let site = building_damage_unwind_test_native as *const () as usize;
-    let hook = unsafe {
-        Hook::new(
-            site,
-            building_damage_entry as *const () as usize,
-            native::APPLY_DAMAGE_SENTINEL,
-        )
-    }
-    .unwrap();
+    let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+        .try_into()
+        .unwrap();
+    let hook =
+        unsafe { Hook::new(site, building_damage_entry as *const () as usize, sentinel) }.unwrap();
     let trampoline = hook.trampoline();
     let bytes = unsafe { std::slice::from_raw_parts(trampoline as *const u8, 10) };
-    assert_eq!(&bytes[..5], &native::APPLY_DAMAGE_SENTINEL[..5]);
+    assert_eq!(&bytes[..5], &sentinel[..5]);
     let target = match bytes[5] {
         0xe9 => {
             let displacement = i32::from_le_bytes(bytes[6..10].try_into().unwrap());
@@ -438,17 +435,13 @@ fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
         (context.Rbx, context.Rsi, context.Rdi),
         (0xf001, 0xf002, 0xf003)
     );
-    assert_eq!(
-        &native::APPLY_DAMAGE_SENTINEL[..5],
-        &[0x48, 0x89, 0x5c, 0x24, 0x20]
-    );
     let synthetic = unsafe {
         std::slice::from_raw_parts(
             building_damage_unwind_test_native as *const () as *const u8,
             16,
         )
     };
-    assert_eq!(synthetic, native::APPLY_DAMAGE_SENTINEL);
+    assert_eq!(&synthetic[..5], &[0x48, 0x89, 0x5c, 0x24, 0x20]);
 
     // Walk from a framed native continuation through the DLL wrapper, then
     // to the original caller. No Rust frame surrounds this native call.

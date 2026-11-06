@@ -1210,7 +1210,7 @@ mod tests {
             {
                 return false;
             }
-            let root = creference_registry::LOW_ROOTS_RVA + cship::HANDLE_TYPE as usize * 8;
+            let root = creference_registry::LOW_ROOTS_RVA.0 + cship::HANDLE_TYPE as usize * 8;
             if address == root && destination.len() == 8 {
                 self.root_reads.set(self.root_reads.get() + 1);
                 destination.copy_from_slice(&self.root.to_le_bytes());
@@ -1236,7 +1236,7 @@ mod tests {
     fn pride_world(text: &[u8]) -> Vec<u8> {
         use engine_native::reference_bucket as bucket;
         let mut bytes = co_world();
-        co_put64(&mut bytes, PRIDE_SHIP, cship::VTABLE_RVA as u64);
+        co_put64(&mut bytes, PRIDE_SHIP, cship::VTABLE_RVA.0 as u64);
         co_put64(&mut bytes, PRIDE_SHIP + cship::HANDLE, PRIDE_HANDLE);
         co_put64(
             &mut bytes,
@@ -1246,7 +1246,7 @@ mod tests {
         co_put64(
             &mut bytes,
             PRIDE_MEMBER,
-            cname_group_member::VTABLE_RVA as u64,
+            cname_group_member::VTABLE_RVA.0 as u64,
         );
         let string = PRIDE_MEMBER + cname_group_member::CACHED_NAME;
         co_put64(&mut bytes, string + 16, text.len() as u64);
@@ -1407,7 +1407,7 @@ mod tests {
         co_put64(&mut bytes, 0x3000, u64::MAX);
         for (index, pointer) in CO_COUNTRIES.into_iter().enumerate() {
             co_put64(&mut bytes, 0x3008 + index * 8, pointer as u64);
-            co_put64(&mut bytes, pointer, ccountry::VTABLE_RVA as u64);
+            co_put64(&mut bytes, pointer, ccountry::VTABLE_RVA.0 as u64);
             co_put32(&mut bytes, pointer + ccountry::ID, index as u32 + 1);
             co_put64(
                 &mut bytes,
@@ -1422,7 +1422,7 @@ mod tests {
         }
         for owner in 0..2 {
             let root = CO_DIPLOMACY[owner];
-            co_put64(&mut bytes, root, diplomacy::VTABLE_RVA as u64);
+            co_put64(&mut bytes, root, diplomacy::VTABLE_RVA.0 as u64);
             co_put64(
                 &mut bytes,
                 root + diplomacy::COUNTRY,
@@ -1433,7 +1433,7 @@ mod tests {
             for target in 0..3 {
                 let status = co_status(owner, target);
                 co_put64(&mut bytes, matrix + target * 8, status as u64);
-                co_put64(&mut bytes, status, crelation_status::VTABLE_RVA as u64);
+                co_put64(&mut bytes, status, crelation_status::VTABLE_RVA.0 as u64);
                 co_put64(
                     &mut bytes,
                     status + crelation_status::DIPLOMACY_STATUS,
@@ -1656,7 +1656,7 @@ mod tests {
                 co_status(0, 0) + crelation_status::SUBJECT_RELATION,
                 subject as u64,
             );
-            co_put64(&mut bytes, subject, csubject_relation::VTABLE_RVA as u64);
+            co_put64(&mut bytes, subject, csubject_relation::VTABLE_RVA.0 as u64);
             co_put32(
                 &mut bytes,
                 subject + crelation::TYPE_ID,

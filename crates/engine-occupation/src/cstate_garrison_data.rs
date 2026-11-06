@@ -2,8 +2,9 @@
 //! manpower is an embedded container: its entry-array field is not a
 //! pointer to a separate manpower pool.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_0d78;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_0d78);
 /// Garrison allocation size.
 pub const SIZE: usize = 0x108;
 /// CStateGarrisonData child pointer vector.
@@ -68,7 +69,8 @@ fn authenticate(
     parent: usize,
     entry: pdx_robin_hood_table::Entry,
 ) -> Result<(), &'static str> {
-    if base.checked_add(VTABLE_RVA).map(|p| p as u64) != read::<u64>(memory, entry.value) {
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("state garrison vtable mismatch")?;
+    if read::<u64>(memory, entry.value) != Some(expected as u64) {
         return Err("state garrison vtable mismatch");
     }
     let references = entry

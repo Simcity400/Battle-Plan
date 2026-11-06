@@ -39,13 +39,11 @@ use crate::{
     Memory, cair_wing, cair_wing_pool, cbuilding, cbuilding_status, cbuilding_template,
     cgame_state, cpdx_array::Array, cprovince, cstate, cstrategic_air, read,
 };
+use engine_sites::Rva;
 
 /// Damage entry. Its relocated five-byte instruction stores RBX in caller
 /// home space without changing RSP or nonvolatile registers.
-pub const APPLY_DAMAGE_RVA: usize = 0x0116_3cd0;
-pub const APPLY_DAMAGE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9,
-];
+pub const APPLY_DAMAGE_RVA: Rva = Rva(0x0116_3cd0);
 
 /// Attribution of the pinned native caller, independently of source kind.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -65,18 +63,28 @@ pub enum Cause {
 /// Exact return RVAs after every indexed direct CALL to ApplyDamage. The
 /// original wrapper must retain its incoming return address before calling
 /// the trampoline; the trampoline's own return address is not a caller.
-pub const CALLERS: [(usize, Cause); 10] = [
-    (0x0100_02cb, Cause::AirMission),
-    (0x01a0_f0db, Cause::AirNaval),
-    (0x0133_be87, Cause::LandCombat),
-    (0x0133_c01c, Cause::LandCombat),
-    (0x0133_c0f8, Cause::LandCombat),
-    (0x0133_c1f7, Cause::LandCombat),
-    (0x0032_71ae, Cause::Scripted),
-    (0x00a2_bb51, Cause::Weekly),
-    (0x014d_f801, Cause::ProgramTeardown),
-    (0x014d_e667, Cause::AbortDismantle),
+pub const CALLERS: [(Rva, Cause); 10] = [
+    (Rva(0x0100_02cb), Cause::AirMission),
+    (Rva(0x01a0_f0db), Cause::AirNaval),
+    (Rva(0x0133_be87), Cause::LandCombat),
+    (Rva(0x0133_c01c), Cause::LandCombat),
+    (Rva(0x0133_c0f8), Cause::LandCombat),
+    (Rva(0x0133_c1f7), Cause::LandCombat),
+    (Rva(0x0032_71ae), Cause::Scripted),
+    (Rva(0x00a2_bb51), Cause::Weekly),
+    (Rva(0x014d_f801), Cause::ProgramTeardown),
+    (Rva(0x014d_e667), Cause::AbortDismantle),
 ];
+
+pub const CALLER_KEYS: [Rva; CALLERS.len()] = {
+    let mut keys = [CALLERS[0].0; CALLERS.len()];
+    let mut index = 1;
+    while index < CALLERS.len() {
+        keys[index] = CALLERS[index].0;
+        index += 1;
+    }
+    keys
+};
 
 /// Source kind selecting an air-wing payload.
 pub const AIR_SOURCE_KIND: u32 = 1;
@@ -135,10 +143,10 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
     reason: &'static str,
 ) -> Result<(), &'static str> {
-    let expected = base.checked_add(vtable).ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, vtable).ok_or("module address overflow")?;
     if object == 0 || read::<u64>(memory, object) != Some(expected as u64) {
         return Err(reason);
     }
@@ -186,8 +194,8 @@ fn health(memory: &impl Memory, building: usize) -> Result<(i16, i64), &'static 
 pub fn building_count(memory: &impl Memory, base: usize) -> Option<usize> {
     let game_state = pointer(
         memory,
-        base,
-        cgame_state::SINGLETON_RVA,
+        engine_sites::at(base, cgame_state::SINGLETON_RVA)?,
+        0,
         "building damage census game state unreadable",
     )
     .ok()?;
@@ -514,9 +522,8 @@ pub fn snapshot(
     } else {
         field(memory, source, 0, "building damage source kind unreadable")?
     };
-    let cause = return_address
-        .checked_sub(base)
-        .and_then(|rva| CALLERS.iter().find(|(caller, _)| *caller == rva))
+    let cause = engine_sites::which(base, return_address, &CALLER_KEYS)
+        .and_then(|key| CALLERS.iter().find(|(caller, _)| *caller == key))
         .map_or(Cause::Unknown, |(_, cause)| *cause);
     Ok(Snapshot {
         building,

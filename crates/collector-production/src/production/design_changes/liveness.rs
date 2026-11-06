@@ -144,9 +144,9 @@ fn event(
     if store.batch.events.len() == store.batch.events.capacity() {
         return Err("design liveness event capacity exhausted");
     }
-    let state =
-        engine_native::read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
-            .ok_or("design liveness clock unreadable")?;
+    let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .ok_or("design liveness clock unreadable")?;
     let hour = engine_native::read(
         memory,
         state as usize + engine_native::cgame_state::CURRENT_HOUR,
@@ -182,9 +182,9 @@ pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
             return Ok(());
         }
         store.interests.author_changed(handle);
-        if engine_native::read::<u64>(memory, pointer)
-            != Some((base + organisation::VTABLE_RVA) as u64)
-        {
+        let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
+            .ok_or("design organisation liveness identity mismatch")?;
+        if engine_native::read::<u64>(memory, pointer) != Some(vtable as u64) {
             return Err("design organisation liveness identity mismatch");
         }
         let resolved = engine_native::creference_registry::resolve(memory, base, handle)?;
@@ -329,7 +329,7 @@ pub(super) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let callbacks = [
             reconcile as *const () as usize,
             callback::<1> as *const () as usize,
@@ -338,11 +338,16 @@ impl Hooks {
         ];
         let mut hooks = Vec::new();
         if ORGANISATIONS.iter().all(|site| {
-            engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+            engine_sites::hook(base, site.rva)
+                .and_then(|code| code.sentinel::<16>())
+                .is_ok()
         }) {
             for (index, site) in ORGANISATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| match index {
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook = unsafe {
+                    Hook::new(code.address, callbacks[index], code.sentinel::<16>()?)
+                }
+                .map_err(|_| match index {
                     0 => "design-liveness ReconcileOrganisations hook construction failed",
                     1 => "design-liveness InitializeOrganisations hook construction failed",
                     2 => "design-liveness RepairOrganisationReference hook construction failed",

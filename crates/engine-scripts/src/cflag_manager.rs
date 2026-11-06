@@ -1,9 +1,10 @@
 //! Dense scripted-flag storage shared by country, state and global scopes.
 
 use crate::{Memory, cscript_flag, memory::RecordSources, read, walk::Outcome};
+use engine_sites::Rva;
 
 /// CFlagManager primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_9d98;
+pub const VTABLE_RVA: Rva = Rva(0x029d_9d98);
 /// CFlagManager primary vtable pointer.
 pub const VTABLE: usize = 0x00;
 /// CFlagManager dense flag-row array pointer.
@@ -93,9 +94,7 @@ pub fn walk_header_buffer(
     mut output: crate::walk::Buffer<'_, cscript_flag::Row>,
 ) -> Outcome {
     let result = (|| {
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let head = head.ok_or("flag manager header unreadable")?;
         if u64::from_le_bytes(head[0..8].try_into().unwrap()) != expected as u64 {
             return Err("flag manager vtable mismatch");
@@ -191,20 +190,20 @@ mod tests {
 
     fn fixture(tokens: &[u32]) -> Vec<u8> {
         let mut bytes = vec![0; 0x40 + tokens.len() * cscript_flag::STRIDE];
-        bytes[0..8].copy_from_slice(&((BASE + VTABLE_RVA) as u64).to_le_bytes());
+        bytes[0..8].copy_from_slice(&((BASE + VTABLE_RVA.0) as u64).to_le_bytes());
         bytes[8..16].copy_from_slice(&(DATA as u64).to_le_bytes());
         bytes[16..20].copy_from_slice(&(tokens.len() as i32).to_le_bytes());
         bytes[20..24].copy_from_slice(&(tokens.len() as i32).to_le_bytes());
         for (index, token) in tokens.iter().enumerate() {
             let start = 0x40 + index * cscript_flag::STRIDE;
             bytes[start..start + 8]
-                .copy_from_slice(&((BASE + cscript_flag::VTABLE_RVA) as u64).to_le_bytes());
+                .copy_from_slice(&((BASE + cscript_flag::VTABLE_RVA.0) as u64).to_le_bytes());
             bytes[start + 8..start + 12].copy_from_slice(&token.to_le_bytes());
             bytes[start + 16..start + 24]
-                .copy_from_slice(&((BASE + cscript_flag::DATE_VTABLE_RVA) as u64).to_le_bytes());
+                .copy_from_slice(&((BASE + cscript_flag::DATE_VTABLE_RVA.0) as u64).to_le_bytes());
             bytes[start + 24..start + 28].copy_from_slice(&i32::MIN.to_le_bytes());
             bytes[start + 32..start + 40].copy_from_slice(
-                &((BASE + cscript_flag::DATE_SECONDARY_VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + cscript_flag::DATE_SECONDARY_VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             bytes[start + 40..start + 42].copy_from_slice(&i16::MIN.to_le_bytes());
             bytes[start + 42..start + 44].copy_from_slice(&(-1_i16).to_le_bytes());

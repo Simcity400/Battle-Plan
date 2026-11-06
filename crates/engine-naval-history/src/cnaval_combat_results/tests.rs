@@ -62,10 +62,10 @@ impl Heap {
         let mut heap = Self(vec![0; 0x7000]);
         heap.array(STATE + cgame_state::NAVAL_COMBAT_RESULTS, LIST, 1);
         heap.u64(LIST, RECORD as u64);
-        heap.u64(RECORD, (BASE + VTABLE_RVA) as u64);
+        heap.u64(RECORD, (BASE + VTABLE_RVA.0) as u64);
         heap.u64(RECORD + HANDLE, RESULT_ID);
         for offset in [FIRST_SIDE, SECOND_SIDE] {
-            heap.u64(RECORD + offset, (BASE + side::VTABLE_RVA) as u64);
+            heap.u64(RECORD + offset, (BASE + side::VTABLE_RVA.0) as u64);
         }
         heap.u64(RECORD + WINNING_SIDE, (RECORD + SECOND_SIDE) as u64);
         heap.u64(RECORD + LOSING_SIDE, (RECORD + FIRST_SIDE) as u64);
@@ -81,7 +81,7 @@ impl Heap {
             (MEMBER_A, MEMBER_ID, 0x1_0000_0001),
             (MEMBER_B, 0x2345_6789_0000_0000, 0),
         ] {
-            heap.u64(pointer, (BASE + member::VTABLE_RVA) as u64);
+            heap.u64(pointer, (BASE + member::VTABLE_RVA.0) as u64);
             heap.u64(pointer + member::HANDLE, id);
             heap.u64(pointer + member::PRESENCE, raw);
         }

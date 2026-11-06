@@ -1,15 +1,14 @@
-//! Every native site any collector hook family patches, with the bytes each
-//! patch replaces. A site has one patch owner: two families patching one
-//! entry, or patches whose spans overlap, make publication fail at attach
-//! for that optional family. Dependent
+//! Every native site any collector hook family patches. A site has one patch
+//! owner: two families patching one entry, or patches whose spans overlap,
+//! make publication fail at attach for that optional family. Dependent
 //! observers dispatch through the owner's detour instead.
 use engine_mutations::{
-    army_stat_mutations, faction_companion_mutations, faction_goal_mutations, template_mutations,
-    unit_leader_mutations, world_input_mutations,
+    army_stat_mutations, template_mutations, unit_leader_mutations, world_input_mutations,
 };
 use engine_production::market_mutations;
 
 use crate::hook_inventory::{PATCH, Patch, patches};
+use engine_sites::Rva;
 
 fn runtime_hook_families() -> std::collections::BTreeSet<&'static str> {
     crate::runtime::hook_patch_families().collect()
@@ -97,106 +96,6 @@ fn original_family_omissions_are_reported_by_name() {
     );
 }
 
-fn verification_collisions(patches: &[Patch]) -> Vec<String> {
-    let mut collisions = Vec::new();
-    for (index, verified) in patches.iter().enumerate() {
-        for (other, written) in patches.iter().enumerate() {
-            if index != other
-                && verified.rva < written.rva + written.len
-                && written.rva < verified.rva + verified.sentinel.len()
-            {
-                collisions.push(format!(
-                    "{} / {} verification covers {} / {} patch",
-                    verified.family, verified.name, written.family, written.name
-                ));
-            }
-        }
-    }
-    collisions
-}
-
-#[test]
-fn no_verified_span_overlaps_another_written_patch() {
-    let patches = patches();
-    assert_family_completeness(&patches);
-    for patch in &patches {
-        assert!((PATCH..=16).contains(&patch.sentinel.len()), "{patch:?}");
-        assert!(patch.sentinel.len() >= patch.len, "{patch:?}");
-    }
-    let collisions = verification_collisions(&patches);
-    assert!(collisions.is_empty(), "{collisions:#?}");
-    println!(
-        "{} registered hooks: 0 verified-span/written-span overlaps",
-        patches.len()
-    );
-}
-
-#[test]
-fn adjacent_decision_pairs_reject_the_original_full_verification_spans() {
-    let mut patches = patches();
-    for site in [
-        engine_events::script_event_sites::decisions::REACTIVATE_TARGETED_DAYS,
-        engine_events::script_event_sites::decisions::REQUEST_TARGETED_TIMED,
-    ] {
-        let patch = patches
-            .iter_mut()
-            .find(|patch| patch.rva == site.rva)
-            .unwrap();
-        patch.sentinel = site.sentinel.to_vec();
-    }
-    let collisions = verification_collisions(&patches);
-    assert_eq!(collisions.len(), 2, "{collisions:#?}");
-    assert!(
-        collisions
-            .iter()
-            .any(|reason| reason.contains("DecisionReactivateTargetedDays")
-                && reason.contains("DecisionReactivateTargetedState"))
-    );
-    assert!(
-        collisions
-            .iter()
-            .any(|reason| reason.contains("DecisionRequestTargetedTimed")
-                && reason.contains("DecisionRequestTargeted patch"))
-    );
-}
-
-#[test]
-fn every_verified_span_matches_the_pinned_executable() {
-    let directory = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
-        .expect("hook sentinel checks require BATTLE_PLAN_GAME_DIR with the supported installation");
-    let bytes = std::fs::read(std::path::Path::new(&directory).join("hoi4.exe")).unwrap();
-    let identity = engine_executable::build::hash_executable(bytes.as_slice()).unwrap();
-    assert!(
-        engine_executable::build::PINNED_BUILD.matches(&identity),
-        "hook sentinel checks require the pinned executable: {identity:?}"
-    );
-    let image = engine_executable::executable_tables::pe::PeImage::parse(bytes).unwrap();
-    let patches = patches();
-    assert_family_completeness(&patches);
-    let mismatches: Vec<_> = patches
-        .iter()
-        .filter_map(|patch| {
-            let actual = image.bytes(u32::try_from(patch.rva).unwrap(), patch.sentinel.len());
-            match actual {
-                Ok(actual) if actual == patch.sentinel => None,
-                Ok(actual) => Some(format!(
-                    "{} / {} sentinel differs: expected {:02x?}, executable {actual:02x?}",
-                    patch.family, patch.name, patch.sentinel
-                )),
-                Err(reason) => Some(format!(
-                    "{} / {} executable read failed: {reason}",
-                    patch.family, patch.name
-                )),
-            }
-        })
-        .collect();
-    assert!(mismatches.is_empty(), "{mismatches:#?}");
-    println!(
-        "{} registered hooks: 0 sentinel mismatches against pinned hoi4.exe",
-        patches.len()
-    );
-}
-
 #[test]
 fn naval_management_integration_registers_every_installed_patch() {
     let patches = patches();
@@ -210,11 +109,11 @@ fn naval_management_integration_registers_every_installed_patch() {
             .iter()
             .any(|patch| patch.name == "repair split command")
     );
-    for (name, rva, len) in collector_naval_management::changes::patch_sites() {
+    for (name, rva) in collector_naval_management::changes::patch_sites() {
         assert_eq!(
             naval
                 .iter()
-                .filter(|patch| patch.name == name && patch.rva == rva && patch.len == len)
+                .filter(|patch| patch.name == name && patch.rva == rva)
                 .count(),
             1
         );
@@ -243,19 +142,17 @@ fn market_inventory_covers_exactly_the_installed_detours_and_fuel_taps() {
             ]
             .contains(&index)
             {
-                7
+                None
             } else {
-                PATCH
+                Some(PATCH)
             }
         );
     }
     // Active removal precedes deferred destruction and reference retirement.
     let removal = &market_mutations::SITES[market_mutations::CONTRACT_REMOVAL_SITE];
-    assert!(
-        registered.iter().any(|patch| patch.name == removal.name
-            && patch.rva == removal.rva
-            && patch.len == PATCH)
-    );
+    assert!(registered.iter().any(|patch| patch.name == removal.name
+        && patch.rva == removal.rva
+        && patch.len == Some(PATCH)));
     for nested in [1, 2, 22, 26, 27, 28] {
         assert!(
             registered
@@ -293,66 +190,36 @@ fn no_two_hooks_share_a_site_or_overlap() {
         let registered: Vec<_> = patches.iter().filter(|patch| patch.name == name).collect();
         assert_eq!(registered.len(), 1, "{name} needs one patch owner");
         assert_eq!(registered[0].family, "world_input_changes", "{name}");
-        assert_eq!((registered[0].rva, registered[0].len), (site.rva, PATCH));
+        assert_eq!(
+            (registered[0].rva, registered[0].len),
+            (site.rva, Some(PATCH))
+        );
     }
     assert_family_completeness(&patches);
-    assert!(patches.iter().all(|patch| patch.len >= PATCH));
+    assert!(
+        patches
+            .iter()
+            .all(|patch| patch.len.is_none_or(|len| len >= PATCH))
+    );
     patches.sort_by_key(|patch| patch.rva);
+    // A tap's span decodes from the located bytes; it writes at least a CALL.
     let collisions: Vec<String> = patches
         .windows(2)
-        .filter(|pair| pair[0].rva + pair[0].len > pair[1].rva)
+        .filter(|pair| pair[0].rva.0 + pair[0].len.unwrap_or(PATCH) > pair[1].rva.0)
         .map(|pair| {
             format!(
-                "{} {} at {:#x}+{} overlaps {} {} at {:#x}",
+                "{} {} at {:#x}+{:?} overlaps {} {} at {:#x}",
                 pair[0].family,
                 pair[0].name,
-                pair[0].rva,
+                pair[0].rva.0,
                 pair[0].len,
                 pair[1].family,
                 pair[1].name,
-                pair[1].rva
+                pair[1].rva.0
             )
         })
         .collect();
     assert!(collisions.is_empty(), "{collisions:#?}");
-}
-
-#[test]
-fn game_fog_writers_authenticate_entries_and_leave_nudge_construction_with_buildings() {
-    let path = std::path::PathBuf::from(
-        std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("native site test requires BATTLE_PLAN_GAME_DIR"),
-    )
-    .join("hoi4.exe");
-    let bytes = std::fs::read(path).unwrap();
-    let identity = engine_executable::build::hash_executable(std::io::Cursor::new(&bytes)).unwrap();
-    assert!(engine_executable::build::PINNED_BUILD.matches(&identity));
-    let image = engine_executable::executable_tables::PeImage::parse(bytes).unwrap();
-    let sites: Vec<_> = world_input_mutations::MUTATIONS
-        .iter()
-        .filter(|(_, domain)| *domain == world_input_mutations::Domain::GameFog)
-        .map(|(site, _)| site)
-        .collect();
-    assert_eq!(sites.len(), 4);
-    let nudge = &engine_mutations::building_mutations::MUTATIONS
-        .iter()
-        .find(|(site, _)| site.name == "enter_nudge_mode")
-        .unwrap()
-        .0;
-    for site in sites {
-        assert_ne!(site.rva, nudge.rva);
-        assert_eq!(
-            image.function(site.rva as u32).unwrap().0,
-            site.rva as u32,
-            "{}",
-            site.name
-        );
-        assert_eq!(
-            image.bytes(site.rva as u32, 16).unwrap(),
-            site.sentinel,
-            "{}",
-            site.name
-        );
-    }
 }
 
 #[test]
@@ -383,7 +250,7 @@ fn experience_and_progression_families_register_every_descriptor() {
             assert!(patches.iter().any(|patch| patch.family == family
                 && patch.name == site.name
                 && patch.rva == site.rva
-                && patch.len == PATCH));
+                && patch.len == Some(PATCH)));
         }
     }
 }
@@ -425,8 +292,8 @@ fn faction_phase_and_advisor_sites_are_registered_and_shared_resource_helpers_ar
             .any(|name| name.contains("extraction_call") || *name == "rebuild_advisor_slots")
     );
     // These are the generic pool helpers, not faction-specific simulation stores.
-    const SHARED_POOL_CLEAR: usize = 0xc22500;
-    const SHARED_POOL_ADD_ASSIGN: usize = 0xc20ee0;
+    const SHARED_POOL_CLEAR: Rva = Rva(0xc22500);
+    const SHARED_POOL_ADD_ASSIGN: Rva = Rva(0xc20ee0);
     for rva in [SHARED_POOL_CLEAR, SHARED_POOL_ADD_ASSIGN] {
         assert!(
             !engine_mutations::faction_companion_mutations::MUTATIONS
@@ -434,33 +301,6 @@ fn faction_phase_and_advisor_sites_are_registered_and_shared_resource_helpers_ar
                 .any(|(site, _, _)| site.rva == rva)
         );
     }
-}
-
-#[test]
-fn every_faction_tap_decodes_with_its_family_and_site() {
-    let mut failures = Vec::new();
-    for (site, _, patch) in faction_companion_mutations::MUTATIONS {
-        if matches!(patch, faction_companion_mutations::Patch::Call) {
-            assert_eq!(
-                site.sentinel[0], 0xe8,
-                "{} must be a direct native call",
-                site.name
-            );
-        }
-        if matches!(patch, faction_companion_mutations::Patch::Tap)
-            && let Err(why) = crate::hook::tap_span(&site.sentinel)
-        {
-            failures.push(format!("FactionCompanions/{}: {why}", site.name));
-        }
-    }
-    for (site, _, patch) in faction_goal_mutations::MUTATIONS {
-        if matches!(patch, faction_goal_mutations::Patch::Tap)
-            && let Err(why) = crate::hook::tap_span(&site.sentinel)
-        {
-            failures.push(format!("FactionGoals/{}: {why}", site.name));
-        }
-    }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -477,7 +317,7 @@ fn every_template_detour_is_registered_and_occupation_reset_has_one_owner() {
                 .iter()
                 .filter(|patch| patch.name == site.name
                     && patch.rva == site.rva
-                    && patch.len == PATCH)
+                    && patch.len == Some(PATCH))
                 .count(),
             1,
             "{}",
@@ -489,7 +329,8 @@ fn every_template_detour_is_registered_and_occupation_reset_has_one_owner() {
         .filter(|patch| {
             patch
                 .rva
-                .abs_diff(engine_occupation::ccountry_occupation_status::RESET_RVA)
+                .0
+                .abs_diff(engine_occupation::ccountry_occupation_status::RESET_RVA.0)
                 <= 16
         })
         .collect::<Vec<_>>();
@@ -515,7 +356,7 @@ fn every_orders_group_detour_is_registered_and_group_destruction_has_one_owner()
                 .iter()
                 .filter(|patch| patch.name == site.name
                     && patch.rva == site.rva
-                    && patch.len == PATCH)
+                    && patch.len == Some(PATCH))
                 .count(),
             1,
             "{}",

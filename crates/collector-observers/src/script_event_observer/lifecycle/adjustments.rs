@@ -59,11 +59,9 @@ fn emit(instance: usize, tag: usize, cooldown: bool) {
     }
     feed::record_script(|world, memory, base| {
         let (definition, days) = values(memory, base, instance, cooldown, None)?;
-        if engine_native::read::<u64>(memory, definition)
-            != base
-                .checked_add(engine_decisions::cdecision::VTABLE_RVA)
-                .map(|at| at as u64)
-        {
+        if engine_sites::at(base, engine_decisions::cdecision::VTABLE_RVA).is_none_or(|vtable| {
+            engine_native::read::<u64>(memory, definition) != Some(vtable as u64)
+        }) {
             return Err("decision duration definition identity differs");
         }
         let token = Descriptor::read(
@@ -113,8 +111,9 @@ mod tests {
     #[test]
     fn extension_then_removal_preserves_intermediate_result_and_wrapping() {
         let mut bytes = [0; 0x40];
-        bytes[..8]
-            .copy_from_slice(&(engine_decisions::ctimed_decision::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(
+            &(engine_decisions::ctimed_decision::VTABLE_RVA.0 as u64).to_le_bytes(),
+        );
         bytes[engine_decisions::ctimed_decision::DEFINITION
             ..engine_decisions::ctimed_decision::DEFINITION + 8]
             .copy_from_slice(&99_u64.to_le_bytes());
@@ -135,7 +134,7 @@ mod tests {
     fn removal_extension_uses_cooldown_layout_and_final_display_reads_only_actual_duration() {
         let mut bytes = [0; 0x40];
         bytes[..8].copy_from_slice(
-            &(engine_decisions::cdecision_cooldown::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_decisions::cdecision_cooldown::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         bytes[8..16].copy_from_slice(&88_u64.to_le_bytes());
         bytes[16..20].copy_from_slice(&10_i32.to_le_bytes());
@@ -144,8 +143,9 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(values(&memory, 0, 0x1000, true, Some(5)), Ok((88, 15)));
-        bytes[..8]
-            .copy_from_slice(&(engine_decisions::ctimed_decision::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(
+            &(engine_decisions::ctimed_decision::VTABLE_RVA.0 as u64).to_le_bytes(),
+        );
         bytes[16..24].copy_from_slice(&99_u64.to_le_bytes());
         bytes[24..28].copy_from_slice(&17_i32.to_le_bytes());
         for state in [0_i32, 1, 2, 3, 4] {

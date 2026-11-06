@@ -3,6 +3,7 @@
 //! key and user bytes.
 use super::*;
 use crate::{cname_group_member as member, msvc_string};
+use engine_sites::Rva;
 
 /// Shared stored-text descriptor. AirWings, railway guns and the historical
 /// raid projection use this exact scalar header, SSO/heap and overflow
@@ -336,7 +337,7 @@ fn member(
         _ => return Ok(()), // Consumer names unsupported member types.
     };
     if group != 0 {
-        context::authenticate(m, base, group, 0x029b_3cd8)?;
+        context::authenticate(m, base, group, Rva(0x029b_3cd8))?;
         string(m, group + 8, group_kind, sink).map_err(NameReadError::reason)?; // Stored raw key.
     }
     Ok(())
@@ -576,7 +577,7 @@ mod tests {
         let image = |cache: &[u8], cache_valid: bool| {
             let mut bytes = vec![0u8; 2048];
             bytes[member_at..member_at + 8]
-                .copy_from_slice(&(member::VTABLE_RVA as u64).to_le_bytes());
+                .copy_from_slice(&(member::VTABLE_RVA.0 as u64).to_le_bytes());
             bytes[member_at + member::TYPE..member_at + member::TYPE + 4]
                 .copy_from_slice(&1i32.to_le_bytes());
             // A stored programmatic override: the naming operands stop there.

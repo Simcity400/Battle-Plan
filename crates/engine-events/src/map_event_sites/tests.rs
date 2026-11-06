@@ -11,7 +11,7 @@ fn scripted_refresh_records_the_selected_declaration_after_the_effect_gates() {
     }
     impl Memory for Selection {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == MODULE + MAP_MODE_SINGLETON_RVA && output.len() == 8 {
+            if address == MODULE + MAP_MODE_SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&self.pointer.to_le_bytes());
             } else if address == 0x1000 && output.len() == 4 {
                 output.copy_from_slice(&self.mode.to_le_bytes());

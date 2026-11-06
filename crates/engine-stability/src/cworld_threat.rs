@@ -14,9 +14,10 @@ use crate::{
     read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// CWorldThreat primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_3048;
+pub const VTABLE_RVA: Rva = Rva(0x029f_3048);
 /// Stored signed i64 total, after clamping and scalar conversion.
 pub const TOTAL: usize = 0x08;
 /// CWorldThreat CThreatSource pointer array.
@@ -28,7 +29,7 @@ pub const AGGREGATE_STRIDE: usize = 0x08;
 /// CWorldThreat source-pointer stride.
 pub const SOURCE_STRIDE: usize = 0x08;
 /// CWorldThreat total update.
-pub const UPDATE_TOTAL_RVA: usize = 0x00f8_3ad0;
+pub const UPDATE_TOTAL_RVA: Rva = Rva(0x00f8_3ad0);
 /// World-tension clamp ceiling.
 pub const CLAMP_CEILING: i64 = 10_000_000;
 /// World-tension scalar divisor.
@@ -87,9 +88,8 @@ impl Reader {
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|pointer| *pointer != 0)
             .ok_or("world threat pointer unreadable or null")?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("world threat module address overflow")?;
+        let expected =
+            engine_sites::at(base, VTABLE_RVA).ok_or("world threat module address overflow")?;
         let head = read::<[u8; 0x40]>(memory, pointer).ok_or("world threat header unreadable")?;
         if u64::from_le_bytes(head[..8].try_into().unwrap()) != expected as u64 {
             return Err("world threat vtable mismatch");
@@ -295,7 +295,7 @@ mod tests {
         put(
             bytes,
             at,
-            &(cthreat_source::VTABLE_RVA as u64).to_le_bytes(),
+            &(cthreat_source::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(bytes, at + cthreat_source::COUNTRY, &7_u32.to_le_bytes());
         put(bytes, at + cthreat_source::CURRENT, &current.to_le_bytes());
@@ -320,7 +320,7 @@ mod tests {
             BASE + cgame_state::WORLD_THREAT,
             &(MANAGER as u64).to_le_bytes(),
         );
-        put(&mut bytes, MANAGER, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, MANAGER, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, MANAGER + TOTAL, &(-125_682_i64).to_le_bytes());
         array(&mut bytes, MANAGER + SOURCES, SOURCE_ARRAY, 2);
         array(&mut bytes, MANAGER + COUNTRY_AGGREGATES, AGGREGATES, 3);

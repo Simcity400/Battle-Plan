@@ -1687,7 +1687,7 @@ mod tests {
         }
         put(&mut world.bytes, 0x808, COUNTRY as u64);
         put(&mut world.bytes, 0x900, 1 << 32);
-        put(&mut world.bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        put(&mut world.bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         put(&mut world.bytes, COUNTRY + ccountry::ID, 1);
         let mut seeds: Vec<_> = (0..DIVISIONS)
             .map(|index| {
@@ -1695,7 +1695,7 @@ mod tests {
                 put(
                     &mut world.bytes,
                     pointer + carmy::EQUIPMENT_POOL,
-                    pool::VTABLE_RVA as u64,
+                    pool::VTABLE_RVA.0 as u64,
                 );
                 DivisionSeed {
                     pointer,
@@ -1994,7 +1994,7 @@ mod tests {
         put(
             &mut world.bytes,
             GROUP,
-            engine_native::corders_group::VTABLE_RVA as u64,
+            engine_native::corders_group::VTABLE_RVA.0 as u64,
         );
         put(
             &mut world.bytes,
@@ -2006,7 +2006,7 @@ mod tests {
             GROUP + engine_native::corders_group::LEADER,
             LEADER as u64,
         );
-        put(&mut world.bytes, LEADER, carmy_leader::VTABLE_RVA as u64);
+        put(&mut world.bytes, LEADER, carmy_leader::VTABLE_RVA.0 as u64);
         put(
             &mut world.bytes,
             LEADER + engine_native::cunit_leader::TYPE,
@@ -2015,7 +2015,7 @@ mod tests {
         put(
             &mut world.bytes,
             PROVINCE,
-            engine_native::cprovince::VTABLE_RVA as u64,
+            engine_native::cprovince::VTABLE_RVA.0 as u64,
         );
         put(
             &mut world.bytes,
@@ -2025,7 +2025,7 @@ mod tests {
         put(
             &mut world.bytes,
             CONTEXT,
-            engine_native::cstate::VTABLE_RVA as u64,
+            engine_native::cstate::VTABLE_RVA.0 as u64,
         );
         put(&mut world.bytes, CONTEXT + engine_native::cstate::ID, 7);
         for seed in &mut seeds {
@@ -2135,7 +2135,7 @@ mod tests {
             deny: Cell::new(true),
         };
         world.bytes[pool..pool + 8]
-            .copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes());
         let mut store = Store::default();
         store.membership(&world, 0, &seed).unwrap();
         store
@@ -2187,7 +2187,7 @@ mod tests {
         let pool = seed.pointer + carmy::EQUIPMENT_POOL;
         let mut bytes = vec![0u8; 0x1000];
         bytes[pool..pool + 8]
-            .copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes());
         let world = World {
             bytes,
             reads: Cell::new(0),
@@ -2288,7 +2288,7 @@ mod tests {
             let put = |bytes: &mut [u8], at: usize, value: u64| {
                 bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
             };
-            put(&mut world.bytes, pointer, variant::VTABLE_RVA as u64);
+            put(&mut world.bytes, pointer, variant::VTABLE_RVA.0 as u64);
             put(&mut world.bytes, pointer + 8, handle);
             let terrain = pointer + division_panel_operands::VARIANT_TERRAIN_ATTRITION;
             put(&mut world.bytes, terrain, values as u64);
@@ -2419,7 +2419,7 @@ mod tests {
         let put = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
         };
-        put(&mut world.bytes, pointer, variant::VTABLE_RVA as u64);
+        put(&mut world.bytes, pointer, variant::VTABLE_RVA.0 as u64);
         put(&mut world.bytes, pointer + 8, handle);
         let terrain = pointer + division_panel_operands::VARIANT_TERRAIN_ATTRITION;
         put(&mut world.bytes, terrain, values as u64);
@@ -2601,7 +2601,7 @@ mod tests {
                 (count << 32) | count,
             )
         };
-        put(&mut world.bytes, pointer, variant::VTABLE_RVA as u64);
+        put(&mut world.bytes, pointer, variant::VTABLE_RVA.0 as u64);
         put(&mut world.bytes, pointer + 8, handle);
         put(&mut world.bytes, terrain, values as u64);
         resize(&mut world.bytes, 3);
@@ -2756,7 +2756,7 @@ mod tests {
             put(
                 &mut world.bytes,
                 seed.pointer + engine_native::carmy::EQUIPMENT_POOL,
-                pool::VTABLE_RVA as u64,
+                pool::VTABLE_RVA.0 as u64,
             );
         }
         let first_pool = seeds[0].pointer + engine_native::carmy::EQUIPMENT_POOL;
@@ -2767,7 +2767,7 @@ mod tests {
             .copy_from_slice(&1u32.to_le_bytes());
         put(&mut world.bytes, entries, pointer as u64);
         put(&mut world.bytes, entries + 8, 1);
-        put(&mut world.bytes, pointer, variant::VTABLE_RVA as u64);
+        put(&mut world.bytes, pointer, variant::VTABLE_RVA.0 as u64);
         put(&mut world.bytes, pointer + 8, handle);
         let mut store = Store::default();
         store.retire_memberships().unwrap();

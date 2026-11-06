@@ -1,8 +1,9 @@
 //! Air mission embedded in a wing; all offsets are relative to the mission
 //! subobject.
 
+use engine_sites::Rva;
 /// Mission primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_9040;
+pub const VTABLE_RVA: Rva = Rva(0x029f_9040);
 
 /// Enabled mission mask, u32, including the training bit.
 pub const ENABLED_MASK: usize = 0x10;
@@ -32,4 +33,4 @@ pub const LAST_TARGET_PROVINCE: usize = 0x70;
 /// Training mission bit.
 pub const TRAINING_MASK: u32 = 0x800;
 /// Mask-to-bit-index helper used for mission fuel costs.
-pub const MISSION_BIT_INDEX_RVA: usize = 0x0109_9d90;
+pub const MISSION_BIT_INDEX_RVA: Rva = Rva(0x0109_9d90);

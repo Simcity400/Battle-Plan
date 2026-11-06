@@ -23,7 +23,7 @@ fn fixture() -> Vec<u8> {
         cgame_state::RAIL_MANAGER,
         0x1400_u64.to_le_bytes(),
     );
-    put(&mut bytes, 0x400, (VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, 0x400, (VTABLE_RVA.0 as u64).to_le_bytes());
     array(&mut bytes, 0x400 + PROVINCE_INFO_TABLE, 0x1500, 5, 4);
     array(&mut bytes, cgame_state::PROVINCES, 0x1540, 5, 4);
     put(&mut bytes, 0x508, 0x2000_u64.to_le_bytes());
@@ -40,7 +40,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             offset,
-            (cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            (cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, offset + cprovince::ID, id.to_le_bytes());
         put(
@@ -57,7 +57,7 @@ fn fixture() -> Vec<u8> {
     for (offset, id, province_offset, ticks) in
         [(0x1000, 1_u32, 0x600, 0_i32), (0x1080, 3, 0xc00, i32::MAX)]
     {
-        put(&mut bytes, offset, (info::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, offset, (info::VTABLE_RVA.0 as u64).to_le_bytes());
         put(
             &mut bytes,
             offset + info::PROVINCE_RECORD,
@@ -128,7 +128,7 @@ fn eta_fixture() -> EtaMemory {
     put(
         &mut bytes,
         0x3000,
-        (crate::cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+        (crate::cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -340,12 +340,12 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
     put(bytes, 0x900 + cprovince::STATE, 0x5000_u64.to_le_bytes());
     array(bytes, cgame_state::STATES, 0x5800, 2, 2);
     put(bytes, 0x4808, 0x5000_u64.to_le_bytes());
-    put(bytes, 0x4000, (cstate::VTABLE_RVA as u64).to_le_bytes());
+    put(bytes, 0x4000, (cstate::VTABLE_RVA.0 as u64).to_le_bytes());
     put(bytes, 0x4000 + cstate::ID, 1_u32.to_le_bytes());
     put(
         bytes,
         0x4000 + cstate::BUILDING_STATUS,
-        (s::VTABLE_RVA as u64).to_le_bytes(),
+        (s::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         bytes,
@@ -377,7 +377,7 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
     put(bytes, 0x6000 + t::TYPE_ID, 71_u32.to_le_bytes());
     put(bytes, 0x6000 + 0x2bc, 4_i32.to_le_bytes());
     put(bytes, 0x6000 + 0x2b8, 8_i32.to_le_bytes());
-    put(bytes, 0x7000, (b::VTABLE_RVA as u64).to_le_bytes());
+    put(bytes, 0x7000, (b::VTABLE_RVA.0 as u64).to_le_bytes());
     put(bytes, 0x7000 + b::TYPE_ID, 71_u32.to_le_bytes());
     put(
         bytes,
@@ -811,7 +811,7 @@ fn many_edge_pairs(count: usize) -> (Vec<u8>, Array, Array) {
         put(
             &mut bytes,
             pointer - MEMORY_BASE,
-            (cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            (cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -870,7 +870,7 @@ fn compare_reused_edge_scratch(
         read_edges(
             &current,
             provinces,
-            cprovince::VTABLE_RVA,
+            cprovince::VTABLE_RVA.0,
             &mut batch,
             scratch,
             pairs,
@@ -881,7 +881,7 @@ fn compare_reused_edge_scratch(
         fresh_scratch_reference_edges(
             &reference,
             provinces,
-            cprovince::VTABLE_RVA,
+            cprovince::VTABLE_RVA.0,
             &mut old_batch,
             pairs,
             province,
@@ -921,7 +921,7 @@ fn reused_edge_scratch_matches_fresh_windows_capacities_and_partial_faults() {
         let _ = fresh_scratch_reference_edges(
             &reference,
             provinces,
-            cprovince::VTABLE_RVA,
+            cprovince::VTABLE_RVA.0,
             &mut ProvinceBatch::new(),
             pairs,
             68,

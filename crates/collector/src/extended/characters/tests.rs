@@ -78,7 +78,7 @@ pub(super) fn two_advisor_fixture(same_character: bool) -> Vec<u8> {
     put(
         &mut bytes,
         SECOND_ADVISOR,
-        ((IMAGE + cadvisor::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + cadvisor::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     pointer(&mut bytes, SECOND_ADVISOR + cadvisor::CHARACTER, character);
     for (role, data, value, key) in [
@@ -1165,7 +1165,7 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         put(
             bytes,
             at,
-            ((IMAGE + ccharacter_template::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + ccharacter_template::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(bytes, at + ccharacter_template::TAG, tag.to_le_bytes());
         let header = at + ccharacter_template::SOURCE_FILE;
@@ -1662,7 +1662,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         MANAGER,
-        ((IMAGE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + ccharacter_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -1673,7 +1673,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         DEFINITION,
-        ((IMAGE + cunit_leader_trait::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + cunit_leader_trait::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -1698,7 +1698,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             character,
-            ((IMAGE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1728,7 +1728,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             unit,
-            ((IMAGE + cunit_leader::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + cunit_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -2097,7 +2097,7 @@ fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step(
         put(
             &mut bytes,
             country,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, country + ccountry::ID, &slot.to_le_bytes());
         header(&mut bytes, country + ccountry::ACTIVE_ABILITIES, record, 1);
@@ -2110,7 +2110,7 @@ fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step(
     put(
         &mut bytes,
         DEFINITION,
-        &(cability::VTABLE_RVA as u64).to_le_bytes(),
+        &(cability::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, DEFINITION + cability::TOKEN, b"ability");
     put(
@@ -2419,7 +2419,7 @@ pub(crate) fn cost_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COST_MANAGER,
-        ((IMAGE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes(),
+        ((IMAGE + ccharacter_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -2432,7 +2432,7 @@ pub(crate) fn cost_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             at,
-            ((IMAGE + cunit_leader_trait::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + cunit_leader_trait::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -2452,7 +2452,7 @@ pub(crate) fn cost_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             character,
-            ((IMAGE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -2492,7 +2492,7 @@ pub(crate) fn cost_fixture() -> Vec<u8> {
             put(
                 &mut bytes,
                 role,
-                ((IMAGE + ccountry_leader::VTABLE_RVA) as u64).to_le_bytes(),
+                ((IMAGE + ccountry_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             pointer(&mut bytes, role + ccountry_leader::CHARACTER, character);
         }
@@ -2523,7 +2523,7 @@ pub(crate) fn cost_fixture() -> Vec<u8> {
             put(
                 &mut bytes,
                 role,
-                ((IMAGE + cadvisor::VTABLE_RVA) as u64).to_le_bytes(),
+                ((IMAGE + cadvisor::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             pointer(&mut bytes, role + cadvisor::CHARACTER, character);
             heap.write(&mut bytes, role + cadvisor::IDEA_TOKEN);
@@ -2538,7 +2538,7 @@ pub(crate) fn cost_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             unit,
-            ((IMAGE + cunit_leader::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + cunit_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -2856,7 +2856,7 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
         put(
             &mut bytes,
             unit,
-            ((IMAGE + coperative_leader::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + coperative_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -2868,7 +2868,7 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
         put(
             &mut bytes,
             member,
-            ((IMAGE + naming::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + naming::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, member + naming::TYPE, 2_i32.to_le_bytes());
         put(
@@ -3182,7 +3182,7 @@ fn shared_skill_hits_keep_alias_failures_as_separate_raw_occurrences() {
     assert!(owned.copy(skill, &mut vtable));
     assert_eq!(
         u64::from_le_bytes(vtable),
-        (IMAGE + cunit_leader_skill::VTABLE_RVA) as u64
+        (IMAGE + cunit_leader_skill::VTABLE_RVA.0) as u64
     );
 }
 

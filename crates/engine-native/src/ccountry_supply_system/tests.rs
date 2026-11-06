@@ -25,12 +25,12 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         ROOT,
-        &(csupply_system::VTABLE_RVA as u64).to_le_bytes(),
+        &(csupply_system::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
         ROOT + 8,
-        &(csupply_system::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        &(csupply_system::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     header(&mut bytes, GAME + cgame_state::COUNTRIES, 0x2500, 3, 3);
     header(&mut bytes, GAME + cgame_state::COUNTRY_LINKS, 0x2600, 8, 8);
@@ -65,16 +65,16 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             country,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, country + ccountry::ID, &id.to_le_bytes());
         put(&mut bytes, 0x2600 + slot as usize * 4, &slot.to_le_bytes());
         put(&mut bytes, 0x2600 + id as usize * 4, &slot.to_le_bytes());
-        put(&mut bytes, system, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, system, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(
             &mut bytes,
             system + SECONDARY_BASE,
-            &(SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            &(SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -418,7 +418,7 @@ fn train_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             p,
-            &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, p + crate::cprovince::ID, &id.to_le_bytes());
         put(
@@ -467,11 +467,11 @@ impl Memory for TrainMemory<'_> {
         {
             return false;
         }
-        if address == crate::supply_route::EMPTY_RVA + crate::supply_route::FROM {
+        if address == crate::supply_route::EMPTY_RVA.0 + crate::supply_route::FROM {
             destination.fill(0);
             return true;
         }
-        if address == crate::creference_registry::LOW_ROOTS_RVA + 70 * 8 {
+        if address == crate::creference_registry::LOW_ROOTS_RVA.0 + 70 * 8 {
             destination.copy_from_slice(&0x11000_u64.to_le_bytes());
             return true;
         }
@@ -1023,7 +1023,7 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
     put(
         &mut bytes,
         0x1a000,
-        &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -1101,7 +1101,7 @@ fn parent_vertex_membership_keeps_sorted_rows_cycles_country_scope_and_truncatio
                 put(
                     &mut bytes,
                     pointer,
-                    &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+                    &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -1263,12 +1263,12 @@ fn census(n: u32) -> Vec<u8> {
     put(
         &mut bytes,
         ROOT,
-        &(csupply_system::VTABLE_RVA as u64).to_le_bytes(),
+        &(csupply_system::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
         ROOT + 8,
-        &(csupply_system::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        &(csupply_system::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     let count = n as u32;
     header(
@@ -1317,18 +1317,18 @@ fn census(n: u32) -> Vec<u8> {
         put(
             &mut bytes,
             country,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             country + ccountry::ID,
             &(slot as u32).to_le_bytes(),
         );
-        put(&mut bytes, system, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, system, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(
             &mut bytes,
             system + SECONDARY_BASE,
-            &(SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            &(SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1533,7 +1533,7 @@ fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() 
     put(
         &mut bytes,
         0x14000,
-        &(variant::VTABLE_RVA as u64).to_le_bytes(),
+        &(variant::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, 0x14008, &handle.to_le_bytes());
     put(
@@ -1647,7 +1647,7 @@ fn selected_supply_walks_partition_a_census_by_country() {
         put(
             &mut bytes,
             province,
-            &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

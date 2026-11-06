@@ -26,20 +26,17 @@
 //! Readers copy plain values through guarded reads only; they never call the
 //! game. A refused read refuses the whole event.
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cprovince, cstate, cunit, read};
+use engine_sites::Rva;
 
 /// A forced scripted map refresh, after its native mode-name and limit gates.
-pub const SCRIPTED_REFRESH_CALL_RVA: usize = 0x0036_fe21;
-pub const SCRIPTED_REFRESH_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0xca, 0xf0, 0xc4, 0x00, 0x4c, 0x8d, 0x9c, 0x24, 0xe0, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x5b,
-];
+pub const SCRIPTED_REFRESH_CALL_RVA: Rva = Rva(0x0036_fe21);
 /// The current map-mode object; its first word is the selected mode.
-pub const MAP_MODE_SINGLETON_RVA: usize = 0x033e_ad00;
+pub const MAP_MODE_SINGLETON_RVA: Rva = Rva(0x033e_ad00);
 /// The first scripted mode follows the native modes.
 pub const FIRST_SCRIPTED_MAP_MODE: i32 = 40;
 
 pub fn scripted_map_mode(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
-    let pointer = base
-        .checked_add(MAP_MODE_SINGLETON_RVA)
+    let pointer = engine_sites::at(base, MAP_MODE_SINGLETON_RVA)
         .and_then(|address| read::<u64>(memory, address))
         .filter(|&pointer| pointer != 0)
         .ok_or("map-mode object is unavailable")?;
@@ -51,51 +48,30 @@ pub fn scripted_map_mode(memory: &impl Memory, base: usize) -> Result<u32, &'sta
 
 /// The call asking the local viewer's intel level of a revealed fake division
 /// (`RCX`, the division), after the queued-for-deletion refusal.
-pub const FAKE_REVEAL_VISIBILITY_CALL_RVA: usize = 0x0134_af20;
-pub const FAKE_REVEAL_VISIBILITY_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0x8b, 0x7f, 0x36, 0x00, 0x3c, 0x96, 0x0f, 0x82, 0xf3, 0x00, 0x00, 0x00, 0x33, 0xd2, 0x48,
-];
+pub const FAKE_REVEAL_VISIBILITY_CALL_RVA: Rva = Rva(0x0134_af20);
 /// The overrun entry: `RCX` the gun, `RDX` its province, `R8` the province
 /// it is overrun into, where the text stands.
-pub const RAILWAY_OVERRUN_RVA: usize = 0x00ef_e970;
-pub const RAILWAY_OVERRUN_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x18, 0x55,
-];
+pub const RAILWAY_OVERRUN_RVA: Rva = Rva(0x00ef_e970);
 /// The first instruction after the critical branch's random draw returns:
 /// it loads the bombarded province's building list from `R13`, the province.
-pub const CRITICAL_BOMBARDMENT_TAP_RVA: usize = 0x0133_bcda;
-pub const CRITICAL_BOMBARDMENT_TAP_SENTINEL: [u8; 16] = [
-    0x49, 0x8b, 0x85, 0xe0, 0x01, 0x00, 0x00, 0x48, 0x8b, 0x34, 0xc8, 0x48, 0x8b, 0x0d, 0x24, 0x1e,
-];
+pub const CRITICAL_BOMBARDMENT_TAP_RVA: Rva = Rva(0x0133_bcda);
 /// The capture notification call: `RCX` the general's unit leader, `RDX` the
 /// captor's country reference, `R8` the province (null shows no text).
-pub const GENERAL_CAPTURE_CALL_RVA: usize = 0x00c6_7ec0;
-pub const GENERAL_CAPTURE_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0x4b, 0x1c, 0x01, 0x00, 0x4c, 0x8b, 0xac, 0x24, 0x38, 0x01, 0x00, 0x00, 0x48, 0x81, 0xc4,
-];
+pub const GENERAL_CAPTURE_CALL_RVA: Rva = Rva(0x00c6_7ec0);
 /// The landing notification call: `RCX` the province, `RDX` the dropping
 /// country's reference, `R8B` whether the landing took losses.
-pub const PARADROP_LANDING_CALL_RVA: usize = 0x0100_8fcd;
-pub const PARADROP_LANDING_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0x5e, 0x75, 0xee, 0xff, 0x49, 0x8b, 0x4f, 0x28, 0xe8, 0x25, 0x1e, 0xfe, 0xff, 0x49, 0x8b,
-];
+pub const PARADROP_LANDING_CALL_RVA: Rva = Rva(0x0100_8fcd);
 /// The activity execution entry: `RCX` the state's resistance, `RDX` the
 /// activity definition.
-pub const RESISTANCE_ACTIVITY_RVA: usize = 0x0101_c8d0;
-pub const RESISTANCE_ACTIVITY_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x55,
-];
+pub const RESISTANCE_ACTIVITY_RVA: Rva = Rva(0x0101_c8d0);
 /// The building health notifier: `RCX` the building, `RDX` the change's
 /// source (its first dword is the reason), `R8W` the level, `R9` that level's
 /// health before the change, then a byte that enables the client branch and a
 /// byte that enables its text.
-pub const BUILDING_NOTIFICATION_RVA: usize = 0x0116_3760;
-pub const BUILDING_NOTIFICATION_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48,
-];
+pub const BUILDING_NOTIFICATION_RVA: Rva = Rva(0x0116_3760);
 
 /// The game's fog of war switch, a byte: zero shows every province.
-pub const FOG_OF_WAR_RVA: usize = 0x033d_daaa;
+pub const FOG_OF_WAR_RVA: Rva = Rva(0x033d_daaa);
 
 /// A unit's intel array (the unit viewer entries): 24-byte entries holding
 /// a canonical country ordinal and, at [`INTEL_LEVEL`], a signed level.
@@ -155,12 +131,9 @@ fn pointer(
 
 /// The game state singleton.
 pub fn game_state(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
-    let state = pointer(
-        memory,
-        base,
-        cgame_state::SINGLETON_RVA,
-        "map event game state unreadable",
-    )?;
+    const UNREADABLE: &str = "map event game state unreadable";
+    let singleton = engine_sites::at(base, cgame_state::SINGLETON_RVA).ok_or(UNREADABLE)?;
+    let state = pointer(memory, singleton, 0, UNREADABLE)?;
     if state == 0 {
         return Err("map event game state absent");
     }
@@ -179,13 +152,9 @@ pub fn hour(memory: &impl Memory, game_state: usize) -> Result<i32, &'static str
 
 /// Whether fog of war is on.
 pub fn fog(memory: &impl Memory, base: usize) -> Result<bool, &'static str> {
-    field::<u8>(
-        memory,
-        base,
-        FOG_OF_WAR_RVA,
-        "map event fog switch unreadable",
-    )
-    .map(|fog| fog != 0)
+    const UNREADABLE: &str = "map event fog switch unreadable";
+    let switch = engine_sites::at(base, FOG_OF_WAR_RVA).ok_or(UNREADABLE)?;
+    field::<u8>(memory, switch, 0, UNREADABLE).map(|fog| fog != 0)
 }
 
 /// A province's id.

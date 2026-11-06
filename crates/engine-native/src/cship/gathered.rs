@@ -169,8 +169,8 @@ const TASK_LOCATION: usize = 3;
 /// Location fields: vtable and province definition.
 const LOCATION: [(usize, usize); 2] = [(0, 8), (PROVINCE_DEFINITION, 8)];
 
-/// Module globals: the game state singleton.
-const GLOBALS: [(usize, usize); 1] = [(cgame_state::SINGLETON_RVA, 8)];
+/// Global fields: the game state singleton's slot, gathered at its located address.
+const GLOBALS: [(usize, usize); 1] = [(0, 8)];
 
 /// Where a read's bytes come from.
 #[doc(hidden)]
@@ -361,9 +361,7 @@ impl Heap {
     /// its header names.
     fn gather(memory: &impl Memory, base: usize, ship: &Object<16>) -> Self {
         let mut heap = Self::NONE;
-        let vtable = base
-            .checked_add(cequipment_variant_pool::VTABLE_RVA)
-            .unwrap_or(0);
+        let vtable = engine_sites::at(base, cequipment_variant_pool::VTABLE_RVA).unwrap_or(0);
         if ship.completed > SHIP_POOL_ITEMS
             && ship.word(SHIP_POOL) == vtable
             && let Some(array) = Array::from_header(
@@ -831,7 +829,8 @@ impl ShipFields {
 
     fn visit_task_only(&mut self, memory: &impl Memory, task: usize) {
         if self.globals.pointer == 0 {
-            self.globals = Object::gather(memory, self.base, GLOBALS);
+            let singleton = engine_sites::at(self.base, cgame_state::SINGLETON_RVA).unwrap_or(0);
+            self.globals = Object::gather(memory, singleton, GLOBALS);
         }
         if task != self.task.pointer {
             self.task = Object::gather(memory, task, TASK);
@@ -924,7 +923,7 @@ impl ShipFields {
         let Some(fields) = naval_power_fields(original) else {
             return;
         };
-        let Some(expected) = self.base.checked_add(cequipment_variant::VTABLE_RVA) else {
+        let Some(expected) = engine_sites::at(self.base, cequipment_variant::VTABLE_RVA) else {
             return;
         };
         let header: [u8; 16] = original.bytes[0][..16]

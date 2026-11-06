@@ -31,13 +31,13 @@ use crate::{
     Memory, cair_wing, carmy, cequipment_variant_pool, cpdx_array::Array, equipment_entry, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 pub struct Site {
     pub id: SiteId,
     pub kind: SiteKind,
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,7 +75,7 @@ impl SiteId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SiteKind {
     Entry,
-    Call { target: usize },
+    Call { target: Rva },
 }
 
 /// Entry ABI: eight integer slots, RCX army; void. The four stack slots
@@ -84,11 +84,7 @@ pub const LAND: Site = Site {
     id: SiteId::Land,
     kind: SiteKind::Entry,
     name: "land_damage",
-    rva: 0xce84d0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54,
-        0x41,
-    ],
+    rva: Rva(0xce84d0),
 };
 /// Replace only the five-byte removal CALL with another CALL. RCX is the
 /// division equipment pool, RDX the variant, R8 the positive fixed5 removal;
@@ -102,34 +98,22 @@ pub const ATTRITION: Site = Site {
         target: ATTRITION_TARGET,
     },
     name: "attrition_removal_tap",
-    rva: 0xccaf44,
-    sentinel: [
-        0xe8, 0xb7, 0xd7, 0x3c, 0x00, 0x48, 0x8b, 0x47, 0x10, 0x48, 0x8b, 0x08, 0x48, 0x85, 0xc9,
-        0x74,
-    ],
+    rva: Rva(0xccaf44),
 };
-pub const ATTRITION_TARGET: usize = 0x1098700;
+pub const ATTRITION_TARGET: Rva = Rva(0x1098700);
 /// Win64 RCX wing, EDX signed requested count, R8D source country; void.
 pub const AIR: Site = Site {
     id: SiteId::Air,
     kind: SiteKind::Entry,
     name: "airplanes",
-    rva: 0xfe7a80,
-    sentinel: [
-        0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83,
-        0xec,
-    ],
+    rva: Rva(0xfe7a80),
 };
 /// Win64 RCX occupation entry, RDX raw fixed-point damage, R8 source; void.
 pub const GARRISON: Site = Site {
     id: SiteId::Garrison,
     kind: SiteKind::Entry,
     name: "garrison_resistance",
-    rva: 0x107ad10,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54,
-        0x41,
-    ],
+    rva: Rva(0x107ad10),
 };
 /// RCX game state, RDX unit, R8B return request; returns void. R9 is unused
 /// but its full slot must be preserved.
@@ -137,11 +121,7 @@ pub const DELETE: Site = Site {
     id: SiteId::Delete,
     kind: SiteKind::Entry,
     name: "division_delete_scope",
-    rva: 0x1ecbe0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54,
-        0x41,
-    ],
+    rva: Rva(0x1ecbe0),
 };
 /// Replace only the five-byte reserve-return CALL with another CALL. RCX is
 /// reserve manager, RDX the division equipment pool; returns void. Reached only
@@ -153,13 +133,9 @@ pub const RETURN: Site = Site {
         target: RETURN_TARGET,
     },
     name: "division_equipment_return_tap",
-    rva: 0x1ed0e8,
-    sentinel: [
-        0xe8, 0x73, 0x4a, 0xce, 0x00, 0x48, 0x8b, 0xd3, 0xeb, 0xc7, 0x48, 0x0f, 0xaf, 0x1d, 0x4e,
-        0x79,
-    ],
+    rva: Rva(0x1ed0e8),
 };
-pub const RETURN_TARGET: usize = 0xed1b60;
+pub const RETURN_TARGET: Rva = Rva(0xed1b60);
 /// RCX primary division, EDX deleting flags; returns the original pointer.
 /// The destructor clears and frees the live equipment pool. Secondary-base
 /// thunks tail-jump here and retain the original caller return address.
@@ -167,11 +143,7 @@ pub const DIVISION_FREE: Site = Site {
     id: SiteId::DivisionFree,
     kind: SiteKind::Entry,
     name: "division_equipment_discard",
-    rva: 0xccb4f0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0xda, 0x48, 0x8b, 0xf9,
-        0xe8,
-    ],
+    rva: Rva(0xccb4f0),
 };
 /// RCX game state, RDX unit; returns void. Records deletion cause only; the
 /// residual is copied at DIVISION_FREE after intervening writers.
@@ -179,11 +151,7 @@ pub const QUEUE: Site = Site {
     id: SiteId::Queue,
     kind: SiteKind::Entry,
     name: "division_deletion_queue_scope",
-    rva: 0x1ed9b0,
-    sentinel: [
-        0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x08, 0x49, 0x89, 0x6b, 0x18, 0x49, 0x89, 0x73, 0x20,
-        0x57,
-    ],
+    rva: Rva(0x1ed9b0),
 };
 /// Five integer slots: division, source-country pointer, equipment divisor, manpower divisor and
 /// organization divisor. The fifth is in its stack argument slot. Division and flooring finish
@@ -192,11 +160,7 @@ pub const PARADROP: Site = Site {
     id: SiteId::Paradrop,
     kind: SiteKind::Entry,
     name: "paradrop_disruption",
-    rva: 0xce7310,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x41,
-        0x56,
-    ],
+    rva: Rva(0xce7310),
 };
 /// Volunteer roster-removal CALL. RCX roster country, RDX primary division;
 /// retains the original integer result. The transfer keeps the complete handle
@@ -207,11 +171,7 @@ pub const VOLUNTEER_TRANSFER: Site = Site {
         target: TRANSFER_TARGET,
     },
     name: "volunteer_roster_transfer_tap",
-    rva: 0x15be8c3,
-    sentinel: [
-        0xe8, 0xf8, 0x99, 0x19, 0xff, 0x49, 0x8b, 0xcf, 0xe8, 0x70, 0x93, 0x18, 0xff, 0x84, 0xc0,
-        0x74,
-    ],
+    rva: Rva(0x15be8c3),
 };
 /// Exile roster-removal CALL; same ABI as the volunteer tap. Live armies and
 /// load-restored transfer-held armies remain separate from the country roster.
@@ -222,13 +182,9 @@ pub const EXILE_TRANSFER: Site = Site {
         target: TRANSFER_TARGET,
     },
     name: "exile_roster_transfer_tap",
-    rva: 0x15aeb53,
-    sentinel: [
-        0xe8, 0x68, 0x97, 0x1a, 0xff, 0x49, 0x8b, 0xce, 0xe8, 0xe0, 0x90, 0x19, 0xff, 0x84, 0xc0,
-        0x74,
-    ],
+    rva: Rva(0x15aeb53),
 };
-pub const TRANSFER_TARGET: usize = 0x7582c0;
+pub const TRANSFER_TARGET: Rva = Rva(0x7582c0);
 /// RCX primary division, EDX boolean; returns void. Observe scaling and
 /// integral rounding together so rounding gains remain in the exact net loss.
 /// Other work clears the movement target, rebuilds abilities and cancels
@@ -239,15 +195,11 @@ pub const SET_EXILED: Site = Site {
     id: SiteId::SetExiled,
     kind: SiteKind::Entry,
     name: "exile_equipment",
-    rva: 0xceb540,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x81, 0xec, 0x70,
-        0x01,
-    ],
+    rva: Rva(0xceb540),
 };
 /// Scale taps return void, with RCX pool and RDX fixed5 factor. Replace only
 /// the five-byte CALL; scaling does not call other pool writers.
-pub const SCALE_TARGET: usize = 0x1096e40;
+pub const SCALE_TARGET: Rva = Rva(0x1096e40);
 /// Returning volunteers scale their live pool with the content-loaded return
 /// ratio. The removed difference is logged as loss without a source-reserve
 /// credit. Surviving armies and pools return to the roster. The stored transfer
@@ -258,11 +210,7 @@ pub const VOLUNTEER_RETURN_LOSS: Site = Site {
         target: SCALE_TARGET,
     },
     name: "volunteer_return_equipment_tap",
-    rva: 0x15be600,
-    sentinel: [
-        0xe8, 0x3b, 0x88, 0xad, 0xff, 0x48, 0x8d, 0x96, 0x48, 0x03, 0x00, 0x00, 0x48, 0x8d, 0x4c,
-        0x24,
-    ],
+    rva: Rva(0x15be600),
 };
 /// Capitulation escape scales selected live armies with a content-loaded ratio
 /// and applies selection rounding. Observe the actual pool result rather than the factor.
@@ -272,11 +220,7 @@ pub const CAPITULATION_ESCAPE_LOSS: Site = Site {
         target: SCALE_TARGET,
     },
     name: "capitulation_escape_equipment_tap",
-    rva: 0x72c3f8,
-    sentinel: [
-        0xe8, 0x43, 0xaa, 0x96, 0x00, 0x48, 0x8d, 0x55, 0xe7, 0x48, 0x8d, 0x0d, 0x98, 0x47, 0xcb,
-        0x02,
-    ],
+    rva: Rva(0x72c3f8),
 };
 /// Scripted equipment fractions scale every roster division. Factors remain
 /// unclamped; values above one or below zero retain signed results.
@@ -286,11 +230,7 @@ pub const SCRIPTED_EQUIPMENT_FRACTION: Site = Site {
         target: SCALE_TARGET,
     },
     name: "scripted_division_equipment_fraction_tap",
-    rva: 0x4bade3,
-    sentinel: [
-        0xe8, 0x58, 0xc0, 0xbd, 0x00, 0x48, 0xff, 0xc3, 0x48, 0x3b, 0xde, 0x7c, 0xe0, 0x48, 0x8b,
-        0x5c,
-    ],
+    rva: Rva(0x4bade3),
 };
 /// Scripted fractions scale the national stockpile before division pools.
 /// Authenticate the manager's country backlink. Aircraft and ships can occur
@@ -301,11 +241,7 @@ pub const SCRIPTED_RESERVE_EQUIPMENT_FRACTION: Site = Site {
         target: SCALE_TARGET,
     },
     name: "scripted_reserve_equipment_fraction_tap",
-    rva: 0x4badb0,
-    sentinel: [
-        0xe8, 0x8b, 0xc0, 0xbd, 0x00, 0x48, 0x8b, 0xcf, 0xe8, 0x83, 0xbe, 0x25, 0x00, 0x48, 0x8b,
-        0xf8,
-    ],
+    rva: Rva(0x4badb0),
 };
 pub const SITES: [&Site; 18] = [
     &LAND,
@@ -334,11 +270,7 @@ pub const MERGE: Site = Site {
     id: SiteId::Merge,
     kind: SiteKind::Entry,
     name: "division_merge_pools",
-    rva: 0x13f9fb0,
-    sentinel: [
-        0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-        0x41,
-    ],
+    rva: Rva(0x13f9fb0),
 };
 /// Five-byte HQ-provider reserve-return CALL, before the same full division
 /// handle is queued for deletion.
@@ -348,11 +280,7 @@ pub const HQ_RETURN: Site = Site {
         target: RETURN_TARGET,
     },
     name: "hq_equipment_return_tap",
-    rva: 0xc49bec,
-    sentinel: [
-        0xe8, 0x6f, 0x7f, 0x28, 0x00, 0xba, 0xa0, 0x86, 0x01, 0x00, 0x48, 0x8d, 0x8b, 0xd0, 0x03,
-        0x00,
-    ],
+    rva: Rva(0xc49bec),
 };
 
 /// Selected pools have matching location pointers. Read each physical pool
@@ -411,7 +339,7 @@ pub fn merge_reserves(
     base: usize,
     survivor: usize,
 ) -> Result<usize, &'static str> {
-    let state = pointer(memory, base, crate::cgame_state::SINGLETON_RVA)?;
+    let state = game_state(memory, base)?;
     let country = crate::ccountry::Reader::new(memory, base, state)?
         .resolve(merge_owner(memory, survivor)?)?;
     let manager = pointer(memory, country.pointer, crate::ccountry::PRODUCTION_STATUS)?;
@@ -436,15 +364,13 @@ pub fn canceled_delivery_pools(
     }
     // Parent requests point to their division; children retain the owning division.
     if field::<u64>(memory, requests, 0)?
-        != base
-            .checked_add(0x2a4bab0)
-            .ok_or("merge requests vtable overflow")? as u64
+        != engine_sites::at(base, Rva(0x2a4bab0)).ok_or("merge requests vtable overflow")? as u64
         || pointer(memory, requests, 8)? != army
     {
         return Err("merge army requests identity mismatch");
     }
     for (offset, vtable, data, pool) in [
-        (0x10, 0x2a4b7f0, 0x28, 0x38),
+        (0x10, Rva(0x2a4b7f0), 0x28, 0x38),
         (
             crate::carmy_upgrades_requests::IN_ARMY_REQUESTS,
             crate::carmy_upgrades_requests::VTABLE_RVA,
@@ -459,9 +385,7 @@ pub fn canceled_delivery_pools(
             .checked_add(offset)
             .ok_or("merge requests child overflow")?;
         if field::<u64>(memory, child, 0)?
-            != base
-                .checked_add(vtable)
-                .ok_or("merge requests vtable overflow")? as u64
+            != engine_sites::at(base, vtable).ok_or("merge requests vtable overflow")? as u64
             || pointer(memory, child, 0x20)? != army
         {
             return Err("merge delivery group identity mismatch");
@@ -621,95 +545,121 @@ pub enum QueuedContext {
 /// Actual return addresses include tail-jump routes. Transfer readers preserve
 /// their original parser dispatch return through unit deletion; combat lifecycle
 /// cleanup also retains the original caller return through its intervening dispatches.
-pub const COMBAT_DELETION_RETURN: usize = 0x147fa46;
-pub const QUEUED_DELETE_RETURN: usize = 0x1ec994;
-pub const READ_CONTEXT_RETURN: usize = 0x25414d5;
-pub const DELETION_CAUSES: [(usize, Cause); 15] = [
+pub const COMBAT_DELETION_RETURN: Rva = Rva(0x147fa46);
+pub const QUEUED_DELETE_RETURN: Rva = Rva(0x1ec994);
+pub const READ_CONTEXT_RETURN: Rva = Rva(0x25414d5);
+pub const DELETION_CAUSES: [(Rva, Cause); 15] = [
     (COMBAT_DELETION_RETURN, Cause::DivisionDestroyed),
     // Unit-deletion effects retain their requested-return flag through the
     // exact reserve-return tap; it is not interpreted as a loss predicate.
-    (0x36d5e0, Cause::DivisionScripted),
-    (0x36dc5e, Cause::DivisionScripted),
+    (Rva(0x36d5e0), Cause::DivisionScripted),
+    (Rva(0x36dc5e), Cause::DivisionScripted),
     // Destruction effects retain the return address through scope-validated virtual dispatch.
-    (0x584fd0, Cause::DivisionScripted),
-    (0x755a10, Cause::DivisionTemplateRemoved),
-    (0x15ae6a7, Cause::DivisionTemplateRemoved),
-    (0x13fc152, Cause::DivisionDisbanded),
-    (0x729854, Cause::DivisionCapitulation),
+    (Rva(0x584fd0), Cause::DivisionScripted),
+    (Rva(0x755a10), Cause::DivisionTemplateRemoved),
+    (Rva(0x15ae6a7), Cause::DivisionTemplateRemoved),
+    (Rva(0x13fc152), Cause::DivisionDisbanded),
+    (Rva(0x729854), Cause::DivisionCapitulation),
     // Annex/OOB replacement wipes; initial OOB loading passes wipe=false.
-    (0x730be0, Cause::DivisionDeleted),
-    (0x730cf0, Cause::DivisionDeleted),
+    (Rva(0x730be0), Cause::DivisionDeleted),
+    (Rva(0x730cf0), Cause::DivisionDeleted),
     // Country army validation and orphan exile/volunteer transfer cleanup.
-    (0x75bbb8, Cause::DivisionDeleted),
-    (0x15acc70, Cause::DivisionDeleted),
-    (0x15bb8c1, Cause::DivisionDeleted),
+    (Rva(0x75bbb8), Cause::DivisionDeleted),
+    (Rva(0x15acc70), Cause::DivisionDeleted),
+    (Rva(0x15bb8c1), Cause::DivisionDeleted),
     // Appearance reset also supports gameplay country reuse. Runtime reset
     // is excluded by RESETTING rather than by shared return addresses.
-    (0x72b0ae, Cause::DivisionDeleted),
-    (0x72b1c1, Cause::DivisionDeleted),
+    (Rva(0x72b0ae), Cause::DivisionDeleted),
+    (Rva(0x72b1c1), Cause::DivisionDeleted),
 ];
 /// Failed save-reader validation and rejected scripted unit creation delete
 /// parsed allocations before roster attachment or stockpile supply.
-pub const FAILED_CREATE_RETURN: usize = 0x36b420;
-pub const IGNORED_DELETIONS: [usize; 4] = [
-    0x74f24a,
-    0x74f4fc,
+pub const FAILED_CREATE_RETURN: Rva = Rva(0x36b420);
+pub const IGNORED_DELETIONS: [Rva; 4] = [
+    Rva(0x74f24a),
+    Rva(0x74f4fc),
     READ_CONTEXT_RETURN,
     FAILED_CREATE_RETURN,
 ];
 /// Merge copies source pools into its aggregate before disposal. Unchanged
 /// source pools are therefore transfers rather than losses.
-pub const MERGED_DELETION_RETURN: usize = 0x13fab3c;
+pub const MERGED_DELETION_RETURN: Rva = Rva(0x13fab3c);
 
-pub fn deletion_context(caller_rva: usize) -> DeletionContext {
-    if IGNORED_DELETIONS.contains(&caller_rva) {
-        DeletionContext::Ignore
-    } else if caller_rva == MERGED_DELETION_RETURN {
-        DeletionContext::Transfer(Disposition::Merged)
-    } else if caller_rva == QUEUED_DELETE_RETURN {
-        DeletionContext::Queue
-    } else {
-        DeletionContext::Loss(
-            DELETION_CAUSES
-                .iter()
-                .find_map(|&(pc, cause)| (pc == caller_rva).then_some(cause))
-                .unwrap_or(Cause::Unknown),
-        )
+const DELETION_KEY_COUNT: usize = 2 + IGNORED_DELETIONS.len() + DELETION_CAUSES.len();
+/// Every return key [`deletion_context`] distinguishes.
+const DELETION_KEYS: [Rva; DELETION_KEY_COUNT] = {
+    let mut keys = [MERGED_DELETION_RETURN; DELETION_KEY_COUNT];
+    keys[1] = QUEUED_DELETE_RETURN;
+    let mut index = 0;
+    while index < IGNORED_DELETIONS.len() {
+        keys[2 + index] = IGNORED_DELETIONS[index];
+        index += 1;
     }
+    let mut index = 0;
+    while index < DELETION_CAUSES.len() {
+        keys[2 + IGNORED_DELETIONS.len() + index] = DELETION_CAUSES[index].0;
+        index += 1;
+    }
+    keys
+};
+
+/// Classify the live return address of a unit deletion.
+pub fn deletion_context(base: usize, return_address: usize) -> DeletionContext {
+    match engine_sites::which(base, return_address, &DELETION_KEYS) {
+        Some(key) if IGNORED_DELETIONS.contains(&key) => DeletionContext::Ignore,
+        Some(MERGED_DELETION_RETURN) => DeletionContext::Transfer(Disposition::Merged),
+        Some(QUEUED_DELETE_RETURN) => DeletionContext::Queue,
+        key => DeletionContext::Loss(cause_of(&DELETION_CAUSES, key)),
+    }
+}
+
+fn cause_of(causes: &[(Rva, Cause)], key: Option<Rva>) -> Cause {
+    key.and_then(|key| {
+        causes
+            .iter()
+            .find_map(|&(pc, cause)| (pc == key).then_some(cause))
+    })
+    .unwrap_or(Cause::Unknown)
 }
 
 /// Scheduling copies a unique full handle, never the pool. Retain the first
 /// deletion cause until disposal. HQ cleanup credits its complete pool before
 /// queueing, so that disposal is a transfer.
-pub const QUEUED_DELETION_CAUSES: [(usize, Cause); 7] = [
-    (0xce6806, Cause::DivisionOverrun),
+pub const QUEUED_DELETION_CAUSES: [(Rva, Cause); 7] = [
+    (Rva(0xce6806), Cause::DivisionOverrun),
     // Hourly attrition completes before the content-loaded strength threshold
     // and deletion scheduling.
-    (0xce54a6, Cause::DivisionDeleted),
-    (0xe65af8, Cause::DivisionDeleted),
-    (0x7602ed, Cause::DivisionDeleted),
-    (0x15bc7dd, Cause::DivisionDeleted),
-    (0xa28424, Cause::DivisionDeleted),
+    (Rva(0xce54a6), Cause::DivisionDeleted),
+    (Rva(0xe65af8), Cause::DivisionDeleted),
+    (Rva(0x7602ed), Cause::DivisionDeleted),
+    (Rva(0x15bc7dd), Cause::DivisionDeleted),
+    (Rva(0xa28424), Cause::DivisionDeleted),
     // Immediate damage finishes its removal before this strength test.
-    (0x35b6f6, Cause::DivisionScripted),
+    (Rva(0x35b6f6), Cause::DivisionScripted),
 ];
-pub const HQ_PROVIDER_RETURN: usize = 0xc49d14;
+pub const HQ_PROVIDER_RETURN: Rva = Rva(0xc49d14);
 /// Reveal-skip selects deception armies. Combat joining refuses those
 /// objects, so their disposal is outside inventory loss.
-pub const FAKE_INTEL_QUEUE_RETURN: usize = 0x134b10b;
+pub const FAKE_INTEL_QUEUE_RETURN: Rva = Rva(0x134b10b);
 
-pub fn queued_context(caller_rva: usize) -> QueuedContext {
-    if caller_rva == HQ_PROVIDER_RETURN {
-        QueuedContext::Transfer(Disposition::HqTransferred)
-    } else if caller_rva == FAKE_INTEL_QUEUE_RETURN {
-        QueuedContext::Ignore
-    } else {
-        QueuedContext::Loss(
-            QUEUED_DELETION_CAUSES
-                .iter()
-                .find_map(|&(pc, cause)| (pc == caller_rva).then_some(cause))
-                .unwrap_or(Cause::Unknown),
-        )
+/// Every return key [`queued_context`] distinguishes.
+const QUEUED_KEYS: [Rva; 2 + QUEUED_DELETION_CAUSES.len()] = {
+    let mut keys = [HQ_PROVIDER_RETURN; 2 + QUEUED_DELETION_CAUSES.len()];
+    keys[1] = FAKE_INTEL_QUEUE_RETURN;
+    let mut index = 0;
+    while index < QUEUED_DELETION_CAUSES.len() {
+        keys[2 + index] = QUEUED_DELETION_CAUSES[index].0;
+        index += 1;
+    }
+    keys
+};
+
+/// Classify the live return address of a deletion scheduling.
+pub fn queued_context(base: usize, return_address: usize) -> QueuedContext {
+    match engine_sites::which(base, return_address, &QUEUED_KEYS) {
+        Some(HQ_PROVIDER_RETURN) => QueuedContext::Transfer(Disposition::HqTransferred),
+        Some(FAKE_INTEL_QUEUE_RETURN) => QueuedContext::Ignore,
+        key => QueuedContext::Loss(cause_of(&QUEUED_DELETION_CAUSES, key)),
     }
 }
 
@@ -719,7 +669,7 @@ pub fn queued_context(caller_rva: usize) -> QueuedContext {
 pub const RESETTING: usize = 0xa3a;
 
 pub fn cleanup(memory: &impl Memory, base: usize) -> Result<bool, &'static str> {
-    let state = pointer(memory, base, crate::cgame_state::SINGLETON_RVA)?;
+    let state = game_state(memory, base)?;
     if state == 0 {
         return Err("destruction current game state is null");
     }
@@ -735,7 +685,7 @@ pub fn current_state(
     base: usize,
     receiver: usize,
 ) -> Result<(), &'static str> {
-    if receiver == 0 || pointer(memory, base, crate::cgame_state::SINGLETON_RVA)? != receiver {
+    if receiver == 0 || game_state(memory, base)? != receiver {
         return Err("destruction current game state identity mismatch");
     }
     Ok(())
@@ -757,13 +707,16 @@ pub fn is_army(memory: &impl Memory, base: usize, unit: usize) -> Result<bool, &
 /// assigned: no reference-type constant is assumed. Authenticate both native CArmy vtables and the
 /// class discriminator.
 pub fn army_identity(memory: &impl Memory, base: usize, army: usize) -> Result<u64, &'static str> {
-    let primary = base.checked_add(carmy::VTABLE_RVA);
-    let secondary = base.checked_add(carmy::SECONDARY_VTABLE_RVA);
+    let (Some(primary), Some(secondary)) = (
+        engine_sites::at(base, carmy::VTABLE_RVA),
+        engine_sites::at(base, carmy::SECONDARY_VTABLE_RVA),
+    ) else {
+        return Err("destruction division identity mismatch");
+    };
     if army == 0
         || field::<u32>(memory, army, crate::cunit::CLASS)? != 0
-        || field::<u64>(memory, army, 0)? != primary.map(|p| p as u64).unwrap_or(0)
-        || field::<u64>(memory, army, carmy::SECONDARY_BASE)?
-            != secondary.map(|p| p as u64).unwrap_or(0)
+        || field::<u64>(memory, army, 0)? != primary as u64
+        || field::<u64>(memory, army, carmy::SECONDARY_BASE)? != secondary as u64
     {
         return Err("destruction division identity mismatch");
     }
@@ -776,19 +729,33 @@ pub fn army_identity(memory: &impl Memory, base: usize, army: usize) -> Result<u
 
 /// Direct combat-damage caller return addresses. Combat end flushes accumulated
 /// losses and applies the content-loaded combat-loss factor before damage.
-pub const LAND_COMBAT_RETURN: usize = 0xce7bb8;
+pub const LAND_COMBAT_RETURN: Rva = Rva(0xce7bb8);
 /// Lost transports remove convoys and damage carried divisions in proportion
 /// to the lost transport amount.
-pub const NAVAL_TRANSPORT_RETURN: usize = 0xe96b00;
+pub const NAVAL_TRANSPORT_RETURN: Rva = Rva(0xe96b00);
 /// Immediate damage applies strength and organization operands before
 /// equipment damage.
-pub const IMMEDIATE_RETURN: usize = 0xcec745;
+pub const IMMEDIATE_RETURN: Rva = Rva(0xcec745);
 
-pub fn land_cause(caller_rva: usize) -> Cause {
-    match caller_rva {
-        LAND_COMBAT_RETURN => Cause::LandCombat,
-        NAVAL_TRANSPORT_RETURN => Cause::NavalTransport,
-        IMMEDIATE_RETURN => Cause::Immediate,
+/// Every return key the deletion, queue, land and air classifiers distinguish resolves, or the
+/// first withheld one's reason.
+pub fn classification_sites(base: usize) -> Result<(), &'static str> {
+    engine_sites::require(base, &DELETION_KEYS)?;
+    engine_sites::require(base, &QUEUED_KEYS)?;
+    engine_sites::require(base, &[LAND_COMBAT_RETURN, NAVAL_TRANSPORT_RETURN, IMMEDIATE_RETURN])?;
+    engine_sites::require(base, &AIR_KEYS)
+}
+
+/// Classify the live return address of a combat-damage call.
+pub fn land_cause(base: usize, return_address: usize) -> Cause {
+    match engine_sites::which(
+        base,
+        return_address,
+        &[LAND_COMBAT_RETURN, NAVAL_TRANSPORT_RETURN, IMMEDIATE_RETURN],
+    ) {
+        Some(LAND_COMBAT_RETURN) => Cause::LandCombat,
+        Some(NAVAL_TRANSPORT_RETURN) => Cause::NavalTransport,
+        Some(IMMEDIATE_RETURN) => Cause::Immediate,
         _ => Cause::Unknown,
     }
 }
@@ -796,36 +763,47 @@ pub fn land_cause(caller_rva: usize) -> Cause {
 /// Supported-build return-address to cause map. Strategic and mission-AA
 /// channels retain the coordinator's classification. Requested removal and
 /// source-country arguments do not establish a finer cause.
-pub const AIR_CAUSES: [(usize, Cause); 11] = [
+pub const AIR_CAUSES: [(Rva, Cause); 11] = [
     // Nuclear airbase damage removes aircraft from every wing.
-    (0x11215b3, Cause::AirNuclear),
+    (Rva(0x11215b3), Cause::AirNuclear),
     // Accident losses apply the country loss roll and update the wing accumulator.
-    (0xfe23c2, Cause::AirAccident),
+    (Rva(0xfe23c2), Cause::AirAccident),
     // Strategic bombing applies content-loaded aircraft hit and damage factors.
-    (0xcb8301, Cause::AirStrategic),
+    (Rva(0xcb8301), Cause::AirStrategic),
     // Strategic hourly processing removes aircraft during its wing pass.
-    (0xcbc912, Cause::AirStrategic),
+    (Rva(0xcbc912), Cause::AirStrategic),
     // Train anti-air losses use the content-loaded hit and amount factors.
-    (0xffaaa3, Cause::AirMissionAa),
+    (Rva(0xffaaa3), Cause::AirMissionAa),
     // Mission anti-air applies the mission-dependent wing loss.
-    (0x1008036, Cause::AirMissionAa),
+    (Rva(0x1008036), Cause::AirMissionAa),
     // Mission anti-air damage uses content-loaded chance and damage factors.
-    (0x100b5b0, Cause::AirMissionAa),
+    (Rva(0x100b5b0), Cause::AirMissionAa),
     // Mission processing flushes its accumulated losses with their stored attribution.
-    (0x100bc47, Cause::AirMissionAa),
+    (Rva(0x100bc47), Cause::AirMissionAa),
     // Land anti-air applies the night-attack and anti-air content factors.
-    (0x133b533, Cause::AirLandCombatCas),
+    (Rva(0x133b533), Cause::AirLandCombatCas),
     // Scripted raid-unit damage reaches this aircraft-removal channel.
-    (0x1502ff4, Cause::AirRaid),
+    (Rva(0x1502ff4), Cause::AirRaid),
     // Naval anti-air callers remove aircraft through their shared exchange channel.
-    (0x1a0cd3c, Cause::AirNavalAa),
+    (Rva(0x1a0cd3c), Cause::AirNavalAa),
 ];
 
-pub fn air_cause(caller_rva: usize) -> Cause {
-    AIR_CAUSES
-        .iter()
-        .find_map(|&(pc, cause)| (pc == caller_rva).then_some(cause))
-        .unwrap_or(Cause::Unknown)
+const AIR_KEYS: [Rva; AIR_CAUSES.len()] = {
+    let mut keys = [AIR_CAUSES[0].0; AIR_CAUSES.len()];
+    let mut index = 1;
+    while index < AIR_CAUSES.len() {
+        keys[index] = AIR_CAUSES[index].0;
+        index += 1;
+    }
+    keys
+};
+
+/// Classify the live return address of an aircraft removal.
+pub fn air_cause(base: usize, return_address: usize) -> Cause {
+    cause_of(
+        &AIR_CAUSES,
+        engine_sites::which(base, return_address, &AIR_KEYS),
+    )
 }
 
 /// Positive expeditionary ownership selects the equipment country; otherwise
@@ -897,6 +875,12 @@ fn pointer(memory: &impl Memory, object: usize, offset: usize) -> Result<usize, 
         .map_err(|_| "destruction owner pointer overflow")
 }
 
+fn game_state(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
+    let singleton = engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)
+        .ok_or("destruction operand address overflow")?;
+    pointer(memory, singleton, 0)
+}
+
 pub fn pool(receiver: usize, site: SiteId) -> Result<usize, &'static str> {
     let offset = match site {
         SiteId::Air => cair_wing::EQUIPMENT_POOL,
@@ -924,15 +908,13 @@ pub fn reserve_owner(memory: &impl Memory, base: usize, pool: usize) -> Result<u
         .checked_sub(cproduction_status::STOCKPILE_POOL)
         .filter(|&manager| manager != 0)
         .ok_or("destruction reserve manager address invalid")?;
-    let expected_manager = base
-        .checked_add(cproduction_status::VTABLE_RVA)
+    let expected_manager = engine_sites::at(base, cproduction_status::VTABLE_RVA)
         .ok_or("destruction reserve manager vtable address overflow")?;
     if field::<u64>(memory, manager, 0)? != expected_manager as u64 {
         return Err("destruction reserve manager identity mismatch");
     }
     let country = pointer(memory, manager, cproduction_status::COUNTRY)?;
-    let expected_country = base
-        .checked_add(ccountry::VTABLE_RVA)
+    let expected_country = engine_sites::at(base, ccountry::VTABLE_RVA)
         .ok_or("destruction reserve country vtable address overflow")?;
     if country == 0
         || field::<u64>(memory, country, 0)? != expected_country as u64
@@ -1080,7 +1062,7 @@ pub fn removals(
 pub fn design_count(memory: &impl Memory, base: usize) -> Option<usize> {
     let state = usize::try_from(read::<u64>(
         memory,
-        base.checked_add(crate::cgame_state::SINGLETON_RVA)?,
+        engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)?,
     )?)
     .ok()?;
     if state == 0 {
@@ -1106,7 +1088,7 @@ pub struct Population {
 pub fn population(memory: &impl Memory, base: usize) -> Option<Population> {
     let state = usize::try_from(read::<u64>(
         memory,
-        base.checked_add(crate::cgame_state::SINGLETON_RVA)?,
+        engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)?,
     )?)
     .ok()?;
     if state == 0 {

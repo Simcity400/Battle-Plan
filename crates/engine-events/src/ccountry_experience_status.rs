@@ -3,9 +3,10 @@
 //! training divisor and resets the daily accumulators.
 
 use crate::{Memory, ccountry, read, walk::Outcome};
+use engine_sites::Rva;
 
 /// Experience-state primary vtable.
-pub const VTABLE_RVA: usize = 0x02a2_34f0;
+pub const VTABLE_RVA: Rva = Rva(0x02a2_34f0);
 /// Owning country pointer.
 pub const COUNTRY: usize = 0x08;
 /// Army experience, i64 fixed15, updated with a clamp.
@@ -74,9 +75,8 @@ pub fn walk_buffer(
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("experience module address overflow")?;
+        let vtable =
+            engine_sites::at(base, VTABLE_RVA).ok_or("experience module address overflow")?;
         output.ensure(countries.count().saturating_sub(1) as usize)?;
         let mut len = 0_usize;
         let mut unread_rows = 0;
@@ -169,7 +169,7 @@ mod tests {
             put(
                 &mut bytes,
                 country,
-                &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, country + ccountry::ID, &id.to_le_bytes());
             put(
@@ -180,7 +180,7 @@ mod tests {
             put(
                 &mut bytes,
                 status as usize,
-                &(VTABLE_RVA as u64).to_le_bytes(),
+                &(VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

@@ -196,8 +196,7 @@ fn resolve(memory: &impl Memory, base: usize, raw: u64) -> Result<Option<usize>,
     };
     let identity =
         engine_native::read::<[u8; 16]>(memory, pointer).ok_or("wing raid identity unreadable")?;
-    let expected = base
-        .checked_add(craid_instance::VTABLE_RVA)
+    let expected = engine_sites::at(base, craid_instance::VTABLE_RVA)
         .ok_or("wing raid module address overflow")? as u64;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected
         || u64::from_le_bytes(identity[8..].try_into().unwrap()) != raw

@@ -17,6 +17,7 @@ use crate::{
     cland_border_war_combatant, cland_combat as combat, cland_combatant as side, corders_group,
     cpdx_array::Array, cprovince, cunit, cunit_leader, cunit_leader_skill, read,
 };
+use engine_sites::Rva;
 
 /// Off-thread population hint for staging records. Each live combat can
 /// dispatch participants and commanders, then finalize results, losses and
@@ -42,9 +43,7 @@ pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
         |_, pointer| {
             let vtable = field::<u64>(memory, pointer, 0)?;
             if Some(vtable)
-                == base
-                    .checked_add(crate::cnaval_combat::VTABLE_RVA)
-                    .map(|p| p as u64)
+                == engine_sites::at(base, crate::cnaval_combat::VTABLE_RVA).map(|p| p as u64)
             {
                 return Ok(());
             }
@@ -102,16 +101,16 @@ fn destruction_words(combats: Array) -> usize {
     10 + combats.count as usize
 }
 
-pub const FINALIZE_RVA: usize = 0x1349260;
+pub const FINALIZE_RVA: Rva = Rva(0x1349260);
 /// Round termination invokes this dispatch before removing losers; it
 /// resolves loser then winner and marks the winner's observer.
-pub const DISPATCH_RVA: usize = 0x13491a0;
+pub const DISPATCH_RVA: Rva = Rva(0x13491a0);
 /// Exact loser-then-winner commander return addresses certify on-action
 /// commanders. Scripts can query the same resolver while dispatch state is active.
-pub const DISPATCH_LEADER_RETURNS: [usize; 2] = [0x13491bc, 0x13491da];
+pub const DISPATCH_LEADER_RETURNS: [Rva; 2] = [Rva(0x13491bc), Rva(0x13491da)];
 /// Six-byte verdict CALLs in on-action dispatch. Resolver entries and
 /// vtable slots are not patched.
-pub const DISPATCH_LEADER_CALLS: [usize; 2] = [0x13491b6, 0x13491d4];
+pub const DISPATCH_LEADER_CALLS: [Rva; 2] = [Rva(0x13491b6), Rva(0x13491d4)];
 pub const DISPATCH_LEADER_CALL_SENTINEL: [u8; 6] = [0xff, 0x90, 0xe8, 0, 0, 0];
 /// The commander-resolver vtable slot each verdict CALL calls through, the displacement its
 /// sentinel ends with.
@@ -119,9 +118,6 @@ pub const DISPATCH_LEADER_VTABLE_SLOT: usize = 0xe8;
 pub const DISPATCH_LEADER_CALL_NAMES: [&str; 2] = [
     "DispatchLeaderOnActions.loser_leader",
     "DispatchLeaderOnActions.winner_leader",
-];
-pub const DISPATCH_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x02, 0x48, 0x8b, 0xca,
 ];
 
 const COMBAT_HEADER_END: usize = combat::DURATION + size_of::<i32>();
@@ -169,11 +165,13 @@ pub struct CombatHeader {
 }
 impl CombatHeader {
     fn read(memory: &impl Memory, base: usize, pointer: usize) -> Result<Self, &'static str> {
-        let vtable = field::<u64>(memory, pointer, 0)?;
-        let border = vtable == (base + cland_border_war_combat::VTABLE_RVA) as u64;
-        if !border && vtable != (base + combat::VTABLE_RVA) as u64 {
-            return Err("land combat class unsupported");
-        }
+        let vtable = field::<u64>(memory, pointer, 0)? as usize;
+        let classes = [cland_border_war_combat::VTABLE_RVA, combat::VTABLE_RVA];
+        let border = match engine_sites::which(base, vtable, &classes) {
+            Some(cland_border_war_combat::VTABLE_RVA) => true,
+            Some(_) => false,
+            None => return Err("land combat class unsupported"),
+        };
         Ok(Self {
             pointer,
             bytes: field(memory, pointer, combat::HANDLE)?,
@@ -336,7 +334,7 @@ pub fn final_inputs(
         let bytes = &blocks[n * STRIDE..(n + 1) * STRIDE];
         if pointers[n] == 0
             || u64::from_le_bytes(bytes[..8].try_into().unwrap())
-                != (base + cland_border_war_combatant::VTABLE_RVA) as u64
+                != module(base, cland_border_war_combatant::VTABLE_RVA)? as u64
         {
             return Err("border final side identity mismatch");
         }
@@ -383,7 +381,11 @@ impl NullTagPlan {
         Ok(Self(crate::msvc_string::Descriptor::read(memory, at)?))
     }
     fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
-        let db = field::<u64>(memory, base, crate::ccountry_database::SINGLETON_RVA)? as usize;
+        let db = field::<u64>(
+            memory,
+            module(base, crate::ccountry_database::SINGLETON_RVA)?,
+            0,
+        )? as usize;
         let tags = Array::read(memory, db, crate::msvc_string::STRIDE)
             .ok_or("null history tag array invalid")?;
         let at = tags
@@ -424,7 +426,8 @@ impl HistoryPlan {
                 side::VTABLE_RVA
             };
             if p == 0
-                || u64::from_le_bytes(bytes[..8].try_into().unwrap()) != (base + expected) as u64
+                || u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                    != module(base, expected)? as u64
             {
                 return Err("history side identity mismatch");
             }
@@ -473,36 +476,20 @@ impl HistoryPlan {
         Ok(())
     }
 }
-pub const FINALIZE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
-];
 /// Destruction dispatch arguments: old province, new province, dying division,
 /// equipment pool and selected killer division. Deletion is deferred; hourly
 /// movement can continue after destruction dispatch. Preserve every invocation,
 /// including repeated dying-division handles.
-pub const DESTROY_RVA: usize = 0xd3bdc0;
+pub const DESTROY_RVA: Rva = Rva(0xd3bdc0);
 /// Snapshot destruction-entry country choice and victim operands before
 /// leader experience or history can run effects. A later observation supplies
 /// the actual selected killer.
-pub const DESTRUCTION_RVA: usize = 0xce6370;
-pub const DESTRUCTION_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
-];
-pub const DESTROY_SENTINEL: [u8; 16] = [
-    0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55,
-];
-pub const BORDER_FINALIZE_RVA: usize = 0x148a4b0;
-pub const BORDER_TERMINATE_RVA: usize = 0x148b950;
+pub const DESTRUCTION_RVA: Rva = Rva(0xce6370);
+pub const BORDER_FINALIZE_RVA: Rva = Rva(0x148a4b0);
+pub const BORDER_TERMINATE_RVA: Rva = Rva(0x148b950);
 /// Attacker-then-defender finalizer verdict returns, before scripts.
 /// Calls from effects are not verdict queries.
-pub const BORDER_TERMINATE_RETURNS: [usize; 2] = [0x148a51d, 0x148a52d];
-/// Border finalizer and result-handler entry bytes.
-pub const BORDER_FINALIZE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-];
-pub const BORDER_TERMINATE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48,
-];
+pub const BORDER_TERMINATE_RETURNS: [Rva; 2] = [Rva(0x148a51d), Rva(0x148a52d)];
 
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
@@ -514,14 +501,18 @@ fn field<T: crate::memory::Raw>(
         .and_then(|p| read(memory, p))
         .ok_or("land event field unreadable")
 }
+fn module(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("land event module address withheld")
+}
 fn identity(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
     if pointer != 0
-        && Some(field::<u64>(memory, pointer, 0)?) == base.checked_add(vtable).map(|v| v as u64)
+        && Some(field::<u64>(memory, pointer, 0)?)
+            == engine_sites::at(base, vtable).map(|v| v as u64)
     {
         Ok(())
     } else {
@@ -529,7 +520,7 @@ fn identity(
     }
 }
 pub fn state_hour(memory: &impl Memory, base: usize) -> Result<(usize, i32), &'static str> {
-    let state = field::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
+    let state = field::<u64>(memory, module(base, cgame_state::SINGLETON_RVA)?, 0)? as usize;
     if state == 0 {
         return Err("land event game state null");
     }
@@ -666,7 +657,7 @@ impl ResultPlan {
             } else {
                 side::VTABLE_RVA
             };
-            if sides[n] == 0 || qword(0) != (base + expected) as u64 {
+            if sides[n] == 0 || qword(0) != module(base, expected)? as u64 {
                 return Err("land result side identity mismatch");
             }
             if qword(side::COMBAT) != pointer as u64 {
@@ -942,11 +933,9 @@ impl DestructionPlan {
                     .ok_or("destroyed combat offset overflow")?,
                 0,
             )? as usize;
-            let vtable = field::<u64>(memory, pointer, 0)?;
-            if pointer == 0
-                || (vtable != (base + combat::VTABLE_RVA) as u64
-                    && vtable != (base + cland_border_war_combat::VTABLE_RVA) as u64)
-            {
+            let vtable = field::<u64>(memory, pointer, 0)? as usize;
+            let classes = [combat::VTABLE_RVA, cland_border_war_combat::VTABLE_RVA];
+            if pointer == 0 || engine_sites::which(base, vtable, &classes).is_none() {
                 return Err("destroyed division combat class unsupported");
             }
             put(field(memory, pointer, combat::HANDLE)?);
@@ -979,7 +968,7 @@ mod tests {
         for slot in 1..=2 {
             let army = world.alloc(cunit::COMBAT_REFERENCE_DATA + 16);
             let roster = world.alloc(8);
-            world.u64(army, carmy::VTABLE_RVA as u64);
+            world.u64(army, carmy::VTABLE_RVA.0 as u64);
             world.u64(roster, army as u64);
             world.array(world.object(slot) + ccountry::DIVISIONS, roster, 1);
         }
@@ -1042,22 +1031,22 @@ mod tests {
     #[test]
     fn terminal_loss_plan_authenticates_each_side_and_observer_without_roster_walk() {
         let mut f = Fixture::default();
-        f.q(0x2000, combat::VTABLE_RVA as u64);
+        f.q(0x2000, combat::VTABLE_RVA.0 as u64);
         f.put(0x2000 + combat::HANDLE, &[0; COMBAT_HEADER_BYTES]);
         f.q(0x2000 + combat::HANDLE, 7 << 32 | 62);
         f.q(0x2000 + combat::ATTACKER, 0x3000);
         f.q(0x2000 + combat::DEFENDER, 0x4000);
         for p in [0x3000, 0x4000] {
-            f.q(p, side::VTABLE_RVA as u64);
+            f.q(p, side::VTABLE_RVA.0 as u64);
             f.q(p + side::COMBAT, 0x2000);
             let observer = p + side::STATS_OBSERVER;
-            f.q(observer, crate::cstats_observer::VTABLE_RVA as u64);
+            f.q(observer, crate::cstats_observer::VTABLE_RVA.0 as u64);
             f.put(
                 observer + crate::cstats_observer::MANPOWER_LOSS,
                 &91i32.to_le_bytes(),
             );
             let pool = observer + crate::cstats_observer::EQUIPMENT_LOSSES;
-            f.q(pool, crate::cequipment_variant_pool::VTABLE_RVA as u64);
+            f.q(pool, crate::cequipment_variant_pool::VTABLE_RVA.0 as u64);
             f.array(pool + crate::cequipment_variant_pool::ITEMS, 0, 0);
         }
         let plan = LossesPlan::read(&f, 0, 0x2000).unwrap();
@@ -1074,15 +1063,15 @@ mod tests {
     #[test]
     fn native_result_plan_copies_transient_lists_and_refuses_first_fault() {
         let mut f = Fixture::default();
-        f.q(crate::ccountry_database::SINGLETON_RVA, 0xb000);
+        f.q(crate::ccountry_database::SINGLETON_RVA.0, 0xb000);
         f.array(0xb000, 0xc000, 1);
         f.put(0xc000, &[0; 32]);
         f.put(0xc000 + 24, &15u64.to_le_bytes());
-        f.q(cgame_state::SINGLETON_RVA, 0x1000);
+        f.q(cgame_state::SINGLETON_RVA.0, 0x1000);
         f.put(0x1000 + cgame_state::CURRENT_HOUR, &80i32.to_le_bytes());
         f.array(0x1000 + crate::cgame_state::COUNTRIES, 0x9000, 3);
         f.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0xa000, 3);
-        f.q(0x2000, combat::VTABLE_RVA as u64);
+        f.q(0x2000, combat::VTABLE_RVA.0 as u64);
         f.put(0x2000 + combat::HANDLE, &[0; 0x30]);
         f.q(0x2000 + combat::HANDLE, 0x8000_0001_0000_003e);
         f.q(0x2000 + combat::ATTACKER, 0x3000);
@@ -1090,11 +1079,11 @@ mod tests {
         f.q(0x2000 + combat::PROVINCE, 0x5000);
         f.put(0x2000 + combat::DAY, &4i32.to_le_bytes());
         f.put(0x2000 + combat::DURATION, &9i32.to_le_bytes());
-        f.q(0x5000, cprovince::VTABLE_RVA as u64);
+        f.q(0x5000, cprovince::VTABLE_RVA.0 as u64);
         f.put(0x5000 + cprovince::ID, &42u32.to_le_bytes());
         for p in [0x3000, 0x4000] {
             f.put(p, &[0; 0x64]);
-            f.q(p, side::VTABLE_RVA as u64);
+            f.q(p, side::VTABLE_RVA.0 as u64);
             f.q(p + side::COMBAT, 0x2000);
             f.array(p + side::UNITS, 0, 0);
             for offset in [side::COUNTRIES, side::SECONDARY_COUNTRIES] {
@@ -1182,36 +1171,36 @@ mod tests {
     #[test]
     fn destruction_selects_active_enemy_and_converts_combat_pointers_to_handles() {
         let mut f = Fixture::default();
-        f.q(cgame_state::SINGLETON_RVA, 0x1000);
+        f.q(cgame_state::SINGLETON_RVA.0, 0x1000);
         f.put(0x1000 + cgame_state::CURRENT_HOUR, &80i32.to_le_bytes());
         f.array(0x1000 + crate::cgame_state::COUNTRIES, 0x9000, 3);
         f.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0xa000, 3);
         for (slot, p) in [(1usize, 0xd000usize), (2, 0xe000)] {
             f.q(0x9000 + slot * 8, p as u64);
             f.put(0xa000 + slot * 4, &(slot as u32).to_le_bytes());
-            f.q(p, ccountry::VTABLE_RVA as u64);
+            f.q(p, ccountry::VTABLE_RVA.0 as u64);
             f.put(p + ccountry::ID, &(slot as u32).to_le_bytes());
         }
-        f.q(0x2000, carmy::VTABLE_RVA as u64);
+        f.q(0x2000, carmy::VTABLE_RVA.0 as u64);
         f.q(0x2000 + cunit::HANDLE, 0x8000_0001_0000_1269);
         f.put(0x2000 + cunit::ROSTER_OWNER, &1u32.to_le_bytes());
         f.put(0x2000 + cunit::LOGICAL_OWNER, &2u32.to_le_bytes());
         for (p, id, controller) in [(0x3000, 17u32, 1u32), (0x4000, 18, 2)] {
-            f.q(p, cprovince::VTABLE_RVA as u64);
+            f.q(p, cprovince::VTABLE_RVA.0 as u64);
             f.put(p + cprovince::ID, &id.to_le_bytes());
             f.put(p + cprovince::CONTROLLER, &controller.to_le_bytes());
         }
-        f.q(0x5000, carmy::VTABLE_RVA as u64);
+        f.q(0x5000, carmy::VTABLE_RVA.0 as u64);
         f.q(0x5000 + cunit::HANDLE, 0x8000_0002_0000_1269);
         f.q(0xd000 + ccountry::DIPLOMACY_STATUS, 0xf000);
-        f.q(0xf000, crate::cdiplomacy_status::VTABLE_RVA as u64);
+        f.q(0xf000, crate::cdiplomacy_status::VTABLE_RVA.0 as u64);
         f.q(0xf000 + crate::cdiplomacy_status::COUNTRY, 0xd000);
         f.array(0xf000 + crate::cdiplomacy_status::RELATIONS, 0x10000, 3);
         f.q(0x10010, 0x11000);
-        f.q(0x11000, crate::crelation_status::VTABLE_RVA as u64);
+        f.q(0x11000, crate::crelation_status::VTABLE_RVA.0 as u64);
         f.q(0x11000 + crate::crelation_status::DIPLOMACY_STATUS, 0xf000);
         f.q(0x11000 + crate::crelation_status::WAR_RELATION, 0x12000);
-        f.q(0x12000, crate::cwar_relation::VTABLE_RVA as u64);
+        f.q(0x12000, crate::cwar_relation::VTABLE_RVA.0 as u64);
         f.put(0x12000 + crate::crelation::RETIRED, &[0]);
         f.array(0x2000 + cunit::COMBAT_REFERENCE_DATA, 0x14000, 2);
         for (slot, p, vt, handle) in [
@@ -1224,7 +1213,7 @@ mod tests {
             ),
         ] {
             f.q(0x14000 + slot * 8, p as u64);
-            f.q(p, vt as u64);
+            f.q(p, vt.0 as u64);
             f.q(p + combat::HANDLE, handle);
         }
         let capture = |f: &Fixture, killer| {

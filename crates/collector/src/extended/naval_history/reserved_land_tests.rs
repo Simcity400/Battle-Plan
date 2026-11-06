@@ -22,7 +22,7 @@ fn vector(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 fn fixture(count: u32) -> Vec<u8> {
     let mut bytes = kit::fixture();
     p64(&mut bytes, 0x11000, ZERO as u64);
-    p64(&mut bytes, ZERO, engine_native::ccountry::VTABLE_RVA as u64);
+    p64(&mut bytes, ZERO, engine_native::ccountry::VTABLE_RVA.0 as u64);
     p32(&mut bytes, ZERO + engine_native::ccountry::ID, 0);
     vector(
         &mut bytes,
@@ -33,7 +33,7 @@ fn fixture(count: u32) -> Vec<u8> {
     for ordinal in 0..count as usize {
         let theatre = ZERO_THEATRE + ordinal * ctheatre::SIZE;
         p64(&mut bytes, ZERO_VECTOR + ordinal * 8, theatre as u64);
-        p64(&mut bytes, theatre, ctheatre::VTABLE_RVA as u64);
+        p64(&mut bytes, theatre, ctheatre::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             theatre + ctheatre::HANDLE,

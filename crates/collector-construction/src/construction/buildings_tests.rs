@@ -62,7 +62,7 @@ fn fixture(countries: usize, types: usize) -> Fixture {
         put(
             &mut bytes,
             country,
-            &(BASE as u64 + ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(BASE as u64 + ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -76,7 +76,7 @@ fn fixture(countries: usize, types: usize) -> Fixture {
         put(
             &mut bytes,
             template,
-            &(BASE as u64 + cbuilding_template::VTABLE_RVA as u64).to_le_bytes(),
+            &(BASE as u64 + cbuilding_template::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -135,7 +135,7 @@ fn fixture(countries: usize, types: usize) -> Fixture {
             put(
                 &mut bytes,
                 location,
-                &(BASE as u64 + vtable as u64).to_le_bytes(),
+                &(BASE as u64 + vtable.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, location + id_offset, &(id as u32).to_le_bytes());
             if province_scope {
@@ -148,7 +148,7 @@ fn fixture(countries: usize, types: usize) -> Fixture {
             put(
                 &mut bytes,
                 status,
-                &(BASE as u64 + cbuilding_status::VTABLE_RVA as u64).to_le_bytes(),
+                &(BASE as u64 + cbuilding_status::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -202,7 +202,7 @@ fn fixture(countries: usize, types: usize) -> Fixture {
                 put(
                     &mut bytes,
                     building,
-                    &(BASE as u64 + cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+                    &(BASE as u64 + cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,

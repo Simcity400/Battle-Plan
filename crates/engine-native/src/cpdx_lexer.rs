@@ -9,6 +9,7 @@
 //! checks cover insertion and rebuild, but cannot exclude arbitrary writes
 //! through escaped string aliases.
 
+use engine_sites::Rva;
 use crate::{Memory, msvc_string, read, read_slice, walk::Outcome};
 use std::sync::atomic::{Ordering, compiler_fence};
 
@@ -19,32 +20,64 @@ pub const IDLE_RESEARCH_TOKEN: u32 = 0x2a4e;
 pub const MAXIMUM_SPEED_TOKEN: u32 = 0x2eb2;
 
 /// Lexer initialized byte required to be one.
-pub const INITIALIZED_RVA: usize = 0x0368f570;
+pub const INITIALIZED_RVA: Rva = Rva(0x0368f570);
 /// Maximum admitted token ID, signed i32, used as an inclusive bound.
-pub const MAX_TOKEN_ID_RVA: usize = 0x0368f574;
+pub const MAX_TOKEN_ID_RVA: Rva = Rva(0x0368f574);
 /// Static maximum calculated from loaded static token definitions.
-pub const STATIC_MAX_TOKEN_ID_RVA: usize = 0x0368f57c;
+pub const STATIC_MAX_TOKEN_ID_RVA: Rva = Rva(0x0368f57c);
 /// Dynamic-record pointer to its separate 0x48-byte-record array.
-pub const DYNAMIC_TOKENS_RVA: usize = 0x0368f580;
+pub const DYNAMIC_TOKENS_RVA: Rva = Rva(0x0368f580);
 /// Dynamic-array signed capacity, compared against count.
-pub const DYNAMIC_CAPACITY_RVA: usize = 0x0368f588;
+pub const DYNAMIC_CAPACITY_RVA: Rva = Rva(0x0368f588);
 /// Dynamic count, incremented before reverse-name assignment or rebuild.
-pub const DYNAMIC_COUNT_RVA: usize = 0x0368f58c;
+pub const DYNAMIC_COUNT_RVA: Rva = Rva(0x0368f58c);
 /// Exclusive flag set atomically and decremented on release.
-pub const WRITER_FLAG_RVA: usize = 0x0368f59c;
+pub const WRITER_FLAG_RVA: Rva = Rva(0x0368f59c);
 /// Token-name table pointer.
-pub const TOKEN_NAMES_RVA: usize = 0x0368f5a0;
-/// Reverse-string allocation capacity used during lookup rebuilding.
-pub const TOKEN_ALLOCATION_RVA: usize = 0x0368f5a8;
+pub const TOKEN_NAMES_RVA: Rva = Rva(0x0368f5a0);
+/// Reverse-string allocation capacity used during lookup rebuilding. No code addresses it
+/// directly: it is the field between the verified table pointer and capacity, never a located key.
+pub const TOKEN_ALLOCATION_RVA: Rva = TOKEN_NAMES_RVA.after(8);
 /// Token-name capacity, signed i32, validated against the maximum token ID.
-pub const TOKEN_CAPACITY_RVA: usize = 0x0368f5ac;
+pub const TOKEN_CAPACITY_RVA: Rva = Rva(0x0368f5ac);
 /// MSVC string entry stride for token-name lookup.
 pub const TOKEN_NAME_STRIDE: usize = 0x20;
 /// Dynamic-token wrapper used during strategic-resource loading.
-pub const ADD_DYNAMIC_TOKEN_RVA: usize = 0x0253ded0;
+pub const ADD_DYNAMIC_TOKEN_RVA: Rva = Rva(0x0253ded0);
 /// Static long-fixed token formatted as fixed15 numeric text instead of its
 /// spelling; saves never serialize the name.
 pub const FIXED15_TOKEN: u32 = 0x167;
+
+/// The globals copied as one 64-byte witness starting at [`INITIALIZED_RVA`].
+const WITNESS_MEMBERS: [Rva; 8] = [
+    MAX_TOKEN_ID_RVA,
+    STATIC_MAX_TOKEN_ID_RVA,
+    DYNAMIC_TOKENS_RVA,
+    DYNAMIC_CAPACITY_RVA,
+    DYNAMIC_COUNT_RVA,
+    WRITER_FLAG_RVA,
+    TOKEN_NAMES_RVA,
+    TOKEN_CAPACITY_RVA,
+];
+
+/// A witness member's offset in the block; [`witness_address`] proves the live layout keeps it.
+pub const fn witness_offset(key: Rva) -> usize {
+    key.0 - INITIALIZED_RVA.0
+}
+
+/// The live witness block, once every member is located at its offset in it.
+pub fn witness_address(base: usize) -> Result<usize, &'static str> {
+    let block = engine_sites::at(base, INITIALIZED_RVA).ok_or("lexer witness withheld")?;
+    if block.checked_add(64).is_none() {
+        return Err("lexer address overflow");
+    }
+    for key in WITNESS_MEMBERS {
+        if engine_sites::at(base, key) != Some(block + witness_offset(key)) {
+            return Err("lexer witness members withheld or not one block");
+        }
+    }
+    Ok(block)
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -86,8 +119,8 @@ pub struct PreparedWitness {
 
 impl PreparedWitness {
     fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
-        let at = |offset| base.checked_add(offset).ok_or("lexer address overflow");
-        let writer = at(WRITER_FLAG_RVA)?;
+        let block = witness_address(base)?;
+        let writer = block + witness_offset(WRITER_FLAG_RVA);
         // The pinned x86-64 scalar loads are aligned and load/load ordered.
         // Compiler fences also keep the foreign copies inside their witnesses.
         compiler_fence(Ordering::SeqCst);
@@ -96,7 +129,7 @@ impl PreparedWitness {
         }
         compiler_fence(Ordering::SeqCst);
         let header =
-            read::<[u8; 64]>(memory, at(INITIALIZED_RVA)?).ok_or("lexer witness unreadable")?;
+            read::<[u8; 64]>(memory, block).ok_or("lexer witness unreadable")?;
         compiler_fence(Ordering::SeqCst);
         if read::<u32>(memory, writer) != Some(0) {
             return Err("lexer writer active or unreadable");
@@ -111,15 +144,15 @@ impl PreparedWitness {
         if header[0] != 1 {
             return Err("lexer is not initialized");
         }
-        let signed = |rva: usize| -> Result<u32, &'static str> {
-            let offset = rva - INITIALIZED_RVA;
+        let signed = |key: Rva| -> Result<u32, &'static str> {
+            let offset = witness_offset(key);
             u32::try_from(i32::from_le_bytes(
                 header[offset..offset + 4].try_into().unwrap(),
             ))
             .map_err(|_| "lexer witness has negative count")
         };
-        let pointer = |rva: usize| {
-            let offset = rva - INITIALIZED_RVA;
+        let pointer = |key: Rva| {
+            let offset = witness_offset(key);
             u64::from_le_bytes(header[offset..offset + 8].try_into().unwrap())
         };
         if signed(WRITER_FLAG_RVA)? != 0 {
@@ -433,13 +466,13 @@ mod tests {
 
     impl Memory for WitnessMemory {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == WRITER_FLAG_RVA {
+            if address == WRITER_FLAG_RVA.0 {
                 let count = self.writer_reads.get() + 1;
                 self.writer_reads.set(count);
                 destination.copy_from_slice(&u32::from(self.busy_on == Some(count)).to_le_bytes());
                 return true;
             }
-            if address == INITIALIZED_RVA {
+            if address == INITIALIZED_RVA.0 {
                 destination.copy_from_slice(if self.copied.get() {
                     &self.after
                 } else {
@@ -459,8 +492,8 @@ mod tests {
         }
     }
 
-    fn set_count(header: &mut [u8; 64], rva: usize, value: i32) {
-        let offset = rva - INITIALIZED_RVA;
+    fn set_count(header: &mut [u8; 64], key: Rva, value: i32) {
+        let offset = witness_offset(key);
         header[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
 

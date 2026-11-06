@@ -31,6 +31,7 @@ use crate::{
     Memory, cbuilding_production_line, cbuilding_status, cgame_state, cgeneral_production_line,
     cpdx_array::Array, cproduction_line, crailway_production_line, read,
 };
+use engine_sites::Rva;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Identity {
@@ -72,7 +73,7 @@ fn identity(
     } else {
         let state = game_state
             .or_else(|| {
-                base.checked_add(cgame_state::SINGLETON_RVA)
+                engine_sites::at(base, cgame_state::SINGLETON_RVA)
                     .and_then(|p| read::<u64>(memory, p))
                     .and_then(|p| usize::try_from(p).ok())
                     .filter(|&p| p != 0)
@@ -133,7 +134,7 @@ pub fn events_per_pass(
     let countries = crate::ccountry::Reader::new(memory, base, game_state)?;
     let mut events = 0_usize;
     let expected = |rva| {
-        base.checked_add(rva)
+        engine_sites::at(base, rva)
             .map(|address| address as u64)
             .ok_or("construction output module address overflow")
     };
@@ -186,8 +187,7 @@ mod demand_tests;
 /// A detoured native function.
 pub struct Site {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 
 /// Building speed query: RCX is the line, RDX is output storage, and the return
@@ -196,24 +196,16 @@ pub struct Site {
 /// following RIP-relative load remains at its original location.
 pub const BUILDING_SPEED: Site = Site {
     name: "building speed",
-    rva: 0x00ff_2540,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x05, 0x54, 0x8d, 0x3f,
-        0x02,
-    ],
+    rva: Rva(0x00ff_2540),
 };
 /// Return RVA of the [`BUILDING_SPEED`] call whose value building advancement spends.
-pub const BUILDING_SPEND_RETURN: usize = 0x00fe_edc7;
+pub const BUILDING_SPEND_RETURN: Rva = Rva(0x00fe_edc7);
 
 /// Building completion query: RCX is the line and AL is the result.
 /// Amount and repair count must both be zero.
 pub const BUILDING_COMPLETE: Site = Site {
     name: "building completion",
-    rva: 0x00ff_2640,
-    sentinel: [
-        0x48, 0x83, 0xec, 0x28, 0x83, 0x79, 0x48, 0x00, 0x75, 0x14, 0x48, 0x8b, 0x01, 0xff, 0x90,
-        0xa8,
-    ],
+    rva: Rva(0x00ff_2640),
 };
 
 /// Completion clears amount and repair count before ownership transfer rescales
@@ -221,11 +213,7 @@ pub const BUILDING_COMPLETE: Site = Site {
 /// RBX and reserves stack space before the indirect call.
 pub const BUILDING_RESET: Site = Site {
     name: "building count reset",
-    rva: 0x00fe_ea50,
-    sentinel: [
-        0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x01, 0x33, 0xd2, 0x48, 0x8b, 0xd9, 0xff,
-        0x90,
-    ],
+    rva: Rva(0x00fe_ea50),
 };
 
 pub fn count_reset(
@@ -233,9 +221,13 @@ pub fn count_reset(
     base: usize,
     line: usize,
 ) -> Result<(u64, i32, Option<Identity>), &'static str> {
-    if line == 0 || read::<u64>(memory, line) != base.checked_add(LINE_VTABLES[0]).map(|p| p as u64)
-    {
-        return Err("construction count reset line vtable unreadable or unsupported");
+    const UNSUPPORTED: &str = "construction count reset line vtable unreadable or unsupported";
+    if line == 0 {
+        return Err(UNSUPPORTED);
+    }
+    let expected = engine_sites::at(base, LINE_VTABLES[0]).ok_or(UNSUPPORTED)?;
+    if read::<u64>(memory, line) != Some(expected as u64) {
+        return Err(UNSUPPORTED);
     }
     let handle = line
         .checked_add(LINE_HANDLE)
@@ -252,32 +244,24 @@ pub fn count_reset(
 /// Cancellation or every adjacent route edge reaching the target level completes it.
 pub const RAILWAY_COMPLETE: Site = Site {
     name: "railway completion",
-    rva: 0x01a9_58c0,
-    sentinel: [
-        0x40, 0x55, 0x48, 0x83, 0xec, 0x50, 0x80, 0x3d, 0x44, 0x9d, 0xbf, 0x01, 0x00, 0x40, 0xb5,
-        0x01,
-    ],
+    rva: Rva(0x01a9_58c0),
 };
 
 /// The daily production pass checks completion after advancing the line and
 /// removes and deletes it on a true result. Other getter calls are not
 /// queue-completion events.
-pub const COMPLETE_RETURN: usize = 0x00ed_861e;
+pub const COMPLETE_RETURN: Rva = Rva(0x00ed_861e);
 
 /// General-line removal: RCX is the status and RDX is the line.
 /// It removes the roster index and destroys the line.
 pub const REMOVE_GENERAL_LINE: Site = Site {
     name: "linked building completion removal",
-    rva: 0x00ee_03b0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30,
-        0x48,
-    ],
+    rva: Rva(0x00ee_03b0),
 };
 /// Primary advancement decrements its partner, tests for zero amount, and
 /// deletes it before the daily completion check. Command and hourly removal
 /// callers are not completion events.
-pub const LINKED_COMPLETE_RETURN: usize = 0x00fe_f2ec;
+pub const LINKED_COMPLETE_RETURN: Rva = Rva(0x00fe_f2ec);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Completion {
@@ -304,15 +288,14 @@ pub fn completion(
         return Err("construction completion line unreadable");
     }
     let word = |offset| u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-    if base.checked_add(LINE_VTABLES[usize::from(railway)]) != Some(word(0) as usize) {
+    if engine_sites::at(base, LINE_VTABLES[usize::from(railway)]) != Some(word(0) as usize) {
         return Err("construction completion line vtable unsupported");
     }
     let handle = word(LINE_HANDLE);
     if handle == 0 {
         return Err("construction completion line handle is null");
     }
-    let state = base
-        .checked_add(crate::cgame_state::SINGLETON_RVA)
+    let state = engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .filter(|p| *p != 0)
@@ -372,7 +355,8 @@ pub fn linked_completion(
         return Err("linked construction completion owner unreadable");
     }
     let owner_word = |offset| u64::from_le_bytes(owner[offset..offset + 8].try_into().unwrap());
-    if base.checked_add(crate::cproduction_status::VTABLE_RVA) != Some(owner_word(0) as usize) {
+    if engine_sites::at(base, crate::cproduction_status::VTABLE_RVA) != Some(owner_word(0) as usize)
+    {
         return Err("linked construction completion owner vtable unsupported");
     }
     let owner_int = |offset| i32::from_le_bytes(owner[offset..offset + 4].try_into().unwrap());
@@ -402,11 +386,7 @@ pub fn linked_completion(
 /// The relocated prefix comprises four register pushes occupying five bytes.
 pub const RAILWAY_ADVANCE: Site = Site {
     name: "railway advance",
-    rva: 0x01a9_44c0,
-    sentinel: [
-        0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8b, 0xec, 0x48,
-        0x83,
-    ],
+    rva: Rva(0x01a9_44c0),
 };
 
 /// Railway progress query: RCX is the railway manager, EDX is the source province, R8D is the
@@ -415,16 +395,12 @@ pub const RAILWAY_ADVANCE: Site = Site {
 /// stack.
 pub const RAILWAY_PROGRESS: Site = Site {
     name: "railway progress",
-    rva: 0x00f0_5d60,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
-        0x41,
-    ],
+    rva: Rva(0x00f0_5d60),
 };
 
 /// Instant-construction console flag (u8). Progress under it consumes the
 /// cost and is not factory output.
-pub const INSTANT_CONSTRUCTION: usize = 0x033d_da98;
+pub const INSTANT_CONSTRUCTION: Rva = Rva(0x033d_da98);
 /// Railway instant progress amount passed in R9, gated by the player's country.
 pub const RAILWAY_INSTANT_AMOUNT: i64 = 10_000_000_000;
 
@@ -437,8 +413,7 @@ pub fn railway_instant(
     base: usize,
     line: usize,
 ) -> Result<bool, &'static str> {
-    let flag = base
-        .checked_add(INSTANT_CONSTRUCTION)
+    let flag = engine_sites::at(base, INSTANT_CONSTRUCTION)
         .and_then(|address| read::<u8>(memory, address))
         .ok_or("construction output instant flag unreadable")?;
     if flag == 0 {
@@ -458,8 +433,7 @@ pub fn railway_instant_owned(
     base: usize,
     country: u32,
 ) -> Result<bool, &'static str> {
-    let flag = base
-        .checked_add(INSTANT_CONSTRUCTION)
+    let flag = engine_sites::at(base, INSTANT_CONSTRUCTION)
         .and_then(|address| read::<u8>(memory, address))
         .ok_or("construction output instant flag unreadable")?;
     if flag == 0 {
@@ -473,8 +447,7 @@ fn railway_instant_country(
     base: usize,
     country: u32,
 ) -> Result<bool, &'static str> {
-    let state = base
-        .checked_add(cgame_state::SINGLETON_RVA)
+    let state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
         .and_then(|address| read::<u64>(memory, address))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
@@ -506,7 +479,7 @@ fn railway_instant_country(
 }
 /// `creference_registry::invalid_reference` (u64): the empty reference, assigned
 /// at run time (read it live, never a sampled constant).
-pub const INVALID_REFERENCE: usize = 0x033e_b2a0;
+pub const INVALID_REFERENCE: Rva = Rva(0x033e_b2a0);
 
 /// The line's own CID (u32 type, u32 id): the construction tables' `id`.
 pub const LINE_HANDLE: usize = cproduction_line::REFERENCE_TYPE;
@@ -522,7 +495,7 @@ pub const LINKED_LINE: usize = cbuilding_production_line::LINKED_LINE;
 
 /// The vtables of the construction lines whose output is observed, building then
 /// railway.
-pub const LINE_VTABLES: [usize; 2] = [
+pub const LINE_VTABLES: [Rva; 2] = [
     cbuilding_production_line::VTABLE_RVA,
     crailway_production_line::VTABLE_RVA,
 ];
@@ -557,7 +530,7 @@ pub fn operands(
         return Err("construction output line unreadable");
     }
     let word = |offset| u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-    if base.checked_add(LINE_VTABLES[usize::from(railway)]) != Some(word(0) as usize) {
+    if engine_sites::at(base, LINE_VTABLES[usize::from(railway)]) != Some(word(0) as usize) {
         return Err("construction output line vtable unsupported");
     }
     let handle = word(LINE_HANDLE);
@@ -565,15 +538,14 @@ pub fn operands(
         return Err("construction output line handle is null");
     }
     let instant = !railway
-        && base
-            .checked_add(INSTANT_CONSTRUCTION)
+        && engine_sites::at(base, INSTANT_CONSTRUCTION)
             .and_then(|p| read::<u8>(memory, p))
             .ok_or("construction output instant flag unreadable")?
             != 0;
     let invalid = if railway {
         0
     } else {
-        base.checked_add(INVALID_REFERENCE)
+        engine_sites::at(base, INVALID_REFERENCE)
             .and_then(|p| read::<u64>(memory, p))
             .ok_or("construction output invalid reference unreadable")?
     };
@@ -637,17 +609,21 @@ mod tests {
     fn target_regions(status: usize) -> Regions {
         let mut regions = Regions(Vec::new());
         let mut add = |at: usize, bytes: &[u8]| regions.0.push((at, bytes.to_vec()));
-        add(BASE + cgame_state::SINGLETON_RVA, &0x2000_u64.to_le_bytes());
+        add(
+            BASE + cgame_state::SINGLETON_RVA.0,
+            &0x2000_u64.to_le_bytes(),
+        );
         add(
             status,
-            &((BASE + crate::cproduction_status::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crate::cproduction_status::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         add(
             status + crate::cproduction_status::COUNTRY,
             &(TARGET_COUNTRY as u64).to_le_bytes(),
         );
         let mut country = [0; 12];
-        country[..8].copy_from_slice(&((BASE + crate::ccountry::VTABLE_RVA) as u64).to_le_bytes());
+        country[..8]
+            .copy_from_slice(&((BASE + crate::ccountry::VTABLE_RVA.0) as u64).to_le_bytes());
         country[8..].copy_from_slice(&7_u32.to_le_bytes());
         add(TARGET_COUNTRY, &country);
         add(
@@ -656,7 +632,7 @@ mod tests {
         );
         add(
             TARGET,
-            &((BASE + cbuilding::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cbuilding::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         add(TARGET + cbuilding::TYPE_ID, &9_u32.to_le_bytes());
         let building_status = TARGET_STATE + crate::cstate::BUILDING_STATUS;
@@ -666,7 +642,7 @@ mod tests {
         );
         add(
             building_status,
-            &((BASE + cbuilding_status::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cbuilding_status::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         let fields = [
             2_u32.to_le_bytes(),
@@ -677,7 +653,7 @@ mod tests {
         add(building_status + cbuilding_status::FLAGS, &fields);
         add(
             TARGET_STATE,
-            &((BASE + crate::cstate::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crate::cstate::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         add(TARGET_STATE + crate::cstate::ID, &1_u32.to_le_bytes());
         let header = [
@@ -718,7 +694,7 @@ mod tests {
     #[test]
     fn count_reset_observes_the_native_signed_count_before_it_is_cleared() {
         let mut bytes = vec![0; LINE + cbuilding_production_line::BUILDING + 8];
-        bytes[LINE..LINE + 8].copy_from_slice(&((BASE + LINE_VTABLES[0]) as u64).to_le_bytes());
+        bytes[LINE..LINE + 8].copy_from_slice(&((BASE + LINE_VTABLES[0].0) as u64).to_le_bytes());
         bytes[LINE + LINE_HANDLE..LINE + LINE_HANDLE + 8].copy_from_slice(&19_u64.to_le_bytes());
         bytes[LINE + cproduction_line::PRODUCTION_STATUS
             ..LINE + cproduction_line::PRODUCTION_STATUS + 8]
@@ -768,7 +744,7 @@ mod tests {
                 } else if address == 0x4000 {
                     out.copy_from_slice(&self.slot.to_le_bytes());
                     return true;
-                } else if address == BASE + crate::cgame_state::SINGLETON_RVA {
+                } else if address == BASE + crate::cgame_state::SINGLETON_RVA.0 {
                     out.copy_from_slice(&0x2000_usize.to_le_bytes());
                     return true;
                 } else if address == 0x2000 + crate::cgame_state::CURRENT_HOUR {
@@ -794,7 +770,7 @@ mod tests {
             date: true,
         };
         for (offset, word) in [
-            (0, (BASE + LINE_VTABLES[0]) as u64),
+            (0, (BASE + LINE_VTABLES[0].0) as u64),
             (LINE_HANDLE, 7),
             (cproduction_line::PRODUCTION_STATUS, STATUS as u64),
             (cbuilding_production_line::BUILDING, TARGET as u64),
@@ -802,7 +778,7 @@ mod tests {
             memory.line[offset..offset + 8].copy_from_slice(&word.to_le_bytes());
         }
         for (offset, word) in [
-            (0, (BASE + crate::cproduction_status::VTABLE_RVA) as u64),
+            (0, (BASE + crate::cproduction_status::VTABLE_RVA.0) as u64),
             (crate::cproduction_status::CONSTRUCTION_LINES, 0x4000),
         ] {
             memory.owner[offset..offset + 8].copy_from_slice(&word.to_le_bytes());
@@ -870,7 +846,7 @@ mod tests {
                     }
                     let mut bytes = [0_u8; crailway_production_line::COMPLETION_FLAG + 1];
                     bytes[..8].copy_from_slice(
-                        &((BASE + LINE_VTABLES[usize::from(self.railway)]) as u64).to_le_bytes(),
+                        &((BASE + LINE_VTABLES[usize::from(self.railway)].0) as u64).to_le_bytes(),
                     );
                     bytes[LINE_HANDLE..LINE_HANDLE + 8].copy_from_slice(&7_u64.to_le_bytes());
                     bytes[cproduction_line::PRODUCTION_STATUS
@@ -888,7 +864,7 @@ mod tests {
                     }
                     .copy(address, out);
                 }
-                if address == BASE + crate::cgame_state::SINGLETON_RVA {
+                if address == BASE + crate::cgame_state::SINGLETON_RVA.0 {
                     out.copy_from_slice(&0x2000_usize.to_le_bytes());
                     return true;
                 }
@@ -949,14 +925,14 @@ mod tests {
                 }
                 .copy(address, out);
             }
-            if address == BASE + INSTANT_CONSTRUCTION && out.len() == 1 {
+            if address == BASE + INSTANT_CONSTRUCTION.0 && out.len() == 1 {
                 if let Some(flag) = self.instant {
                     out[0] = flag;
                     return true;
                 }
                 return false;
             }
-            if address == BASE + INVALID_REFERENCE && out.len() == 8 {
+            if address == BASE + INVALID_REFERENCE.0 && out.len() == 8 {
                 if let Some(reference) = self.invalid {
                     out.copy_from_slice(&reference.to_le_bytes());
                     return true;
@@ -974,7 +950,7 @@ mod tests {
             invalid: Some(u64::MAX),
         };
         for (offset, value) in [
-            (0, (BASE + LINE_VTABLES[usize::from(railway)]) as u64),
+            (0, (BASE + LINE_VTABLES[usize::from(railway)].0) as u64),
             (LINE_HANDLE, 23),
             (cproduction_line::PRODUCTION_STATUS, STATUS as u64),
             (cbuilding_production_line::BUILDING, TARGET as u64),
@@ -1118,7 +1094,7 @@ mod tests {
         put(
             &mut line,
             0,
-            &((BASE + crailway_production_line::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crailway_production_line::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut line, LINE_HANDLE, &0x2a_0000_1269_u64.to_le_bytes());
         put(
@@ -1130,7 +1106,7 @@ mod tests {
         put(
             &mut status,
             0,
-            &((BASE + crate::cproduction_status::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crate::cproduction_status::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut status,
@@ -1141,7 +1117,7 @@ mod tests {
         put(
             &mut country,
             0,
-            &((BASE + crate::ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crate::ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut country, crate::ccountry::ID, &5_u32.to_le_bytes());
         put(
@@ -1168,9 +1144,9 @@ mod tests {
             .flat_map(|link| link.to_le_bytes())
             .collect();
         Regions(vec![
-            (BASE + INSTANT_CONSTRUCTION, vec![flag]),
+            (BASE + INSTANT_CONSTRUCTION.0, vec![flag]),
             (
-                BASE + cgame_state::SINGLETON_RVA,
+                BASE + cgame_state::SINGLETON_RVA.0,
                 (STATE as u64).to_le_bytes().to_vec(),
             ),
             (LINE, line),
@@ -1183,7 +1159,7 @@ mod tests {
     #[test]
     fn railway_instant_follows_the_native_flag_and_viewing_country_gate() {
         // A clear flag reads nothing else: even an absent line is ordinary.
-        let clear = Regions(vec![(BASE + INSTANT_CONSTRUCTION, vec![0])]);
+        let clear = Regions(vec![(BASE + INSTANT_CONSTRUCTION.0, vec![0])]);
         assert_eq!(railway_instant(&clear, BASE, LINE), Ok(false));
         for (playing, observed, instant) in [
             // The playing country itself, then a country sharing its link.

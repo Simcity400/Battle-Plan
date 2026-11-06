@@ -1,13 +1,14 @@
 //! Selected faction rules in native occurrence order. Rule definitions and
 //! permission conditions belong to the recorded content stack.
 
+use engine_sites::Rva;
 use crate::{Memory, allocation, cpdx_array::Array, read};
 
 pub const STATUS: usize = 0x570;
-pub const VTABLE_RVA: usize = 0x02a9_bb58;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_bb58);
 pub const OWNER: usize = 0x08;
 pub const RULES: usize = 0x58;
-pub const DEFINITION_VTABLE_RVA: usize = 0x0279_7ee8;
+pub const DEFINITION_VTABLE_RVA: Rva = Rva(0x0279_7ee8);
 pub const DEFINITION_TOKEN: usize = 0x08;
 
 pub fn read_into(
@@ -19,8 +20,7 @@ pub fn read_into(
     let status = faction
         .checked_add(STATUS)
         .ok_or("faction rule status address overflow")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("faction rule vtable address overflow")?;
     if read::<u64>(memory, status) != Some(expected as u64) {
         return Err("faction rule status vtable mismatch");
@@ -39,7 +39,7 @@ pub fn read_into(
     allocation::resize_default(output, array.count as usize)
         .map_err(|_| "faction selected rule storage allocation failed")?;
     let definition_vtable =
-        base.checked_add(DEFINITION_VTABLE_RVA)
+        engine_sites::at(base, DEFINITION_VTABLE_RVA)
             .ok_or("faction rule definition vtable address overflow")? as u64;
     for (ordinal, value) in output.iter_mut().enumerate() {
         let pointer = array

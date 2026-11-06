@@ -89,15 +89,16 @@ struct Held<T> {
     /// The certificate is the receiver's current one: a daily carry under a later sequence is not.
     current: bool,
 }
+/// Whether `seen` is the live address of a located vtable.
+fn is_vtable(base: usize, key: engine_sites::Rva, seen: Option<u64>) -> bool {
+    engine_sites::at(base, key).is_some_and(|vtable| seen == Some(vtable as u64))
+}
 fn identity(base: usize, seed: &DivisionSeed) -> Result<(), &'static str> {
     if seed.division == 0
         || seed.handle != Some(seed.division)
         || seed.class != Some(0)
-        || base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64) != seed.primary_vtable
-        || base
-            .checked_add(carmy::SECONDARY_VTABLE_RVA)
-            .map(|v| v as u64)
-            != seed.secondary_vtable
+        || !is_vtable(base, carmy::VTABLE_RVA, seed.primary_vtable)
+        || !is_vtable(base, carmy::SECONDARY_VTABLE_RVA, seed.secondary_vtable)
     {
         return Err("division experience census identity unavailable");
     }
@@ -277,11 +278,8 @@ impl<T: Clone> Store<T> {
         if seed.division == 0
             || seed.handle != Some(seed.division)
             || seed.class != Some(0)
-            || base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64) != seed.primary_vtable
-            || base
-                .checked_add(carmy::SECONDARY_VTABLE_RVA)
-                .map(|v| v as u64)
-                != seed.secondary_vtable
+            || !is_vtable(base, carmy::VTABLE_RVA, seed.primary_vtable)
+            || !is_vtable(base, carmy::SECONDARY_VTABLE_RVA, seed.secondary_vtable)
         {
             return None;
         }
@@ -439,11 +437,8 @@ impl<T: Clone> Store<T> {
         if seed.division == 0
             || seed.handle != Some(seed.division)
             || seed.class != Some(0)
-            || base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64) != seed.primary_vtable
-            || base
-                .checked_add(carmy::SECONDARY_VTABLE_RVA)
-                .map(|v| v as u64)
-                != seed.secondary_vtable
+            || !is_vtable(base, carmy::VTABLE_RVA, seed.primary_vtable)
+            || !is_vtable(base, carmy::SECONDARY_VTABLE_RVA, seed.secondary_vtable)
         {
             return None;
         }
@@ -508,8 +503,8 @@ mod tests {
             division: id,
             handle: Some(id),
             class: Some(0),
-            primary_vtable: Some(carmy::VTABLE_RVA as u64),
-            secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
+            primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
+            secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA.0 as u64),
             ..Default::default()
         }
     }

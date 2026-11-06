@@ -1041,10 +1041,12 @@ fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type
     struct Counterset(i32, u32);
     impl Memory for Counterset {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            let bytes = match address {
-                engine_native::cship::NEXT_ID_RVA => self.0.to_le_bytes(),
-                engine_native::creference_registry::ID_COUNTER_RVA => self.1.to_le_bytes(),
-                _ => return false,
+            let bytes = if address == engine_native::cship::NEXT_ID_RVA.0 {
+                self.0.to_le_bytes()
+            } else if address == engine_native::creference_registry::ID_COUNTER_RVA.0 {
+                self.1.to_le_bytes()
+            } else {
+                return false;
             };
             if output.len() != 4 {
                 return false;
@@ -1108,7 +1110,7 @@ fn order_counter_capture_gates_and_clears_recycled_metadata_without_allocation()
     }
     put(0x1508, &0x2000_u64.to_le_bytes());
     put(0x1604, &1_u32.to_le_bytes());
-    put(0x2000, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    put(0x2000, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     put(0x2008, &1_u32.to_le_bytes());
     put(
         0x2000 + ccountry::ORDER_INSTANCE_COUNTER,
@@ -2216,7 +2218,7 @@ fn divisions_presentation_memory() -> impl engine_native::Memory {
     struct Memory(Vec<u8>);
     impl engine_native::Memory for Memory {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == carmy::COUNTER_ATTRITION_THRESHOLD_RVA && output.len() == 8 {
+            if address == carmy::COUNTER_ATTRITION_THRESHOLD_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&500_i64.to_le_bytes());
                 return true;
             }
@@ -2227,7 +2229,7 @@ fn divisions_presentation_memory() -> impl engine_native::Memory {
     // Null map entities and disabled training need no render/global reads.
     // Per-division effective stats are the only extra heap input.
     let stats = 0x65000_usize;
-    bytes[stats..stats + 8].copy_from_slice(&(stats::VTABLE_RVA as u64).to_le_bytes());
+    bytes[stats..stats + 8].copy_from_slice(&(stats::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[stats + stats::MAXIMUM_STRENGTH..stats + stats::MAXIMUM_STRENGTH + 8]
         .copy_from_slice(&500_000_i64.to_le_bytes());
     bytes[stats + stats::MAXIMUM_ORGANISATION..stats + stats::MAXIMUM_ORGANISATION + 8]
@@ -2237,7 +2239,7 @@ fn divisions_presentation_memory() -> impl engine_native::Memory {
             .copy_from_slice(&(stats as u64).to_le_bytes());
         let acclimatization = army + carmy::ACCLIMATIZATION;
         bytes[acclimatization..acclimatization + 8].copy_from_slice(
-            &(engine_native::acclimatization_data::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::acclimatization_data::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
     }
     Memory(bytes)
@@ -2858,10 +2860,10 @@ struct CampaignClockMemory {
 }
 impl engine_native::Memory for CampaignClockMemory {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+        if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x1000_u64.to_le_bytes());
             true
-        } else if address == cgame_state::PLAY_SESSION_STARTED_AT_RVA && output.len() == 8 {
+        } else if address == cgame_state::PLAY_SESSION_STARTED_AT_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&7_i64.to_le_bytes());
             true
         } else {

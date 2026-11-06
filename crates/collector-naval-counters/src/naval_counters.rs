@@ -1272,20 +1272,20 @@ mod tests {
         p64(&mut bytes, 0x2008, COUNTRY as u64);
         p32(&mut bytes, 0x2024, 1);
         p64(&mut bytes, 0x2068, REGION as u64);
-        p64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, COUNTRY + ccountry::ID, 1);
         array(&mut bytes, COUNTRY + ccountry::FLEETS, 0x2040, 1);
         p64(&mut bytes, 0x2040, FLEET as u64);
-        p64(&mut bytes, FLEET, cfleet::VTABLE_RVA as u64);
+        p64(&mut bytes, FLEET, cfleet::VTABLE_RVA.0 as u64);
         p64(&mut bytes, FLEET + cfleet::HANDLE, (1 << 32) | 61);
         p64(&mut bytes, FLEET + cfleet::OWNER, COUNTRY as u64);
         array(&mut bytes, FLEET + cfleet::TASK_FORCES, 0x2030, 1);
         p64(&mut bytes, 0x2030, TASK as u64);
-        p64(&mut bytes, TASK, ctask_force::VTABLE_RVA as u64);
+        p64(&mut bytes, TASK, ctask_force::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             TASK + ctask_force::SECONDARY_BASE,
-            ctask_force::SECONDARY_VTABLE_RVA as u64,
+            ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
         );
         p64(&mut bytes, TASK + cunit::HANDLE, (1 << 32) | 51);
         p64(&mut bytes, TASK + ctask_force::FLEET, FLEET as u64);
@@ -1293,7 +1293,7 @@ mod tests {
         p32(&mut bytes, TASK + cunit::LOGICAL_OWNER, 1);
         p32(&mut bytes, TASK + ctask_force::MISSION, 2);
         let mission = TASK + ctask_force::NAVAL_MISSION;
-        p64(&mut bytes, mission, cnaval_mission::VTABLE_RVA as u64);
+        p64(&mut bytes, mission, cnaval_mission::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             mission + cnaval_mission::TASK_FORCE,
@@ -1307,7 +1307,7 @@ mod tests {
             1,
         );
         p64(&mut bytes, 0x7020, REGION as u64);
-        p64(&mut bytes, REGION, cstrategic_region::VTABLE_RVA as u64);
+        p64(&mut bytes, REGION, cstrategic_region::VTABLE_RVA.0 as u64);
         p32(&mut bytes, REGION + cstrategic_region::ID, 1);
         for offset in [cunit::ORDINARY_ROUTE_DATA, cunit::ALTERNATE_ROUTE_DATA] {
             array(&mut bytes, TASK + offset, 0x7010, 1);

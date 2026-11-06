@@ -6,8 +6,9 @@
 //! The stored date therefore remains the date of its first write. Serialization
 //! includes the equipment pool, reason and date.
 
+use engine_sites::Rva;
 /// Equipment-loss primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_9ef0;
+pub const VTABLE_RVA: Rva = Rva(0x029d_9ef0);
 /// Stored signed i32 reason; loaded values above three are dropped.
 pub const REASON: usize = 0x08;
 /// First write's raw game hour.

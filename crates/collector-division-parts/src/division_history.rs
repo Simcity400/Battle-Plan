@@ -678,8 +678,8 @@ mod tests {
             division,
             handle: Some(division),
             class: Some(0),
-            primary_vtable: Some(carmy::VTABLE_RVA as u64),
-            secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
+            primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
+            secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA.0 as u64),
             ..Default::default()
         }
     }
@@ -688,7 +688,7 @@ mod tests {
         put(
             bytes,
             history,
-            (native::HISTORY_VTABLE_RVA as u64).to_le_bytes(),
+            (native::HISTORY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             bytes,
@@ -703,7 +703,7 @@ mod tests {
         put(
             bytes,
             store,
-            (native::STORE_VTABLE_RVA as u64).to_le_bytes(),
+            (native::STORE_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             bytes,
@@ -753,7 +753,7 @@ mod tests {
             put(
                 &mut world.bytes,
                 entry,
-                (native::ENTRY_VTABLE_RVA as u64).to_le_bytes(),
+                (native::ENTRY_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             for text in [8, 0x28] {
                 put(&mut world.bytes, entry + text + 24, 15_u64.to_le_bytes());
@@ -761,12 +761,12 @@ mod tests {
             put(
                 &mut world.bytes,
                 entry + 0x50,
-                (cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+                (cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut world.bytes,
                 entry + 0x60,
-                (cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+                (cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut world.bytes, entry + 0x138, 100_000_i64.to_le_bytes());
             let seeds = [seed(0x2000, 2), seed(0x1000, 1)];
@@ -973,7 +973,7 @@ mod tests {
         put(
             &mut world.bytes,
             entry,
-            (native::ENTRY_VTABLE_RVA as u64).to_le_bytes(),
+            (native::ENTRY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         for text in [8, 0x28] {
             put(&mut world.bytes, entry + text + 24, 15_u64.to_le_bytes());
@@ -981,12 +981,12 @@ mod tests {
         put(
             &mut world.bytes,
             entry + 0x50,
-            (cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+            (cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut world.bytes,
             entry + 0x60,
-            (cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+            (cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut world.bytes, entry + 0x138, 100_000_i64.to_le_bytes());
         let seeds = [seed(0x2000, 2), seed(0x1000, 1)];

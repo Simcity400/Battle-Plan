@@ -214,7 +214,7 @@ impl AirMemory {
     }
     fn registry(&mut self, handle: u64, pointer: usize, table: usize) {
         use engine_native::{creference_registry as registry, reference_bucket as bucket};
-        let root = registry::LOW_ROOTS_RVA + handle as u32 as usize * 8;
+        let root = registry::LOW_ROOTS_RVA.0 + handle as u32 as usize * 8;
         let entries = table + 0x100;
         self.span(root, 8);
         self.span(table, 0x20);
@@ -301,7 +301,7 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
     );
     memory.put(
         MANAGER,
-        &(cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstrategic_air_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     memory.array(
         MANAGER + cstrategic_air_manager::COUNTRY_AIR,
@@ -315,14 +315,14 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
         memory.span(air, 0x100);
         memory.put(COUNTRIES + id as usize * 8, &(country as u64).to_le_bytes());
         memory.put(LINKS + id as usize * 4, &id.to_le_bytes());
-        memory.put(country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(country, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(country + ccountry::ID, &id.to_le_bytes());
         memory.put(
             country + ccountry::SURRENDER_TARGET,
             &(id + 7000).to_le_bytes(),
         );
         memory.put(AIRS + id as usize * 8, &(air as u64).to_le_bytes());
-        memory.put(air, &(cstrategic_air::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(air, &(cstrategic_air::VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(air + cstrategic_air::COUNTRY, &id.to_le_bytes());
         memory.array(air + cstrategic_air::FIRST_AIR_SITES, LIST, 2);
         memory.array(air + cstrategic_air::SECOND_AIR_SITES, LIST, 1);
@@ -332,7 +332,7 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
     let wing_ref = 2_u64 << 32 | u64::from(cair_wing::TYPE);
     memory.registry(base_ref, BASE, 0x2700000);
     memory.registry(wing_ref, WING + cair_wing::SECONDARY, 0x2710000);
-    memory.put(BASE, &(cair_base::VTABLE_RVA as u64).to_le_bytes());
+    memory.put(BASE, &(cair_base::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(BASE + cair_base::HANDLE, &base_ref.to_le_bytes());
     memory.array(
         BASE + cair_base::COUNTRY_CONTAINERS,
@@ -345,14 +345,14 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
     for ordinal in 0..3 {
         memory.put(WINGS + ordinal * 8, &(WING as u64).to_le_bytes());
     }
-    memory.put(ENTRY, &(container::VTABLE_RVA as u64).to_le_bytes());
+    memory.put(ENTRY, &(container::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(ENTRY + container::COUNTRY, &1_u32.to_le_bytes());
     memory.put(ENTRY + container::CAPACITY_RAW, &100_000_i64.to_le_bytes());
     memory.array(ENTRY + container::POOLS, POOLS, 1);
     memory.put(POOLS, &(POOL as u64).to_le_bytes());
-    memory.put(POOL, &(cair_wing_pool::VTABLE_RVA as u64).to_le_bytes());
+    memory.put(POOL, &(cair_wing_pool::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.array(POOL + cair_wing_pool::WINGS, WINGS, 2);
-    memory.put(WING, &(cair_wing::VTABLE_RVA as u64).to_le_bytes());
+    memory.put(WING, &(cair_wing::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(WING + cair_wing::REFERENCE_TYPE, &wing_ref.to_le_bytes());
     memory.put(WING + 0xa4, &1_u32.to_le_bytes());
     memory.put(WING + 0x170, &1_i32.to_le_bytes());
@@ -366,17 +366,17 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
     memory.put(WING + cair_wing::NAME, &(NAME as u64).to_le_bytes());
     memory.put(
         REGION,
-        &(cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     memory.put(REGION + cstrategic_region::ID, &7001_u32.to_le_bytes());
     memory.array(REGION + cstrategic_region::PROVINCES, PROVINCES, 100);
-    memory.put(PROVINCE, &(cprovince::VTABLE_RVA as u64).to_le_bytes());
+    memory.put(PROVINCE, &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
     for ordinal in 0..250 {
         memory.put(PROVINCES + ordinal * 8, &(PROVINCE as u64).to_le_bytes());
     }
     memory.put(
         WEATHER,
-        &(cweather_manager::VTABLE_RVA as u64).to_le_bytes(),
+        &(cweather_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     memory.put(WEATHER + 0x350, &100_000_i64.to_le_bytes());
     memory.put(WEATHER + 0x370, &(GRID as u64).to_le_bytes());
@@ -390,8 +390,8 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
         (defines::CONTEXT_SCALE_RVA, 100_000),
         (defines::CONTEXT_THRESHOLD_RVA, 50_000),
     ] {
-        memory.span(address, 8);
-        memory.put(address, &value.to_le_bytes());
+        memory.span(address.0, 8);
+        memory.put(address.0, &value.to_le_bytes());
     }
     memory.put(COSTS, &100_000_i64.to_le_bytes());
     let mut captured = Captured::with_capacities(&Capacities { rows: [0; N] });

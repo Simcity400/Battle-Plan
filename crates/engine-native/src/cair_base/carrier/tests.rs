@@ -54,9 +54,9 @@ impl Fixture {
         self.qword(
             at,
             if real {
-                definition::VTABLE_RVA
+                definition::VTABLE_RVA.0
             } else {
-                definition::NULL_VTABLE_RVA
+                definition::NULL_VTABLE_RVA.0
             } as u64,
         );
         self.dword(at + definition::TOKEN, token);
@@ -77,11 +77,11 @@ impl Fixture {
             result.qword(COUNTRIES + slot * 8, pointer as u64);
             result.dword(LINKS + slot * 4, slot as u32);
             result.dword(LINKS + raw * 4, slot as u32);
-            result.qword(pointer, ccountry::VTABLE_RVA as u64);
+            result.qword(pointer, ccountry::VTABLE_RVA.0 as u64);
             result.dword(pointer + ccountry::ID, raw as u32);
         }
         for (pointer, raw) in [(CONTAINER_A, 5), (CONTAINER_B, 9), (CONTAINER_ZERO, 8)] {
-            result.qword(pointer, ccountry_air_container::VTABLE_RVA as u64);
+            result.qword(pointer, ccountry_air_container::VTABLE_RVA.0 as u64);
             result.dword(pointer + ccountry_air_container::COUNTRY, raw);
         }
         result.array(AIR_BASE + crate::cair_base::REGISTERED_CONTAINERS, DENSE, 3);
@@ -101,7 +101,7 @@ impl Fixture {
         );
         result.qword(POOL + cair_wing_pool::AIR_BASE_REFERENCE, BASE_HANDLE);
         result.qword(POOL + cair_wing_pool::OWNER, OWNER as u64);
-        result.qword(OWNER, cstrategic_air::VTABLE_RVA as u64);
+        result.qword(OWNER, cstrategic_air::VTABLE_RVA.0 as u64);
         // Alias raw2 resolves to the same canonical country as container raw9.
         result.dword(OWNER + cstrategic_air::COUNTRY, 2);
         result.qword(POOL + cair_wing_pool::DEFINITION, DEFINITION as u64);
@@ -109,11 +109,11 @@ impl Fixture {
         result.definition(GLOBAL, 987, true);
         result.dword(DEFINITION + definition::DATABASE_INDEX, 1);
         result.dword(DEFINITION + TYPE_INDEX, i32::MIN as u32);
-        result.qword(definition::DATABASE_RVA, DATABASE as u64);
+        result.qword(definition::DATABASE_RVA.0, DATABASE as u64);
         result.array(DATABASE + definition::DATABASE_VECTOR, DEFINITIONS, 2);
         result.qword(DEFINITIONS, NULL_DEFINITION as u64);
         result.qword(DEFINITIONS + 8, GLOBAL as u64);
-        result.qword(definition::NULL_OBJECT_RVA, NULL_DEFINITION as u64);
+        result.qword(definition::NULL_OBJECT_RVA.0, NULL_DEFINITION as u64);
         result.definition(NULL_DEFINITION, definition::NULL_TOKEN, false);
         result.dword(NULL_DEFINITION + TYPE_INDEX, (-17i32) as u32);
         result
@@ -149,10 +149,10 @@ impl Fixture {
         );
         self.registry
             .put(0x1000 + registry::COUNT, &1u32.to_le_bytes());
-        self.qword(SHIP, cship::VTABLE_RVA as u64);
+        self.qword(SHIP, cship::VTABLE_RVA.0 as u64);
         self.qword(SHIP + cship::HANDLE, HOST_HANDLE);
         self.qword(SHIP + cship::NAME_MEMBER, NAME as u64);
-        self.qword(NAME, cname_group_member::VTABLE_RVA as u64);
+        self.qword(NAME, cname_group_member::VTABLE_RVA.0 as u64);
         let string = NAME + cname_group_member::CACHED_NAME;
         self.put(string, &[0; 32]);
         self.qword(string + 16, text.len() as u64);
@@ -485,7 +485,7 @@ fn host_null_and_known_stale_are_empty_but_failed_resolution_is_unknown() {
         host_name(&memory, 0, &source(HOST_HANDLE), &mut resolver, &mut names),
         Ok(Some((0, 0)))
     );
-    memory.fault = Some(registry::LOW_ROOTS_RVA + cship::HANDLE_TYPE as usize * 8);
+    memory.fault = Some(registry::LOW_ROOTS_RVA.0 + cship::HANDLE_TYPE as usize * 8);
     let mut resolver = registry::ScopedResolver::new(0);
     assert!(host_name(&memory, 0, &source(HOST_HANDLE), &mut resolver, &mut names).is_err());
     assert_eq!((names.len, names.required), (0, 0));

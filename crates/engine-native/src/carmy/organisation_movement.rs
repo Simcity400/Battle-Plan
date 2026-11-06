@@ -1,8 +1,9 @@
 //! Exact organisation operands only where ordinary movement takes its penalty.
 use super::*;
+use engine_sites::Rva;
 
 /// The loaded low-organisation attack threshold, fixed5.
-pub const LOW_ORGANISATION_FOR_ATTACK_RVA: usize = 0x033e_0898;
+pub const LOW_ORGANISATION_FOR_ATTACK_RVA: Rva = Rva(0x033e_0898);
 
 fn below_threshold(current: i64, maximum: i64, threshold: i64) -> Result<bool, &'static str> {
     let share = if (current as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
@@ -114,7 +115,7 @@ impl OrganisationMemo {
             || {
                 if province == 0
                     || read::<u64>(memory, province)
-                        != base.checked_add(cprovince::VTABLE_RVA).map(|p| p as u64)
+                        != engine_sites::at(base, cprovince::VTABLE_RVA).map(|p| p as u64)
                 {
                     return Err("movement province identity mismatch");
                 }
@@ -280,7 +281,7 @@ impl StatusPacket {
                     .effective()
                     .1;
                 let limit = *threshold.get_or_insert_with(|| {
-                    presentation_field(memory, base, LOW_ORGANISATION_FOR_ATTACK_RVA)
+                    presentation_global(memory, base, LOW_ORGANISATION_FOR_ATTACK_RVA)
                 });
                 if !below_threshold(current, maximum, limit?)? {
                     return Ok(None);

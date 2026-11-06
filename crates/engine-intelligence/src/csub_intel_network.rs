@@ -1,10 +1,11 @@
 //! Sub-intel-network elements stored inline in country intel-network
 //! storage with stride 0xd8.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x2a1_dd28;
+pub const VTABLE_RVA: Rva = Rva(0x2a1_dd28);
 /// Sub-network constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x125_cfd0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x125_cfd0);
 
 /// Subnetwork byte stride.
 pub const STRIDE: usize = 0xd8;

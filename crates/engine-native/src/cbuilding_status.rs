@@ -8,9 +8,10 @@ use crate::{
     read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Building-status vtable.
-pub const VTABLE_RVA: usize = 0x02a1_5510;
+pub const VTABLE_RVA: Rva = Rva(0x02a1_5510);
 /// Signed building-index array keyed by template ordinal.
 pub const BUILDING_INDICES: usize = 0x20;
 /// Building-index count, i32, checked before lookup.
@@ -35,7 +36,7 @@ pub const PROVINCE_FLAG: u32 = 1;
 /// State-location flag.
 pub const STATE_FLAG: u32 = 2;
 /// Constructor installing arrays and location controls.
-pub const CONSTRUCTOR_RVA: usize = 0x011f_e6b0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x011f_e6b0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
@@ -148,15 +149,12 @@ fn walk_locations(
         } else {
             (cstate::VTABLE_RVA, cstate::ID, cstate::BUILDING_STATUS)
         };
-        let location_vtable = base
-            .checked_add(location_vtable)
-            .ok_or("module address overflow")? as u64;
-        let state_vtable = base
-            .checked_add(cstate::VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
-        let status_vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
+        let location_vtable =
+            engine_sites::at(base, location_vtable).ok_or("module address overflow")? as u64;
+        let state_vtable =
+            engine_sites::at(base, cstate::VTABLE_RVA).ok_or("module address overflow")? as u64;
+        let status_vtable =
+            engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
         let fields = [
             RecordField {
                 source_offset: 0,
@@ -433,9 +431,7 @@ pub fn refresh(
     output: &mut Vec<cbuilding::Row>,
 ) -> Result<usize, &'static str> {
     debug_assert_eq!(held.len(), fresh.len());
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let mut len = 0_usize;
     for (first, batch) in (0..).step_by(BATCH).zip(held.chunks(BATCH)) {
         let mut statuses = [0_usize; BATCH];
@@ -758,7 +754,7 @@ impl Locations {
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
             .ok_or("construction target location absent or unreadable")?;
-        let expected = base.checked_add(vtable).ok_or("module address overflow")? as u64;
+        let expected = engine_sites::at(base, vtable).ok_or("module address overflow")? as u64;
         if read::<u64>(memory, pointer) != Some(expected) {
             return Err("construction target location vtable mismatch");
         }
@@ -779,8 +775,7 @@ impl Locations {
             if state_pointer == 0 {
                 0
             } else {
-                let expected = base
-                    .checked_add(cstate::VTABLE_RVA)
+                let expected = engine_sites::at(base, cstate::VTABLE_RVA)
                     .ok_or("module address overflow")? as u64;
                 if read::<u64>(memory, state_pointer) != Some(expected) {
                     return Err("construction target state vtable mismatch");
@@ -812,9 +807,7 @@ pub(crate) fn identity(
     base: usize,
     pointer: usize,
 ) -> Result<Identity, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let mut vtable = [0; 8];
     let mut fields = [0; 12];
     let copied = memory.copy_scattered(

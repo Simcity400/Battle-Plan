@@ -130,8 +130,7 @@ impl TraitDefinitions {
                     .checked_add(offset)
                     .ok_or("unit leader address overflow")
             };
-            let expected = base
-                .checked_add(cunit_leader_trait::VTABLE_RVA)
+            let expected = engine_sites::at(base, cunit_leader_trait::VTABLE_RVA)
                 .ok_or("unit leader address overflow")?;
             let (starts, completed) = self
                 .log
@@ -446,18 +445,21 @@ impl TraitCapture {
                 "unit leader identity unreadable"
             })?;
             self.raw_bytes += 16;
-            let relative = usize::try_from(u64::from_le_bytes(identity[..8].try_into().unwrap()))
+            let found = usize::try_from(u64::from_le_bytes(identity[..8].try_into().unwrap()))
                 .ok()
-                .and_then(|value| value.checked_sub(base));
-            if !matches!(
-                relative,
-                Some(
-                    cunit_leader::VTABLE_RVA
-                        | carmy_leader::VTABLE_RVA
-                        | cnavy_leader::VTABLE_RVA
-                        | coperative_leader::VTABLE_RVA
-                )
-            ) {
+                .and_then(|vtable| {
+                    engine_sites::which(
+                        base,
+                        vtable,
+                        &[
+                            cunit_leader::VTABLE_RVA,
+                            carmy_leader::VTABLE_RVA,
+                            cnavy_leader::VTABLE_RVA,
+                            coperative_leader::VTABLE_RVA,
+                        ],
+                    )
+                });
+            if found.is_none() {
                 return Err("unit leader vtable mismatch");
             }
             if u32::from_le_bytes(identity[8..12].try_into().unwrap())
@@ -487,7 +489,7 @@ impl TraitCapture {
                 engine_allocation::reserve(&mut self.occurrences, array.count as usize)
                     .map_err(|_| "character trait occurrence allocation failed")?;
             }
-            base.checked_add(cunit_leader_trait::VTABLE_RVA)
+            engine_sites::at(base, cunit_leader_trait::VTABLE_RVA)
                 .ok_or("unit leader address overflow")?;
             let row_limit = if self.growing {
                 array.count as usize

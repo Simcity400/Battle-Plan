@@ -61,9 +61,12 @@ impl CategoryCache {
         }
         let vtable =
             read::<u64>(memory, pointer).ok_or("equipment category identity unreadable")?;
-        if ![equipment::VTABLE_RVA, equipment::NULL_VTABLE_RVA]
-            .into_iter()
-            .any(|rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+        if engine_sites::which(
+            base,
+            vtable as usize,
+            &[equipment::VTABLE_RVA, equipment::NULL_VTABLE_RVA],
+        )
+        .is_none()
         {
             return Err("equipment category identity mismatch");
         }

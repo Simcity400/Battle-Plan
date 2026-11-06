@@ -4,10 +4,11 @@
 //! record holds one value per archetype, at the archetype's `cequipment_type::STOCKPILE_INDEX`,
 //! which is its position in this list.
 
+use engine_sites::Rva;
 /// CEquipmentDatabase singleton pointer global.
-pub const SINGLETON_RVA: usize = 0x033d_d300;
+pub const SINGLETON_RVA: Rva = Rva(0x033d_d300);
 /// CEquipmentDatabase primary vtable at object offset zero.
-pub const VTABLE_RVA: usize = 0x029b_5f40;
+pub const VTABLE_RVA: Rva = Rva(0x029b_5f40);
 /// Equipment archetype pointer array: capacity and count follow it. Each archetype's
 /// `cequipment_type::STOCKPILE_INDEX` is its position here, assigned on insertion and retained on
 /// reload. Logistics records use this count and index.

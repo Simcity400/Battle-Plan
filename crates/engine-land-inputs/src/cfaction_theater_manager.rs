@@ -9,9 +9,10 @@ use crate::{
     msvc_string, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Manager primary vtable.
-pub const VTABLE_RVA: usize = 0x02a9_8778;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_8778);
 /// Owning CFaction pointer.
 pub const OWNER: usize = 0x08;
 /// Theatre array header: data, capacity and count. Serialization and pin visibility use the stored
@@ -256,9 +257,7 @@ fn manager(memory: &impl Memory, base: usize, faction: usize) -> Result<Array, &
         .ok_or("faction address overflow")?;
     let header = read::<[u8; 0x20]>(memory, manager).ok_or("faction theatre manager unreadable")?;
     let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().expect("8 bytes"));
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if word(0) != expected as u64 {
         return Err("faction theatre manager vtable mismatch");
     }
@@ -340,7 +339,7 @@ mod tests {
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x8000];
         put64(&mut bytes, GS + cgame_state::FACTION_SYSTEM, SYSTEM as u64);
-        put64(&mut bytes, SYSTEM, cfaction_system::VTABLE_RVA as u64);
+        put64(&mut bytes, SYSTEM, cfaction_system::VTABLE_RVA.0 as u64);
         array(
             &mut bytes,
             SYSTEM + cfaction_system::FACTIONS,
@@ -353,10 +352,10 @@ mod tests {
             .enumerate()
         {
             put64(&mut bytes, FACTION_POINTERS + slot * 8, faction as u64);
-            put64(&mut bytes, faction, cfaction::VTABLE_RVA as u64);
+            put64(&mut bytes, faction, cfaction::VTABLE_RVA.0 as u64);
             put64(&mut bytes, faction + cfaction::REFERENCE, id);
             let manager = faction + cfaction::THEATER_MANAGER;
-            put64(&mut bytes, manager, VTABLE_RVA as u64);
+            put64(&mut bytes, manager, VTABLE_RVA.0 as u64);
             put64(&mut bytes, manager + OWNER, faction as u64);
         }
         icon(&mut bytes, FIRST, b"GFX_a");

@@ -44,7 +44,7 @@ impl World {
         for slot in 1..=countries {
             pointers[slot * 8..slot * 8 + 8].copy_from_slice(&(object(slot) as u64).to_le_bytes());
             links[slot * 4..slot * 4 + 4].copy_from_slice(&(slot as u32).to_le_bytes());
-            world.put(object(slot), &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+            world.put(object(slot), &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
             world.put(object(slot) + ccountry::ID, &(slot as u32).to_le_bytes());
             world.raw(
                 slot,
@@ -57,7 +57,7 @@ impl World {
         }
         world.spans.insert(COUNTRIES, pointers);
         world.spans.insert(LINKS, links);
-        world.put(definition::TABLE_RVA, &(DEFINITIONS as u64).to_le_bytes());
+        world.put(definition::TABLE_RVA.0, &(DEFINITIONS as u64).to_le_bytes());
         world.spans.insert(metadata(), vec![0; definition::STRIDE]);
         world
     }
@@ -234,7 +234,7 @@ fn effective_definition_changes_apply_without_an_accumulator_mark_or_read() {
     ] {
         world.flags(flags, selector);
         // Authenticated null eligibility callback supplies no feature bits.
-        world.put(definition::ELIGIBILITY_CALLBACK_RVA, &0_u64.to_le_bytes());
+        world.put(definition::ELIGIBILITY_CALLBACK_RVA.0, &0_u64.to_le_bytes());
         domain.boundary(false);
         let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
         assert_eq!(rows, full(&world));

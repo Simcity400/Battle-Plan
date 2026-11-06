@@ -1,6 +1,7 @@
 //! Shared primary unit base for divisions and task forces.
 
 use crate::{Memory, carmy, cpdx_array::Array, memory::FieldBatch, read};
+use engine_sites::Rva;
 
 mod combat_references;
 pub use combat_references::CombatReferencesCapture;
@@ -39,18 +40,15 @@ pub fn counter_identity_with(
         || handle >> 32 == 0
         || (class == 0
             && vtable
-                != base
-                    .checked_add(crate::carmy::VTABLE_RVA)
+                != engine_sites::at(base, crate::carmy::VTABLE_RVA)
                     .ok_or("counter unit module overflow")? as u64)
         || (class == 13
             && vtable
-                != base
-                    .checked_add(crate::crailway_gun::VTABLE_RVA)
+                != engine_sites::at(base, crate::crailway_gun::VTABLE_RVA)
                     .ok_or("counter railway module overflow")? as u64)
         || (class == 1
             && vtable
-                != base
-                    .checked_add(crate::ctask_force::VTABLE_RVA)
+                != engine_sites::at(base, crate::ctask_force::VTABLE_RVA)
                     .ok_or("counter unit module overflow")? as u64)
     {
         return Err("counter unit identity invalid");
@@ -103,7 +101,7 @@ pub const ORDINARY_ROUTE_COUNT: usize = 0x20c;
 /// Movement-priority enum; independent of arrival time.
 pub const MOVEMENT_PRIORITY: usize = 0x248;
 /// Embark movement denominator, used in place of neighbor distance.
-pub const EMBARK_MOVEMENT_DISTANCE_RVA: usize = 0x033e_1048;
+pub const EMBARK_MOVEMENT_DISTANCE_RVA: Rva = Rva(0x033e_1048);
 /// CUnit alternate-route u32 province-id vector.
 pub const ALTERNATE_ROUTE_DATA: usize = 0x220;
 /// Retreat byte used by action selection.
@@ -136,7 +134,7 @@ pub const COMBAT_MODIFIER_DATA: usize = 0x170;
 pub const ATTACK_ACCUMULATOR: usize = 0x188;
 
 /// CUnit destructor.
-pub const DESTRUCTOR_RVA: usize = 0x00c4_e950;
+pub const DESTRUCTOR_RVA: Rva = Rva(0x00c4_e950);
 
 /// Simulation operands for map routes and stack kinds, independent of the map entity.
 /// The caller first authenticates the unit's class and roster. Routes are copied
@@ -539,26 +537,30 @@ fn map_combat_identity(
     let primary = u64::from_le_bytes(header[..8].try_into().unwrap());
     let secondary = u64::from_le_bytes(header[16..24].try_into().unwrap());
     let reference = u64::from_le_bytes(header[24..32].try_into().unwrap());
-    let primary_rva = usize::try_from(primary)
+    let primary = usize::try_from(primary)
         .ok()
-        .and_then(|pointer| pointer.checked_sub(base))
+        .filter(|&pointer| pointer >= base)
         .ok_or("map combat primary identity invalid")?;
     // Land and naval classes have distinct class results. Reference types
     // are dynamically minted and cannot serve as the class admission gate.
-    let (secondary_rva, kind) = match primary_rva {
-        crate::cland_combat::VTABLE_RVA => (crate::cland_combat::BODY_VTABLE_RVA, COMBAT_LAND),
-        crate::cland_border_war_combat::VTABLE_RVA => (
+    let classes = [
+        crate::cland_combat::VTABLE_RVA,
+        crate::cland_border_war_combat::VTABLE_RVA,
+        crate::cnaval_combat::VTABLE_RVA,
+    ];
+    let (secondary_rva, kind) = match engine_sites::which(base, primary, &classes) {
+        Some(crate::cland_combat::VTABLE_RVA) => {
+            (crate::cland_combat::BODY_VTABLE_RVA, COMBAT_LAND)
+        }
+        Some(crate::cland_border_war_combat::VTABLE_RVA) => (
             crate::cland_border_war_combat::BODY_VTABLE_RVA,
             COMBAT_BORDER_WAR,
         ),
         // Authenticate the naval combat's secondary reference-object vtable.
-        crate::cnaval_combat::VTABLE_RVA => (0x02a5_6e70, COMBAT_NAVAL),
+        Some(crate::cnaval_combat::VTABLE_RVA) => (Rva(0x02a5_6e70), COMBAT_NAVAL),
         _ => return Err("map combat class unsupported"),
     };
-    if base
-        .checked_add(secondary_rva)
-        .map(|pointer| pointer as u64)
-        != Some(secondary)
+    if engine_sites::at(base, secondary_rva).map(|pointer| pointer as u64) != Some(secondary)
         || reference == 0
     {
         return Err("map combat secondary identity invalid");
@@ -582,8 +584,7 @@ pub fn registered_province(
     if pointer == 0 {
         return Ok(0);
     }
-    let expected = base
-        .checked_add(crate::cprovince::VTABLE_RVA)
+    let expected = engine_sites::at(base, crate::cprovince::VTABLE_RVA)
         .ok_or("unit province module overflow")? as u64;
     if read::<u64>(memory, pointer) != Some(expected) {
         return Err("unit province vtable mismatch");
@@ -901,7 +902,7 @@ fn combat_role(
         crate::cnaval_combat::VTABLE_RVA,
     ]
     .iter()
-    .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+    .any(|&rva| engine_sites::at(base, rva).map(|p| p as u64) == Some(vtable))
     {
         return Err("division first combat identity mismatch");
     }
@@ -913,7 +914,7 @@ fn combat_role(
         crate::cnaval_combatant::VTABLE_RVA,
     ]
     .iter()
-    .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+    .any(|&rva| engine_sites::at(base, rva).map(|p| p as u64) == Some(vtable))
         || field(side, side_layout::COMBAT)? != combat as u64
     {
         return Err("first combat side identity mismatch");

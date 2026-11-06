@@ -1,8 +1,9 @@
 //! CCountryAirContainer: one country's pool membership at one CAirBase. It is not the per-country
 //! CStrategicAir object in the strategic air manager's country table.
 
+use engine_sites::Rva;
 /// Country air-container vtable.
-pub const VTABLE_RVA: usize = 0x029d_5030;
+pub const VTABLE_RVA: Rva = Rva(0x029d_5030);
 /// Allocation size.
 pub const SIZE: usize = 0xf8;
 /// Inherited supply ratio, signed fixed5.

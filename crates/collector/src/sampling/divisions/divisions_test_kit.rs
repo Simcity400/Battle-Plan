@@ -36,7 +36,7 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 fn variant(bytes: &mut [u8], at: usize, id: u32) {
-    p64(bytes, at, cequipment_variant::VTABLE_RVA as u64);
+    p64(bytes, at, cequipment_variant::VTABLE_RVA.0 as u64);
     p64(
         bytes,
         at + 8,
@@ -65,7 +65,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         (C0, 1u32, 0x23000usize, vec![A1, A2]),
         (C1, 2u32, 0x23100usize, vec![A3]),
     ] {
-        p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, country + ccountry::ID, id);
         header(
             &mut bytes,
@@ -77,7 +77,7 @@ pub(crate) fn fixture() -> Vec<u8> {
             p64(&mut bytes, roster + index * 8, division as u64);
         }
     }
-    p64(&mut bytes, P1, cprovince::VTABLE_RVA as u64);
+    p64(&mut bytes, P1, cprovince::VTABLE_RVA.0 as u64);
     p32(&mut bytes, P1 + cprovince::ID, 1);
     // A1 is complete; A2 has null location and orders; A3 has a null
     // template.
@@ -113,11 +113,11 @@ pub(crate) fn fixture() -> Vec<u8> {
             70_000i64,
         ),
     ] {
-        p64(&mut bytes, army, carmy::VTABLE_RVA as u64);
+        p64(&mut bytes, army, carmy::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             army + carmy::SECONDARY_BASE,
-            carmy::SECONDARY_VTABLE_RVA as u64,
+            carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         p64(&mut bytes, army + cunit::HANDLE, handle);
         p32(&mut bytes, army + cunit::ROSTER_OWNER, owner);
@@ -132,14 +132,14 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         0x40000,
-        creferenced_division_template::VTABLE_RVA as u64,
+        creferenced_division_template::VTABLE_RVA.0 as u64,
     );
     p64(
         &mut bytes,
         0x40000 + creferenced_division_template::TYPE,
         0x3455_0000_0034u64,
     );
-    p64(&mut bytes, 0x41000, corders_group::VTABLE_RVA as u64);
+    p64(&mut bytes, 0x41000, corders_group::VTABLE_RVA.0 as u64);
     p64(
         &mut bytes,
         0x41008,
@@ -158,7 +158,11 @@ pub(crate) fn fixture() -> Vec<u8> {
         (A3, 0x42200usize, vec![]),
     ] {
         let pool = army + carmy::EQUIPMENT_POOL;
-        p64(&mut bytes, pool, cequipment_variant_pool::VTABLE_RVA as u64);
+        p64(
+            &mut bytes,
+            pool,
+            cequipment_variant_pool::VTABLE_RVA.0 as u64,
+        );
         header(
             &mut bytes,
             pool + cequipment_variant_pool::ITEMS,
@@ -193,7 +197,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         p64(
             &mut bytes,
             group,
-            carmy_upgrades_requests::VTABLE_RVA as u64,
+            carmy_upgrades_requests::VTABLE_RVA.0 as u64,
         );
         p32(
             &mut bytes,
@@ -203,7 +207,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         p64(
             &mut bytes,
             group + carmy_upgrades_requests::PERSISTENT_SUBOBJECT,
-            carmy_upgrades_requests::PERSISTENT_VTABLE_RVA as u64,
+            carmy_upgrades_requests::PERSISTENT_VTABLE_RVA.0 as u64,
         );
         p64(
             &mut bytes,
@@ -233,14 +237,14 @@ pub(crate) fn fixture() -> Vec<u8> {
         }
     }
     // The one live delivery: progress-available status with a produced row.
-    p64(&mut bytes, 0x64000, cupgrade_delivery::VTABLE_RVA as u64);
+    p64(&mut bytes, 0x64000, cupgrade_delivery::VTABLE_RVA.0 as u64);
     p32(&mut bytes, 0x64000 + cupgrade_delivery::STATUS, 1);
     p64(&mut bytes, 0x64000 + cupgrade_delivery::PROGRESS, 300);
     p64(&mut bytes, 0x64000 + cupgrade_delivery::TOTAL_PROGRESS, 400);
     p64(
         &mut bytes,
         0x64020,
-        cequipment_variant_pool::VTABLE_RVA as u64,
+        cequipment_variant_pool::VTABLE_RVA.0 as u64,
     );
     header(
         &mut bytes,

@@ -1,8 +1,9 @@
 //! Country-embedded convoy state. The country row records the signed quantity
 //! cache only when its validity byte is set.
 
+use engine_sites::Rva;
 /// Convoy-state primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_4500;
+pub const VTABLE_RVA: Rva = Rva(0x0286_4500);
 /// Owner country link, u32, copied during construction.
 pub const COUNTRY: usize = 8;
 /// Embedded convoy equipment pool.

@@ -16,7 +16,7 @@ pub(crate) struct World {
 impl World {
     pub(crate) fn new(count: usize) -> Self {
         let variants = (0..count)
-            .map(|n| [variant::VTABLE_RVA as u64, ((n as u64 + 1) << 32) | 70])
+            .map(|n| [variant::VTABLE_RVA.0 as u64, ((n as u64 + 1) << 32) | 70])
             .collect::<Vec<_>>();
         let mut out = Self {
             combat: vec![0; cland_combat::DURATION + 4],
@@ -36,11 +36,11 @@ impl World {
             variants,
         };
         let combat = out.combat.as_ptr() as u64;
-        Self::q(&mut out.combat, 0, cland_combat::VTABLE_RVA as u64);
+        Self::q(&mut out.combat, 0, cland_combat::VTABLE_RVA.0 as u64);
         Self::q(
             &mut out.combat,
             cland_combat::BODY,
-            cland_combat::BODY_VTABLE_RVA as u64,
+            cland_combat::BODY_VTABLE_RVA.0 as u64,
         );
         Self::q(&mut out.combat, cland_combat::HANDLE, 7 << 32 | 62);
         for n in 0..2 {
@@ -49,23 +49,23 @@ impl World {
                 [cland_combat::ATTACKER, cland_combat::DEFENDER][n],
                 out.sides[n].as_ptr() as u64,
             );
-            Self::q(&mut out.sides[n], 0, side::VTABLE_RVA as u64);
+            Self::q(&mut out.sides[n], 0, side::VTABLE_RVA.0 as u64);
             Self::q(&mut out.sides[n], side::COMBAT, combat);
             out.sides[n][side::IS_ATTACKER] = u8::from(n == 0);
             Self::q(
                 &mut out.sides[n],
                 side::STATS_OBSERVER,
-                stats::VTABLE_RVA as u64,
+                stats::VTABLE_RVA.0 as u64,
             );
             Self::q(
                 &mut out.sides[n],
                 side::STATS_OBSERVER + stats::EQUIPMENT_LOSSES,
-                pool::VTABLE_RVA as u64,
+                pool::VTABLE_RVA.0 as u64,
             );
             Self::q(
                 &mut out.sides[n],
                 side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_SIDE,
-                engine_land_inputs::combat_log_history::SIDE_VTABLE_RVA as u64,
+                engine_land_inputs::combat_log_history::SIDE_VTABLE_RVA.0 as u64,
             );
             for offset in [
                 engine_land_inputs::combat_log_history::SIDE_CAPTURED_BY_ENEMY,
@@ -76,7 +76,7 @@ impl World {
                     side::STATS_OBSERVER
                         + engine_land_inputs::combat_log_events::OBSERVER_SIDE
                         + offset,
-                    pool::VTABLE_RVA as u64,
+                    pool::VTABLE_RVA.0 as u64,
                 );
             }
             out.set(n, n as i32 + 11, count);
@@ -129,7 +129,7 @@ impl Registry {
 }
 impl Memory for Registry {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+        if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(self.state.as_ptr() as u64).to_le_bytes());
             true
         } else {
@@ -354,7 +354,7 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
 fn hourly_losses_off_thread_census_presizes_all_sides() {
     let mut worlds = [World::new(3), World::new(9)];
     worlds[1].set(1, 12, 0);
-    let naval = [engine_native::cnaval_combat::VTABLE_RVA as u64];
+    let naval = [engine_native::cnaval_combat::VTABLE_RVA.0 as u64];
     let registry = Registry::new(&worlds, &naval);
     let mut capacity = Capacities::default();
     capacity.presize(&registry, 0).unwrap();
@@ -418,7 +418,7 @@ fn land_casualty_hourly_timing() {
         .unwrap_or(12);
     let count = provinces.checked_mul(fraction).unwrap() / 100;
     let worlds = (0..count).map(|_| World::new(variants)).collect::<Vec<_>>();
-    let naval = [engine_native::cnaval_combat::VTABLE_RVA as u64];
+    let naval = [engine_native::cnaval_combat::VTABLE_RVA.0 as u64];
     let registry = Registry::new(&worlds, &naval);
     let mut capacity = Capacities::default();
     capacity.presize(&registry, 0).unwrap();
@@ -708,12 +708,12 @@ fn observer_daily_children_follow_current_parent_and_refusal_forces_fresh_recove
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut world = World::new(0);
     let mut activity = [0; event::ACTIVITY_SIZE];
-    World::q(&mut activity, 0, event::ACTIVITY_VTABLE_RVA as u64);
+    World::q(&mut activity, 0, event::ACTIVITY_VTABLE_RVA.0 as u64);
     World::q(&mut activity, event::ACTIVITY_GROUP, 41);
     World::q(
         &mut activity,
         event::ACTIVITY_EQUIPMENT_POOL,
-        pool::VTABLE_RVA as u64,
+        pool::VTABLE_RVA.0 as u64,
     );
     let mut damage = [0; 16];
     World::q(&mut damage, 0, 61);

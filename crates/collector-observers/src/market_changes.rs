@@ -378,7 +378,7 @@ fn root(
 ) -> Result<MarketEventRow, &'static str> {
     let state = read::<u64>(
         memory,
-        base.checked_add(engine_native::cgame_state::SINGLETON_RVA)
+        engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
             .ok_or("market game address overflow")?,
     )
     .filter(|p| *p != 0)
@@ -412,6 +412,17 @@ fn scalar<T: engine_native::memory::Raw>(
         memory,
         at.checked_add(offset)
             .ok_or("market operand address overflow")?,
+    )
+    .ok_or("market writer operand unreadable")
+}
+fn global<T: engine_native::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: engine_sites::Rva,
+) -> Result<T, &'static str> {
+    read(
+        memory,
+        engine_sites::at(base, key).ok_or("market global withheld")?,
     )
     .ok_or("market writer operand unreadable")
 }
@@ -1036,12 +1047,16 @@ fn site_failure(index: usize, phase: &str, reason: impl std::fmt::Display) -> St
     )
 }
 
-fn verify_sites(memory: &impl Memory, base: usize) -> Result<(), String> {
+/// The site's address and the 16 bytes its patch replaces.
+fn located(base: usize, index: usize) -> Result<(usize, [u8; 16]), String> {
+    engine_sites::hook(base, native::SITES[index].rva)
+        .and_then(|code| Ok((code.address, code.sentinel()?)))
+        .map_err(|reason| site_failure(index, "sentinel", reason))
+}
+
+fn verify_sites(base: usize) -> Result<(), String> {
     for &index in &OBSERVED_SITES {
-        let site = &native::SITES[index];
-        if read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-            return Err(site_failure(index, "sentinel", "unreadable or differs"));
-        }
+        located(base, index)?;
     }
     Ok(())
 }
@@ -1068,7 +1083,7 @@ pub struct Hooks {
 impl Hooks {
     /// # Safety
     /// The host verified the executable and exclusively owns these dedicated sites.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Release);
         let callbacks = [
             amendment as *const () as usize,
@@ -1104,14 +1119,28 @@ impl Hooks {
             contract_removed as *const () as usize,
         ];
         let install = || -> Result<(Vec<Hook>, Vec<Tap>), String> {
-            verify_sites(memory, base)?;
+            verify_sites(base)?;
             let mut hooks = Vec::with_capacity(OBSERVED_SITES.len() - 2);
             let mut taps = Vec::with_capacity(2);
             for &index in &OBSERVED_SITES {
                 let site = &native::SITES[index];
+                let (at, original) = located(base, index)?;
                 if index == native::FUEL_SENT_SITE || index == native::FUEL_LOST_SITE {
+                    let field = if index == native::FUEL_SENT_SITE {
+                        lease::FUEL_SENT
+                    } else {
+                        lease::FUEL_SUNK
+                    };
+                    // The tap takes the exchange and delta from ADD [RSI + field], RAX.
+                    if original[..3] != [0x48, 0x01, 0x86]
+                        || u32::from_le_bytes([original[3], original[4], original[5], original[6]])
+                            as usize
+                            != field
+                    {
+                        return Err(site_failure(index, "sentinel", "fuel store differs"));
+                    }
                     taps.push(
-                        unsafe { Tap::new(base + site.rva, fuel_write, index, site.sentinel) }
+                        unsafe { Tap::new(at, fuel_write, index, original) }
                             .map_err(|reason| site_failure(index, "tap construction", reason))?,
                     );
                     continue;
@@ -1123,15 +1152,19 @@ impl Hooks {
                         "no game-state callback",
                     ));
                 }
-                let hook = if site.call_target.is_some() {
-                    unsafe { Hook::new_call(base + site.rva, callbacks[index], site.sentinel) }
+                let target = site
+                    .call_target
+                    .map(|key| engine_sites::hook(base, key).map(|code| code.address))
+                    .transpose()
+                    .map_err(|reason| site_failure(index, "call target", reason))?;
+                let hook = if target.is_some() {
+                    unsafe { Hook::new_call(at, callbacks[index], original) }
                 } else {
-                    unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    unsafe { Hook::new(at, callbacks[index], original) }
                 }
                 .map_err(|reason| site_failure(index, "hook construction", reason))?;
                 ORIGINAL[index].store(
-                    site.call_target
-                        .map_or_else(|| hook.trampoline(), |rva| base + rva),
+                    target.unwrap_or_else(|| hook.trampoline()),
                     Ordering::Release,
                 );
                 hooks.push(hook);
@@ -1374,7 +1407,7 @@ mod tests {
                     5000
                 } else if at == POINTER + engine_production::cpurchase_contract::BUYER {
                     0
-                } else if at == engine_native::cgame_state::SINGLETON_RVA {
+                } else if at == engine_native::cgame_state::SINGLETON_RVA.0 {
                     0x1000
                 } else if at == 0x1000 + engine_native::cgame_state::CURRENT_HOUR {
                     2
@@ -1511,47 +1544,6 @@ mod tests {
         );
     }
     #[test]
-    fn every_sentinel_refusal_names_its_family_and_exact_site() {
-        struct Sentinels {
-            refused: usize,
-            unreadable: bool,
-        }
-        impl Memory for Sentinels {
-            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-                let index = native::SITES
-                    .iter()
-                    .position(|site| site.rva == at)
-                    .unwrap();
-                if index == self.refused {
-                    out.fill(0);
-                    return !self.unreadable;
-                }
-                out.copy_from_slice(&native::SITES[index].sentinel);
-                true
-            }
-        }
-        for refused in OBSERVED_SITES {
-            for unreadable in [false, true] {
-                let reason = verify_sites(
-                    &Sentinels {
-                        refused,
-                        unreadable,
-                    },
-                    0,
-                )
-                .unwrap_err();
-                assert_eq!(
-                    reason,
-                    format!(
-                        "market_changes {}: sentinel: unreadable or differs",
-                        native::SITES[refused].name
-                    )
-                );
-            }
-        }
-    }
-
-    #[test]
     fn construction_and_publication_errors_keep_site_names_and_underlying_cause() {
         for index in OBSERVED_SITES {
             for phase in ["hook construction", "tap construction"] {
@@ -1579,41 +1571,9 @@ mod tests {
     }
 
     #[test]
-    fn writer_coverage_never_reads_local_draft_reset_sites() {
-        struct GameWriters;
-        impl Memory for GameWriters {
-            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-                for index in [1, 2] {
-                    assert_ne!(
-                        at,
-                        native::SITES[index].rva,
-                        "local draft reset was observed"
-                    );
-                }
-                let Some(site) = native::SITES.iter().find(|site| site.rva == at) else {
-                    return false;
-                };
-                output.copy_from_slice(&site.sentinel[..output.len()]);
-                true
-            }
-        }
-        verify_sites(&GameWriters, 0).unwrap();
-    }
-    #[test]
     fn fuel_taps_observe_only_reached_signed_add_operands() {
-        for (index, offset) in [
-            (native::FUEL_SENT_SITE, lease::FUEL_SENT),
-            (native::FUEL_LOST_SITE, lease::FUEL_SUNK),
-        ] {
-            let site = &native::SITES[index];
-            // ADD [RSI + field], RAX: the tap takes the exchange and delta
-            // directly from the native operands, before the seven-byte store.
-            assert_eq!(&site.sentinel[..3], &[0x48, 0x01, 0x86]);
-            assert_eq!(
-                u32::from_le_bytes(site.sentinel[3..7].try_into().unwrap()) as usize,
-                offset
-            );
-            assert!(site.call_target.is_none());
+        for index in [native::FUEL_SENT_SITE, native::FUEL_LOST_SITE] {
+            assert!(native::SITES[index].call_target.is_none());
         }
         assert!(
             native::SITES
@@ -1645,7 +1605,7 @@ mod tests {
         struct Memory<'a>(&'a World);
         impl engine_native::Memory for Memory<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+                if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&(self.0.game_state() as u64).to_le_bytes());
                     true
                 } else {
@@ -1661,19 +1621,19 @@ mod tests {
         let resources = world.alloc(0x30);
         world.u64(
             resources,
-            engine_resources::ccountry_resources::VTABLE_RVA as u64,
+            engine_resources::ccountry_resources::VTABLE_RVA.0 as u64,
         );
         world.u32(
             resources + engine_resources::ccountry_resources::OWNER,
             5000,
         );
         let exchange = world.alloc(lease::SIZE);
-        world.u64(exchange, lease::VTABLE_RVA as u64);
+        world.u64(exchange, lease::VTABLE_RVA.0 as u64);
         world.u64(exchange + lease::HANDLE, (17_u64 << 32) | 9001);
         world.u64(exchange + lease::GIVER_RESOURCES, resources as u64);
         world.u32(exchange + lease::RECEIVER, 4999);
         let model = world.alloc(16);
-        world.u64(model, variant::VTABLE_RVA as u64);
+        world.u64(model, variant::VTABLE_RVA.0 as u64);
         world.u64(model + 8, (31_u64 << 32) | variant::REFERENCE_TYPE as u64);
         for offset in [
             lease::MONTHLY_NEED,
@@ -1685,7 +1645,7 @@ mod tests {
                 world.u64(items + index * 16, model as u64);
                 world.u64(items + index * 16 + 8, index as u64);
             }
-            world.u64(exchange + offset, pool::VTABLE_RVA as u64);
+            world.u64(exchange + offset, pool::VTABLE_RVA.0 as u64);
             world.array(exchange + offset + pool::ITEMS, items, 5000);
         }
         LEDGER.reset();
@@ -1732,7 +1692,7 @@ mod tests {
                     5000
                 } else if at == CONTRACT + engine_production::cpurchase_contract::BUYER {
                     4999
-                } else if at == engine_native::cgame_state::SINGLETON_RVA {
+                } else if at == engine_native::cgame_state::SINGLETON_RVA.0 {
                     0x1000
                 } else if at == 0x1000 + engine_native::cgame_state::CURRENT_HOUR {
                     77
@@ -1817,7 +1777,7 @@ mod tests {
                 world.u64(items + index * 16, model as u64);
                 world.u64(items + index * 16 + 8, index as u64);
             }
-            world.u64(exchange + offset, pool::VTABLE_RVA as u64);
+            world.u64(exchange + offset, pool::VTABLE_RVA.0 as u64);
             world.array(exchange + offset + pool::ITEMS, items, 5000);
         }
         crate::test_support::with_allocations_denied(|| {

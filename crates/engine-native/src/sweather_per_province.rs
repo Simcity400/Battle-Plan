@@ -5,6 +5,7 @@
 //! are written serially. Provinces update in rotating subsets; each row
 //! preserves its stored state.
 
+use engine_sites::Rva;
 use crate::{
     Memory,
     cpdx_array::Array,
@@ -15,7 +16,7 @@ use crate::{
 };
 
 /// Province-weather vtable.
-pub const VTABLE_RVA: usize = 0x029f_4098;
+pub const VTABLE_RVA: Rva = Rva(0x029f_4098);
 /// Province-weather array stride.
 pub const STRIDE: usize = 0x180;
 /// Province ID, i32, authenticated against its array slot.
@@ -185,7 +186,7 @@ pub fn fill_clocks(
 }
 
 pub(crate) fn walk(memory: &impl Memory, base: usize, array: Array, output: &mut [Row]) -> Outcome {
-    let Some(vtable) = base.checked_add(VTABLE_RVA) else {
+    let Some(vtable) = engine_sites::at(base, VTABLE_RVA) else {
         return Outcome::Unavailable {
             reason: "module address overflow",
         };

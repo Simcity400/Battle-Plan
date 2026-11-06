@@ -30,6 +30,7 @@ use crate::{
     read,
     recent::Recent,
 };
+use engine_sites::Rva;
 
 const P: i64 = 100_000;
 const KEYS: [u32; 5] = [
@@ -282,10 +283,8 @@ fn field<T: crate::memory::Raw>(
     read(memory, address).ok_or("fresh task-force operand unreadable")
 }
 
-fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: usize) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(rva)
-        .ok_or("fresh task-force module overflow")? as u64;
+fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(), &'static str> {
+    let expected = engine_sites::at(base, rva).ok_or("fresh task-force module overflow")? as u64;
     if field::<u64>(memory, pointer, 0)? != expected {
         return Err("fresh task-force source identity mismatch");
     }
@@ -365,8 +364,7 @@ impl<'a> RosterShip<'a> {
         task: usize,
         parent_mismatch: &'static str,
     ) -> Result<(), &'static str> {
-        let expected = base
-            .checked_add(cship::VTABLE_RVA)
+        let expected = engine_sites::at(base, cship::VTABLE_RVA)
             .ok_or("fresh task-force module overflow")? as u64;
         if self.get::<u64>(memory, 0)? != expected {
             return Err("fresh task-force source identity mismatch");
@@ -536,9 +534,7 @@ impl<'a, M: Memory> Reader<'a, M> {
     /// as success/failure observations rather than reacquired for another key.
     fn definition(&mut self, index: usize) -> Result<Operands, &'static str> {
         let root = *self.metadata_root.get_or_insert_with(|| {
-            let address = self
-                .base
-                .checked_add(metadata::TABLE_RVA)
+            let address = engine_sites::at(self.base, metadata::TABLE_RVA)
                 .ok_or("fresh task-force metadata root overflow")?;
             read::<u64>(self.memory, address)
                 .filter(|pointer| *pointer != 0)
@@ -560,26 +556,20 @@ impl<'a, M: Memory> Reader<'a, M> {
             0
         } else {
             (*self.eligibility.get_or_insert_with(|| {
-                let callback_at = self
-                    .base
-                    .checked_add(metadata::ELIGIBILITY_CALLBACK_RVA)
+                let callback_at = engine_sites::at(self.base, metadata::ELIGIBILITY_CALLBACK_RVA)
                     .ok_or("fresh task-force metadata callback overflow")?;
                 let callback = read::<u64>(self.memory, callback_at)
                     .ok_or("fresh task-force metadata callback unreadable")?;
                 if callback == 0 {
                     return Ok(0);
                 }
-                if self
-                    .base
-                    .checked_add(metadata::ELIGIBILITY_FLAGS_GETTER_RVA)
+                if engine_sites::at(self.base, metadata::ELIGIBILITY_FLAGS_GETTER_RVA)
                     .map(|address| address as u64)
                     != Some(callback)
                 {
                     return Err("fresh task-force metadata callback unsupported");
                 }
-                let flags_at = self
-                    .base
-                    .checked_add(metadata::TRADE_FEATURE_FLAGS_RVA)
+                let flags_at = engine_sites::at(self.base, metadata::TRADE_FEATURE_FLAGS_RVA)
                     .ok_or("fresh task-force metadata feature flags overflow")?;
                 read::<u32>(self.memory, flags_at)
                     .ok_or("fresh task-force metadata feature flags unreadable")
@@ -1176,15 +1166,13 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok((fuel.wrapping_mul(P) / requested).clamp(0, P))
     }
 
-    fn deficit(&self, fuel: Result<i64, &'static str>, rva: usize) -> Result<i64, &'static str> {
+    fn deficit(&self, fuel: Result<i64, &'static str>, rva: Rva) -> Result<i64, &'static str> {
         let fuel = fuel?;
         if fuel == P {
             return Ok(0);
         }
-        let address = self
-            .base
-            .checked_add(rva)
-            .ok_or("fresh task-force define address overflow")?;
+        let address =
+            engine_sites::at(self.base, rva).ok_or("fresh task-force define address overflow")?;
         let define =
             read::<i64>(self.memory, address).ok_or("fresh task-force define unreadable")?;
         Ok(P.wrapping_sub(fuel).wrapping_mul(define) / P)
@@ -1222,9 +1210,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             self.effective(4, country_values?[4])?
         };
         // Loaded underway-replenishment range bonus.
-        let address = self
-            .base
-            .checked_add(0x033d_fbc0)
+        let address = engine_sites::at(self.base, Rva(0x033d_fbc0))
             .ok_or("fresh task-force define address overflow")?;
         let define =
             read::<i64>(self.memory, address).ok_or("fresh task-force define unreadable")?;
@@ -1518,7 +1504,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             let base = stats.and_then(|stats| self.stat(stats, 0x1a8));
             let fuel = self.fuel(task);
             let speed = terms[0].and_then(|value| {
-                self.deficit(fuel, 0x033d_f978)
+                self.deficit(fuel, Rva(0x033d_f978))
                     .map(|deficit| value.wrapping_add(deficit))
             });
             (
@@ -1605,13 +1591,13 @@ impl<'a, M: Memory> Reader<'a, M> {
         // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the
         // deficit branch.
         let observed_speed_modifier = terms[0].and_then(|value| {
-            self.deficit(fuel, 0x033d_f978)
+            self.deficit(fuel, Rva(0x033d_f978))
                 .map(|deficit| value.wrapping_add(deficit))
         });
         let speed_modifier = self.modifier_guard.and(observed_speed_modifier);
         let modified_range = range_base.and_then(|base| {
             let additive = terms[1]?;
-            let factor = terms[2]?.wrapping_add(self.deficit(fuel, 0x033d_fa08)?);
+            let factor = terms[2]?.wrapping_add(self.deficit(fuel, Rva(0x033d_fa08))?);
             let underway = self.underway(task, roster?, country_values)?;
             Ok(base
                 .wrapping_add(additive)

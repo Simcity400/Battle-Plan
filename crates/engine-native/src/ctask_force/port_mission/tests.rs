@@ -41,11 +41,17 @@ fn world(class: u32, owner: u32, searching: &[u64]) -> Observed {
         (UNIT + 0x10) as u64,
     );
     let (primary, secondary) = match class {
-        0 => (crate::carmy::VTABLE_RVA, crate::carmy::SECONDARY_VTABLE_RVA),
-        1 => (super::super::VTABLE_RVA, super::super::SECONDARY_VTABLE_RVA),
+        0 => (
+            crate::carmy::VTABLE_RVA.0,
+            crate::carmy::SECONDARY_VTABLE_RVA.0,
+        ),
+        1 => (
+            super::super::VTABLE_RVA.0,
+            super::super::SECONDARY_VTABLE_RVA.0,
+        ),
         13 => (
-            crate::crailway_gun::VTABLE_RVA,
-            crate::crailway_gun::SECONDARY_VTABLE_RVA,
+            crate::crailway_gun::VTABLE_RVA.0,
+            crate::crailway_gun::SECONDARY_VTABLE_RVA.0,
         ),
         _ => (0, 0),
     };
@@ -65,7 +71,7 @@ fn world(class: u32, owner: u32, searching: &[u64]) -> Observed {
     memory.put(TASK + ENGAGEMENT_TARGET, &0_u64.to_le_bytes());
     memory.put(
         TASK + super::super::NAVAL_MISSION,
-        &(crate::cnaval_mission::VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::cnaval_mission::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     memory.put(
         TASK + super::super::NAVAL_MISSION + 8,

@@ -33,6 +33,7 @@ unify-windows-sys-0-52 = { package = "windows-sys", version = "0.52.0", default-
 unify-windows-sys-0-59 = { package = "windows-sys", version = "0.59.0", default-features = false, features = ["Win32", "Win32_Foundation", "Win32_Graphics", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_UI", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "default"] }
 # End generated declarations.
 rayon = "1.11"
+engine-sites = { path = "crates/engine-sites" }
 product-codec = { path = "crates/product-codec" }
 content-witness = { path = "crates/content-witness" }
 map-products = { path = "crates/map-products" }

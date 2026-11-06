@@ -1137,12 +1137,13 @@ impl Hooks {
     /// # Safety
     /// Caller owns this family and the authenticated process image, and retains
     /// every patch and callback until restoration and native quiescence.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
-        if SITES
-            .iter()
-            .all(|s| engine_native::read::<[u8; 16]>(memory, base + s.rva) == Some(s.sentinel))
-        {
+        if SITES.iter().all(|s| {
+            engine_sites::hook(base, s.rva)
+                .and_then(|code| code.sentinel::<16>())
+                .is_ok()
+        }) {
             let callbacks = [
                 bombing_decay as *const () as usize,
                 air_damage as *const () as usize,
@@ -1162,8 +1163,10 @@ impl Hooks {
             ];
             allocation::reserve(&mut hooks, SITES.len()).map_err(allocation_error)?;
             for (index, site) in SITES.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| "war participation hook construction failed")?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|_| "war participation hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -1473,7 +1476,7 @@ mod tests {
             self.check(owner);
             let mut bytes = [0u8; 52];
             bytes[..8].copy_from_slice(
-                &(engine_native::crelation_status::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_native::crelation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             bytes[8..12].copy_from_slice(&(target + 1).to_le_bytes());
             bytes[12..20].copy_from_slice(&(Self::root(owner) as u64).to_le_bytes());
@@ -1830,7 +1833,7 @@ mod tests {
             for (side, ledger) in native::DIRECTIONAL_LEDGERS.into_iter().enumerate() {
                 let at = start + ledger;
                 bytes[at..at + 8]
-                    .copy_from_slice(&(native::LEDGER_VTABLE_RVA as u64).to_le_bytes());
+                    .copy_from_slice(&(native::LEDGER_VTABLE_RVA.0 as u64).to_le_bytes());
                 bytes[at + native::FIRST..at + native::FIRST + 4]
                     .copy_from_slice(&((war * 2 + side + 1) as u32).to_le_bytes());
                 bytes[at + native::SECOND..at + native::SECOND + 4]

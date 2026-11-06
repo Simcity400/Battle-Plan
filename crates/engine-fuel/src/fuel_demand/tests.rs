@@ -102,13 +102,13 @@ fn cold_and_later_context_index_growth_keeps_original_contexts_and_cached_faults
     for count in [8_usize, 40] {
         let mut memory = Map::default();
         memory.span(STATE, 0x800);
-        memory.span(crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA, 8);
+        memory.span(crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0, 8);
         for index in 0..count {
             let region = REGIONS + index * 0x100;
             memory.span(region, 0x80);
             memory.put(
                 region,
-                &(crate::cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+                &(crate::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             memory.put(
                 region + crate::cstrategic_region::ID,
@@ -177,10 +177,10 @@ fn captured_empty_and_negative_region_counts_do_not_dereference_weather_manager(
         let mut memory = Map::default();
         memory.span(STATE, 0x800);
         memory.span(REGION, 0x80);
-        memory.span(crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA, 8);
+        memory.span(crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0, 8);
         memory.put(
             REGION,
-            &(crate::cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         memory.put(REGION + crate::cstrategic_region::ID, &7_u32.to_le_bytes());
         memory.put(
@@ -188,7 +188,7 @@ fn captured_empty_and_negative_region_counts_do_not_dereference_weather_manager(
             &count.to_le_bytes(),
         );
         memory.put(
-            crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA,
+            crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0,
             &50_000_i64.to_le_bytes(),
         );
         // The manager pointer is readable and null; its object is absent.
@@ -237,7 +237,7 @@ fn carrier_capacity_acquires_primary_ship_formation_and_reached_module_paths() {
         registry::test_support::Fixture::index(ship_ref)
     );
     refs.put(
-        registry::LOW_ROOTS_RVA + cship::HANDLE_TYPE as usize * 8,
+        registry::LOW_ROOTS_RVA.0 + cship::HANDLE_TYPE as usize * 8,
         &0x1000_u64.to_le_bytes(),
     );
     refs.put(0x1000 + registry::COUNT, &2_u32.to_le_bytes());
@@ -268,7 +268,7 @@ fn carrier_capacity_acquires_primary_ship_formation_and_reached_module_paths() {
         memory.span(address, len);
     }
     memory.put(WING + cair_wing::POOL, &(POOL as u64).to_le_bytes());
-    memory.put(POOL, &(cair_wing_pool::VTABLE_RVA as u64).to_le_bytes());
+    memory.put(POOL, &(cair_wing_pool::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(
         POOL + cair_wing_pool::AIR_BASE_REFERENCE,
         &base_ref.to_le_bytes(),
@@ -277,14 +277,14 @@ fn carrier_capacity_acquires_primary_ship_formation_and_reached_module_paths() {
         POOL + cair_wing_pool::DEFINITION,
         &(DEFINITION as u64).to_le_bytes(),
     );
-    memory.put(BASE, &(cair_base::VTABLE_RVA as u64).to_le_bytes());
+    memory.put(BASE, &(cair_base::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(BASE + cair_base::HOST_REFERENCE, &ship_ref.to_le_bytes());
     memory.put(BASE + cair_base::CAPACITY, &(-7_i32).to_le_bytes());
-    memory.put(SHIP, &(cship::VTABLE_RVA as u64).to_le_bytes());
+    memory.put(SHIP, &(cship::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(SHIP + cship::HANDLE, &ship_ref.to_le_bytes());
     memory.put(
         DEFINITION,
-        &(csub_unit_definition::VTABLE_RVA as u64).to_le_bytes(),
+        &(csub_unit_definition::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     for kind in 0..4 {
         memory.put(

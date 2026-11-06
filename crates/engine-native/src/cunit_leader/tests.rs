@@ -116,9 +116,9 @@ fn vector(bytes: &mut [u8], at: usize, data: usize, count: u32) {
     u32_at(bytes, at + 12, count);
 }
 
-fn fixture(vtable: usize) -> Vec<u8> {
+fn fixture(vtable: Rva) -> Vec<u8> {
     let mut bytes = vec![0; 0x9000];
-    u64_at(&mut bytes, 0, (IMAGE + vtable) as u64);
+    u64_at(&mut bytes, 0, (IMAGE + vtable.0) as u64);
     u32_at(&mut bytes, TYPE, REFERENCE_TYPE);
     u32_at(&mut bytes, ID, 0x8000_0001);
     u32_at(&mut bytes, CHARACTER_TYPE, ccharacter::REFERENCE_TYPE);
@@ -129,7 +129,7 @@ fn fixture(vtable: usize) -> Vec<u8> {
     u64_at(
         &mut bytes,
         SKILL_AT,
-        (IMAGE + cunit_leader_skill::VTABLE_RVA) as u64,
+        (IMAGE + cunit_leader_skill::VTABLE_RVA.0) as u64,
     );
     bytes[SKILL_AT + cunit_leader_skill::VALID] = 1;
     u32_at(&mut bytes, SKILL_AT + cunit_leader_skill::LEVEL, 300);
@@ -166,7 +166,7 @@ fn fixture(vtable: usize) -> Vec<u8> {
         u64_at(
             &mut bytes,
             offset,
-            (IMAGE + cunit_leader_trait::VTABLE_RVA) as u64,
+            (IMAGE + cunit_leader_trait::VTABLE_RVA.0) as u64,
         );
         u32_at(&mut bytes, offset + cunit_leader_trait::TOKEN_ID, id);
         u32_at(&mut bytes, offset + cunit_leader_trait::ORDINAL, ordinal);

@@ -155,7 +155,7 @@ fn resource_database(
 ) -> Result<Result<usize, usize>, &'static str> {
     let database = read::<u64>(
         memory,
-        address(base, cstrategic_resource_database::SINGLETON_RVA)?,
+        site(base, cstrategic_resource_database::SINGLETON_RVA)?,
     )
     .and_then(|pointer| usize::try_from(pointer).ok())
     .filter(|&pointer| pointer != 0)
@@ -264,7 +264,7 @@ fn resource_database(
                 key_words[row] = u32_at(record, 0);
             },
         );
-        let vtable = address(base, cstrategic_resource::VTABLE_RVA)? as u64;
+        let vtable = site(base, cstrategic_resource::VTABLE_RVA)? as u64;
         for index in 0..len {
             let item = first + index + 1;
             if index >= readable {
@@ -765,6 +765,9 @@ fn address(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("raid state input address overflow")
 }
+fn site(base: usize, key: engine_sites::Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("raid state input address overflow")
+}
 
 const fn field(source_offset: usize, destination_offset: usize, len: usize) -> RecordField {
     RecordField {
@@ -1001,7 +1004,7 @@ fn scan_accumulator(
 
 /// `dynamic_modifier_entry::header` over an owned entry copy.
 fn modifier_entry(base: usize, bytes: &[u8]) -> Result<(u32, i32, usize), &'static str> {
-    if u64_at(bytes, 0) != address(base, dynamic_modifier_entry::VTABLE_RVA)? as u64 {
+    if u64_at(bytes, 0) != site(base, dynamic_modifier_entry::VTABLE_RVA)? as u64 {
         return Err("dynamic modifier entry vtable mismatch");
     }
     let definition = usize::try_from(u64_at(bytes, dynamic_modifier_entry::DEFINITION))
@@ -1235,7 +1238,7 @@ fn walk_inner(
         totals.unread_countries = 1;
         return Ok(());
     }
-    let vtable = address(base, cstate::VTABLE_RVA)? as u64;
+    let vtable = site(base, cstate::VTABLE_RVA)? as u64;
     let mut count = 0;
     let mut present = false;
     if !read_slice(memory, root.data, &mut bytes[..slots * 8]) {
@@ -1434,8 +1437,8 @@ fn walk_inner(
     let controllers = &mut controllers[..wanted];
 
     // Pass 2: resources, overrides and origins, in country batches.
-    let resources_vtable = address(base, ccountry_resources::VTABLE_RVA)? as u64;
-    let origin_vtable = address(base, cresource_origin::VTABLE_RVA)? as u64;
+    let resources_vtable = site(base, ccountry_resources::VTABLE_RVA)? as u64;
+    let origin_vtable = site(base, cresource_origin::VTABLE_RVA)? as u64;
     let skip = |states: &mut [Scratch], nation: &Nation, totals: &mut Totals| {
         for &(_, index) in &order[nation.first..nation.end] {
             states[index as usize].skipped = true;
@@ -1593,8 +1596,8 @@ fn walk_inner(
         *pointer = u64_at(bytes, index * 8);
     }
     let system_vtables = [
-        address(base, ccountry_supply_system::VTABLE_RVA)? as u64,
-        address(base, ccountry_supply_system::SECONDARY_VTABLE_RVA)? as u64,
+        site(base, ccountry_supply_system::VTABLE_RVA)? as u64,
+        site(base, ccountry_supply_system::SECONDARY_VTABLE_RVA)? as u64,
     ];
     let infrastructure = infrastructure_template(memory, base)?;
     // Only controllers with an origin state read their supply.
@@ -2297,7 +2300,7 @@ fn origin_states_supply(
     }
     gather(memory, spans, bytes, "pointer vector unreadable")?;
     non_null(bytes, &mut addresses[..total])?;
-    let vtable = address(base, cprovince::VTABLE_RVA)? as u64;
+    let vtable = site(base, cprovince::VTABLE_RVA)? as u64;
     records(
         memory,
         &addresses[..total],
@@ -2387,7 +2390,7 @@ fn infrastructure_template(
     memory: &impl Memory,
     base: usize,
 ) -> Result<Infrastructure, &'static str> {
-    let database = read::<u64>(memory, address(base, cbuilding_database::SINGLETON_RVA)?)
+    let database = read::<u64>(memory, site(base, cbuilding_database::SINGLETON_RVA)?)
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
         .ok_or("building database unreadable or null")?;
@@ -2414,7 +2417,7 @@ fn infrastructure_template(
 /// The state container's authenticated entry array: no country or leader, and this state's ID.
 fn container_array(base: usize, state: &Scratch) -> Result<Array, &'static str> {
     let bytes = &state.fields[STATE_CONTAINER..STATE_CONTAINER + 0x38];
-    if u64_at(bytes, 0) != address(base, cdynamic_modifier_container::VTABLE_RVA)? as u64 {
+    if u64_at(bytes, 0) != site(base, cdynamic_modifier_container::VTABLE_RVA)? as u64 {
         return Err("state dynamic modifier container vtable mismatch");
     }
     if u64_at(bytes, cdynamic_modifier_container::COUNTRY) != 0

@@ -139,6 +139,8 @@ pub(crate) use collector_primitives::raw_memory;
 pub(crate) use collector_raw::raw;
 #[cfg(test)]
 mod read_accounting_tests;
+mod site_withholding;
+mod worker_panic;
 pub(crate) use collector_air_relations::relation_changes;
 pub(crate) use collector_metadata::roster;
 pub(crate) use collector_observers::retreat_ban_changes;
@@ -242,3 +244,16 @@ pub(crate) use collector_intel::{
     network_auxiliary, propaganda_changes, source_changes as intel_source_changes,
 };
 pub(crate) use collector_naval_management::changes as naval_management_changes;
+
+/// A hook site's live address and the 16 bytes its hook replaces. A withheld site is refused
+/// the way a differing sentinel was, by the withheld text that names it.
+pub(crate) fn located_hook(
+    base: usize,
+    key: engine_sites::Rva,
+) -> Result<(usize, [u8; 16]), &'static str> {
+    engine_sites::hook(base, key)
+        .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+        .inspect_err(|cause| {
+            hook::installation::refused(hook::installation::Kind::Sentinel, None, cause)
+        })
+}

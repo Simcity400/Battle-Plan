@@ -126,26 +126,26 @@ impl World {
             root: Box::new(0),
             base: 0,
         };
-        world.base = (&*world.root as *const u64 as usize) - cgame_state::SINGLETON_RVA;
+        world.base = (&*world.root as *const u64 as usize) - cgame_state::SINGLETON_RVA.0;
         *world.root = world.at(GAME) as u64;
         world.u32(GAME + cgame_state::CURRENT_HOUR, 60_827_795);
-        world.vtable(NUKE, cnuke::VTABLE_RVA);
+        world.vtable(NUKE, cnuke::VTABLE_RVA.0);
         world.u64(NUKE + cnuke::COUNTRY, world.at(COUNTRY) as u64);
         world.u32(NUKE + cnuke::TYPE, 0);
         world.array(GAME + cgame_state::COUNTRIES, SLOTS, 3);
         world.array(GAME + cgame_state::COUNTRY_LINKS, LINKS, 3);
         for (slot, country) in [RESERVED, COUNTRY, OWNER].into_iter().enumerate() {
             world.u64(SLOTS + slot * 8, world.at(country) as u64);
-            world.vtable(country, ccountry::VTABLE_RVA);
+            world.vtable(country, ccountry::VTABLE_RVA.0);
             world.u32(country + ccountry::ID, slot as u32);
             world.u32(country + ccountry::SURRENDER_TARGET, 0x100 + slot as u32);
             world.u32(LINKS + slot * 4, slot as u32);
         }
-        world.vtable(PROVINCE, cprovince::VTABLE_RVA);
+        world.vtable(PROVINCE, cprovince::VTABLE_RVA.0);
         world.u32(PROVINCE + cprovince::ID, 13_000);
         world.u64(PROVINCE + cprovince::STATE, world.at(STATE) as u64);
         world.u32(PROVINCE + cprovince::CONTROLLER, 77);
-        world.vtable(STATE, cstate::VTABLE_RVA);
+        world.vtable(STATE, cstate::VTABLE_RVA.0);
         world.u32(STATE + cstate::ID, 1_204);
         world.u32(STATE + cstate::OWNER, 2);
         world

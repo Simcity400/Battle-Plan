@@ -720,7 +720,7 @@ pub(super) fn copy_view_carrying(
     }
     // Local vtable and reference-type authentication, checked after the
     // scatter exactly like the typed view.
-    let expected = base.checked_add(ccharacter::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, ccharacter::VTABLE_RVA)? as u64;
     let identity = view.field(job, 0);
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected
         || u32::from_le_bytes(
@@ -1302,7 +1302,7 @@ pub(super) fn copy_character_template(
         dead.characters = true;
         return;
     };
-    let Some(expected) = base.checked_add(ccharacter_template::VTABLE_RVA) else {
+    let Some(expected) = engine_sites::at(base, ccharacter_template::VTABLE_RVA) else {
         dead.characters = true;
         return;
     };
@@ -1340,7 +1340,7 @@ pub(super) fn copy_leaders(
     if dead.leaders {
         return true;
     }
-    let expected = match base.checked_add(ccountry_leader::VTABLE_RVA) {
+    let expected = match engine_sites::at(base, ccountry_leader::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => {
             dead.leaders = true;
@@ -1460,7 +1460,7 @@ pub(super) fn copy_advisors(
     if dead.advisors {
         return true;
     }
-    let expected = match base.checked_add(cadvisor::VTABLE_RVA) {
+    let expected = match engine_sites::at(base, cadvisor::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => {
             dead.advisors = true;
@@ -1643,8 +1643,16 @@ pub(super) fn parse_unit_identity(
     start: usize,
 ) -> Option<(u8, u32)> {
     let vtable = pool_u64(job, start);
-    let relative = usize::try_from(vtable).ok()?.checked_sub(base)?;
-    let kind = match relative {
+    let kind = match engine_sites::which(
+        base,
+        usize::try_from(vtable).ok()?,
+        &[
+            cunit_leader::VTABLE_RVA,
+            carmy_leader::VTABLE_RVA,
+            cnavy_leader::VTABLE_RVA,
+            coperative_leader::VTABLE_RVA,
+        ],
+    )? {
         cunit_leader::VTABLE_RVA => cunit_leader::KIND_BASE,
         carmy_leader::VTABLE_RVA => cunit_leader::KIND_ARMY,
         cnavy_leader::VTABLE_RVA => cunit_leader::KIND_NAVY,
@@ -1870,7 +1878,7 @@ pub(super) fn copy_unit_skill(
         }
         Some(0) => {}
         Some(skill) => {
-            let skill_expected = match base.checked_add(cunit_leader_skill::VTABLE_RVA) {
+            let skill_expected = match engine_sites::at(base, cunit_leader_skill::VTABLE_RVA) {
                 Some(expected) => expected as u64,
                 None => {
                     dead.units = true;
@@ -2107,9 +2115,7 @@ fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize
     let mut bytes = [0_u8; naming::INPUT_SPAN];
     bytes.copy_from_slice(&job.log.bytes[start..start + naming::INPUT_SPAN]);
     if Some(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
-        != base
-            .checked_add(naming::VTABLE_RVA)
-            .map(|address| address as u64)
+        != engine_sites::at(base, naming::VTABLE_RVA).map(|address| address as u64)
         || i32::from_le_bytes(bytes[naming::TYPE..naming::TYPE + 4].try_into().unwrap()) != 2
     {
         return;
@@ -2510,7 +2516,7 @@ pub(super) fn copy_roster_headers(
         .ok()
         .filter(|&manager| manager != 0)?;
     let vtable_start = job.log.take(memory, manager, 8, source_mask)?;
-    let expected = base.checked_add(ccharacter_manager::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, ccharacter_manager::VTABLE_RVA)? as u64;
     if pool_u64(job, vtable_start) != expected {
         return None;
     }
@@ -2787,7 +2793,7 @@ pub(super) fn copy_census_leaders(
     let needs = |occurrence: census::Occurrence| {
         census::map_head(occurrence.leaders()).is_none_or(|(_, count)| count != 0)
     };
-    let omissible = base.checked_add(ccountry_leader::VTABLE_RVA).is_some();
+    let omissible = engine_sites::at(base, ccountry_leader::VTABLE_RVA).is_some();
     let mut heads = [0; SENTINEL_BATCH];
     let mut sentinels = [0; SENTINEL_BATCH * SENTINEL];
     let mut next = 0;

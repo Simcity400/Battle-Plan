@@ -62,14 +62,14 @@ fn world() -> Vec<u8> {
         let slot = index + 1;
         p64(&mut bytes, 0x2000 + slot * 8, country as u64);
         p32(&mut bytes, 0x2100 + slot * 4, slot as u32);
-        p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA) as u64);
+        p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA.0) as u64);
         p32(&mut bytes, country + ccountry::ID, slot as u32);
         let pool = POOLS[index];
         p64(&mut bytes, country + ccountry::CHARACTERS, pool as u64);
         p64(
             &mut bytes,
             pool,
-            (BASE + engine_native::ccountry_characters::VTABLE_RVA) as u64,
+            (BASE + engine_native::ccountry_characters::VTABLE_RVA.0) as u64,
         );
         p64(
             &mut bytes,
@@ -84,7 +84,7 @@ fn world() -> Vec<u8> {
         for ordinal in 0..2 {
             let (role, character) = advisor(index, ordinal);
             p64(&mut bytes, array + ordinal * 8, role as u64);
-            p64(&mut bytes, role, (BASE + cadvisor::VTABLE_RVA) as u64);
+            p64(&mut bytes, role, (BASE + cadvisor::VTABLE_RVA.0) as u64);
             p64(&mut bytes, role + cadvisor::CHARACTER, character as u64);
             string(
                 &mut bytes,
@@ -94,7 +94,7 @@ fn world() -> Vec<u8> {
             p64(
                 &mut bytes,
                 character,
-                (BASE + ccharacter::VTABLE_RVA) as u64,
+                (BASE + ccharacter::VTABLE_RVA.0) as u64,
             );
             p32(
                 &mut bytes,
@@ -116,7 +116,7 @@ fn world() -> Vec<u8> {
     p64(
         &mut bytes,
         MANAGER,
-        (BASE + ccharacter_manager::VTABLE_RVA) as u64,
+        (BASE + ccharacter_manager::VTABLE_RVA.0) as u64,
     );
     let table = MANAGER + tokens::TABLE;
     p64(&mut bytes, table + tokens::BUCKETS, BUCKETS as u64);

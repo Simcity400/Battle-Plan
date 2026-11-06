@@ -3,7 +3,7 @@ use crate::memory::SliceMemory;
 
 fn bytes(slot: u32) -> [u8; STRIDE] {
     let mut bytes = [0; STRIDE];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[ID..ID + 4].copy_from_slice(&slot.to_le_bytes());
     bytes[SNOW..SNOW + 8].copy_from_slice(&((1_i64 << 41) + 7).to_le_bytes());
     bytes[PERMANENT_SNOW..PERMANENT_SNOW + 8].copy_from_slice(&(-5_i64).to_le_bytes());
@@ -100,12 +100,12 @@ fn temperature_and_raw_mud_failures_withhold_the_row_without_narrowing() {
     }
     for raw in [i64::MIN, -1, 0, i64::MAX] {
         let mut record = [0; RECORD_BYTES];
-        record[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        record[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         record[28..36].copy_from_slice(&raw.to_le_bytes());
         record[36] = 255;
-        let row = decode_record(0, &record, FIELDS.len(), VTABLE_RVA).unwrap();
+        let row = decode_record(0, &record, FIELDS.len(), VTABLE_RVA.0).unwrap();
         assert_eq!((row.temperature, row.raw_mud), (raw, 255));
-        assert!(decode_record(0, &record, FIELDS.len() - 1, VTABLE_RVA).is_err());
+        assert!(decode_record(0, &record, FIELDS.len() - 1, VTABLE_RVA.0).is_err());
     }
 }
 

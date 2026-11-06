@@ -1,12 +1,13 @@
 //! CFactionSystem's autonomous live roster, with signed capacity/count geometry.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cdiplomacy_status, cfaction, cgame_state, cpdx_array::Array, read,
     walk::Outcome,
 };
 
 /// CFactionSystem primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_2fd0;
+pub const VTABLE_RVA: Rva = Rva(0x029e_2fd0);
 
 /// CFactionSystem faction pointer-array data.
 pub const FACTIONS: usize = 0x20;
@@ -32,8 +33,7 @@ pub fn roster(memory: &impl Memory, base: usize, game_state: usize) -> Result<Ar
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("faction system unreadable or null")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("faction system vtable mismatch");
@@ -53,7 +53,9 @@ pub fn accounts(memory: &impl Memory, base: usize, state: usize) -> Result<Array
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| *value != 0)
         .ok_or("faction account system unavailable")?;
-    if read::<u64>(memory, system) != base.checked_add(VTABLE_RVA).map(|value| value as u64) {
+    let vtable =
+        engine_sites::at(base, VTABLE_RVA).ok_or("faction account system vtable mismatch")?;
+    if read::<u64>(memory, system) != Some(vtable as u64) {
         return Err("faction account system vtable mismatch");
     }
     system
@@ -221,8 +223,7 @@ fn country_faction(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("country diplomacy unreadable or null")?;
-    let expected = base
-        .checked_add(cdiplomacy_status::VTABLE_RVA)
+    let expected = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
         .ok_or("module address overflow")?;
     if read::<u64>(memory, diplomacy) != Some(expected as u64) {
         return Err("country diplomacy vtable mismatch");
@@ -311,14 +312,14 @@ mod tests {
             put32(&mut bytes, LINKS + raw * 4, canonical);
         }
         for (country, id, diplomacy) in [(C1, 7, D1), (C2, 2, D2)] {
-            put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            put64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
             put32(&mut bytes, country + ccountry::ID, id);
             put64(
                 &mut bytes,
                 country + ccountry::DIPLOMACY_STATUS,
                 diplomacy as u64,
             );
-            put64(&mut bytes, diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+            put64(&mut bytes, diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
             put64(
                 &mut bytes,
                 diplomacy + cdiplomacy_status::COUNTRY,
@@ -331,7 +332,7 @@ mod tests {
             );
         }
         put64(&mut bytes, GS + cgame_state::FACTION_SYSTEM, SYSTEM as u64);
-        put64(&mut bytes, SYSTEM, VTABLE_RVA as u64);
+        put64(&mut bytes, SYSTEM, VTABLE_RVA.0 as u64);
         array(&mut bytes, SYSTEM + FACTIONS, FACTION_POINTERS, 4, 2);
         put64(&mut bytes, FACTION_POINTERS, FIRST as u64);
         put64(&mut bytes, FACTION_POINTERS + 8, SECOND as u64);
@@ -341,12 +342,12 @@ mod tests {
             (FIRST, FIRST_ID, FIRST_COLOR, 0),
             (SECOND, SECOND_ID, [1.0; 4], 1),
         ] {
-            put64(&mut bytes, faction, cfaction::VTABLE_RVA as u64);
+            put64(&mut bytes, faction, cfaction::VTABLE_RVA.0 as u64);
             put64(&mut bytes, faction + cfaction::REFERENCE, id);
             put64(
                 &mut bytes,
                 faction + cfaction::COLOR,
-                cfaction::COLOR_VTABLE_RVA as u64,
+                cfaction::COLOR_VTABLE_RVA.0 as u64,
             );
             for (index, component) in color.into_iter().enumerate() {
                 put32(
@@ -366,7 +367,7 @@ mod tests {
         put64(
             &mut bytes,
             TEMPLATE_OBJECT,
-            crate::cfaction_template::VTABLE_RVA as u64,
+            crate::cfaction_template::VTABLE_RVA.0 as u64,
         );
         put32(
             &mut bytes,
@@ -395,9 +396,9 @@ mod tests {
         let mut bytes = fixture();
         bytes.resize(0x11000, 0);
         put64(&mut bytes, COUNTRIES, C0 as u64);
-        put64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
+        put64(&mut bytes, C0, ccountry::VTABLE_RVA.0 as u64);
         put64(&mut bytes, C0 + ccountry::DIPLOMACY_STATUS, D0 as u64);
-        put64(&mut bytes, D0, cdiplomacy_status::VTABLE_RVA as u64);
+        put64(&mut bytes, D0, cdiplomacy_status::VTABLE_RVA.0 as u64);
         put64(&mut bytes, D0 + cdiplomacy_status::COUNTRY, C0 as u64);
         put64(&mut bytes, D0 + cdiplomacy_status::FACTION, FIRST as u64);
         put32(&mut bytes, FIRST + cfaction::MEMBER_COUNT, 3);

@@ -87,7 +87,7 @@ fn fixture() -> Image {
     m.u32(LINKS + 8, 1);
     m.u32(LINKS + 12, 2);
     for (country, id) in [(COUNTRY, 2), (ENEMY, 3)] {
-        m.u64(country, ccountry::VTABLE_RVA as u64);
+        m.u64(country, ccountry::VTABLE_RVA.0 as u64);
         m.u32(country + ccountry::ID, id);
     }
     m.accumulator(
@@ -96,11 +96,11 @@ fn fixture() -> Image {
         &[(0x1a, -10_000), (0x184, 200_000)],
     );
     m.u64(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    m.u64(DIPLOMACY, cdiplomacy_status::VTABLE_RVA as u64);
+    m.u64(DIPLOMACY, cdiplomacy_status::VTABLE_RVA.0 as u64);
     m.array(DIPLOMACY + cdiplomacy_status::RELATIONS, MATRIX, 3);
     m.put(MATRIX, &[0; 24]);
     m.u64(MATRIX + 16, RELATION as u64);
-    m.u64(RELATION, crelation_status::VTABLE_RVA as u64);
+    m.u64(RELATION, crelation_status::VTABLE_RVA.0 as u64);
     m.accumulator(
         RELATION + RELATION_ACCUMULATOR,
         0x4c00,
@@ -109,10 +109,10 @@ fn fixture() -> Image {
     // Province 5 of 8, in a state controlled by country 3.
     m.array(GS + cgame_state::PROVINCES, PROVINCE_TABLE, 8);
     m.u64(PROVINCE_TABLE + 5 * 8, PROVINCE as u64);
-    m.u64(PROVINCE, cprovince::VTABLE_RVA as u64);
+    m.u64(PROVINCE, cprovince::VTABLE_RVA.0 as u64);
     m.u32(PROVINCE + cprovince::ID, 5);
     m.u64(PROVINCE + cprovince::STATE, STATE as u64);
-    m.u64(STATE, cstate::VTABLE_RVA as u64);
+    m.u64(STATE, cstate::VTABLE_RVA.0 as u64);
     m.u32(STATE + cstate::CONTROLLER, 3);
     // The group, its leader and its HQ provider.
     m.u64(GROUP + corders_group::HANDLE, HANDLE);
@@ -136,7 +136,7 @@ fn fixture() -> Image {
     m.u64(0x7500, 0x9999);
     m.u64(0x7508, MEMBER as u64);
     // Modifier metadata: the three keys enabled, unclamped.
-    m.u64(modifier_definition::TABLE_RVA, DEFINITIONS as u64);
+    m.u64(modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
     for key in [0x1a_usize, 0x184, 0x1ce] {
         let row = DEFINITIONS + key * modifier_definition::STRIDE;
         m.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
@@ -305,7 +305,7 @@ fn route_fixture() -> Image {
     m.u64(DIPLOMACY + cdiplomacy_status::COUNTRY, COUNTRY as u64);
     m.u64(MATRIX, ZERO as u64);
     for (status, target) in [(ZERO, 0_u32), (RELATION, 3)] {
-        m.u64(status, crelation_status::VTABLE_RVA as u64);
+        m.u64(status, crelation_status::VTABLE_RVA.0 as u64);
         m.u64(
             status + crelation_status::DIPLOMACY_STATUS,
             DIPLOMACY as u64,

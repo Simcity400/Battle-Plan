@@ -321,7 +321,9 @@ impl Live {
                 "player command classes name kinds this executable lacks",
             ));
         }
-        let state = read::<u64>(memory, base + cgame_state::SINGLETON_RVA).unwrap_or(0) as usize;
+        let state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
+            .and_then(|at| read::<u64>(memory, at))
+            .unwrap_or(0) as usize;
         let roster = Array::read(
             memory,
             state.saturating_add(cgame_state::PLAYER_RECORDS),
@@ -750,7 +752,8 @@ impl Live {
                 }
                 return Ok(());
             }
-            let state = read::<u64>(memory, self.base + cgame_state::SINGLETON_RVA)
+            let state = engine_sites::at(self.base, cgame_state::SINGLETON_RVA)
+                .and_then(|at| read::<u64>(memory, at))
                 .filter(|&pointer| pointer != 0)
                 .ok_or("command world unreadable")? as usize;
             let campaign = engine_native::msvc_string::read_text::<36>(
@@ -763,7 +766,8 @@ impl Live {
                 campaign: campaign.bytes,
                 hour: read(memory, state + cgame_state::CURRENT_HOUR)
                     .ok_or("command phase hour unreadable")?,
-                load_signal: read(memory, self.base + cgame_state::PLAY_SESSION_STARTED_AT_RVA)
+                load_signal: engine_sites::at(self.base, cgame_state::PLAY_SESSION_STARTED_AT_RVA)
+                    .and_then(|at| read(memory, at))
                     .ok_or("command phase load signal unreadable")?,
                 qpc: time,
             };
@@ -1373,14 +1377,13 @@ pub struct Hooks {
 impl Hooks {
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let result = (|| -> Result<Vec<Tap>, Cow<'static, str>> {
-            let mut sentinels = Vec::new();
-            for site in &native::SITES {
-                let sentinel = read::<[u8; 16]>(memory, base + site.rva)
-                    .ok_or("command observer site unreadable")?;
-                if native::fingerprint(&sentinel) != site.fingerprint {
-                    return Err("command observer site differs from supported build".into());
+            let mut located = [(0, [0; 16]); native::SITES.len()];
+            for (site, slot) in native::SITES.iter().zip(&mut located) {
+                *slot = engine_sites::hook(base, site.rva)
+                    .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))?;
+                if crate::hook::tap_span(&slot.1) != Ok(site.span) {
+                    return Err("command observer site instruction span differs".into());
                 }
-                sentinels.push(sentinel);
             }
             let live = engine_allocation::boxed(
                 Live::new(memory, base).map_err(|error| Cow::Owned(error.to_string()))?,
@@ -1391,12 +1394,11 @@ impl Hooks {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
             LIVE.store(pointer, Ordering::Release);
-            native::SITES
-                .iter()
-                .zip(sentinels)
+            located
+                .into_iter()
                 .enumerate()
-                .map(|(index, (site, sentinel))| unsafe {
-                    Tap::new(base + site.rva, observe, index, sentinel).map_err(|reason| {
+                .map(|(index, (at, original))| unsafe {
+                    Tap::new(at, observe, index, original).map_err(|reason| {
                         Cow::Owned(format!("player command site {index}: {reason}"))
                     })
                 })
@@ -1529,10 +1531,10 @@ pub(crate) mod tests {
             let mut text = campaign.to_vec();
             text.push(0);
             Self(BTreeMap::from([
-                (native::IDLER_RVA, 0x5000_u64.to_le_bytes().to_vec()),
+                (native::IDLER_RVA.0, 0x5000_u64.to_le_bytes().to_vec()),
                 (
                     0x5000,
-                    (native::IN_GAME_IDLER_VTABLE_RVA as u64)
+                    (native::IN_GAME_IDLER_VTABLE_RVA.0 as u64)
                         .to_le_bytes()
                         .to_vec(),
                 ),
@@ -1541,11 +1543,11 @@ pub(crate) mod tests {
                 (0x2000, state),
                 (0x4000, text),
                 (
-                    cgame_state::SINGLETON_RVA,
+                    cgame_state::SINGLETON_RVA.0,
                     0x2000_u64.to_le_bytes().to_vec(),
                 ),
                 (
-                    cgame_state::PLAY_SESSION_STARTED_AT_RVA,
+                    cgame_state::PLAY_SESSION_STARTED_AT_RVA.0,
                     5_i64.to_le_bytes().to_vec(),
                 ),
             ]))
@@ -1601,10 +1603,7 @@ pub(crate) mod tests {
 
     impl Memory for LoadingMemory<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            assert!(matches!(
-                address,
-                native::IDLER_RVA | 0x5000 | 0x6000 | 0x7000
-            ));
+            assert!(address == native::IDLER_RVA.0 || matches!(address, 0x5000 | 0x6000 | 0x7000));
             assert_eq!(output.len(), 8);
             if address == 0x7000 {
                 self.headers.set(self.headers.get() + 1);
@@ -1647,7 +1646,7 @@ pub(crate) mod tests {
             for category in [Some(Category::Army), None] {
                 for world in [0, 1] {
                     let (live, mut memory) = accepted_fixture(category);
-                    memory.0.remove(&native::IDLER_RVA);
+                    memory.0.remove(&native::IDLER_RVA.0);
                     let loading = LoadingMemory {
                         fixture: &memory,
                         headers: std::cell::Cell::new(0),
@@ -1684,7 +1683,7 @@ pub(crate) mod tests {
             for absent in [false, true] {
                 let (live, mut memory) = accepted_fixture(Some(category));
                 if absent {
-                    memory.0.remove(&native::IDLER_RVA);
+                    memory.0.remove(&native::IDLER_RVA.0);
                 } else {
                     memory.0.insert(0x5000, 1_u64.to_le_bytes().to_vec());
                 }
@@ -1708,7 +1707,7 @@ pub(crate) mod tests {
         for drain_between in [false, true] {
             let (live, mut memory) = accepted_fixture(Some(Category::Army));
             attempt_mode(&live, &memory, 1, 100, 1).unwrap();
-            memory.0.remove(&native::IDLER_RVA);
+            memory.0.remove(&native::IDLER_RVA.0);
             assert_eq!(
                 attempt_observe(&live, &memory, 2, 1, 105),
                 Err("command accepted before the game is in play")
@@ -1862,7 +1861,7 @@ pub(crate) mod tests {
                 seen: true,
                 ..Default::default()
             };
-            memory.0.remove(&native::IDLER_RVA);
+            memory.0.remove(&native::IDLER_RVA.0);
             attempt_mode(&live, &memory, 7, 105, 2).unwrap();
             let mut drain = Drain::default();
             let mut groups = drain.take_live(&live, false).unwrap();
@@ -1928,7 +1927,7 @@ pub(crate) mod tests {
             live.closed_world.store(0, Ordering::Relaxed);
             let mut drain = Drain::default();
             assert!(drain.take_live(&live, true).unwrap().is_empty());
-            memory.0.remove(&native::IDLER_RVA);
+            memory.0.remove(&native::IDLER_RVA.0);
             assert_eq!(
                 attempt_observe(&live, &memory, 2, 0, 90),
                 Err("command accepted before the game is in play")
@@ -1974,16 +1973,16 @@ pub(crate) mod tests {
             ..Default::default()
         })
         .unwrap();
-        memory.0.remove(&native::IDLER_RVA);
+        memory.0.remove(&native::IDLER_RVA.0);
         attempt_mode(&live, &memory, 1, 105, 2).unwrap();
         memory
             .0
-            .insert(native::IDLER_RVA, 0x5000_u64.to_le_bytes().to_vec());
+            .insert(native::IDLER_RVA.0, 0x5000_u64.to_le_bytes().to_vec());
         memory.0.get_mut(&0x2000).unwrap()
             [cgame_state::CURRENT_HOUR..cgame_state::CURRENT_HOUR + 4]
             .copy_from_slice(&12_i32.to_le_bytes());
         memory.0.insert(
-            cgame_state::PLAY_SESSION_STARTED_AT_RVA,
+            cgame_state::PLAY_SESSION_STARTED_AT_RVA.0,
             6_i64.to_le_bytes().to_vec(),
         );
         attempt_mode(&live, &memory, 1, 110, 3).unwrap();
@@ -2065,12 +2064,12 @@ pub(crate) mod tests {
             }
             match variant {
                 0 => {
-                    memory.0.remove(&native::IDLER_RVA);
+                    memory.0.remove(&native::IDLER_RVA.0);
                 }
                 1 => {
                     memory
                         .0
-                        .insert(native::IDLER_RVA, 0_u64.to_le_bytes().to_vec());
+                        .insert(native::IDLER_RVA.0, 0_u64.to_le_bytes().to_vec());
                 }
                 2 => {
                     memory.0.insert(0x5000, 1_u64.to_le_bytes().to_vec());
@@ -2229,7 +2228,7 @@ pub(crate) mod tests {
                 };
             }
             if absent {
-                memory.0.remove(&native::IDLER_RVA);
+                memory.0.remove(&native::IDLER_RVA.0);
             } else {
                 memory.0.insert(0x5000, 1_u64.to_le_bytes().to_vec());
             }

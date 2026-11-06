@@ -200,7 +200,7 @@ impl Runtime {
                             held.pending_known = true;
                         } else if let Some(header) =
                             engine_native::read::<[u8; 12]>(memory, pending).filter(|header| {
-                                base.checked_add(nproject_cproject::REWARD_VTABLE_RVA)
+                                engine_sites::at(base, nproject_cproject::REWARD_VTABLE_RVA)
                                     .is_some_and(|expected| {
                                         u64::from_le_bytes(header[..8].try_into().unwrap())
                                             == expected as u64
@@ -740,17 +740,19 @@ mod tests {
         bytes[nproject_cproject::PENDING_REWARD..nproject_cproject::PENDING_REWARD + 8]
             .copy_from_slice(&0x11c0u64.to_le_bytes());
         bytes[0x1c0..0x1c8]
-            .copy_from_slice(&(nproject_cproject::REWARD_VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(nproject_cproject::REWARD_VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x1c8..0x1cc].copy_from_slice(&123u32.to_le_bytes());
         let store = nproject_cproject::VARIABLES;
         bytes[store..store + 8]
-            .copy_from_slice(&(engine_scripts::cvariables::VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(engine_scripts::cvariables::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[store + engine_scripts::cvariables::SEED
             ..store + engine_scripts::cvariables::SEED + 4]
             .copy_from_slice(&7u32.to_le_bytes());
         bytes[store + engine_scripts::cvariables::STORAGE
             ..store + engine_scripts::cvariables::STORAGE + 8]
-            .copy_from_slice(&(engine_scripts::cvariables::EMPTY_STORAGE_RVA as u64).to_le_bytes());
+            .copy_from_slice(
+                &(engine_scripts::cvariables::EMPTY_STORAGE_RVA.0 as u64).to_le_bytes(),
+            );
         let row = nproject_cproject::Row {
             owner: 5_000,
             local_id: 9,

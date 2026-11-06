@@ -36,9 +36,10 @@ use crate::{
     ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as logs, read, read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Combat-log manager primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_a260;
+pub const VTABLE_RVA: Rva = Rva(0x029d_a260);
 /// CPdxArray of group-log pointers, appended by writers and serialized in order.
 pub const GROUPS: usize = 0x08;
 /// Manager raw country link, serialized as a tag.
@@ -48,11 +49,7 @@ pub const SIZE: usize = 0x28;
 
 /// Per-country prune entry; RCX is the manager. It prunes old month entries,
 /// then swap-removes and destroys group logs that are empty or no longer resolve.
-pub const PRUNE_RVA: usize = 0x00d3_a9f0;
-/// Prune-entry instruction sentinel.
-pub const PRUNE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xff, 0x48, 0x8b, 0xf1, 0x39,
-];
+pub const PRUNE_RVA: Rva = Rva(0x00d3_a9f0);
 
 /// Row kind of the recovered array; kinds 0 to 3 are the stored loss reasons.
 pub const RECOVERED_KIND: u8 = 4;
@@ -511,10 +508,8 @@ fn for_each_manager<M: Memory, T>(
     mut prepare: impl FnMut(&mut T, usize) -> Result<(), &'static str>,
     mut visit: impl FnMut(&mut T, &M, &Vtables, u32, Array) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    let relocate = |rva: usize| {
-        base.checked_add(rva)
-            .ok_or("combat log module address overflow")
-    };
+    let relocate =
+        |key: Rva| engine_sites::at(base, key).ok_or("combat log module address overflow");
     let vtables = Vtables {
         manager: relocate(VTABLE_RVA)? as u64,
         group: relocate(logs::VTABLE_RVA)? as u64,
@@ -909,10 +904,8 @@ pub fn deleted_logs(
     manager: usize,
     rows: &mut [Row],
 ) -> Result<(u32, Outcome), &'static str> {
-    let relocate = |rva: usize| {
-        base.checked_add(rva)
-            .ok_or("combat log module address overflow")
-    };
+    let relocate =
+        |key: Rva| engine_sites::at(base, key).ok_or("combat log module address overflow");
     let vtables = Vtables {
         manager: relocate(VTABLE_RVA)? as u64,
         group: relocate(logs::VTABLE_RVA)? as u64,

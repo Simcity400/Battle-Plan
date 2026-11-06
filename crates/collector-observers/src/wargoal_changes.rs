@@ -223,24 +223,16 @@ impl Hooks {
     /// # Safety
     /// The host has authenticated the image and owns patch publication and
     /// quiescence for the enclosing country-input hook family.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         BASE.store(base, Ordering::Release);
         for site in &mutations::SITES {
-            let bytes = base
-                .checked_add(site.rva)
-                .and_then(|p| engine_native::read::<[u8; 16]>(memory, p));
-            if bytes != Some(site.sentinel) {
-                let cause = if bytes.is_none() {
-                    "instruction bytes unreadable"
-                } else {
-                    "instruction bytes differ"
-                };
-                return Err(format!(
+            crate::verified(base, site.rva).map_err(|cause| {
+                format!(
                     "wargoal_changes hook {} verification failed: {cause}",
                     site.name
-                ));
-            }
+                )
+            })?;
         }
         {
             let callbacks = [
@@ -262,7 +254,8 @@ impl Hooks {
                 prune_activities as *const () as usize,
             ];
             for (i, site) in mutations::SITES.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[i], site.sentinel) }
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook = unsafe { Hook::new(code.address, callbacks[i], code.sentinel::<16>()?) }
                     .map_err(|cause| {
                         format!(
                             "wargoal_changes hook {} construction failed: {cause}",
@@ -309,6 +302,14 @@ impl Drop for Hooks {
     }
 }
 
+/// Whether a payload's vtable may be a justification; a withheld vtable keeps every payload.
+fn justification(vtable: u64) -> bool {
+    engine_sites::at(
+        BASE.load(Ordering::Acquire),
+        input::JUSTIFICATION_VTABLE_RVA,
+    )
+    .is_none_or(|expected| expected as u64 == vtable)
+}
 macro_rules! callback {
     ($name:ident,$site:expr) => {
         unsafe extern "system" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
@@ -319,24 +320,12 @@ macro_rules! callback {
             // The shared daily activity writer is reached by other activity
             // types too. Only justification payloads demand this capture.
             let interested = !matches!(site.receiver, Receiver::Activity)
-                || engine_native::read::<u64>(&memory, a).is_none_or(|v| {
-                    Some(v)
-                        == BASE
-                            .load(Ordering::Acquire)
-                            .checked_add(input::JUSTIFICATION_VTABLE_RVA)
-                            .map(|p| p as u64)
-                })
+                || engine_native::read::<u64>(&memory, a).is_none_or(justification)
                 || site.name == "read_activity";
             // Other activity types do not demand payloads on insertion.
             let interested = interested
                 && (!matches!(site.receiver, Receiver::ActivityInsert)
-                    || engine_native::read::<u64>(&memory, b).is_none_or(|v| {
-                        Some(v)
-                            == BASE
-                                .load(Ordering::Acquire)
-                                .checked_add(input::JUSTIFICATION_VTABLE_RVA)
-                                .map(|p| p as u64)
-                    }))
+                    || engine_native::read::<u64>(&memory, b).is_none_or(justification))
                 && (!matches!(site.receiver, Receiver::ActivityPrune)
                     || a.checked_add(input::ACTIVITIES + 12)
                         .and_then(|p| engine_native::read::<u32>(&memory, p))
@@ -410,22 +399,16 @@ mod tests {
     #[test]
     fn hook_verification_errors_name_family_site_and_cause() {
         let first = &mutations::SITES[0];
-        for bytes in [&[][..], &[0_u8; 16][..]] {
-            let memory = engine_native::memory::SliceMemory {
-                base: first.rva,
-                bytes,
-            };
-            let error = unsafe { Hooks::new(&memory, 0) }
-                .err()
-                .expect("bad instruction bytes must name the failed hook");
-            assert!(error.contains("wargoal_changes"));
-            assert!(error.contains(first.name));
-            assert!(error.contains(if bytes.is_empty() {
-                "unreadable"
-            } else {
-                "differ"
-            }));
-        }
+        let memory = engine_native::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let error = unsafe { Hooks::new(&memory, 0) }
+            .err()
+            .expect("an unlocated site must name the failed hook");
+        assert!(error.contains("wargoal_changes"));
+        assert!(error.contains(first.name));
+        assert!(error.contains("withheld"));
     }
 
     #[test]

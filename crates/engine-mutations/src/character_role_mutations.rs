@@ -54,6 +54,7 @@
 //! Scientist rows and operative links are read every hour and need no site.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// Index of each site in [`MUTATIONS`].
 pub const COUNTRY_LEADER_MODIFIERS: usize = 0;
@@ -69,73 +70,41 @@ pub const MUTATIONS: [MutationSite; 8] = [
     // Leader modifier rebuilding (leader); character at `ccountry_leader::CHARACTER`.
     MutationSite {
         name: "country_leader_modifiers",
-        rva: 0x1050ba0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24,
-            0x20, 0x55,
-        ],
+        rva: Rva(0x1050ba0),
     },
     // Leader destruction (leader); character at `ccountry_leader::CHARACTER`.
     MutationSite {
         name: "country_leader_destroy",
-        rva: 0x104e6e0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0xbf,
-            0xf1, 0x9a,
-        ],
+        rva: Rva(0x104e6e0),
     },
     // Leader-map try_emplace(map = the character's leader map, result, key, value).
     MutationSite {
         name: "country_leader_map_insert",
-        rva: 0x343ef0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-            0x18, 0x48,
-        ],
+        rva: Rva(0x343ef0),
     },
     // Role builder (out, character, definition) of add_country_leader_role.
     MutationSite {
         name: "country_leader_create",
-        rva: 0x104f8d0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24,
-            0x08, 0x55,
-        ],
+        rva: Rva(0x104f8d0),
     },
     // Advisor modifier rebuild (advisor); character at `cadvisor::CHARACTER`.
     MutationSite {
         name: "advisor_modifiers",
-        rva: 0x1334c90,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0x1334c90),
     },
     // Leader-ideology effect (effect, scope); names no character.
     MutationSite {
         name: "country_leader_ideology",
-        rva: 0x379e30,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf9, 0x48,
-            0x8d, 0x4a,
-        ],
+        rva: Rva(0x379e30),
     },
     // Name setter (character, name string).
     MutationSite {
         name: "character_name",
-        rva: 0x102a770,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x56, 0x57, 0x41, 0x56,
-            0x48, 0x83,
-        ],
+        rva: Rva(0x102a770),
     },
     // Character identity repair (character).
     MutationSite {
         name: "character_repair",
-        rva: 0x1028950,
-        sentinel: [
-            0x40, 0x57, 0x48, 0x83, 0xec, 0x50, 0x83, 0x79, 0x18, 0x00, 0x48, 0x8b, 0xf9, 0x75,
-            0x0f, 0x48,
-        ],
+        rva: Rva(0x1028950),
     },
 ];

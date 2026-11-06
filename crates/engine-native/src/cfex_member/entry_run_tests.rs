@@ -124,7 +124,7 @@ fn naval_world() -> Vec<u8> {
         put(
             &mut bytes,
             hit,
-            &((BASE + crate::naval_combat_hit::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crate::naval_combat_hit::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, hit + 8, &(index as u32 * 3).to_le_bytes());
         let name: Vec<u8> = (0..(index % 3) * 9)
@@ -150,7 +150,7 @@ fn air_world() -> Vec<u8> {
         put(
             &mut bytes,
             at,
-            &((BASE + crate::cequipment_variant::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crate::cequipment_variant::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, at + 8, &(0x1000 + variant as u64).to_le_bytes());
     }
@@ -160,7 +160,7 @@ fn air_world() -> Vec<u8> {
         put(
             &mut bytes,
             hit,
-            &((BASE + crate::naval_combat_air_hit::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crate::naval_combat_air_hit::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -180,7 +180,7 @@ fn damage_world() -> Vec<u8> {
         put(
             &mut bytes,
             at,
-            &((BASE + crate::cfex_damage_entry::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + crate::cfex_damage_entry::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

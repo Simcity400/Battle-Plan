@@ -5,11 +5,12 @@
 use crate::{
     Memory, ccountry, country_intel_row, cpdx_array::Array, memory::read_slice, read, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Intel-state primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_bb28;
+pub const VTABLE_RVA: Rva = Rva(0x029d_bb28);
 /// Constructor publishing the country-owned intel object.
-pub const CONSTRUCTOR_RVA: usize = 0x00d6_3480;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d6_3480);
 /// Allocation size.
 pub const SIZE: usize = 0xf0;
 /// Owner raw country id, u32.
@@ -31,7 +32,7 @@ pub const COUNT: usize = 0x1c;
 /// selectors are not retried and invalid spans add no hint.
 pub fn native_rows(memory: &impl Memory, base: usize, game_state: usize) -> Option<usize> {
     let countries = ccountry::Reader::new(memory, base, game_state).ok()?;
-    let expected = base.checked_add(VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA)? as u64;
     // One sticky result, shared with any physical aliases the positive loop sees.
     let reserved = countries.reserved();
     let mut total = 0_usize;
@@ -145,9 +146,7 @@ fn walk_in_reader(
     visit: &mut dyn FnMut(u32, usize, usize),
 ) -> Outcome {
     let result = (|| {
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
         if scratch.len() < country_intel_row::STRIDE {
             return Err("country intel scratch holds no record");
         }
@@ -360,9 +359,7 @@ fn reserved_vector_at(
         .ok_or("reserved country intel table unreadable or null")?;
     let identity =
         read::<[u8; 12]>(memory, table).ok_or("reserved country intel identity unreadable")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected {
         return Err("reserved country intel vtable mismatch");
     }
@@ -495,10 +492,10 @@ mod tests {
         for owner in 0..2 {
             let country = COUNTRIES[owner];
             let table = TABLES[owner];
-            p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA) as u64);
+            p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA.0) as u64);
             p32(&mut bytes, country + ccountry::ID, owner as u32 + 1);
             p64(&mut bytes, country + ccountry::INTEL_TABLE, table as u64);
-            p64(&mut bytes, table, (BASE + VTABLE_RVA) as u64);
+            p64(&mut bytes, table, (BASE + VTABLE_RVA.0) as u64);
             p64(&mut bytes, table + DATA, RECORDS[owner] as u64);
         }
         p32(&mut bytes, TABLES[0] + CAPACITY, 4);
@@ -857,7 +854,7 @@ mod tests {
         p64(
             &mut bytes,
             RESERVED_COUNTRY,
-            (BASE + ccountry::VTABLE_RVA) as u64,
+            (BASE + ccountry::VTABLE_RVA.0) as u64,
         );
         p32(&mut bytes, RESERVED_COUNTRY + ccountry::ID, 0);
         p64(
@@ -865,7 +862,7 @@ mod tests {
             RESERVED_COUNTRY + ccountry::INTEL_TABLE,
             RESERVED_TABLE as u64,
         );
-        p64(&mut bytes, RESERVED_TABLE, (BASE + VTABLE_RVA) as u64);
+        p64(&mut bytes, RESERVED_TABLE, (BASE + VTABLE_RVA.0) as u64);
         p32(&mut bytes, RESERVED_TABLE + OWNER, 0);
         p64(&mut bytes, RESERVED_TABLE + DATA, RESERVED_RECORDS as u64);
         p32(&mut bytes, RESERVED_TABLE + CAPACITY, count);

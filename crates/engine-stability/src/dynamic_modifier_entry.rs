@@ -5,11 +5,12 @@
 //! installing lifecycle hooks.
 
 use crate::{Memory, cpdx_array::Array, read, read_slice};
+use engine_sites::Rva;
 
 /// Timed modifier entry stride.
 pub const STRIDE: usize = 0x40;
 /// Timed modifier entry vtable.
-pub const VTABLE_RVA: usize = 0x0285_3ec8;
+pub const VTABLE_RVA: Rva = Rva(0x0285_3ec8);
 /// Timed modifier scope-country reference u32.
 pub const SCOPE_COUNTRY: usize = 0x08;
 /// Timed modifier scope-state i32.
@@ -30,7 +31,7 @@ pub const VALUES_COUNT: usize = 0x34;
 pub const VALUE_STRIDE: usize = 8;
 
 /// Timed entry construction/layout.
-pub const CONSTRUCT_RVA: usize = 0x0059_9670;
+pub const CONSTRUCT_RVA: Rva = Rva(0x0059_9670);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
@@ -46,9 +47,7 @@ pub struct Header {
 /// hourly consistency protocol; this reader does not retry a moving entry.
 pub fn header(memory: &impl Memory, base: usize, address: usize) -> Result<Header, &'static str> {
     let bytes = read::<[u8; 56]>(memory, address).ok_or("dynamic modifier entry unreadable")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected as u64 {
         return Err("dynamic modifier entry vtable mismatch");
     }

@@ -104,7 +104,8 @@ fn record(store: &mut Store, memory: &impl Memory, base: usize, pointer: usize, 
     let result = (|| {
         let state = engine_native::read::<u64>(
             memory,
-            at(base, engine_native::cgame_state::SINGLETON_RVA)?,
+            engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                .ok_or("variant scalar address overflow")?,
         )
         .ok_or("variant scalar clock unreadable")? as usize;
         let hour = engine_native::read::<i32>(
@@ -227,7 +228,7 @@ mod tests {
     impl Memory for ToggleMemory {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
-            if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x2000_u64.to_le_bytes());
             } else if address == 0x2000 + engine_native::cgame_state::CURRENT_HOUR
                 && output.len() == 4

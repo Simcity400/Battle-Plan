@@ -51,7 +51,7 @@ impl Fixture {
             f.put(LINKS + index * 4, slot.to_le_bytes());
         }
         for (pointer, id) in [(COUNTRY_A, 2u32), (COUNTRY_B, 3)] {
-            f.put(pointer, (ccountry::VTABLE_RVA as u64).to_le_bytes());
+            f.put(pointer, (ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
             f.put(pointer + ccountry::ID, id.to_le_bytes());
         }
         f.put(GAME + DOCTRINE_SYSTEM, (SYSTEM as u64).to_le_bytes());
@@ -70,7 +70,7 @@ impl Fixture {
         }
         // Database: the null tactic, then IDs 1 and 2 in ID order.
         f.put(
-            ccombat_tactic::DATABASE_RVA,
+            ccombat_tactic::DATABASE_RVA.0,
             (DATABASE as u64).to_le_bytes(),
         );
         f.array(DATABASE + ccombat_tactic::DATABASE_ENTRIES, ENTRIES, 3);
@@ -84,11 +84,11 @@ impl Fixture {
         }
         f.put(
             NULL_TACTIC,
-            (cnull_combat_tactic::VTABLE_RVA as u64).to_le_bytes(),
+            (cnull_combat_tactic::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         f.put(NULL_TACTIC + ccombat_tactic::ID, 0i32.to_le_bytes());
         for (pointer, id) in [(TACTIC_A, 1i32), (TACTIC_B, 2), (FOREIGN, 3)] {
-            f.put(pointer, (ccombat_tactic::VTABLE_RVA as u64).to_le_bytes());
+            f.put(pointer, (ccombat_tactic::VTABLE_RVA.0 as u64).to_le_bytes());
             f.put(pointer + ccombat_tactic::ID, id.to_le_bytes());
         }
         f
@@ -226,7 +226,7 @@ fn the_null_tactic_is_database_entry_zero_and_records_id_zero() {
     let mut memory = Fixture::new();
     memory.put(
         NULL_TACTIC,
-        (ccombat_tactic::VTABLE_RVA as u64).to_le_bytes(),
+        (ccombat_tactic::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     assert_eq!(Owned::fits().fixture(&memory).outcome, invalid);
     let mut memory = Fixture::new();
@@ -345,7 +345,7 @@ fn malformed_database_rows_and_changed_roots_never_become_empty_lists() {
     };
     for (address, moved) in [
         (GAME + DOCTRINE_SYSTEM, SYSTEM_MOVED),
-        (ccombat_tactic::DATABASE_RVA, DATABASE_MOVED),
+        (ccombat_tactic::DATABASE_RVA.0, DATABASE_MOVED),
     ] {
         let mut memory = Fixture::new();
         memory.change = Some((address, 1, moved as u64));
@@ -378,7 +378,7 @@ fn world(countries: usize, tactics: usize, unlocks: usize) -> (Vec<u8>, usize, u
     let entries = region((tactics + 1) * 8);
     let objects_t = region((tactics + 1) * 0x100);
     let lists = region(countries * unlocks * 8);
-    let base = region(8) - ccombat_tactic::DATABASE_RVA;
+    let base = region(8) - ccombat_tactic::DATABASE_RVA.0;
     let mut bytes = vec![0u8; end - WORLD];
     let mut put = |address: usize, value: &[u8]| {
         bytes[address - WORLD..address - WORLD + value.len()].copy_from_slice(value);
@@ -400,7 +400,7 @@ fn world(countries: usize, tactics: usize, unlocks: usize) -> (Vec<u8>, usize, u
         put(links + slot * 4, &(slot as u32).to_le_bytes());
         put(
             object,
-            &((base + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+            &((base + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(object + ccountry::ID, &(slot as u32).to_le_bytes());
         let row = doctrine + slot * DOCTRINE_STRIDE;
@@ -414,7 +414,7 @@ fn world(countries: usize, tactics: usize, unlocks: usize) -> (Vec<u8>, usize, u
         }
     }
     put(
-        base + ccombat_tactic::DATABASE_RVA,
+        base + ccombat_tactic::DATABASE_RVA.0,
         &(database as u64).to_le_bytes(),
     );
     put(
@@ -428,7 +428,7 @@ fn world(countries: usize, tactics: usize, unlocks: usize) -> (Vec<u8>, usize, u
             _ => ccombat_tactic::VTABLE_RVA,
         };
         put(entries + index * 8, &(tactic as u64).to_le_bytes());
-        put(tactic, &((base + vtable) as u64).to_le_bytes());
+        put(tactic, &((base + vtable.0) as u64).to_le_bytes());
         put(tactic + ccombat_tactic::ID, &(index as i32).to_le_bytes());
     }
     (bytes, base, game)

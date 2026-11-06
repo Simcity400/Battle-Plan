@@ -51,6 +51,7 @@ use crate::{
     read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 mod volunteer_air;
 pub use volunteer_air::VolunteerAir;
@@ -203,8 +204,8 @@ pub fn essentials(
     out.clear();
     let database = pointer(
         memory,
-        base,
-        db::SINGLETON_RVA,
+        engine_sites::at(base, db::SINGLETON_RVA).ok_or("raid definition database unreadable")?,
+        0,
         "raid definition database unreadable",
     )?;
     let types = array(
@@ -434,10 +435,10 @@ fn vtable(
     memory: &impl Memory,
     base: usize,
     at: usize,
-    rva: usize,
+    rva: Rva,
     what: &'static str,
 ) -> Result<(), &'static str> {
-    let expected = base.checked_add(rva).ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, rva).ok_or(what)?;
     (read::<u64>(memory, at) == Some(expected as u64))
         .then_some(())
         .ok_or(what)
@@ -764,10 +765,10 @@ fn stockpiles(
     output: &mut crate::walk::Buffer<'_, ArchetypeRow>,
     mut volunteer_air: Option<&mut VolunteerAir>,
 ) -> Result<(), &'static str> {
-    let module = |rva: usize| {
-        base.checked_add(rva)
+    let module = |key: Rva| {
+        engine_sites::at(base, key)
             .map(|address| address as u64)
-            .ok_or("module address overflow")
+            .ok_or("raid launch site withheld")
     };
     let production_vtable = module(cproduction_status::VTABLE_RVA)?;
     let pool_vtable = module(cequipment_variant_pool::VTABLE_RVA)?;
@@ -1100,10 +1101,10 @@ fn sliced(
     let sorted = &sorted[..sorted_len];
     // The aces read `air_range_factor`: without it their table is unknown.
     let air_range = keys.keys[AIR_RANGE];
-    let module = |rva: usize| {
-        base.checked_add(rva)
+    let module = |key: Rva| {
+        engine_sites::at(base, key)
             .map(|address| address as u64)
-            .ok_or("module address overflow")
+            .ok_or("raid launch site withheld")
     };
     let (site_vtable, container_vtable, ace_vtable, strategic_vtable) = (
         module(cair_base::VTABLE_RVA)?,
@@ -1882,7 +1883,7 @@ pub(crate) mod tests {
         /// its own 0x1000-byte block after `types`.
         fn raid_types(&mut self, database: usize, types: usize, maps: &[&[(usize, i32)]]) {
             use crate::raid_database as db;
-            self.u64(db::SINGLETON_RVA, database as u64);
+            self.u64(db::SINGLETON_RVA.0, database as u64);
             self.array(
                 database + db::DEFINITIONS,
                 database + 0x100,
@@ -1891,7 +1892,7 @@ pub(crate) mod tests {
             for (index, entries) in maps.iter().enumerate() {
                 let raid = types + 0x1000 * index;
                 self.u64(database + 0x100 + index * 8, raid as u64);
-                self.u64(raid, db::TYPE_VTABLE_RVA as u64);
+                self.u64(raid, db::TYPE_VTABLE_RVA.0 as u64);
                 self.equipment_map(raid + db::ESSENTIAL_EQUIPMENT, raid + 0xc00, entries);
             }
         }
@@ -1907,7 +1908,7 @@ pub(crate) mod tests {
 
     fn fixture() -> Synthetic {
         let mut memory = Synthetic::default();
-        memory.u64(modifier_definition::TABLE_RVA, DEFINITIONS as u64);
+        memory.u64(modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
         for key in MODIFIERS {
             let row = DEFINITIONS + key as usize * modifier_definition::STRIDE;
             memory.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
@@ -1924,7 +1925,7 @@ pub(crate) mod tests {
         memory.u64(COUNTRIES + 8, COUNTRY as u64);
         memory.u32(LINKS + 4, 1);
         memory.u32(LINKS + 8, 1);
-        memory.u64(COUNTRY, ccountry::VTABLE_RVA as u64);
+        memory.u64(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         memory.u32(COUNTRY + ccountry::ID, 2);
         memory.u64(COUNTRY + ccountry::ALLOCATED_COMMAND_POWER, 3_000_000);
         memory.accumulator(
@@ -1950,10 +1951,10 @@ pub(crate) mod tests {
         memory.u32(RESERVATION, 1);
         memory.u32(RESERVATION + 4, 12);
         memory.u64(COUNTRY + ccountry::PRODUCTION_STATUS, PRODUCTION as u64);
-        memory.u64(PRODUCTION, cproduction_status::VTABLE_RVA as u64);
+        memory.u64(PRODUCTION, cproduction_status::VTABLE_RVA.0 as u64);
         memory.u64(PRODUCTION + cproduction_status::COUNTRY, COUNTRY as u64);
         let pool = PRODUCTION + cproduction_status::STOCKPILE_POOL;
-        memory.u64(pool, cequipment_variant_pool::VTABLE_RVA as u64);
+        memory.u64(pool, cequipment_variant_pool::VTABLE_RVA.0 as u64);
         memory.array(pool + cequipment_variant_pool::ALLOCATIONS, ALLOCATIONS, 1);
         memory.u64(
             ALLOCATIONS + allocation_equipment_row::ARCHETYPE,
@@ -1961,30 +1962,30 @@ pub(crate) mod tests {
         );
         memory.u64(ALLOCATIONS + 8, 0);
         memory.u64(ALLOCATIONS + allocation_equipment_row::AMOUNT, 4_000_000);
-        memory.u64(ARCHETYPE, cequipment_type::VTABLE_RVA as u64);
+        memory.u64(ARCHETYPE, cequipment_type::VTABLE_RVA.0 as u64);
         memory.u32(ARCHETYPE + cequipment_type::TOKEN, 0x3309);
         memory.u32(ARCHETYPE + cequipment_type::ARCHETYPE_ID, 7);
-        memory.u64(EQUIPMENT, cequipment_type::VTABLE_RVA as u64);
+        memory.u64(EQUIPMENT, cequipment_type::VTABLE_RVA.0 as u64);
         memory.u64(EQUIPMENT + cequipment_type::ARCHETYPE, ARCHETYPE as u64);
         memory.raid_types(RAIDS, RAIDS + 0x1000, &[&[(EQUIPMENT, 30)]]);
         memory.u64(GS + cgame_state::STRATEGIC_AIR_MANAGER, MANAGER as u64);
-        memory.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+        memory.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA.0 as u64);
         memory.array(MANAGER + cstrategic_air_manager::COUNTRY_AIR, AIR, 2);
         memory.u64(AIR + 8, STRATEGIC as u64);
-        memory.u64(STRATEGIC, cstrategic_air::VTABLE_RVA as u64);
+        memory.u64(STRATEGIC, cstrategic_air::VTABLE_RVA.0 as u64);
         memory.array(STRATEGIC + cstrategic_air::FIRST_AIR_SITES, SITES, 1);
         memory.array(STRATEGIC + cstrategic_air::SECOND_AIR_SITES, SITES, 0);
         memory.u64(SITES, SITE as u64);
-        memory.u64(SITE, cair_base::VTABLE_RVA as u64);
+        memory.u64(SITE, cair_base::VTABLE_RVA.0 as u64);
         memory.u64(SITE + cair_base::HANDLE, 0x0000_0009_0000_0041);
         memory.array(SITE + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 2);
         memory.u64(CONTAINERS, 0);
         memory.u64(CONTAINERS + 8, CONTAINER as u64);
-        memory.u64(CONTAINER, ccountry_air_container::VTABLE_RVA as u64);
+        memory.u64(CONTAINER, ccountry_air_container::VTABLE_RVA.0 as u64);
         memory.u64(CONTAINER + ccountry_air_container::CAPACITY_RAW, 100_000);
         memory.array(COUNTRY + ccountry::ACES, ROSTER, 1);
         memory.u64(ROSTER, ACE as u64);
-        memory.u64(ACE, cace::VTABLE_RVA as u64);
+        memory.u64(ACE, cace::VTABLE_RVA.0 as u64);
         memory.u64(ACE + cace::REFERENCE, 0x0000_0003_0000_0077);
         memory.u64(ACE + cace::ASSIGNED_WING_REFERENCE, 0x0000_0005_0000_0045);
         memory.bytes(ACE + cace::ALIVE, &[1]);
@@ -2339,7 +2340,7 @@ pub(crate) mod tests {
         memory.u32(GS + cgame_state::PLAYER_RECORDS + 0xc, 1);
         memory.array(STRATEGIC + cstrategic_air::FIRST_AIR_SITES, SITES, 2);
         memory.u64(SITES + 8, SITE_B as u64);
-        memory.u64(SITE_B, cair_base::VTABLE_RVA as u64);
+        memory.u64(SITE_B, cair_base::VTABLE_RVA.0 as u64);
         memory.u64(SITE_B + cair_base::HANDLE, 0x0000_000a_0000_0041);
         // Slot 1 has no entry in the second site's container table.
         memory.array(SITE_B + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 1);
@@ -2353,7 +2354,7 @@ pub(crate) mod tests {
         let mut memory = site_fixture();
         memory.array(SITE_B + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 2);
         memory.u32(SITE_B + cair_base::COUNTRY_CONTAINERS + 12, 9);
-        memory.u64(SITE_B, cair_base::VTABLE_RVA as u64);
+        memory.u64(SITE_B, cair_base::VTABLE_RVA.0 as u64);
         memory.u64(SITE_B + cair_base::HANDLE, 0x42);
         let unavailable = |run: &Run| match run.walk.sites {
             Outcome::Unavailable { reason } => reason,
@@ -2405,7 +2406,7 @@ pub(crate) mod tests {
             &[&[(EQUIPMENT, 30)], &[(ARCHETYPE, 35)]],
         );
         const OTHER: usize = 0x2b_000;
-        memory.u64(OTHER, cequipment_type::VTABLE_RVA as u64);
+        memory.u64(OTHER, cequipment_type::VTABLE_RVA.0 as u64);
         memory.array(
             PRODUCTION + cproduction_status::STOCKPILE_POOL + cequipment_variant_pool::ALLOCATIONS,
             ALLOCATIONS,
@@ -2423,7 +2424,7 @@ pub(crate) mod tests {
         );
         memory.u64(ALLOCATIONS + allocation_equipment_row::AMOUNT, 1_234_567);
         assert_eq!(run(&memory, 2).archetype.units, 12);
-        memory.u64(crate::raid_database::SINGLETON_RVA, 0);
+        memory.u64(crate::raid_database::SINGLETON_RVA.0, 0);
         let unread = run(&memory, 2);
         assert!(matches!(
             unread.walk.archetypes,
@@ -2607,8 +2608,8 @@ pub(crate) mod tests {
     // reads at base 0, which a country block would otherwise overwrite.
     const WORLD: usize = 0x400_0000;
     const _: () = assert!(
-        WORLD >= modifier_definition::TABLE_RVA + 8
-            && WORLD >= crate::raid_database::SINGLETON_RVA + 8
+        WORLD >= modifier_definition::TABLE_RVA.0 + 8
+            && WORLD >= crate::raid_database::SINGLETON_RVA.0 + 8
     );
     const BLOCK: usize = 0x5000;
     const B_ACCUMULATOR: usize = 0x1400;
@@ -2636,7 +2637,7 @@ pub(crate) mod tests {
     fn scaled(countries: usize) -> Flat {
         let mut memory = Flat::default();
         let slots = countries + 1;
-        memory.u64(modifier_definition::TABLE_RVA, DEFINITIONS as u64);
+        memory.u64(modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
         for key in MODIFIERS {
             let row = DEFINITIONS + key as usize * modifier_definition::STRIDE;
             memory.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
@@ -2660,7 +2661,7 @@ pub(crate) mod tests {
         memory.array(GS + cgame_state::HUMAN_STATUS, humans, slots as u32);
         memory.array(GS + cgame_state::AUTONOMOUS_STATUS, flags, slots as u32);
         memory.u64(GS + cgame_state::STRATEGIC_AIR_MANAGER, MANAGER as u64);
-        memory.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+        memory.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA.0 as u64);
         memory.array(
             MANAGER + cstrategic_air_manager::COUNTRY_AIR,
             air,
@@ -2668,7 +2669,7 @@ pub(crate) mod tests {
         );
         for index in 0..ARCHETYPES {
             let archetype = archetypes + index * 0x500;
-            memory.u64(archetype, cequipment_type::VTABLE_RVA as u64);
+            memory.u64(archetype, cequipment_type::VTABLE_RVA.0 as u64);
             memory.u32(archetype + cequipment_type::TOKEN, 0x3000 + index as u32);
             memory.u32(archetype + cequipment_type::ARCHETYPE_ID, index as u32);
             memory.u64(archetype + cequipment_type::ARCHETYPE, archetype as u64);
@@ -2682,11 +2683,11 @@ pub(crate) mod tests {
         for slot in 1..slots {
             memory.u64(containers + slot * 8, container as u64);
         }
-        memory.u64(container, ccountry_air_container::VTABLE_RVA as u64);
+        memory.u64(container, ccountry_air_container::VTABLE_RVA.0 as u64);
         memory.u64(container + ccountry_air_container::CAPACITY_RAW, 100_000);
         for index in 0..site_count {
             let site = sites + index * 0x100;
-            memory.u64(site, cair_base::VTABLE_RVA as u64);
+            memory.u64(site, cair_base::VTABLE_RVA.0 as u64);
             memory.u64(site + cair_base::HANDLE, ((index as u64 + 1) << 32) | 0x41);
             memory.array(
                 site + cair_base::COUNTRY_CONTAINERS,
@@ -2704,7 +2705,7 @@ pub(crate) mod tests {
             memory.u64(table + slot * 8, country as u64);
             memory.u32(links + slot * 4, slot as u32);
             memory.bytes(flags + slot, &[1]);
-            memory.u64(country, ccountry::VTABLE_RVA as u64);
+            memory.u64(country, ccountry::VTABLE_RVA.0 as u64);
             memory.u32(country + ccountry::ID, slot as u32);
             memory.u64(country + ccountry::ALLOCATED_COMMAND_POWER, 3_000_000);
             let mut entries: Vec<(u32, i64)> = (1..=MODIFIER_ENTRIES as u32
@@ -2734,10 +2735,10 @@ pub(crate) mod tests {
             }
             let production = country + B_PRODUCTION;
             memory.u64(country + ccountry::PRODUCTION_STATUS, production as u64);
-            memory.u64(production, cproduction_status::VTABLE_RVA as u64);
+            memory.u64(production, cproduction_status::VTABLE_RVA.0 as u64);
             memory.u64(production + cproduction_status::COUNTRY, country as u64);
             let pool = production + cproduction_status::STOCKPILE_POOL;
-            memory.u64(pool, cequipment_variant_pool::VTABLE_RVA as u64);
+            memory.u64(pool, cequipment_variant_pool::VTABLE_RVA.0 as u64);
             let allocations = country + B_ALLOCATIONS;
             memory.array(
                 pool + cequipment_variant_pool::ALLOCATIONS,
@@ -2752,7 +2753,7 @@ pub(crate) mod tests {
             }
             let strategic = country + B_STRATEGIC;
             memory.u64(air + slot * 8, strategic as u64);
-            memory.u64(strategic, cstrategic_air::VTABLE_RVA as u64);
+            memory.u64(strategic, cstrategic_air::VTABLE_RVA.0 as u64);
             let list = country + B_SITES;
             memory.array(
                 strategic + cstrategic_air::FIRST_AIR_SITES,
@@ -2774,7 +2775,7 @@ pub(crate) mod tests {
             for index in 0..ACES_PER_COUNTRY {
                 let ace = country + B_ACES + index * ACE_SIZE;
                 memory.u64(roster + index * 8, ace as u64);
-                memory.u64(ace, cace::VTABLE_RVA as u64);
+                memory.u64(ace, cace::VTABLE_RVA.0 as u64);
                 memory.u64(
                     ace + cace::REFERENCE,
                     ((slot * 8 + index) as u64) << 32 | 0x77,

@@ -24,8 +24,8 @@ pub(super) fn capture(
     let size = read::<u64>(memory, at(state, super::BORDER_CONFLICT_SIZE)?)
         .ok_or("state border conflict size unreadable")?;
     let head = pointer(at(state, super::BORDER_CONFLICT_TREE)?)?;
-    let expected = |rva: usize| {
-        base.checked_add(rva)
+    let expected = |rva: engine_sites::Rva| {
+        engine_sites::at(base, rva)
             .map(|p| p as u64)
             .ok_or("module address overflow")
     };

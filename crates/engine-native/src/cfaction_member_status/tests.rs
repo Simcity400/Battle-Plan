@@ -58,7 +58,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         UPGRADE_DEFINITION,
-        (UPGRADE_VTABLE_RVA as u64).to_le_bytes(),
+        (UPGRADE_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, UPGRADE_DEFINITION + 8, 1123_u32.to_le_bytes());
     array(&mut bytes, ACCOUNT + COMPLETED_GOALS, GOAL_LIST, 3);
@@ -75,7 +75,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         GOAL_DEFINITION,
-        (crate::cfaction_goal_status::DEFINITION_VTABLE_RVA as u64).to_le_bytes(),
+        (crate::cfaction_goal_status::DEFINITION_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, GOAL_DEFINITION + 8, 888_u32.to_le_bytes());
     bytes
@@ -233,7 +233,7 @@ fn projection_coefficients_preserve_loaded_mod_values_without_default_substituti
     struct Factors;
     impl Memory for Factors {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-            let Some(index) = PROJECTION_FACTORS.iter().position(|&offset| offset == at) else {
+            let Some(index) = PROJECTION_FACTORS.iter().position(|&offset| offset.0 == at) else {
                 return false;
             };
             if out.len() != 8 {

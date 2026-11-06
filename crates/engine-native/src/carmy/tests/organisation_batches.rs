@@ -109,7 +109,7 @@ fn capture_serial(
                 .effective()
                 .1;
             let limit = *threshold.get_or_insert_with(|| {
-                presentation_field(memory, base, LOW_ORGANISATION_FOR_ATTACK_RVA)
+                presentation_global(memory, base, LOW_ORGANISATION_FOR_ATTACK_RVA)
             });
             if !below_threshold(current, maximum, limit?)? {
                 return Ok(None);
@@ -224,15 +224,15 @@ fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() 
     let b = &mut source.bytes;
     p32(b, 0x18400 + cprovince::CONTROLLER, 2);
     p64(b, C2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    p64(b, DIPLOMACY, diplomacy::VTABLE_RVA as u64);
+    p64(b, DIPLOMACY, diplomacy::VTABLE_RVA.0 as u64);
     p64(b, DIPLOMACY + diplomacy::COUNTRY, C2 as u64);
     array(b, DIPLOMACY + diplomacy::RELATIONS, RELATIONS, 4);
     p64(b, RELATIONS + 8, RELATION as u64);
-    p64(b, RELATION, relation::VTABLE_RVA as u64);
+    p64(b, RELATION, relation::VTABLE_RVA.0 as u64);
     p64(b, RELATION + relation::DIPLOMACY_STATUS, DIPLOMACY as u64);
     p32(b, RELATION + relation::TARGET_COUNTRY, 3);
     p64(b, RELATION + relation::WAR_RELATION, WAR as u64);
-    p64(b, WAR, crate::cwar_relation::VTABLE_RVA as u64);
+    p64(b, WAR, crate::cwar_relation::VTABLE_RVA.0 as u64);
     p32(
         b,
         WAR + crate::crelation::TYPE_ID,

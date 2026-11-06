@@ -721,8 +721,8 @@ impl Store {
             [pointer, members, contacts],
             &mut [&mut vtable, &mut fields, &mut header],
         );
-        let expected = base.wrapping_add(ccontroller_area::VTABLE_RVA) as u64;
-        if copied < 1 || u64::from_le_bytes(vtable) != expected {
+        let expected = engine_sites::at(base, ccontroller_area::VTABLE_RVA).map(|v| v as u64);
+        if copied < 1 || Some(u64::from_le_bytes(vtable)) != expected {
             area.failure = Some("controller area type unreadable or unsupported");
             return Ok(None);
         }

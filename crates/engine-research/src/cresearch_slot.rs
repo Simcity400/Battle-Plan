@@ -1,8 +1,9 @@
 //! Active research-slot operands. The speed multiplier is separate from
 //! technology progress.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_1810;
+pub const VTABLE_RVA: Rva = Rva(0x029f_1810);
 /// Technology definition handle, u32, matched against its token identity.
 pub const TECHNOLOGY_HANDLE: usize = 0x08;
 /// Owning technology-status pointer authenticated by backlink.
@@ -127,9 +128,7 @@ pub fn decode_raw(
     raw: &Raw,
     linked: Option<&[u8; crate::ctechnology::INSTANCE_BYTES]>,
 ) -> Result<Row, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     if u64::from_le_bytes(raw.header[..8].try_into().unwrap()) != expected {
         return Err("research slot vtable mismatch");
     }
@@ -181,7 +180,7 @@ mod tests {
     #[test]
     fn idle_slot_requires_the_shared_empty_handle() {
         let mut raw = Raw::default();
-        raw.header[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        raw.header[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         raw.header[8..].copy_from_slice(&IDLE_HANDLE.to_le_bytes());
         let idle = decode_raw(0, 0, 7, &raw, None).unwrap();
         assert_eq!(idle.technology_handle, IDLE_HANDLE);

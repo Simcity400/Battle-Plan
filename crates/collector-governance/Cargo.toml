@@ -19,6 +19,7 @@ party_changes = []
 party_leader_changes = ["character_changes"]
 
 [dependencies]
+engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-decisions.workspace = true
 engine-focus.workspace = true

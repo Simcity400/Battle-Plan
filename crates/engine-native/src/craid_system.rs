@@ -1,8 +1,9 @@
 //! Persistent country-indexed raid graph. Country handles resolve through
 //! the country-link table; layout alone does not establish hourly consistency.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_e798;
+pub const VTABLE_RVA: Rva = Rva(0x029e_e798);
 /// Country-raid-status array pointer.
 pub const COUNTRY_STATUSES: usize = 0xd8;
 /// Country-status array capacity, u32.
@@ -223,9 +224,7 @@ fn walk_buffer(
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
             .ok_or("raid system unreadable or null")?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(memory, root) != Some(expected as u64) {
             return Err("raid system vtable mismatch");
         }

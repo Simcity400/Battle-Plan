@@ -10,6 +10,7 @@
 //! Constructor/destructor and world invalidation bound receiver lifetimes.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Receiver {
@@ -35,11 +36,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "construct_goal_status",
-            rva: 0xa722d0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x48, 0x89, 0x4c, 0x24,
-                0x08, 0x56,
-            ],
+            rva: Rva(0xa722d0),
         },
         Receiver::Status,
         Patch::Entry,
@@ -47,11 +44,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "destroy_goal_status",
-            rva: 0xa72ac0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-                0x20, 0x48,
-            ],
+            rva: Rva(0xa72ac0),
         },
         Receiver::Status,
         Patch::Entry,
@@ -59,11 +52,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "add_goal_slots",
-            rva: 0xa73040,
-            sentinel: [
-                0x83, 0xfa, 0x03, 0x7d, 0x0b, 0x48, 0x8b, 0x41, 0x78, 0x48, 0x63, 0xd2, 0x44, 0x01,
-                0x04, 0x90,
-            ],
+            rva: Rva(0xa73040),
         },
         Receiver::Status,
         Patch::Entry,
@@ -71,11 +60,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "activate_goal",
-            rva: 0xa73060,
-            sentinel: [
-                0x40, 0x53, 0x56, 0x48, 0x83, 0xec, 0x38, 0x4c, 0x89, 0x74, 0x24, 0x68, 0x48, 0x8b,
-                0xf1, 0x4c,
-            ],
+            rva: Rva(0xa73060),
         },
         Receiver::Status,
         Patch::Entry,
@@ -83,11 +68,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "insert_goal",
-            rva: 0xa73290,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x44, 0x88, 0x4c, 0x24,
-                0x20, 0x55,
-            ],
+            rva: Rva(0xa73290),
         },
         Receiver::Status,
         Patch::Entry,
@@ -95,11 +76,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "remove_goal",
-            rva: 0xa75340,
-            sentinel: [
-                0x40, 0x56, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x40, 0x48, 0x63, 0x41, 0x24, 0x33,
-                0xf6, 0x48,
-            ],
+            rva: Rva(0xa75340),
         },
         Receiver::Status,
         Patch::Entry,
@@ -107,11 +84,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "select_manifest",
-            rva: 0xa75920,
-            sentinel: [
-                0x40, 0x56, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9, 0x45, 0x0f,
-                0xb6, 0xf0,
-            ],
+            rva: Rva(0xa75920),
         },
         Receiver::Status,
         Patch::Entry,
@@ -119,11 +92,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "initialize_goal_template",
-            rva: 0xa75c30,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0xa75c30),
         },
         Receiver::Status,
         Patch::Entry,
@@ -131,11 +100,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "load_goal_status",
-            rva: 0xa75090,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x81, 0xec,
-                0x40, 0x01,
-            ],
+            rva: Rva(0xa75090),
         },
         Receiver::Status,
         Patch::Entry,
@@ -143,11 +108,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "rebuild_goal_status",
-            rva: 0xa74910,
-            sentinel: [
-                0x48, 0x89, 0x4c, 0x24, 0x08, 0x53, 0x55, 0x48, 0x83, 0xec, 0x38, 0x4c, 0x89, 0x6c,
-                0x24, 0x30,
-            ],
+            rva: Rva(0xa74910),
         },
         Receiver::Status,
         Patch::Entry,
@@ -155,11 +116,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "refresh_goal_progress",
-            rva: 0xa7668e,
-            sentinel: [
-                0xe8, 0xad, 0x07, 0xb6, 0x00, 0x8b, 0xd8, 0x48, 0x8d, 0x4c, 0x24, 0x20, 0xe8, 0x51,
-                0x5f, 0xb0,
-            ],
+            rva: Rva(0xa7668e),
         },
         Receiver::Progress,
         Patch::Call,
@@ -167,11 +124,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "finish_goal_completion",
-            rva: 0xa743e9,
-            sentinel: [
-                0xc7, 0x43, 0x08, 0x01, 0x00, 0x00, 0x00, 0x33, 0xc0, 0x48, 0x8b, 0x5c, 0x24, 0x48,
-                0x48, 0x8b,
-            ],
+            rva: Rva(0xa743e9),
         },
         Receiver::FinishedFactionRsi,
         Patch::Tap,
@@ -179,11 +132,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "append_completed_goal",
-            rva: 0xa74e00,
-            sentinel: [
-                0x48, 0x89, 0x6c, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xea, 0x48,
-                0x89, 0x54,
-            ],
+            rva: Rva(0xa74e00),
         },
         Receiver::Status,
         Patch::Entry,
@@ -191,11 +140,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "append_cancelled_goal",
-            rva: 0xa74269,
-            sentinel: [
-                0xe8, 0xf2, 0xda, 0x6a, 0xff, 0x48, 0x81, 0xc6, 0x40, 0x05, 0x00, 0x00, 0x49, 0x3b,
-                0xf7, 0x0f,
-            ],
+            rva: Rva(0xa74269),
         },
         Receiver::Cancelled,
         Patch::Call,
@@ -203,11 +148,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "pend_goal_completion",
-            rva: 0xa73971,
-            sentinel: [
-                0xc7, 0x43, 0x08, 0x03, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x0b, 0x48, 0x8b, 0xd7, 0xe8,
-                0x2d, 0xa2,
-            ],
+            rva: Rva(0xa73971),
         },
         Receiver::PendingRbp,
         Patch::Tap,
@@ -215,11 +156,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "pend_goal_cancellation",
-            rva: 0xa73987,
-            sentinel: [
-                0xc7, 0x43, 0x08, 0x04, 0x00, 0x00, 0x00, 0x48, 0x81, 0xc3, 0x40, 0x05, 0x00, 0x00,
-                0x48, 0x3b,
-            ],
+            rva: Rva(0xa73987),
         },
         Receiver::PendingRbp,
         Patch::Tap,
@@ -227,11 +164,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "pend_initial_goal_completion",
-            rva: 0xa73f91,
-            sentinel: [
-                0xc7, 0x43, 0x08, 0x03, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x0b, 0x48, 0x8b, 0xd7, 0xe8,
-                0x0d, 0x9c,
-            ],
+            rva: Rva(0xa73f91),
         },
         Receiver::PendingRsi,
         Patch::Tap,
@@ -239,11 +172,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "pend_initial_goal_cancellation",
-            rva: 0xa73fa7,
-            sentinel: [
-                0xc7, 0x43, 0x08, 0x04, 0x00, 0x00, 0x00, 0x48, 0x81, 0xc3, 0x40, 0x05, 0x00, 0x00,
-                0x48, 0x3b,
-            ],
+            rva: Rva(0xa73fa7),
         },
         Receiver::PendingRsi,
         Patch::Tap,
@@ -251,11 +180,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 19] = [
     (
         MutationSite {
             name: "finish_goal_cancellation",
-            rva: 0xa74513,
-            sentinel: [
-                0xc7, 0x43, 0x08, 0x02, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x5c, 0x24, 0x48, 0x48, 0x8b,
-                0x74, 0x24,
-            ],
+            rva: Rva(0xa74513),
         },
         Receiver::FinishedFactionRsi,
         Patch::Tap,

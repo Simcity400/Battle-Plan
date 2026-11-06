@@ -99,7 +99,7 @@ impl Fixture {
         let exponent = capacity.trailing_zeros();
         let overflow = exponent + 2;
         let terminal = capacity + overflow;
-        let root = BASE + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8;
+        let root = BASE + registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8;
         self.pointer(root, REGISTRY);
         self.pointer(REGISTRY + registry::ENTRIES, BUCKETS);
         self.u32(REGISTRY + registry::COUNT, groups.len() as u32);
@@ -146,7 +146,7 @@ impl Fixture {
     }
     fn variant(&mut self, id: u32) -> usize {
         let variant = VARIANTS + id as usize * 0x100;
-        self.pointer(variant, BASE + cequipment_variant::VTABLE_RVA);
+        self.pointer(variant, BASE + cequipment_variant::VTABLE_RVA.0);
         self.u32(variant + 8, cequipment_variant::REFERENCE_TYPE);
         self.u32(variant + 12, id);
         variant
@@ -161,7 +161,7 @@ impl Fixture {
         f.pointer(MANAGERS + 16, 0);
         let empty = f.alloc(SIZE);
         f.pointer(MANAGERS + 24, empty);
-        f.pointer(empty, BASE + VTABLE_RVA);
+        f.pointer(empty, BASE + VTABLE_RVA.0);
         f.array(empty + GROUPS, 0, 0);
         f.u32(empty + COUNTRY, 3);
         let manager = f.manager(7, groups);
@@ -172,14 +172,14 @@ impl Fixture {
     /// A manager of country `country` holding `groups`.
     fn manager(&mut self, country: u32, groups: &[(u32, [&[Entry]; 5])]) -> usize {
         let manager = self.alloc(SIZE);
-        self.pointer(manager, BASE + VTABLE_RVA);
+        self.pointer(manager, BASE + VTABLE_RVA.0);
         self.u32(manager + COUNTRY, country);
         let list = self.alloc(groups.len() * 8);
         self.array(manager + GROUPS, list, groups.len() as u32);
         for (index, (id, kinds)) in groups.iter().enumerate() {
             let group = self.alloc(logs::SIZE);
             self.pointer(list + index * 8, group);
-            self.pointer(group, BASE + logs::VTABLE_RVA);
+            self.pointer(group, BASE + logs::VTABLE_RVA.0);
             self.u32(group + logs::GROUP, corders_group::REFERENCE_TYPE);
             self.u32(group + logs::GROUP + 4, *id);
             self.array(group + logs::ENEMY_LOSSES, 0xdead_0000, 0);
@@ -194,10 +194,10 @@ impl Fixture {
                 for (position, entry) in entries.iter().enumerate() {
                     let object = self.alloc(loss::SIZE);
                     self.pointer(data + position * 8, object);
-                    self.pointer(object, BASE + loss::VTABLE_RVA);
+                    self.pointer(object, BASE + loss::VTABLE_RVA.0);
                     self.put(object + loss::REASON, &entry.reason.to_le_bytes());
                     self.put(object + loss::DATE, &entry.date.to_le_bytes());
-                    self.pointer(object + loss::POOL, BASE + pool::VTABLE_RVA);
+                    self.pointer(object + loss::POOL, BASE + pool::VTABLE_RVA.0);
                     let items = self.alloc(entry.pool.len() * 16);
                     self.array(
                         object + loss::POOL + pool::ITEMS,
@@ -908,7 +908,7 @@ fn deleted_groups_are_the_logs_whose_orders_group_no_longer_resolves() {
     };
     // A null reference table for the type: nothing resolves.
     let (mut f, _) = standard();
-    let root = BASE + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8;
+    let root = BASE + registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8;
     f.pointer(root, 0);
     assert_eq!(scan(&f), Ok(vec![7]));
     f.registry(&[12793, 12794]);
@@ -928,7 +928,7 @@ fn deleted_groups_are_the_logs_whose_orders_group_no_longer_resolves() {
 fn a_deleted_log_count_without_room_is_what_a_read_with_room_returns() {
     let (mut f, manager) = standard();
     // A null reference table for the type: both groups' logs are deleted.
-    let root = BASE + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8;
+    let root = BASE + registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8;
     f.pointer(root, 0);
     assert_eq!(
         deleted_logs(&f, BASE, manager, &mut []),

@@ -32,6 +32,7 @@
 //!   effects into stockpiles or their own pools only read the watched pool.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// Bytes from a wing to its equipment pool.
 pub const POOL: usize = 0x1d8;
@@ -50,56 +51,32 @@ pub const RAID_LIFETIME_KEY: usize = 1;
 pub const MAP_MUTATIONS: [MutationSite; 6] = [
     MutationSite {
         name: "wing_training_stop",
-        rva: 0x100_9c80,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x4c, 0x89, 0x4c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24,
-            0x18, 0x89,
-        ],
+        rva: Rva(0x100_9c80),
     },
     MutationSite {
         name: "wing_attachment_coverage",
-        rva: 0xc4_8760,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-            0x18, 0x57,
-        ],
+        rva: Rva(0xc4_8760),
     },
     MutationSite {
         name: "wing_raid_reference",
-        rva: 0xfe_b740,
-        sentinel: [
-            0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0x05, 0x53, 0xfb, 0x3f, 0x02, 0x48,
-            0x8b, 0xf9,
-        ],
+        rva: Rva(0xfe_b740),
     },
     MutationSite {
         name: "raid_reference_lifetime",
-        rva: 0x106_fc60,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x8b,
-        ],
+        rva: Rva(0x106_fc60),
     },
     MutationSite {
         name: "append_incoming_air_wing",
-        rva: 0xca_9030,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x30, 0x80,
-        ],
+        rva: Rva(0xca_9030),
     },
     MutationSite {
         name: "erase_incoming_air_wing",
-        rva: 0xcc_0490,
-        sentinel: [
-            0x48, 0x83, 0xec, 0x08, 0x48, 0x63, 0x41, 0x24, 0x45, 0x33, 0xc9, 0x4c, 0x8b, 0xd9,
-            0x85, 0xc0,
-        ],
+        rva: Rva(0xcc_0490),
     },
 ];
 
 /// The pool primitive the call sites in [`MUTATIONS`] invoke.
-pub const SUBTRACT_VARIANT_RVA: usize = 0x109_8700;
+pub const SUBTRACT_VARIANT_RVA: Rva = Rva(0x109_8700);
 
 /// How a site's arguments name the written pools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,11 +96,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
     (
         MutationSite {
             name: "add_airplanes",
-            rva: 0xfd_f340,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
-                0x48, 0x83,
-            ],
+            rva: Rva(0xfd_f340),
         },
         Receiver::Wing,
     ),
@@ -131,11 +104,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
     (
         MutationSite {
             name: "add_equipment_pool",
-            rva: 0xfd_f1c0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0xfd_f1c0),
         },
         Receiver::Wing,
     ),
@@ -144,11 +113,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
     (
         MutationSite {
             name: "move_airplanes",
-            rva: 0xfe_8020,
-            sentinel: [
-                0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x53, 0x10, 0x49, 0x89, 0x4b, 0x08, 0x53, 0x55, 0x56,
-                0x57, 0x41,
-            ],
+            rva: Rva(0xfe_8020),
         },
         Receiver::Wings,
     ),
@@ -156,11 +121,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
     (
         MutationSite {
             name: "subtract_equipment_pool",
-            rva: 0xfe_ad80,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-                0x30, 0x48,
-            ],
+            rva: Rva(0xfe_ad80),
         },
         Receiver::Wing,
     ),
@@ -169,11 +130,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
     (
         MutationSite {
             name: "trim_airplanes",
-            rva: 0xfe_c83a,
-            sentinel: [
-                0xe8, 0xc1, 0xbe, 0x0a, 0x00, 0x48, 0xb8, 0x09, 0xe1, 0xd1, 0xc6, 0x11, 0x6b, 0xf1,
-                0x29, 0x49,
-            ],
+            rva: Rva(0xfe_c83a),
         },
         Receiver::Pool,
     ),
@@ -182,11 +139,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
     (
         MutationSite {
             name: "return_airplanes",
-            rva: 0xee_1510,
-            sentinel: [
-                0xe8, 0xeb, 0x71, 0x1b, 0x00, 0x48, 0xb8, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00,
-                0x00, 0x49,
-            ],
+            rva: Rva(0xee_1510),
         },
         Receiver::Pool,
     ),
@@ -194,11 +147,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
     (
         MutationSite {
             name: "destroy_wing",
-            rva: 0xfd_eb30,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0xfd_eb30),
         },
         Receiver::Wing,
     ),
@@ -217,20 +166,6 @@ pub fn pools(receiver: Receiver, first: usize, second: usize) -> [usize; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Each call site's sentinel starts with its rel32 CALL of the primitive.
-    #[test]
-    fn call_sites_call_the_subtraction() {
-        for (site, receiver) in MUTATIONS {
-            if receiver != Receiver::Pool {
-                continue;
-            }
-            assert_eq!(site.sentinel[0], 0xe8, "{}", site.name);
-            let displacement = i32::from_le_bytes(site.sentinel[1..5].try_into().unwrap());
-            let target = (site.rva + 5).wrapping_add_signed(displacement as isize);
-            assert_eq!(target, SUBTRACT_VARIANT_RVA, "{}", site.name);
-        }
-    }
 
     #[test]
     fn receivers_name_the_pools() {

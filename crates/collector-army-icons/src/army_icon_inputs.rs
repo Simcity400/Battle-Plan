@@ -215,8 +215,8 @@ mod tests {
         let seed = carmy::DivisionSeed {
             pointer: source.pointer,
             division: source.division,
-            primary_vtable: Some(carmy::VTABLE_RVA as u64),
-            secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
+            primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
+            secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA.0 as u64),
             handle: Some(source.division),
             roster_owner: Some(source.country),
             separate_counter: Some(255),

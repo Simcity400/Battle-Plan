@@ -33,8 +33,7 @@ pub fn read(
         read_memory::<[u8; STRIDE]>(memory, address).ok_or("equipment allocation unreadable")?;
     let archetype_pointer = usize::try_from(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
         .map_err(|_| "equipment archetype pointer overflow")?;
-    let expected = module_base
-        .checked_add(cequipment_type::VTABLE_RVA)
+    let expected = engine_sites::at(module_base, cequipment_type::VTABLE_RVA)
         .ok_or("equipment archetype vtable address overflow")?;
     let vtable = read_memory::<u64>(memory, archetype_pointer)
         .ok_or("equipment archetype vtable unreadable")?;
@@ -85,7 +84,7 @@ mod tests {
     #[test]
     fn allocations_preserve_duplicates_and_signed_extrema_and_authenticate_archetypes() {
         let mut bytes = vec![0_u8; 0x600];
-        bytes[0x100..0x108].copy_from_slice(&(cequipment_type::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x100..0x108].copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
         let id = 0x100 + cequipment_type::ARCHETYPE_ID;
         bytes[id..id + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         for (ordinal, amount) in [i64::MIN, 0, i64::MAX].into_iter().enumerate() {

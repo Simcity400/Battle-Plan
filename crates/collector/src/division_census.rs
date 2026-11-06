@@ -1290,10 +1290,7 @@ impl CoreIdentities {
         };
         if gathered == 0
             || Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
-                != self
-                    .base
-                    .checked_add(cprovince::VTABLE_RVA)
-                    .map(|p| p as u64)
+                != engine_sites::at(self.base, cprovince::VTABLE_RVA).map(|p| p as u64)
         {
             return Err("division province vtable mismatch");
         }
@@ -1348,9 +1345,7 @@ impl CoreIdentities {
         );
         if gathered == 0
             || Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
-                != self
-                    .base
-                    .checked_add(creferenced_division_template::VTABLE_RVA)
+                != engine_sites::at(self.base, creferenced_division_template::VTABLE_RVA)
                     .map(|p| p as u64)
         {
             return Err("division template vtable mismatch");
@@ -1382,13 +1377,9 @@ impl CoreIdentities {
         let identity =
             read::<[u8; 16]>(memory, group).ok_or("division orders group identity unreadable")?;
         let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
-        let normal = self
-            .base
-            .checked_add(engine_native::corders_group::VTABLE_RVA)
+        let normal = engine_sites::at(self.base, engine_native::corders_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let army = self
-            .base
-            .checked_add(engine_native::carmy_group::VTABLE_RVA)
+        let army = engine_sites::at(self.base, engine_native::carmy_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if vtable != normal && vtable != army {
             return Err("division orders group vtable mismatch");
@@ -1412,13 +1403,9 @@ fn project(
     scalar: &carmy::DivisionSeed,
     identities: &mut CoreIdentities,
 ) -> Result<carmy::Row, &'static str> {
-    let primary = identities
-        .base
-        .checked_add(carmy::VTABLE_RVA)
+    let primary = engine_sites::at(identities.base, carmy::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
-    let secondary = identities
-        .base
-        .checked_add(carmy::SECONDARY_VTABLE_RVA)
+    let secondary = engine_sites::at(identities.base, carmy::SECONDARY_VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     if scalar
         .primary_vtable

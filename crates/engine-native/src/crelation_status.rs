@@ -10,15 +10,16 @@ use crate::{
     read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 mod baseline;
 use baseline::Identity;
 pub use baseline::{Baseline, Counts as BaselineCounts, Mark, Observation};
 
 /// CRelationStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_d490;
+pub const VTABLE_RVA: Rva = Rva(0x029d_d490);
 /// Relation-status constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d7_9480;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d7_9480);
 /// Relation-status allocation size.
 #[cfg(test)]
 pub const OBJECT_SIZE: usize = 0x9c0;
@@ -547,9 +548,8 @@ fn links_observed_inner(
     let mut war_failure = None;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let status_vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
+        let status_vtable =
+            engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
         resolver.begin(&countries);
         if output.is_growing() {
             resolver
@@ -568,8 +568,7 @@ fn links_observed_inner(
         let mut subject_seen = target_words(countries.count())?;
         let (mut len, mut unread) = (0_usize, 0_u32);
         let (mut war_len, mut war_unread) = (0, 0_u32);
-        let diplomacy_vtable = base
-            .checked_add(cdiplomacy_status::VTABLE_RVA)
+        let diplomacy_vtable = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let mut members = [None::<ccountry::Country>; BATCH];
         let mut country_pointers = [0_usize; BATCH];
@@ -1363,9 +1362,8 @@ fn walk_buffers(
     let mut owned_failure: Option<&'static str> = None;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let status_vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
+        let status_vtable =
+            engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
         let mut highest_slot = 0;
         for slot in 1..countries.count() {
             if countries.at(slot)?.is_some() {
@@ -1551,9 +1549,8 @@ fn read_owner(
     if copied < 2 {
         return Err("country diplomacy unreadable");
     }
-    let expected = base
-        .checked_add(cdiplomacy_status::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected =
+        engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(vtable) != expected as u64 {
         return Err("diplomacy vtable mismatch");
     }
@@ -2123,8 +2120,7 @@ fn zero_subject_at(
     let relation_type = relation_type?;
     let pointer = pointer?;
     let parties = if relation_type == csubject_relation::TYPE_VALUE {
-        let identity = base
-            .checked_add(csubject_relation::VTABLE_RVA)
+        let identity = engine_sites::at(base, csubject_relation::VTABLE_RVA)
             .ok_or("slot-0 subject module address overflow")
             .and_then(|expected| {
                 (read::<u64>(memory, pointer) == Some(expected as u64))
@@ -2204,7 +2200,7 @@ fn status_in_matrix(
     status
         .checked_add(CO_BELLIGERENT)
         .ok_or("relation status address overflow")?;
-    if read::<u64>(memory, status) != base.checked_add(VTABLE_RVA).map(|p| p as u64)
+    if read::<u64>(memory, status) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
         || read::<u64>(memory, status + DIPLOMACY_STATUS) != Some(diplomacy as u64)
     {
         return Err("relation status identity mismatch");
@@ -2249,7 +2245,7 @@ fn co_candidate_byte(
         &mut [&mut vtable, &mut owner, &mut target, &mut byte],
     );
     if copied < 2
-        || Some(u64::from_le_bytes(vtable)) != base.checked_add(VTABLE_RVA).map(|p| p as u64)
+        || Some(u64::from_le_bytes(vtable)) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
         || u64::from_le_bytes(owner) != diplomacy as u64
     {
         return Err("relation status identity mismatch");
@@ -2823,8 +2819,7 @@ fn visibility_subject_at_pointer(
     }
     let pointer = pointer?;
     (*attempts.subject_identity.get_or_insert_with(|| {
-        let expected = base
-            .checked_add(csubject_relation::VTABLE_RVA)
+        let expected = engine_sites::at(base, csubject_relation::VTABLE_RVA)
             .ok_or("reverse-zero subject module address overflow")?;
         (read::<u64>(memory, pointer) == Some(expected as u64))
             .then_some(())
@@ -3047,9 +3042,8 @@ fn diplomacy_root(
     if pointer == 0 {
         return Err("country diplomacy is null");
     }
-    let expected = base
-        .checked_add(cdiplomacy_status::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected =
+        engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("diplomacy vtable mismatch");
     }
@@ -3158,10 +3152,12 @@ fn read_tuples(
             }
             let record = &auth_records[index * TUPLE_AUTH_BYTES..(index + 1) * TUPLE_AUTH_BYTES];
             let vtable = u64::from_le_bytes(record[..8].try_into().unwrap());
-            let rva = usize::try_from(vtable)
+            let vtable = usize::try_from(vtable)
                 .ok()
-                .and_then(|value| value.checked_sub(base))
+                .filter(|&value| value >= base)
                 .ok_or("relation vtable outside the module")?;
+            let rva = engine_sites::which(base, vtable, &crelation::CLASS_VTABLES)
+                .ok_or("serializable relation has an unclassified vtable")?;
             let expected_type = crelation::class_type(rva)
                 .ok_or("serializable relation has an unclassified vtable")?;
             let type_id = u32::from_le_bytes(record[8..12].try_into().unwrap());

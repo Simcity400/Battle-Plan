@@ -2,6 +2,7 @@
 //! already authenticated by the country-intel census and select only a dirty
 //! family/pool/source. Nothing here enumerates countries or potential pairs.
 
+use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, memory::Raw, read, read_slice};
 use engine_native::allocation;
 
@@ -18,10 +19,10 @@ pub const RADAR_REFERENCE: usize = 0x48;
 pub const TOKEN_REFERENCE: usize = 0x10;
 pub const STATIC_POOL_STRIDE: usize = 0x48;
 pub const DYNAMIC_POOL_STRIDE: usize = 0x38;
-pub const STATIC_POOL_VTABLE: usize = 0x029d_ba88;
-pub const DYNAMIC_POOL_VTABLE: usize = 0x029d_b9e8;
-pub const SOURCE_VTABLE: usize = 0x029d_ba38;
-pub const REFERENCE_VTABLE: usize = 0x029d_bad8;
+pub const STATIC_POOL_VTABLE: Rva = Rva(0x029d_ba88);
+pub const DYNAMIC_POOL_VTABLE: Rva = Rva(0x029d_b9e8);
+pub const SOURCE_VTABLE: Rva = Rva(0x029d_ba38);
+pub const REFERENCE_VTABLE: Rva = Rva(0x029d_bad8);
 pub const POOL_SOURCES: usize = 0x28;
 pub const NEXT_ID: usize = 0x40;
 pub const SOURCE_STRIDE: usize = 0x28;
@@ -384,9 +385,10 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    if object == 0 || read::<u64>(memory, object) != base.checked_add(vtable).map(|p| p as u64) {
+    let vtable = engine_sites::at(base, vtable).ok_or("intel source object identity mismatch")?;
+    if object == 0 || read::<u64>(memory, object) != Some(vtable as u64) {
         Err("intel source object identity mismatch")
     } else {
         Ok(())

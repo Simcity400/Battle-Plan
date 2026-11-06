@@ -69,7 +69,7 @@ pub(super) fn fixture() -> Vec<u8> {
     }
     let at = kit::VARIANT - kit::BASE + native::UPGRADES;
     bytes[at..at + 8].copy_from_slice(
-        &(engine_equipment::cequipment_upgrades_instance::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_equipment::cequipment_upgrades_instance::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     bytes
 }
@@ -194,12 +194,12 @@ fn variant_named_sources_keep_country_scope_duplicates_and_owned_values() {
     put(
         &mut bytes,
         0x9100,
-        &(native::NAMED_BONUS_VTABLE_RVA as u64).to_le_bytes(),
+        &(native::NAMED_BONUS_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
         0x9108,
-        &(native::SPECIFIC_BONUS_VTABLE_RVA as u64).to_le_bytes(),
+        &(native::SPECIFIC_BONUS_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -224,7 +224,7 @@ fn variant_named_sources_keep_country_scope_duplicates_and_owned_values() {
     struct World<'a>(&'a [u8]);
     impl Memory for World<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&(kit::BASE as u64).to_le_bytes());
                 true
             } else {
@@ -790,7 +790,7 @@ fn base_destruction_uses_only_the_prepared_binding_and_clock_without_shifting_or
     struct Clock;
     impl Memory for Clock {
         fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
-            if address == engine_native::cgame_state::SINGLETON_RVA && bytes.len() == 8 {
+            if address == engine_native::cgame_state::SINGLETON_RVA.0 && bytes.len() == 8 {
                 bytes.copy_from_slice(&0x1000_u64.to_le_bytes());
                 true
             } else if address == 0x1000 + engine_native::cgame_state::CURRENT_HOUR
@@ -1307,7 +1307,7 @@ fn private_snapshots_read_outside_store_and_intervening_observers_use_the_exact_
                     drop(callback_store(mutex));
                 }
             }
-            if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x12000_u64.to_le_bytes());
                 true
             } else if address == 0x12000 + engine_native::cgame_state::CURRENT_HOUR

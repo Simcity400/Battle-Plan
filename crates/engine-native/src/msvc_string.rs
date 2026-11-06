@@ -1,5 +1,6 @@
 //! The supported executable's 64-bit MSVC string layout and exact byte reader.
 
+use engine_sites::Rva;
 use crate::{Memory, read, read_slice};
 
 /// MSVC string inline union or heap pointer, selected by capacity.
@@ -15,7 +16,7 @@ pub const STRIDE: usize = 32;
 /// MSVC string pointer-union alignment.
 pub const ALIGNMENT: usize = 8;
 /// String constructor used for callback filenames.
-pub const CONSTRUCT_BYTES_CANDIDATE_RVA: usize = 0x0011_f030;
+pub const CONSTRUCT_BYTES_CANDIDATE_RVA: Rva = Rva(0x0011_f030);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Text<const N: usize> {

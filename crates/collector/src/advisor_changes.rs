@@ -215,7 +215,7 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "advisor_changes") {
             let callbacks = [
@@ -232,21 +232,22 @@ impl Hooks {
                 destroy_character as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
-                    return Err("advisor hook sentinel differs");
-                }
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                let (at, original) = crate::located_hook(base, site.rva)?;
+                let hook = unsafe { Hook::new(at, callbacks[index], original) }
                     .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
             // The role sites complete this family's character coverage. A
-            // differing sentinel leaves them all uninstalled; the character
+            // withheld site leaves them all uninstalled; the character
             // domain then stays disabled and every hour reads afresh.
             let roles = engine_mutations::character_role_mutations::MUTATIONS;
+            let mut located = [(0, [0; 16]); ROLE_SITES];
             if cfg!(feature = "character_changes")
-                && roles.iter().all(|site| {
-                    crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
+                && roles.iter().zip(&mut located).all(|(site, slot)| {
+                    crate::located_hook(base, site.rva)
+                        .map(|code| *slot = code)
+                        .is_ok()
                 })
             {
                 let callbacks: [usize; ROLE_SITES] = [
@@ -259,10 +260,9 @@ impl Hooks {
                     character_name as *const () as usize,
                     character_repair as *const () as usize,
                 ];
-                for (index, site) in roles.iter().enumerate() {
-                    let hook =
-                        unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                            .map_err(|_| "native hook construction failed")?;
+                for (index, &(at, original)) in located.iter().enumerate() {
+                    let hook = unsafe { Hook::new(at, callbacks[index], original) }
+                        .map_err(|_| "native hook construction failed")?;
                     ROLE_ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                     hooks.push(hook);
                 }

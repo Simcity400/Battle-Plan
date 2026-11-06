@@ -4,49 +4,33 @@
 use crate::{
     Memory, ccountry, cideology_group, cpolitical_party, cpolitical_status, msvc_string, read,
 };
+use engine_sites::Rva;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HookSite {
     pub name: &'static str,
-    pub function_rva: usize,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
     pub commit: bool,
 }
 
 /// Entry: RCX status, RDX signed fixed5; signal follows clamping.
 pub const ADD_POLITICAL_POWER: HookSite = HookSite {
     name: "AddPoliticalPower",
-    function_rva: 0xbfa720,
-    rva: 0xbfa720,
-    sentinel: [
-        0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x3c, 0x5c, 0x90, 0x02, 0x00, 0x48, 0x8b,
-        0xf9,
-    ],
+    rva: Rva(0xbfa720),
     commit: false,
 };
 
 /// Entry: RCX status, RDX signed fixed5; applies the no-deficit floor.
 pub const ADD_POLITICAL_POWER_NO_DEFICIT: HookSite = HookSite {
     name: "AddPoliticalPowerNoDeficit",
-    function_rva: 0xbfa810,
-    rva: 0xbfa810,
-    sentinel: [
-        0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x4c, 0x5b, 0x90, 0x02, 0x00, 0x48, 0x8b,
-        0xf9,
-    ],
+    rva: Rva(0xbfa810),
     commit: false,
 };
 
 /// Commit: RSI status, RCX evaluated target; a negative target floors to zero.
 pub const SET_POLITICAL_POWER: HookSite = HookSite {
     name: "SetPoliticalPower",
-    function_rva: 0x37c550,
-    rva: 0x37c597,
-    sentinel: [
-        0x48, 0x89, 0x8e, 0xe0, 0x00, 0x00, 0x00, 0x48, 0x83, 0x7c, 0x24, 0x40, 0x00, 0x7d, 0x0b,
-        0x48,
-    ],
+    rva: Rva(0x37c597),
     commit: true,
 };
 
@@ -55,156 +39,91 @@ pub const SET_POLITICAL_POWER: HookSite = HookSite {
 /// the commit tap inside only stages its operands.
 pub const SET_POLITICAL_POWER_EFFECT: HookSite = HookSite {
     name: "SetPoliticalPowerEffect",
-    function_rva: 0x37c550,
-    rva: 0x37c550,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30,
-        0x48,
-    ],
+    rva: Rva(0x37c550),
     commit: false,
 };
 
 /// Entry: RCX status; retains the old government before party destruction.
 pub const CLEAR_POLITICS: HookSite = HookSite {
     name: "ClearPolitics",
-    function_rva: 0xbfb410,
-    rva: 0xbfb410,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54, 0x48, 0x83, 0xec, 0x20, 0x65, 0x48,
-        0x8b,
-    ],
+    rva: Rva(0xbfb410),
     commit: false,
 };
 
 /// Entry: RCX country; command-power reset and nested clear/setup are observed separately.
 pub const RESET_COUNTRY: HookSite = HookSite {
     name: "ResetCountry",
-    function_rva: 0x72a990,
-    rva: 0x72a990,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
-        0x55,
-    ],
+    rva: Rva(0x72a990),
     commit: false,
 };
 
 /// Entry: RCX country, RDX pointer to signed fixed5; returns void.
 pub const ADD_COMMAND_POWER: HookSite = HookSite {
     name: "AddCommandPower",
-    function_rva: 0x7179b0,
-    rva: 0x7179b0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x20,
-        0x48,
-    ],
+    rva: Rva(0x7179b0),
     commit: false,
 };
 
 /// Entry: RCX country, RDX charge pointer; AL reports success, preserving full RAX.
 pub const SPEND_COMMAND_POWER: HookSite = HookSite {
     name: "SpendCommandPower",
-    function_rva: 0x75cd40,
-    rva: 0x75cd40,
-    sentinel: [
-        0x48, 0x8b, 0x81, 0xf0, 0x01, 0x00, 0x00, 0x4c, 0x8b, 0x02, 0x49, 0x3b, 0xc0, 0x7c, 0x0d,
-        0x49,
-    ],
+    rva: Rva(0x75cd40),
     commit: false,
 };
 
 /// Entry: RCX country, RDX allocator, R8B charge; AL reports success, preserving full RAX.
 pub const ALLOCATE_COMMAND_POWER: HookSite = HookSite {
     name: "AllocateCommandPower",
-    function_rva: 0x75c9b0,
-    rva: 0x75c9b0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54, 0x41,
-        0x56,
-    ],
+    rva: Rva(0x75c9b0),
     commit: false,
 };
 
 /// Entry: RCX country, RDX allocator; nested command-power refund with its own cap.
 pub const RELEASE_COMMAND_POWER: HookSite = HookSite {
     name: "ReleaseCommandPower",
-    function_rva: 0x732a10,
-    rva: 0x732a10,
-    sentinel: [
-        0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xee,
-        0xcb,
-    ],
+    rva: Rva(0x732a10),
     commit: false,
 };
 
 /// Entry: RCX country, RDX definition, R8 scope, R9B charge; upfront subtraction precedes nested allocation.
 pub const ACTIVATE_ABILITY: HookSite = HookSite {
     name: "ActivateAbility",
-    function_rva: 0x7320b0,
-    rva: 0x7320b0,
-    sentinel: [
-        0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d,
-        0x6c,
-    ],
+    rva: Rva(0x7320b0),
     commit: false,
 };
 
 /// Commit: R13 country, RCX balance, RDX charge, R15+RBX record; one commit per paid anniversary.
 pub const ABILITY_UPKEEP: HookSite = HookSite {
     name: "AbilityUpkeep",
-    function_rva: 0x7442f0,
-    rva: 0x7445bd,
-    sentinel: [
-        0x49, 0x89, 0x8d, 0xf0, 0x01, 0x00, 0x00, 0xeb, 0x03, 0x40, 0x32, 0xff, 0x49, 0x8b, 0x54,
-        0x1f,
-    ],
+    rva: Rva(0x7445bd),
     commit: true,
 };
 
 /// Entry: RCX country, RDX region, R8 allocator, R9 adjustment, fifth byte charge.
 pub const GROUND_CREW: HookSite = HookSite {
     name: "GroundCrew",
-    function_rva: 0x71b3c0,
-    rva: 0x71b3c0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x20,
-        0x55,
-    ],
+    rva: Rva(0x71b3c0),
     commit: false,
 };
 
 /// Commit: RBX status, RAX new party; precedes refresh and on-actions.
 pub const SET_RULING_PARTY: HookSite = HookSite {
     name: "SetRulingParty",
-    function_rva: 0xc01a30,
-    rva: 0xc01ba6,
-    sentinel: [
-        0x48, 0x89, 0x83, 0xd0, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xcb, 0x48, 0x8b, 0x5c, 0x24, 0x78,
-        0x48,
-    ],
+    rva: Rva(0xc01ba6),
     commit: true,
 };
 
 /// Commit: RBP status, RSI new party; precedes refresh and on-actions.
 pub const FORCE_RULING_PARTY: HookSite = HookSite {
     name: "ForceRulingParty",
-    function_rva: 0xc00af0,
-    rva: 0xc00b72,
-    sentinel: [
-        0x48, 0x89, 0xb5, 0xd0, 0x00, 0x00, 0x00, 0xe8, 0x32, 0xfd, 0xff, 0xff, 0xba, 0x80, 0x8d,
-        0x5b,
-    ],
+    rva: Rva(0xc00b72),
     commit: true,
 };
 
 /// Commit: RBP status, RCX new party; setup and dynamic reuse.
 pub const SETUP_POLITICS: HookSite = HookSite {
     name: "SetupPolitics",
-    function_rva: 0xc01bd0,
-    rva: 0xc01d60,
-    sentinel: [
-        0x48, 0x89, 0x8d, 0xd0, 0x00, 0x00, 0x00, 0x4c, 0x8b, 0xbd, 0xc8, 0x00, 0x00, 0x00, 0x48,
-        0x8d,
-    ],
+    rva: Rva(0xc01d60),
     commit: true,
 };
 
@@ -213,43 +132,28 @@ pub const SETUP_POLITICS: HookSite = HookSite {
 /// maxima emit no event.
 pub const FALLBACK_RULING_PARTY: HookSite = HookSite {
     name: "FallbackRulingParty",
-    function_rva: 0xbfff10,
-    rva: 0xc00063,
-    sentinel: [
-        0x49, 0x8b, 0x86, 0xc8, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xa8, 0x68, 0x0f, 0x00, 0x00, 0x49,
-        0x8b,
-    ],
+    rva: Rva(0xc00063),
     commit: true,
 };
 
 /// Observation: R13 status, RDI gross, stack reduction, RAX net, R15 blockade count; precedes tooltip adjustment.
 pub const DAILY_POLITICAL_RATE: HookSite = HookSite {
     name: "DailyPoliticalRate",
-    function_rva: 0xbfc7c0,
-    rva: 0xbfd435,
-    sentinel: [
-        0x4c, 0x8b, 0xbd, 0x68, 0x03, 0x00, 0x00, 0x49, 0x89, 0x07, 0x4d, 0x85, 0xf6, 0x0f, 0x84,
-        0x55,
-    ],
+    rva: Rva(0xbfd435),
     commit: true,
 };
 
 /// Daily political-power application, separate timed charges and inline daily command-power application.
-pub const DAILY_PP_CALLER: usize = 0xbfb99c;
-pub const TIMED_PP_CALLER: usize = 0xbfbc23;
-pub const DAILY_CP_CALLER: usize = 0x72f4f7;
+pub const DAILY_PP_CALLER: Rva = Rva(0xbfb99c);
+pub const TIMED_PP_CALLER: Rva = Rva(0xbfbc23);
+pub const DAILY_CP_CALLER: Rva = Rva(0x72f4f7);
 
 /// Daily reduction observation after the cost call. The seven-byte patch span
 /// has no relative operand, interior target or return PC. R13 status, stack cost
 /// and daily caller remain unchanged.
 pub const DAILY_PP_MODIFIER: HookSite = HookSite {
     name: "DailyPpModifier",
-    function_rva: 0xbfc7c0,
-    rva: 0xbfc8c2,
-    sentinel: [
-        0x0f, 0x11, 0x85, 0xc0, 0x00, 0x00, 0x00, 0x66, 0x0f, 0x6f, 0x35, 0xbf, 0x90, 0xb9, 0x01,
-        0xf3,
-    ],
+    rva: Rva(0xbfc8c2),
     commit: true,
 };
 /// Post-signal observation after the assertion calls. The patch spans the
@@ -258,22 +162,12 @@ pub const DAILY_PP_MODIFIER: HookSite = HookSite {
 /// signal in RCX is unused by the thread-local flush.
 pub const PP_SIGNAL: HookSite = HookSite {
     name: "PpSignal",
-    function_rva: 0xbfa720,
-    rva: 0xbfa7fb,
-    sentinel: [
-        0x48, 0x83, 0xc4, 0x30, 0x5f, 0xe9, 0xbb, 0xd5, 0x74, 0xff, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
-        0xcc,
-    ],
+    rva: Rva(0xbfa7fb),
     commit: true,
 };
 pub const PP_SIGNAL_NO_DEFICIT: HookSite = HookSite {
     name: "PpSignalNoDeficit",
-    function_rva: 0xbfa810,
-    rva: 0xbfa8fe,
-    sentinel: [
-        0x48, 0x83, 0xc4, 0x30, 0x5f, 0xe9, 0xb8, 0xd4, 0x74, 0xff, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
-        0xcc,
-    ],
+    rva: Rva(0xbfa8fe),
     commit: true,
 };
 
@@ -306,9 +200,7 @@ pub fn command_owner(
 }
 fn owner_identity(base: usize, pointer: usize, identity: [u8; 16]) -> Result<Owner, &'static str> {
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) as usize
-        != base
-            .checked_add(ccountry::VTABLE_RVA)
-            .ok_or("politics module overflow")?
+        != engine_sites::at(base, ccountry::VTABLE_RVA).ok_or("politics module overflow")?
     {
         return Err("politics country vtable mismatch");
     }
@@ -351,9 +243,9 @@ pub fn country_owner(
     let status = usize::try_from(u64::from_le_bytes(status))
         .map_err(|_| "politics status pointer overflow")?;
     if status != 0 {
-        if read::<u64>(memory, status).map(|p| p as usize)
-            != base.checked_add(cpolitical_status::VTABLE_RVA)
-        {
+        let vtable = engine_sites::at(base, cpolitical_status::VTABLE_RVA)
+            .ok_or("politics status vtable mismatch")?;
+        if read::<u64>(memory, status) != Some(vtable as u64) {
             return Err("politics status vtable mismatch");
         }
         if status
@@ -400,15 +292,15 @@ mod tests {
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x2800];
         for (at, value) in [
-            (COUNTRY, BASE + ccountry::VTABLE_RVA),
+            (COUNTRY, BASE + ccountry::VTABLE_RVA.0),
             (COUNTRY + ccountry::ID, 5001),
             (COUNTRY + ccountry::POLITICAL_STATUS, STATUS),
-            (STATUS, BASE + cpolitical_status::VTABLE_RVA),
+            (STATUS, BASE + cpolitical_status::VTABLE_RVA.0),
             (STATUS + cpolitical_status::COUNTRY, COUNTRY),
-            (PARTY, BASE + cpolitical_party::VTABLE_RVA),
+            (PARTY, BASE + cpolitical_party::VTABLE_RVA.0),
             (PARTY + cpolitical_party::ID, 37),
             (PARTY + cpolitical_party::IDEOLOGY_GROUP, IDEOLOGY),
-            (IDEOLOGY, BASE + cideology_group::VTABLE_RVA),
+            (IDEOLOGY, BASE + cideology_group::VTABLE_RVA.0),
             (IDEOLOGY + cideology_group::ID, 37),
         ] {
             put(&mut bytes, at, value as u64);
@@ -605,381 +497,210 @@ mod tests {
             Ok(None)
         );
     }
-    #[test]
-    fn sites_have_one_detour_per_native_function() {
-        let sites = [
-            ADD_POLITICAL_POWER,
-            ADD_POLITICAL_POWER_NO_DEFICIT,
-            SET_POLITICAL_POWER,
-            CLEAR_POLITICS,
-            RESET_COUNTRY,
-            ADD_COMMAND_POWER,
-            SPEND_COMMAND_POWER,
-            ALLOCATE_COMMAND_POWER,
-            RELEASE_COMMAND_POWER,
-            ACTIVATE_ABILITY,
-            ABILITY_UPKEEP,
-            GROUND_CREW,
-            SET_RULING_PARTY,
-            FORCE_RULING_PARTY,
-            SETUP_POLITICS,
-            FALLBACK_RULING_PARTY,
-            DAILY_POLITICAL_RATE,
-        ];
-        for (index, site) in sites.iter().enumerate() {
-            assert!(
-                !sites[..index]
-                    .iter()
-                    .any(|other| other.function_rva == site.function_rva)
-            );
-            assert!(!site.sentinel.iter().all(|byte| *byte == 0));
-            assert_eq!(site.commit, site.rva != site.function_rva);
-        }
-    }
 }
 
 /// Charging-path call return addresses, independent of item identity or table differences.
-pub const CHARGING_CALLERS: &[(usize, &str)] = &[
-    (0x259452, "Console"),
-    (0x2865c2, "Console"),
-    (0x2e77bb, "FocusRefund"),
-    (0x2f387a, "Focus"),
-    (0x3618b2, "ScriptEffect"),
-    (0x363c39, "ScriptEffect"),
-    (0x3645f7, "ScaledScriptEffect"),
-    (0x6bfa05, "Autonomy"),
-    (0x6c1a43, "Autonomy"),
-    (0x71b405, "AirAction"),
-    (0x71b9a9, "AirAction"),
-    (0x732467, "AbilityActivation"),
-    (0x732c4f, "AllocationRefund"),
-    (0x76fe2e, "Decision"),
-    (0x771077, "DecisionTimeout"),
-    (0x77dcd6, "TargetedDecision"),
-    (0xb02d86, "Diplomacy"),
-    (0xc71212, "LeaderAssignment"),
-    (0xc76066, "LeaderAssignment"),
-    (0xc78d1f, "LeaderAssignment"),
-    (0xc78d51, "LeaderAssignment"),
-    (0xd89162, "Diplomacy"),
-    (0xe22d67, "MioPolicy"),
-    (0xfe8302, "AirAction"),
-    (0x100b8a5, "AirAction"),
-    (0x100b9ac, "AirAction"),
-    (0x1052da5, "Idea"),
-    (0x106fe4c, "Raid"),
-    (0x1072856, "Raid"),
-    (0x107286d, "Raid"),
-    (0x1172d61, "AdvisorRemoval"),
-    (0x1189be3, "Diplomacy"),
-    (0x1189c13, "Diplomacy"),
-    (0x118d050, "WarJustification"),
-    (0x118ee10, "JoinWar"),
-    (0x11c6cea, "JoinWar"),
-    (0x11da88c, "Advisor"),
-    (0x11da8e3, "Advisor"),
-    (0x11dac38, "Advisor"),
-    (0x11e0141, "LeaderRecruitment"),
-    (0x11e37dc, "Advisor"),
-    (0x11e3835, "Advisor"),
-    (0x11e69a7, "PreferredTactic"),
-    (0x11e747f, "ScorchedEarth"),
-    (0x11e9981, "OfficerUpgrade"),
-    (0x11e9b5f, "CaptainUpgrade"),
-    (0x13338a7, "Advisor"),
-    (0x133447e, "Advisor"),
-    (0x13344a6, "Advisor"),
-    (0x13eb50f, "PrideOfFleet"),
-    (0x13fd15c, "LeaderPromotion"),
-    (0x14e3569, "Medal"),
-    (0x18d36f2, "LeaderTrait"),
-    (0x18db48b, "LeaderAssignment"),
-    (0x1ab9bc1, "SpyMaster"),
-    (0x1b365dc, "Blockade"),
-    (0x1c36ca8, "ScientistFaction"),
-    (0x1f6b6e0, "ScientistRecruitment"),
+pub const CHARGING_CALLERS: &[(Rva, &str)] = &[
+    (Rva(0x259452), "Console"),
+    (Rva(0x2865c2), "Console"),
+    (Rva(0x2e77bb), "FocusRefund"),
+    (Rva(0x2f387a), "Focus"),
+    (Rva(0x3618b2), "ScriptEffect"),
+    (Rva(0x363c39), "ScriptEffect"),
+    (Rva(0x3645f7), "ScaledScriptEffect"),
+    (Rva(0x6bfa05), "Autonomy"),
+    (Rva(0x6c1a43), "Autonomy"),
+    (Rva(0x71b405), "AirAction"),
+    (Rva(0x71b9a9), "AirAction"),
+    (Rva(0x732467), "AbilityActivation"),
+    (Rva(0x732c4f), "AllocationRefund"),
+    (Rva(0x76fe2e), "Decision"),
+    (Rva(0x771077), "DecisionTimeout"),
+    (Rva(0x77dcd6), "TargetedDecision"),
+    (Rva(0xb02d86), "Diplomacy"),
+    (Rva(0xc71212), "LeaderAssignment"),
+    (Rva(0xc76066), "LeaderAssignment"),
+    (Rva(0xc78d1f), "LeaderAssignment"),
+    (Rva(0xc78d51), "LeaderAssignment"),
+    (Rva(0xd89162), "Diplomacy"),
+    (Rva(0xe22d67), "MioPolicy"),
+    (Rva(0xfe8302), "AirAction"),
+    (Rva(0x100b8a5), "AirAction"),
+    (Rva(0x100b9ac), "AirAction"),
+    (Rva(0x1052da5), "Idea"),
+    (Rva(0x106fe4c), "Raid"),
+    (Rva(0x1072856), "Raid"),
+    (Rva(0x107286d), "Raid"),
+    (Rva(0x1172d61), "AdvisorRemoval"),
+    (Rva(0x1189be3), "Diplomacy"),
+    (Rva(0x1189c13), "Diplomacy"),
+    (Rva(0x118d050), "WarJustification"),
+    (Rva(0x118ee10), "JoinWar"),
+    (Rva(0x11c6cea), "JoinWar"),
+    (Rva(0x11da88c), "Advisor"),
+    (Rva(0x11da8e3), "Advisor"),
+    (Rva(0x11dac38), "Advisor"),
+    (Rva(0x11e0141), "LeaderRecruitment"),
+    (Rva(0x11e37dc), "Advisor"),
+    (Rva(0x11e3835), "Advisor"),
+    (Rva(0x11e69a7), "PreferredTactic"),
+    (Rva(0x11e747f), "ScorchedEarth"),
+    (Rva(0x11e9981), "OfficerUpgrade"),
+    (Rva(0x11e9b5f), "CaptainUpgrade"),
+    (Rva(0x13338a7), "Advisor"),
+    (Rva(0x133447e), "Advisor"),
+    (Rva(0x13344a6), "Advisor"),
+    (Rva(0x13eb50f), "PrideOfFleet"),
+    (Rva(0x13fd15c), "LeaderPromotion"),
+    (Rva(0x14e3569), "Medal"),
+    (Rva(0x18d36f2), "LeaderTrait"),
+    (Rva(0x18db48b), "LeaderAssignment"),
+    (Rva(0x1ab9bc1), "SpyMaster"),
+    (Rva(0x1b365dc), "Blockade"),
+    (Rva(0x1c36ca8), "ScientistFaction"),
+    (Rva(0x1f6b6e0), "ScientistRecruitment"),
 ];
 
 /// Synchronous charging scopes use up to five integer/pointer arguments and return through RAX.
 pub const SCOPES: &[HookSite] = &[
     HookSite {
         name: "PoliticsDaily",
-        function_rva: 0xbfb6a0,
-        rva: 0xbfb6a0,
-        sentinel: [
-            0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
-            0x8d, 0xac,
-        ],
+        rva: Rva(0xbfb6a0),
         commit: false,
     },
     HookSite {
         name: "ImproveRelationDaily",
-        function_rva: 0xd85080,
-        rva: 0xd85080,
-        sentinel: [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xda, 0x4d, 0x8b, 0xc8, 0x4c, 0x8d,
-            0x41, 0x14,
-        ],
+        rva: Rva(0xd85080),
         commit: false,
     },
     HookSite {
         name: "BoostPartyDaily",
-        function_rva: 0xd84a50,
-        rva: 0xd84a50,
-        sentinel: [
-            0x83, 0x79, 0x10, 0x00, 0x7e, 0x14, 0x83, 0x79, 0x14, 0x00, 0x7e, 0x0e, 0x48, 0x8b,
-            0x05, 0x25,
-        ],
+        rva: Rva(0xd84a50),
         commit: false,
     },
     HookSite {
         name: "MioResearchDaily",
-        function_rva: 0xe23770,
-        rva: 0xe23770,
-        sentinel: [
-            0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-            0x40, 0x49,
-        ],
+        rva: Rva(0xe23770),
         commit: false,
     },
     HookSite {
         name: "MioProductionDaily",
-        function_rva: 0xe236d0,
-        rva: 0xe236d0,
-        sentinel: [
-            0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-            0x40, 0x49,
-        ],
+        rva: Rva(0xe236d0),
         commit: false,
     },
     HookSite {
         name: "AddIdea",
-        function_rva: 0x11db650,
-        rva: 0x11db650,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x55, 0x57, 0x41, 0x55,
-            0x41, 0x56,
-        ],
+        rva: Rva(0x11db650),
         commit: false,
     },
     HookSite {
         name: "RemoveIdea",
-        function_rva: 0x11e30b0,
-        rva: 0x11e30b0,
-        sentinel: [
-            0x40, 0x55, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xac, 0xd2, 0x31, 0x02, 0x00, 0x48,
-            0x8b, 0xe9,
-        ],
+        rva: Rva(0x11e30b0),
         commit: false,
     },
     HookSite {
         name: "ReplaceIdea",
-        function_rva: 0x11e3920,
-        rva: 0x11e3920,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
-            0x48, 0x83,
-        ],
+        rva: Rva(0x11e3920),
         commit: false,
     },
     HookSite {
         name: "HireAdvisor",
-        function_rva: 0x11da7f0,
-        rva: 0x11da7f0,
-        sentinel: [
-            0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
-            0x8d, 0x6c,
-        ],
+        rva: Rva(0x11da7f0),
         commit: false,
     },
     HookSite {
         name: "ReplaceAdvisor",
-        function_rva: 0x11e36d0,
-        rva: 0x11e36d0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54,
-            0x41, 0x56,
-        ],
+        rva: Rva(0x11e36d0),
         commit: false,
     },
     HookSite {
         name: "Decision",
-        function_rva: 0x76fc80,
-        rva: 0x76fc80,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0x76fc80),
         commit: false,
     },
     HookSite {
         name: "TargetedDecision",
-        function_rva: 0x77dab0,
-        rva: 0x77dab0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0x77dab0),
         commit: false,
     },
     HookSite {
         name: "DecisionTimeout",
-        function_rva: 0x770f00,
-        rva: 0x770f00,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x55,
-            0x41, 0x56,
-        ],
+        rva: Rva(0x770f00),
         commit: false,
     },
     HookSite {
         name: "Diplomacy",
-        function_rva: 0x1189420,
-        rva: 0x1189420,
-        sentinel: [
-            0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
-            0x8d, 0xac,
-        ],
+        rva: Rva(0x1189420),
         commit: false,
     },
     HookSite {
         name: "ScriptedDiplomacy",
-        function_rva: 0xb02ca0,
-        rva: 0xb02ca0,
-        sentinel: [
-            0x40, 0x53, 0x48, 0x81, 0xec, 0x90, 0x01, 0x00, 0x00, 0x48, 0x8b, 0xd9, 0x48, 0x8d,
-            0x4c, 0x24,
-        ],
+        rva: Rva(0xb02ca0),
         commit: false,
     },
     HookSite {
         name: "LeaderPromotion",
-        function_rva: 0x13fd0f0,
-        rva: 0x13fd0f0,
-        sentinel: [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x40, 0x83, 0x79, 0x28, 0x00, 0x48, 0x8d, 0x59, 0x28,
-            0x75, 0x0a,
-        ],
+        rva: Rva(0x13fd0f0),
         commit: false,
     },
     HookSite {
         name: "LeaderTrait",
-        function_rva: 0x18d36a0,
-        rva: 0x18d36a0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xff, 0x48, 0x8b,
-            0xd9, 0x40,
-        ],
+        rva: Rva(0x18d36a0),
         commit: false,
     },
     HookSite {
         name: "AbilityCost",
-        function_rva: 0x108fd70,
-        rva: 0x108fd70,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-            0x20, 0x57,
-        ],
+        rva: Rva(0x108fd70),
         commit: false,
     },
     HookSite {
         name: "CoupCompletion",
-        function_rva: 0xb2d600,
-        rva: 0xb2d600,
-        sentinel: [
-            0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
-            0x56, 0x41,
-        ],
+        rva: Rva(0xb2d600),
         commit: false,
     },
     HookSite {
         name: "CivilWar",
-        function_rva: 0x1165a00,
-        rva: 0x1165a00,
-        sentinel: [
-            0x48, 0x8b, 0xc4, 0x4c, 0x89, 0x40, 0x18, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48,
-            0x08, 0x55,
-        ],
+        rva: Rva(0x1165a00),
         commit: false,
     },
     HookSite {
         name: "SetPoliticsEffect",
-        function_rva: 0x37c5f0,
-        rva: 0x37c5f0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
-            0x48, 0x83,
-        ],
+        rva: Rva(0x37c5f0),
         commit: false,
     },
     HookSite {
         name: "PeaceForceGovernment",
-        function_rva: 0x14f1050,
-        rva: 0x14f1050,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-            0x18, 0x48,
-        ],
+        rva: Rva(0x14f1050),
         commit: false,
     },
     HookSite {
         name: "SubjectGovernment",
-        function_rva: 0xd86710,
-        rva: 0xd86710,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x4c, 0x89, 0x4c, 0x24, 0x20, 0x44, 0x89, 0x44, 0x24,
-            0x18, 0x89,
-        ],
+        rva: Rva(0xd86710),
         commit: false,
     },
     HookSite {
         name: "ConsoleGovernment",
-        function_rva: 0x29d970,
-        rva: 0x29d970,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
-            0x54, 0x41,
-        ],
+        rva: Rva(0x29d970),
         commit: false,
     },
     HookSite {
         name: "ConsoleSubject",
-        function_rva: 0x24c3a0,
-        rva: 0x24c3a0,
-        sentinel: [
-            0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x55, 0x41, 0x56, 0x41,
-            0x57, 0x48,
-        ],
+        rva: Rva(0x24c3a0),
         commit: false,
     },
     HookSite {
         name: "OnAction",
-        function_rva: 0xacaf60,
-        rva: 0xacaf60,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24,
-            0x18, 0x55,
-        ],
+        rva: Rva(0xacaf60),
         commit: false,
     },
     HookSite {
         name: "Focus",
-        function_rva: 0x2f37d0,
-        rva: 0x2f37d0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0x2f37d0),
         commit: false,
     },
     HookSite {
         name: "FocusRefund",
-        function_rva: 0x2e7530,
-        rva: 0x2e7530,
-        sentinel: [
-            0x48, 0x8b, 0xc4, 0x88, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08, 0x48, 0x83, 0xec, 0x68,
-            0x48, 0x89,
-        ],
+        rva: Rva(0x2e7530),
         commit: false,
     },
 ];
@@ -1097,7 +818,7 @@ pub fn blockade_cost(count_register: usize, loaded_define: i64) -> i64 {
         .wrapping_mul(100_000)
         / 100_000
 }
-pub const BLOCKADE_COST_DEFINE_RVA: usize = 0x33e3ab8;
+pub const BLOCKADE_COST_DEFINE_RVA: Rva = Rva(0x33e3ab8);
 
 /// Daily rate, modifier and blockade records, plus applied political and command power.
 pub const DAILY_RECORDS: usize = 5;
@@ -1125,6 +846,9 @@ pub fn daily_record_demand(
         }
         Ok(array)
     };
+    let organisation_vtable = engine_sites::at(base, organisation::VTABLE_RVA)
+        .ok_or("politics staging organisation identity mismatch")?
+        as u64;
     let mut records = 0usize;
     for slot in 1..countries.count() {
         let Some(country) = countries.at(slot)? else {
@@ -1166,7 +890,9 @@ pub fn daily_record_demand(
                 .filter(|pointer| *pointer != 0)
                 .ok_or("politics staging status unreadable or null")?
                 as usize;
-            if read::<u64>(memory, pointer) != base.checked_add(vtable).map(|p| p as u64)
+            let vtable = engine_sites::at(base, vtable)
+                .ok_or("politics staging status identity mismatch")?;
+            if read::<u64>(memory, pointer) != Some(vtable as u64)
                 || pointer
                     .checked_add(backlink)
                     .and_then(|address| read::<u64>(memory, address))
@@ -1184,8 +910,7 @@ pub fn daily_record_demand(
                     "politics staging organisation unreadable",
                     |_, pointer| {
                         if pointer == 0
-                            || read::<u64>(memory, pointer)
-                                != base.checked_add(organisation::VTABLE_RVA).map(|p| p as u64)
+                            || read::<u64>(memory, pointer) != Some(organisation_vtable)
                             || pointer
                                 .checked_add(organisation::OWNER)
                                 .and_then(|address| read::<u32>(memory, address))
@@ -1225,9 +950,7 @@ pub fn daily_record_demand(
 /// dynamic keys can grow beyond this witness: the collector counts a named
 /// identity shortage, preserves the known cause and grows its next staging.
 pub fn lexical_key_demand(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
-    let address = base
-        .checked_add(crate::cpdx_lexer::INITIALIZED_RVA)
-        .ok_or("lexer witness address overflow")?;
+    let address = crate::cpdx_lexer::witness_address(base)?;
     let header = read::<[u8; 64]>(memory, address).ok_or("lexer witness unreadable")?;
     let witness = crate::cpdx_lexer::PreparedWitness::from_header(header)?;
     let mut longest = 0;
@@ -1242,7 +965,7 @@ pub fn lexical_key_demand(memory: &impl Memory, base: usize) -> Result<usize, &'
             .ok_or("lexer key address overflow")?;
         longest = longest.max(literal(memory, address)?.len);
     }
-    if read::<[u8; 64]>(memory, base + crate::cpdx_lexer::INITIALIZED_RVA) != Some(header) {
+    if read::<[u8; 64]>(memory, address) != Some(header) {
         return Err("lexer changed during politics presizing");
     }
     longest
@@ -1267,7 +990,7 @@ mod capture_tests {
                 world.u64(country + ccountry::POLITICAL_STATUS, status as u64);
                 world.u64(
                     status,
-                    (world.module + cpolitical_status::VTABLE_RVA) as u64,
+                    (world.module + cpolitical_status::VTABLE_RVA.0) as u64,
                 );
                 world.u64(status + cpolitical_status::COUNTRY, country as u64);
                 world.array(status + 8, country, 2);
@@ -1290,11 +1013,11 @@ mod capture_tests {
                 ] {
                     let pointer = world.alloc(0x300);
                     world.u64(country + offset, pointer as u64);
-                    world.u64(pointer, (world.module + vtable) as u64);
+                    world.u64(pointer, (world.module + vtable.0) as u64);
                     world.u64(pointer + backlink, country as u64);
                     let data = if offset == ccountry::PRODUCTION_STATUS {
                         let object = world.alloc(0x130);
-                        world.u64(object, (world.module + organisation::VTABLE_RVA) as u64);
+                        world.u64(object, (world.module + organisation::VTABLE_RVA.0) as u64);
                         world.u32(object + organisation::OWNER, slot);
                         world.array(object + organisation::PRODUCTION_LINES, country, 7);
                         let data = world.alloc(8);
@@ -1322,7 +1045,7 @@ mod capture_tests {
 
     #[test]
     fn every_site_is_unique_including_scoped_native_commands() {
-        let mut functions = std::collections::BTreeSet::new();
+        let mut sites = std::collections::BTreeSet::new();
         for site in [
             ADD_POLITICAL_POWER,
             ADD_POLITICAL_POWER_NO_DEFICIT,
@@ -1346,11 +1069,10 @@ mod capture_tests {
         .chain(SCOPES.iter().copied())
         {
             assert!(
-                functions.insert(site.function_rva),
+                sites.insert(site.rva),
                 "duplicate native hook {}",
                 site.name
             );
-            assert!(!site.sentinel.iter().all(|byte| *byte == 0));
         }
         assert!(
             CHARGING_CALLERS

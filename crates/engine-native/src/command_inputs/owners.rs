@@ -2,6 +2,7 @@ use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, creference_registry::HeaderResolver, read,
 };
 use engine_executable::executable_tables::commands::{Object, Source, Target};
+use engine_sites::Rva;
 use std::io;
 
 struct Building {
@@ -22,7 +23,8 @@ impl Inputs {
     pub fn new(memory: &impl Memory, base: usize) -> io::Result<Self> {
         use crate::{cbuilding_database as database, cbuilding_template as template};
         let result = (|| {
-            let building_database = field::<u64>(memory, base, database::SINGLETON_RVA)? as usize;
+            let building_database =
+                field::<u64>(memory, global(base, database::SINGLETON_RVA)?, 0)? as usize;
             let building_header =
                 field::<[u8; 16]>(memory, building_database, database::TEMPLATES)?;
             let array =
@@ -31,7 +33,7 @@ impl Inputs {
                 .element(0, 8)
                 .and_then(|at| read::<u64>(memory, at))
                 .ok_or("command building sentinel missing")? as usize;
-            if field::<u64>(memory, empty, 0)? != (base + template::NULL_VTABLE_RVA) as u64 {
+            if Some(field::<u64>(memory, empty, 0)?) != vtable(base, template::NULL_VTABLE_RVA) {
                 return Err("command building sentinel identity mismatch");
             }
             let mut buildings = Vec::new();
@@ -49,7 +51,7 @@ impl Inputs {
                 if pointer == 0 {
                     continue;
                 }
-                if field::<u64>(memory, pointer, 0)? != (base + template::VTABLE_RVA) as u64 {
+                if Some(field::<u64>(memory, pointer, 0)?) != vtable(base, template::VTABLE_RVA) {
                     return Err("command building definition identity mismatch");
                 }
                 buildings.push(Building {
@@ -97,6 +99,14 @@ fn field<T: crate::memory::Raw>(
         .ok_or("command owner field unreadable or overflowing")
 }
 
+fn global(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("command owner field unreadable or overflowing")
+}
+
+fn vtable(base: usize, key: Rva) -> Option<u64> {
+    engine_sites::at(base, key).map(|address| address as u64)
+}
+
 impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
     fn object(&self, pointer: usize, expected: Object) -> Result<u32, &'static str> {
         let vtable = field::<u64>(self.memory, pointer, 0)?;
@@ -138,7 +148,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
     }
 
     fn country_pointer(&self, pointer: usize) -> Result<u32, &'static str> {
-        if field::<u64>(self.memory, pointer, 0)? != (self.base + ccountry::VTABLE_RVA) as u64 {
+        if Some(field::<u64>(self.memory, pointer, 0)?) != vtable(self.base, ccountry::VTABLE_RVA) {
             return Err("command country pointer identity mismatch");
         }
         field(self.memory, pointer, 8)
@@ -176,7 +186,9 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
                 use crate::ccountry_raid_status as status;
                 let owner = field::<u64>(self.memory, pointer, crate::craid_instance::OWNER_OBJECT)?
                     as usize;
-                if field::<u64>(self.memory, owner, 0)? != (self.base + status::VTABLE_RVA) as u64 {
+                if Some(field::<u64>(self.memory, owner, 0)?)
+                    != vtable(self.base, status::VTABLE_RVA)
+                {
                     return Err("command raid status identity mismatch");
                 }
                 let country = field::<i32>(self.memory, owner, status::COUNTRY)?;
@@ -228,8 +240,8 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
                     self.object(pool, WingPool)?;
                     let strategic =
                         field::<u64>(self.memory, pool, crate::cair_wing_pool::OWNER)? as usize;
-                    if field::<u64>(self.memory, strategic, 0)?
-                        != (self.base + crate::cstrategic_air::VTABLE_RVA) as u64
+                    if Some(field::<u64>(self.memory, strategic, 0)?)
+                        != vtable(self.base, crate::cstrategic_air::VTABLE_RVA)
                     {
                         return Err("command air country identity mismatch");
                     }
@@ -303,7 +315,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
 
     fn location(&self, id: u32, province: bool) -> Result<Option<usize>, &'static str> {
         use crate::{cprovince, cstate};
-        let (array, vtable, identity) = if province {
+        let (array, class, identity) = if province {
             (cgame_state::PROVINCES, cprovince::VTABLE_RVA, cprovince::ID)
         } else {
             (cgame_state::STATES, cstate::VTABLE_RVA, cstate::ID)
@@ -317,7 +329,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
         if pointer == 0 {
             return Ok(None);
         }
-        if field::<u64>(self.memory, pointer, 0)? != (self.base + vtable) as u64
+        if Some(field::<u64>(self.memory, pointer, 0)?) != vtable(self.base, class)
             || field::<u32>(self.memory, pointer, identity)? != id
         {
             return Err("command location identity mismatch");
@@ -327,7 +339,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
 
     fn building(&self, index: u32, state: u32) -> Result<Option<u32>, &'static str> {
         use crate::{cbuilding, cbuilding_database as database, cbuilding_status as status};
-        if field::<u64>(self.memory, self.base, database::SINGLETON_RVA)? as usize
+        if field::<u64>(self.memory, global(self.base, database::SINGLETON_RVA)?, 0)? as usize
             != self.inputs.building_database
             || field::<[u8; 16]>(
                 self.memory,
@@ -352,7 +364,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
         let status = location
             .checked_add(crate::cstate::BUILDING_STATUS)
             .ok_or("command building status overflow")?;
-        if field::<u64>(self.memory, status, 0)? != (self.base + status::VTABLE_RVA) as u64 {
+        if Some(field::<u64>(self.memory, status, 0)?) != vtable(self.base, status::VTABLE_RVA) {
             return Err("command building status identity mismatch");
         }
         let indices = Array::read(self.memory, status + status::BUILDING_INDICES, 4)
@@ -371,7 +383,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
             .ok_or("command building index outside instances")?;
         let building =
             read::<u64>(self.memory, slot).ok_or("command building instance unreadable")? as usize;
-        if field::<u64>(self.memory, building, 0)? != (self.base + cbuilding::VTABLE_RVA) as u64
+        if Some(field::<u64>(self.memory, building, 0)?) != vtable(self.base, cbuilding::VTABLE_RVA)
             || field::<u64>(self.memory, building, cbuilding::BUILDING_STATUS)? != status as u64
             || field::<u64>(self.memory, building, cbuilding::TEMPLATE)?
                 != definition.pointer as u64
@@ -627,7 +639,7 @@ mod tests {
             assert!(kind < registry::LOW_ROOT_COUNT);
             let entries = table + 0x100;
             self.u64(
-                BASE + registry::LOW_ROOTS_RVA + kind as usize * 8,
+                BASE + registry::LOW_ROOTS_RVA.0 + kind as usize * 8,
                 table as u64,
             );
             self.u64(table + registry::ENTRIES, entries as u64);
@@ -675,10 +687,10 @@ mod tests {
             registry: HeaderResolver::default(),
             object_identity: |identity, object| {
                 let expected = match object {
-                    Object::Group => corders_group::VTABLE_RVA,
-                    Object::Theatre => ctheatre::VTABLE_RVA,
-                    Object::TheatreGroup => ctheater_group::VTABLE_RVA,
-                    Object::Raid => craid_instance::VTABLE_RVA,
+                    Object::Group => corders_group::VTABLE_RVA.0,
+                    Object::Theatre => ctheatre::VTABLE_RVA.0,
+                    Object::TheatreGroup => ctheater_group::VTABLE_RVA.0,
+                    Object::Raid => craid_instance::VTABLE_RVA.0,
                     Object::ProductionLine => PRODUCTION_LINE_IDENTITY,
                     _ => return false,
                 };
@@ -705,7 +717,7 @@ mod tests {
         for (index, handle) in groups.into_iter().enumerate() {
             let pointer = 0x4000 + index * 0x1000;
             memory.u64(0x3000 + index * 8, handle);
-            memory.u64(pointer, (BASE + corders_group::VTABLE_RVA) as u64);
+            memory.u64(pointer, (BASE + corders_group::VTABLE_RVA.0) as u64);
             memory.u64(pointer + corders_group::HANDLE, handle);
             memory.u32(pointer + corders_group::COUNTRY, 1);
         }
@@ -718,7 +730,7 @@ mod tests {
             memory.u32(0x9000 + raw * 4, slot);
         }
         for (pointer, country) in [(0xa000, 1), (0xb000, 3)] {
-            memory.u64(pointer, (BASE + ccountry::VTABLE_RVA) as u64);
+            memory.u64(pointer, (BASE + ccountry::VTABLE_RVA.0) as u64);
             memory.u32(pointer + ccountry::ID, country);
         }
         assert_eq!(resolve(&memory), Ok(Resolution::Country(1)));
@@ -734,10 +746,10 @@ mod tests {
         let theatre_group = (1u64 << 32) | u64::from(ctheater_group::REFERENCE_TYPE);
         memory.references(0x1_1000, &[(theatre_group, 0x6000)]);
         memory.u64(COMMAND + 0x28, theatre_group);
-        memory.u64(0x6000, (BASE + ctheater_group::VTABLE_RVA) as u64);
+        memory.u64(0x6000, (BASE + ctheater_group::VTABLE_RVA.0) as u64);
         memory.u64(0x6000 + ctheater_group::HANDLE, theatre_group);
         memory.u64(0x6000 + ctheater_group::THEATRE, 0x7000);
-        memory.u64(0x7000, (BASE + ctheatre::VTABLE_RVA) as u64);
+        memory.u64(0x7000, (BASE + ctheatre::VTABLE_RVA.0) as u64);
         memory.u32(0x7000 + ctheatre::OWNER, 3);
         assert_eq!(resolve(&memory), Ok(Resolution::Country(3)));
 
@@ -762,7 +774,7 @@ mod tests {
         memory.u64(0x4000 + line::REFERENCE_TYPE, handles[1]);
         memory.u64(0x4000 + line::PRODUCTION_STATUS, 0x5000);
         memory.u64(0x5000 + status::COUNTRY, 0x6000);
-        memory.u64(0x6000, (BASE + ccountry::VTABLE_RVA) as u64);
+        memory.u64(0x6000, (BASE + ccountry::VTABLE_RVA.0) as u64);
         memory.u32(0x6000 + ccountry::ID, 1);
         memory.array(STATE + cgame_state::COUNTRIES, 0x8000, 2);
         memory.array(STATE + cgame_state::COUNTRY_LINKS, 0x9000, 2);
@@ -785,7 +797,7 @@ mod tests {
         );
 
         memory.u64(0x3008, handles[1]);
-        memory.u64(0x4000, (BASE + corders_group::VTABLE_RVA) as u64);
+        memory.u64(0x4000, (BASE + corders_group::VTABLE_RVA.0) as u64);
         assert_eq!(
             resolve(&memory),
             Err("command owner object type unsupported")
@@ -809,19 +821,19 @@ mod tests {
         let handle = (1u64 << 32) | u64::from(craid_instance::REFERENCE_TYPE_VALUE);
         memory.references(0x1_0000, &[(handle, 0x4000)]);
         memory.u64(COMMAND + 0x28, handle);
-        memory.u64(0x4000, (BASE + craid_instance::VTABLE_RVA) as u64);
+        memory.u64(0x4000, (BASE + craid_instance::VTABLE_RVA.0) as u64);
         memory.u64(0x4000 + craid_instance::REFERENCE_TYPE, handle);
         memory.u64(0x4000 + craid_instance::OWNER_OBJECT, 0x5000);
-        memory.u64(0x5000, (BASE + status::VTABLE_RVA) as u64);
+        memory.u64(0x5000, (BASE + status::VTABLE_RVA.0) as u64);
         memory.u32(0x5000 + status::COUNTRY, 7);
         assert_eq!(resolve(&memory), Ok(Resolution::Country(7)));
 
-        memory.u64(0x5000, (BASE + ccountry::VTABLE_RVA) as u64);
+        memory.u64(0x5000, (BASE + ccountry::VTABLE_RVA.0) as u64);
         assert_eq!(
             resolve(&memory),
             Err("command raid status identity mismatch")
         );
-        memory.u64(0x5000, (BASE + status::VTABLE_RVA) as u64);
+        memory.u64(0x5000, (BASE + status::VTABLE_RVA.0) as u64);
         for country in [0, -1, i32::MIN] {
             memory.put(0x5000 + status::COUNTRY, &country.to_le_bytes());
             assert_eq!(
@@ -837,7 +849,7 @@ mod tests {
         use crate::{cbuilding_database as database, cbuilding_template as template};
         let base = 0x1_0000_0000usize;
         let mut memory = Bytes::default();
-        memory.put(base + database::SINGLETON_RVA, &0x1000u64.to_le_bytes());
+        memory.put(base + database::SINGLETON_RVA.0, &0x1000u64.to_le_bytes());
         let mut header = Vec::new();
         header.extend_from_slice(&0x2000u64.to_le_bytes());
         header.extend_from_slice(&3u32.to_le_bytes());
@@ -848,14 +860,14 @@ mod tests {
         }
         memory.put(
             0x3000,
-            &((base + template::NULL_VTABLE_RVA) as u64).to_le_bytes(),
+            &((base + template::NULL_VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         for (pointer, token, ordinal, enabled) in
             [(0x4000, u32::MAX, 73u32, 0u8), (0x5000, 37, 5, 0x19)]
         {
             memory.put(
                 pointer,
-                &((base + template::VTABLE_RVA) as u64).to_le_bytes(),
+                &((base + template::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             memory.put(pointer + template::TYPE_ID, &token.to_le_bytes());
             memory.put(pointer + template::DATABASE_ORDINAL, &ordinal.to_le_bytes());
@@ -883,13 +895,13 @@ mod tests {
         memory.put(0x7000 + 8 * 8, &0x8000u64.to_le_bytes());
         memory.put(
             0x8000,
-            &((base + crate::cstate::VTABLE_RVA) as u64).to_le_bytes(),
+            &((base + crate::cstate::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         memory.put(0x8000 + crate::cstate::ID, &8u32.to_le_bytes());
         let status = 0x8000 + crate::cstate::BUILDING_STATUS;
         memory.put(
             status,
-            &((base + crate::cbuilding_status::VTABLE_RVA) as u64).to_le_bytes(),
+            &((base + crate::cbuilding_status::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         header.clear();
         header.extend_from_slice(&0x9000u64.to_le_bytes());
@@ -905,7 +917,7 @@ mod tests {
         memory.put(0xa000, &0xb000u64.to_le_bytes());
         memory.put(
             0xb000,
-            &((base + crate::cbuilding::VTABLE_RVA) as u64).to_le_bytes(),
+            &((base + crate::cbuilding::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         memory.put(
             0xb000 + crate::cbuilding::BUILDING_STATUS,

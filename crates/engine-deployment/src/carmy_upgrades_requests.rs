@@ -2,14 +2,15 @@
 //! The owning army pointer authenticates membership independently of active
 //! country registration.
 
+use engine_sites::Rva;
 /// Primary requests vtable.
-pub const VTABLE_RVA: usize = 0x2a4b9a0;
+pub const VTABLE_RVA: Rva = Rva(0x2a4b9a0);
 /// Priority, u32; serialization omits the default value one.
 pub const PRIORITY: usize = 0x08;
 /// Persistent subobject displacement.
 pub const PERSISTENT_SUBOBJECT: usize = 0x18;
 /// Persistent subobject vtable.
-pub const PERSISTENT_VTABLE_RVA: usize = 0x2a4b9d8;
+pub const PERSISTENT_VTABLE_RVA: Rva = Rva(0x2a4b9d8);
 /// Owning CArmy pointer requiring both vtables and persistent-id authentication.
 pub const ARMY: usize = 0x20;
 /// CArmyUpgradesStatus back-reference checked against the owning status.
@@ -46,12 +47,9 @@ pub(crate) fn row(
     address: usize,
     source: &DivisionSource,
 ) -> Result<Row, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
-    let expected_persistent = base
-        .checked_add(PERSISTENT_VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
+    let expected_persistent =
+        engine_sites::at(base, PERSISTENT_VTABLE_RVA).ok_or("module address overflow")?;
     let mut primary = [0_u8; 12];
     let mut persistent = [0_u8; 16];
     let persistent_at = address

@@ -60,8 +60,8 @@ impl Populated {
         self.u32(at + 8, count as u32);
         self.u32(at + 12, count as u32);
     }
-    fn vtable(&mut self, at: usize, rva: usize) {
-        self.u64(at, (BASE + rva) as u64);
+    fn vtable(&mut self, at: usize, rva: engine_sites::Rva) {
+        self.u64(at, (BASE + rva.0) as u64);
     }
     /// A map at `character + offset`: one node, or none.
     fn map(&mut self, character: usize, offset: usize, head: usize, entry: Option<usize>) {
@@ -102,7 +102,7 @@ impl Populated {
                     .to_le_bytes()
                     .into_iter()
                     .enumerate()
-                    .map(|(index, byte)| (BASE + rva + index, byte)),
+                    .map(|(index, byte)| (BASE + rva.0 + index, byte)),
             );
         }
         let links = TABLE + slots * 8;
@@ -215,7 +215,7 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
     for (index, byte) in (registry as u64).to_le_bytes().into_iter().enumerate() {
         world
             .globals
-            .insert(BASE + creference_registry::HIGH_ROOT_RVA + index, byte);
+            .insert(BASE + creference_registry::HIGH_ROOT_RVA.0 + index, byte);
     }
     world.u64(registry + creference_registry::ENTRIES, entries as u64);
     world.u32(registry + creference_registry::COUNT, countries as u32);

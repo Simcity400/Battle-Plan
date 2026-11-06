@@ -83,16 +83,24 @@ fn identity(
     };
     let header = read::<[u8; 12]>(memory, pointer).ok_or("peace action header unreadable")?;
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap()) as usize;
-    let form = [
-        (take::VTABLE_RVA, Form::TakeState),
-        (liberate::VTABLE_RVA, Form::Liberate),
-        (puppet::VTABLE_RVA, Form::Puppet),
-        (government::VTABLE_RVA, Form::Government),
-        (navy::VTABLE_RVA, Form::Navy),
-    ]
-    .into_iter()
-    .find_map(|(rva, form)| (base.checked_add(rva) == Some(vtable)).then_some(form))
-    .ok_or("peace action vtable unsupported")?;
+    let form = match engine_sites::which(
+        base,
+        vtable,
+        &[
+            take::VTABLE_RVA,
+            liberate::VTABLE_RVA,
+            puppet::VTABLE_RVA,
+            government::VTABLE_RVA,
+            navy::VTABLE_RVA,
+        ],
+    ) {
+        Some(take::VTABLE_RVA) => Form::TakeState,
+        Some(liberate::VTABLE_RVA) => Form::Liberate,
+        Some(puppet::VTABLE_RVA) => Form::Puppet,
+        Some(government::VTABLE_RVA) => Form::Government,
+        Some(navy::VTABLE_RVA) => Form::Navy,
+        _ => return Err("peace action vtable unsupported"),
+    };
     Ok((form, header))
 }
 
@@ -161,8 +169,7 @@ pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'
         ..Default::default()
     };
     if form == Form::Navy {
-        let key = base
-            .checked_add(navy::LABEL_LITERAL_RVA)
+        let key = engine_sites::at(base, navy::LABEL_LITERAL_RVA)
             .and_then(|at| read::<[u8; navy::LABEL_LITERAL_BYTES]>(memory, at))
             .ok_or("peace navy naming key unreadable")?;
         if !key.contains(&0) {
@@ -175,9 +182,7 @@ pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'
         } else {
             let identity = read::<[u8; 16]>(memory, selected as usize)
                 .ok_or("peace selected ship identity unreadable")?;
-            if base
-                .checked_add(crate::cship::VTABLE_RVA)
-                .map(|value| value as u64)
+            if engine_sites::at(base, crate::cship::VTABLE_RVA).map(|value| value as u64)
                 != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
             {
                 return Err("peace selected ship vtable mismatch");

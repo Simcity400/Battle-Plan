@@ -500,7 +500,7 @@ mod tests {
             pointers,
             1,
         );
-        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             variant + cequipment_variant::TYPE,
@@ -510,11 +510,11 @@ mod tests {
             word(&mut bytes, pointers + index * 8, variant as u64);
         }
         for entry in (0..3).map(|index| entries + index * unit_bonuses::STRIDE) {
-            word(&mut bytes, entry, unit_bonuses::VTABLE_RVA as u64);
+            word(&mut bytes, entry, unit_bonuses::VTABLE_RVA.0 as u64);
             word(
                 &mut bytes,
                 entry + unit_bonuses::PAYLOAD,
-                unit_bonuses::PAYLOAD_VTABLE_RVA as u64,
+                unit_bonuses::PAYLOAD_VTABLE_RVA.0 as u64,
             );
             word(
                 &mut bytes,
@@ -532,7 +532,7 @@ mod tests {
         word(
             &mut bytes,
             definition,
-            csub_unit_definition::VTABLE_RVA as u64,
+            csub_unit_definition::VTABLE_RVA.0 as u64,
         );
         word(&mut bytes, definition + csub_unit_definition::TOKEN, 41);
         word(&mut bytes, definition + unit_bonuses::STATS, 25_000);
@@ -543,7 +543,7 @@ mod tests {
             let deployment = country + 0x1400;
             word(&mut bytes, 0x2000 + id * 8, country as u64);
             bytes[0xc000 + id * 4..0xc004 + id * 4].copy_from_slice(&(id as u32).to_le_bytes());
-            word(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            word(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
             bytes[country + ccountry::ID..country + ccountry::ID + 4]
                 .copy_from_slice(&(id as u32).to_le_bytes());
             word(
@@ -554,7 +554,7 @@ mod tests {
             word(
                 &mut bytes,
                 production,
-                cproduction_status::VTABLE_RVA as u64,
+                cproduction_status::VTABLE_RVA.0 as u64,
             );
             word(
                 &mut bytes,
@@ -576,7 +576,7 @@ mod tests {
             word(
                 &mut bytes,
                 deployment,
-                cdeployment_status::VTABLE_RVA as u64,
+                cdeployment_status::VTABLE_RVA.0 as u64,
             );
             word(
                 &mut bytes,
@@ -593,7 +593,7 @@ mod tests {
         struct Fixture<'a>(&'a [u8]);
         impl Memory for Fixture<'_> {
             fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-                if at == csub_unit_definition::DATABASE_RVA && output.len() == 8 {
+                if at == csub_unit_definition::DATABASE_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
                     return true;
                 }

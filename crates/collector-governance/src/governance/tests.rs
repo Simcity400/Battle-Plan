@@ -226,17 +226,17 @@ fn party_leader_role_identity_survives_capture_at_country_scale() {
     };
     let mut bytes = vec![0_u8; 0x3000];
     let mut word = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-    word(0x100, ccountry::VTABLE_RVA as u64);
+    word(0x100, ccountry::VTABLE_RVA.0 as u64);
     word(0x100 + ccountry::POLITICAL_STATUS, 0x1200);
-    word(0x1200, cpolitical_status::VTABLE_RVA as u64);
+    word(0x1200, cpolitical_status::VTABLE_RVA.0 as u64);
     word(0x1200 + cpolitical_status::COUNTRY, 0x100);
     word(0x1200 + cpolitical_status::PARTIES, 0x1400);
     word(0x1200 + cpolitical_status::PARTIES + 8, (1 << 32) | 1);
     word(0x1400, 0x1500);
-    word(0x1500, cpolitical_party::VTABLE_RVA as u64);
+    word(0x1500, cpolitical_party::VTABLE_RVA.0 as u64);
     word(0x1500 + cpolitical_party::ID, 7);
     word(0x1500 + cpolitical_party::IDEOLOGY_GROUP, 0x1600);
-    word(0x1600, cideology_group::VTABLE_RVA as u64);
+    word(0x1600, cideology_group::VTABLE_RVA.0 as u64);
     word(0x1600 + cideology_group::ID, 7);
     word(0x1500 + cpolitical_party::COUNTRY_LEADERS, 0x1700);
     word(
@@ -244,11 +244,11 @@ fn party_leader_role_identity_survives_capture_at_country_scale() {
         (1 << 32) | 1,
     );
     word(0x1700, 0x1800);
-    word(0x1800, ccountry_leader::VTABLE_RVA as u64);
+    word(0x1800, ccountry_leader::VTABLE_RVA.0 as u64);
     word(0x1800 + ccountry_leader::CHARACTER, 0x1a00);
     word(0x1800 + ccountry_leader::LEADER_ID, 12);
     word(0x1800 + 0x140, 0x2500); // Changed ideology; the role key is still -7.
-    word(0x1a00, ccharacter::VTABLE_RVA as u64);
+    word(0x1a00, ccharacter::VTABLE_RVA.0 as u64);
     word(
         0x1a00 + ccharacter::TYPE,
         (91_u64 << 32) | u64::from(ccharacter::REFERENCE_TYPE),
@@ -592,7 +592,7 @@ pub mod focus_test_kit {
         }
 
         fn country(&mut self, country: usize, id: u32, tree: usize, root: usize) {
-            self.w64(country, (BASE + ccountry::VTABLE_RVA) as u64);
+            self.w64(country, (BASE + ccountry::VTABLE_RVA.0) as u64);
             self.w32(country + ccountry::ID, id);
             // Each country owns a state, so its focus drifts daily.
             self.w32(country + ccountry::OWNED_STATE_COUNT, 1);
@@ -612,7 +612,7 @@ pub mod focus_test_kit {
             roster: usize,
             roster_count: u32,
         ) {
-            self.w64(root, (BASE + cnational_focus_progress::VTABLE_RVA) as u64);
+            self.w64(root, (BASE + cnational_focus_progress::VTABLE_RVA.0) as u64);
             self.w64(root + cnational_focus_progress::CURRENT, current as u64);
             self.w64(
                 root + cnational_focus_progress::CURRENT + 8,
@@ -713,7 +713,7 @@ fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
     let mut fixture = Fixture::world();
     for (country, politics) in [(0x1_2000, 0x1_9000), (0x1_4000, 0x1_a000)] {
         fixture.w64(country + ccountry::POLITICAL_STATUS, politics as u64);
-        fixture.w64(politics, (BASE + cpolitical_status::VTABLE_RVA) as u64);
+        fixture.w64(politics, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
         fixture.w64(politics + cpolitical_status::COUNTRY, country as u64);
     }
     for fail_ideas in [false, true] {
@@ -777,7 +777,7 @@ fn failed_native_technology_name_does_not_request_deferred_arena_growth() {
         let roster = 0x1_a400 + owner * 0x20;
         let technology = 0x1_b000 + owner * 0x200;
         fixture.w64(country + ccountry::TECHNOLOGY_STATUS, status as u64);
-        fixture.w64(status, (BASE + ctechnology_status::VTABLE_RVA) as u64);
+        fixture.w64(status, (BASE + ctechnology_status::VTABLE_RVA.0) as u64);
         fixture.w64(status + ctechnology_status::COUNTRY, country as u64);
         fixture.w64(
             status + ctechnology_status::TECHNOLOGIES_DATA,
@@ -787,7 +787,7 @@ fn failed_native_technology_name_does_not_request_deferred_arena_growth() {
             fixture.w32(status + ctechnology_status::TECHNOLOGIES_DATA + offset, 1);
         }
         fixture.w64(roster, technology as u64);
-        fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA) as u64);
+        fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA.0) as u64);
         fixture.w32(technology + ctechnology::DEFINITION_INDEX, 3);
         fixture.w64(technology + ctechnology::STATUS, status as u64);
         fixture.w64(technology + ctechnology::TEMPLATE, TEMPLATE as u64);
@@ -835,7 +835,7 @@ fn technology_fixture() -> focus_test_kit::Fixture {
         let status = 0x1_a000 + owner * 0x200;
         let roster = 0x1_a400 + owner * 0x20;
         fixture.w64(country + ccountry::TECHNOLOGY_STATUS, status as u64);
-        fixture.w64(status, (BASE + ctechnology_status::VTABLE_RVA) as u64);
+        fixture.w64(status, (BASE + ctechnology_status::VTABLE_RVA.0) as u64);
         fixture.w64(status + ctechnology_status::COUNTRY, country as u64);
         fixture.w64(
             status + ctechnology_status::TECHNOLOGIES_DATA,
@@ -849,7 +849,7 @@ fn technology_fixture() -> focus_test_kit::Fixture {
             let definition = index;
             let template = 0x1_c000 + definition * 0x600;
             fixture.w64(roster + index * 8, technology as u64);
-            fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA) as u64);
+            fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA.0) as u64);
             fixture.w32(technology + ctechnology::DEFINITION_INDEX, 0x8000_0001);
             fixture.w64(technology + ctechnology::STATUS, status as u64);
             fixture.w64(technology + ctechnology::TEMPLATE, template as u64);
@@ -891,7 +891,7 @@ fn assign_slots(fixture: &mut focus_test_kit::Fixture, owner: usize, assigned: &
     for (position, &technology) in assigned.iter().enumerate() {
         let slot = slots + 0x100 + position * 0x80;
         fixture.w64(slots + position * 8, slot as u64);
-        fixture.w64(slot, (BASE + cresearch_slot::VTABLE_RVA) as u64);
+        fixture.w64(slot, (BASE + cresearch_slot::VTABLE_RVA.0) as u64);
         fixture.w32(slot + cresearch_slot::TECHNOLOGY_HANDLE, 0x8000_0001);
         fixture.w64(slot + cresearch_slot::STATUS, status as u64);
         fixture.w64(slot + cresearch_slot::TECHNOLOGY, technology as u64);

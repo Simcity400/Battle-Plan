@@ -1,5 +1,6 @@
 //! CTheaterGroup, the named group inside a CTheatre.
 
+use engine_sites::Rva;
 /// A persistent named land-theatre group. The identity is the complete native
 /// reference; `ordinal` is its actual position in its parent's pointer vector.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub struct MemberRow {
 }
 
 /// CTheaterGroup vtable.
-pub const VTABLE_RVA: usize = 0x02a5_f240;
+pub const VTABLE_RVA: Rva = Rva(0x02a5_f240);
 /// Theater-group reference type.
 pub const REFERENCE_TYPE: u32 = 68;
 /// CTheaterGroup packed type/id handle.
@@ -38,4 +39,4 @@ pub const ORDERS_GROUP_DATA: usize = 0x48;
 /// CTheaterGroup allocation size.
 pub const SIZE: usize = 0x60;
 /// CTheaterGroup constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x016d_8ed0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x016d_8ed0);

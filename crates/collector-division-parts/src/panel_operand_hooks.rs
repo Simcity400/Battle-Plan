@@ -2,7 +2,6 @@
 use crate::hook::Hook;
 use collector_observers::division_panel_changes as changes;
 use engine_mutations::division_panel_mutations::MUTATIONS;
-use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicUsize, Ordering},
@@ -27,7 +26,7 @@ fn failure(site: Option<usize>, reason: &str) -> &'static str {
 impl Hooks {
     /// # Safety
     /// The enclosing family owns the authenticated executable and patch lifetime.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         let callbacks = [
             add_pool as *const () as usize,
@@ -39,10 +38,10 @@ impl Hooks {
         ];
         if cfg!(feature = "army_stat_changes") {
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-                    return Err(failure(Some(index), "instruction sentinel mismatch"));
-                }
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                let (address, original) = engine_sites::hook(base, site.rva)
+                    .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                    .map_err(|why| failure(Some(index), why))?;
+                let hook = unsafe { Hook::new(address, callbacks[index], original) }
                     .map_err(|why| failure(Some(index), &why))?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);

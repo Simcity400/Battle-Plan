@@ -10,12 +10,13 @@ use crate::{
     read, sweather_per_province, sweather_per_region,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 mod display_grid;
 pub use display_grid::{DisplayGrid, display_grid_size, read_display_grid};
 
 /// CWeatherManager vtable.
-pub const VTABLE_RVA: usize = 0x029f_4138;
+pub const VTABLE_RVA: Rva = Rva(0x029f_4138);
 /// CWeatherManager contiguous SWeatherPerProvince array header.
 pub const PROVINCES: usize = 0x10;
 /// CWeatherManager province array count, i32.
@@ -73,7 +74,7 @@ pub const INITIAL_MODE: usize = 0x348;
 /// weather and day/night. The weather-simulation reset command can change the second.
 pub const SUSPEND_FLAGS: usize = 0x349;
 /// CWeatherManager hourly update.
-pub const HOURLY_UPDATE_RVA: usize = 0x00f9_f440;
+pub const HOURLY_UPDATE_RVA: Rva = Rva(0x00f9_f440);
 
 /// An authenticated manager for one callback. Each table reads its own header,
 /// so failure of one weather array does not make the other table unavailable.
@@ -121,9 +122,7 @@ impl<'a, M: Memory> Reader<'a, M> {
 
     /// Authenticate an already read, nonnull manager pointer.
     fn with_manager(memory: &'a M, base: usize, pointer: usize) -> Result<Self, &'static str> {
-        let vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("weather manager vtable withheld")?;
         if read::<u64>(memory, pointer) != Some(vtable as u64) {
             return Err("weather manager vtable mismatch");
         }
@@ -190,9 +189,8 @@ impl<'a, M: Memory> Reader<'a, M> {
     /// The native feather words may retain initialization while updates are
     /// suspended; only an ordinary completed update proves content derivation.
     pub fn daylight_feather(&self) -> Result<[i64; 2], &'static str> {
-        let word = |offset| {
-            self.base
-                .checked_add(offset)
+        let word = |key| {
+            engine_sites::at(self.base, key)
                 .and_then(|address| read::<i64>(self.memory, address))
                 .ok_or("held weather daylight feather unreadable")
         };
@@ -372,9 +370,8 @@ pub fn movement_modifiers(
         0
     } else {
         let region = usize::try_from(region).map_err(|_| "movement region pointer invalid")?;
-        let expected = base
-            .checked_add(crate::cstrategic_region::VTABLE_RVA)
-            .ok_or("movement region vtable overflow")?;
+        let expected = engine_sites::at(base, crate::cstrategic_region::VTABLE_RVA)
+            .ok_or("movement region vtable withheld")?;
         let fields = FieldBatch::gather(
             memory,
             movement_fields(region, [(0, 8), (crate::cstrategic_region::ID, 4)]),
@@ -441,10 +438,8 @@ impl<M: Memory> Reader<'_, M> {
             .checked_mul(stride)
             .and_then(|offset| data.checked_add(offset))
             .ok_or("movement weather address overflow")?;
-        let expected = self
-            .base
-            .checked_add(vtable_rva)
-            .ok_or("movement weather vtable overflow")?;
+        let expected =
+            engine_sites::at(self.base, vtable_rva).ok_or("movement weather vtable withheld")?;
         let fields = FieldBatch::gather(
             self.memory,
             movement_fields(record, [(0, 8), (id_offset, 4)]),

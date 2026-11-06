@@ -11,8 +11,9 @@
 //! Faction display first uses its nonempty literal name, otherwise evaluates
 //! the template binding; a missing template yields empty text.
 
+use engine_sites::Rva;
 /// CFactionTemplate primary vtable.
-pub const VTABLE_RVA: usize = 0x0279_80c8;
+pub const VTABLE_RVA: Rva = Rva(0x0279_80c8);
 /// CFactionTemplate native u32 LexerToken.
 pub const IDENTIFIER_TOKEN: usize = 0x08;
 /// Embedded bound-localisation object used for template display.

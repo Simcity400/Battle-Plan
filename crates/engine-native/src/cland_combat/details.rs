@@ -524,7 +524,7 @@ pub fn read_details_sharing(
         crate::cterrain_type::NULL_VTABLE_RVA,
     ]
     .into_iter()
-    .any(|rva| base.checked_add(rva).map(|p| p as u64) == Some(stored_vtable))
+    .any(|key| engine_sites::at(base, key).map(|p| p as u64) == Some(stored_vtable))
     {
         return Err("land stored terrain vtable mismatch");
     }
@@ -578,8 +578,7 @@ pub fn read_details_sharing(
             reader.field::<u64>(tactic, 0)?
         };
         if Some(tactic_vtable)
-            == base
-                .checked_add(crate::ccombat_tactic::VTABLE_RVA)
+            == engine_sites::at(base, crate::ccombat_tactic::VTABLE_RVA)
                 .map(|v| v as u64)
         {
             side.tactic_kind = 2;
@@ -589,8 +588,7 @@ pub fn read_details_sharing(
         } else if tactic == 0 {
             side.tactic_kind = 0;
         } else if Some(tactic_vtable)
-            != base
-                .checked_add(crate::cnull_combat_tactic::VTABLE_RVA)
+            != engine_sites::at(base, crate::cnull_combat_tactic::VTABLE_RVA)
                 .map(|v| v as u64)
         {
             return Err("land detail tactic vtable mismatch");
@@ -810,13 +808,12 @@ impl<M: Memory> Reader<'_, M> {
         )
         .inspect_err(|reason| refused[0] = Some(*reason))
         .ok();
-        row.learning_threshold = self
-            .field(
-                self.base,
-                crate::naval_commander_inputs::LEARNING_THRESHOLD_RVA,
-            )
-            .inspect_err(|reason| refused[1] = Some(*reason))
-            .ok();
+        row.learning_threshold =
+            engine_sites::at(self.base, crate::naval_commander_inputs::LEARNING_THRESHOLD_RVA)
+                .ok_or("land combat field unreadable or address overflow")
+                .and_then(|address| self.field(address, 0))
+                .inspect_err(|reason| refused[1] = Some(*reason))
+                .ok();
         row.skill_modifiers = self
             .skill_modifiers(members, index, units, selected)
             .inspect_err(|reason| refused[2] = Some(*reason))

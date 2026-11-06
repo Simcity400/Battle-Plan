@@ -24,7 +24,7 @@ fn visit() -> cfleet::TaskForceVisit {
 fn bytes(target: u64) -> Vec<u8> {
     let mut b = vec![0; 0x1200];
     let m = TASK + ctask_force::NAVAL_MISSION;
-    put(&mut b, m, cnaval_mission::VTABLE_RVA as u64);
+    put(&mut b, m, cnaval_mission::VTABLE_RVA.0 as u64);
     put(&mut b, m + 8, TASK as u64);
     put(&mut b, m + TARGET, target);
     put(&mut b, m + PROGRESS, (-123_i64) as u64);

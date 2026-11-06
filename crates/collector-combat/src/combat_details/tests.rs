@@ -223,7 +223,7 @@ fn experience_ratio_keeps_the_native_sentinel_and_zero_requirement_words() {
 fn modifier_capacity_and_division_growth_keep_independent_failures() {
     let mut image = vec![0_u8; 0x4000];
     for (address, value) in [
-        (0x1000, engine_native::carmy::VTABLE_RVA as u64),
+        (0x1000, engine_native::carmy::VTABLE_RVA.0 as u64),
         (0x1018, 0x1234_0000_0033),
         (0x1170, 0x3000),
         (0x1178, 2_u64 << 32 | 2),
@@ -1082,7 +1082,7 @@ struct ReserveWorld(Vec<u8>);
 
 impl Memory for ReserveWorld {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == engine_native::modifier_definition::TABLE_RVA && output.len() == 8 {
+        if address == engine_native::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
             return true;
         }

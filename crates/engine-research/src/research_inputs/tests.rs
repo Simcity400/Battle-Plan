@@ -34,7 +34,7 @@ fn fixture(active: bool, applied: bool) -> Vec<u8> {
     put(
         &mut b,
         STATUS,
-        (ctechnology_status::VTABLE_RVA as u64).to_le_bytes(),
+        (ctechnology_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut b,
@@ -51,7 +51,7 @@ fn fixture(active: bool, applied: bool) -> Vec<u8> {
     put(
         &mut b,
         SLOT,
-        (cresearch_slot::VTABLE_RVA as u64).to_le_bytes(),
+        (cresearch_slot::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut b,
@@ -79,7 +79,11 @@ fn fixture(active: bool, applied: bool) -> Vec<u8> {
             SLOT + cresearch_slot::TECHNOLOGY,
             (TECH as u64).to_le_bytes(),
         );
-        put(&mut b, TECH, (ctechnology::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut b,
+            TECH,
+            (ctechnology::VTABLE_RVA.0 as u64).to_le_bytes(),
+        );
         put(
             &mut b,
             TECH + ctechnology::DEFINITION_INDEX,
@@ -137,7 +141,7 @@ fn fixture(active: bool, applied: bool) -> Vec<u8> {
             1,
         );
         put(&mut b, BONUSES, (BONUS as u64).to_le_bytes());
-        put(&mut b, BONUS, (bonus::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut b, BONUS, (bonus::VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut b, BONUS + bonus::ID, (-7_i32).to_le_bytes());
         text(&mut b, BONUS + bonus::NAME, b"bonus_radio");
         put(
@@ -570,7 +574,7 @@ fn cost_reduction_ids_use_their_own_layout_and_only_unresolved_ids_need_that_ros
         1,
     );
     put(&mut b, roster, (pointer as u64).to_le_bytes());
-    put(&mut b, pointer, (cost::VTABLE_RVA as u64).to_le_bytes());
+    put(&mut b, pointer, (cost::VTABLE_RVA.0 as u64).to_le_bytes());
     put(&mut b, pointer + cost::ID, 99_i32.to_le_bytes());
     text(&mut b, pointer + cost::NAME, b"doctrine_bonus");
     put(&mut b, pointer + cost::REDUCTION, 25_000_i64.to_le_bytes());

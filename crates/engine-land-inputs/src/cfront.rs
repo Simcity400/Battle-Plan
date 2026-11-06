@@ -3,9 +3,10 @@ use crate::{
     Memory, cfront_section, corder_instance, cpdx_array::Array, creference_registry, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Front primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_23b0;
+pub const VTABLE_RVA: Rva = Rva(0x029f_23b0);
 /// Front reference type.
 pub const REFERENCE_TYPE: u32 = 66;
 /// Inherited full reference handle.
@@ -141,7 +142,8 @@ pub fn walk_bound(
             let Some(pointer) = creference_registry::resolve(memory, base, handle)? else {
                 continue;
             };
-            if read::<u64>(memory, pointer) != base.checked_add(VTABLE_RVA).map(|v| v as u64)
+            let expected = engine_sites::at(base, VTABLE_RVA).ok_or("front identity mismatch")?;
+            if read::<u64>(memory, pointer) != Some(expected as u64)
                 || corder_instance::plan_field::<u64>(memory, pointer, HANDLE)? != handle
             {
                 return Err("front identity mismatch");
@@ -254,7 +256,7 @@ mod tests {
     const HANDLE: u64 = (7 << 32) | 66;
     fn image() -> Image {
         let mut m = Image::default();
-        m.u64(registry::LOW_ROOTS_RVA + 66 * 8, 0x1000);
+        m.u64(registry::LOW_ROOTS_RVA.0 + 66 * 8, 0x1000);
         m.put(0x1000, &[0; 32]);
         m.u64(0x1008, 0x2000);
         m.u32(0x1010, 1);
@@ -271,21 +273,21 @@ mod tests {
         m.u64(at + bucket::TYPE, HANDLE);
         m.u64(at + bucket::OBJECT, FRONT as u64);
         m.put(FRONT, &[0; 0x88]);
-        m.u64(FRONT, VTABLE_RVA as u64);
+        m.u64(FRONT, VTABLE_RVA.0 as u64);
         m.u64(FRONT + 8, HANDLE);
         m.array(FRONT + SECTIONS, 0x3800, 2);
         m.u64(0x3800, SECTION as u64);
         m.u64(0x3808, (SECTION + 0x100) as u64);
         for (at, id, count) in [(SECTION, 9, 2), (SECTION + 0x100, 3, 0)] {
             m.put(at, &[0; 0x60]);
-            m.u64(at, cfront_section::VTABLE_RVA as u64);
+            m.u64(at, cfront_section::VTABLE_RVA.0 as u64);
             m.u32(at + 8, id);
             m.u64(at + 0x10, FRONT as u64);
             m.array(at + cfront_section::PAIRS, 0x5000, count);
         }
         for (at, id) in [(0x6000, 4), (0x7000, 8)] {
             m.put(at, &[0; 0xb0]);
-            m.u64(at, cprovince::VTABLE_RVA as u64);
+            m.u64(at, cprovince::VTABLE_RVA.0 as u64);
             m.u32(at + cprovince::ID, id);
         }
         for (at, pointer) in [

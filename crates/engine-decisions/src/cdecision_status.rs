@@ -1,6 +1,7 @@
 //! CDecisionStatus state containers. Array headers use a pointer,
 //! u32 capacity and u32 count.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cdecision, cdecision_cooldown,
     cpdx_array::Array,
@@ -10,7 +11,7 @@ use crate::{
 };
 
 /// CDecisionStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_8760;
+pub const VTABLE_RVA: Rva = Rva(0x0286_8760);
 /// CDecisionStatus owner CCountry pointer.
 pub const COUNTRY: usize = 0x08;
 /// CDecisionStatus decisions-taken array.
@@ -29,7 +30,7 @@ pub const TARGETED_TIMED: usize = 0x100;
 pub const RANDOM_ITEMS: usize = 0x148;
 pub const RANDOM_ITEM_STRIDE: usize = 0x18;
 /// Random-count item primary vtable.
-pub const RANDOM_ITEM_VTABLE_RVA: usize = 0x0286_8710;
+pub const RANDOM_ITEM_VTABLE_RVA: Rva = Rva(0x0286_8710);
 /// Random-count item definition pointer and signed seed/target words.
 pub const RANDOM_ITEM_DEFINITION: usize = 0x08;
 pub const RANDOM_ITEM_SEED: usize = 0x10;
@@ -170,7 +171,7 @@ fn walk_random_items_with(
                     .ok_or("decision random-item address overflow")?;
                 let entry = read::<[u8; RANDOM_ITEM_STRIDE]>(memory, at)
                     .ok_or("decision random-item entry unreadable")?;
-                if base.checked_add(RANDOM_ITEM_VTABLE_RVA).map(|p| p as u64)
+                if engine_sites::at(base, RANDOM_ITEM_VTABLE_RVA).map(|p| p as u64)
                     != Some(u64::from_le_bytes(entry[..8].try_into().unwrap()))
                 {
                     return Err("decision random-item vtable mismatch");
@@ -250,7 +251,9 @@ pub fn random_item_demand(
 }
 
 fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'static str> {
-    if base.checked_add(ccountry::VTABLE_RVA).map(|p| p as u64) != read::<u64>(memory, country) {
+    let expected =
+        engine_sites::at(base, ccountry::VTABLE_RVA).ok_or("decision country vtable mismatch")?;
+    if read::<u64>(memory, country) != Some(expected as u64) {
         return Err("decision country vtable mismatch");
     }
     let status = country
@@ -260,7 +263,7 @@ fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'
         .filter(|&p| p != 0)
         .ok_or("decision status pointer unreadable or null")?;
     let identity = read::<[u8; 16]>(memory, status).ok_or("decision status identity unreadable")?;
-    if base.checked_add(VTABLE_RVA).map(|p| p as u64)
+    if engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
         != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
     {
         return Err("decision status vtable mismatch");
@@ -570,7 +573,7 @@ fn description_seed(
             .ok_or("decision seed row overflow")?;
         let bytes =
             read::<[u8; RANDOM_ITEM_STRIDE]>(memory, at).ok_or("decision seed row unreadable")?;
-        if base.checked_add(RANDOM_ITEM_VTABLE_RVA).map(|p| p as u64)
+        if engine_sites::at(base, RANDOM_ITEM_VTABLE_RVA).map(|p| p as u64)
             != Some(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
         {
             return Err("decision seed row vtable mismatch");
@@ -605,7 +608,7 @@ fn description_seed(
 }
 
 /// Decision-status hourly update runs after joined country stages.
-pub const HOURLY_UPDATE_RVA: usize = 0x0077_7e30;
+pub const HOURLY_UPDATE_RVA: Rva = Rva(0x0077_7e30);
 
 #[cfg(test)]
 mod tests;

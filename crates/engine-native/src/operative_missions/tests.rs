@@ -34,12 +34,12 @@ impl Memory for World {
         if destination.len() == 8
             && VTABLE_RVAS
                 .iter()
-                .any(|&rva| address == rva + COUNTRY_GETTER_SLOT)
+                .any(|&rva| address == rva.0 + COUNTRY_GETTER_SLOT)
         {
-            destination.copy_from_slice(&(COUNTRY_GETTER_RVA as u64).to_le_bytes());
+            destination.copy_from_slice(&(COUNTRY_GETTER_RVA.0 as u64).to_le_bytes());
             return true;
         }
-        if destination.len() == 8 && address == modifier_definition::TABLE_RVA {
+        if destination.len() == 8 && address == modifier_definition::TABLE_RVA.0 {
             destination.copy_from_slice(&(DEFINITIONS as u64).to_le_bytes());
             return true;
         }
@@ -72,7 +72,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         0x3000,
-        (ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        (ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, 0x3008, 1_u32.to_le_bytes());
     put(
@@ -83,7 +83,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         0x5000,
-        (cintelligence_agency::VTABLE_RVA as u64).to_le_bytes(),
+        (cintelligence_agency::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -95,7 +95,7 @@ fn fixture() -> Vec<u8> {
     put(&mut bytes, header + 8, 1_u32.to_le_bytes());
     put(&mut bytes, header + 12, 1_u32.to_le_bytes());
     put(&mut bytes, 0x6000, (OPERATIVE as u64).to_le_bytes());
-    put(&mut bytes, OPERATIVE, (VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, OPERATIVE, (VTABLE_RVA.0 as u64).to_le_bytes());
     put(&mut bytes, OPERATIVE + IDENTITY, HANDLE.to_le_bytes());
     put(&mut bytes, OPERATIVE + OWNER_COUNTRY, 7_u32.to_le_bytes());
     put(&mut bytes, OPERATIVE + ASSIGNMENT, 2_u32.to_le_bytes());
@@ -110,7 +110,11 @@ fn fixture() -> Vec<u8> {
         u64::MAX.to_le_bytes(),
     );
     for (state, id) in [(TARGET_STATE, 42_i32), (PENDING_STATE, -3)] {
-        put(&mut bytes, state, (cstate::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            state,
+            (cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
+        );
         put(&mut bytes, state + cstate::ID, id.to_le_bytes());
     }
     put(
@@ -265,7 +269,7 @@ fn state_variants_read_their_state_and_country_variants_only_their_country() {
     );
     for (index, rva) in VTABLE_RVAS.into_iter().enumerate() {
         let variant = index as u32 + 1;
-        mission(&mut bytes, variant, rva);
+        mission(&mut bytes, variant, rva.0);
         let state = operative_action::targets_state(variant);
         // A country variant's implementation has no state at this offset.
         put(
@@ -291,7 +295,11 @@ fn state_variants_read_their_state_and_country_variants_only_their_country() {
 #[test]
 fn a_null_target_state_is_absent_while_its_country_stands() {
     let mut bytes = fixture();
-    mission(&mut bytes, operative_action::BUILD_NETWORK, VTABLE_RVAS[0]);
+    mission(
+        &mut bytes,
+        operative_action::BUILD_NETWORK,
+        VTABLE_RVAS[0].0,
+    );
     put(
         &mut bytes,
         IMPLEMENTATION + operative_action_implementation::TARGET_COUNTRY,
@@ -392,7 +400,7 @@ fn a_pending_mission_is_read_only_when_present() {
 #[test]
 fn mission_reads_refuse_unsupported_variants_implementations_and_states() {
     let mut bytes = fixture();
-    mission(&mut bytes, 9, VTABLE_RVAS[0]);
+    mission(&mut bytes, 9, VTABLE_RVAS[0].0);
     assert_eq!(
         refusal(&bytes),
         (
@@ -402,14 +410,22 @@ fn mission_reads_refuse_unsupported_variants_implementations_and_states() {
             Some((HANDLE, 1))
         )
     );
-    mission(&mut bytes, operative_action::BUILD_NETWORK, VTABLE_RVAS[1]);
+    mission(
+        &mut bytes,
+        operative_action::BUILD_NETWORK,
+        VTABLE_RVAS[1].0,
+    );
     assert_eq!(
         refusal(&bytes).0,
         Outcome::Unavailable {
             reason: "unsupported operative mission implementation vtable"
         }
     );
-    mission(&mut bytes, operative_action::BUILD_NETWORK, VTABLE_RVAS[0]);
+    mission(
+        &mut bytes,
+        operative_action::BUILD_NETWORK,
+        VTABLE_RVAS[0].0,
+    );
     put(
         &mut bytes,
         IMPLEMENTATION + operative_action_implementation::TARGET_POINTER,
@@ -421,7 +437,7 @@ fn mission_reads_refuse_unsupported_variants_implementations_and_states() {
             reason: "operative mission state vtable mismatch"
         }
     );
-    mission(&mut bytes, 0, VTABLE_RVAS[0]);
+    mission(&mut bytes, 0, VTABLE_RVAS[0].0);
     put(&mut bytes, OPERATIVE + PENDING_MISSION_PRESENT, [1]);
     put(
         &mut bytes,
@@ -599,7 +615,7 @@ fn group(bytes: &mut [u8], group: usize, name: &[u8]) {
     put(
         bytes,
         group,
-        (cideology_group::VTABLE_RVA as u64).to_le_bytes(),
+        (cideology_group::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     let token = group + cideology_group::TOKEN;
     bytes[token..token + name.len()].copy_from_slice(name);
@@ -609,7 +625,7 @@ fn group(bytes: &mut [u8], group: usize, name: &[u8]) {
 
 /// A boost-ideology mission on the target state naming `group`.
 fn boost_ideology(bytes: &mut [u8], group: usize) {
-    mission(bytes, operative_action::BOOST_IDEOLOGY, VTABLE_RVAS[4]);
+    mission(bytes, operative_action::BOOST_IDEOLOGY, VTABLE_RVAS[4].0);
     put(
         bytes,
         IMPLEMENTATION + operative_action_implementation::TARGET_POINTER,
@@ -684,7 +700,7 @@ fn a_null_ideology_group_has_no_name() {
     // Another variant never reads the ideology slot, even when it holds a pointer.
     let mut bytes = fixture();
     boost_ideology(&mut bytes, usize::MAX >> 1);
-    mission(&mut bytes, operative_action::PROPAGANDA, VTABLE_RVAS[7]);
+    mission(&mut bytes, operative_action::PROPAGANDA, VTABLE_RVAS[7].0);
     assert_eq!(row(&bytes).ideology, Name::default());
 }
 
@@ -720,7 +736,7 @@ fn a_pending_missions_group_is_copied_after_the_active_one() {
     );
     assert_eq!(&arena, b"fascismcommunismGFX_spy");
     // A pending group alone, without an active mission.
-    mission(&mut bytes, 0, VTABLE_RVAS[4]);
+    mission(&mut bytes, 0, VTABLE_RVAS[4].0);
     let alone = row(&bytes);
     assert_eq!(
         (alone.ideology, alone.pending_ideology),
@@ -776,7 +792,7 @@ fn root_out(
     mission(
         &mut bytes,
         operative_action::ROOT_OUT_RESISTANCE,
-        VTABLE_RVAS[3],
+        VTABLE_RVAS[3].0,
     );
     put(
         &mut bytes,
@@ -867,9 +883,13 @@ fn root_out_factors_are_the_owner_and_operative_effective_values() {
     put(&mut bytes, OPERATIVE_ENTRIES, (KEY + 1).to_le_bytes());
     assert_eq!(root_out_operands(&bytes), (Some(25_000), Some(0), Some(0)));
     // Every other variant carries no root-out operands.
-    mission(&mut bytes, operative_action::BUILD_NETWORK, VTABLE_RVAS[0]);
+    mission(
+        &mut bytes,
+        operative_action::BUILD_NETWORK,
+        VTABLE_RVAS[0].0,
+    );
     assert_eq!(root_out_operands(&bytes), (None, None, None));
-    mission(&mut bytes, 0, VTABLE_RVAS[0]);
+    mission(&mut bytes, 0, VTABLE_RVAS[0].0);
     assert_eq!(root_out_operands(&bytes), (None, None, None));
 }
 
@@ -955,7 +975,11 @@ fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
     );
     // Another mission never resolves it.
     let mut other = bytes.clone();
-    mission(&mut other, operative_action::BUILD_NETWORK, VTABLE_RVAS[0]);
+    mission(
+        &mut other,
+        operative_action::BUILD_NETWORK,
+        VTABLE_RVAS[0].0,
+    );
     let read = walk(
         &World(other),
         0,

@@ -5,7 +5,7 @@ use crate::memory::SliceMemory;
 /// Where the fixture's bytes start: the game state singleton slot.
 const START: usize = 0x1000_0000;
 /// The module base that puts the singleton at [`START`].
-const BASE: usize = START - cgame_state::SINGLETON_RVA;
+const BASE: usize = START - cgame_state::SINGLETON_RVA.0;
 /// Countries 7 (slot 1), 9 (slot 2) and 11 (slot 3).
 const COUNTRY: [usize; 3] = [START + 0x1000, START + 0x2000, START + 0x3000];
 const DIPLOMACY: [usize; 2] = [START + 0x5000, START + 0x6000];
@@ -133,10 +133,10 @@ fn named(bytes: &[u8], receiver: Receiver, first: usize, second: usize) -> (bool
 }
 
 /// One patch per site, and the sites named beside their layouts keep those
-/// addresses and sentinels.
+/// addresses.
 #[test]
 fn sites_are_distinct_and_agree_with_their_layout_constants() {
-    let mut rvas: Vec<usize> = MUTATIONS.iter().map(|(site, _, _)| site.rva).collect();
+    let mut rvas: Vec<Rva> = MUTATIONS.iter().map(|(site, _, _)| site.rva).collect();
     rvas.sort_unstable();
     rvas.dedup();
     assert_eq!(rvas.len(), MUTATIONS.len());
@@ -173,8 +173,8 @@ fn sites_are_distinct_and_agree_with_their_layout_constants() {
     assert_eq!(site("license_extension").1, Receiver::License);
     assert_eq!(site("weekly_update").0.rva, ccountry::WEEKLY_UPDATE_RVA);
     assert_eq!(
-        site("research_completed").0.sentinel,
-        ctechnology_status::RESEARCH_COMPLETED_SENTINEL
+        site("research_completed").0.rva,
+        ctechnology_status::RESEARCH_COMPLETED_RVA
     );
     // The tree rebuild reaches both families and the counter rows (the
     // pride of the fleet and attack modifiers), the war body the stability
@@ -520,7 +520,7 @@ fn shared_levels_name_every_country_sharing_research() {
     put_u64(
         &mut bytes,
         START + 0x9100,
-        (BASE + ctechnology_sharing_group::VTABLE_RVA) as u64,
+        (BASE + ctechnology_sharing_group::VTABLE_RVA.0) as u64,
     );
     put_array(
         &mut bytes,
@@ -676,7 +676,7 @@ fn partner_world() -> (Vec<u8>, [usize; 4]) {
     put_u64(
         &mut bytes,
         START + 0x9100,
-        (BASE + ctechnology_sharing_group::VTABLE_RVA) as u64,
+        (BASE + ctechnology_sharing_group::VTABLE_RVA.0) as u64,
     );
     put_array(
         &mut bytes,
@@ -843,7 +843,7 @@ fn a_write_marks_the_partners_reading_its_listeners() {
     put_u64(
         &mut bytes,
         t2 + ctechnology::LISTENER,
-        (BASE + ctechnology::LISTENER_VTABLE_RVA) as u64,
+        (BASE + ctechnology::LISTENER_VTABLE_RVA.0) as u64,
     );
     let shared =
         |bytes: &[u8], technology| sorted(named(bytes, Receiver::SharedTechnology, technology, 0));
@@ -859,7 +859,7 @@ fn a_write_marks_the_partners_reading_its_listeners() {
     put_u64(
         &mut bytes,
         t2 + ctechnology::LISTENER,
-        (BASE + ctechnology::LISTENER_VTABLE_RVA) as u64,
+        (BASE + ctechnology::LISTENER_VTABLE_RVA.0) as u64,
     );
     put_u64(
         &mut bytes,
@@ -875,7 +875,6 @@ fn a_write_marks_the_partners_reading_its_listeners() {
 fn research_progress_marks_its_technology_country() {
     let (site, receiver, tables) = &MUTATIONS[RESEARCH_PROGRESS];
     assert_eq!(site.name, "research_progress");
-    assert_eq!(site.rva, 0xf5_2040);
     assert_eq!(*receiver, Receiver::Technology);
     assert_eq!(*tables, Tables::TECHNOLOGY);
     assert_eq!(

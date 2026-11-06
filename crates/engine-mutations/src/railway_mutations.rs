@@ -81,10 +81,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "set_province_on_cooldown",
             rva: crailway_manager::SET_PROVINCE_ON_COOLDOWN_RVA,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x20, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x41, 0x56, 0x48,
-                0x83, 0xec,
-            ],
         },
         Receiver::Province,
     ),
@@ -93,10 +89,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "update_cooldowns",
             rva: crailway_manager::UPDATE_COOLDOWNS_RVA,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x80,
-                0x3d, 0x3d,
-            ],
         },
         Receiver::CooldownList,
     ),
@@ -106,7 +98,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "set_railway",
             rva: crate::cprovince_railway_info::SET_RAILWAY_RVA,
-            sentinel: crate::cprovince_railway_info::SET_RAILWAY_SENTINEL,
         },
         Receiver::Info,
     ),
@@ -115,10 +106,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "construct_info",
             rva: crate::cprovince_railway_info::CONSTRUCTOR_RVA,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x48,
-                0x83, 0xec,
-            ],
         },
         Receiver::Province,
     ),
@@ -127,7 +114,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "destroy_info",
             rva: crate::cprovince_railway_info::DESTRUCTOR_RVA,
-            sentinel: crate::cprovince_railway_info::DESTRUCTOR_SENTINEL,
         },
         Receiver::Info,
     ),
@@ -138,7 +124,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "read_info",
             rva: crate::cprovince_railway_info::LOAD_TOKEN_RVA,
-            sentinel: crate::cprovince_railway_info::LOAD_TOKEN_SENTINEL,
         },
         Receiver::Every,
     ),
@@ -147,10 +132,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "construct_manager",
             rva: crailway_manager::CONSTRUCTOR_RVA,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x48, 0x89, 0x4c, 0x24,
-                0x08, 0x56,
-            ],
         },
         Receiver::Every,
     ),
@@ -159,10 +140,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "destroy_manager",
             rva: crailway_manager::DESTRUCTOR_RVA,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x7f,
-                0x9f, 0xae,
-            ],
         },
         Receiver::Every,
     ),
@@ -171,10 +148,6 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         MutationSite {
             name: "read_manager",
             rva: crailway_manager::LOAD_TOKEN_RVA,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-                0x41, 0x57,
-            ],
         },
         Receiver::Every,
     ),
@@ -215,24 +188,9 @@ mod tests {
     use super::*;
     use crate::memory::SliceMemory;
 
-    /// The sites already named beside their layouts keep those addresses
-    /// and sentinels.
     #[test]
-    fn sites_agree_with_their_layout_constants() {
-        use crate::cprovince_railway_info as info;
-        let site = |name: &str| {
-            &MUTATIONS
-                .iter()
-                .find(|(site, _)| site.name == name)
-                .unwrap()
-                .0
-        };
-        assert_eq!(site("set_railway").sentinel, info::SET_RAILWAY_SENTINEL);
-        assert_eq!(site("destroy_info").sentinel, info::DESTRUCTOR_SENTINEL);
-        assert_eq!(site("read_info").sentinel, info::LOAD_TOKEN_SENTINEL);
-        // The manager's and info's token readers share their first 16 bytes.
-        assert_eq!(site("read_manager").sentinel, info::LOAD_TOKEN_SENTINEL);
-        let mut rvas: Vec<usize> = MUTATIONS.iter().map(|(site, _)| site.rva).collect();
+    fn sites_are_distinct() {
+        let mut rvas: Vec<_> = MUTATIONS.iter().map(|(site, _)| site.rva).collect();
         rvas.sort_unstable();
         rvas.dedup();
         assert_eq!(rvas.len(), MUTATIONS.len());

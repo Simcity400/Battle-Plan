@@ -88,7 +88,7 @@ impl IdentityBatch {
                 break;
             }
             let (vtable, id) = self.raw(row);
-            if Some(vtable) != base.checked_add(super::VTABLE_RVA).map(|at| at as u64)
+            if Some(vtable) != engine_sites::at(base, super::VTABLE_RVA).map(|at| at as u64)
                 || id == 0
                 || !slot_missing(id)
                 || self.ids[..self.slot_len].contains(&id)

@@ -32,13 +32,13 @@ fn requested_operand_keeps_lazy_disabled_presence_separate_from_raw_and_clamped_
     memory.put(0x1000, &0x2000_u64.to_le_bytes());
     memory.put(0x1000 + COUNT, &1_i32.to_le_bytes());
     memory.put(0x2000, &1_u32.to_le_bytes());
-    memory.put(definition::TABLE_RVA, &0x4000_u64.to_le_bytes());
+    memory.put(definition::TABLE_RVA.0, &0x4000_u64.to_le_bytes());
     let metadata = 0x4000 + definition::STRIDE;
     memory.put(
         metadata + definition::FEATURE_SELECTOR,
         &4_u32.to_le_bytes(),
     );
-    memory.put(definition::ELIGIBILITY_CALLBACK_RVA, &0_u64.to_le_bytes());
+    memory.put(definition::ELIGIBILITY_CALLBACK_RVA.0, &0_u64.to_le_bytes());
     // No raw payload or clamp word exists: a disabled present key must not read it.
     assert_eq!(
         requested_operand_at(&memory, 0, 0x1000, 1),

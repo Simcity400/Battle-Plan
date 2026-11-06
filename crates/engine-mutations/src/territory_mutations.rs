@@ -57,6 +57,7 @@
 //!   inline. The building family owns and forwards its entry patch.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// Which rows a state site's writes reach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,11 +95,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "province_controller",
-            rva: 0xef_1860,
-            sentinel: [
-                0x44, 0x88, 0x4c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24,
-                0x10, 0x55,
-            ],
+            rva: Rva(0xef_1860),
         },
         Receiver::Province,
     ),
@@ -106,11 +103,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "victory_points",
-            rva: 0xef_27b0,
-            sentinel: [
-                0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x89, 0x51, 0x38, 0x48, 0x8b, 0xd9, 0x80, 0x3d,
-                0x4e, 0xce,
-            ],
+            rva: Rva(0xef_27b0),
         },
         Receiver::Province,
     ),
@@ -118,11 +111,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "read_province",
-            rva: 0xef_0de0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-                0x40, 0x48,
-            ],
+            rva: Rva(0xef_0de0),
         },
         Receiver::Province,
     ),
@@ -130,11 +119,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "insert_border_conflict",
-            rva: 0xa1_c020,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0xa1_c020),
         },
         Receiver::State(StateRows {
             state: false,
@@ -145,11 +130,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "erase_border_conflict",
-            rva: 0xa2_7e70,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0xa2_7e70),
         },
         Receiver::State(StateRows {
             state: false,
@@ -160,11 +141,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "rebuild_owner_areas",
-            rva: 0xd5_74c0,
-            sentinel: [
-                0x40, 0x53, 0x55, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x58, 0x4c, 0x89, 0x6c, 0x24,
-                0x40, 0xe8,
-            ],
+            rva: Rva(0xd5_74c0),
         },
         Receiver::EveryProvince,
     ),
@@ -173,11 +150,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "initialize_provinces",
-            rva: 0xa2_9aa0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-                0x41, 0x57,
-            ],
+            rva: Rva(0xa2_9aa0),
         },
         Receiver::EveryProvince,
     ),
@@ -185,11 +158,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "state_owner",
-            rva: 0xa2_9290,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x89, 0x54, 0x24, 0x10,
-                0x55, 0x57,
-            ],
+            rva: Rva(0xa2_9290),
         },
         Receiver::State(BOTH),
     ),
@@ -200,11 +169,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "state_controller",
-            rva: 0xa2_8770,
-            sentinel: [
-                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x89, 0x50, 0x10, 0x55, 0x56, 0x57, 0x41,
-                0x54, 0x41,
-            ],
+            rva: Rva(0xa2_8770),
         },
         Receiver::State(StateRows {
             state: true,
@@ -216,11 +181,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "reset_state",
-            rva: 0xa2_1920,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0xa2_1920),
         },
         Receiver::State(BOTH),
     ),
@@ -230,11 +191,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "read_state",
-            rva: 0xa2_6b30,
-            sentinel: [
-                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x10, 0x48, 0x89, 0x78,
-                0x20, 0x55,
-            ],
+            rva: Rva(0xa2_6b30),
         },
         Receiver::State(BOTH),
     ),
@@ -244,22 +201,14 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "state_name_effect",
-            rva: 0x32_96d0,
-            sentinel: [
-                0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x08, 0x49, 0x89, 0x6b, 0x18, 0x49, 0x89, 0x73,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x32_96d0),
         },
         Receiver::EveryState,
     ),
     (
         MutationSite {
             name: "recount_controller_groups",
-            rva: 0x00a2_a440,
-            sentinel: [
-                0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
-                0x56, 0x41,
-            ],
+            rva: Rva(0x00a2_a440),
         },
         Receiver::State(StateRows {
             state: true,
@@ -269,11 +218,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "refresh_cached_victory_point",
-            rva: 0x00a2_a1e0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x7c, 0x24, 0x10, 0x8b, 0x79, 0x24, 0x33,
-                0xd2, 0xbb,
-            ],
+            rva: Rva(0x00a2_a1e0),
         },
         Receiver::State(StateRows {
             state: true,

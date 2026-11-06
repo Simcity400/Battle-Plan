@@ -6,11 +6,12 @@ use crate::{
     Memory, ccountry, ccountry_supply_system, cgame_state, cpdx_array::Array, read,
     supply_companion,
 };
+use engine_sites::Rva;
 
 /// CSupplySystem primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_02b8;
+pub const VTABLE_RVA: Rva = Rva(0x029f_02b8);
 /// CSupplySystem secondary vtable (`SECONDARY_BASE`).
-pub const SECONDARY_VTABLE_RVA: usize = 0x029f_02e0;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029f_02e0);
 /// CSupplySystem secondary-base displacement.
 pub const SECONDARY_BASE: usize = 0x08;
 /// CSupplySystem SProvinceSupplyData array pointer.
@@ -22,7 +23,7 @@ pub const COUNTRY_SYSTEM_DATA: usize = 0x108;
 /// CSupplySystem inline companion array pointer.
 pub const COUNTRY_COMPANION_DATA: usize = 0x120;
 /// Supply-system constructor installing primary identity.
-pub const CONSTRUCTOR_RVA: usize = 0x00f3_ce90;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f3_ce90);
 
 /// Authenticates the root without allocating or calling engine functions.
 pub fn read_root(
@@ -36,12 +37,9 @@ pub fn read_root(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("supply system pointer unreadable or null")?;
-    let primary = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
-    let secondary = base
-        .checked_add(SECONDARY_VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let primary = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
+    let secondary =
+        engine_sites::at(base, SECONDARY_VTABLE_RVA).ok_or("module address overflow")?;
     let bytes = read::<[u8; 16]>(memory, pointer).ok_or("supply system vtables unreadable")?;
     if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != primary as u64
         || u64::from_le_bytes(bytes[8..].try_into().unwrap()) != secondary as u64
@@ -96,11 +94,9 @@ impl<'a, M: Memory> Reader<'a, M> {
             systems,
             companions,
             root,
-            primary: base
-                .checked_add(ccountry_supply_system::VTABLE_RVA)
+            primary: engine_sites::at(base, ccountry_supply_system::VTABLE_RVA)
                 .ok_or("module address overflow")?,
-            secondary: base
-                .checked_add(ccountry_supply_system::SECONDARY_VTABLE_RVA)
+            secondary: engine_sites::at(base, ccountry_supply_system::SECONDARY_VTABLE_RVA)
                 .ok_or("module address overflow")?,
         })
     }

@@ -26,7 +26,7 @@ fn division_world(n: usize) -> (Arena, Vec<DivisionSeed>) {
     );
     let base = arena.base();
     let metadata = arena.alloc((0x400 + 1) * modifier_definition::STRIDE);
-    arena.u64(base + modifier_definition::TABLE_RVA, metadata as u64);
+    arena.u64(base + modifier_definition::TABLE_RVA.0, metadata as u64);
     let combat = arena.alloc(0x10);
     let groups: Vec<usize> = (0..2 * n)
         .map(|index| {

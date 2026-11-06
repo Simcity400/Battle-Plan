@@ -3,7 +3,7 @@ use crate::{
     hook::{Hook, TapSafety},
     output_log::Log,
 };
-use engine_native::Memory;
+use engine_sites::Rva;
 use std::{
     ops::Range,
     sync::{
@@ -14,23 +14,16 @@ use std::{
 
 #[derive(Clone, Copy)]
 pub struct Site {
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 impl From<&engine_production::construction_ic_sites::Site> for Site {
     fn from(site: &engine_production::construction_ic_sites::Site) -> Self {
-        Self {
-            rva: site.rva,
-            sentinel: site.sentinel,
-        }
+        Self { rva: site.rva }
     }
 }
 impl From<&engine_production::line_output_sites::HookSite> for Site {
     fn from(site: &engine_production::line_output_sites::HookSite) -> Self {
-        Self {
-            rva: site.rva,
-            sentinel: site.sentinel,
-        }
+        Self { rva: site.rva }
     }
 }
 
@@ -42,7 +35,6 @@ pub enum Failure {
     Unavailable,
 }
 pub struct Domain<const N: usize> {
-    pub sentinel_error: &'static str,
     pub failure: Failure,
     pub observation: &'static Log,
     pub base: &'static AtomicUsize,
@@ -51,18 +43,24 @@ pub struct Domain<const N: usize> {
     pub unhooked: &'static OnceLock<&'static str>,
 }
 
-pub fn validate_sentinels(
-    memory: &impl Memory,
+/// Every site located with the bytes its hook replaces, or the first withheld one.
+pub fn locate<const N: usize>(
     base: usize,
-    sites: &[Site],
-    sentinel_error: &'static str,
-) -> Result<(), &'static str> {
-    for site in sites {
-        if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
-            return Err(sentinel_error);
-        }
+    sites: &[Site; N],
+) -> Result<[(usize, [u8; 16]); N], &'static str> {
+    let mut located = [(0, [0; 16]); N];
+    for (slot, site) in located.iter_mut().zip(sites) {
+        *slot = engine_sites::hook(base, site.rva)
+            .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+            .inspect_err(|cause| {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Sentinel,
+                    None,
+                    cause,
+                )
+            })?;
     }
-    Ok(())
+    Ok(located)
 }
 
 pub struct Hooks<const N: usize> {
@@ -70,31 +68,29 @@ pub struct Hooks<const N: usize> {
     domain: Domain<N>,
 }
 impl<const N: usize> Hooks<N> {
-    /// Verify every sentinel and store every trampoline before publication.
+    /// Locate every site and store every trampoline before publication.
     ///
     /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    /// The base must identify the authenticated executable in this process.
+    /// The caller owns this family exclusively and must restore its hooks and
+    /// quiesce native calls before releasing code or unloading.
     pub unsafe fn new(
-        memory: &impl Memory,
         base: usize,
         sites: [Site; N],
         callbacks: [usize; N],
         domain: Domain<N>,
         ready: Result<(), &'static str>,
     ) -> Self {
-        unsafe { Self::construct(memory, base, sites, callbacks, domain, ready, None) }
+        unsafe { Self::construct(base, sites, callbacks, domain, ready, None) }
     }
 
     /// Bind the native flight counter and callback ranges before publication.
     ///
     /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    /// The base must identify the authenticated executable in this process.
+    /// The caller owns this family exclusively and must restore its hooks and
+    /// quiesce native calls before releasing code or unloading.
     pub unsafe fn new_with_safety(
-        memory: &impl Memory,
         base: usize,
         sites: [Site; N],
         callbacks: [usize; N],
@@ -102,12 +98,11 @@ impl<const N: usize> Hooks<N> {
         ready: Result<(), &'static str>,
         safety: [TapSafety; N],
     ) -> Self {
-        unsafe { Self::construct(memory, base, sites, callbacks, domain, ready, Some(safety)) }
+        unsafe { Self::construct(base, sites, callbacks, domain, ready, Some(safety)) }
     }
 
     #[allow(clippy::too_many_arguments)]
     unsafe fn construct(
-        memory: &impl Memory,
         base: usize,
         sites: [Site; N],
         callbacks: [usize; N],
@@ -116,24 +111,24 @@ impl<const N: usize> Hooks<N> {
         safety: Option<[TapSafety; N]>,
     ) -> Self {
         let install = || -> Result<Vec<Hook>, &'static str> {
-            validate_sentinels(memory, base, &sites, domain.sentinel_error)?;
+            let located = locate(base, &sites)?;
             ready?;
             domain.base.store(base, Ordering::Relaxed);
             let mut hooks =
                 engine_allocation::vec(N).map_err(|_| "output hook allocation failed")?;
             let mut safety = safety.map(IntoIterator::into_iter);
-            for (index, site) in sites.iter().enumerate() {
+            for (index, &(address, original)) in located.iter().enumerate() {
                 let hook = if let Some(safety) = safety.as_mut() {
                     unsafe {
                         Hook::new_with_safety(
-                            base + site.rva,
+                            address,
                             callbacks[index],
-                            site.sentinel,
+                            original,
                             safety.next().unwrap(),
                         )
                     }
                 } else {
-                    unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    unsafe { Hook::new(address, callbacks[index], original) }
                 }
                 .map_err(|_| "native hook construction failed")?;
                 domain.originals[index].store(hook.trampoline(), Ordering::Release);

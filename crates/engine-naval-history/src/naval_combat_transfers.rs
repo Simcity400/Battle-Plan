@@ -6,6 +6,7 @@
 //! handle in stored order, skipping stale handles; their provinces come from
 //! unit tables.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cgame_state, cland_border_war_combat, cland_combat, cnaval_combat,
     cnaval_unit_transfer, cpdx_array::Array, creference_registry::HeaderResolver, read,
@@ -149,7 +150,7 @@ fn walk_buffer(
     let (mut transfer_required, mut unit_required) = (0usize, 0usize);
     let result = (|| {
         let registry = handles(memory, state, cgame_state::COMBATS + 8)?;
-        let expected = |rva: usize| base.checked_add(rva).map(|address| address as u64);
+        let expected = |key: Rva| engine_sites::at(base, key).map(|address| address as u64);
         let naval = expected(cnaval_combat::VTABLE_RVA).ok_or("module address overflow")?;
         let land = [
             expected(cland_combat::VTABLE_RVA),
@@ -359,11 +360,11 @@ mod tests {
 
     impl Memory for Image<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == registry::HIGH_ROOT_RVA {
+            if address == registry::HIGH_ROOT_RVA.0 {
                 destination.copy_from_slice(&(TABLE as u64).to_le_bytes()[..destination.len()]);
                 return true;
             }
-            if address >= registry::HIGH_ROOT_RVA {
+            if address >= registry::HIGH_ROOT_RVA.0 {
                 destination.fill(0);
                 return true;
             }
@@ -462,7 +463,7 @@ mod tests {
                 put(
                     &mut bytes,
                     object,
-                    &(cnaval_unit_transfer::VTABLE_RVA as u64).to_le_bytes(),
+                    &(cnaval_unit_transfer::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -496,7 +497,7 @@ mod tests {
             put(
                 &mut bytes,
                 LAND,
-                &(cland_combat::VTABLE_RVA as u64).to_le_bytes(),
+                &(cland_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             for (index, transfers) in combats.iter().enumerate() {
                 let combat = next(&mut bytes, 0x100);
@@ -509,7 +510,7 @@ mod tests {
                 put(
                     &mut bytes,
                     combat,
-                    &(cnaval_combat::VTABLE_RVA as u64).to_le_bytes(),
+                    &(cnaval_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,

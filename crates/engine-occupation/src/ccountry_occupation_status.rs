@@ -2,10 +2,11 @@
 //! persistent subobject. These fields alone do not establish hourly consistency
 //! or writer ownership.
 
+use engine_sites::Rva;
 /// Occupation-status primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_0e18;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_0e18);
 /// Persistent subobject vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_0e50;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x02a0_0e50);
 /// Persistent subobject displacement.
 pub const SECONDARY_BASE: usize = 0x18;
 /// Embedded occupation-data robin-hood table; enumerate only live buckets.
@@ -38,7 +39,7 @@ pub const ASSIGNED_MANPOWER: usize = 0x90;
 /// Default COccupationLaw pointer.
 pub const DEFAULT_LAW: usize = 0x118;
 /// Reset leaving the occupation table empty.
-pub const RESET_RVA: usize = 0x0107_beb0;
+pub const RESET_RVA: Rva = Rva(0x0107_beb0);
 
 use crate::{
     Memory, ccountry,
@@ -267,9 +268,7 @@ impl Occupied<'_> {
             |ordinal, pointer| {
                 let fields = read::<[u8; 32]>(memory, pointer)
                     .ok_or("occupied-country roster group unreadable")?;
-                if base
-                    .checked_add(ccountry_occupation_data::VTABLE_RVA)
-                    .map(|p| p as u64)
+                if engine_sites::at(base, ccountry_occupation_data::VTABLE_RVA).map(|p| p as u64)
                     != Some(u64::from_le_bytes(fields[..8].try_into().unwrap()))
                 {
                     return Err("occupied-country roster group vtable mismatch");
@@ -281,7 +280,7 @@ impl Occupied<'_> {
                     .map_err(|_| "occupied-country roster country address overflow")?;
                 let identity = read::<[u8; 12]>(memory, country)
                     .ok_or("occupied-country roster country unreadable")?;
-                if base.checked_add(ccountry::VTABLE_RVA).map(|p| p as u64)
+                if engine_sites::at(base, ccountry::VTABLE_RVA).map(|p| p as u64)
                     != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
                 {
                     return Err("occupied-country roster country vtable mismatch");
@@ -401,10 +400,14 @@ pub(crate) fn status(
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("occupation status pointer unreadable")?;
-    if base.checked_add(VTABLE_RVA).map(|p| p as u64) != read::<u64>(memory, pointer) {
+    let primary =
+        engine_sites::at(base, VTABLE_RVA).ok_or("occupation status primary vtable mismatch")?;
+    if read::<u64>(memory, pointer) != Some(primary as u64) {
         return Err("occupation status primary vtable mismatch");
     }
-    if base.checked_add(SECONDARY_VTABLE_RVA).map(|p| p as u64)
+    let secondary = engine_sites::at(base, SECONDARY_VTABLE_RVA)
+        .ok_or("occupation status secondary vtable mismatch")?;
+    if Some(secondary as u64)
         != pointer
             .checked_add(SECONDARY_BASE)
             .and_then(|p| read::<u64>(memory, p))
@@ -430,11 +433,9 @@ fn settings(
     let garrison_template = if template == 0 {
         None
     } else {
-        if base
-            .checked_add(creferenced_division_template::VTABLE_RVA)
-            .map(|p| p as u64)
-            != read::<u64>(memory, template)
-        {
+        let expected = engine_sites::at(base, creferenced_division_template::VTABLE_RVA)
+            .ok_or("garrison template vtable mismatch")?;
+        if read::<u64>(memory, template) != Some(expected as u64) {
             return Err("garrison template vtable mismatch");
         }
         let reference = template
@@ -790,7 +791,7 @@ mod tests {
         u64_at(
             &mut bytes,
             0xa200,
-            creferenced_division_template::VTABLE_RVA as u64,
+            creferenced_division_template::VTABLE_RVA.0 as u64,
         );
         u64_at(
             &mut bytes,
@@ -905,30 +906,30 @@ mod tests {
         u32_at(&mut bytes, 0x2108, 2);
         u32_at(&mut bytes, 0x2100 + 99 * 4, 2);
         for (country, id, status) in [(0x3000, 1, 0x7000), (0x5000, 99, 0x7200)] {
-            u64_at(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            u64_at(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
             u32_at(&mut bytes, country + ccountry::ID, id);
             u64_at(
                 &mut bytes,
                 country + ccountry::OCCUPATION_STATUS,
                 status as u64,
             );
-            u64_at(&mut bytes, status, VTABLE_RVA as u64);
+            u64_at(&mut bytes, status, VTABLE_RVA.0 as u64);
             u64_at(
                 &mut bytes,
                 status + SECONDARY_BASE,
-                SECONDARY_VTABLE_RVA as u64,
+                SECONDARY_VTABLE_RVA.0 as u64,
             );
             u64_at(
                 &mut bytes,
                 status + ASSIGNED_MANPOWER,
-                carmy_manpower_values::VTABLE_RVA as u64,
+                carmy_manpower_values::VTABLE_RVA.0 as u64,
             );
         }
         u64_at(&mut bytes, 0x7000 + GARRISON_TEMPLATE, 0xa100);
         u64_at(
             &mut bytes,
             0xa100,
-            creferenced_division_template::VTABLE_RVA as u64,
+            creferenced_division_template::VTABLE_RVA.0 as u64,
         );
         u64_at(
             &mut bytes,
@@ -936,7 +937,7 @@ mod tests {
             (7_u64 << 32) | 52,
         );
         u64_at(&mut bytes, 0x7000 + DEFAULT_LAW, 0xa000);
-        u64_at(&mut bytes, 0xa000, coccupation_law::VTABLE_RVA as u64);
+        u64_at(&mut bytes, 0xa000, coccupation_law::VTABLE_RVA.0 as u64);
         put(&mut bytes, 0xa000 + coccupation_law::NAME, b"civilian");
         u64_at(&mut bytes, 0xa000 + coccupation_law::NAME + 16, 8);
         u64_at(&mut bytes, 0xa000 + coccupation_law::NAME + 24, 15);
@@ -953,7 +954,7 @@ mod tests {
         u64_at(
             &mut bytes,
             0x8400,
-            ccountry_occupation_data::VTABLE_RVA as u64,
+            ccountry_occupation_data::VTABLE_RVA.0 as u64,
         );
         u64_at(
             &mut bytes,
@@ -980,9 +981,13 @@ mod tests {
             0x9000,
         );
         u64_at(&mut bytes, 0x2408, 0xb100);
-        u64_at(&mut bytes, 0xb100, cstate::VTABLE_RVA as u64);
+        u64_at(&mut bytes, 0xb100, cstate::VTABLE_RVA.0 as u64);
         u32_at(&mut bytes, 0xb100 + cstate::ID, 1);
-        u64_at(&mut bytes, 0x9000, cstate_garrison_data::VTABLE_RVA as u64);
+        u64_at(
+            &mut bytes,
+            0x9000,
+            cstate_garrison_data::VTABLE_RVA.0 as u64,
+        );
         u64_at(&mut bytes, 0x9000 + cstate_garrison_data::STATE, 0xb100);
         u64_at(
             &mut bytes,
@@ -1008,7 +1013,7 @@ mod tests {
         u64_at(
             &mut bytes,
             manpower,
-            carmy_manpower_values::VTABLE_RVA as u64,
+            carmy_manpower_values::VTABLE_RVA.0 as u64,
         );
         array(&mut bytes, manpower + 8, 0xb800, 2);
         u32_at(&mut bytes, 0xb800, 99);
@@ -1230,7 +1235,7 @@ mod tests {
         u64_at(
             &mut bytes,
             0x8800,
-            ccountry_occupation_data::VTABLE_RVA as u64,
+            ccountry_occupation_data::VTABLE_RVA.0 as u64,
         );
         u64_at(
             &mut bytes,

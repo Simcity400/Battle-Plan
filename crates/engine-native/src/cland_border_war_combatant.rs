@@ -1,8 +1,9 @@
 //! CLandBorderWarCombatant, the border-war side. Its round dispatch directly
 //! calls the ordinary land round; replacing a virtual slot alone misses this path.
 
+use engine_sites::Rva;
 /// CLandBorderWarCombatant primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_72e8;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_72e8);
 /// Border-war side country used by the tooltip.
 pub const COUNTRY: usize = 0x4c0;
 /// Border-war state pointer; the tooltip reads its id.

@@ -51,7 +51,7 @@ fn world(countries: usize) -> (Vec<u8>, Vec<carmy::DivisionSeed>) {
         .map(|index| {
             let pointer = OBJECTS + index * 0x100;
             bytes[pointer..pointer + 8]
-                .copy_from_slice(&(cprovince::VTABLE_RVA as u64).to_le_bytes());
+                .copy_from_slice(&(cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
             let at = pointer + cprovince::ID;
             bytes[at..at + 4].copy_from_slice(&(index as u32 + 1).to_le_bytes());
             let at = SLOTS + (index + 1) * 8;

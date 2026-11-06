@@ -83,7 +83,7 @@ fn copy_stats_history(
         Some(start) => start,
         None => return false,
     };
-    let expected = match base.checked_add(cloop_history::VTABLE_RVA) {
+    let expected = match engine_sites::at(base, cloop_history::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
@@ -137,7 +137,7 @@ fn copy_stats_history(
         Some(start) => start,
         None => return false,
     };
-    let expected_window = match base.checked_add(loop_history_window::VTABLE_RVA) {
+    let expected_window = match engine_sites::at(base, loop_history_window::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
@@ -457,7 +457,7 @@ fn copy_stats_owners(
             return;
         }
     }
-    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
+    let country_vtable = match engine_sites::at(base, ccountry::VTABLE_RVA) {
         Some(vtable) => vtable as u64,
         None => return,
     };
@@ -489,7 +489,7 @@ fn copy_stats_owners(
             return;
         }
     }
-    let air_vtable = match base.checked_add(cstrategic_air::VTABLE_RVA) {
+    let air_vtable = match engine_sites::at(base, cstrategic_air::VTABLE_RVA) {
         Some(vtable) => vtable as u64,
         None => return,
     };

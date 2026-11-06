@@ -182,7 +182,7 @@ mod tests {
             put(
                 &mut bytes,
                 country,
-                &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, country + ccountry::ID, &slot.to_le_bytes());
             if slot % active_every == 0 {
@@ -198,7 +198,7 @@ mod tests {
         put(
             &mut bytes,
             DEFINITION,
-            &(cability::VTABLE_RVA as u64).to_le_bytes(),
+            &(cability::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, DEFINITION + cability::TOKEN, b"ability");
         put(

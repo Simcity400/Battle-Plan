@@ -1,5 +1,6 @@
 //! CRailwayManager's persistent rail province and directed edge state.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cgame_state,
     cpdx_array::Array,
@@ -13,7 +14,7 @@ pub mod fresh_inputs;
 pub mod selected_inputs;
 
 /// CRailwayManager primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f450;
+pub const VTABLE_RVA: Rva = Rva(0x029e_f450);
 
 /// CRailwayManager province-indexed CProvinceRailwayInfo pointer table.
 pub const PROVINCE_INFO_TABLE: usize = 0x08;
@@ -27,16 +28,16 @@ pub const COOLDOWN_PROVINCE_COUNT: usize = 0x2c;
 /// CRailwayManager table pointer stride.
 pub const PROVINCE_INFO_STRIDE: usize = 8;
 /// Manager constructor sizing and zero-filling the province table.
-pub const CONSTRUCTOR_RVA: usize = 0x00f0_51e0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f0_51e0);
 /// Railway manager scalar deleting destructor (vtable slot 0); destruction
 /// stores the vtable and frees every info object.
-pub const DESTRUCTOR_RVA: usize = 0x00f0_54c0;
+pub const DESTRUCTOR_RVA: Rva = Rva(0x00f0_54c0);
 /// Railway token loader can allocate and replace info slots.
-pub const LOAD_TOKEN_RVA: usize = 0x00f0_8180;
+pub const LOAD_TOKEN_RVA: Rva = Rva(0x00f0_8180);
 /// Province-cooldown setter writes stored cooldown and notifies supply.
-pub const SET_PROVINCE_ON_COOLDOWN_RVA: usize = 0x00f0_7810;
+pub const SET_PROVINCE_ON_COOLDOWN_RVA: Rva = Rva(0x00f0_7810);
 /// Cooldown updater decrements values and removes expired IDs.
-pub const UPDATE_COOLDOWNS_RVA: usize = 0x00f0_6fc0;
+pub const UPDATE_COOLDOWNS_RVA: Rva = Rva(0x00f0_6fc0);
 
 /// Passive railway speed computation, before CArmy's outer movement-speed
 /// scale. Road infrastructure and the directed rail edge compete by signed
@@ -55,13 +56,13 @@ pub fn movement_speed(
     let to_id = eta_province(memory, base, provinces, to)?;
     let infrastructure = eta_infrastructure(memory, base, state, to)?;
     // Railway speed computation: all four defines are signed fixed5 qwords.
-    let road_base = eta_read::<i64>(memory, base, 0x033e_0928)?;
-    let road_scale = eta_read::<i64>(memory, base, 0x033e_09b8)?;
+    let road_base = eta_global::<i64>(memory, base, Rva(0x033e_0928))?;
+    let road_scale = eta_global::<i64>(memory, base, Rva(0x033e_09b8))?;
     let road = road_base.wrapping_add(infrastructure.wrapping_mul(road_scale) / 100_000);
     let percentage =
         railway_percentage_from_ids(memory, base, state, provinces, (from, from_id), to_id)?;
-    let rail_base = eta_read::<i64>(memory, base, 0x033e_0a48)?;
-    let rail_scale = eta_read::<i64>(memory, base, 0x033e_0ae0)?;
+    let rail_base = eta_global::<i64>(memory, base, Rva(0x033e_0a48))?;
+    let rail_scale = eta_global::<i64>(memory, base, Rva(0x033e_0ae0))?;
     let rail = rail_base.wrapping_add(percentage.wrapping_mul(rail_scale) / 100_000);
     Ok(road.max(rail))
 }
@@ -146,7 +147,7 @@ fn railway_percentage_from_ids(
     }
     // Sign-extended denominator: this denominator define is an i32, unlike the
     // speed defines. Zero returns zero, not the fixed-point sentinel.
-    let denominator = i64::from(eta_read::<i32>(memory, base, 0x033d_fbe8)?) * 100_000;
+    let denominator = i64::from(eta_global::<i32>(memory, base, Rva(0x033d_fbe8))?) * 100_000;
     if denominator == 0 {
         Ok(0)
     } else {
@@ -175,6 +176,22 @@ fn eta_pointer(memory: &impl Memory, pointer: usize, offset: usize) -> Result<us
         .ok_or("ETA railway pointer null or invalid")
 }
 
+fn eta_key(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("ETA railway address overflow")
+}
+
+fn eta_global<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    eta_read(memory, eta_key(base, key)?, 0)
+}
+
+fn eta_global_pointer(memory: &impl Memory, base: usize, key: Rva) -> Result<usize, &'static str> {
+    eta_pointer(memory, eta_key(base, key)?, 0)
+}
+
 fn eta_array(
     memory: &impl Memory,
     pointer: usize,
@@ -188,9 +205,9 @@ fn eta_vtable(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    rva: usize,
+    key: Rva,
 ) -> Result<(), &'static str> {
-    if pointer == 0 || eta_read::<u64>(memory, pointer, 0)? != eta_address(base, rva)? as u64 {
+    if pointer == 0 || eta_read::<u64>(memory, pointer, 0)? != eta_key(base, key)? as u64 {
         return Err("ETA railway source vtable mismatch");
     }
     Ok(())
@@ -283,7 +300,7 @@ fn eta_state_infrastructure(
     {
         return Err("ETA infrastructure state identity mismatch");
     }
-    let database = eta_pointer(memory, base, database::SINGLETON_RVA)?;
+    let database = eta_global_pointer(memory, base, database::SINGLETON_RVA)?;
     // Select the infrastructure template from its database field.
     let definition = eta_pointer(memory, database, 0x3b0)?;
     if eta_read::<u8>(memory, definition, template::LOOKUP_ENABLED_CANDIDATE)? == 0 {
@@ -337,7 +354,7 @@ fn eta_state_infrastructure(
     if maximum < 1 {
         maximum = eta_read::<i32>(memory, definition, 0x2b8)?;
         if maximum <= 0 {
-            maximum = eta_read::<i32>(memory, base, 0x033e_5274)?;
+            maximum = eta_global::<i32>(memory, base, Rva(0x033e_5274))?;
         }
     }
     eta_ratio(i64::from(healthy) * 100_000, i64::from(maximum) * 100_000)
@@ -359,8 +376,7 @@ pub fn cooldown_list(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("rail manager unreadable or null")?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
+    let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")?;
     if read::<u64>(memory, manager) != Some(vtable as u64) {
         return Err("rail manager vtable mismatch");
@@ -806,8 +822,7 @@ fn walk_inner(
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
             .ok_or("rail manager unreadable or null")?;
-        let manager_vtable = base
-            .checked_add(VTABLE_RVA)
+        let manager_vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")?;
         if read::<u64>(memory, manager) != Some(manager_vtable as u64) {
             return Err("rail manager vtable mismatch");
@@ -827,11 +842,9 @@ fn walk_inner(
         if let Some(output) = building_output.as_mut() {
             output.ensure(rail.count as usize)?;
         }
-        let info_vtable = base
-            .checked_add(info::VTABLE_RVA)
+        let info_vtable = engine_sites::at(base, info::VTABLE_RVA)
             .ok_or("module address overflow")?;
-        let province_vtable = base
-            .checked_add(cprovince::VTABLE_RVA)
+        let province_vtable = engine_sites::at(base, cprovince::VTABLE_RVA)
             .ok_or("module address overflow")?;
         // A rail slot's own province, its definition, the info identity and
         // backlinks, the cooldown and the neighbor header are all gathered for

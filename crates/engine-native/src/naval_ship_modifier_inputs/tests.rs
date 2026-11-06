@@ -22,7 +22,7 @@ impl Memory for Fixture {
                 return true;
             }
         }
-        if address == IMAGE + crate::modifier_definition::TABLE_RVA && output.len() == 16 {
+        if address == IMAGE + crate::modifier_definition::TABLE_RVA.0 && output.len() == 16 {
             output[..8].copy_from_slice(&0x4000u64.to_le_bytes());
             output[8..12].copy_from_slice(&64u32.to_le_bytes());
             output[12..].copy_from_slice(&64u32.to_le_bytes());
@@ -100,7 +100,7 @@ fn doctrine_fixture(count: usize) -> Fixture {
     for offset in [56, 60] {
         witness[offset..offset + 4].copy_from_slice(&(count as u32 + 1).to_le_bytes());
     }
-    f.globals.push((IMAGE + lexer::INITIALIZED_RVA, witness));
+    f.globals.push((IMAGE + lexer::INITIALIZED_RVA.0, witness));
     for (rva, value) in [
         (0x0343_9158, GENERATOR),
         (0x0343_9150, GENERATOR),
@@ -257,7 +257,7 @@ fn doctrine_source_visitor_sizes_growing_populations_in_operand_order() {
             assert_eq!(source.weights, [index as i64 + 7, index as i64]);
             assert_eq!(*accumulator, Some(0x1800));
         }
-        let failed = IMAGE + crate::cpdx_lexer::INITIALIZED_RVA;
+        let failed = IMAGE + crate::cpdx_lexer::INITIALIZED_RVA.0;
         memory.fail = Some(failed);
         memory.reads.borrow_mut().clear();
         sources.clear();
@@ -438,7 +438,7 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
         let mut memory = fixture();
         memory.globals.push((IMAGE + 0x029f_5b58, key.to_vec()));
         memory.globals.push((
-            IMAGE + crate::cterrain_database::SINGLETON_RVA,
+            IMAGE + crate::cterrain_database::SINGLETON_RVA.0,
             (DATABASE as u64).to_le_bytes().to_vec(),
         ));
         memory.q(DATABASE + 0x40, TYPES as u64);
@@ -446,7 +446,7 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
         memory.q(TYPES, LONG as u64);
         memory.q(TYPES + 8, MATCHED as u64);
         for terrain in [LONG, MATCHED] {
-            memory.q(terrain, (IMAGE + crate::cterrain_type::VTABLE_RVA) as u64);
+            memory.q(terrain, (IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64);
             memory.put(terrain + 0x10, &[1]);
         }
         memory.heap_text(LONG + 0x18, DATA, &vec![b'z'; length]);
@@ -502,13 +502,13 @@ fn a_capture_scans_the_terrain_database_for_the_ocean_once() {
     let mut memory = fixture();
     memory.globals.push((IMAGE + 0x029f_5b58, key.to_vec()));
     memory.globals.push((
-        IMAGE + crate::cterrain_database::SINGLETON_RVA,
+        IMAGE + crate::cterrain_database::SINGLETON_RVA.0,
         (DATABASE as u64).to_le_bytes().to_vec(),
     ));
     memory.q(DATABASE + 0x40, TYPES as u64);
     memory.q(DATABASE + 0x48, (1u64 << 32) | 1);
     memory.q(TYPES, OCEAN as u64);
-    memory.q(OCEAN, (IMAGE + crate::cterrain_type::VTABLE_RVA) as u64);
+    memory.q(OCEAN, (IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64);
     memory.put(OCEAN + 0x10, &[1]);
     memory.put(OCEAN + 0x18, &key);
     memory.q(OCEAN + 0x28, key.len() as u64);
@@ -550,7 +550,7 @@ fn modifier_terms_and_keys_exceed_65536() {
     for offset in [8, 12] {
         header[offset..offset + 4].copy_from_slice(&(COUNT as u32 + 1).to_le_bytes());
     }
-    f.globals.push((IMAGE + md::TABLE_RVA, header));
+    f.globals.push((IMAGE + md::TABLE_RVA.0, header));
     for index in 0..COUNT {
         f.put(TERMS + index * 16, &(index as u32 + 1).to_le_bytes());
         f.q(TERMS + index * 16 + 8, i64::MIN as u64);
@@ -592,7 +592,7 @@ fn native_modifier_sources_share_owned_terms_per_accumulator() {
     use crate::modifier_definition as md;
     let source_reads = [
         (0x1800, 16),
-        (IMAGE + md::TABLE_RVA, 16),
+        (IMAGE + md::TABLE_RVA.0, 16),
         (0x2000, 32),
         (0x4000 + 0x2a * md::STRIDE + md::FLAGS, 12),
         (0x4000 + 0x2b * md::STRIDE + md::FLAGS, 12),
@@ -678,7 +678,7 @@ fn a_capture_reads_each_keys_metadata_once() {
         *memory.reads.borrow(),
         [
             (0x1800, 16),
-            (IMAGE + md::TABLE_RVA, 16),
+            (IMAGE + md::TABLE_RVA.0, 16),
             (0x2000, 32),
             (0x4000 + 0x2a * md::STRIDE + md::FLAGS, 12),
             (0x4000 + 0x2b * md::STRIDE + md::FLAGS, 12),
@@ -694,7 +694,7 @@ fn modifier_source_faults_stop_at_primary_prefix_and_leave_lengths_unpublished()
     for (fail, calls, copied, required_terms, reason) in [
         (0x1800, 1, 16, 0, "naval field unreadable"),
         (
-            IMAGE + md::TABLE_RVA,
+            IMAGE + md::TABLE_RVA.0,
             2,
             32,
             2,

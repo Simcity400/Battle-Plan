@@ -122,8 +122,8 @@ impl World {
     fn d(&mut self, at: usize, value: u32) {
         self.put(at, &value.to_le_bytes());
     }
-    fn vtable(&mut self, at: usize, rva: usize) {
-        self.q(at, (MODULE + rva) as u64);
+    fn vtable(&mut self, at: usize, rva: engine_sites::Rva) {
+        self.q(at, (MODULE + rva.0) as u64);
     }
     fn array(&mut self, at: usize, data: usize, count: u32) {
         self.q(at, data as u64);

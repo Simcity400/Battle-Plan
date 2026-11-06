@@ -66,9 +66,9 @@ impl Context {
         let mut debug = [0; 1];
         if memory.copy_scattered_prefetched(
             [
-                base.checked_add(ctechnology::BASE_COST_SCALE_RVA)
+                engine_sites::at(base, ctechnology::BASE_COST_SCALE_RVA)
                     .ok_or("module address overflow")?,
-                base.checked_add(ctechnology::BASE_COST_DEBUG_FLAG_RVA)
+                engine_sites::at(base, ctechnology::BASE_COST_DEBUG_FLAG_RVA)
                     .ok_or("module address overflow")?,
             ],
             &mut [&mut scale[..], &mut debug[..]],
@@ -452,13 +452,15 @@ fn resolve_bonus_roster(
     )
     .ok_or("research bonus roster invalid")?;
     // Use the complete stored bonus rosters.
-    let vtable = base
-        .checked_add(if cost {
+    let vtable = engine_sites::at(
+        base,
+        if cost {
             reduction::VTABLE_RVA
         } else {
             bonus::VTABLE_RVA
-        })
-        .ok_or("module address overflow")? as u64;
+        },
+    )
+    .ok_or("module address overflow")? as u64;
     let mut first = 0;
     let mut bytes = [0; 64 * 8];
     let mut pointers = [0; 64];

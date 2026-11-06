@@ -30,9 +30,10 @@ use crate::{
     Memory, cair_wing, cair_wing_pool, ccountry, cloop_history, cpdx_array::Array, cstrategic_air,
     csub_unit_definition, loop_history_record_fields, loop_history_window, read,
 };
+use engine_sites::Rva;
 
 /// Seven-argument writer: manager entry, wing, count, enemy, region, selection, cause.
-pub const WRITER_RVA: usize = 0x00cb_96a0;
+pub const WRITER_RVA: Rva = Rva(0x00cb_96a0);
 /// Field count used by air-history construction.
 pub const FIELD_COUNT: usize = cloop_history::air_stats::FIELD_COUNT as usize;
 /// Own/enemy family bases; unknown families select zero.
@@ -40,8 +41,7 @@ pub const FAMILY_BASES: [u32; 13] = [0, 3, 10, 17, 24, 30, 40, 44, 51, 58, 65, 7
 
 pub struct Site {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 
 /// Both direct callsites in the loss dispatcher. Tapping these calls
@@ -49,19 +49,11 @@ pub struct Site {
 pub const SITES: [Site; 2] = [
     Site {
         name: "own_air_loss",
-        rva: 0x00cb_99b9,
-        sentinel: [
-            0xe8, 0xe2, 0xfc, 0xff, 0xff, 0x8b, 0x06, 0x8b, 0x17, 0x3b, 0xc2, 0x74, 0x48, 0x85,
-            0xc0, 0x74,
-        ],
+        rva: Rva(0x00cb_99b9),
     },
     Site {
         name: "credited_air_loss",
-        rva: 0x00cb_9a09,
-        sentinel: [
-            0xe8, 0x92, 0xfc, 0xff, 0xff, 0x48, 0x8b, 0xcf, 0xe8, 0xea, 0xcd, 0x06, 0x00, 0x45,
-            0x85, 0xff,
-        ],
+        rva: Rva(0x00cb_9a09),
     },
 ];
 
@@ -82,13 +74,11 @@ pub fn selected_family(
     authenticate(memory, base, pool, cair_wing_pool::VTABLE_RVA)?;
     let definition = pointer(memory, pool, cair_wing_pool::DEFINITION)?;
     let vtable = read::<u64>(memory, definition).ok_or("air loss definition vtable unreadable")?;
-    if ![
+    let forms = [
         csub_unit_definition::VTABLE_RVA,
         csub_unit_definition::NULL_VTABLE_RVA,
-    ]
-    .into_iter()
-    .any(|rva| base.checked_add(rva).map(|address| address as u64) == Some(vtable))
-    {
+    ];
+    if engine_sites::which(base, vtable as usize, &forms).is_none() {
         return Err("air loss definition form unsupported");
     }
     let flags = field::<u64>(memory, definition, csub_unit_definition::AIR_FLAGS)?;
@@ -296,7 +286,7 @@ pub fn gather(
     if enemy > 1 || region == 0 || receiver == 0 || wing == 0 {
         return None;
     }
-    let vtable = |rva: usize| base.checked_add(rva).map(|at| at as u64);
+    let vtable = |key: Rva| engine_sites::at(base, key).map(|at| at as u64);
     let word = |bytes: &[u8]| u64::from_le_bytes(bytes[..8].try_into().unwrap());
     let half = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
 
@@ -381,13 +371,11 @@ pub fn gather(
             &mut window,
         ],
     );
-    if copied != 6
-        || ![
-            csub_unit_definition::VTABLE_RVA,
-            csub_unit_definition::NULL_VTABLE_RVA,
-        ]
-        .into_iter()
-        .any(|rva| vtable(rva) == Some(word(&definition_vtable)))
+    let forms = [
+        csub_unit_definition::VTABLE_RVA,
+        csub_unit_definition::NULL_VTABLE_RVA,
+    ];
+    if copied != 6 || engine_sites::which(base, word(&definition_vtable) as usize, &forms).is_none()
     {
         return None;
     }
@@ -617,11 +605,10 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    rva: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(rva)
-        .ok_or("air loss writer vtable address overflow")?;
+    let expected =
+        engine_sites::at(base, vtable).ok_or("air loss writer vtable address overflow")?;
     if object == 0 || read::<u64>(memory, object) != Some(expected as u64) {
         return Err("air loss writer object vtable unreadable or mismatched");
     }

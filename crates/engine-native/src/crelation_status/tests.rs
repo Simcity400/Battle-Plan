@@ -68,7 +68,7 @@ fn fixture() -> Vec<u8> {
     for owner in 0..3 {
         let country = COUNTRIES[owner];
         let diplomacy = DIPLOMACY[owner];
-        p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA) as u64);
+        p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA.0) as u64);
         p32(&mut bytes, country + ccountry::ID, owner as u32 + 1);
         p64(
             &mut bytes,
@@ -78,7 +78,7 @@ fn fixture() -> Vec<u8> {
         p64(
             &mut bytes,
             diplomacy,
-            (BASE + cdiplomacy_status::VTABLE_RVA) as u64,
+            (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64,
         );
         p64(
             &mut bytes,
@@ -94,7 +94,7 @@ fn fixture() -> Vec<u8> {
         );
         for target in 0..4 {
             let object = status(owner, target);
-            p64(&mut bytes, object, (BASE + VTABLE_RVA) as u64);
+            p64(&mut bytes, object, (BASE + VTABLE_RVA.0) as u64);
             p64(&mut bytes, object + DIPLOMACY_STATUS, diplomacy as u64);
             p32(&mut bytes, object + TARGET_COUNTRY, target as u32);
             array(
@@ -110,8 +110,8 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
-fn relation(bytes: &mut [u8], object: usize, vtable: usize, type_id: u32, first: u32, second: u32) {
-    p64(bytes, object, (BASE + vtable) as u64);
+fn relation(bytes: &mut [u8], object: usize, vtable: Rva, type_id: u32, first: u32, second: u32) {
+    p64(bytes, object, (BASE + vtable.0) as u64);
     p32(bytes, object + crelation::TYPE_ID, type_id);
     p32(bytes, object + crelation::FIRST_COUNTRY, first);
     p32(bytes, object + crelation::SECOND_COUNTRY, second);
@@ -258,7 +258,7 @@ fn reverse_fixture() -> Vec<u8> {
     let mut bytes = co_inputs_fixture();
     bytes.resize(0x38000, 0);
     p64(&mut bytes, 0x3000, ZERO_COUNTRY as u64);
-    p64(&mut bytes, ZERO_COUNTRY, ccountry::VTABLE_RVA as u64);
+    p64(&mut bytes, ZERO_COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     p64(
         &mut bytes,
         ZERO_COUNTRY + ccountry::DIPLOMACY_STATUS,
@@ -267,7 +267,7 @@ fn reverse_fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         ZERO_DIPLOMACY,
-        cdiplomacy_status::VTABLE_RVA as u64,
+        cdiplomacy_status::VTABLE_RVA.0 as u64,
     );
     p64(
         &mut bytes,
@@ -282,7 +282,7 @@ fn reverse_fixture() -> Vec<u8> {
         &slots,
     );
     for slot in 0..4 {
-        p64(&mut bytes, zero_status(slot), VTABLE_RVA as u64);
+        p64(&mut bytes, zero_status(slot), VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             zero_status(slot) + DIPLOMACY_STATUS,
@@ -426,7 +426,7 @@ fn reverse_zero_cell_and_header_hint_are_independent_of_positive_links_and_names
     assert_eq!(reserved_visibility_demand(&memory, BASE, GS), Ok(4));
     assert_eq!(memory.reads(ZERO_COUNTRY + ccountry::OWNED_STATE_COUNT), 0);
     assert_eq!(memory.reads(ZERO_DIPLOMACY + cdiplomacy_status::FACTION), 0);
-    assert_eq!(memory.reads(crate::ccountry_database::SINGLETON_RVA), 0);
+    assert_eq!(memory.reads(crate::ccountry_database::SINGLETON_RVA.0), 0);
     assert_eq!(
         memory.reads(ZERO_DIPLOMACY + cdiplomacy_status::RELATIONS),
         1
@@ -486,7 +486,7 @@ fn reverse_cell_authenticates_raw_aliases_including_readable_positive_index_zero
 fn nonnull_reserved_faction_self_match_skips_zero_cell_target_and_subject() {
     let mut bytes = reverse_fixture();
     const FACTION: usize = 0x29000;
-    p64(&mut bytes, FACTION, crate::cfaction::VTABLE_RVA as u64);
+    p64(&mut bytes, FACTION, crate::cfaction::VTABLE_RVA.0 as u64);
     p64(
         &mut bytes,
         FACTION + crate::cfaction::REFERENCE,
@@ -2658,7 +2658,7 @@ mod dense {
     ) -> Walk {
         let result = (|| {
             let countries = ccountry::Reader::new(memory, base, game_state)?;
-            let status_vtable = (base + VTABLE_RVA) as u64;
+            let status_vtable = (base + VTABLE_RVA.0) as u64;
             let mut highest_slot = 0;
             for slot in 1..countries.count() {
                 if countries.at(slot)?.is_some() {
@@ -2770,7 +2770,7 @@ mod world {
     const SERIALIZED: usize = 0x50_0000_0000;
     const STATUSES: usize = 0x100_0000_0000;
     const NEIGHBOURS: usize = 3;
-    const CLASSES: [(usize, u32); 6] = [
+    const CLASSES: [(Rva, u32); 6] = [
         (cguarantee_relation::VTABLE_RVA, cguarantee_relation::TYPE),
         (
             cnon_aggression_pact_relation::VTABLE_RVA,
@@ -2935,7 +2935,7 @@ mod world {
                 let (owner, target) = (pair / self.slots(), pair % self.slots());
                 let hit = |at: usize, len: usize| at < end && offset < at + len;
                 if hit(0, 8) {
-                    field(0, &((BASE + VTABLE_RVA) as u64).to_le_bytes());
+                    field(0, &((BASE + VTABLE_RVA.0) as u64).to_le_bytes());
                 }
                 if hit(TARGET_COUNTRY, 4) {
                     let raw = if self.aliased(target) && owner.is_multiple_of(4) {
@@ -2982,7 +2982,7 @@ mod world {
                 } else {
                     first
                 };
-                field(0, &((BASE + vtable) as u64).to_le_bytes());
+                field(0, &((BASE + vtable.0) as u64).to_le_bytes());
                 field(crelation::TYPE_ID, &type_id.to_le_bytes());
                 field(crelation::FIRST_COUNTRY, &(first as u32).to_le_bytes());
                 field(crelation::SECOND_COUNTRY, &(second as u32).to_le_bytes());
@@ -3014,7 +3014,7 @@ mod world {
                 let owned = self.owned(owner, &mut owned) as u32;
                 field(
                     0,
-                    &((BASE + cdiplomacy_status::VTABLE_RVA) as u64).to_le_bytes(),
+                    &((BASE + cdiplomacy_status::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 let matrix = MATRICES + owner * self.slots() * 8;
                 field(cdiplomacy_status::RELATIONS, &(matrix as u64).to_le_bytes());
@@ -3037,7 +3037,7 @@ mod world {
                 field(cdiplomacy_status::COUNTRY, &(country as u64).to_le_bytes());
             } else if object >= OBJECTS {
                 let slot = (object - OBJECTS) / OBJECT;
-                field(0, &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes());
+                field(0, &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes());
                 field(ccountry::ID, &(slot as u32).to_le_bytes());
                 let diplomacy = DIPLOMACIES + slot * DIPLOMACY;
                 field(
@@ -3083,7 +3083,7 @@ mod world {
                 let (owner, target) = (pair / self.slots(), pair % self.slots());
                 match (offset, output.len()) {
                     (0, 8) => {
-                        output.copy_from_slice(&((BASE + VTABLE_RVA) as u64).to_le_bytes());
+                        output.copy_from_slice(&((BASE + VTABLE_RVA.0) as u64).to_le_bytes());
                         return true;
                     }
                     (OPINION, 4) => {
@@ -3396,14 +3396,14 @@ fn star(partners: usize) -> Sparse {
     let partner = |index: usize| index + 2;
     for slot in 1..slots {
         let (object, root) = (country(slot), diplomacy(slot));
-        world.p64(object, COUNTRY, 0, (BASE + ccountry::VTABLE_RVA) as u64);
+        world.p64(object, COUNTRY, 0, (BASE + ccountry::VTABLE_RVA.0) as u64);
         world.p32(object, COUNTRY, ccountry::ID, slot as u32);
         world.p64(object, COUNTRY, ccountry::DIPLOMACY_STATUS, root as u64);
         world.p64(
             root,
             DIPLOMACY,
             0,
-            (BASE + cdiplomacy_status::VTABLE_RVA) as u64,
+            (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64,
         );
         world.p64(root, DIPLOMACY, cdiplomacy_status::COUNTRY, object as u64);
         // Only the hub's statuses and those toward the hub are set.
@@ -3445,7 +3445,7 @@ fn star(partners: usize) -> Sparse {
         }
         for (owner, target) in [(1, other), (other, 1)] {
             let object = status(owner, target);
-            world.p64(object, STATUS, 0, (BASE + VTABLE_RVA) as u64);
+            world.p64(object, STATUS, 0, (BASE + VTABLE_RVA.0) as u64);
             world.p64(object, STATUS, DIPLOMACY_STATUS, diplomacy(owner) as u64);
             world.p32(object, STATUS, TARGET_COUNTRY, target as u32);
             world.p64(object, STATUS, MILITARY_ACCESS, relation(other, 0) as u64);

@@ -110,10 +110,10 @@ mod resource_fixture {
                 .into_iter()
                 .enumerate()
             {
-                f.u64(country, ccountry::VTABLE_RVA as u64);
+                f.u64(country, ccountry::VTABLE_RVA.0 as u64);
                 f.u32(country + ccountry::ID, raw);
                 f.u64(country + ccountry::RESOURCES, resources as u64);
-                f.u64(resources, VTABLE_RVA as u64);
+                f.u64(resources, VTABLE_RVA.0 as u64);
                 f.u32(resources + OWNER, raw);
                 f.array(resources + IMPORT_ROUTES, 0, 0);
                 let buckets = 0xc000 + ordinal * 0x200;
@@ -124,7 +124,7 @@ mod resource_fixture {
                     let data = 0x10000 + ordinal * 0x2000 + pool * 0x80;
                     f.u64(
                         resources + offset,
-                        cstrategic_resource_pool::VTABLE_RVA as u64,
+                        cstrategic_resource_pool::VTABLE_RVA.0 as u64,
                     );
                     f.array(resources + offset + 8, data, 2);
                     f.put(data, &[0; 32]);
@@ -133,7 +133,7 @@ mod resource_fixture {
                 }
             }
             f.put(0xa000, &[0; trade::SIZE]);
-            f.u64(0xa000, trade::VTABLE_RVA as u64);
+            f.u64(0xa000, trade::VTABLE_RVA.0 as u64);
             f.u64(0xa000 + trade::REFERENCE, 0x1234_5678_0000_0033);
             f.put(0xa000 + trade::REGISTERED, &[1]);
             f.u32(0xa000 + trade::OWNER, 2);
@@ -149,12 +149,12 @@ mod resource_fixture {
             f.u64(0xb100, 0xa000);
             f.array(0xc000 + EXPORT_BUCKET_STRIDE, 0xc100, 1);
             f.u64(0xc100, 0xa000);
-            f.u64(0xd000, cstrategic_resource::VTABLE_RVA as u64);
+            f.u64(0xd000, cstrategic_resource::VTABLE_RVA.0 as u64);
             f.u32(0xd000 + cstrategic_resource::INDEX, 1);
             f.u32(0xd000 + cstrategic_resource::TOKEN_ID, 19);
             f.put(0xd000 + cstrategic_resource::ACTIVE, &[1]);
             f.u64(0xd000 + cstrategic_resource::FACTORY_COST, 4_294_967_300);
-            f.u64(database::SINGLETON_RVA, 0xe000);
+            f.u64(database::SINGLETON_RVA.0, 0xe000);
             f.array(0xe000 + database::ITEMS, 0xe100, 2);
             f.u64(0xe100, 0xdf00);
             f.u64(0xe108, 0xd000);
@@ -538,7 +538,7 @@ fn owned_resource_raw_shortage_never_starts_group_and_shared_fault_is_terminal()
         !memory
             .reads
             .borrow()
-            .contains(&engine_resources::cstrategic_resource_database::SINGLETON_RVA)
+            .contains(&engine_resources::cstrategic_resource_database::SINGLETON_RVA.0)
     );
     assert_eq!(job.resources.outcomes, [None; 3]);
     decoded.decode_economy_rest_payload(0, &job, &mut [0; N]);
@@ -559,8 +559,8 @@ fn worker_supply_growth_stages_and_decodes_mod_sized_rows_in_the_same_hour() {
     const COUNT: usize = 20_152;
     let mut source = resource_fixture::Fixture::default();
     source.u64(GAME + cgame_state::SUPPLY_SYSTEM, ROOT as u64);
-    source.u64(ROOT, csupply_system::VTABLE_RVA as u64);
-    source.u64(ROOT + 8, csupply_system::SECONDARY_VTABLE_RVA as u64);
+    source.u64(ROOT, csupply_system::VTABLE_RVA.0 as u64);
+    source.u64(ROOT + 8, csupply_system::SECONDARY_VTABLE_RVA.0 as u64);
     source.array(GAME + cgame_state::PROVINCES, 0x4000, COUNT as u32);
     source.array(ROOT + csupply_system::PROVINCE_DATA, SUPPLY, COUNT as u32);
     source.put(SUPPLY, &vec![0; COUNT * sprovince_supply_data::STRIDE]);
@@ -611,8 +611,8 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
     const SUPPLY: usize = 0x21000;
     let mut source = resource_fixture::Fixture::new();
     source.u64(GAME + cgame_state::SUPPLY_SYSTEM, ROOT as u64);
-    source.u64(ROOT, csupply_system::VTABLE_RVA as u64);
-    source.u64(ROOT + 8, csupply_system::SECONDARY_VTABLE_RVA as u64);
+    source.u64(ROOT, csupply_system::VTABLE_RVA.0 as u64);
+    source.u64(ROOT + 8, csupply_system::SECONDARY_VTABLE_RVA.0 as u64);
     source.array(GAME + cgame_state::PROVINCES, 0x22000, 3);
     source.array(ROOT + csupply_system::PROVINCE_DATA, SUPPLY, 3);
     source.array(ROOT + csupply_system::COUNTRY_SYSTEM_DATA, 0, 0);
@@ -1186,7 +1186,7 @@ fn e_census(bytes: &mut [u8]) {
         e_put(
             &mut *bytes,
             country,
-            &(engine_native::ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         e_put(&mut *bytes, country + ccountry::ID, &id.to_le_bytes());
         let _ = cgame_state::COUNTRIES;
@@ -1257,7 +1257,7 @@ fn e_fuel_world() -> Vec<u8> {
         e_put(
             &mut bytes,
             fuel,
-            &(ccountry_fuel_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_fuel_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         e_put(
             &mut bytes,
@@ -1328,7 +1328,7 @@ fn economy_copy_skips_positive_aliases_of_the_reserved_country() {
     e_put(
         &mut bytes,
         RESERVED,
-        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     e_assert_fuel_matches_direct(&bytes);
 }
@@ -1351,7 +1351,7 @@ fn e_fuel_arrays(bytes: &mut [u8]) {
         e_put(
             &mut *bytes,
             status,
-            &(fuel::VTABLE_RVA as u64).to_le_bytes(),
+            &(fuel::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         e_put(
             &mut *bytes,
@@ -1497,7 +1497,7 @@ fn economy_experience_copy_matches_direct_walk() {
         e_put(
             &mut bytes,
             status,
-            &(ccountry_experience_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_experience_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         e_put(
             &mut bytes,
@@ -1538,12 +1538,12 @@ fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
     e_put(
         &mut bytes,
         ROOT,
-        &(csupply_system::VTABLE_RVA as u64).to_le_bytes(),
+        &(csupply_system::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     e_put(
         &mut bytes,
         ROOT + 8,
-        &(csupply_system::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        &(csupply_system::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     e_array(&mut bytes, E_GAME + cgame_state::PROVINCES, PROVINCES, 3);
     e_array(&mut bytes, ROOT + csupply_system::PROVINCE_DATA, SUPPLY, 3);
@@ -1692,7 +1692,7 @@ fn economy_truncation_matrix_matches_direct_with_same_caps() {
         e_put(
             &mut bytes,
             fuel,
-            &(ccountry_fuel_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_fuel_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         e_put(
             &mut bytes,

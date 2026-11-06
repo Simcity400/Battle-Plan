@@ -3,7 +3,7 @@ use crate::memory::SliceMemory;
 
 fn member(text: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0; 0x100 + text.len() + 1];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[CACHED_NAME + 16..CACHED_NAME + 24].copy_from_slice(&(text.len() as u64).to_le_bytes());
     let capacity = if text.len() <= 15 { 15 } else { text.len() };
     bytes[CACHED_NAME + 24..CACHED_NAME + 32].copy_from_slice(&(capacity as u64).to_le_bytes());

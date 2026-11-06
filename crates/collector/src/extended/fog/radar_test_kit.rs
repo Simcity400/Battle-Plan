@@ -38,12 +38,12 @@ pub(crate) fn fixture() -> Vec<u8> {
     put32(&mut bytes, LTAB, 0);
     put32(&mut bytes, LTAB + 4, 1);
     put32(&mut bytes, LTAB + 8, 0);
-    put64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
+    put64(&mut bytes, C0, ccountry::VTABLE_RVA.0 as u64);
     put32(&mut bytes, C0 + ccountry::ID, 1);
     put64(
         &mut bytes,
         C0 + ccountry::RADARS_POOL,
-        cradars_pool::VTABLE_RVA as u64,
+        cradars_pool::VTABLE_RVA.0 as u64,
     );
     put32(&mut bytes, C0 + ccountry::RADARS_POOL_COUNTRY, 1);
     header(&mut bytes, C0 + ccountry::RADAR_GROUPS, GVEC, 1);
@@ -57,7 +57,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     header(&mut bytes, GROUP + radar_group::PROVINCES, COVERED, 2);
     put32(&mut bytes, COVERED, 11);
     put32(&mut bytes, COVERED + 4, 12);
-    put64(&mut bytes, STATE_A, cstate::VTABLE_RVA as u64);
+    put64(&mut bytes, STATE_A, cstate::VTABLE_RVA.0 as u64);
     put32(&mut bytes, STATE_A + cstate::ID, 77);
     bytes
 }

@@ -515,7 +515,8 @@ impl Store {
                 .ok_or("decision rebuild campaign seed unreadable")?,
             );
             value.script.lifecycle = Some(i32::from(
-                engine_native::read::<u8>(memory, base + native::ADMISSION_OVERRIDE_RVA)
+                engine_sites::at(base, native::ADMISSION_OVERRIDE_RVA)
+                    .and_then(|at| engine_native::read::<u8>(memory, at))
                     .ok_or("decision rebuild admission override unreadable")?
                     != 0,
             ));
@@ -884,10 +885,8 @@ impl Store {
             .checked_add(engine_native::ccountry::DECISION_STATUS)
             .and_then(|p| engine_native::read::<u64>(memory, p))
             .ok_or("decision baseline status unreadable")? as usize;
-        if engine_native::read::<u64>(memory, status)
-            != base
-                .checked_add(engine_decisions::cdecision_status::VTABLE_RVA)
-                .map(|v| v as u64)
+        if engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
+            .is_none_or(|vtable| engine_native::read::<u64>(memory, status) != Some(vtable as u64))
         {
             return Err("decision baseline status identity differs");
         }

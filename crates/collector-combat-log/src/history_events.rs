@@ -244,8 +244,10 @@ fn memory() -> engine_native::memory::LiveMemory {
 fn signal() -> Option<i64> {
     engine_native::read(
         &memory(),
-        BASE.load(SeqCst)
-            .checked_add(engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA)?,
+        engine_sites::at(
+            BASE.load(SeqCst),
+            engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA,
+        )?,
     )
 }
 fn emit(fact: native::Fact) {
@@ -292,9 +294,7 @@ fn observe(result: Result<(), &'static str>) {
     }
 }
 fn equipment_enabled() -> bool {
-    match BASE
-        .load(SeqCst)
-        .checked_add(engine_dlc::dlc_feature_state::MASK_RVA)
+    match engine_sites::at(BASE.load(SeqCst), engine_dlc::dlc_feature_state::MASK_RVA)
         .and_then(|p| engine_native::read::<u32>(&memory(), p))
     {
         Some(mask) => mask & engine_dlc::dlc_feature_state::EQUIPMENT_LOSSES_MASK != 0,
@@ -433,16 +433,19 @@ unsafe extern "system-unwind" fn group_create(array: usize, element: usize) {
             let result = engine_native::read::<u64>(&m, element)
                 .ok_or("combat log new group pointer unreadable")?
                 as usize;
-            if engine_native::read::<u64>(&m, manager)
-                != base
-                    .checked_add(engine_land_inputs::ncombat_log_cmanager::VTABLE_RVA)
-                    .map(|p| p as u64)
-                || engine_native::read::<u64>(&m, result)
-                    != base
-                        .checked_add(engine_land_inputs::ncombat_log_corders_group_logs::VTABLE_RVA)
-                        .map(|p| p as u64)
+            let identity = "combat log creation identity differs";
+            let manager_vtable =
+                engine_sites::at(base, engine_land_inputs::ncombat_log_cmanager::VTABLE_RVA)
+                    .ok_or(identity)?;
+            let logs_vtable = engine_sites::at(
+                base,
+                engine_land_inputs::ncombat_log_corders_group_logs::VTABLE_RVA,
+            )
+            .ok_or(identity)?;
+            if engine_native::read::<u64>(&m, manager) != Some(manager_vtable as u64)
+                || engine_native::read::<u64>(&m, result) != Some(logs_vtable as u64)
             {
-                return Err("combat log creation identity differs");
+                return Err(identity);
             }
             let country = engine_native::read::<u32>(
                 &m,
@@ -647,9 +650,9 @@ pub struct Hooks {
 impl Hooks {
     /// # Safety
     /// The caller owns hook publication and quiescence for the verified image.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, SeqCst);
-        match unsafe { Self::install(memory, base) } {
+        match unsafe { Self::install(base) } {
             Ok(hooks) => hooks,
             Err(reason) => {
                 let _ = WRITERS.unhooked.set(reason);
@@ -660,87 +663,42 @@ impl Hooks {
             }
         }
     }
-    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Self, String> {
+    unsafe fn install(base: usize) -> Result<Self, String> {
         let sites = [
             (
                 sites::GROUP_CREATE_CALL_RVA,
-                sites::GROUP_CREATE_CALL_SENTINEL,
                 group_create as *const () as usize,
             ),
             (
                 sites::OWN_EQUIPMENT_RVA,
-                sites::OWN_EQUIPMENT_SENTINEL,
                 own_equipment as *const () as usize,
             ),
-            (
-                sites::OWN_VARIANT_RVA,
-                sites::OWN_VARIANT_SENTINEL,
-                own_variant as *const () as usize,
-            ),
-            (
-                sites::ENEMY_RVA,
-                sites::ENEMY_SENTINEL,
-                enemy as *const () as usize,
-            ),
-            (
-                sites::RECOVERED_RVA,
-                sites::RECOVERED_SENTINEL,
-                recovered as *const () as usize,
-            ),
-            (
-                sites::MANPOWER_RVA,
-                sites::MANPOWER_SENTINEL,
-                manpower as *const () as usize,
-            ),
-            (
-                sites::RESULT_RVA,
-                sites::RESULT_SENTINEL,
-                result as *const () as usize,
-            ),
-            (
-                sites::GROUP_PRUNE_RVA,
-                sites::GROUP_PRUNE_SENTINEL,
-                prune as *const () as usize,
-            ),
-            (
-                sites::GROUP_DESTROY_RVA,
-                sites::GROUP_DESTROY_SENTINEL,
-                destroy as *const () as usize,
-            ),
-            (
-                sites::BATTLE_ALLOCATE_RVA,
-                sites::BATTLE_ALLOCATE_SENTINEL,
-                allocate as *const () as usize,
-            ),
-            (
-                sites::BATTLE_RELEASE_RVA,
-                sites::BATTLE_RELEASE_SENTINEL,
-                release as *const () as usize,
-            ),
-            (
-                sites::BATTLE_RESET_RVA,
-                sites::BATTLE_RESET_SENTINEL,
-                reset as *const () as usize,
-            ),
-            (
-                sites::BATTLE_LOAD_RVA,
-                sites::BATTLE_LOAD_SENTINEL,
-                load as *const () as usize,
-            ),
+            (sites::OWN_VARIANT_RVA, own_variant as *const () as usize),
+            (sites::ENEMY_RVA, enemy as *const () as usize),
+            (sites::RECOVERED_RVA, recovered as *const () as usize),
+            (sites::MANPOWER_RVA, manpower as *const () as usize),
+            (sites::RESULT_RVA, result as *const () as usize),
+            (sites::GROUP_PRUNE_RVA, prune as *const () as usize),
+            (sites::GROUP_DESTROY_RVA, destroy as *const () as usize),
+            (sites::BATTLE_ALLOCATE_RVA, allocate as *const () as usize),
+            (sites::BATTLE_RELEASE_RVA, release as *const () as usize),
+            (sites::BATTLE_RESET_RVA, reset as *const () as usize),
+            (sites::BATTLE_LOAD_RVA, load as *const () as usize),
         ];
         let mut hooks = Vec::new();
-        for (index, (rva, bytes, callback)) in sites.into_iter().enumerate() {
-            if engine_native::read::<[u8; 16]>(memory, base + rva) != Some(bytes) {
-                return Err("combat log writer sentinel differs".into());
-            }
+        let append =
+            engine_sites::resolve(base, sites::GROUP_APPEND_RVA).map_err(|w| w.to_string())?;
+        for (index, (rva, callback)) in sites.into_iter().enumerate() {
+            let code = engine_sites::code(base, rva).map_err(|w| w.to_string())?;
+            let bytes = code.original::<16>().map_err(|w| w.to_string())?;
             let hook = if index == 0 {
-                unsafe { Hook::new_call(base + rva, callback, bytes) }?
+                unsafe { Hook::new_call(code.address, callback, bytes) }?
             } else {
-                unsafe { Hook::new(base + rva, callback, bytes) }?
+                unsafe { Hook::new(code.address, callback, bytes) }?
             };
             ORIGINAL[index].store(
                 if index == 0 {
-                    base + sites::GROUP_APPEND_RVA
+                    append
                 } else {
                     hook.trampoline()
                 },
@@ -748,17 +706,14 @@ impl Hooks {
             );
             hooks.push(hook);
         }
-        if engine_native::read::<[u8; 16]>(memory, base + sites::TEMPLATE_COUNTER_RVA)
-            != Some(sites::TEMPLATE_COUNTER_SENTINEL)
-        {
-            return Err("combat log template sentinel differs".into());
-        }
+        let counter =
+            engine_sites::code(base, sites::TEMPLATE_COUNTER_RVA).map_err(|w| w.to_string())?;
         let tap = unsafe {
             Tap::new(
-                base + sites::TEMPLATE_COUNTER_RVA,
+                counter.address,
                 template,
                 0,
-                sites::TEMPLATE_COUNTER_SENTINEL,
+                counter.original::<16>().map_err(|w| w.to_string())?,
             )
         }?;
         Ok(Self {

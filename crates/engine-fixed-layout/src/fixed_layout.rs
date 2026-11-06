@@ -267,14 +267,14 @@ mod tests {
             header[..8].copy_from_slice(&(TABLE as u64).to_le_bytes());
             header[8..12].copy_from_slice(&(GAP + 1).to_le_bytes());
             header[12..].copy_from_slice(&(GAP + 1).to_le_bytes());
-            result.put(definition::TABLE_RVA, &header);
+            result.put(definition::TABLE_RVA.0, &header);
             result.put(TABLE + GAP as usize * definition::STRIDE, &gap_bytes());
             let mut lexer = [0; 64];
             lexer[0] = 1;
             lexer[48..56].copy_from_slice(&(NAMES as u64).to_le_bytes());
             lexer[56..60].copy_from_slice(&0x6001_u32.to_le_bytes());
             lexer[60..64].copy_from_slice(&0x6001_u32.to_le_bytes());
-            result.put(cpdx_lexer::INITIALIZED_RVA, &lexer);
+            result.put(cpdx_lexer::INITIALIZED_RVA.0, &lexer);
             result.maximum(0x5000);
             for (index, &name) in modifier_keys::names().unwrap().iter().enumerate() {
                 let index = index as u32;
@@ -293,8 +293,8 @@ mod tests {
             result
         }
         fn maximum(&mut self, maximum: u32) {
-            self.put(cpdx_lexer::MAX_TOKEN_ID_RVA, &maximum.to_le_bytes());
-            self.put(cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, &maximum.to_le_bytes());
+            self.put(cpdx_lexer::MAX_TOKEN_ID_RVA.0, &maximum.to_le_bytes());
+            self.put(cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA.0, &maximum.to_le_bytes());
         }
         fn name(&mut self, token: u32, name: &[u8]) {
             let mut header = [0; 32];
@@ -379,7 +379,7 @@ mod tests {
             );
         }
         let mut fixture = Fixture::new();
-        fixture.put(definition::TABLE_RVA + 12, &GAP.to_le_bytes());
+        fixture.put(definition::TABLE_RVA.0 + 12, &GAP.to_le_bytes());
         assert_eq!(check(&fixture, 0).unwrap().gap, Err("gap row missing"));
     }
 
@@ -405,7 +405,7 @@ mod tests {
             check(&fixture, 0).unwrap().modifiers[key.index as usize],
             Err("definition index/token inconsistent")
         );
-        fixture.put(definition::TABLE_RVA + 12, &key.index.to_le_bytes());
+        fixture.put(definition::TABLE_RVA.0 + 12, &key.index.to_le_bytes());
         assert_eq!(
             check(&fixture, 0).unwrap().modifiers[key.index as usize],
             Err("definition row missing")
@@ -419,21 +419,21 @@ mod tests {
             let mut fixture = Fixture::new();
             // A token exactly at the inclusive static maximum is accepted,
             // even with later dynamic tokens in the reverse dictionary.
-            fixture.put(cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, &token.id.to_le_bytes());
-            fixture.put(cpdx_lexer::MAX_TOKEN_ID_RVA, &0x5000_u32.to_le_bytes());
+            fixture.put(cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA.0, &token.id.to_le_bytes());
+            fixture.put(cpdx_lexer::MAX_TOKEN_ID_RVA.0, &0x5000_u32.to_le_bytes());
             fixture.put(
-                cpdx_lexer::DYNAMIC_COUNT_RVA,
+                cpdx_lexer::DYNAMIC_COUNT_RVA.0,
                 &(0x5000 - token.id).to_le_bytes(),
             );
-            fixture.put(cpdx_lexer::DYNAMIC_CAPACITY_RVA, &0x5000_u32.to_le_bytes());
-            fixture.put(cpdx_lexer::DYNAMIC_TOKENS_RVA, &0x800000_u64.to_le_bytes());
+            fixture.put(cpdx_lexer::DYNAMIC_CAPACITY_RVA.0, &0x5000_u32.to_le_bytes());
+            fixture.put(cpdx_lexer::DYNAMIC_TOKENS_RVA.0, &0x800000_u64.to_le_bytes());
             assert_eq!(check(&fixture, 0).unwrap().tokens[position], Ok(()));
             fixture.put(
-                cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA,
+                cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA.0,
                 &(token.id - 1).to_le_bytes(),
             );
             fixture.put(
-                cpdx_lexer::DYNAMIC_COUNT_RVA,
+                cpdx_lexer::DYNAMIC_COUNT_RVA.0,
                 &(0x5001 - token.id).to_le_bytes(),
             );
             let report = check(&fixture, 0).unwrap();
@@ -476,7 +476,7 @@ mod tests {
                 true
             }
         }
-        for address in [cpdx_lexer::INITIALIZED_RVA, definition::TABLE_RVA] {
+        for address in [cpdx_lexer::INITIALIZED_RVA.0, definition::TABLE_RVA.0] {
             let fixture = Changing {
                 fixture: Fixture::new(),
                 address,
@@ -508,8 +508,8 @@ mod tests {
     #[test]
     fn appended_dynamic_rows_do_not_change_the_builtin_layout() {
         let mut fixture = Fixture::new();
-        fixture.put(definition::TABLE_RVA + 8, &(GAP + 2).to_le_bytes());
-        fixture.put(definition::TABLE_RVA + 12, &(GAP + 2).to_le_bytes());
+        fixture.put(definition::TABLE_RVA.0 + 8, &(GAP + 2).to_le_bytes());
+        fixture.put(definition::TABLE_RVA.0 + 12, &(GAP + 2).to_le_bytes());
         // An unreadable dynamic row is intentionally outside this check.
         assert!(check(&fixture, 0).unwrap().is_verified());
     }

@@ -33,9 +33,9 @@ impl Fixture {
             bytes: vec![0; 0x9000],
         };
         result.word(MEMBER + GROUP, OWN as u64);
-        result.word(OWN, group::VTABLE_RVA as u64);
+        result.word(OWN, group::VTABLE_RVA.0 as u64);
         result.word(OWN + group::HANDLE, 0xffff_ffff_0000_0035);
-        result.word(PARENT, crate::carmy_group::VTABLE_RVA as u64);
+        result.word(PARENT, crate::carmy_group::VTABLE_RVA.0 as u64);
         result.word(PARENT + group::HANDLE, 0xffff_fffe_0000_0035);
         result
     }
@@ -53,7 +53,7 @@ impl Fixture {
     fn assigned(&mut self, owner: usize, offset: usize, index: usize) {
         self.array(owner + offset, ROOTS, 1);
         self.word(ROOTS, ORDER as u64);
-        self.word(ORDER, order::VTABLE_RVA as u64);
+        self.word(ORDER, order::VTABLE_RVA.0 as u64);
         self.word(ORDER + order::OWNER, owner as u64);
         self.array(
             ORDER + order::ASSIGNED_MEMBER_DATA,
@@ -193,7 +193,7 @@ fn packet_late_root_fault_cannot_precede_first_hit_or_be_skipped() {
 fn packet_shared_parent_is_demanded_once_and_parent_identity_stays_lazy() {
     let other = OWN + 0x400;
     let mut source = Fixture::new();
-    source.word(other, group::VTABLE_RVA as u64);
+    source.word(other, group::VTABLE_RVA.0 as u64);
     source.word(other + group::HANDLE, 53);
     source.word(other + group::PARENT, PARENT as u64);
     source.word(OWN + group::PARENT, PARENT as u64);
@@ -221,7 +221,7 @@ fn packet_shared_parent_is_demanded_once_and_parent_identity_stays_lazy() {
 fn packet_later_parent_demand_extends_retained_prefix_without_retry() {
     let other = OWN + 0x400;
     let mut source = Fixture::new();
-    source.word(other, group::VTABLE_RVA as u64);
+    source.word(other, group::VTABLE_RVA.0 as u64);
     source.word(other + group::HANDLE, 53);
     source.word(other + group::PARENT, OWN as u64);
     source.word(MEMBER + 0x100 + GROUP, other as u64);
@@ -344,12 +344,12 @@ fn packet_index_growth_preserves_earlier_aliases_and_failure_frontiers() {
         let order = ORDER + index * 0x400;
         let roots = 0x7000 + index * 0x20;
         source.word(member + GROUP, own as u64);
-        source.word(own, group::VTABLE_RVA as u64);
+        source.word(own, group::VTABLE_RVA.0 as u64);
         source.word(own + group::HANDLE, group::REFERENCE_TYPE as u64);
         source.array(own + group::PRIMARY_ORDER_DATA, roots, 2);
         source.word(roots, order as u64);
         source.word(roots + 8, if index == 5 { ORDER } else { order } as u64);
-        source.word(order, order::VTABLE_RVA as u64);
+        source.word(order, order::VTABLE_RVA.0 as u64);
         source.word(order + order::OWNER, own as u64);
         queries.push((member, own));
     }

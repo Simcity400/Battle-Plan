@@ -148,11 +148,9 @@ impl Store {
                     .and_then(|value| usize::try_from(value).ok())
                     .filter(|value| *value != 0)
                     .ok_or("faction member accounting system unavailable")?;
-                if engine_native::read::<u64>(memory, system)
-                    != base
-                        .checked_add(engine_native::cfaction_system::VTABLE_RVA)
-                        .map(|value| value as u64)
-                {
+                let vtable = engine_sites::at(base, engine_native::cfaction_system::VTABLE_RVA)
+                    .ok_or("faction member accounting system vtable mismatch")?;
+                if engine_native::read::<u64>(memory, system) != Some(vtable as u64) {
                     return Err("faction member accounting system vtable mismatch");
                 }
                 self.header = system
@@ -574,7 +572,7 @@ mod tests {
         put(
             &mut bytes,
             0x4000,
-            engine_native::ccountry::VTABLE_RVA as u64,
+            engine_native::ccountry::VTABLE_RVA.0 as u64,
         );
         bytes[0x4000 + engine_native::ccountry::ID..0x4004 + engine_native::ccountry::ID]
             .copy_from_slice(&9u32.to_le_bytes());
@@ -632,7 +630,7 @@ mod tests {
         put(
             &mut bytes,
             SYSTEM,
-            engine_native::cfaction_system::VTABLE_RVA as u64,
+            engine_native::cfaction_system::VTABLE_RVA.0 as u64,
         );
         put(&mut bytes, SYSTEM + native::ACCOUNTS, ACCOUNTS as u64);
         put(

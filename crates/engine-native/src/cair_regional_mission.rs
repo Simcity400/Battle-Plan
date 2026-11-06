@@ -785,17 +785,17 @@ mod tests {
         put64(&mut bytes, COUNTRIES + 8, COUNTRY as u64);
         put32(&mut bytes, LINKS + 4, 1);
         put32(&mut bytes, LINKS + 12, 1);
-        put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         put32(&mut bytes, COUNTRY + 8, 3);
         put64(&mut bytes, GS + 0x690, MANAGER as u64);
         put64(
             &mut bytes,
             MANAGER,
-            cstrategic_air_manager::VTABLE_RVA as u64,
+            cstrategic_air_manager::VTABLE_RVA.0 as u64,
         );
         array(&mut bytes, MANAGER + 0x30, OWNERS, 4);
         put64(&mut bytes, OWNERS + 8, OWNER as u64);
-        put64(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA as u64);
+        put64(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA.0 as u64);
         put32(&mut bytes, OWNER + cstrategic_air::COUNTRY, 3);
         array(
             &mut bytes,

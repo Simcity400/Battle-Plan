@@ -15,6 +15,7 @@ batch-fallback-test-counts = []
 test-support = ["batch-fallback-test-counts", "engine-allocation/test-support"]
 
 [dependencies]
+engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
 replay-spool.workspace = true

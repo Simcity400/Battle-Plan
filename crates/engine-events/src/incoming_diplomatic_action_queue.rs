@@ -154,9 +154,7 @@ impl<M: Memory> Reader<'_, M> {
         // exact constructor-ordered span.
         let header = read::<[u8; 32]>(self.memory, wrapper)
             .ok_or("incoming diplomatic action identity unreadable")?;
-        let expected = self
-            .base
-            .checked_add(cincoming_diplomatic_action::VTABLE_RVA)
+        let expected = engine_sites::at(self.base, cincoming_diplomatic_action::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected {
             return Err("incoming diplomatic action vtable mismatch");
@@ -239,7 +237,7 @@ mod tests {
         p64(&mut bytes, COUNTRIES + 8, C1 as u64);
         p32(&mut bytes, LINKS, 0);
         p32(&mut bytes, LINKS + 4, 1);
-        p64(&mut bytes, C1, ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, C1, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, C1 + ccountry::ID, 1);
         p64(
             &mut bytes,
@@ -255,7 +253,7 @@ mod tests {
             p64(
                 &mut bytes,
                 wrapper,
-                cincoming_diplomatic_action::VTABLE_RVA as u64,
+                cincoming_diplomatic_action::VTABLE_RVA.0 as u64,
             );
             p64(
                 &mut bytes,

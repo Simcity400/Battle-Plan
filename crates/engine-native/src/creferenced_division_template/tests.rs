@@ -5,10 +5,12 @@ struct Fixture(Vec<u8>, std::cell::RefCell<Vec<(usize, usize)>>);
 impl Memory for Fixture {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         self.1.borrow_mut().push((address, output.len()));
-        let redirect = match address {
-            subunit::NULL_OBJECT_RVA => Some(0x9000_u64),
-            subunit::DATABASE_RVA => Some(0x9800),
-            _ => None,
+        let redirect = if address == subunit::NULL_OBJECT_RVA.0 {
+            Some(0x9000_u64)
+        } else if address == subunit::DATABASE_RVA.0 {
+            Some(0x9800)
+        } else {
+            None
         };
         if let Some(pointer) = redirect
             && output.len() == 8
@@ -41,7 +43,7 @@ impl Fixture {
         self.word(at + 24, 15);
     }
     fn subunit(&mut self, at: usize, token: u32, index: i32) {
-        self.word(at, subunit::VTABLE_RVA as u64);
+        self.word(at, subunit::VTABLE_RVA.0 as u64);
         self.put(at + subunit::TOKEN, &token.to_le_bytes());
         self.0[at + subunit::IS_REAL] = 1;
         self.put(at + subunit::DATABASE_INDEX, &index.to_le_bytes());
@@ -55,11 +57,11 @@ fn fixture() -> Fixture {
     memory.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0x2100, 2);
     memory.word(0x2008, 0x3000);
     memory.put(0x2104, &1_u32.to_le_bytes());
-    memory.word(0x3000, ccountry::VTABLE_RVA as u64);
+    memory.word(0x3000, ccountry::VTABLE_RVA.0 as u64);
     memory.put(0x3008, &1_u32.to_le_bytes());
     memory.array(0x3000 + ccountry::DIVISION_TEMPLATES, 0x4000, 1);
     memory.word(0x4000, 0x5000);
-    memory.word(0x5000, VTABLE_RVA as u64);
+    memory.word(0x5000, VTABLE_RVA.0 as u64);
     memory.word(0x5008, 0xffff_ffff_0000_0034);
     memory.text(0x5000 + NAME, &[b'A', 0, 255]);
     memory.text(0x5000 + NAME_KEY, b"fallback");
@@ -74,7 +76,7 @@ fn fixture() -> Fixture {
     memory.text(0x7000 + subunit::NAME, b"infantry");
     memory.put(0x7000 + subunit::CATEGORY, &4_i32.to_le_bytes());
     memory.subunit(0x7800, 777, 1);
-    memory.word(0x9000, subunit::NULL_VTABLE_RVA as u64);
+    memory.word(0x9000, subunit::NULL_VTABLE_RVA.0 as u64);
     memory.array(0x9800 + subunit::DATABASE_VECTOR, 0x9900, 2);
     memory.word(0x9900, 0x9000);
     memory.word(0x9908, 0x7000);
@@ -89,7 +91,7 @@ fn unused_template_retains_historical_naming_group_and_refuses_a_broken_group() 
         0x5000 + crate::cname_group_member::TEMPLATE_NAME_GROUP,
         0xa000,
     );
-    memory.word(0xa000, crate::cname_group_member::GROUP_VTABLE_RVA as u64);
+    memory.word(0xa000, crate::cname_group_member::GROUP_VTABLE_RVA.0 as u64);
     memory.text(0xa000 + crate::cname_group_member::GROUP_KEY, b"MOD_NAMES");
     let (walk, bytes, _, _) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
@@ -246,7 +248,7 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
     memory.text(0x5000 + MODEL_ENTITY, b"GER_x_entity");
     memory.array(0x5000 + EXCLUDED_VARIANT_DATA, 0x8100, 1);
     memory.word(0x8100, 0x8200);
-    memory.word(0x8200, crate::cequipment_variant::VTABLE_RVA as u64);
+    memory.word(0x8200, crate::cequipment_variant::VTABLE_RVA.0 as u64);
     memory.word(0x8208, 0x0000_0009_0000_0046);
     let mut rows = [IconRow::default(); 2];
     let (walk, bytes, counts, variants) = icons_all(&memory, &mut rows);
@@ -409,7 +411,7 @@ fn daily_rows_keep_names_and_the_category_without_the_model_inputs() {
             .count(),
         3 + 1 // Plus the category fallback's regiment grid header.
     );
-    for address in [0x8000, subunit::DATABASE_RVA] {
+    for address in [0x8000, subunit::DATABASE_RVA.0] {
         assert!(!reads.iter().any(|(at, _)| *at == address));
     }
 }
@@ -641,7 +643,7 @@ fn model_fixture() -> Fixture {
     memory.put(0x8018, &1_i32.to_le_bytes());
     memory.array(0x5000 + EXCLUDED_VARIANT_DATA, 0x8100, 1);
     memory.word(0x8100, 0x8200);
-    memory.word(0x8200, crate::cequipment_variant::VTABLE_RVA as u64);
+    memory.word(0x8200, crate::cequipment_variant::VTABLE_RVA.0 as u64);
     memory.word(0x8208, 0x0000_0009_0000_0046);
     memory
 }
@@ -907,7 +909,7 @@ fn icon_rows_do_not_read_the_template_name_and_gather_every_grid_header() {
 #[test]
 fn full_handle_survives_and_a_wrong_type_word_fails() {
     let mut bytes = vec![0; 16];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[8..].copy_from_slice(&0xffff_ffff_0000_0034_u64.to_le_bytes());
     let memory = SliceMemory {
         base: 0x1000,
@@ -1047,7 +1049,7 @@ fn spatial_cells_keep_holes_dimensions_null_objects_and_native_settings() {
     memory.array(0x5000 + FORBIDDEN_EQUIPMENT, 0x8100, 2);
     memory.word(0x8100, 0x8200);
     memory.word(0x8108, 0x8200);
-    memory.word(0x8200, crate::cequipment_type::VTABLE_RVA as u64);
+    memory.word(0x8200, crate::cequipment_type::VTABLE_RVA.0 as u64);
     memory.put(0x8208, &4294967294_u32.to_le_bytes());
     let mut rows = [IconRow::default(); 1];
     let (walk, _, counts, variants) = icons_all(&memory, &mut rows);

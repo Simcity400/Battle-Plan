@@ -52,10 +52,10 @@ fn fixture() -> Vec<u8> {
         let slot = slot + 1;
         p64(&mut bytes, COUNTRIES + slot * 8, country as u64);
         p32(&mut bytes, LINKS + slot * 4, slot as u32);
-        p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, country + ccountry::ID, slot as u32);
         p64(&mut bytes, country + ccountry::CHARACTERS, object as u64);
-        p64(&mut bytes, object, VTABLE_RVA as u64);
+        p64(&mut bytes, object, VTABLE_RVA.0 as u64);
         p64(&mut bytes, object + OWNER, country as u64);
     }
     vector(&mut bytes, OBJ1 + APPOINTED_ADVISORS, ARRAY1, 2);
@@ -71,13 +71,13 @@ fn fixture() -> Vec<u8> {
         .zip(CHARACTERS)
         .zip(ideas.into_iter().zip(slots))
     {
-        p64(&mut bytes, advisor, cadvisor::VTABLE_RVA as u64);
+        p64(&mut bytes, advisor, cadvisor::VTABLE_RVA.0 as u64);
         p64(&mut bytes, advisor + cadvisor::CHARACTER, character as u64);
         string(&mut bytes, advisor + cadvisor::IDEA_TOKEN, idea, heap);
         heap += 0x40;
         string(&mut bytes, advisor + cadvisor::SLOT, slot, heap);
         heap += 0x40;
-        p64(&mut bytes, character, ccharacter::VTABLE_RVA as u64);
+        p64(&mut bytes, character, ccharacter::VTABLE_RVA.0 as u64);
         p32(
             &mut bytes,
             character + ccharacter::TYPE,
@@ -258,17 +258,17 @@ fn available_advisor_walk_header_demand_and_selected_slices_follow_countries() {
         let id = index as u32 + 1;
         p64(&mut bytes, COUNTRY_ARRAY + (index + 1) * 8, country as u64);
         p32(&mut bytes, LINK_ARRAY + (index + 1) * 4, id);
-        p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, country + ccountry::ID, id);
         p64(&mut bytes, country + ccountry::CHARACTERS, object as u64);
-        p64(&mut bytes, object, VTABLE_RVA as u64);
+        p64(&mut bytes, object, VTABLE_RVA.0 as u64);
         p64(&mut bytes, object + OWNER, country as u64);
         vector(&mut bytes, object + AVAILABLE_ADVISORS, array, 1);
         p64(&mut bytes, array, advisor as u64);
-        p64(&mut bytes, advisor, cadvisor::VTABLE_RVA as u64);
+        p64(&mut bytes, advisor, cadvisor::VTABLE_RVA.0 as u64);
         p64(&mut bytes, advisor + cadvisor::CHARACTER, character as u64);
         string(&mut bytes, advisor + cadvisor::IDEA_TOKEN, b"idea", 0);
-        p64(&mut bytes, character, ccharacter::VTABLE_RVA as u64);
+        p64(&mut bytes, character, ccharacter::VTABLE_RVA.0 as u64);
         p32(
             &mut bytes,
             character + ccharacter::TYPE,

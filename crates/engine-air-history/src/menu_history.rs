@@ -374,12 +374,10 @@ fn headers(
     scratch: &mut Scratch,
     whole: bool,
 ) -> Result<(), &'static str> {
-    let history_vtable = base
-        .checked_add(cloop_history::VTABLE_RVA)
+    let history_vtable = engine_sites::at(base, cloop_history::VTABLE_RVA)
         .ok_or("air menu history address overflow")?;
-    let window_vtable = base
-        .checked_add(window::VTABLE_RVA)
-        .ok_or("air menu history address overflow")?;
+    let window_vtable =
+        engine_sites::at(base, window::VTABLE_RVA).ok_or("air menu history address overflow")?;
     scratch.heads.clear();
     crate::allocation::resize(&mut scratch.heads, histories.len(), Head::default())
         .map_err(|_| "air menu history allocation failed")?;

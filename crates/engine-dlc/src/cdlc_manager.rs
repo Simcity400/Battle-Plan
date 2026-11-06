@@ -16,12 +16,13 @@ use crate::{
     msvc_tree_node as tree_node, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CDLCManager singleton pointer.
-pub const SINGLETON_RVA: usize = 0x034f_83a8;
+pub const SINGLETON_RVA: Rva = Rva(0x034f_83a8);
 /// Cached successful mount-path pointer array, refreshed after mounts
 /// in highest-priority-first order.
-pub const SEARCH_PATH_RVA: usize = 0x0369_17a8;
+pub const SEARCH_PATH_RVA: Rva = Rva(0x0369_17a8);
 /// CDLCManager mutable DLC filter strings.
 pub const DLC_FILTER_STRINGS: usize = 0x50;
 /// Requested mod strings, data and count.
@@ -100,8 +101,7 @@ fn observe_inner<N: Value, D: Value>(
     buffers: Buffers<'_, N, D>,
     growing: bool,
 ) -> Observation {
-    let Some(manager) = base
-        .checked_add(SINGLETON_RVA)
+    let Some(manager) = engine_sites::at(base, SINGLETON_RVA)
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
@@ -168,8 +168,7 @@ pub struct Counts {
 /// No game function is called and nothing is allocated. Native map sizes and
 /// the successful mount terminator supply the live populations.
 pub fn observe_counts(memory: &impl Memory, base: usize) -> Counts {
-    let manager = base
-        .checked_add(SINGLETON_RVA)
+    let manager = engine_sites::at(base, SINGLETON_RVA)
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0);
@@ -187,7 +186,7 @@ pub fn observe_counts(memory: &impl Memory, base: usize) -> Counts {
             .unwrap_or(0)
     };
     let mounts = (|| {
-        let root = read::<u64>(memory, base.checked_add(SEARCH_PATH_RVA)?)
+        let root = read::<u64>(memory, engine_sites::at(base, SEARCH_PATH_RVA)?)
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)?;
         let mut index = 0_usize;
@@ -268,9 +267,8 @@ fn search_path_inner<M: Memory, T>(
     mut copy: impl FnMut(&M, usize, &mut T) -> Result<(), &'static str>,
 ) -> Outcome {
     let result = (|| {
-        let root_address = base
-            .checked_add(SEARCH_PATH_RVA)
-            .ok_or("search path root address overflow")?;
+        let root_address =
+            engine_sites::at(base, SEARCH_PATH_RVA).ok_or("search path root address withheld")?;
         let root = read::<u64>(memory, root_address)
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)

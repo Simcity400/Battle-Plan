@@ -1,9 +1,10 @@
 //! Country collaboration relation state.
 
+use engine_sites::Rva;
 use crate::Memory;
 
 /// Collaboration-data vtable.
-pub const VTABLE_RVA: usize = 0x02a3_76f8;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_76f8);
 /// Target country link, u32.
 pub const TARGET_COUNTRY: usize = 0x08;
 /// Progress, signed i64 scaled by 100000.
@@ -24,8 +25,7 @@ pub(crate) fn read_row(
     pointer: usize,
     source: u32,
 ) -> Result<Row, &'static str> {
-    let vtable = base
-        .checked_add(VTABLE_RVA)
+    let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")?;
     let target_address = pointer
         .checked_add(TARGET_COUNTRY)

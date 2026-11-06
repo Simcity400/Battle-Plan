@@ -1,9 +1,10 @@
 //! CStrategicResource descriptors. Ordinals are engine indices, not dense wire slots.
 
 use crate::{Memory, cstrategic_resource_database, read, walk::Outcome};
+use engine_sites::Rva;
 
 /// Resource primary vtable.
-pub const VTABLE_RVA: usize = 0x29ce150;
+pub const VTABLE_RVA: Rva = Rva(0x29ce150);
 
 /// Interned resource token ID, u32.
 pub const TOKEN_ID: usize = 0x08;
@@ -23,7 +24,7 @@ pub const TEMPORARY_KEY: usize = 0xf8;
 /// State resource-accumulator modifier key, u32.
 pub const MODIFIER_KEY: usize = 0xfc;
 /// Resource constructor initializing token and ordinal.
-pub const CONSTRUCTOR_RVA: usize = 0xc1ff60;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0xc1ff60);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -84,9 +85,7 @@ pub(crate) fn row(memory: &impl Memory, base: usize, pointer: usize) -> Result<R
             .checked_add(offset)
             .ok_or("resource address overflow")
     };
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("resource descriptor vtable mismatch");
     }

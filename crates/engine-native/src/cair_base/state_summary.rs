@@ -31,7 +31,7 @@ pub fn state_country_order<M: Memory>(
     };
     let mut identity = [0_u8; 16];
     if !crate::read_slice(memory, pointer, &mut identity)
-        || image.checked_add(VTABLE_RVA).map(|value| value as u64)
+        || engine_sites::at(image, VTABLE_RVA).map(|value| value as u64)
             != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
         || u64::from_le_bytes(identity[8..].try_into().unwrap()) != source.id
         || source.state.is_none()

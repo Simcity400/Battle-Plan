@@ -152,9 +152,8 @@ fn memo_address(
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
         .ok_or("raid system unreadable or null")?;
-    let vtable = base
-        .checked_add(craid_system::VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let vtable =
+        engine_sites::at(base, craid_system::VTABLE_RVA).ok_or("module address overflow")? as u64;
     if read::<u64>(memory, system) != Some(vtable) {
         return Err("raid system vtable mismatch");
     }
@@ -289,7 +288,7 @@ mod tests {
         put(
             &mut bytes,
             SYSTEM,
-            &(craid_system::VTABLE_RVA as u64).to_le_bytes(),
+            &(craid_system::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -586,7 +585,7 @@ mod tests {
         put(
             &mut bytes,
             SYSTEM,
-            &(craid_system::VTABLE_RVA as u64).to_le_bytes(),
+            &(craid_system::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

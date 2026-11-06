@@ -3,9 +3,10 @@
 //! Keys omit the null object, so `keys[index - 1]` names `items[index]`.
 
 use crate::{Memory, cpdx_array::Array, cstrategic_resource, read};
+use engine_sites::Rva;
 
 /// CStrategicResourceDatabase global pointer.
-pub const SINGLETON_RVA: usize = 0x33dd4d0;
+pub const SINGLETON_RVA: Rva = Rva(0x33dd4d0);
 /// CStrategicResourceDatabase item pointer array.
 pub const ITEMS: usize = 0x28;
 /// CStrategicResourceDatabase item-pointer stride.
@@ -21,7 +22,7 @@ pub const OIL: usize = 0x60;
 /// Fuel descriptor pointer.
 pub const FUEL: usize = 0x68;
 /// Database constructor initializing item zero with the null object.
-pub const CONSTRUCTOR_RVA: usize = 0xb13aa0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0xb13aa0);
 
 /// Item and key arrays load together. Validate descriptor/key correspondence
 /// without resolving the separate dynamically mutable lexer table.
@@ -34,8 +35,7 @@ pub(crate) struct Reader<'a, M: Memory> {
 
 impl<'a, M: Memory> Reader<'a, M> {
     pub(crate) fn new(memory: &'a M, base: usize) -> Result<Self, &'static str> {
-        let pointer = base
-            .checked_add(SINGLETON_RVA)
+        let pointer = engine_sites::at(base, SINGLETON_RVA)
             .and_then(|p| read::<u64>(memory, p))
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)

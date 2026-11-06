@@ -12,6 +12,7 @@ use crate::{
     read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Viewer-entry stride.
 pub const STRIDE: usize = 24;
@@ -210,11 +211,8 @@ struct Reader<'a, M> {
 }
 
 impl<M: Memory> Reader<'_, M> {
-    fn vtable(&self, pointer: usize, rva: usize, reason: &'static str) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(rva)
-            .ok_or("module address overflow")?;
+    fn vtable(&self, pointer: usize, rva: Rva, reason: &'static str) -> Result<(), &'static str> {
+        let expected = engine_sites::at(self.base, rva).ok_or("module address overflow")?;
         if read::<u64>(self.memory, pointer) == Some(expected as u64) {
             Ok(())
         } else {
@@ -286,7 +284,7 @@ impl<M: Memory> Reader<'_, M> {
             // from the gathered headers so their misses overlap, then read
             // sixteen divisions to a scatter ([`Self::first_blocks`]) and
             // served to `unit_fields` at each division's turn.
-            let expected = self.base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64);
+            let expected = engine_sites::at(self.base, carmy::VTABLE_RVA).map(|v| v as u64);
             for record in bytes[..(completed / 3).min(chunk.len()) * 32].chunks_exact(32) {
                 if Some(u64::from_le_bytes(record[..8].try_into().unwrap())) != expected {
                     continue;
@@ -339,7 +337,7 @@ impl<M: Memory> Reader<'_, M> {
         completed: usize,
         blocks: &mut [[u8; ENTRY_BATCH * STRIDE]; GROUP],
     ) -> [Option<usize>; GROUP] {
-        let expected = self.base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64);
+        let expected = engine_sites::at(self.base, carmy::VTABLE_RVA).map(|v| v as u64);
         let mut addresses = [0; GROUP];
         let mut lens = [0; GROUP];
         for (index, record) in records.chunks_exact(32).enumerate() {
@@ -367,7 +365,7 @@ impl<M: Memory> Reader<'_, M> {
     fn unit(
         &self,
         unit: usize,
-        vtable: usize,
+        vtable: Rva,
         output: &mut Buffer<'_, Row>,
         counter: &mut Counter,
     ) -> Result<(), &'static str> {
@@ -393,15 +391,12 @@ impl<M: Memory> Reader<'_, M> {
         handle: [u8; 8],
         header: [u8; 16],
         complete: usize,
-        vtable: usize,
+        vtable: Rva,
         first_block: Option<&[u8]>,
         output: &mut Buffer<'_, Row>,
         counter: &mut Counter,
     ) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(vtable)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(self.base, vtable).ok_or("module address overflow")?;
         if complete == 0 || u64::from_le_bytes(primary) != expected as u64 {
             return Err("unit vtable mismatch or identity unreadable");
         }

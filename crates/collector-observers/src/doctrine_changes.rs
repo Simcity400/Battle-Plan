@@ -48,19 +48,17 @@ pub unsafe fn bind_cost_consumption(handler: unsafe fn(usize, usize, usize)) {
 /// # Safety
 /// The host owns these taps together with the enclosing observer family.
 pub unsafe fn gain_taps(
-    memory: &impl Memory,
+    _memory: &impl Memory,
     base: usize,
 ) -> Result<Vec<crate::hook::Tap>, &'static str> {
     let mut taps = engine_allocation::vec(2).map_err(|_| "doctrine gain tap allocation failed")?;
-    for (index, &(rva, sentinel)) in engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES
+    for (index, &rva) in engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES
         .iter()
         .enumerate()
     {
-        if engine_native::read::<[u8; 16]>(memory, base + rva) != Some(sentinel) {
-            return Err("doctrine gain store sentinel differs");
-        }
+        let code = engine_sites::hook(base, rva)?;
         taps.push(
-            unsafe { crate::hook::Tap::new(base + rva, gain_store, index, sentinel) }
+            unsafe { crate::hook::Tap::new(code.address, gain_store, index, code.sentinel()?) }
                 .map_err(|_| "doctrine gain tap construction failed")?,
         );
     }
@@ -138,12 +136,9 @@ pub fn status() -> impl serde::Serialize {
 /// # Safety
 /// The host verified the executable and owns restoration and quiescence of
 /// every returned hook and its observer storage before unloading the collector.
-pub unsafe fn hooks(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
-    if SITES
-        .iter()
-        .any(|site| engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel))
-    {
-        return Err("doctrine writer sentinel differs");
+pub unsafe fn hooks(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
+    for site in &SITES {
+        engine_sites::hook(base, site.rva)?.sentinel::<16>()?;
     }
     let callbacks: [usize; SITES.len()] = [
         reset_status as *const () as usize,
@@ -166,7 +161,8 @@ pub unsafe fn hooks(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'st
     let mut hooks =
         engine_allocation::vec(SITES.len()).map_err(|_| "doctrine hook allocation failed")?;
     for (index, site) in SITES.iter().enumerate() {
-        let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+        let code = engine_sites::hook(base, site.rva)?;
+        let hook = unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
             .map_err(|_| "doctrine hook construction failed")?;
         ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
         hooks.push(hook);

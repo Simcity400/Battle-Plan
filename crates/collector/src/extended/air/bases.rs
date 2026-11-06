@@ -777,7 +777,7 @@ fn base_identity(
     pointer: usize,
 ) -> (bool, u64) {
     let identity = bspan(log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
-    match (identity, base.checked_add(cair_base::VTABLE_RVA)) {
+    match (identity, engine_sites::at(base, cair_base::VTABLE_RVA)) {
         (Some(start), Some(expected)) => {
             let handle = bases_pool_u64(log, start + 8);
             (
@@ -914,7 +914,7 @@ fn copy_air_bases_census(
     if log.worker_growth_enabled() && reserve_to(census, *required_census).is_err() {
         return None;
     }
-    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    let vtable = engine_sites::at(base, ccountry::VTABLE_RVA)? as u64;
     let mut reserved = false;
     for slot in 1..countries.count {
         let pointer_addr = (slot as usize)
@@ -1104,7 +1104,7 @@ fn copy_air_base_row(
         None
     } else {
         let vtable = bspan(log, memory, Some(state_pointer), 8, BASES_MASK)?;
-        let expected_state = match base.checked_add(cstate::VTABLE_RVA) {
+        let expected_state = match engine_sites::at(base, cstate::VTABLE_RVA) {
             Some(expected) => expected as u64,
             None => return None,
         };
@@ -1132,7 +1132,7 @@ fn copy_air_base_row(
     }
     let province = if province_pointer != 0 {
         let vtable = bspan(log, memory, Some(province_pointer), 8, BASES_MASK)?;
-        let expected_province = match base.checked_add(cprovince::VTABLE_RVA) {
+        let expected_province = match engine_sites::at(base, cprovince::VTABLE_RVA) {
             Some(expected) => expected as u64,
             None => return None,
         };
@@ -1283,7 +1283,7 @@ fn copy_air_ace(
     else {
         return false;
     };
-    let expected = match base.checked_add(cace::VTABLE_RVA) {
+    let expected = match engine_sites::at(base, cace::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
@@ -1537,9 +1537,8 @@ fn copy_dense_plan(
         .ok_or(Refusal::Header)?
     };
     snapshot.block = Some(block);
-    let expected = image
-        .checked_add(ccountry_air_container::VTABLE_RVA)
-        .ok_or(Refusal::Container)? as u64;
+    let expected =
+        engine_sites::at(image, ccountry_air_container::VTABLE_RVA).ok_or(Refusal::Container)? as u64;
     for index in 0..len {
         let container = block_word(log, block, index)
             .filter(|&pointer| pointer != 0)
@@ -1907,20 +1906,20 @@ fn copy_air_base_registrations(
     if let Some(carrier) = carrier.as_mut() {
         carrier.indexed_header(containers.count);
     }
-    let expected_pool = match base.checked_add(cair_wing_pool::VTABLE_RVA) {
+    let expected_pool = match engine_sites::at(base, cair_wing_pool::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_primary = match base.checked_add(engine_native::cair_wing::VTABLE_RVA) {
+    let expected_primary = match engine_sites::at(base, engine_native::cair_wing::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_secondary = match base.checked_add(engine_native::cair_wing::SECONDARY_VTABLE_RVA)
+    let expected_secondary = match engine_sites::at(base, engine_native::cair_wing::SECONDARY_VTABLE_RVA)
     {
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_container = match base.checked_add(ccountry_air_container::VTABLE_RVA) {
+    let expected_container = match engine_sites::at(base, ccountry_air_container::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
@@ -2493,7 +2492,7 @@ fn copy_air_bases_vectors(
                 }
             };
             let vtable = bspan(&mut *log, memory, Some(manager), 8, BASE_VECTORS_MASK);
-            let expected_manager = base.checked_add(cstrategic_air_manager::VTABLE_RVA);
+            let expected_manager = engine_sites::at(base, cstrategic_air_manager::VTABLE_RVA);
             let manager_ok = match (vtable, expected_manager) {
                 (Some(start), Some(expected)) => bases_pool_u64(&*log, start) == expected as u64,
                 _ => false,

@@ -133,8 +133,7 @@ fn scalar_stats(
     expected_handle: u64,
 ) -> Result<Row, &'static str> {
     let identity = bytes::<8>(memory, pointer, 0)?;
-    let expected_vtable = base
-        .checked_add(carmy::VTABLE_RVA)
+    let expected_vtable = engine_sites::at(base, carmy::VTABLE_RVA)
         .ok_or("land combat division identity mismatch")? as u64;
     let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
     if pointer == 0
@@ -150,9 +149,7 @@ fn scalar_stats(
     let stat_identity = bytes::<8>(memory, stat, 0)?;
     if stat == 0
         || Some(u64::from_le_bytes(stat_identity))
-            != base
-                .checked_add(csub_unit_definition::VTABLE_RVA)
-                .map(|p| p as u64)
+            != engine_sites::at(base, csub_unit_definition::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("land combat division stat identity mismatch");
     }
@@ -204,10 +201,10 @@ fn scalar_stats(
 fn stats_scatter_matches_scalar_first_values_and_every_fault() {
     let mut source = context_fixture();
     source.u64(0x10c0, 0xe000);
-    source.u64(0xe000, crate::corders_group::VTABLE_RVA as u64);
+    source.u64(0xe000, crate::corders_group::VTABLE_RVA.0 as u64);
     source.u64(0xe008, 1_u64 << 32 | 53);
     source.u64(0xe088, 0xf000);
-    source.u64(0xf000, crate::carmy_leader::VTABLE_RVA as u64);
+    source.u64(0xf000, crate::carmy_leader::VTABLE_RVA.0 as u64);
     source.u64(0xf008, 77_u64 << 32 | 4713);
     for (index, (address, count)) in [
         (0x2298, 2),
@@ -316,7 +313,7 @@ fn stats_preserve_identity_module_overflow_order_and_later_address_failure() {
     // An unreadable armour span fails before the group read.
     let stat = usize::MAX - 0x2a0;
     source.u64(0x1138, stat as u64);
-    source.u64(stat, csub_unit_definition::VTABLE_RVA as u64);
+    source.u64(stat, csub_unit_definition::VTABLE_RVA.0 as u64);
     let actual = Observed::new(&source);
     let expected = Observed::new(&source);
     assert_eq!(
@@ -443,7 +440,7 @@ fn context_metadata_address_errors_follow_readable_prefix_and_earlier_fault() {
         ),
     ] {
         let mut source = context_fixture();
-        source.u64(md::TABLE_RVA, table as u64);
+        source.u64(md::TABLE_RVA.0, table as u64);
         let first = table + CONTEXT_MODIFIER_KEYS[0] as usize * md::STRIDE + md::FLAGS;
         source.put(first, &[0x17; 12]);
         let memory = Observed::new(&source);
@@ -497,12 +494,12 @@ fn fixture(count: u32) -> Vec<u8> {
     let mut put = |address: usize, value: u64| {
         image[address..address + 8].copy_from_slice(&value.to_le_bytes());
     };
-    put(0x1000, carmy::VTABLE_RVA as u64);
+    put(0x1000, carmy::VTABLE_RVA.0 as u64);
     put(0x1018, 0x1234_0000_0033);
     put(0x1138, 0x2000);
     // The division's name member: order i32::MAX and a one-byte custom name.
     put(0x1340, 0x3800);
-    put(0x3800, crate::cname_group_member::VTABLE_RVA as u64);
+    put(0x3800, crate::cname_group_member::VTABLE_RVA.0 as u64);
     put(0x3880, i32::MAX as u64);
     put(0x3888, 0xff);
     put(0x3898, 1);
@@ -510,7 +507,7 @@ fn fixture(count: u32) -> Vec<u8> {
     put(0x38a8, 1);
     put(0x1170, 0x3000);
     put(0x1178, (count as u64) << 32 | count as u64);
-    put(0x2000, csub_unit_definition::VTABLE_RVA as u64);
+    put(0x2000, csub_unit_definition::VTABLE_RVA.0 as u64);
     put(0x1420, (-123_i64) as u64);
     put(0x2280, 1);
     put(0x3000, 27);
@@ -733,23 +730,23 @@ fn context_fixture() -> ContextMemory {
     memory.array(0x5000 + crate::cgame_state::COUNTRY_LINKS, 0x6100, 2);
     memory.u64(0x6008, 0x9000);
     memory.put(0x6104, &1_u32.to_le_bytes());
-    memory.u64(0x9000, crate::ccountry::VTABLE_RVA as u64);
+    memory.u64(0x9000, crate::ccountry::VTABLE_RVA.0 as u64);
     memory.put(0x9008, &1_u32.to_le_bytes());
     memory.array(0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR, 0xa000, 3);
     for (index, key) in CONTEXT_MODIFIER_KEYS.into_iter().enumerate() {
         memory.put(0xa000 + index * 16, &key.to_le_bytes());
         memory.u64(0xa008 + index * 16, (-111_i64 - index as i64) as u64);
     }
-    memory.u64(crate::modifier_definition::TABLE_RVA, 0x10000);
-    memory.u64(crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA, 0);
+    memory.u64(crate::modifier_definition::TABLE_RVA.0, 0x10000);
+    memory.u64(crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0, 0);
     memory.put(
-        crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+        crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
         &0_u32.to_le_bytes(),
     );
     memory.u64(0x13b8, 0xb000);
     memory.u64(
         0xb000,
-        crate::creferenced_division_template::VTABLE_RVA as u64,
+        crate::creferenced_division_template::VTABLE_RVA.0 as u64,
     );
     memory.u64(0xb008, 1_u64 << 32 | 52);
     memory.array(0xb0c0, 0xc000, 2);
@@ -757,7 +754,7 @@ fn context_fixture() -> ContextMemory {
     memory.u64(0xc010, 0xd000);
     memory.put(0xc008, &3_i32.to_le_bytes());
     memory.put(0xc018, &(-2_i32).to_le_bytes());
-    memory.u64(0xd000, csub_unit_definition::VTABLE_RVA as u64);
+    memory.u64(0xd000, csub_unit_definition::VTABLE_RVA.0 as u64);
     memory.put(0xd008, &7_u32.to_le_bytes());
     memory.u64(0xd058, 12345);
     memory
@@ -1101,10 +1098,10 @@ fn width_context_reports_short_arena_and_malformed_accumulator() {
 fn width_context_selects_authenticated_leader_raw_modifiers() {
     let mut memory = context_fixture();
     memory.u64(0x10c0, 0xe000);
-    memory.u64(0xe000, crate::corders_group::VTABLE_RVA as u64);
+    memory.u64(0xe000, crate::corders_group::VTABLE_RVA.0 as u64);
     memory.u64(0xe008, 1_u64 << 32 | 53);
     memory.u64(0xe088, 0xf000);
-    memory.u64(0xf000, crate::carmy_leader::VTABLE_RVA as u64);
+    memory.u64(0xf000, crate::carmy_leader::VTABLE_RVA.0 as u64);
     memory.u64(0xf008, 77_u64 << 32 | 4713);
     memory.array(0xf418, 0xa100, 1);
     memory.put(0xa100, &0x10f_u32.to_le_bytes());
@@ -1194,7 +1191,7 @@ mod scale {
         pub(super) fn new(count: usize, template_count: usize) -> Self {
             let capacity = (template_count * 2).next_power_of_two().max(1024);
             let overflow = capacity.trailing_zeros() as usize + 2;
-            let module = vec![0_u8; registry::LOW_ROOTS_RVA + 0x1000];
+            let module = vec![0_u8; registry::LOW_ROOTS_RVA.0 + 0x1000];
             let sizes = [
                 count * ARMY,
                 count * STAT,
@@ -1234,19 +1231,19 @@ mod scale {
             ] = sizes.map(&mut region);
             for g in 0..GROUPS {
                 let (group, leader) = (groups + g * 0x100, leaders + g * 0x20);
-                world.u64(group, (base + crate::corders_group::VTABLE_RVA) as u64);
+                world.u64(group, (base + crate::corders_group::VTABLE_RVA.0) as u64);
                 world.u64(group + 8, (g as u64 + 1) << 32 | 53);
                 world.u64(group + crate::corders_group::LEADER, leader as u64);
-                world.u64(leader, (base + crate::carmy_leader::VTABLE_RVA) as u64);
+                world.u64(leader, (base + crate::carmy_leader::VTABLE_RVA.0) as u64);
                 world.u64(leader + 8, (g as u64 + 1) << 32 | 4713);
             }
             for n in 0..NAME_GROUPS {
                 let group = name_groups + n * 0x40;
-                world.u64(group, (base + name::GROUP_VTABLE_RVA) as u64);
+                world.u64(group, (base + name::GROUP_VTABLE_RVA.0) as u64);
                 world.string(group + name::GROUP_KEY, format!("GRP_{n}").as_bytes(), 0);
             }
             // A valid robin-hood reference table holding every template.
-            world.u64(base + registry::LOW_ROOTS_RVA + 52 * 8, table as u64);
+            world.u64(base + registry::LOW_ROOTS_RVA.0 + 52 * 8, table as u64);
             world.u64(table + registry::ENTRIES, entries as u64);
             world.put(
                 table + registry::COUNT,
@@ -1260,7 +1257,7 @@ mod scale {
                 let handle = (t as u64 + 1) << 32 | 52;
                 world.u64(
                     template,
-                    (base + crate::creferenced_division_template::VTABLE_RVA) as u64,
+                    (base + crate::creferenced_division_template::VTABLE_RVA.0) as u64,
                 );
                 world.u64(template + 8, handle);
                 world.u64(
@@ -1301,7 +1298,7 @@ mod scale {
                 let (army, stat, member) =
                     (armies + i * ARMY, stats + i * STAT, members + i * MEMBER);
                 let handle = (i as u64 + 1) << 32 | 0x33;
-                world.u64(army, (base + carmy::VTABLE_RVA) as u64);
+                world.u64(army, (base + carmy::VTABLE_RVA.0) as u64);
                 world.u64(army + cunit::HANDLE, handle);
                 world.u64(army + cunit::STAT_BLOCK, stat as u64);
                 world.u64(
@@ -1310,9 +1307,9 @@ mod scale {
                 );
                 world.u64(army + NAME_GROUP_MEMBER, member as u64);
                 world.u64(army + carmy::STRENGTH_FACTOR, 100_000);
-                world.u64(stat, (base + csub_unit_definition::VTABLE_RVA) as u64);
+                world.u64(stat, (base + csub_unit_definition::VTABLE_RVA.0) as u64);
                 world.u64(stat + ARMOUR, 5 << 20);
-                world.u64(member, (base + name::VTABLE_RVA) as u64);
+                world.u64(member, (base + name::VTABLE_RVA.0) as u64);
                 // Odd multiples of 13 have no template, so a null group.
                 if i % 26 != 13 {
                     world.u64(
@@ -1424,7 +1421,7 @@ mod scale {
                     null = false;
                     assert_eq!(
                         read::<u64>(memory, group),
-                        Some((base + name::GROUP_VTABLE_RVA) as u64)
+                        Some((base + name::GROUP_VTABLE_RVA.0) as u64)
                     );
                     row.group = match keys.get(&group) {
                         Some(key) => *key,

@@ -1,6 +1,7 @@
 //! Retained naval ship entry in its result side's ship vector; it holds either a ship or convoy
 //! handle.
 
+use engine_sites::Rva;
 use crate::capture_text::Value;
 use crate::{Memory, read};
 
@@ -150,7 +151,7 @@ pub(crate) fn capture_hits(
 }
 
 /// CNavalCombatShipEntry vtable.
-pub const VTABLE_RVA: usize = 0x029d_a620;
+pub const VTABLE_RVA: Rva = Rva(0x029d_a620);
 /// CNavalCombatShipEntry extent.
 pub const SIZE: usize = 0x120;
 /// Ship or convoy full native reference u64.
@@ -169,7 +170,7 @@ pub(crate) fn values(
     let header =
         read::<[u8; 16]>(memory, entry).ok_or("naval result member identity unreadable")?;
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
-    if Some(vtable) != base.checked_add(VTABLE_RVA).map(|p| p as u64) {
+    if Some(vtable) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64) {
         return Err("naval result member vtable mismatch");
     }
     let handle = u64::from_le_bytes(header[8..].try_into().unwrap());
@@ -225,7 +226,7 @@ mod detail_tests {
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x1000];
         for (offset, value) in [
-            (0, (BASE + VTABLE_RVA) as u64),
+            (0, (BASE + VTABLE_RVA.0) as u64),
             (8, ID),
             (0x28, (-321i64) as u64),
             (0x30, 99999),
@@ -257,16 +258,16 @@ mod detail_tests {
             (0x808, 0x900),
             (0x820, 0x980),
             (0x828, 0x980),
-            (0x900, (BASE + crate::naval_combat_hit::VTABLE_RVA) as u64),
+            (0x900, (BASE + crate::naval_combat_hit::VTABLE_RVA.0) as u64),
             (0x928, 15),
             (0x938, i64::MIN as u64),
             (0x940, i64::MAX as u64),
             (
                 0x980,
-                (BASE + crate::naval_combat_air_hit::VTABLE_RVA) as u64,
+                (BASE + crate::naval_combat_air_hit::VTABLE_RVA.0) as u64,
             ),
             (0x988, 0xb00),
-            (0xb00, (BASE + crate::cequipment_variant::VTABLE_RVA) as u64),
+            (0xb00, (BASE + crate::cequipment_variant::VTABLE_RVA.0) as u64),
             (0xb08, ID),
         ] {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -452,11 +453,11 @@ mod detail_tests {
         const VARIANT: usize = 0x500;
         let mut bytes = vec![0; 0x1000];
         for (at, value) in [
-            (ENTRY, (BASE + air::VTABLE_RVA) as u64),
+            (ENTRY, (BASE + air::VTABLE_RVA.0) as u64),
             (ENTRY + 8, VARIANT as u64),
             (ENTRY + 0x30, 3),
             (ENTRY + 0x38, 15),
-            (VARIANT, (BASE + cequipment_variant::VTABLE_RVA) as u64),
+            (VARIANT, (BASE + cequipment_variant::VTABLE_RVA.0) as u64),
             (VARIANT + 8, ID),
             (VARIANT + 0x2a0, i64::MIN as u64),
             (VARIANT + 0x2a8, i64::MAX as u64),

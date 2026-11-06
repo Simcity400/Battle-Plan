@@ -198,7 +198,6 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
                 constructor_entry as *const () as usize,
             ][site_index];
             let mut hook = if site_index == 2 {
-                assert_eq!(&sentinel[..5], &native::CONSTRUCTOR.sentinel[..5]);
                 unsafe { Hook::new(target, callback, sentinel) }.unwrap()
             } else {
                 unsafe {

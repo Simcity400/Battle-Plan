@@ -64,10 +64,7 @@ fn authenticate_header(
 ) -> Result<(), &'static str> {
     let identity = u64::from_le_bytes(header[..8].try_into().expect("mission identity"));
     let task = u64::from_le_bytes(header[8..].try_into().expect("mission backlink"));
-    if Some(identity)
-        != base
-            .checked_add(cnaval_mission::VTABLE_RVA)
-            .map(|at| at as u64)
+    if Some(identity) != engine_sites::at(base, cnaval_mission::VTABLE_RVA).map(|at| at as u64)
         || task != visit.task as u64
     {
         return Err("patrol mission identity or backlink invalid");
@@ -163,10 +160,7 @@ fn read_with(
     };
     let identity = u64::from_le_bytes(header[..8].try_into().expect("mission identity"));
     let owner = u64::from_le_bytes(header[8..].try_into().expect("mission backlink"));
-    if Some(identity)
-        != base
-            .checked_add(cnaval_mission::VTABLE_RVA)
-            .map(|at| at as u64)
+    if Some(identity) != engine_sites::at(base, cnaval_mission::VTABLE_RVA).map(|at| at as u64)
         || owner != visit.task as u64
     {
         return row;
@@ -245,9 +239,7 @@ pub fn read_context_with_location(
         } else {
             result.region = (|| {
                 if read::<u64>(memory, location)
-                    != base
-                        .checked_add(crate::cprovince::VTABLE_RVA)
-                        .map(|at| at as u64)
+                    != engine_sites::at(base, crate::cprovince::VTABLE_RVA).map(|at| at as u64)
                 {
                     return None;
                 }

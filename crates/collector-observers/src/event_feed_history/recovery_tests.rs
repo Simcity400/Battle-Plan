@@ -18,7 +18,7 @@ fn populated_cohort(countries: usize) -> (WarImage, Vec<ccountry::Country>) {
     );
     image.q(roster, 0x10000);
     image.d(links, 0);
-    image.q(definition, BASE + cdecision::VTABLE_RVA);
+    image.q(definition, BASE + cdecision::VTABLE_RVA.0);
     image.bytes(definition + decision_runtime::PERMANENT, &[1]);
     let token = b"synthetic_definition_with_owned_worker_side_token_payload";
     image.bytes(text, token);
@@ -35,7 +35,7 @@ fn populated_cohort(countries: usize) -> (WarImage, Vec<ccountry::Country>) {
         let status = pointer + 0x2000;
         image.q(roster + id as usize * 8, pointer);
         image.d(links + id as usize * 4, id);
-        image.q(pointer, BASE + ccountry::VTABLE_RVA);
+        image.q(pointer, BASE + ccountry::VTABLE_RVA.0);
         image.d(pointer + ccountry::ID, id);
         image.d(pointer + ccountry::SURRENDER_TARGET, id + 1000);
         image.decisions(pointer, status);
@@ -52,7 +52,7 @@ fn populated_cohort(countries: usize) -> (WarImage, Vec<ccountry::Country>) {
         for n in 0..2 {
             let member = pointer + 0x3000 + n * 0x40;
             image.q(pointer + 0x2640 + n * 8, member);
-            image.q(member, BASE + cdecision_cooldown::VTABLE_RVA);
+            image.q(member, BASE + cdecision_cooldown::VTABLE_RVA.0);
             image.q(member + cdecision_cooldown::DEFINITION, definition);
             image.d(
                 member + cdecision_cooldown::DAYS,

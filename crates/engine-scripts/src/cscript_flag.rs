@@ -4,21 +4,22 @@ use crate::{
     Memory,
     memory::{RecordField, RecordLayout},
 };
+use engine_sites::Rva;
 
 /// CScriptFlag stride.
 pub const STRIDE: usize = 0x30;
 /// CScriptFlag primary vtable.
-pub const VTABLE_RVA: usize = 0x0279_f310;
+pub const VTABLE_RVA: Rva = Rva(0x0279_f310);
 /// CScriptFlag token id.
 pub const TOKEN_ID: usize = 0x08;
 /// CScriptFlag CGameDate primary vtable.
-pub const DATE_VTABLE_RVA: usize = 0x0279_63d0;
+pub const DATE_VTABLE_RVA: Rva = Rva(0x0279_63d0);
 /// CScriptFlag date primary object.
 pub const DATE: usize = 0x10;
 /// Latest-set raw hour copied from the current game date.
 pub const SET_HOUR: usize = 0x18;
 /// CScriptFlag CGameDate secondary vtable.
-pub const DATE_SECONDARY_VTABLE_RVA: usize = 0x0279_6400;
+pub const DATE_SECONDARY_VTABLE_RVA: Rva = Rva(0x0279_6400);
 /// CScriptFlag date secondary interface.
 pub const DATE_SECONDARY: usize = 0x20;
 /// CScriptFlag signed i16 value.
@@ -87,7 +88,7 @@ pub fn decode_fields(base: usize, fields: &[u8]) -> Result<Row, &'static str> {
 
 fn decode(base: usize, token: &[u8], date: &[u8], value: &[u8]) -> Result<Row, &'static str> {
     let expected = |rva| {
-        base.checked_add(rva)
+        engine_sites::at(base, rva)
             .map(|p| p as u64)
             .ok_or("module address overflow")
     };

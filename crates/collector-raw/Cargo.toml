@@ -15,6 +15,7 @@ test-support = ["collector-memory/test-support"]
 [dependencies]
 engine-allocation.workspace = true
 engine-native.workspace = true
+engine-sites.workspace = true
 collector-memory.workspace = true
 collector-primitives.workspace = true
 collector-status.workspace = true

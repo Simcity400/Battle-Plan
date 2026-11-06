@@ -22,9 +22,9 @@ const SHIP_BASE: usize = 0x1000_0000;
 struct ShipWorld(Native);
 impl Memory for ShipWorld {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-        let pointer = if at == SHIP_BASE + engine_native::cgame_state::SINGLETON_RVA {
+        let pointer = if at == SHIP_BASE + engine_native::cgame_state::SINGLETON_RVA.0 {
             Some(0x10000_u64)
-        } else if at == SHIP_BASE + engine_native::cequipment_database::SINGLETON_RVA {
+        } else if at == SHIP_BASE + engine_native::cequipment_database::SINGLETON_RVA.0 {
             Some(0x15000_u64)
         } else {
             None
@@ -74,15 +74,15 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     memory.array(state + cgame_state::COUNTRY_LINKS, 0x11100, 2);
     memory.word(0x11008, country);
     memory.put(0x11104, &1_u32.to_le_bytes());
-    memory.word(country, SHIP_BASE + ccountry::VTABLE_RVA);
+    memory.word(country, SHIP_BASE + ccountry::VTABLE_RVA.0);
     memory.put(country + ccountry::ID, &1_u32.to_le_bytes());
-    memory.word(task, SHIP_BASE + ctask_force::VTABLE_RVA);
+    memory.word(task, SHIP_BASE + ctask_force::VTABLE_RVA.0);
     memory.put(task + cunit::HANDLE, &census.task_force.to_le_bytes());
     memory.put(task + cunit::ROSTER_OWNER, &1_u32.to_le_bytes());
     memory.word(task + 0x640, doctrine);
     memory.word(doctrine, doctrine);
     memory.put(doctrine + 0x19, &[1]);
-    memory.word(variant, SHIP_BASE + cequipment_variant::VTABLE_RVA);
+    memory.word(variant, SHIP_BASE + cequipment_variant::VTABLE_RVA.0);
     memory.word(
         variant + cequipment_variant::TYPE,
         (1_usize << 32) | cequipment_variant::REFERENCE_TYPE as usize,
@@ -93,7 +93,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     );
     memory.word(variant + cequipment_variant::DEFINITION, definition);
     memory.word(variant + cequipment_variant::CLASSIFIER_FLAGS, 1 << 6);
-    memory.word(definition, SHIP_BASE + cequipment_type::VTABLE_RVA);
+    memory.word(definition, SHIP_BASE + cequipment_type::VTABLE_RVA.0);
     memory.put(definition + cequipment_type::TOKEN, &11_u32.to_le_bytes());
     memory.put(
         definition + cequipment_type::ARCHETYPE_ID,
@@ -103,15 +103,15 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
         definition + cequipment_type::HULL_SPRITE + msvc_string::CAPACITY,
         msvc_string::INLINE_CAPACITY as usize,
     );
-    memory.word(database, SHIP_BASE + cequipment_database::VTABLE_RVA);
+    memory.word(database, SHIP_BASE + cequipment_database::VTABLE_RVA.0);
     memory.array(database + 0x68, 0x15100, 2);
     memory.word(0x15108, definition);
-    memory.word(ship, SHIP_BASE + cship::VTABLE_RVA);
+    memory.word(ship, SHIP_BASE + cship::VTABLE_RVA.0);
     memory.put(ship + cship::HANDLE, &census.id.to_le_bytes());
     memory.word(ship + cship::TASK_FORCE, task);
     memory.word(
         ship + cship::EQUIPMENT_POOL,
-        SHIP_BASE + cequipment_variant_pool::VTABLE_RVA,
+        SHIP_BASE + cequipment_variant_pool::VTABLE_RVA.0,
     );
     memory.array(
         ship + cship::EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
@@ -122,7 +122,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     memory.word(ship + 0x988, 5);
     memory.word(
         ship + cship::SUBUNIT_DEFINITION,
-        SHIP_BASE + csub_unit_definition::VTABLE_RVA,
+        SHIP_BASE + csub_unit_definition::VTABLE_RVA.0,
     );
     memory.put(
         ship + cship::CLASS_DATABASE_ID,
@@ -220,14 +220,14 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
     assert!(!crate::design_changes::enabled());
     let mut memory = Native(vec![0; 0x9000]);
     let (object, definition, module, upgrade, bonus) = (0x1000, 0x2000, 0x3000, 0x4000, 0x5000);
-    memory.word(object, variant::VTABLE_RVA);
+    memory.word(object, variant::VTABLE_RVA.0);
     memory.word(
         object + variant::TYPE,
         (7_usize << 32) | variant::REFERENCE_TYPE as usize,
     );
     memory.put(object + variant::EQUIPMENT_TOKEN, &71_u32.to_le_bytes());
     memory.word(object + variant::DEFINITION, definition);
-    memory.word(definition, cequipment_type::VTABLE_RVA);
+    memory.word(definition, cequipment_type::VTABLE_RVA.0);
     memory.put(definition + cequipment_type::TOKEN, &71_u32.to_le_bytes());
     memory.word(definition + cequipment_type::ARCHETYPE, definition);
     for field in [
@@ -244,7 +244,7 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
     memory.put(object + variant::ICON_OVERRIDE_KIND, &1_u32.to_le_bytes());
     memory.word(
         object + variant::UPGRADES,
-        cequipment_upgrades_instance::VTABLE_RVA,
+        cequipment_upgrades_instance::VTABLE_RVA.0,
     );
     memory.array(
         object + variant::UPGRADES + cequipment_upgrades_instance::ENTRIES,
@@ -252,7 +252,7 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
         1,
     );
     memory.word(0x6100 + equipment_upgrade_entry::DEFINITION, upgrade);
-    memory.word(upgrade, cequipment_upgrade::VTABLE_RVA);
+    memory.word(upgrade, cequipment_upgrade::VTABLE_RVA.0);
     memory.put(upgrade + 8, &73_i32.to_le_bytes());
     memory.array(
         object + variant::MODULES + equipment_module_container::ENTRIES_CANDIDATE,
@@ -260,12 +260,12 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
         1,
     );
     memory.word(0x6008, module);
-    memory.word(module, cequipment_module::VTABLE_RVA);
+    memory.word(module, cequipment_module::VTABLE_RVA.0);
     memory.put(module + 8, &72_u32.to_le_bytes());
     memory.put(module + cequipment_module::ACTIVE, &[1]);
     memory.array(object + variant::BONUS_SOURCES, 0x6200, 1);
     memory.word(0x6200, bonus);
-    memory.word(bonus, variant::SPECIFIC_BONUS_VTABLE_RVA);
+    memory.word(bonus, variant::SPECIFIC_BONUS_VTABLE_RVA.0);
     memory.array(bonus + variant::BONUS_STATS, 0x6300, 1);
     memory.put(0x6300, &1_u32.to_le_bytes());
     let registry = [variant::RegistryRow::read(&memory, 0, object).unwrap()];
@@ -428,7 +428,7 @@ fn failed_army_observer_rejects_carry_and_reads_changed_native_operands() {
         ..Default::default()
     }];
     let mut memory = Native(vec![0; 0x8000]);
-    memory.word(block, stats::VTABLE_RVA);
+    memory.word(block, stats::VTABLE_RVA.0);
     let mut store = ArmyStatStore::new();
     let mut capture = Captured::default();
     for (hour, value) in [(10, 13_i64), (11, 29)] {

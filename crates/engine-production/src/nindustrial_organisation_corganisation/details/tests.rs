@@ -21,12 +21,12 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         ORG + VARIABLES,
-        &(cvariables::VTABLE_RVA as u64).to_le_bytes(),
+        &(cvariables::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
         ORG + VARIABLES + cvariables::STORAGE,
-        &(cvariables::EMPTY_STORAGE_RVA as u64).to_le_bytes(),
+        &(cvariables::EMPTY_STORAGE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -36,7 +36,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         ORG + FLAGS,
-        &(cflag_manager::VTABLE_RVA as u64).to_le_bytes(),
+        &(cflag_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     bytes
 }
@@ -119,7 +119,7 @@ fn empty_task_slots_survive_and_bad_task_identity_refuses_details() {
         put(
             &mut bytes,
             QUEUE + offset,
-            &(TASK_VTABLE_RVA as u64).to_le_bytes(),
+            &(TASK_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
     }
     assert_eq!(run(&bytes).unwrap().tasks, vec![Task::default(); 2]);
@@ -229,14 +229,14 @@ fn research_and_production_slots_keep_referent_identity_and_reject_reused_line_s
         put(
             &mut bytes,
             QUEUE + 24 * index,
-            &(TASK_VTABLE_RVA as u64).to_le_bytes(),
+            &(TASK_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
     }
     put(&mut bytes, QUEUE + 8, &(technology as u64).to_le_bytes());
     put(
         &mut bytes,
         technology,
-        &(TECHNOLOGY_VTABLE_RVA as u64).to_le_bytes(),
+        &(TECHNOLOGY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -277,7 +277,7 @@ fn research_and_production_slots_keep_referent_identity_and_reject_reused_line_s
     put(
         &mut bytes,
         line,
-        &(engine_native::cmilitary_production_line::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cmilitary_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     let reference = (17_u64 << 32) | 51;
     put(
@@ -318,7 +318,7 @@ fn country_policies_keep_cached_names_context_and_selection_score() {
     put(
         &mut bytes,
         policy,
-        &(crate::cproduction_status::POLICY_VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::cproduction_status::POLICY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -433,7 +433,10 @@ fn policy_cost_modifier_is_the_country_accumulators_effective_entry() {
             }
         }
         fn flags(&mut self, flags: u32) {
-            self.put(definitions::TABLE_RVA, &(DEFINITIONS as u64).to_le_bytes());
+            self.put(
+                definitions::TABLE_RVA.0,
+                &(DEFINITIONS as u64).to_le_bytes(),
+            );
             let row = DEFINITIONS + KEY as usize * definitions::STRIDE;
             self.put(row + definitions::FLAGS, &flags.to_le_bytes());
             self.put(row + definitions::FEATURE_SELECTOR, &0_u32.to_le_bytes());

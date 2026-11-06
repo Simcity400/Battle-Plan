@@ -87,14 +87,14 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         0x500,
-        (0x1000 + cstate::VTABLE_RVA as u64).to_le_bytes(),
+        (0x1000 + cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, 0x500 + cstate::ID, 1_u32.to_le_bytes());
     for (pointer, id, state) in [(0x1000, 1_u32, 0x1500_u64), (0x1300, 2, 0)] {
         put(
             &mut bytes,
             pointer,
-            (0x1000 + cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, pointer + cprovince::ID, id.to_le_bytes());
         put(&mut bytes, pointer + cprovince::STATE, state.to_le_bytes());
@@ -107,7 +107,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             status,
-            (0x1000 + VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, status + FLAGS, flags.to_le_bytes());
         put(&mut bytes, status + ID, id.to_le_bytes());
@@ -131,7 +131,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             building,
-            (0x1000 + cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -475,7 +475,7 @@ fn building_batches_preserve_full_values_and_earlier_dependent_faults() {
         put(
             &mut bytes,
             building,
-            (0x1000 + cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -652,7 +652,7 @@ fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
         put(
             &mut bytes,
             object,
-            (0x1000 + cstate::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -663,7 +663,7 @@ fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
         put(
             &mut bytes,
             status,
-            (0x1000 + VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, status + FLAGS, STATE_FLAG.to_le_bytes());
         put(&mut bytes, status + ID, (state as u32).to_le_bytes());
@@ -679,7 +679,7 @@ fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
         put(
             &mut bytes,
             object,
-            (0x1000 + cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -697,7 +697,7 @@ fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
         put(
             &mut bytes,
             status,
-            (0x1000 + VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, status + FLAGS, PROVINCE_FLAG.to_le_bytes());
         put(&mut bytes, status + ID, (province as u32).to_le_bytes());
@@ -727,7 +727,7 @@ fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
             put(
                 &mut bytes,
                 building,
-                (0x1000 + cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+                (0x1000 + cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -837,7 +837,7 @@ fn a_shared_batch_keeps_every_locations_own_backlink_ordinals_and_duplicates() {
             put(
                 &mut bytes,
                 building,
-                (0x1000 + cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+                (0x1000 + cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

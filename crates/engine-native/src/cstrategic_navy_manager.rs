@@ -1,8 +1,9 @@
 //! CStrategicNavyManager canonical-country-indexed cache.
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_navy, read};
+use engine_sites::Rva;
 
 /// Strategic-navy-manager primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f9d0;
+pub const VTABLE_RVA: Rva = Rva(0x029e_f9d0);
 /// Strategic-navy pointer array.
 pub const NAVIES: usize = 8;
 
@@ -13,9 +14,7 @@ pub fn navies(memory: &impl Memory, base: usize, state: usize) -> Result<Array, 
     let manager = read::<u64>(memory, root)
         .filter(|&p| p != 0)
         .ok_or("navy manager absent or unreadable")? as usize;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("navy manager vtable overflow")? as u64;
+    let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("navy manager vtable overflow")? as u64;
     if read::<u64>(memory, manager) != Some(vtable) {
         return Err("navy manager identity mismatch");
     }

@@ -11,6 +11,7 @@
 
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 use engine_native::Memory;
+use engine_sites::Rva;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -23,8 +24,7 @@ pub type Certificate = (u64, u64);
 #[derive(Clone, Copy)]
 pub struct Site {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 
 /// Mutation and lifetime entries. Their first argument is always the fleet;
@@ -32,59 +32,31 @@ pub struct Site {
 pub const SITES: [Site; 7] = [
     Site {
         name: "append mission region",
-        rva: 0x00db72b0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24,
-            0x10, 0x57,
-        ],
+        rva: Rva(0x00db72b0),
     },
     Site {
         name: "clear mission regions",
-        rva: 0x00dbf900,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x30, 0x8b, 0x41, 0x54, 0x0f,
-            0xb6, 0xda,
-        ],
+        rva: Rva(0x00dbf900),
     },
     Site {
         name: "remove mission region",
-        rva: 0x00dbfb30,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x41, 0x48,
-            0x41, 0x0f,
-        ],
+        rva: Rva(0x00dbfb30),
     },
     Site {
         name: "prune mission regions",
-        rva: 0x00dbffc0,
-        sentinel: [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x41, 0x54, 0x48, 0x8b, 0xd9, 0x83, 0xe8,
-            0x01, 0x78,
-        ],
+        rva: Rva(0x00dbffc0),
     },
     Site {
         name: "load mission regions",
-        rva: 0x00dbe690,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0x00dbe690),
     },
     Site {
         name: "construct fleet regions",
-        rva: 0x00db6650,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-            0x20, 0x48,
-        ],
+        rva: Rva(0x00db6650),
     },
     Site {
         name: "destroy fleet regions",
-        rva: 0x00db6ac0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24,
-            0x20, 0x55,
-        ],
+        rva: Rva(0x00db6ac0),
     },
 ];
 
@@ -165,11 +137,11 @@ impl Hooks {
     /// The enclosing runtime authenticated this executable, owns this family
     /// exclusively and restores its patches and drains native calls before
     /// releasing its storage or unloading.
-    pub unsafe fn prepare(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn prepare(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         for site in SITES {
-            if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-                return Err(hook_error(site.name, "entry verification failed"));
-            }
+            engine_sites::hook(base, site.rva)
+                .and_then(|code| code.sentinel::<16>())
+                .map_err(|reason| hook_error(site.name, reason))?;
         }
         let callbacks = [
             append as *const () as usize,
@@ -182,7 +154,8 @@ impl Hooks {
         ];
         let mut hooks = Vec::with_capacity(SITES.len());
         for (index, site) in SITES.into_iter().enumerate() {
-            let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+            let code = engine_sites::hook(base, site.rva)?;
+            let hook = unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
                 .map_err(|reason| hook_error(site.name, &reason))?;
             ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
             hooks.push(hook);

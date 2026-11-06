@@ -68,3 +68,15 @@ static TEST_THREAD_STACK: unsafe extern "C" fn() = collector_test_support::reser
 
 pub mod wargoal_changes;
 pub mod division_panel_changes;
+
+/// A hook site located with the 16 bytes its hook replaces, or why not.
+fn verified(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
+    engine_sites::hook(base, key)?.sentinel::<16>().map(drop)
+}
+
+/// [`verified`], refusing a withheld site the way a differing sentinel was.
+fn located(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
+    verified(base, key).inspect_err(|cause| {
+        hook::installation::refused(hook::installation::Kind::Sentinel, None, cause);
+    })
+}

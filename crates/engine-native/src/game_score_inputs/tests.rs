@@ -48,7 +48,7 @@ fn game_score_country_counts_preserve_signed_values_and_fleet_occurrences() {
         let pointer = OBJECTS + index * 0x500;
         u64_at(&mut bytes, POINTERS + slot * 8, pointer as u64);
         i32_at(&mut bytes, LINKS + slot * 4, slot as i32);
-        u64_at(&mut bytes, pointer, ccountry::VTABLE_RVA as u64);
+        u64_at(&mut bytes, pointer, ccountry::VTABLE_RVA.0 as u64);
         i32_at(&mut bytes, pointer + ccountry::ID, slot as i32);
         i32_at(
             &mut bytes,
@@ -66,7 +66,7 @@ fn game_score_country_counts_preserve_signed_values_and_fleet_occurrences() {
         u64_at(&mut bytes, FLEET_POINTERS + index * 8, pointer as u64);
     }
     for (pointer, handle, count) in [(FLEET_A, 61_u64, i32::MAX), (FLEET_B, 62, 2)] {
-        u64_at(&mut bytes, pointer, cfleet::VTABLE_RVA as u64);
+        u64_at(&mut bytes, pointer, cfleet::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, pointer + cfleet::HANDLE, handle);
         i32_at(&mut bytes, pointer + cfleet::TASK_FORCE_COUNT, count);
     }
@@ -202,7 +202,7 @@ fn game_score_country_prefix_diagnostics_survive_later_identity_failure() {
         let pointer = FIRST + (slot - 1) * 0x500;
         u64_at(&mut bytes, 0x1800 + slot * 8, pointer as u64);
         i32_at(&mut bytes, 0x1900 + slot * 4, slot as i32);
-        u64_at(&mut bytes, pointer, ccountry::VTABLE_RVA as u64);
+        u64_at(&mut bytes, pointer, ccountry::VTABLE_RVA.0 as u64);
         i32_at(&mut bytes, pointer + ccountry::ID, slot as i32);
     }
     u64_at(&mut bytes, FIRST + 0x500, 0);
@@ -267,7 +267,7 @@ fn game_score_slot_zero_object_is_included_and_refusals_are_named() {
     assert!(capture.slot_zero_null);
     assert_eq!(capture.slot_zero_refusal, None);
     u64_at(&mut bytes, 0x1800, OBJECT as u64);
-    u64_at(&mut bytes, OBJECT, ccountry::VTABLE_RVA as u64);
+    u64_at(&mut bytes, OBJECT, ccountry::VTABLE_RVA.0 as u64);
     i32_at(&mut bytes, OBJECT + ccountry::DIVISIONS_COUNT, -3);
     i32_at(&mut bytes, OBJECT + ccountry::CONTROLLED_PROVINCES_COUNT, 7);
     let capture = walk_country_inputs(
@@ -343,14 +343,14 @@ fn game_score_sizing_counts_failures_and_keeps_later_healthy_demand() {
         u64_at(&mut bytes, 0x2000 + slot * 8, pointer as u64);
         i32_at(&mut bytes, 0x2100 + slot * 4, slot as i32);
     }
-    u64_at(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+    u64_at(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     i32_at(&mut bytes, COUNTRY + ccountry::ID, 2);
     array(&mut bytes, COUNTRY + ccountry::FLEETS, 0x4800, 4);
     u64_at(&mut bytes, GS + cgame_state::STRATEGIC_AIR_MANAGER, 0x5000);
     u64_at(
         &mut bytes,
         0x5000,
-        cstrategic_air_manager::VTABLE_RVA as u64,
+        cstrategic_air_manager::VTABLE_RVA.0 as u64,
     );
     array(
         &mut bytes,
@@ -360,13 +360,13 @@ fn game_score_sizing_counts_failures_and_keeps_later_healthy_demand() {
     );
     u64_at(&mut bytes, 0x6008, 0x6200);
     u64_at(&mut bytes, 0x6010, AIR as u64);
-    u64_at(&mut bytes, AIR, cstrategic_air::VTABLE_RVA as u64);
+    u64_at(&mut bytes, AIR, cstrategic_air::VTABLE_RVA.0 as u64);
     array(&mut bytes, AIR + cstrategic_air::FIRST_AIR_SITES, 0x7800, 5);
     array(&mut bytes, AIR + cstrategic_air::POOLS, 0x7000, 3);
     for (index, pointer) in [0x7100, 0x7200, 0x7100].into_iter().enumerate() {
         u64_at(&mut bytes, 0x7000 + index * 8, pointer);
     }
-    u64_at(&mut bytes, 0x7200, cair_wing_pool::VTABLE_RVA as u64);
+    u64_at(&mut bytes, 0x7200, cair_wing_pool::VTABLE_RVA.0 as u64);
     array(&mut bytes, 0x7200 + cair_wing_pool::WINGS, 0x8000, 7);
     let expected_failures = vec![
         ("country vtable mismatch", 2),
@@ -521,7 +521,7 @@ fn game_score_first_sites_keep_repeats_access_false_and_read_failures_distinct()
         u64_at(&mut bytes, 0x500 + index * 8, pointer);
     }
     for (pointer, handle) in [(0x1000, 65_u64), (0x2000, 66)] {
-        u64_at(&mut bytes, pointer, cair_base::VTABLE_RVA as u64);
+        u64_at(&mut bytes, pointer, cair_base::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, pointer + 8, handle);
     }
     i32_at(&mut bytes, 0x1000 + cair_base::COUNTRY_CONTAINERS_COUNT, 2);
@@ -670,12 +670,12 @@ fn game_score_wing_uses_stored_mission_one_record_and_shared_plane_read() {
 fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
     const MODULE: usize = 0x1_0000;
     let rvas = [
-        COUNTRY_SCORE_MULTIPLIER_RVA,
-        ARMY_SCORE_MULTIPLIER_RVA,
-        NAVY_SCORE_MULTIPLIER_RVA,
-        AIR_SCORE_MULTIPLIER_RVA,
-        INDUSTRY_SCORE_MULTIPLIER_RVA,
-        PROVINCE_SCORE_MULTIPLIER_RVA,
+        COUNTRY_SCORE_MULTIPLIER_RVA.0,
+        ARMY_SCORE_MULTIPLIER_RVA.0,
+        NAVY_SCORE_MULTIPLIER_RVA.0,
+        AIR_SCORE_MULTIPLIER_RVA.0,
+        INDUSTRY_SCORE_MULTIPLIER_RVA.0,
+        PROVINCE_SCORE_MULTIPLIER_RVA.0,
     ];
     let first = rvas.into_iter().min().unwrap();
     let mut bytes = vec![0; rvas.into_iter().max().unwrap() + 8 - first];
@@ -703,7 +703,7 @@ fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
     struct MissingArmy<'a>(SliceMemory<'a>);
     impl Memory for MissingArmy<'_> {
         fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-            at != MODULE + ARMY_SCORE_MULTIPLIER_RVA && self.0.copy(at, output)
+            at != MODULE + ARMY_SCORE_MULTIPLIER_RVA.0 && self.0.copy(at, output)
         }
     }
     let partial = read_multipliers(&MissingArmy(image), MODULE);
@@ -722,7 +722,7 @@ fn first_score_air_sites_grow_from_original_headers_for_mod_sized_lists() {
             0x5000,
             count,
         );
-        u64_at(&mut bytes, 0x1000, cair_base::VTABLE_RVA as u64);
+        u64_at(&mut bytes, 0x1000, cair_base::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, 0x1008, 65);
         i32_at(&mut bytes, 0x1000 + cair_base::COUNTRY_CONTAINERS_COUNT, 1);
         for index in 0..count {
@@ -811,7 +811,7 @@ fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
     for index in 0..SITES {
         let pointer = site(index);
         u64_at(&mut bytes, ROSTER + index * 8, pointer as u64);
-        u64_at(&mut bytes, pointer, cair_base::VTABLE_RVA as u64);
+        u64_at(&mut bytes, pointer, cair_base::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, pointer + 8, 1_000 + index as u64);
         i32_at(&mut bytes, pointer + cair_base::COUNTRY_CONTAINERS_COUNT, 4);
         let vector = VECTORS + index * 0x40;
@@ -937,12 +937,12 @@ fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
     array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 2);
     u64_at(&mut bytes, POINTERS + 8, COUNTRY as u64);
     i32_at(&mut bytes, LINKS + 4, 1);
-    u64_at(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+    u64_at(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     i32_at(&mut bytes, COUNTRY + ccountry::ID, 1);
     array(&mut bytes, COUNTRY + ccountry::FLEETS, ROSTER, FLEETS);
     for index in 0..FLEETS {
         u64_at(&mut bytes, ROSTER + index * 8, fleet(index) as u64);
-        u64_at(&mut bytes, fleet(index), cfleet::VTABLE_RVA as u64);
+        u64_at(&mut bytes, fleet(index), cfleet::VTABLE_RVA.0 as u64);
         u64_at(
             &mut bytes,
             fleet(index) + cfleet::HANDLE,

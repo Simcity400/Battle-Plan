@@ -23,6 +23,10 @@ use std::{
 };
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
+// Located at construction: the balance store and the advance / clear history calls.
+static WRITE: AtomicUsize = AtomicUsize::new(0);
+static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+static CLEAR: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static FAILED_READS: AtomicU64 = AtomicU64::new(0);
@@ -467,7 +471,7 @@ pub fn fill(memory: &impl Memory, base: usize, rows: &mut [native::Row]) {
     }
     let storage = unsafe { &*pointer };
     let signal = || {
-        base.checked_add(cgame_state::PLAY_SESSION_STARTED_AT_RVA)
+        engine_sites::at(base, cgame_state::PLAY_SESSION_STARTED_AT_RVA)
             .and_then(|at| read::<i64>(memory, at))
     };
     if signal() != Some(storage.load_signal) {
@@ -511,18 +515,17 @@ unsafe fn history_change(history: usize, target: usize) {
     } else {
         [None, None]
     };
-    let original: unsafe extern "system-unwind" fn(usize) =
-        unsafe { std::mem::transmute(BASE.load(Ordering::Acquire) + target) };
+    let original: unsafe extern "system-unwind" fn(usize) = unsafe { std::mem::transmute(target) };
     timing.original(|| unsafe { original(history) });
     for change in changes.iter_mut().flatten() {
         change.write.complete = true;
     }
 }
 unsafe extern "system-unwind" fn advance(history: usize) {
-    unsafe { history_change(history, native::HISTORY_CALLS[0].2) };
+    unsafe { history_change(history, ADVANCE.load(Ordering::Acquire)) };
 }
 unsafe extern "system-unwind" fn clear(history: usize) {
-    unsafe { history_change(history, native::HISTORY_CALLS[1].2) };
+    unsafe { history_change(history, CLEAR.load(Ordering::Acquire)) };
 }
 
 // No stack or nonvolatile register changes: Rust bodies have normal unwind
@@ -635,7 +638,7 @@ unsafe fn write(record: usize, balance: i64, archetype: u32, stack: usize, offse
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { LiveMemory::new() };
     let signal = || {
-        base.checked_add(cgame_state::PLAY_SESSION_STARTED_AT_RVA)
+        engine_sites::at(base, cgame_state::PLAY_SESSION_STARTED_AT_RVA)
             .and_then(|at| read::<i64>(&memory, at))
     };
     // Bind every reachable cell before native code, so an overlapping writer
@@ -655,7 +658,7 @@ unsafe fn write(record: usize, balance: i64, archetype: u32, stack: usize, offse
         None => [None, None],
     };
     let original: unsafe extern "system-unwind" fn(usize, i64, u32) =
-        unsafe { std::mem::transmute(base + native::BALANCE_WRITE_RVA) };
+        unsafe { std::mem::transmute(WRITE.load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(record, balance, archetype) });
     let signal = signal();
     let mut read = None;
@@ -678,7 +681,7 @@ unsafe extern "system-unwind" fn daily(record: usize, balance: i64, archetype: u
             balance,
             archetype,
             stack,
-            native::BALANCE_CALLS[0].2,
+            native::BALANCE_CALLS[0].1,
         )
     };
 }
@@ -694,7 +697,7 @@ unsafe extern "system-unwind" fn refresh(
             balance,
             archetype,
             stack,
-            native::BALANCE_CALLS[1].2,
+            native::BALANCE_CALLS[1].1,
         )
     };
 }
@@ -707,45 +710,61 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
-        if native::BALANCE_CALLS
-            .iter()
-            .chain(native::HISTORY_CALLS.iter())
-            .any(|(rva, sentinel, _)| {
-                base.checked_add(*rva).is_none_or(|site| {
-                    !crate::hook::installation::sentinel(memory, site, *sentinel)
-                })
-            })
-        {
-            crate::hook::installation::refused(
-                crate::hook::installation::Kind::Sentinel,
-                None,
-                "logistics balance sentinel differs or address is unreadable",
-            );
-            UNHOOKED.store(true, Ordering::Relaxed);
-            return Ok(Self { hooks });
-        }
+        let located = || -> Result<_, &'static str> {
+            let call = |key| {
+                engine_sites::hook(base, key)
+                    .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+            };
+            let target = |key| engine_sites::hook(base, key).map(|code| code.address);
+            let [daily, refresh] = native::BALANCE_CALLS.map(|(key, _)| key);
+            let [first, second, third] = native::HISTORY_CALLS.map(|(key, _)| key);
+            Ok((
+                [call(daily)?, call(refresh)?],
+                [call(first)?, call(second)?, call(third)?],
+                [
+                    target(native::BALANCE_WRITE_RVA)?,
+                    target(native::HISTORY_CALLS[0].1)?,
+                    target(native::HISTORY_CALLS[1].1)?,
+                ],
+            ))
+        };
+        let (balance, history, [write, advance_target, clear_target]) = match located() {
+            Ok(located) => located,
+            Err(cause) => {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Sentinel,
+                    None,
+                    cause,
+                );
+                UNHOOKED.store(true, Ordering::Relaxed);
+                return Ok(Self { hooks });
+            }
+        };
+        WRITE.store(write, Ordering::Release);
+        ADVANCE.store(advance_target, Ordering::Release);
+        CLEAR.store(clear_target, Ordering::Release);
         UNHOOKED.store(false, Ordering::Relaxed);
-        for (index, (rva, sentinel, _)) in native::BALANCE_CALLS.iter().enumerate() {
+        for (index, (at, sentinel)) in balance.into_iter().enumerate() {
             let callback = [
                 daily_entry as *const () as usize,
                 refresh_entry as *const () as usize,
             ][index];
             hooks.push(
-                unsafe { Hook::new_call(base + rva, callback, *sentinel) }
+                unsafe { Hook::new_call(at, callback, sentinel) }
                     .map_err(|_| "logistics balance CALL construction failed")?,
             );
         }
-        for (rva, sentinel, target) in native::HISTORY_CALLS {
-            let callback = if target == native::HISTORY_CALLS[0].2 {
+        for ((at, sentinel), (_, target)) in history.into_iter().zip(native::HISTORY_CALLS) {
+            let callback = if target == native::HISTORY_CALLS[0].1 {
                 advance as *const () as usize
             } else {
                 clear as *const () as usize
             };
             hooks.push(
-                unsafe { Hook::new_call(base + rva, callback, sentinel) }
+                unsafe { Hook::new_call(at, callback, sentinel) }
                     .map_err(|_| "logistics history CALL construction failed")?,
             );
         }

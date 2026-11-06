@@ -791,16 +791,16 @@ mod tests {
             for (offset, value) in [
                 (
                     engine_native::cfaction::EXTRACTED_RESOURCES,
-                    engine_resources::cstrategic_resource_pool::VTABLE_RVA,
+                    engine_resources::cstrategic_resource_pool::VTABLE_RVA.0,
                 ),
                 (
                     engine_stability::cfaction_upgrade_status::STATUS
                         + engine_stability::cfaction_upgrade_status::DOCTRINE_SHARING,
-                    engine_native::cdoctrine_sharing_status::VTABLE_RVA,
+                    engine_native::cdoctrine_sharing_status::VTABLE_RVA.0,
                 ),
                 (
                     engine_stability::cfaction_upgrade_status::STATUS,
-                    engine_stability::cfaction_upgrade_status::VTABLE_RVA,
+                    engine_stability::cfaction_upgrade_status::VTABLE_RVA.0,
                 ),
                 (
                     engine_stability::cfaction_upgrade_status::STATUS
@@ -810,7 +810,7 @@ mod tests {
                 (
                     engine_stability::cfaction_upgrade_status::STATUS
                         + engine_stability::cfaction_upgrade_status::RESEARCH_SHARING,
-                    engine_native::ctechnology_sharing_faction::VTABLE_RVA,
+                    engine_native::ctechnology_sharing_faction::VTABLE_RVA.0,
                 ),
                 (
                     engine_stability::cfaction_upgrade_status::STATUS
@@ -820,15 +820,15 @@ mod tests {
                 ),
                 (
                     engine_native::cfaction::VARIABLES,
-                    engine_scripts::cvariables::VTABLE_RVA,
+                    engine_scripts::cvariables::VTABLE_RVA.0,
                 ),
                 (
                     engine_native::cfaction::VARIABLES + engine_scripts::cvariables::STORAGE,
-                    engine_scripts::cvariables::EMPTY_STORAGE_RVA,
+                    engine_scripts::cvariables::EMPTY_STORAGE_RVA.0,
                 ),
                 (
                     engine_native::cfaction_rule_status::STATUS,
-                    engine_native::cfaction_rule_status::VTABLE_RVA,
+                    engine_native::cfaction_rule_status::VTABLE_RVA.0,
                 ),
                 (
                     engine_native::cfaction_rule_status::STATUS
@@ -837,11 +837,11 @@ mod tests {
                 ),
                 (
                     engine_native::cfaction_program_status::STATUS,
-                    engine_native::cfaction_program_status::VTABLE_RVA,
+                    engine_native::cfaction_program_status::VTABLE_RVA.0,
                 ),
                 (
                     engine_native::cfaction::MANPOWER_POOL,
-                    engine_native::carmy_manpower_values::VTABLE_RVA,
+                    engine_native::carmy_manpower_values::VTABLE_RVA.0,
                 ),
             ] {
                 bytes[faction + offset..faction + offset + 8]

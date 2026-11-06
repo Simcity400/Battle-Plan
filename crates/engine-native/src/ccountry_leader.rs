@@ -1,7 +1,8 @@
 //! CCountryLeader role object, reached through CCharacter's ideology map or a political party vector.
 
+use engine_sites::Rva;
 /// Country-leader role vtable.
-pub const VTABLE_RVA: usize = 0x029f_d8b0;
+pub const VTABLE_RVA: Rva = Rva(0x029f_d8b0);
 /// Parent character pointer used by name effects and serialized role references.
 pub const CHARACTER: usize = 0x08;
 /// Role id, i32; loading assigns it, serialization omits -1 and nonzero
@@ -11,7 +12,7 @@ pub const LEADER_ID: usize = 0x148;
 /// retains tokens in occurrence order. Trait lookup compares objects.
 pub const TRAITS: usize = 0x50;
 /// Country-leader trait vtable.
-pub const TRAIT_VTABLE_RVA: usize = 0x0286_78c8;
+pub const TRAIT_VTABLE_RVA: Rva = Rva(0x0286_78c8);
 /// Trait lexer token, u32.
 pub const TRAIT_TOKEN: usize = 0x08;
 /// Trait database ordinal, u32, with null object at zero. Repeated names
@@ -22,10 +23,10 @@ pub const TRAIT_ORDINAL: usize = 0x1a0;
 /// Current ideology pointer; changes do not rekey the character's role map.
 pub const CURRENT_IDEOLOGY: usize = 0x140;
 /// Ideology primary vtable.
-pub const IDEOLOGY_VTABLE_RVA: usize = 0x029b_a2d8;
+pub const IDEOLOGY_VTABLE_RVA: Rva = Rva(0x029b_a2d8);
 /// Null-ideology vtable. The constructed null definition clears its valid
 /// byte and supplies each leader's initial ideology.
-pub const NULL_IDEOLOGY_VTABLE_RVA: usize = 0x029b_a558;
+pub const NULL_IDEOLOGY_VTABLE_RVA: Rva = Rva(0x029b_a558);
 
 pub fn current_ideology(
     memory: &impl crate::Memory,
@@ -41,12 +42,9 @@ pub fn current_ideology(
     }
     let header = crate::read::<[u8; 12]>(memory, pointer)
         .ok_or("country leader current ideology unreadable")?;
-    let expected = base
-        .checked_add(IDEOLOGY_VTABLE_RVA)
-        .ok_or("module address overflow")?;
-    let null_expected = base
-        .checked_add(NULL_IDEOLOGY_VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, IDEOLOGY_VTABLE_RVA).ok_or("module address overflow")?;
+    let null_expected =
+        engine_sites::at(base, NULL_IDEOLOGY_VTABLE_RVA).ok_or("module address overflow")?;
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
     // Serialization retains the null object's stored token. Do not invent an
     // ideology or capture refusal.
@@ -154,9 +152,7 @@ pub fn walk_entry(
         walk::Outcome,
     };
     let result = (|| {
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let mut len = 0;
         let mut unread_rows = 0_u32;
         {
@@ -247,7 +243,7 @@ mod tests {
         bytes[0x200 + character_leader_node::IDEOLOGY..0x204 + character_leader_node::IDEOLOGY]
             .copy_from_slice(&(-7_i32).to_le_bytes());
         word(&mut bytes, 0x200 + character_leader_node::LEADER, 0x300);
-        word(&mut bytes, 0x300, VTABLE_RVA as u64);
+        word(&mut bytes, 0x300, VTABLE_RVA.0 as u64);
         word(&mut bytes, 0x300 + CHARACTER, 0);
         let entry = Entry {
             pointer: 0,
@@ -293,7 +289,7 @@ mod tests {
         assert_eq!(rows[0].current_ideology_failure, None);
         word(&mut bytes, 0x300 + CURRENT_IDEOLOGY, 0x480);
         bytes.resize(0x490, 0);
-        word(&mut bytes, 0x480, IDEOLOGY_VTABLE_RVA as u64);
+        word(&mut bytes, 0x480, IDEOLOGY_VTABLE_RVA.0 as u64);
         assert_eq!(
             walk_entry(
                 &SliceMemory {
@@ -315,7 +311,7 @@ mod tests {
         let mut bytes = vec![0; 0x300];
         bytes[CURRENT_IDEOLOGY..CURRENT_IDEOLOGY + 8].copy_from_slice(&0x200_u64.to_le_bytes());
         bytes[0x208..0x20c].copy_from_slice(&0xffff_fffe_u32.to_le_bytes());
-        for vtable in [NULL_IDEOLOGY_VTABLE_RVA, IDEOLOGY_VTABLE_RVA] {
+        for vtable in [NULL_IDEOLOGY_VTABLE_RVA.0, IDEOLOGY_VTABLE_RVA.0] {
             bytes[0x200..0x208].copy_from_slice(&(vtable as u64).to_le_bytes());
             assert_eq!(
                 current_ideology(
@@ -347,7 +343,7 @@ mod tests {
     fn current_ideology_is_a_token_independent_of_the_role_map_key() {
         let mut bytes = vec![0; 0x300];
         bytes[CURRENT_IDEOLOGY..CURRENT_IDEOLOGY + 8].copy_from_slice(&0x200_u64.to_le_bytes());
-        bytes[0x200..0x208].copy_from_slice(&(IDEOLOGY_VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x200..0x208].copy_from_slice(&(IDEOLOGY_VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x208..0x20c].copy_from_slice(&0xffff_1234_u32.to_le_bytes());
         assert_eq!(
             current_ideology(

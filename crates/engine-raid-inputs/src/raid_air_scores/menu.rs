@@ -191,10 +191,12 @@ fn read_map(
         return Err("air power contribution map sentinel invalid");
     }
     let link = |bytes: &[u8], offset: usize| {
-        usize::try_from(u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-            .ok_or("air power contribution map link unreadable or null")
+        usize::try_from(u64::from_le_bytes(
+            bytes[offset..offset + 8].try_into().unwrap(),
+        ))
+        .ok()
+        .filter(|&pointer| pointer != 0)
+        .ok_or("air power contribution map link unreadable or null")
     };
     let leftmost = link(&sentinel[..], node::LEFT)?;
     let root = link(&sentinel[..], node::PARENT)?;
@@ -225,9 +227,7 @@ fn read_map(
                     country: u32::from_le_bytes(
                         record[node::PAYLOAD..node::PAYLOAD + 4].try_into().unwrap(),
                     ),
-                    amount: i64::from_le_bytes(
-                        record[node::PAYLOAD + 8..].try_into().unwrap(),
-                    ),
+                    amount: i64::from_le_bytes(record[node::PAYLOAD + 8..].try_into().unwrap()),
                 },
             });
             parent = current;

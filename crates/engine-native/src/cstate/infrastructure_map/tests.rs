@@ -73,16 +73,16 @@ impl World {
         world.region(CATEGORY, 0x200);
         world.region(GAME, 0x1000);
         world.region(STATES, 0x100);
-        world.put(BASE + cbuilding_database::SINGLETON_RVA, (DATABASE as u64).to_le_bytes());
+        world.put(BASE + cbuilding_database::SINGLETON_RVA.0, (DATABASE as u64).to_le_bytes());
         world.array(DATABASE + INFRASTRUCTURE_DEFINITIONS, DEFINITIONS, 1);
         world.put(DEFINITIONS, (DEFINITION as u64).to_le_bytes());
-        world.put(DEFINITION, ((BASE + template::VTABLE_RVA) as u64).to_le_bytes());
+        world.put(DEFINITION, ((BASE + template::VTABLE_RVA.0) as u64).to_le_bytes());
         world.put(DEFINITION + template::TYPE_ID, TOKEN.to_le_bytes());
         world.put(DEFINITION + template::LOOKUP_ENABLED_CANDIDATE, [1]);
         world.put(DEFINITION + template::DATABASE_ORDINAL, 2_u32.to_le_bytes());
         world.put(DEFINITION + STATE_MAXIMUM, 5_i32.to_le_bytes());
         world.put(DEFINITION + GROUP, NO_GROUP.to_le_bytes());
-        world.put(STATE, ((BASE + cstate::VTABLE_RVA) as u64).to_le_bytes());
+        world.put(STATE, ((BASE + cstate::VTABLE_RVA.0) as u64).to_le_bytes());
         world.put(STATE + cstate::ID, 1_u32.to_le_bytes());
         world.put(STATE + cstate::CATEGORY, (CATEGORY as u64).to_le_bytes());
         let status = STATE + cstate::BUILDING_STATUS;
@@ -93,13 +93,13 @@ impl World {
         }
         world.array(status + status::BUILDINGS, BUILDINGS, 1);
         world.put(BUILDINGS, (BUILDING as u64).to_le_bytes());
-        world.put(BUILDING, ((BASE + cbuilding::VTABLE_RVA) as u64).to_le_bytes());
+        world.put(BUILDING, ((BASE + cbuilding::VTABLE_RVA.0) as u64).to_le_bytes());
         world.put(BUILDING + cbuilding::TEMPLATE, (DEFINITION as u64).to_le_bytes());
         world.put(BUILDING + cbuilding::LEVEL, 2_i16.to_le_bytes());
         world.array(BUILDING + PRIMARY_CONSTRUCTION, ENTRIES, 1);
         world.put(ENTRIES, (ENTRY as u64).to_le_bytes());
         world.put(ENTRY + CONSTRUCTION_LEVEL, 3_i16.to_le_bytes());
-        world.put(CATEGORY, ((BASE + cstate::CATEGORY_VTABLE_RVA) as u64).to_le_bytes());
+        world.put(CATEGORY, ((BASE + cstate::CATEGORY_VTABLE_RVA.0) as u64).to_le_bytes());
         world.array(GAME + cgame_state::STATES, STATES, 2);
         world.put(STATES + 8, (STATE as u64).to_le_bytes());
         world
@@ -222,7 +222,7 @@ fn a_reused_plan_reads_only_its_pointers_until_they_move() {
     let mut moved = World::new();
     moved.region(DEFINITION + 0x1000, template::SIZE);
     moved.put(DEFINITIONS, ((DEFINITION + 0x1000) as u64).to_le_bytes());
-    moved.put(DEFINITION + 0x1000, ((BASE + template::VTABLE_RVA) as u64).to_le_bytes());
+    moved.put(DEFINITION + 0x1000, ((BASE + template::VTABLE_RVA.0) as u64).to_le_bytes());
     assert!(Hour::new(&moved, BASE, GAME, &mut cache, true).is_ok());
     assert_eq!(moved.reads(DEFINITION + 0x1000 + STATE_MAXIMUM), 1);
 }

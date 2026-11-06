@@ -12,9 +12,10 @@ use crate::{
     read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Resource-state primary vtable.
-pub const VTABLE_RVA: usize = 0x29d8f00;
+pub const VTABLE_RVA: Rva = Rva(0x29d8f00);
 /// Owner raw country link, u32, used for exporter identity.
 pub const OWNER: usize = 0x20;
 /// Embedded produced CStrategicResourcePool requiring authentication.
@@ -341,9 +342,7 @@ fn resources_linked<M: Memory>(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("country resources pointer unreadable or null")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     // The vtable and owner, read back to back: one guarded gather of the
     // object, the first field it did not complete failing as its read did.
     const FIELDS: [RecordField; 2] = crate::memory::packed_fields([(0, 8), (OWNER, 4)]);
@@ -491,7 +490,7 @@ pub(crate) mod scale_support {
         fn u64(&mut self, address: usize, value: u64);
         fn u32(&mut self, address: usize, value: u32);
         fn array(&mut self, header: usize, data: usize, count: u32);
-        fn vtable(&self, rva: usize) -> u64;
+        fn vtable(&self, rva: engine_sites::Rva) -> u64;
     }
 
     impl Image for World {
@@ -507,8 +506,8 @@ pub(crate) mod scale_support {
         fn array(&mut self, header: usize, data: usize, count: u32) {
             World::array(self, header, data, count);
         }
-        fn vtable(&self, rva: usize) -> u64 {
-            (self.module + rva) as u64
+        fn vtable(&self, rva: engine_sites::Rva) -> u64 {
+            (self.module + rva.0) as u64
         }
     }
 
@@ -526,7 +525,7 @@ pub(crate) mod scale_support {
         fn array(&mut self, header: usize, data: usize, count: u32) {
             self.vector(header, data, count);
         }
-        fn vtable(&self, rva: usize) -> u64 {
+        fn vtable(&self, rva: engine_sites::Rva) -> u64 {
             self.rva(rva)
         }
     }
@@ -647,10 +646,10 @@ pub(crate) mod test_support {
                 .into_iter()
                 .enumerate()
             {
-                f.u64(country, ccountry::VTABLE_RVA as u64);
+                f.u64(country, ccountry::VTABLE_RVA.0 as u64);
                 f.u32(country + ccountry::ID, raw);
                 f.u64(country + ccountry::RESOURCES, resources as u64);
-                f.u64(resources, VTABLE_RVA as u64);
+                f.u64(resources, VTABLE_RVA.0 as u64);
                 f.u32(resources + OWNER, raw);
                 f.array(resources + IMPORT_ROUTES, 0, 0);
                 let buckets = 0xc000 + ordinal * 0x200;
@@ -661,7 +660,7 @@ pub(crate) mod test_support {
                     let data = 0x10000 + ordinal * 0x2000 + pool * 0x80;
                     f.u64(
                         resources + offset,
-                        cstrategic_resource_pool::VTABLE_RVA as u64,
+                        cstrategic_resource_pool::VTABLE_RVA.0 as u64,
                     );
                     f.array(resources + offset + 8, data, 2);
                     f.put(data, &[0; 32]);
@@ -670,7 +669,7 @@ pub(crate) mod test_support {
                 }
             }
             f.put(0xa000, &[0; trade::SIZE]);
-            f.u64(0xa000, trade::VTABLE_RVA as u64);
+            f.u64(0xa000, trade::VTABLE_RVA.0 as u64);
             f.u64(0xa000 + trade::REFERENCE, 0x1234_5678_0000_0033);
             f.put(0xa000 + trade::REGISTERED, &[1]);
             f.u32(0xa000 + trade::OWNER, 2);
@@ -686,12 +685,12 @@ pub(crate) mod test_support {
             f.u64(0xb100, 0xa000);
             f.array(0xc000 + EXPORT_BUCKET_STRIDE, 0xc100, 1);
             f.u64(0xc100, 0xa000);
-            f.u64(0xd000, cstrategic_resource::VTABLE_RVA as u64);
+            f.u64(0xd000, cstrategic_resource::VTABLE_RVA.0 as u64);
             f.u32(0xd000 + cstrategic_resource::INDEX, 1);
             f.u32(0xd000 + cstrategic_resource::TOKEN_ID, 19);
             f.put(0xd000 + cstrategic_resource::ACTIVE, &[1]);
             f.u64(0xd000 + cstrategic_resource::FACTORY_COST, 4_294_967_300);
-            f.u64(database::SINGLETON_RVA, 0xe000);
+            f.u64(database::SINGLETON_RVA.0, 0xe000);
             f.array(0xe000 + database::ITEMS, 0xe100, 2);
             f.u64(0xe100, 0xdf00);
             f.u64(0xe108, 0xd000);

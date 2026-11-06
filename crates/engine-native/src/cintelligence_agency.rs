@@ -6,6 +6,7 @@
 //! lengths and a caller-sized arena. Capacity shortages omit whole rows with
 //! exact demand; a bad header or terminator refuses the table.
 
+use engine_sites::Rva;
 use crate::{
     Memory,
     batch_fallback::{Ahead, Batch, Link},
@@ -17,7 +18,7 @@ use crate::{
 };
 
 /// CIntelligenceAgency primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_e450;
+pub const VTABLE_RVA: Rva = Rva(0x029f_e450);
 /// CIntelligenceAgency inline COperativeRecruitment.
 pub const RECRUITMENT: usize = 0x08;
 /// CIntelligenceAgency owning CCountry pointer.
@@ -49,9 +50,9 @@ pub const CRYPTOLOGY: usize = 0x138;
 /// CIntelligenceAgency signed i64 defense /100000.
 pub const DEFENSE: usize = 0x140;
 /// CIntelligenceAgency constructor RVA.
-pub const CONSTRUCTOR_RVA: usize = 0x0105_bdb0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x0105_bdb0);
 /// Operative-admission override byte; nonzero permits count above ceiling.
-pub const ADMISSION_OVERRIDE_RVA: usize = 0x033d_da9e;
+pub const ADMISSION_OVERRIDE_RVA: Rva = Rva(0x033d_da9e);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -357,8 +358,7 @@ pub fn walk_captured_operatives_buffer(
                 let header = read::<[u8; 0x14]>(memory, pointer)
                     .ok_or("captured operative entry unreadable")?;
                 if u64::from_le_bytes(header[..8].try_into().unwrap())
-                    != base
-                        .checked_add(captured::VTABLE_RVA)
+                    != engine_sites::at(base, captured::VTABLE_RVA)
                         .ok_or("module address overflow")? as u64
                 {
                     return Err("captured operative entry vtable mismatch");
@@ -370,8 +370,7 @@ pub fn walk_captured_operatives_buffer(
                         let identity = read::<[u8; 16]>(memory, leader)
                             .ok_or("captured operative referent unreadable")?;
                         if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                            != base
-                                .checked_add(coperative_leader::VTABLE_RVA)
+                            != engine_sites::at(base, coperative_leader::VTABLE_RVA)
                                 .ok_or("module address overflow")?
                                 as u64
                             || u64::from_le_bytes(identity[8..].try_into().unwrap()) != operative
@@ -425,8 +424,7 @@ fn root_block(
         crate::batch_fallback::record(Batch::IntelligenceAgencies);
         return Ok(authenticate(memory, base, country, pointer)?.map(|pointer| (pointer, false)));
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("agency vtable address overflow")?;
     if u64::from_le_bytes(block[..8].try_into().unwrap()) != expected as u64 {
         return Err("agency vtable mismatch");
@@ -473,8 +471,7 @@ fn authenticate(
     country: ccountry::Country,
     pointer: usize,
 ) -> Result<Option<usize>, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("agency vtable address overflow")?;
     // The vtable and owner, read back to back, in one guarded gather of the
     // agency; the first field it did not complete fails as its read would.
@@ -594,7 +591,7 @@ pub(crate) mod test_support {
         fn u32(&mut self, address: usize, value: u32);
         fn array(&mut self, header: usize, data: usize, count: u32);
         /// The value a native vtable holds for `rva`.
-        fn vtable(&self, rva: usize) -> u64;
+        fn vtable(&self, key: Rva) -> u64;
     }
 
     impl Image for World {
@@ -610,8 +607,8 @@ pub(crate) mod test_support {
         fn array(&mut self, header: usize, data: usize, count: u32) {
             World::array(self, header, data, count);
         }
-        fn vtable(&self, rva: usize) -> u64 {
-            (self.module + rva) as u64
+        fn vtable(&self, key: Rva) -> u64 {
+            (self.module + key.0) as u64
         }
     }
 
@@ -629,8 +626,8 @@ pub(crate) mod test_support {
         fn array(&mut self, header: usize, data: usize, count: u32) {
             self.vector(header, data, count);
         }
-        fn vtable(&self, rva: usize) -> u64 {
-            self.rva(rva)
+        fn vtable(&self, key: Rva) -> u64 {
+            self.rva(key)
         }
     }
 
@@ -1016,7 +1013,7 @@ mod tests {
         put(
             &mut bytes,
             0x3000,
-            (ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            (ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x3008, 1_u32.to_le_bytes());
         put(
@@ -1024,7 +1021,7 @@ mod tests {
             0x3000 + ccountry::INTELLIGENCE_AGENCY,
             0x5000_u64.to_le_bytes(),
         );
-        put(&mut bytes, 0x5000, (VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, 0x5000, (VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, 0x5000 + OWNER_COUNTRY, 0x3000_u64.to_le_bytes());
         put(&mut bytes, 0x5000 + NAME + 24, 15_u64.to_le_bytes());
         bytes
@@ -1100,7 +1097,7 @@ mod tests {
             put(
                 &mut bytes,
                 0x6000 + ordinal * captured::STRIDE,
-                (captured::VTABLE_RVA as u64).to_le_bytes(),
+                (captured::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
         }
         put(
@@ -1115,7 +1112,7 @@ mod tests {
         );
         let mut memory = registry::test_support::Fixture::default();
         memory.put(0, &bytes);
-        memory.put(registry::LOW_ROOTS_RVA + 54 * 8, &0x8000_u64.to_le_bytes());
+        memory.put(registry::LOW_ROOTS_RVA.0 + 54 * 8, &0x8000_u64.to_le_bytes());
         memory.put(0x8000 + registry::ENTRIES, &0x9000_u64.to_le_bytes());
         memory.put(0x8000 + registry::COUNT, &1_u32.to_le_bytes());
         memory.put(0x8000 + registry::MASK, &7_u32.to_le_bytes());
@@ -1132,7 +1129,7 @@ mod tests {
         memory.put(bucket + reference_bucket::OBJECT, &0xa000_u64.to_le_bytes());
         memory.put(
             0xa000,
-            &(coperative_leader::VTABLE_RVA as u64).to_le_bytes(),
+            &(coperative_leader::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         memory.put(0xa008, &handle.to_le_bytes());
         memory.put(

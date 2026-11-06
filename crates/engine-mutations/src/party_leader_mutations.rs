@@ -36,6 +36,7 @@
 //! - Elections change popularity and the ruling party, never leader vectors.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// How a site's arguments name the written parties.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,11 +59,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "insert_leader_front",
-            rva: 0x1230590,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x1230590),
         },
         Receiver::Party,
     ),
@@ -71,11 +68,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "append_leader",
-            rva: 0x1230620,
-            sentinel: [
-                0x4c, 0x8b, 0xdc, 0x55, 0x48, 0x83, 0xec, 0x40, 0x49, 0x89, 0x5b, 0x08, 0x48, 0x8b,
-                0xe9, 0x49,
-            ],
+            rva: Rva(0x1230620),
         },
         Receiver::Party,
     ),
@@ -83,11 +76,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "remove_leader",
-            rva: 0x1232b80,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-                0x20, 0x48,
-            ],
+            rva: Rva(0x1232b80),
         },
         Receiver::Party,
     ),
@@ -95,11 +84,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "promote_leader",
-            rva: 0x12324a0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x56,
-                0x48, 0x83,
-            ],
+            rva: Rva(0x12324a0),
         },
         Receiver::Party,
     ),
@@ -107,11 +92,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "retire_first_leader",
-            rva: 0x1232c40,
-            sentinel: [
-                0x40, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x41, 0x7c, 0x48, 0x8b, 0xf9, 0x85, 0xc0,
-                0x75, 0x16,
-            ],
+            rva: Rva(0x1232c40),
         },
         Receiver::Party,
     ),
@@ -119,11 +100,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "kill_first_leader",
-            rva: 0x1232410,
-            sentinel: [
-                0x40, 0x57, 0x48, 0x83, 0xec, 0x20, 0x83, 0x79, 0x7c, 0x01, 0x48, 0x8b, 0xf9, 0x7c,
-                0x6d, 0x48,
-            ],
+            rva: Rva(0x1232410),
         },
         Receiver::Party,
     ),
@@ -131,11 +108,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "clear_leaders",
-            rva: 0x1232230,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24,
-                0x18, 0x4c,
-            ],
+            rva: Rva(0x1232230),
         },
         Receiver::Party,
     ),
@@ -145,11 +118,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "transfer_leaders",
-            rva: 0x1233620,
-            sentinel: [
-                0x48, 0x3b, 0xca, 0x0f, 0x84, 0xea, 0x08, 0x00, 0x00, 0x4c, 0x89, 0x4c, 0x24, 0x20,
-                0x4c, 0x89,
-            ],
+            rva: Rva(0x1233620),
         },
         Receiver::Parties,
     ),
@@ -157,11 +126,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "validate_leaders",
-            rva: 0x1232140,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x1232140),
         },
         Receiver::Party,
     ),
@@ -171,11 +136,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "read_leaders",
-            rva: 0x1232590,
-            sentinel: [
-                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78,
-                0x20, 0x55,
-            ],
+            rva: Rva(0x1232590),
         },
         Receiver::Vector,
     ),
@@ -183,11 +144,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
     (
         MutationSite {
             name: "destroy_party",
-            rva: 0x1230450,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0x1230450),
         },
         Receiver::Party,
     ),

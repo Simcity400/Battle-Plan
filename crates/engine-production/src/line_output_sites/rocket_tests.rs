@@ -16,7 +16,7 @@ struct World {
 
 impl Memory for World {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == BASE + crate::construction_ic_sites::INSTANT_CONSTRUCTION {
+        if address == BASE + crate::construction_ic_sites::INSTANT_CONSTRUCTION.0 {
             assert_eq!(output.len(), 1);
             return self.instant.is_some_and(|value| {
                 output[0] = value;
@@ -44,16 +44,16 @@ impl World {
             blocked: None,
         };
         for (address, value) in [
-            (ROCKET, (BASE + ROCKET_VTABLE) as u64),
+            (ROCKET, (BASE + ROCKET_VTABLE.0) as u64),
             (ROCKET + ROCKET_STATUS, STATUS as u64),
             (ROCKET + ROCKET_VARIANT, VARIANT as u64),
             (ROCKET + ROCKET_SPEED, 175_003),
-            (STATUS, (BASE + cproduction_status::VTABLE_RVA) as u64),
+            (STATUS, (BASE + cproduction_status::VTABLE_RVA.0) as u64),
             (STATUS + cproduction_status::COUNTRY, COUNTRY as u64),
-            (COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64),
+            (COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64),
             (COUNTRY + ccountry::ID, 5001),
             (COUNTRY + ccountry::PRODUCTION_STATUS, STATUS as u64),
-            (VARIANT, (BASE + cequipment_variant::VTABLE_RVA) as u64),
+            (VARIANT, (BASE + cequipment_variant::VTABLE_RVA.0) as u64),
             (VARIANT + VARIANT_HANDLE, DESIGN),
         ] {
             world.word(address, value);

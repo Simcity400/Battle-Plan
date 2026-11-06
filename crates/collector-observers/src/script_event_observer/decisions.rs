@@ -192,10 +192,9 @@ fn candidate_owner(memory: &impl Memory, header: usize) -> Result<(usize, u8), &
     let base = BASE.load(Ordering::Acquire);
     for (kind, offset) in runtime::CANDIDATE_HEADERS.into_iter().enumerate() {
         if let Some(status) = header.checked_sub(offset)
-            && engine_native::read::<u64>(memory, status)
-                == base
-                    .checked_add(engine_decisions::cdecision_status::VTABLE_RVA)
-                    .map(|v| v as u64)
+            && engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA).is_some_and(
+                |vtable| engine_native::read::<u64>(memory, status) == Some(vtable as u64),
+            )
         {
             return Ok((status, kind as u8));
         }
@@ -726,11 +725,8 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
         _ => feed::refuse("decision retained-state tap identity differs"),
     }
 }
-pub(super) unsafe fn hooks(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
-    let verify = |site: native::Site| verify_hook(memory, base, site, site.sentinel.len());
+pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
+    let verify = |site: native::Site| verify_hook::<16>(base, site);
     let callbacks = [
         timed as *const () as usize,
         targeted as *const () as usize,
@@ -763,7 +759,8 @@ pub(super) unsafe fn hooks(
     let mut hooks = Vec::new();
     let mut taps = Vec::new();
     for (index, (site, callback)) in sites::ENTRIES.into_iter().zip(callbacks).enumerate() {
-        let hook = unsafe { Hook::new(verify(site)?, callback, site.sentinel) }
+        let (at, original) = verify(site)?;
+        let hook = unsafe { Hook::new(at, callback, original) }
             .map_err(|cause| hook_failure(site, "construction", cause))?
             .named(site.label());
         ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
@@ -789,14 +786,13 @@ pub(super) unsafe fn hooks(
         replace_event_retirement as *const () as usize,
     ];
     for (index, (site, callback)) in sites::CALLS.into_iter().zip(callbacks).enumerate() {
-        let len = sites::call_sentinel_len(site);
-        let at = verify_hook(memory, base, site, len)?;
-        let offset = i32::from_le_bytes(site.sentinel[1..5].try_into().unwrap());
+        let (at, original, len) = verify_call(base, site)?;
+        let offset = i32::from_le_bytes([original[1], original[2], original[3], original[4]]);
         let target = at
             .checked_add(5)
             .and_then(|p| p.checked_add_signed(offset as isize))
             .ok_or_else(|| hook_failure(site, "construction", "selected call target overflow"))?;
-        let hook = unsafe { Hook::new_call_span(at, callback, site.sentinel, len) }
+        let hook = unsafe { Hook::new_call_span(at, callback, original, len) }
             .map_err(|cause| hook_failure(site, "construction", cause))?
             .named(site.label());
         CALL[index].store(target, Ordering::Release);
@@ -810,8 +806,9 @@ pub(super) unsafe fn hooks(
         {
             continue;
         }
+        let (at, original) = verify(site)?;
         taps.push(
-            unsafe { Tap::new(verify(site)?, tap, index, site.sentinel) }
+            unsafe { Tap::new(at, tap, index, original) }
                 .map_err(|cause| hook_failure(site, "construction", cause))?
                 .named(site.label()),
         );
@@ -819,10 +816,30 @@ pub(super) unsafe fn hooks(
     Ok((hooks, taps))
 }
 
-pub(super) unsafe fn selection_tap(memory: &impl Memory, base: usize) -> Result<Tap, &'static str> {
+/// Adjacent CALLs own only their bytes before the next one.
+pub(super) const REACTIVATE_DAYS_LEN: usize =
+    sites::REACTIVATE_TARGETED_STATE.rva.0 - sites::REACTIVATE_TARGETED_DAYS.rva.0;
+pub(super) const REQUEST_TIMED_LEN: usize =
+    sites::REQUEST_TARGETED.rva.0 - sites::REQUEST_TARGETED_TIMED.rva.0;
+
+/// A CALL site's address, its patch bytes and the span it owns.
+fn verify_call(base: usize, site: native::Site) -> Result<(usize, [u8; 16], usize), &'static str> {
+    Ok(if site.rva == sites::REACTIVATE_TARGETED_DAYS.rva {
+        let (at, original) = verify_hook::<REACTIVATE_DAYS_LEN>(base, site)?;
+        (at, original, REACTIVATE_DAYS_LEN)
+    } else if site.rva == sites::REQUEST_TARGETED_TIMED.rva {
+        let (at, original) = verify_hook::<REQUEST_TIMED_LEN>(base, site)?;
+        (at, original, REQUEST_TIMED_LEN)
+    } else {
+        let (at, original) = verify_hook::<16>(base, site)?;
+        (at, original, 16)
+    })
+}
+
+pub(super) unsafe fn selection_tap(base: usize) -> Result<Tap, &'static str> {
     let site = sites::TARGETED_SELECTION_RESULT;
-    let at = verify_hook(memory, base, site, site.sentinel.len())?;
-    unsafe { Tap::new(at, tap, 16, site.sentinel) }
+    let (at, original) = verify_hook::<16>(base, site)?;
+    unsafe { Tap::new(at, tap, 16, original) }
         .map(|tap| tap.named(site.label()))
         .map_err(|cause| hook_failure(site, "construction", cause))
 }
@@ -869,19 +886,19 @@ mod tests {
         }
         fn new(days: [i32; 5]) -> Self {
             let mut memory = Self::default();
-            memory.q(cgame_state::SINGLETON_RVA, GAME);
+            memory.q(cgame_state::SINGLETON_RVA.0, GAME);
             memory.d(GAME + cgame_state::CURRENT_HOUR, 7);
             memory.array(GAME + cgame_state::COUNTRIES, 0x1000, 2);
             memory.array(GAME + cgame_state::COUNTRY_LINKS, 0x2000, 2);
             memory.q(0x1000 + 8, COUNTRY);
             memory.d(0x2000 + 4, 1);
-            memory.q(COUNTRY, ccountry::VTABLE_RVA);
+            memory.q(COUNTRY, ccountry::VTABLE_RVA.0);
             memory.d(COUNTRY + ccountry::ID, 1);
             memory.d(COUNTRY + ccountry::SURRENDER_TARGET, 44);
             memory.q(COUNTRY + ccountry::POLITICAL_STATUS, 0);
             memory.q(COUNTRY + ccountry::DECISION_STATUS, STATUS);
             memory.array(COUNTRY + runtime::IGNORED_TOKENS, 0, 0);
-            memory.q(STATUS, cdecision_status::VTABLE_RVA);
+            memory.q(STATUS, cdecision_status::VTABLE_RVA.0);
             memory.q(STATUS + cdecision_status::COUNTRY, COUNTRY);
             for offset in runtime::HEADERS
                 .into_iter()
@@ -895,10 +912,10 @@ mod tests {
                 let pointer = Self::pointer(ordinal);
                 let definition = 0x60000 + ordinal * 0x1000;
                 memory.q(DATA + ordinal * 8, pointer);
-                memory.q(pointer, cooldown::VTABLE_RVA);
+                memory.q(pointer, cooldown::VTABLE_RVA.0);
                 memory.q(pointer + cooldown::DEFINITION, definition);
                 memory.d(pointer + cooldown::DAYS, days as u32);
-                memory.q(definition, cdecision::VTABLE_RVA);
+                memory.q(definition, cdecision::VTABLE_RVA.0);
                 memory.bytes(
                     definition + runtime::PERMANENT,
                     &[u8::from(ordinal % 2 == 1)],
@@ -1092,13 +1109,13 @@ mod tests {
         memory.array(GAME + cgame_state::COUNTRY_LINKS, 0x2000, 3);
         memory.q(0x1000 + 16, COUNTRY2);
         memory.d(0x2000 + 8, 2);
-        memory.q(COUNTRY2, ccountry::VTABLE_RVA);
+        memory.q(COUNTRY2, ccountry::VTABLE_RVA.0);
         memory.d(COUNTRY2 + ccountry::ID, 2);
         memory.d(COUNTRY2 + ccountry::SURRENDER_TARGET, 45);
         memory.q(COUNTRY2 + ccountry::POLITICAL_STATUS, 0);
         memory.q(COUNTRY2 + ccountry::DECISION_STATUS, STATUS2);
         memory.array(COUNTRY2 + runtime::IGNORED_TOKENS, 0, 0);
-        memory.q(STATUS2, cdecision_status::VTABLE_RVA);
+        memory.q(STATUS2, cdecision_status::VTABLE_RVA.0);
         memory.q(STATUS2 + cdecision_status::COUNTRY, COUNTRY2);
         for offset in runtime::HEADERS
             .into_iter()
@@ -1600,7 +1617,7 @@ mod tests {
 
         fn timed(days: i32) -> Object {
             let mut object = Object::new();
-            object.q(0, ctimed_decision::VTABLE_RVA);
+            object.q(0, ctimed_decision::VTABLE_RVA.0);
             object.q(ctimed_decision::DEFINITION, 0x7000);
             object.d(ctimed_decision::DAYS, days);
             object.d(ctimed_decision::STATE, 2);
@@ -1641,7 +1658,7 @@ mod tests {
                 }]
             );
             let mut timer = Object::new();
-            timer.q(0, cdecision_cooldown::VTABLE_RVA);
+            timer.q(0, cdecision_cooldown::VTABLE_RVA.0);
             timer.q(cdecision_cooldown::DEFINITION, 0x7000);
             timer.d(cdecision_cooldown::DAYS, 20);
             CALL[EXTEND_DECISION_REMOVAL]

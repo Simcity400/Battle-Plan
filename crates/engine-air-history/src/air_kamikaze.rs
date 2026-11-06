@@ -22,6 +22,7 @@ use crate::{
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
     read,
 };
+use engine_sites::Rva;
 
 /// Enemy-ships-sunk and own-fighters-lost channels.
 pub const ENEMY_SHIPS_SUNK: usize = 43;
@@ -187,8 +188,8 @@ fn header(bytes: &[u8], at: usize) -> Result<Array, &'static str> {
         .ok_or("naval-patrol vector header invalid")
 }
 
-fn rva(base: usize, rva: usize) -> Result<u64, &'static str> {
-    base.checked_add(rva)
+fn rva(base: usize, key: Rva) -> Result<u64, &'static str> {
+    engine_sites::at(base, key)
         .map(|at| at as u64)
         .ok_or("module address overflow")
 }
@@ -924,17 +925,17 @@ mod tests {
         for f in 0..fleets {
             let fleet = FLEET + f * FLEET_SIZE;
             image.q(FLEETS + f * 8, fleet as u64);
-            image.q(fleet, (BASE + cfleet::VTABLE_RVA) as u64);
+            image.q(fleet, (BASE + cfleet::VTABLE_RVA.0) as u64);
             let list = TASKS + f * tasks * 8;
             image.vector(fleet + cfleet::TASK_FORCES, list, tasks as u32);
             for t in 0..tasks {
                 let index = f * tasks + t;
                 let task = TASK + index * TASK_SIZE;
                 image.q(list + t * 8, task as u64);
-                image.q(task, (BASE + ctask_force::VTABLE_RVA) as u64);
+                image.q(task, (BASE + ctask_force::VTABLE_RVA.0) as u64);
                 image.q(
                     task + ctask_force::SECONDARY_BASE,
-                    (BASE + ctask_force::SECONDARY_VTABLE_RVA) as u64,
+                    (BASE + ctask_force::SECONDARY_VTABLE_RVA.0) as u64,
                 );
                 let Some((naval, province, region)) = combat(f, t) else {
                     continue;
@@ -949,13 +950,13 @@ mod tests {
                 } else {
                     crate::cland_combat::VTABLE_RVA
                 };
-                image.q(combat, (BASE + vtable) as u64);
+                image.q(combat, (BASE + vtable.0) as u64);
                 image.q(combat + cnaval_combat::PROVINCE, province_at as u64);
-                image.q(province_at, (BASE + cprovince::VTABLE_RVA) as u64);
+                image.q(province_at, (BASE + cprovince::VTABLE_RVA.0) as u64);
                 image.d(province_at + cprovince::ID, province);
                 if region != 0 {
                     image.q(province_at + cprovince::STRATEGIC_REGION, region_at as u64);
-                    image.q(region_at, (BASE + cstrategic_region::VTABLE_RVA) as u64);
+                    image.q(region_at, (BASE + cstrategic_region::VTABLE_RVA.0) as u64);
                     image.d(region_at + cstrategic_region::ID, region);
                 }
             }
@@ -1017,7 +1018,7 @@ mod tests {
         let mut image = fleets(1, 2, |_, t| Some((t == 1, 11, 7)));
         // The first combat ends the image: nothing past its vtable is readable.
         let land = image.0.len() - 8;
-        image.q(land, (BASE + crate::cland_combat::VTABLE_RVA) as u64);
+        image.q(land, (BASE + crate::cland_combat::VTABLE_RVA.0) as u64);
         image.q(TASK + 0x1c0, land as u64);
         assert_eq!(
             walk(&image).0,
@@ -1027,7 +1028,7 @@ mod tests {
             }])
         );
         // A naval combat there still needs its province.
-        image.q(land, (BASE + cnaval_combat::VTABLE_RVA) as u64);
+        image.q(land, (BASE + cnaval_combat::VTABLE_RVA.0) as u64);
         assert_eq!(walk(&image).0, Err("naval-patrol combat unreadable"));
     }
 
@@ -1074,7 +1075,7 @@ mod tests {
         let roots = (0..=countries)
             .map(|slot| {
                 let root = world.alloc(cstrategic_air::COUNTRY + 4);
-                world.u64(root, (BASE + cstrategic_air::VTABLE_RVA) as u64);
+                world.u64(root, (BASE + cstrategic_air::VTABLE_RVA.0) as u64);
                 world.u32(root + cstrategic_air::COUNTRY, slot);
                 root
             })
@@ -1151,13 +1152,13 @@ mod tests {
         const RECORD: usize = 0x400;
         const VALUES: usize = 0x1000;
         let mut image = Image(vec![0; 0x3000]);
-        image.q(HISTORY, (BASE + cloop_history::VTABLE_RVA) as u64);
+        image.q(HISTORY, (BASE + cloop_history::VTABLE_RVA.0) as u64);
         image.d(
             HISTORY + cloop_history::FIELD_COUNT,
             cloop_history::air_stats::FIELD_COUNT,
         );
         image.q(HISTORY + FIRST_WINDOW, WINDOW as u64);
-        image.q(WINDOW, (BASE + loop_history_window::VTABLE_RVA) as u64);
+        image.q(WINDOW, (BASE + loop_history_window::VTABLE_RVA.0) as u64);
         image.vector(WINDOW + loop_history_window::RECORDS, RECORDS, 4);
         image.d(WINDOW + loop_history_window::CAPACITY, 4);
         image.d(WINDOW + loop_history_window::CURRENT_SLOT, 2);

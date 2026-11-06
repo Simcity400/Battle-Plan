@@ -794,7 +794,7 @@ mod tests {
         struct World(Vec<u8>);
         impl Memory for World {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-                if at == BASE + registry::LOW_ROOTS_RVA + 8 {
+                if at == BASE + registry::LOW_ROOTS_RVA.0 + 8 {
                     out.copy_from_slice(&0x7000u64.to_le_bytes());
                     return true;
                 }
@@ -818,10 +818,10 @@ mod tests {
                 for index in 0..count {
                     let at = 0x20000 + index * 0x200;
                     put(&mut world.0, 0x8000 + index * 8, at as u64);
-                    put(&mut world.0, at, (BASE + result::VTABLE_RVA) as u64);
+                    put(&mut world.0, at, (BASE + result::VTABLE_RVA.0) as u64);
                     put(&mut world.0, at + 8, ((index as u64 + 1) << 32) | 4713);
                     for offset in [result::FIRST_SIDE, result::SECOND_SIDE] {
-                        put(&mut world.0, at + offset, (BASE + side::VTABLE_RVA) as u64);
+                        put(&mut world.0, at + offset, (BASE + side::VTABLE_RVA.0) as u64);
                     }
                 }
                 let hash = HQ.rotate_left(32).wrapping_mul(registry::HASH_MULTIPLIER);
@@ -957,8 +957,8 @@ mod tests {
         assert_eq!(
             *memory.0.borrow(),
             [
-                engine_native::creference_registry::HIGH_ROOT_RVA,
-                engine_native::creference_registry::LOW_ROOTS_RVA + 17 * 8
+                engine_native::creference_registry::HIGH_ROOT_RVA.0,
+                engine_native::creference_registry::LOW_ROOTS_RVA.0 + 17 * 8
             ]
         );
         pass.commanders_required = usize::MAX;
@@ -1107,31 +1107,31 @@ mod tests {
         for (at, value) in [
             (0x800, 0x1000u64),
             (0x808, 0x1000),
-            (0x1000, (BASE + result::VTABLE_RVA) as u64),
+            (0x1000, (BASE + result::VTABLE_RVA.0) as u64),
             (0x1008, 0xaabb_ccdd_0000_0010),
-            (0x1018, (BASE + side::VTABLE_RVA) as u64),
-            (0x1088, (BASE + side::VTABLE_RVA) as u64),
+            (0x1018, (BASE + side::VTABLE_RVA.0) as u64),
+            (0x1088, (BASE + side::VTABLE_RVA.0) as u64),
             (0x1800, 0x2000),
             (0x1808, 0x2000),
             (0x1820, 0x2200),
             (0x1900, 0x2800),
             (0x1908, 0x2800),
             (0x1920, 0x2900),
-            (0x2000, (BASE + ship::VTABLE_RVA) as u64),
+            (0x2000, (BASE + ship::VTABLE_RVA.0) as u64),
             (0x2008, 0x1122_3344_0000_0020),
-            (0x2200, (BASE + plane::VTABLE_RVA) as u64),
+            (0x2200, (BASE + plane::VTABLE_RVA.0) as u64),
             (0x2208, 0x2400),
             (
                 0x2400,
-                (BASE + engine_native::cequipment_variant::VTABLE_RVA) as u64,
+                (BASE + engine_native::cequipment_variant::VTABLE_RVA.0) as u64,
             ),
             (0x2408, 0x1234_5678_0000_0030),
             (0x26a0, i64::MIN as u64),
             (0x26a8, i64::MAX as u64),
-            (0x2800, (BASE + naval_combat_hit::VTABLE_RVA) as u64),
+            (0x2800, (BASE + naval_combat_hit::VTABLE_RVA.0) as u64),
             (0x2838, i64::MIN as u64),
             (0x2840, i64::MAX as u64),
-            (0x2900, (BASE + naval_combat_air_hit::VTABLE_RVA) as u64),
+            (0x2900, (BASE + naval_combat_air_hit::VTABLE_RVA.0) as u64),
             (0x2908, 0x2400),
         ] {
             word(&mut bytes, at, value);
@@ -1342,10 +1342,10 @@ mod tests {
             for index in 0..count {
                 let body = OBJECTS + index * 0x200;
                 put(&mut bytes, POINTERS + index * 8, body as u64);
-                put(&mut bytes, body, (BASE + result::VTABLE_RVA) as u64);
+                put(&mut bytes, body, (BASE + result::VTABLE_RVA.0) as u64);
                 put(&mut bytes, body + 8, ((index as u64 + 1) << 32) | 4713);
                 for offset in [result::FIRST_SIDE, result::SECOND_SIDE] {
-                    put(&mut bytes, body + offset, (BASE + side::VTABLE_RVA) as u64);
+                    put(&mut bytes, body + offset, (BASE + side::VTABLE_RVA.0) as u64);
                 }
             }
             let memory = engine_native::memory::SliceMemory {

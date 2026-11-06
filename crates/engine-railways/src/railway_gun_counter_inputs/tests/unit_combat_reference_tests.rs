@@ -15,19 +15,19 @@ fn full_reference_fixture() -> EtaFixture {
     for (pointer, primary, secondary, handle) in [
         (
             COMBAT,
-            cland_combat::VTABLE_RVA,
-            cland_combat::BODY_VTABLE_RVA,
+            cland_combat::VTABLE_RVA.0,
+            cland_combat::BODY_VTABLE_RVA.0,
             LAND_REFERENCE,
         ),
         (
             COMBAT_TWO,
-            crate::cland_border_war_combat::VTABLE_RVA,
-            crate::cland_border_war_combat::BODY_VTABLE_RVA,
+            crate::cland_border_war_combat::VTABLE_RVA.0,
+            crate::cland_border_war_combat::BODY_VTABLE_RVA.0,
             BORDER_REFERENCE,
         ),
         (
             NAVAL,
-            crate::cnaval_combat::VTABLE_RVA,
+            crate::cnaval_combat::VTABLE_RVA.0,
             0x02a5_6e70,
             NAVAL_REFERENCE,
         ),

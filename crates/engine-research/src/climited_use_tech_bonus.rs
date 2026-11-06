@@ -1,9 +1,10 @@
 //! Limited-use technology bonus. Applied ids belong to the technology;
 //! speed and ahead reductions each select their maximum independently.
+use engine_sites::Rva;
 use crate::{Memory, read, research_inputs::Text};
 
 /// Limited-use technology bonus primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_1918;
+pub const VTABLE_RVA: Rva = Rva(0x029f_1918);
 pub const NAME: usize = 0x10;
 pub const ID: usize = 0x30;
 pub const USES: usize = 0x08;

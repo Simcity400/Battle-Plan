@@ -7,7 +7,7 @@ fn faction_resource_pool_uses_live_mod_resource_count_and_retains_zero_and_negat
     let data = 0x1000;
     let count = 5001;
     let mut bytes = vec![0; data + count * VALUE_STRIDE];
-    bytes[pool..pool + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[pool..pool + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[pool + 8..pool + 16].copy_from_slice(&(data as u64).to_le_bytes());
     bytes[pool + 16..pool + 20].copy_from_slice(&(count as u32).to_le_bytes());
     bytes[pool + 20..pool + 24].copy_from_slice(&(count as u32).to_le_bytes());
@@ -55,7 +55,7 @@ fn faction_resource_pool_refuses_bad_counts_and_incomplete_payloads() {
     let pool = 0x100;
     let data = 0x400;
     let mut bytes = vec![0; data + VALUE_STRIDE + 11];
-    bytes[pool..pool + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[pool..pool + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[pool + 8..pool + 16].copy_from_slice(&(data as u64).to_le_bytes());
     bytes[pool + 16..pool + 20].copy_from_slice(&2_u32.to_le_bytes());
     bytes[pool + 20..pool + 24].copy_from_slice(&2_u32.to_le_bytes());

@@ -15,6 +15,7 @@ use engine_native::{
     memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
     read,
 };
+use engine_sites::Rva;
 
 const CONSUMERS: usize = 0x1b8;
 const CONSUMER_STRIDE: usize = 16;
@@ -34,8 +35,8 @@ const UNIT_COUNTRY: usize = 0x1c8;
 const OTHER_COUNTRY: usize = 0xa8;
 const ACCESS_COUNTRIES: usize = 0x1410;
 const OFFERED_ACCESS: usize = 0x2c8;
-const VERY_LOW_THRESHOLD: usize = 0x033e_34c0;
-const LOW_THRESHOLD: usize = 0x033e_35c0;
+const VERY_LOW_THRESHOLD: Rva = Rva(0x033e_34c0);
+const LOW_THRESHOLD: Rva = Rva(0x033e_35c0);
 const BATCH: usize = 64;
 
 // Every consumer kind holds its own from-state amount, so [PROVINCE, FROM_STATE + 8)
@@ -129,6 +130,12 @@ struct Consumer {
 fn field<T: Raw>(memory: &impl Memory, object: usize, offset: usize) -> Result<T, &'static str> {
     object
         .checked_add(offset)
+        .and_then(|address| read(memory, address))
+        .ok_or("regional Air supply operand unreadable")
+}
+
+fn global<T: Raw>(memory: &impl Memory, base: usize, key: Rva) -> Result<T, &'static str> {
+    engine_sites::at(base, key)
         .and_then(|address| read(memory, address))
         .ok_or("regional Air supply operand unreadable")
 }
@@ -258,7 +265,10 @@ impl Scratch {
         base: usize,
         region: usize,
     ) -> Result<Option<u32>, &'static str> {
-        match self.region_ids.binary_search_by_key(&region, |&(pointer, _)| pointer) {
+        match self
+            .region_ids
+            .binary_search_by_key(&region, |&(pointer, _)| pointer)
+        {
             Ok(at) => self.region_ids[at].1,
             Err(at) => {
                 let id = cstrategic_region::id(memory, base, region);
@@ -307,9 +317,17 @@ impl Scratch {
                 }
             }
             let mut buckets = [0u8; BATCH * BUCKET];
-            gather(memory, &cells[..probed], &BUCKET_LAYOUT, &mut buckets, "reference bucket unreadable")?;
+            gather(
+                memory,
+                &cells[..probed],
+                &BUCKET_LAYOUT,
+                &mut buckets,
+                "reference bucket unreadable",
+            )?;
             let mut resolved = 0;
-            for (&(handle, header), first) in probes[..probed].iter().zip(buckets.chunks_exact(BUCKET)) {
+            for (&(handle, header), first) in
+                probes[..probed].iter().zip(buckets.chunks_exact(BUCKET))
+            {
                 let header = header.ok_or("reference header unread")?;
                 if let Some(consumer) =
                     resolver.resolve_gathered(memory, header, handle, first.try_into().unwrap())?
@@ -345,7 +363,13 @@ impl Scratch {
             return Ok(());
         }
         let mut spans = [0u8; BATCH * SPAN];
-        gather(memory, pointers, &SPAN_LAYOUT, &mut spans, "regional Air supply consumers unreadable")?;
+        gather(
+            memory,
+            pointers,
+            &SPAN_LAYOUT,
+            &mut spans,
+            "regional Air supply consumers unreadable",
+        )?;
         let mut consumers = [Consumer::default(); BATCH];
         let mut origin_counts = [0u32; BATCH];
         self.origins.clear();
@@ -413,11 +437,23 @@ impl Scratch {
             return Ok(());
         }
         let mut words = [0u8; BATCH * 8];
-        gather(memory, &addresses[..count], &U64_LAYOUT, &mut words, "regional Air supply province unreadable")?;
+        gather(
+            memory,
+            &addresses[..count],
+            &U64_LAYOUT,
+            &mut words,
+            "regional Air supply province unreadable",
+        )?;
         for (address, word) in addresses[..count].iter_mut().zip(words.chunks_exact(8)) {
             *address = u64::from_le_bytes(word.try_into().unwrap()) as usize;
         }
-        gather(memory, &addresses[..count], &REGION_LAYOUT, &mut words, "regional Air supply operand unreadable")?;
+        gather(
+            memory,
+            &addresses[..count],
+            &REGION_LAYOUT,
+            &mut words,
+            "regional Air supply operand unreadable",
+        )?;
         let mut kept = 0;
         for at in 0..count {
             let region = u64::from_le_bytes(words[at * 8..at * 8 + 8].try_into().unwrap()) as usize;
@@ -462,7 +498,13 @@ impl Scratch {
         }
         if plains != 0 {
             let mut bytes = [0u8; BATCH * 4];
-            gather(memory, &owners[..plains], &U32_LAYOUT, &mut bytes, "regional Air supply operand unreadable")?;
+            gather(
+                memory,
+                &owners[..plains],
+                &U32_LAYOUT,
+                &mut bytes,
+                "regional Air supply operand unreadable",
+            )?;
             for (&at, owner) in plain[..plains].iter().zip(bytes.chunks_exact(4)) {
                 candidates[at].owner = u32::from_le_bytes(owner.try_into().unwrap());
             }
@@ -556,8 +598,8 @@ impl Capture {
             countries: &countries,
             provinces: array(memory, game, engine_native::cgame_state::PROVINCES, 8)?,
             thresholds: [
-                field::<i64>(memory, base, VERY_LOW_THRESHOLD)?,
-                field::<i64>(memory, base, LOW_THRESHOLD)?,
+                global::<i64>(memory, base, VERY_LOW_THRESHOLD)?,
+                global::<i64>(memory, base, LOW_THRESHOLD)?,
             ],
         };
         let Self { rows, scratch } = self;

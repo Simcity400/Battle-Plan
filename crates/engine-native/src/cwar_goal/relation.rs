@@ -2,9 +2,10 @@
 use crate::{
     Memory, ccountry, cpdx_array::Array, creference_registry, cstate, cwar_goal_type, read,
 };
+use engine_sites::Rva;
 
 /// Primary goal vtable.
-pub const VTABLE_RVA: usize = 0x02a5_9250;
+pub const VTABLE_RVA: Rva = Rva(0x02a5_9250);
 /// Registered u64 reference.
 pub const HANDLE: usize = 8;
 /// Embedded goal actor.
@@ -43,7 +44,7 @@ pub fn read_goal(
     let Some(pointer) = creference_registry::resolve(memory, base, row.handle)? else {
         return Ok(row);
     };
-    if read::<u64>(memory, pointer) != base.checked_add(VTABLE_RVA).map(|p| p as u64) {
+    if read::<u64>(memory, pointer) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64) {
         return Err("war goal vtable mismatch");
     }
     let field = |offset| {
@@ -68,7 +69,8 @@ pub fn read_goal(
         let state = read::<u64>(memory, states.data)
             .ok_or("war goal first state pointer unreadable")? as usize;
         if state == 0
-            || read::<u64>(memory, state) != base.checked_add(cstate::VTABLE_RVA).map(|p| p as u64)
+            || read::<u64>(memory, state)
+                != engine_sites::at(base, cstate::VTABLE_RVA).map(|p| p as u64)
         {
             return Err("war goal state vtable mismatch");
         }
@@ -118,14 +120,14 @@ mod tests {
         let table = world.alloc(registry::SIZE);
         let entries = world.alloc(14 * bucket::STRIDE);
         let handle = (41_u64 << 32) | 12_345;
-        world.u64(goal, VTABLE_RVA as u64);
+        world.u64(goal, VTABLE_RVA.0 as u64);
         world.u64(goal + HANDLE, handle);
         world.u32(goal + ACTOR, 1);
         world.u32(goal + RECIPIENT, 2);
         world.u64(goal + TYPE, definition as u64);
-        world.u64(definition, cwar_goal_type::VTABLE_RVA as u64);
+        world.u64(definition, cwar_goal_type::VTABLE_RVA.0 as u64);
         world.u32(definition + cwar_goal_type::TOKEN, 42);
-        world.u64(state, cstate::VTABLE_RVA as u64);
+        world.u64(state, cstate::VTABLE_RVA.0 as u64);
         world.u32(state + cstate::ID, 91);
         world.u64(state_list, state as u64);
         world.u32(country_list, 2);
@@ -150,7 +152,7 @@ mod tests {
         }
         impl crate::Memory for MemoryWithRoot<'_> {
             fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                if address == registry::HIGH_ROOT_RVA && destination.len() == 8 {
+                if address == registry::HIGH_ROOT_RVA.0 && destination.len() == 8 {
                     destination.copy_from_slice(&(self.table as u64).to_le_bytes());
                     true
                 } else {
@@ -186,9 +188,9 @@ mod tests {
             (2, 91, 3, 2)
         );
         for (address, expected) in [
-            (goal, VTABLE_RVA),
-            (definition, cwar_goal_type::VTABLE_RVA),
-            (state, cstate::VTABLE_RVA),
+            (goal, VTABLE_RVA.0),
+            (definition, cwar_goal_type::VTABLE_RVA.0),
+            (state, cstate::VTABLE_RVA.0),
         ] {
             world.u64(address, 1);
             assert!(read(&world).is_err());

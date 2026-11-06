@@ -1,3 +1,4 @@
+use engine_sites::Rva;
 use crate::{
     Memory, cgame_state,
     cpdx_array::Array,
@@ -201,8 +202,7 @@ fn unit_order(
         output.ensure(total)?;
         let mut len = 0_usize;
         let mut missing = 0u32;
-        let vtable = base
-            .checked_add(VTABLE_RVA)
+        let vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let mut registry = crate::creference_registry::HeaderResolver::default();
         let mut pointer_bytes = [0u8; BATCH_ROWS * 8];
@@ -505,8 +505,7 @@ fn walk_direct_combats_listed(
             .and_then(|root| Array::read(memory, root, 8))
             .filter(|provinces| provinces.count > 1)
             .ok_or("province combat census invalid")?;
-        let vtable = base
-            .checked_add(VTABLE_RVA)
+        let vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         // In the order of `KINDS`.
         let classes = [
@@ -514,7 +513,7 @@ fn walk_direct_combats_listed(
             crate::cland_border_war_combat::VTABLE_RVA,
             crate::cnaval_combat::VTABLE_RVA,
         ]
-        .map(|rva| base.checked_add(rva).map(|address| address as u64));
+        .map(|rva| engine_sites::at(base, rva).map(|address| address as u64));
         let (mut len, mut missing) = (0usize, 0u32);
         let mut pointer_bytes = [0u8; BATCH_ROWS * 8];
         let mut pointers = [0usize; BATCH_ROWS];
@@ -678,7 +677,7 @@ const DIRECT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DIRECT_FIELDS, DIRECT_ROW_BYTES).expect("valid record layout");
 
 /// Province primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_e358;
+pub const VTABLE_RVA: Rva = Rva(0x029e_e358);
 /// Province ID authenticated against its roster slot.
 pub const ID: usize = 0xa4;
 /// Owning-state pointer.
@@ -1023,8 +1022,7 @@ pub fn walk_names_buffer(
         if array.count < 2 {
             return Err("province names array has no province slots");
         }
-        let expected = base
-            .checked_add(VTABLE_RVA)
+        let expected = engine_sites::at(base, VTABLE_RVA)
             .ok_or("province names module address overflow")? as u64;
         let mut len = 0_usize;
         let mut missing = 0_u32;
@@ -1245,8 +1243,7 @@ impl StateCache {
                 break;
             }
         }
-        let vtable = base
-            .checked_add(cstate::VTABLE_RVA)
+        let vtable = engine_sites::at(base, cstate::VTABLE_RVA)
             .ok_or("module address overflow")?;
         let mut vtable_bytes = [0; 8];
         let mut id_bytes = [0; 4];
@@ -1430,8 +1427,7 @@ impl ProvinceBatch {
         body: usize,
         states: &mut StateCache,
     ) -> Result<Row, &'static str> {
-        let vtable = base
-            .checked_add(VTABLE_RVA)
+        let vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")?;
         let first = body * FIELDS_PER_ROW;
         if self.field_count <= first || u64::from_le_bytes(self.fields[first]) != vtable as u64 {
@@ -1858,8 +1854,7 @@ pub fn conflict_group_demand(
         .and_then(|address| Array::read(memory, address, 8))
         .filter(|array| array.count >= 2)
         .ok_or("border conflict demand root invalid")?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
+    let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     let mut required = 0_usize;
     crate::cpdx_array::pointers(
@@ -1967,8 +1962,8 @@ fn border_conflict_groups(
         output.ensure(required)?;
     }
     let mut admitted = 0_usize;
-    let expected = |rva: usize| {
-        base.checked_add(rva)
+    let expected = |rva: Rva| {
+        engine_sites::at(base, rva)
             .map(|value| value as u64)
             .ok_or("module address overflow")
     };
@@ -2642,7 +2637,7 @@ impl GeometryPacket {
                 false,
             )
         };
-        if self.base.checked_add(VTABLE_RVA).map(|value| value as u64) != Some(vtable?) {
+        if engine_sites::at(self.base, VTABLE_RVA).map(|value| value as u64) != Some(vtable?) {
             return Err("unit geometry province identity mismatch");
         }
         let id = match self.provinces[index].id {
@@ -3012,7 +3007,7 @@ pub fn movement_province(
             .ok_or("movement province field unreadable")
     };
     if pointer == 0
-        || Some(field(0)?) != base.checked_add(VTABLE_RVA).map(|p| p as u64)
+        || Some(field(0)?) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
         || pointer
             .checked_add(ID)
             .and_then(|address| crate::read::<u32>(memory, address))
@@ -3183,7 +3178,7 @@ pub fn movement_provinces(
     mut each: impl FnMut(u32, Result<MovementProvince, &'static str>),
 ) {
     const MISMATCH: &str = "movement province identity mismatch";
-    let vtable = base.checked_add(VTABLE_RVA).map(|pointer| pointer as u64);
+    let vtable = engine_sites::at(base, VTABLE_RVA).map(|pointer| pointer as u64);
     for ids in ids.chunks(BATCH_ROWS) {
         let mut results: MovementResults = [const { None }; BATCH_ROWS];
         let alone = |row: usize| movement_province(memory, base, provinces, ids[row]);

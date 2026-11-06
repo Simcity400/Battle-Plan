@@ -36,8 +36,7 @@ fn observe_static_key(
     let root = state
         .checked_add(cgame_state::PROVINCES)
         .and_then(|address| crate::read::<[u8; 16]>(memory, address));
-    let session = base
-        .checked_add(cgame_state::PLAY_SESSION_STARTED_AT_RVA)
+    let session = engine_sites::at(base, cgame_state::PLAY_SESSION_STARTED_AT_RVA)
         .and_then(|address| crate::read::<i64>(memory, address));
     let key = root.zip(session).map(|(root, session)| StaticGeometryKey {
         base,
@@ -220,9 +219,7 @@ impl StaticGeometry {
             return Err("static geometry province unreadable");
         }
         if u64::from_le_bytes(vtable)
-            != base
-                .checked_add(VTABLE_RVA)
-                .ok_or("module address overflow")? as u64
+            != engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64
             || u32::from_le_bytes(identity) != id
         {
             return Err("static geometry province identity mismatch");
@@ -339,7 +336,9 @@ impl StaticGeometry {
             return Ok(distance);
         }
         self.counters.misses = self.counters.misses.saturating_add(1);
-        let distance = geometry_field(memory, base, crate::cunit::EMBARK_MOVEMENT_DISTANCE_RVA)?;
+        let distance = engine_sites::at(base, crate::cunit::EMBARK_MOVEMENT_DISTANCE_RVA)
+            .and_then(|address| crate::read(memory, address))
+            .ok_or("unit geometry field unreadable")?;
         if self.usable() {
             self.embark = Some(distance);
         }

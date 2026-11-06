@@ -43,9 +43,7 @@ fn row(
         return Err("raid facility pointer is null");
     }
     let header: [u8; 0x20] = field(memory, pointer, 0)?;
-    let expected = base
-        .checked_add(program::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, program::VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64 {
         return Err("raid facility vtable mismatch");
     }
@@ -181,15 +179,19 @@ mod tests {
             put(&mut bytes, array + slot * 8, country as u64);
             bytes[links + slot * 4..links + slot * 4 + 4]
                 .copy_from_slice(&(slot as u32).to_le_bytes());
-            put(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            put(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
             put(&mut bytes, country + ccountry::ID, slot as u64);
             put(
                 &mut bytes,
                 country + ccountry::PROGRAM_STATUS,
                 status as u64,
             );
-            put(&mut bytes, status, status::VTABLE_RVA as u64);
-            put(&mut bytes, status + 8, status::SECONDARY_VTABLE_RVA as u64);
+            put(&mut bytes, status, status::VTABLE_RVA.0 as u64);
+            put(
+                &mut bytes,
+                status + 8,
+                status::SECONDARY_VTABLE_RVA.0 as u64,
+            );
             put(&mut bytes, status + 0x10, slot as u64);
             put(&mut bytes, status + 0x20, list as u64);
             put(&mut bytes, status + 0x28, (2u64 << 32) | 2);
@@ -197,7 +199,7 @@ mod tests {
             // first-province lookup and must not be deduplicated.
             put(&mut bytes, list, program as u64);
             put(&mut bytes, list + 8, program as u64);
-            put(&mut bytes, program, program::VTABLE_RVA as u64);
+            put(&mut bytes, program, program::VTABLE_RVA.0 as u64);
             put(
                 &mut bytes,
                 program + 8,
@@ -272,7 +274,7 @@ mod tests {
     #[test]
     fn optional_project_preserves_zero_and_ignores_inactive_storage() {
         let mut bytes = vec![0u8; 0x56];
-        bytes[..8].copy_from_slice(&(program::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(program::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8..12].copy_from_slice(&program::REFERENCE_TYPE.to_le_bytes());
         bytes[12..16].copy_from_slice(&7u32.to_le_bytes());
         let read_row = |bytes: &[u8]| {

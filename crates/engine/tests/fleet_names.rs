@@ -62,7 +62,7 @@ fn named_fleet_walk_keeps_all_countries_empty_bytes_and_independent_refusals() {
         };
         bytes[cfleet::LEADER..cfleet::LEADER + 8].copy_from_slice(&leader.to_le_bytes());
     }
-    let invalid = world.base + engine_native::creference_registry::INVALID_REFERENCE_RVA;
+    let invalid = world.base + engine_native::creference_registry::INVALID_REFERENCE_RVA.0;
     let mut rows = vec![cfleet::Row::default(); COUNT];
     let mut tasks = vec![ctask_force::Row::default(); COUNT];
     let mut ships: [cship::Row; 0] = [];

@@ -1,5 +1,6 @@
 //! CAirGroup layout; hourly consistency is unproven.
 
+use engine_sites::Rva;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub id: u64,
@@ -21,7 +22,7 @@ pub struct MemberRow {
 }
 
 /// Air-group primary vtable.
-pub const VTABLE_RVA: usize = 0x02a4_6a20;
+pub const VTABLE_RVA: Rva = Rva(0x02a4_6a20);
 /// Reference type checked against the handle.
 pub const TYPE: u32 = 78;
 /// Full handle containing u32 type and id.

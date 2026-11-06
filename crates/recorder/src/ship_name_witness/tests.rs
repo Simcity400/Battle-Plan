@@ -45,11 +45,11 @@ fn string(bytes: &mut Vec<u8>, at: usize, text: &[u8]) {
 fn native_ship(bytes: &mut Vec<u8>, id: u64, text: &[u8], task: usize) -> (usize, usize) {
     let ship = allocate(bytes, cship::SIZE);
     let member = allocate(bytes, cname_group_member::INPUT_SPAN);
-    word(bytes, ship, cship::VTABLE_RVA as u64);
+    word(bytes, ship, cship::VTABLE_RVA.0 as u64);
     word(bytes, ship + cship::HANDLE, id);
     word(bytes, ship + cship::NAME_MEMBER, member as u64);
     word(bytes, ship + cship::TASK_FORCE, task as u64);
-    word(bytes, member, cname_group_member::VTABLE_RVA as u64);
+    word(bytes, member, cname_group_member::VTABLE_RVA.0 as u64);
     integer(bytes, member + cname_group_member::TYPE, i32::MIN as u32);
     string(bytes, member + cname_group_member::CACHED_NAME, text);
     (ship, member)
@@ -188,7 +188,7 @@ fn world(countries: u32) -> (Vec<u8>, usize, Vec<(usize, u64, Vec<u8>)>) {
     let links = allocate(&mut bytes, (countries as usize + 1) * 4);
     let provinces = allocate(&mut bytes, 16);
     let province = allocate(&mut bytes, cprovince::ID + 8);
-    word(&mut bytes, province, cprovince::VTABLE_RVA as u64);
+    word(&mut bytes, province, cprovince::VTABLE_RVA.0 as u64);
     integer(&mut bytes, province + cprovince::ID, 1);
     word(&mut bytes, provinces + 8, province as u64);
     array(
@@ -209,7 +209,7 @@ fn world(countries: u32) -> (Vec<u8>, usize, Vec<(usize, u64, Vec<u8>)>) {
         let country = allocate(&mut bytes, ccountry::FLEETS + 16);
         word(&mut bytes, roster + slot as usize * 8, country as u64);
         integer(&mut bytes, links + slot as usize * 4, slot);
-        word(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        word(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         integer(&mut bytes, country + ccountry::ID, slot);
         let count = if slot == 1 { 513 } else { slot % 7 };
         if count == 0 {
@@ -219,7 +219,7 @@ fn world(countries: u32) -> (Vec<u8>, usize, Vec<(usize, u64, Vec<u8>)>) {
         let fleet_roster = allocate(&mut bytes, 8);
         word(&mut bytes, fleet_roster, fleet as u64);
         array(&mut bytes, country + ccountry::FLEETS, fleet_roster, 1);
-        word(&mut bytes, fleet, cfleet::VTABLE_RVA as u64);
+        word(&mut bytes, fleet, cfleet::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             fleet + cfleet::HANDLE,
@@ -231,11 +231,11 @@ fn world(countries: u32) -> (Vec<u8>, usize, Vec<(usize, u64, Vec<u8>)>) {
         let tasks = allocate(&mut bytes, 8);
         word(&mut bytes, tasks, task as u64);
         array(&mut bytes, fleet + cfleet::TASK_FORCES, tasks, 1);
-        word(&mut bytes, task, ctask_force::VTABLE_RVA as u64);
+        word(&mut bytes, task, ctask_force::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             task + ctask_force::SECONDARY_BASE,
-            ctask_force::SECONDARY_VTABLE_RVA as u64,
+            ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
         );
         word(&mut bytes, task + ctask_force::FLEET, fleet as u64);
         let task_reference = (u64::from(slot) << 32) | u64::from(ctask_force::DEFAULT_HANDLE_TYPE);

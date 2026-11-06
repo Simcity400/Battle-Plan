@@ -36,8 +36,8 @@ impl Fixture {
         self.dword(at + 8, count);
         self.dword(at + 12, count);
     }
-    fn global(&mut self, at: usize, value: i64) {
-        self.globals.insert(at, value.to_le_bytes().to_vec());
+    fn global(&mut self, key: Rva, value: i64) {
+        self.globals.insert(key.0, value.to_le_bytes().to_vec());
     }
     fn modifier(&mut self, at: usize, data: usize, token: u32, value: i64) {
         self.array(at, data as u64, 1);
@@ -57,13 +57,13 @@ fn fixture() -> Fixture {
     {
         m.word(0x2000 + id * 8, country as u64);
         m.dword(0x2100 + id * 4, id as u32);
-        m.word(country, ccountry::VTABLE_RVA as u64);
+        m.word(country, ccountry::VTABLE_RVA.0 as u64);
         m.dword(country + ccountry::ID, id as u32);
         m.word(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        m.word(diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+        m.word(diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
         m.word(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         m.word(country + ccountry::INTEL_TABLE, intel as u64);
-        m.word(intel, ccountry_intel::VTABLE_RVA as u64);
+        m.word(intel, ccountry_intel::VTABLE_RVA.0 as u64);
         m.dword(intel + ccountry_intel::OWNER, id as u32);
         m.array(intel + ccountry_intel::DATA, (intel + 0x100) as u64, 3);
     }
@@ -86,14 +86,14 @@ fn fixture() -> Fixture {
     );
     m.array(0x1000 + cgame_state::STRATEGIC_REGIONS, 0xc200, 2);
     m.word(0xc208, 0xd000);
-    m.word(0xd000, cstrategic_region::VTABLE_RVA as u64);
+    m.word(0xd000, cstrategic_region::VTABLE_RVA.0 as u64);
     m.dword(0xd000 + cstrategic_region::ID, 1);
     m.dword(0xd000 + cstrategic_region::RUNTIME_SLOT, 1);
     m.word(0x1000 + cgame_state::WEATHER_MANAGER, 0xe000);
-    m.word(0xe000, cweather_manager::VTABLE_RVA as u64);
+    m.word(0xe000, cweather_manager::VTABLE_RVA.0 as u64);
     m.array(0xe000 + cweather_manager::REGIONS, 0xf000, 2);
     let weather = 0xf000 + sweather_per_region::STRIDE;
-    m.word(weather, sweather_per_region::VTABLE_RVA as u64);
+    m.word(weather, sweather_per_region::VTABLE_RVA.0 as u64);
     m.dword(weather + sweather_per_region::ID, 1);
     m.modifier(
         weather + sweather_per_region::MODIFIERS,
@@ -102,29 +102,29 @@ fn fixture() -> Fixture {
         -10_000,
     );
     m.word(0x1000 + cgame_state::STRATEGIC_NAVY_MANAGER, 0x11000);
-    m.word(0x11000, cstrategic_navy_manager::VTABLE_RVA as u64);
+    m.word(0x11000, cstrategic_navy_manager::VTABLE_RVA.0 as u64);
     m.array(0x11000 + cstrategic_navy_manager::NAVIES, 0x12000, 3);
     m.word(0x12008, 0x18000);
-    m.word(0x18000, cstrategic_navy::VTABLE_RVA as u64);
+    m.word(0x18000, cstrategic_navy::VTABLE_RVA.0 as u64);
     m.word(
         0x18000 + cstrategic_navy::SECONDARY,
-        cstrategic_navy::SECONDARY_VTABLE_RVA as u64,
+        cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
     );
     m.dword(0x18000 + cstrategic_navy::OWNER, 1);
     // Deliberately invalid: native does not consume the OWNER's operand.
     m.array(0x18000 + cstrategic_navy::REGIONAL_OPERANDS, 0x50000, 2);
     m.word(0x12010, 0x13000);
-    m.word(0x13000, cstrategic_navy::VTABLE_RVA as u64);
+    m.word(0x13000, cstrategic_navy::VTABLE_RVA.0 as u64);
     m.word(
         0x13000 + cstrategic_navy::SECONDARY,
-        cstrategic_navy::SECONDARY_VTABLE_RVA as u64,
+        cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
     );
     m.dword(0x13000 + cstrategic_navy::OWNER, 2);
     m.array(0x13000 + cstrategic_navy::REGIONAL_OPERANDS, 0x14000, 2);
     m.word(0x14008, 50_000);
     m.global(MODIFIER_SET_RVA, 0x15000);
     m.word(0x15000 + TRANSPORT_MODIFIER, 0x16000);
-    m.word(0x16000, cstatic_modifier::VTABLE_RVA as u64);
+    m.word(0x16000, cstatic_modifier::VTABLE_RVA.0 as u64);
     m.modifier(
         0x16000 + cstatic_modifier::ACCUMULATOR,
         0x17000,
@@ -206,7 +206,7 @@ fn transport_speed_joins_reciprocal_intel_and_scales_raw_before_effective_metada
 fn transport_static_definition_requires_derived_type_not_temporary_modifier() {
     let mut m = fixture();
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(145_000));
-    for wrong_vtable in [0, crate::cmodifier::VTABLE_RVA as u64] {
+    for wrong_vtable in [0, crate::cmodifier::VTABLE_RVA.0 as u64] {
         m.word(0x16000, wrong_vtable);
         assert_eq!(
             movement_speed(&m, 0, 0x1000, 1, 0xd000),
@@ -310,7 +310,7 @@ fn transfer_uses_the_original_selector_and_signed_status() {
         Ok(Transfer::Absent)
     );
     assert!(memory.calls.borrow().is_empty());
-    memory.put(TRANSFER, &(VTABLE_RVA as u64).to_le_bytes());
+    memory.put(TRANSFER, &(VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(TRANSFER + HANDLE, &TRANSFER_HANDLE.to_le_bytes());
     for status in [-7i32, 0] {
         memory.put(TRANSFER + ACTION_STATUS, &status.to_le_bytes());
@@ -341,7 +341,7 @@ fn transfer_authenticated_identity_survives_independent_status_refusal() {
     const TRANSFER: usize = 0x12000;
     const TRANSFER_HANDLE: u64 = (7u64 << 32) | 4713;
     let mut memory = TransferFixture::default();
-    memory.put(TRANSFER, &(VTABLE_RVA as u64).to_le_bytes());
+    memory.put(TRANSFER, &(VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(TRANSFER + HANDLE, &TRANSFER_HANDLE.to_le_bytes());
     assert_eq!(
         transfer(&memory, 0, Ok(TRANSFER), |_| Ok(Some(TRANSFER))),
@@ -362,7 +362,7 @@ fn three_regions(m: &mut Fixture) {
     m.array(0x1000 + cgame_state::STRATEGIC_REGIONS, 0xc200, 3);
     for (slot, region, id) in [(0, 0xd200, 0), (2, 0xd100, 2)] {
         m.word(0xc200 + slot * 8, region as u64);
-        m.word(region, cstrategic_region::VTABLE_RVA as u64);
+        m.word(region, cstrategic_region::VTABLE_RVA.0 as u64);
         m.dword(region + cstrategic_region::ID, id);
         m.dword(region + cstrategic_region::RUNTIME_SLOT, slot as u32);
     }
@@ -480,7 +480,7 @@ fn a_province_names_its_authenticated_strategic_region() {
     let mut m = fixture();
     m.array(0x1000 + cgame_state::PROVINCES, 0x30000, 3);
     m.word(0x30010, 0x31000);
-    m.word(0x31000, cprovince::VTABLE_RVA as u64);
+    m.word(0x31000, cprovince::VTABLE_RVA.0 as u64);
     m.dword(0x31000 + cprovince::ID, 2);
     m.word(0x31000 + cprovince::STRATEGIC_REGION, 0xd000);
     assert_eq!(

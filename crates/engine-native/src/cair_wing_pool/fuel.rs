@@ -15,6 +15,7 @@ use crate::{
     csub_unit_definition, cweather_manager, memory::Raw, modifier_accumulator, read, read_slice,
     sweather_per_province, walk::Buffer,
 };
+use engine_sites::Rva;
 
 fn ace_hash(reference: u64) -> usize {
     reference.wrapping_mul(0x9e37_79b9) as usize
@@ -709,13 +710,13 @@ impl<'a, M: Memory> Reader<'a, M> {
     }
 
     fn costs(&mut self) -> Result<Array, &'static str> {
-        *self
-            .costs
-            .get_or_insert_with(|| array(self.memory, self.base, defines::MISSION_COSTS_RVA, 8))
+        *self.costs.get_or_insert_with(|| {
+            global_array(self.memory, self.base, defines::MISSION_COSTS_RVA, 8)
+        })
     }
     fn thresholds(&mut self) -> Result<Array, &'static str> {
         *self.thresholds.get_or_insert_with(|| {
-            array(self.memory, self.base, defines::CAPACITY_THRESHOLDS_RVA, 8)
+            global_array(self.memory, self.base, defines::CAPACITY_THRESHOLDS_RVA, 8)
         })
     }
     fn maximum_cost(&mut self) -> Value {
@@ -884,8 +885,8 @@ impl<'a, M: Memory> Reader<'a, M> {
             coefficients: std::array::from_fn(|index| {
                 i64::from_le_bytes(coefficients[index * 8..index * 8 + 8].try_into().unwrap())
             }),
-            subtract: field(self.memory, self.base, defines::CONTEXT_SUBTRACT_RVA)?,
-            scale: field(self.memory, self.base, defines::CONTEXT_SCALE_RVA)?,
+            subtract: global(self.memory, self.base, defines::CONTEXT_SUBTRACT_RVA)?,
+            scale: global(self.memory, self.base, defines::CONTEXT_SCALE_RVA)?,
         })
     }
 }
@@ -953,13 +954,23 @@ fn period_term(amount: i64, mode: u8, nights: u8) -> i64 {
     fraction.wrapping_mul(amount) / P
 }
 
-fn cached_scalar(
+fn cached_scalar(memory: &impl Memory, base: usize, key: Rva, value: &mut Option<Value>) -> Value {
+    *value.get_or_insert_with(|| global(memory, base, key))
+}
+fn global<T: Raw>(memory: &impl Memory, base: usize, key: Rva) -> Result<T, &'static str> {
+    engine_sites::at(base, key)
+        .and_then(|address| read(memory, address))
+        .ok_or("carrier fuel field unreadable or address overflow")
+}
+fn global_array(
     memory: &impl Memory,
     base: usize,
-    offset: usize,
-    value: &mut Option<Value>,
-) -> Value {
-    *value.get_or_insert_with(|| field(memory, base, offset))
+    key: Rva,
+    stride: usize,
+) -> Result<Array, &'static str> {
+    engine_sites::at(base, key)
+        .and_then(|address| Array::read(memory, address, stride))
+        .ok_or("carrier fuel array unreadable or invalid")
 }
 fn table_value(memory: &impl Memory, table: Array, index: i32) -> Value {
     let address = u32::try_from(index)
@@ -995,15 +1006,9 @@ fn array(
         .and_then(|address| Array::read(memory, address, stride))
         .ok_or("carrier fuel array unreadable or invalid")
 }
-fn object(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    rva: usize,
-) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(rva)
-        .ok_or("carrier fuel module address overflow")? as u64;
+fn object(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(), &'static str> {
+    let expected =
+        engine_sites::at(base, rva).ok_or("carrier fuel module address overflow")? as u64;
     if pointer == 0 || read::<u64>(memory, pointer) != Some(expected) {
         Err("carrier fuel object identity mismatch")
     } else {

@@ -17,7 +17,7 @@ fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 fn fixture(count: u32) -> Vec<u8> {
     let mut bytes = vec![0; DATA + count as usize * SLOT_STRIDE];
     let status = FACTION + STATUS;
-    put(&mut bytes, status, (VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, status, (VTABLE_RVA.0 as u64).to_le_bytes());
     put(&mut bytes, status + OWNER, (FACTION as u64).to_le_bytes());
     array(&mut bytes, status + SLOTS, DATA, count);
     for ordinal in 0..count as usize {
@@ -31,12 +31,12 @@ fn fixture(count: u32) -> Vec<u8> {
         put(
             &mut bytes,
             date,
-            (cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+            (cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             date + cgame_date::PERSISTENT_BASE,
-            (cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+            (cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -48,7 +48,7 @@ fn fixture(count: u32) -> Vec<u8> {
             put(
                 &mut bytes,
                 modifier,
-                (cmodifier::VTABLE_RVA as u64).to_le_bytes(),
+                (cmodifier::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

@@ -35,29 +35,30 @@
 //!   deployment) or loads. The collector reads those afresh or invalidates.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
-const UPDATE_ACTIVE_STATS_RVA: usize = 0xce_a3c0;
+const UPDATE_ACTIVE_STATS_RVA: Rva = Rva(0xce_a3c0);
 
 /// The writers, in callback order: `update_active_stats` (RCX the primary
 /// division), `refresh_cached_name` (RCX the member) and `refresh_country_names`
 /// (RCX the group and tracker, RDX the country). A detour forwards RCX..R9
 /// and returns RAX unchanged.
-const AWARD_EXPERIENCE_RVA: usize = 0xccb810;
-const ADD_MANPOWER_EXPERIENCE_RVA: usize = 0xccb940;
-const REFRESH_EXPERIENCE_RVA: usize = 0xcecd10;
-const REBIND_EXPERIENCE_RVA: usize = 0xcd6700;
+const AWARD_EXPERIENCE_RVA: Rva = Rva(0xccb810);
+const ADD_MANPOWER_EXPERIENCE_RVA: Rva = Rva(0xccb940);
+const REFRESH_EXPERIENCE_RVA: Rva = Rva(0xcecd10);
+const REBIND_EXPERIENCE_RVA: Rva = Rva(0xcd6700);
 
-const CONSTRUCT_DIVISION_HISTORY_RVA: usize = 0x14e23c0;
-const DESTROY_DIVISION_HISTORY_RVA: usize = 0x14e2980;
-const APPEND_DIVISION_HISTORY_RVA: usize = 0x14e2de0;
-const APPLY_DIVISION_AWARD_RVA: usize = 0x14e33b0;
-const CLEAR_MEDAL_INHERITANCE_RVA: usize = 0x14e76e0;
-const CONSTRUCT_MEDAL_STORE_RVA: usize = 0x14e28d0;
-const BIND_DIVISION_TEMPLATE_RVA: usize = 0xceb320;
-const ADD_OFFICER_EXPERIENCE_RVA: usize = 0x148_4b80;
-const SET_OFFICER_EXPERIENCE_RVA: usize = 0x148_69e0;
-const PROMOTE_DIVISION_OFFICER_RVA: usize = 0x14ecd00;
-const DESTROY_MEDAL_STORE_RVA: usize = 0x14e2d40;
+const CONSTRUCT_DIVISION_HISTORY_RVA: Rva = Rva(0x14e23c0);
+const DESTROY_DIVISION_HISTORY_RVA: Rva = Rva(0x14e2980);
+const APPEND_DIVISION_HISTORY_RVA: Rva = Rva(0x14e2de0);
+const APPLY_DIVISION_AWARD_RVA: Rva = Rva(0x14e33b0);
+const CLEAR_MEDAL_INHERITANCE_RVA: Rva = Rva(0x14e76e0);
+const CONSTRUCT_MEDAL_STORE_RVA: Rva = Rva(0x14e28d0);
+const BIND_DIVISION_TEMPLATE_RVA: Rva = Rva(0xceb320);
+const ADD_OFFICER_EXPERIENCE_RVA: Rva = Rva(0x148_4b80);
+const SET_OFFICER_EXPERIENCE_RVA: Rva = Rva(0x148_69e0);
+const PROMOTE_DIVISION_OFFICER_RVA: Rva = Rva(0x14ecd00);
+const DESTROY_MEDAL_STORE_RVA: Rva = Rva(0x14e2d40);
 
 pub const MUTATIONS: [MutationSite; 19] = [
     // The five-byte RBX store to R8's home slot relocates, followed by saves of
@@ -65,158 +66,83 @@ pub const MUTATIONS: [MutationSite; 19] = [
     MutationSite {
         name: "update_active_stats",
         rva: UPDATE_ACTIVE_STATS_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
     },
     // The five-byte RBX store to RCX's home slot relocates. It is followed by an
     // RSI store to RDX's home slot, an RDI save, 0x20 stack bytes and the prefix
     // of the address calculation placing the member's cached name in RSI.
     MutationSite {
         name: "refresh_cached_name",
-        rva: 0xa0_c820,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
+        rva: Rva(0xa0_c820),
     },
     // The five-byte R8B store to its home slot relocates. It is followed by an
     // RDX store to its home slot and saves of RBX/RBP/RSI/RDI/R12.
     MutationSite {
         name: "refresh_country_names",
-        rva: 0xa0_5020,
-        sentinel: [
-            0x44, 0x88, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x55, 0x56, 0x57,
-            0x41, 0x54,
-        ],
+        rva: Rva(0xa0_5020),
     },
     MutationSite {
         name: "award_experience",
         rva: AWARD_EXPERIENCE_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x30, 0x48,
-        ],
     },
     MutationSite {
         name: "add_manpower_experience",
         rva: ADD_MANPOWER_EXPERIENCE_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
     },
     MutationSite {
         name: "refresh_experience",
         rva: REFRESH_EXPERIENCE_RVA,
-        sentinel: [
-            0x40, 0x53, 0x55, 0x56, 0x57, 0x48, 0x81, 0xec, 0x68, 0x01, 0x00, 0x00, 0x48, 0x8b,
-            0xf1, 0x45,
-        ],
     },
     MutationSite {
         name: "rebind_experience",
         rva: REBIND_EXPERIENCE_RVA,
-        sentinel: [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x8b, 0x89, 0xb8, 0x03, 0x00, 0x00, 0x48,
-            0x8b, 0xd9,
-        ],
     },
     MutationSite {
         name: "construct_division",
         rva: engine_native::carmy::CONSTRUCTOR_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x48,
-            0x83, 0xec,
-        ],
     },
     MutationSite {
         name: "construct_division_history",
         rva: CONSTRUCT_DIVISION_HISTORY_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
     },
     MutationSite {
         name: "destroy_division_history",
         rva: DESTROY_DIVISION_HISTORY_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x67,
-            0x93, 0x55,
-        ],
     },
     MutationSite {
         name: "append_division_history",
         rva: APPEND_DIVISION_HISTORY_RVA,
-        sentinel: [
-            0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41,
-            0x57, 0x48,
-        ],
     },
     MutationSite {
         name: "apply_division_award",
         rva: APPLY_DIVISION_AWARD_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-            0x18, 0x57,
-        ],
     },
     MutationSite {
         name: "clear_medal_inheritance",
         rva: CLEAR_MEDAL_INHERITANCE_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0x59, 0x08,
-            0x48, 0x63,
-        ],
     },
     MutationSite {
         name: "construct_medal_store",
         rva: CONSTRUCT_MEDAL_STORE_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x89, 0x4c, 0x24,
-            0x08, 0x57,
-        ],
     },
     MutationSite {
         name: "destroy_medal_store",
         rva: DESTROY_MEDAL_STORE_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
     },
     MutationSite {
         name: "promote_division_officer",
         rva: PROMOTE_DIVISION_OFFICER_RVA,
-        sentinel: [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x40, 0x48, 0x8b, 0x5a, 0x28, 0x48, 0x63, 0x42, 0x34,
-            0x48, 0x89,
-        ],
     },
     MutationSite {
         name: "bind_division_template",
         rva: BIND_DIVISION_TEMPLATE_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-            0x20, 0x57,
-        ],
     },
     MutationSite {
         name: "add_officer_experience",
         rva: ADD_OFFICER_EXPERIENCE_RVA,
-        sentinel: [
-            0x4c, 0x8b, 0x81, 0x88, 0, 0, 0, 0x33, 0xc0, 0x44, 0x8b, 0x49, 0x10, 0x4c, 0x03, 0xc2,
-        ],
     },
     MutationSite {
         name: "set_officer_experience",
         rva: SET_OFFICER_EXPERIENCE_RVA,
-        sentinel: [
-            0x44, 0x8b, 0x49, 0x10, 0x33, 0xc0, 0x45, 0x85, 0xc9, 0x74, 0x1c, 0x41, 0x83, 0xf9, 1,
-            0x75,
-        ],
     },
 ];
 
@@ -232,31 +158,8 @@ pub const HISTORY_FIRST: usize = 8;
 mod tests {
     use super::*;
 
-    const EXPECTED_CACHED_NAME_RVA: usize = 0xa0_c820;
-    const EXPECTED_COUNTRY_NAMES_RVA: usize = 0xa0_5020;
-
-    /// The sentinel opens with the five-byte store the hook relocates and
-    /// the seven pushes of the prologue; the site is the function the carmy
-    /// layout names.
     #[test]
-    fn the_sentinel_is_the_relocated_store_and_the_prologue_pushes() {
-        let [site, refresh, country, ..] = MUTATIONS;
-        // Each patch replaces exactly one five-byte store.
-        for site in [&refresh, &country] {
-            assert!(matches!(
-                site.sentinel[..5],
-                [0x48 | 0x44, 0x89 | 0x88, _, 0x24, _]
-            ));
-        }
-        assert_eq!(refresh.rva, EXPECTED_CACHED_NAME_RVA);
-        assert_eq!(country.rva, EXPECTED_COUNTRY_NAMES_RVA);
-        assert_eq!(site.rva, crate::carmy::UPDATE_ACTIVE_STATS_RVA);
-        assert_eq!(site.sentinel[..5], [0x48, 0x89, 0x5c, 0x24, 0x18]);
-        assert_eq!(
-            site.sentinel[5..],
-            [
-                0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57
-            ]
-        );
+    fn the_first_site_is_the_function_the_carmy_layout_names() {
+        assert_eq!(MUTATIONS[0].rva, crate::carmy::UPDATE_ACTIVE_STATS_RVA);
     }
 }

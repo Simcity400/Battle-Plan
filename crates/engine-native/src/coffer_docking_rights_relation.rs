@@ -1,8 +1,9 @@
 //! COfferDockingRightsRelation; shared fields live in `crelation`.
 
+use engine_sites::Rva;
 /// COfferDockingRightsRelation primary vtable.
-pub const VTABLE_RVA: usize = 0x02a9_ab80;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_ab80);
 /// COfferDockingRightsRelation native type word.
 pub const TYPE: u32 = 0x3afb;
 /// Docking-rights offer constructor; allocation size is 0x50 bytes.
-pub const CONSTRUCTOR_RVA: usize = 0x01a1_4100;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x01a1_4100);

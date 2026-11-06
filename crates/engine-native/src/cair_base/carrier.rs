@@ -203,8 +203,7 @@ pub(super) fn pool_metadata<M: Memory>(
     }
     let owner = pointer(memory, pool, cair_wing_pool::OWNER)?;
     if field::<u64>(memory, owner, 0)?
-        != image
-            .checked_add(cstrategic_air::VTABLE_RVA)
+        != engine_sites::at(image, cstrategic_air::VTABLE_RVA)
             .ok_or("carrier module address overflow")? as u64
     {
         return Err("carrier registered pool owner identity mismatch");
@@ -253,8 +252,7 @@ fn pool_definition(
         // The first content-vector entry registers the exact null-definition
         // singleton used by pool construction. Matching vtable and token at another
         // address cannot authenticate that null entry.
-        let singleton = image
-            .checked_add(definition::NULL_OBJECT_RVA)
+        let singleton = engine_sites::at(image, definition::NULL_OBJECT_RVA)
             .and_then(|at| read::<u64>(memory, at))
             .and_then(|value| usize::try_from(value).ok())
             .ok_or("carrier null definition singleton unreadable")?;
@@ -285,8 +283,7 @@ fn definition_header(
     let vtable = u64::from_le_bytes(bytes[..8].try_into().unwrap());
     let token = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     let expected = |rva| {
-        image
-            .checked_add(rva)
+        engine_sites::at(image, rva)
             .map(|value| value as u64)
             .ok_or("carrier module address overflow")
     };

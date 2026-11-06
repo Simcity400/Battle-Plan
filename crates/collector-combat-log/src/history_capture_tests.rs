@@ -140,7 +140,7 @@ impl Fixture {
         let mut pointers = vec![0];
         for (country, groups) in countries {
             let p = self.alloc(manager::SIZE);
-            self.word(p, manager::VTABLE_RVA as u64);
+            self.word(p, manager::VTABLE_RVA.0 as u64);
             self.int(p + manager::COUNTRY, *country as i32);
             self.pointers(p + manager::GROUPS, groups);
             pointers.push(p);
@@ -152,7 +152,7 @@ impl Fixture {
     }
     fn group(&mut self, id: u32) -> usize {
         let p = self.alloc(group::SIZE);
-        self.word(p, group::VTABLE_RVA as u64);
+        self.word(p, group::VTABLE_RVA.0 as u64);
         self.word(
             p + group::GROUP,
             (u64::from(id) << 32) | u64::from(engine_native::corders_group::REFERENCE_TYPE),
@@ -165,7 +165,7 @@ impl Fixture {
             .enumerate()
             .map(|(i, values)| {
                 let p = self.alloc(native::MANPOWER_SIZE);
-                self.word(p, native::MANPOWER_VTABLE_RVA as u64);
+                self.word(p, native::MANPOWER_VTABLE_RVA.0 as u64);
                 self.int(p + loss::DATE, DATE + i as i32);
                 for (index, &value) in values.iter().enumerate() {
                     self.int(p + native::MANPOWER_LOSSES + index * 4, value);
@@ -178,7 +178,7 @@ impl Fixture {
     }
     fn equipment(&mut self, owner: usize, amounts: &[i64]) {
         let v = self.alloc(16);
-        self.word(v, variant::VTABLE_RVA as u64);
+        self.word(v, variant::VTABLE_RVA.0 as u64);
         self.word(
             v + 8,
             u64::from(variant::REFERENCE_TYPE) | (u64::from(u32::MAX) << 32),
@@ -198,7 +198,7 @@ impl Fixture {
     }
     fn month(&mut self, group: usize, kind: usize, amounts: &[i64]) {
         let p = self.alloc(loss::SIZE);
-        self.word(p, loss::VTABLE_RVA as u64);
+        self.word(p, loss::VTABLE_RVA.0 as u64);
         self.int(p + loss::DATE, DATE);
         self.int(
             p + loss::REASON,
@@ -208,7 +208,7 @@ impl Fixture {
                 0
             },
         );
-        self.word(p + loss::POOL, pool::VTABLE_RVA as u64);
+        self.word(p + loss::POOL, pool::VTABLE_RVA.0 as u64);
         self.put(p + loss::POOL + pool::ALLOW_ZERO, &[1]);
         self.equipment(p + loss::POOL, amounts);
         self.pointers(group + event::ARRAYS[kind], &[p]);
@@ -223,11 +223,11 @@ impl Fixture {
     }
     fn battle(&mut self, count: i16) -> usize {
         self.blocks.insert(
-            native::BATTLE_POOL_RVA,
+            native::BATTLE_POOL_RVA.0,
             vec![0; 3 * engine_native::cpdx_array::STRIDE],
         );
         let p = self.alloc(native::BATTLE_SIZE);
-        self.word(p, native::BATTLE_VTABLE_RVA as u64);
+        self.word(p, native::BATTLE_VTABLE_RVA.0 as u64);
         self.int(p + native::BATTLE_DATE, DATE);
         self.int(p + native::BATTLE_PROVINCE, 53);
         self.put(p + native::BATTLE_FLAGS, &[2, 0, 1, 255]);
@@ -236,7 +236,7 @@ impl Fixture {
             .enumerate()
         {
             let side = p + offset;
-            self.word(side, native::SIDE_VTABLE_RVA as u64);
+            self.word(side, native::SIDE_VTABLE_RVA.0 as u64);
             self.int(side + native::SIDE_MANPOWER, i32::MIN + i as i32);
             self.word(side + native::SIDE_AIR_FACTOR, i64::MIN as u64);
             self.word(side + native::SIDE_LEADER, 67 | (9 << 32));
@@ -245,11 +245,11 @@ impl Fixture {
                 native::SIDE_CAPTURED_BY_ENEMY,
                 native::SIDE_RECOVERED,
             ] {
-                self.word(side + offset, pool::VTABLE_RVA as u64);
+                self.word(side + offset, pool::VTABLE_RVA.0 as u64);
             }
             self.equipment(side + native::SIDE_EQUIPMENT, &[i64::MIN, 0, i64::MAX]);
             let modifiers = self.alloc(16);
-            self.word(modifiers, native::MODIFIER_HOURS_VTABLE_RVA as u64);
+            self.word(modifiers, native::MODIFIER_HOURS_VTABLE_RVA.0 as u64);
             self.int(modifiers + 8, -1);
             self.int(modifiers + 12, i32::MAX);
             self.array(side + native::SIDE_MODIFIERS, modifiers, 1);
@@ -258,13 +258,13 @@ impl Fixture {
             self.int(countries + 4, 7);
             self.array(side + native::SIDE_COUNTRIES, countries, 2);
         }
-        self.array(native::BATTLE_POOL_RVA, p, 1);
+        self.array(native::BATTLE_POOL_RVA.0, p, 1);
         let counts = self.alloc(2);
         self.put(counts, &count.to_le_bytes());
-        self.array(native::BATTLE_COUNTS_RVA, counts, 1);
+        self.array(native::BATTLE_COUNTS_RVA.0, counts, 1);
         let used = self.alloc(1);
         self.put(used, &[u8::from(count > 0)]);
-        self.array(native::BATTLE_USED_RVA, used, 1);
+        self.array(native::BATTLE_USED_RVA.0, used, 1);
         p
     }
     fn noncombat_sources(&mut self, countries: usize, variants: usize) {
@@ -274,12 +274,12 @@ impl Fixture {
         for slot in 1..=countries {
             self.int(links + slot * 4, slot as i32);
             let country = self.alloc((ccountry::DIVISIONS + 16).max(ccountry::RESOURCES + 8));
-            self.word(country, ccountry::VTABLE_RVA as u64);
+            self.word(country, ccountry::VTABLE_RVA.0 as u64);
             self.int(country + ccountry::ID, slot as i32);
             let resources = self.alloc(engine_resources::clend_lease_exchange::OUTGOING + 16);
             self.word(
                 resources,
-                engine_resources::ccountry_resources::VTABLE_RVA as u64,
+                engine_resources::ccountry_resources::VTABLE_RVA.0 as u64,
             );
             self.int(
                 resources + engine_resources::ccountry_resources::OWNER,
@@ -287,8 +287,8 @@ impl Fixture {
             );
             self.word(country + ccountry::RESOURCES, resources as u64);
             let army = self.alloc(carmy::EQUIPMENT_POOL + pool::ALLOW_ZERO + 1);
-            self.word(army, carmy::VTABLE_RVA as u64);
-            self.word(army + carmy::EQUIPMENT_POOL, pool::VTABLE_RVA as u64);
+            self.word(army, carmy::VTABLE_RVA.0 as u64);
+            self.word(army + carmy::EQUIPMENT_POOL, pool::VTABLE_RVA.0 as u64);
             let entries = self.alloc(variants * equipment_entry::STRIDE);
             self.array(
                 army + carmy::EQUIPMENT_POOL + pool::ITEMS,
@@ -311,7 +311,7 @@ impl Fixture {
         self.month(g, 0, &[]);
         self.month(g, 5, &[i64::MIN, 0, i64::MAX]);
         let t = self.alloc(native::TEMPLATE_SIZE);
-        self.word(t, native::TEMPLATE_VTABLE_RVA as u64);
+        self.word(t, native::TEMPLATE_VTABLE_RVA.0 as u64);
         self.word(t + native::TEMPLATE_REFERENCE, 52 | (7 << 32));
         self.int(t + native::TEMPLATE_DATE, DATE);
         self.int(t + native::TEMPLATE_WINS, -1);
@@ -851,9 +851,9 @@ fn prune_reset_and_load_replace_old_groups_and_reused_battle_slots_exactly() {
     assert_eq!((battles[0].date, battles[0].province), (DATE + 1, 99));
     f.managers(&[]);
     for at in [
-        native::BATTLE_POOL_RVA,
-        native::BATTLE_COUNTS_RVA,
-        native::BATTLE_USED_RVA,
+        native::BATTLE_POOL_RVA.0,
+        native::BATTLE_COUNTS_RVA.0,
+        native::BATTLE_USED_RVA.0,
     ] {
         f.int(at + 12, 0);
     }
@@ -864,7 +864,7 @@ fn prune_reset_and_load_replace_old_groups_and_reused_battle_slots_exactly() {
     );
     let replacement = old;
     f.put(replacement, &vec![0; group::SIZE]);
-    f.word(replacement, group::VTABLE_RVA as u64);
+    f.word(replacement, group::VTABLE_RVA.0 as u64);
     f.word(
         replacement + group::GROUP,
         (19 << 32) | u64::from(engine_native::corders_group::REFERENCE_TYPE),
@@ -1234,7 +1234,7 @@ fn an_incremental_lifetime_read_failure_recovers_at_the_same_quiet_boundary() {
     }
     impl Memory for OnceUnreadable<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == native::BATTLE_COUNTS_RVA && self.fail.replace(false) {
+            if address == native::BATTLE_COUNTS_RVA.0 && self.fail.replace(false) {
                 return false;
             }
             self.fixture.copy(address, destination)

@@ -5,9 +5,10 @@
 //! are ordinary state and are never clamped here.
 
 use crate::{Memory, msvc_string, read, read_slice, walk::Buffer};
+use engine_sites::Rva;
 
 /// CThreatSource primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_2ff8;
+pub const VTABLE_RVA: Rva = Rva(0x029f_2ff8);
 /// CThreatSource raw country reference.
 pub const COUNTRY: usize = 0x08;
 /// CThreatSource second raw country reference.
@@ -27,9 +28,9 @@ pub const SIZE: usize = 0x60;
 /// CThreatSource native fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 /// CThreatSource daily ramp/decay update.
-pub const DAILY_UPDATE_RVA: usize = 0x00f8_3c00;
+pub const DAILY_UPDATE_RVA: Rva = Rva(0x00f8_3c00);
 /// Matching-source update; replaces final, current and daily contribution.
-pub const UPDATE_RVA: usize = 0x00f8_40a0;
+pub const UPDATE_RVA: Rva = Rva(0x00f8_40a0);
 
 /// Bytes copied in one guarded batch: every recorded scalar lies in the first 0x34 bytes.
 const HEAD: usize = 0x34;
@@ -85,9 +86,8 @@ pub(crate) fn read_row_buffer(
     reasons: &mut Buffer<'_, u8>,
     used: usize,
 ) -> Result<(Option<Row>, usize, usize), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("threat source module address overflow")?;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("threat source module address overflow")?;
     let head = read::<[u8; HEAD]>(memory, pointer).ok_or("threat source fields unreadable")?;
     if u64::from_le_bytes(head[..8].try_into().unwrap()) != expected as u64 {
         return Err("threat source vtable mismatch");
@@ -176,7 +176,7 @@ mod tests {
             let at = SOURCE - BASE + offset;
             bytes[at..at + value.len()].copy_from_slice(value);
         };
-        put(0, &(VTABLE_RVA as u64).to_le_bytes());
+        put(0, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(COUNTRY, &0x8000_0007_u32.to_le_bytes());
         put(SECOND_COUNTRY, &u32::MAX.to_le_bytes());
         put(CURRENT, &i64::MIN.to_le_bytes());

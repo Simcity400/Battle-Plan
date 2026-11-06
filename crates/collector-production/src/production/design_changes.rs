@@ -11,9 +11,9 @@ mod repair;
 mod scalar;
 mod snapshots;
 mod storage;
+pub use snapshots::speculative::Part as SnapshotPart;
 pub use storage::SetupPart as ColdSetupPart;
 pub use storage::{ScratchPoolAccounting, account_scratch, presize};
-pub use snapshots::speculative::Part as SnapshotPart;
 /// The Variants lanes that run a burst's speculative full-decode walks.
 pub struct Speculation<'a> {
     pub lanes: usize,
@@ -512,8 +512,7 @@ fn stage_interests(
         )?;
     }
     if u64_at(log, root)
-        != base
-            .checked_add(native::VTABLE_RVA)
+        != engine_sites::at(base, native::VTABLE_RVA)
             .ok_or("variant change module address overflow")? as u64
         || u32_at(log, field(native::TYPE)) != native::REFERENCE_TYPE
     {
@@ -1112,8 +1111,7 @@ fn stage_private(
     pointer: usize,
 ) -> Result<(u64, [u8; 3], i32), StageFailure> {
     let identity = native::identity(memory, base, pointer)?;
-    let state = base
-        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+    let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
         .ok_or("variant change clock unreadable")?;
     let hour = (state as usize)
@@ -1205,8 +1203,7 @@ fn observe_locked(
         store.batch.failure = Some("variant change event capacity exhausted");
         return;
     }
-    let Some(state) = base
-        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+    let Some(state) = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|p| engine_native::read::<u64>(memory, p))
     else {
         store.batch.failure = Some("variant change clock unreadable");
@@ -1345,8 +1342,7 @@ fn retire_from(store: &mut Store, memory: &impl Memory, base: usize, pointer: us
         store.batch.failure = Some("variant removal event capacity exhausted");
         return;
     }
-    let hour = base
-        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+    let hour = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|address| engine_native::read::<u64>(memory, address))
         .and_then(|state| (state as usize).checked_add(engine_native::cgame_state::CURRENT_HOUR))
         .and_then(|address| engine_native::read::<i32>(memory, address));
@@ -1416,8 +1412,7 @@ fn flag_change(memory: &impl Memory, base: usize, pointer: usize) {
         store.batch.failure = Some("variant change event capacity exhausted");
         return;
     }
-    let Some(state) = base
-        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+    let Some(state) = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|p| engine_native::read::<u64>(memory, p))
     else {
         store.batch.failure = Some("variant change clock unreadable");
@@ -1520,17 +1515,19 @@ impl Hooks {
         let mut hooks = Vec::new();
         if native::mutations::WRITER_AUDIT_REFUSAL.is_none()
             && MUTATIONS.iter().all(|site| {
-                base.checked_add(site.rva)
-                    .and_then(|p| engine_native::read::<[u8; 16]>(memory, p))
-                    == Some(site.sentinel)
+                engine_sites::hook(base, site.rva)
+                    .and_then(|code| code.sentinel::<16>())
+                    .is_ok()
             })
         {
             for (index, site) in MUTATIONS.iter().enumerate() {
                 if FORWARDED_SITES.contains(&index) {
                     continue;
                 }
-                let hook = unsafe { Hook::new(base + site.rva, callbacks()[index], site.sentinel) }
-                    .map_err(|_| HOOK_ERRORS[index])?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks()[index], code.sentinel::<16>()?) }
+                        .map_err(|_| HOOK_ERRORS[index])?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -2302,7 +2299,15 @@ fn drain_speculating(
         held::check_lifetimes(&batch.events)?;
         let mut retained = snapshots::retained(epoch, base);
         let mut cache = snapshots::Cache::with_retained(&mut retained);
-        decode_batch_with_cache(&batch, base, hour, output, snapshots, &mut cache, speculation)?;
+        decode_batch_with_cache(
+            &batch,
+            base,
+            hour,
+            output,
+            snapshots,
+            &mut cache,
+            speculation,
+        )?;
         // Terminal repairs have no copied capacity witness; discard their earlier cached states.
         for watch in &repairs.watches {
             cache.remove(watch.id);
@@ -2821,13 +2826,13 @@ impl Captured {
             &mut self.snapshots,
             speculation,
         )
-            .and_then(|repaired| {
-                self.repaired = repaired;
-                self.liveness = liveness::observation()?;
-                let _phase = profile::Timer::new(profile::Phase::Bonuses);
-                self.dictionary = super::bonus_snapshots::snapshot()?;
-                Ok(())
-            });
+        .and_then(|repaired| {
+            self.repaired = repaired;
+            self.liveness = liveness::observation()?;
+            let _phase = profile::Timer::new(profile::Phase::Bonuses);
+            self.dictionary = super::bonus_snapshots::snapshot()?;
+            Ok(())
+        });
         {
             let _phase = profile::Timer::new(profile::Phase::Context);
             (self.context, self.templates) = context(&memory).unwrap_or_default();
@@ -3380,11 +3385,7 @@ fn walk_snapshot(
             )
         },
     );
-    if !replay_data::cadence::should_walk(
-        replay_data::rows::TableId::VariantModules,
-        hour,
-        true,
-    ) {
+    if !replay_data::cadence::should_walk(replay_data::rows::TableId::VariantModules, hour, true) {
         let skipped = Outcome::Unavailable {
             reason: replay_data::cadence::SKIPPED_REASON,
         };

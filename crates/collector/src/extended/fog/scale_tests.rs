@@ -39,7 +39,7 @@ impl World {
             (STATES, vec![0; (countries + 1) * 8]),
             (NAVIES, vec![0; (countries + 1) * 8]),
             (MANAGER, vec![0; 0x100]),
-            (modifier_definition::TABLE_RVA, vec![0; 8]),
+            (modifier_definition::TABLE_RVA.0, vec![0; 8]),
             (
                 METADATA,
                 vec![
@@ -52,26 +52,26 @@ impl World {
         world.array(GS + cgame_state::COUNTRY_LINKS, LINKS, countries + 1);
         world.array(GS + cgame_state::STATES, STATES, countries + 1);
         world.u64(GS + cgame_state::STRATEGIC_NAVY_MANAGER, MANAGER);
-        world.u64(MANAGER, engine_native::cstrategic_navy_manager::VTABLE_RVA);
+        world.u64(MANAGER, engine_native::cstrategic_navy_manager::VTABLE_RVA.0);
         world.array(
             MANAGER + engine_native::cstrategic_navy_manager::NAVIES,
             NAVIES,
             countries + 1,
         );
-        world.u64(modifier_definition::TABLE_RVA, METADATA);
+        world.u64(modifier_definition::TABLE_RVA.0, METADATA);
         for slot in 1..=countries {
             let country = OBJECTS + slot * 0x1_0000;
             world.0.insert(country, vec![0; 0x5000]);
             world.u64(COUNTRIES + slot * 8, country);
             world.u32(LINKS + slot * 4, slot as u32);
-            world.u64(country, ccountry::VTABLE_RVA);
+            world.u64(country, ccountry::VTABLE_RVA.0);
             world.u32(country + ccountry::ID, slot as u32);
             let navy = country + 0x1800;
             world.u64(NAVIES + slot * 8, navy);
-            world.u64(navy, engine_native::cstrategic_navy::VTABLE_RVA);
+            world.u64(navy, engine_native::cstrategic_navy::VTABLE_RVA.0);
             world.u64(
                 navy + 8,
-                engine_native::cstrategic_navy::SECONDARY_VTABLE_RVA,
+                engine_native::cstrategic_navy::SECONDARY_VTABLE_RVA.0,
             );
             world.u32(navy + engine_native::cstrategic_navy::OWNER, slot as u32);
             world.array(
@@ -81,7 +81,7 @@ impl World {
             );
             world.put(country + 0x4100, &vec![2; population]);
             let group = country + 0x1a00;
-            world.u64(country + ccountry::RADARS_POOL, cradars_pool::VTABLE_RVA);
+            world.u64(country + ccountry::RADARS_POOL, cradars_pool::VTABLE_RVA.0);
             world.u32(country + ccountry::RADARS_POOL_COUNTRY, slot as u32);
             world.array(
                 country + ccountry::RADAR_GROUPS,
@@ -111,7 +111,7 @@ impl World {
             let unit = country + 0x2400;
             world.array(country + ccountry::THEATRES, country + 0x4500, 1);
             world.u64(country + 0x4500, theatre);
-            world.u64(theatre, ctheatre::VTABLE_RVA);
+            world.u64(theatre, ctheatre::VTABLE_RVA.0);
             world.u64(
                 theatre + ctheatre::HANDLE,
                 (slot << 32) | ctheatre::REFERENCE_TYPE as usize,
@@ -127,22 +127,22 @@ impl World {
                 country + 0x4700,
                 population,
             );
-            world.u64(area, ccontroller_area::VTABLE_RVA);
+            world.u64(area, ccontroller_area::VTABLE_RVA.0);
             world.array(
                 area + ccontroller_area::PROVINCE_DATA,
                 country + 0x4800,
                 population,
             );
-            world.u64(province, cprovince::VTABLE_RVA);
+            world.u64(province, cprovince::VTABLE_RVA.0);
             world.u32(province + cprovince::ID, slot as u32);
-            world.u64(unit, carmy::VTABLE_RVA);
+            world.u64(unit, carmy::VTABLE_RVA.0);
             world.u64(unit + cunit::HANDLE, (slot << 32) | 1);
             world.array(country + ccountry::DIVISIONS, country + 0x4900, 1);
             world.u64(country + 0x4900, unit);
             world.array(unit + cunit::VIEWER_DATA, country + 0x4a00, population);
             let state = country + 0x3000;
             world.u64(STATES + slot * 8, state);
-            world.u64(state, cstate::VTABLE_RVA);
+            world.u64(state, cstate::VTABLE_RVA.0);
             world.u32(state + cstate::ID, slot as u32);
             world.u32(state + cstate::OWNER, slot as u32);
             world.u32(

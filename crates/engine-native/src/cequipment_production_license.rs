@@ -8,9 +8,10 @@
 //! serialized; its exact role remains unknown and capture preserves it raw.
 
 use crate::{Memory, cequipment_variant, cpdx_array::Array, read};
+use engine_sites::Rva;
 
 /// CEquipmentProductionLicense primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_b258;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_b258);
 /// CEquipmentProductionLicense lended CIC, i32.
 pub const LENDED_CIC: usize = 0x08;
 /// CEquipmentProductionLicense required CIC, i32.
@@ -94,9 +95,8 @@ pub(crate) fn read_row_buffer(
 ) -> Result<(Option<Row>, usize, usize), &'static str> {
     let head =
         read::<[u8; 0x58]>(memory, pointer).ok_or("production licence record fields unreadable")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("production licence module address overflow")?;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("production licence module address overflow")?;
     if u64::from_le_bytes(head[..8].try_into().unwrap()) != expected as u64 {
         return Err("production licence vtable mismatch");
     }
@@ -170,7 +170,7 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x400];
-        put(&mut bytes, LICENSE, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, LICENSE, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(
             &mut bytes,
             LICENSE + UNSERIALIZED_OPERAND,
@@ -202,7 +202,7 @@ mod tests {
         put(
             &mut bytes,
             VARIANT,
-            &(cequipment_variant::VTABLE_RVA as u64).to_le_bytes(),
+            &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

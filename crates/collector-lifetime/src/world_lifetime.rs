@@ -194,7 +194,7 @@ impl Hooks {
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(
-        memory: &impl Memory,
+        _memory: &impl Memory,
         base: usize,
         generation: u64,
     ) -> Result<Self, &'static str> {
@@ -202,27 +202,40 @@ impl Hooks {
             return Err("native world occurrence exhausted or concurrent invalidation");
         }
         SIGNAL.generation.store(generation.max(1), Ordering::SeqCst);
-        for site in [
-            &native::RESET,
-            &native::CONSTRUCT,
-            &native::STATE_RELOAD,
-            &native::STRAITS_RELOAD,
-            &native::DELETE,
-        ] {
-            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
-                return Err("native world lifetime sentinel differs");
+        let locate = |site: &native::Site| {
+            engine_sites::hook(base, site.rva)
+                .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+        };
+        let located = (|| {
+            Ok::<_, &'static str>([
+                locate(&native::RESET)?,
+                locate(&native::CONSTRUCT)?,
+                locate(&native::STATE_RELOAD)?,
+                locate(&native::STRAITS_RELOAD)?,
+                locate(&native::DELETE)?,
+            ])
+        })();
+        let [reset, construct, state_site, straits_site, delete_site] = match located {
+            Ok(located) => located,
+            Err(cause) => {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Sentinel,
+                    None,
+                    cause,
+                );
+                return Err(cause);
             }
-        }
-        let tap = |site: &native::Site| unsafe {
-            Tap::new(base + site.rva, observe, 0, site.sentinel)
+        };
+        let tap = |(site, sentinel): (usize, [u8; 16])| unsafe {
+            Tap::new(site, observe, 0, sentinel)
                 .map_err(|_| "native world lifetime tap construction failed")
         };
-        let taps = [tap(&native::RESET)?, tap(&native::CONSTRUCT)?];
+        let taps = [tap(reset)?, tap(construct)?];
         let delete = unsafe {
             Hook::new_with_safety(
-                base + native::DELETE.rva,
+                delete_site.0,
                 world_delete_entry as *const () as usize,
-                native::DELETE.sentinel,
+                delete_site.1,
                 TapSafety {
                     in_flight: &ACTIVE,
                     stub: delete_range(),
@@ -233,18 +246,18 @@ impl Hooks {
         DELETE_ORIGINAL.store(delete.trampoline(), Ordering::SeqCst);
         let state_reload = unsafe {
             Hook::new(
-                base + native::STATE_RELOAD.rva,
+                state_site.0,
                 state_reload as *const () as usize,
-                native::STATE_RELOAD.sentinel,
+                state_site.1,
             )
         }
         .map_err(|_| "native state reload hook construction failed")?;
         STATE_RELOAD_ORIGINAL.store(state_reload.trampoline(), Ordering::SeqCst);
         let straits_reload = unsafe {
             Hook::new(
-                base + native::STRAITS_RELOAD.rva,
+                straits_site.0,
                 straits_reload as *const () as usize,
-                native::STRAITS_RELOAD.sentinel,
+                straits_site.1,
             )
         }
         .map_err(|_| "native straits reload hook construction failed")?;

@@ -118,11 +118,9 @@ pub fn required_entries(
     base: usize,
     pool: usize,
 ) -> Result<Array, &'static str> {
-    if base
-        .checked_add(garrison_equipment_pool::VTABLE_RVA)
-        .map(|p| p as u64)
-        != read::<u64>(memory, pool)
-    {
+    let expected = engine_sites::at(base, garrison_equipment_pool::VTABLE_RVA)
+        .ok_or("garrison required equipment pool vtable mismatch")?;
+    if read::<u64>(memory, pool) != Some(expected as u64) {
         return Err("garrison required equipment pool vtable mismatch");
     }
     let header = pool
@@ -144,7 +142,9 @@ fn pair(memory: &impl Memory, array: Array, ordinal: u32) -> Result<(usize, i64)
 }
 
 fn authenticate(memory: &impl Memory, base: usize, pointer: usize) -> Result<(), &'static str> {
-    if base.checked_add(ty::VTABLE_RVA).map(|p| p as u64) != read::<u64>(memory, pointer) {
+    let expected =
+        engine_sites::at(base, ty::VTABLE_RVA).ok_or("garrison equipment type vtable mismatch")?;
+    if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("garrison equipment type vtable mismatch");
     }
     Ok(())
@@ -183,7 +183,7 @@ mod tests {
         put(
             &mut bytes,
             START + super::super::REQUIRED_EQUIPMENT,
-            &(garrison_equipment_pool::VTABLE_RVA as u64).to_le_bytes(),
+            &(garrison_equipment_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         header(
             &mut bytes,
@@ -194,7 +194,7 @@ mod tests {
         put(
             &mut bytes,
             START + super::super::LOCAL_EQUIPMENT,
-            &(pool::VTABLE_RVA as u64).to_le_bytes(),
+            &(pool::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         header(
             &mut bytes,
@@ -205,7 +205,7 @@ mod tests {
         put(
             &mut bytes,
             equipment,
-            &(ty::VTABLE_RVA as u64).to_le_bytes(),
+            &(ty::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, equipment + ty::TOKEN, &700_u32.to_le_bytes());
         put(&mut bytes, equipment + ty::ACTIVE, &[2]);
@@ -319,7 +319,11 @@ mod tests {
         let archetype = clone + 0x600;
         bytes.resize(archetype + 0x600 - START, 0);
         for (pointer, token) in [(clone, 701_u32), (archetype, 702)] {
-            put(&mut bytes, pointer, &(ty::VTABLE_RVA as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                pointer,
+                &(ty::VTABLE_RVA.0 as u64).to_le_bytes(),
+            );
             put(&mut bytes, pointer + ty::TOKEN, &token.to_le_bytes());
             put(&mut bytes, pointer + ty::ACTIVE, &[1]);
             put(

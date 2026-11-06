@@ -1,9 +1,10 @@
 //! CAirWingPool; all offsets are primary-object relative.
 
+use engine_sites::Rva;
 pub(crate) mod fuel;
 
 /// Wing-pool primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_77d8;
+pub const VTABLE_RVA: Rva = Rva(0x029f_77d8);
 /// Wing-pool allocation size.
 pub const SIZE: usize = 0x48;
 /// Full CAirBase reference containing u32 type and id.
@@ -18,6 +19,6 @@ pub const WINGS_COUNT: usize = 0x34;
 /// Owning strategic-air object supplying the country reference.
 pub const OWNER: usize = 0x40;
 /// Constructor installing the vtable and wing vector.
-pub const CONSTRUCTOR_RVA: usize = 0x00fd_e990;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00fd_e990);
 /// Destructor unregistering through the base reference.
-pub const DESTRUCTOR_RVA: usize = 0x00fd_ef50;
+pub const DESTRUCTOR_RVA: Rva = Rva(0x00fd_ef50);

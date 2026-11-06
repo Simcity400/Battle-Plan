@@ -1,5 +1,6 @@
 //! Selected supply-route record.
 use crate::{Memory, cpdx_array::Array, read, supply_parent_map::Map};
+use engine_sites::Rva;
 
 /// Supply-system outer-map data header: data, count and mask.
 pub const ROUTE_MAP: usize = 0xf0;
@@ -17,7 +18,7 @@ pub const TO: usize = 0x82;
 /// A nonzero `BREAK` byte flushes and reverses the accumulated land portion.
 pub const BREAK: usize = 0x87;
 /// Static empty route returned when either map key is missing.
-pub const EMPTY_RVA: usize = 0x033e_af50;
+pub const EMPTY_RVA: Rva = Rva(0x033e_af50);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -154,9 +155,7 @@ pub(crate) fn read_edge_buffer(
     province: u32,
     mut output: crate::walk::Buffer<'_, u32>,
 ) -> Result<(Row, usize), &'static str> {
-    let empty = base
-        .checked_add(EMPTY_RVA)
-        .ok_or("empty supply route overflow")?;
+    let empty = engine_sites::at(base, EMPTY_RVA).ok_or("empty supply route withheld")?;
     let mut pointer = empty;
     if let Some(map) = inner.resolve(memory, outer, parent)?
         && let Some(bucket) = map.find(memory, province)?

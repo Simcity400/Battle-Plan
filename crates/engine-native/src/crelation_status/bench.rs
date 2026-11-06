@@ -44,8 +44,8 @@ impl Arena {
         self.put(address, &value.to_le_bytes());
     }
     /// `base + rva`, the value a native vtable or global slot holds.
-    pub fn rva(&self, rva: usize) -> u64 {
-        (self.base() + rva) as u64
+    pub fn rva(&self, rva: engine_sites::Rva) -> u64 {
+        (self.base() + rva.0) as u64
     }
     /// A CPdxArray header with equal capacity and count.
     pub fn vector(&mut self, header: usize, data: usize, count: u32) {

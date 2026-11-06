@@ -104,8 +104,7 @@ fn root(
     if pointer == 0 {
         return Ok(None);
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("agency vtable address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("agency vtable mismatch");

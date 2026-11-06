@@ -6,6 +6,7 @@ use crate::{
 };
 use engine_fuel::fuel_awards as native;
 use engine_native::{Memory, memory::LiveMemory};
+use engine_sites::Rva;
 use std::{
     cell::{Cell, RefCell, UnsafeCell},
     ops::Range,
@@ -16,6 +17,8 @@ use std::{
 };
 
 static LOG: Log = Log::new(0);
+/// The taps in tag order: begin, end, five land receipts, naval, air, reset.
+const SITES: usize = 10;
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ROOT: AtomicU64 = AtomicU64::new(1);
 static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
@@ -1181,21 +1184,36 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
-        let mut sites = vec![native::BEGIN, native::END];
-        sites.extend(native::LAND);
-        sites.extend([native::NAVAL, native::AIR]);
-        sites.push(native::RESET);
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
+        let sites: [Rva; SITES] = [
+            native::BEGIN,
+            native::END,
+            native::LAND[0],
+            native::LAND[1],
+            native::LAND[2],
+            native::LAND[3],
+            native::LAND[4],
+            native::NAVAL,
+            native::AIR,
+            native::RESET,
+        ];
         let mut taps = Vec::new();
         let result = (|| -> Result<(), &'static str> {
-            for (rva, sentinel) in &sites {
-                if !crate::hook::installation::sentinel(memory, base + rva, *sentinel) {
-                    return Err("fuel award sentinel differs");
-                }
+            let mut located = [(0, [0; 16]); SITES];
+            for (slot, &key) in located.iter_mut().zip(&sites) {
+                *slot = engine_sites::hook(base, key)
+                    .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                    .inspect_err(|cause| {
+                        crate::hook::installation::refused(
+                            crate::hook::installation::Kind::Sentinel,
+                            None,
+                            cause,
+                        )
+                    })?;
             }
-            for (tag, (rva, sentinel)) in sites.into_iter().enumerate() {
+            for (tag, (address, original)) in located.into_iter().enumerate() {
                 taps.push(
-                    unsafe { Tap::new(base + rva, observe, tag, sentinel) }
+                    unsafe { Tap::new(address, observe, tag, original) }
                         .map_err(|_| "fuel award tap construction failed")?,
                 );
             }

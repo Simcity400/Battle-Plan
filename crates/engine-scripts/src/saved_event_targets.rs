@@ -20,15 +20,16 @@ use crate::{
     creference_registry, read, read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Saved-global target array in game state.
 pub const REGISTRY: usize = 0x6c0;
 /// Reverse interned-name vector.
-pub const NAMES_RVA: usize = 0x033e_b2b0;
+pub const NAMES_RVA: Rva = Rva(0x033e_b2b0);
 /// Saved-target record stride; its final u16 ends it.
 pub const STRIDE: usize = 0x70;
 /// Saved-target record vtable.
-pub const VTABLE_RVA: usize = 0x0279_f280;
+pub const VTABLE_RVA: Rva = Rva(0x0279_f280);
 /// Fallback target receiver used only outside an initialized game, gated by `cgame_state::PLAYER_INPUT_ELIGIBLE`.
 pub const IN_GAME: usize = 0xa39;
 /// Stored reference fields in validity-bit order.
@@ -158,9 +159,8 @@ fn walk_buffer(
         let registry_at = state
             .checked_add(REGISTRY)
             .ok_or("saved event target state overflow")?;
-        let names_at = base
-            .checked_add(NAMES_RVA)
-            .ok_or("saved event target names overflow")?;
+        let names_at =
+            engine_sites::at(base, NAMES_RVA).ok_or("saved event target names overflow")?;
         let (rh, registry) = header(memory, registry_at, STRIDE)?;
         let (nh, names) = header(memory, names_at, 32)?;
         required.rows = registry.count as usize;
@@ -182,9 +182,8 @@ fn walk_buffer(
                 read::<[u8; 0x6a]>(memory, at).ok_or("saved event target record unreadable")?;
             let qword = |offset| u64::from_le_bytes(raw[offset..offset + 8].try_into().unwrap());
             if qword(0)
-                != base
-                    .checked_add(VTABLE_RVA)
-                    .ok_or("saved event target vtable overflow")? as u64
+                != engine_sites::at(base, VTABLE_RVA).ok_or("saved event target vtable overflow")?
+                    as u64
             {
                 return Err("saved event target vtable mismatch");
             }
@@ -342,7 +341,7 @@ mod tests {
             let mut f = Self::default();
             f.put(0x1000 + IN_GAME, &[2]);
             f.array(0x1000 + REGISTRY, 0xa000, 2);
-            f.array(NAMES_RVA, 0x3000, 3);
+            f.array(NAMES_RVA.0, 0x3000, 3);
             f.put(0xa000, &[0; STRIDE * 2]);
             f.put(0x3000, &[0; 32 * 3]);
             for (i, name) in [b"first".as_slice(), b"x", b"a_long_heap_target_name"]
@@ -364,7 +363,7 @@ mod tests {
                 f.put(0x3000 + i * 32, &h);
             }
             for i in 0..2 {
-                f.put(0xa000 + i * STRIDE, &(VTABLE_RVA as u64).to_le_bytes());
+                f.put(0xa000 + i * STRIDE, &(VTABLE_RVA.0 as u64).to_le_bytes());
                 f.put(0xa000 + i * STRIDE + 0x68, &((i + 1) as u16).to_le_bytes());
             }
             f.put(0xa00c, &77i32.to_le_bytes());
@@ -431,12 +430,12 @@ mod tests {
         let mut f = Fixture::new();
         let mut rows = [Row::default(); 2];
         let mut text = [0; 24];
-        f.array(NAMES_RVA, 0x3000, u32::from(u16::MAX) + 1);
+        f.array(NAMES_RVA.0, 0x3000, u32::from(u16::MAX) + 1);
         assert_eq!(
             walk(&f, 0, 0x1000, &mut rows, &mut text).outcome,
             Outcome::Rows { len: 2 }
         );
-        f.array(NAMES_RVA, 0x3000, u32::from(u16::MAX) + 2);
+        f.array(NAMES_RVA.0, 0x3000, u32::from(u16::MAX) + 2);
         let wrapped = walk(&f, 0, 0x1000, &mut rows, &mut text);
         assert_eq!(
             wrapped.outcome,
@@ -459,7 +458,7 @@ mod tests {
         f.put(0xa00c, &0i32.to_le_bytes());
         f.put(0xa010, &handle.to_le_bytes());
         f.put(
-            creference_registry::LOW_ROOTS_RVA + 54 * 8,
+            creference_registry::LOW_ROOTS_RVA.0 + 54 * 8,
             &0u64.to_le_bytes(),
         );
         let mut rows = [Row::default(); 2];
@@ -513,7 +512,7 @@ mod tests {
         registry.entry(Registry::index(fallback), 1, fallback, 0x8100);
         let operation = (4u64 << 32) | 55;
         f.put(0xa018, &operation.to_le_bytes());
-        f.put(r::LOW_ROOTS_RVA + 55 * 8, &0u64.to_le_bytes());
+        f.put(r::LOW_ROOTS_RVA.0 + 55 * 8, &0u64.to_le_bytes());
         f.put(0x5000, &[0; 0xa00]);
         f.put(0x5000 + 0xa8, &0x8000u64.to_le_bytes());
         let leader = (9u64 << 32) | 1;
@@ -555,7 +554,7 @@ mod tests {
         );
         assert_eq!(rows[0].character_leader, Some(leader));
         // Later references are probed even when the character wins selection.
-        memory.saved.0.remove(&(r::LOW_ROOTS_RVA + 55 * 8));
+        memory.saved.0.remove(&(r::LOW_ROOTS_RVA.0 + 55 * 8));
         assert!(matches!(
             walk(&memory, 0, 0x1000, &mut rows, &mut text).outcome,
             Outcome::Unavailable { .. }
@@ -613,7 +612,7 @@ mod tests {
             fixture.put(0x3040, &h);
             for ordinal in 0..count {
                 let at = 0xa000 + ordinal * STRIDE;
-                fixture.put(at, &(VTABLE_RVA as u64).to_le_bytes());
+                fixture.put(at, &(VTABLE_RVA.0 as u64).to_le_bytes());
                 fixture.put(at + 0xc, &(ordinal as i32 + 1).to_le_bytes());
                 fixture.put(at + 0x68, &2u16.to_le_bytes());
             }

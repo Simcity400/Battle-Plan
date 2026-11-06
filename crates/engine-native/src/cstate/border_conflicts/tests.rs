@@ -10,7 +10,7 @@ fn fixture(active: u8, members: u64) -> Vec<u8> {
     for (at, value) in [
         (0x1000 + cgame_state::STATES, 0x1800),
         (0x1808, 0x2000),
-        (0x2000, cstate::VTABLE_RVA),
+        (0x2000, cstate::VTABLE_RVA.0),
         (0x2000 + cstate::BORDER_CONFLICT_TREE, 0x3000),
     ] {
         put(&mut bytes, at, &(value as u64).to_le_bytes());
@@ -49,7 +49,7 @@ fn fixture(active: u8, members: u64) -> Vec<u8> {
     put(
         &mut bytes,
         0x4000,
-        &(cland_border_war_combat::VTABLE_RVA as u64).to_le_bytes(),
+        &(cland_border_war_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     for (offset, side, country) in [
         (cland_combat::ATTACKER, 0x5000, i32::MIN),
@@ -59,7 +59,7 @@ fn fixture(active: u8, members: u64) -> Vec<u8> {
         put(
             &mut bytes,
             side,
-            &(cland_border_war_combatant::VTABLE_RVA as u64).to_le_bytes(),
+            &(cland_border_war_combatant::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

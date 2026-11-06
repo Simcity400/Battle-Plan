@@ -3,12 +3,13 @@
 //! sentinel and is outside content reach. Effect ownership follows the authored-definition argument
 //! and its token. The untyped hook ABI does not establish the concrete receiver class.
 
+use engine_sites::Rva;
 use crate::{Memory, msvc_string, read};
 
 /// CDecision MSVC string token.
 pub const TOKEN: usize = 0x120;
 /// CDecision primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_8570;
+pub const VTABLE_RVA: Rva = Rva(0x0286_8570);
 /// Native fixed_random_seed content byte.
 pub const FIXED_RANDOM_SEED: usize = 0x962;
 /// Activation selects the timed targeted container when this byte is nonzero.
@@ -29,9 +30,7 @@ pub(crate) fn token(
     if definition == 0 {
         return Err("decision definition is null");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, definition) != Some(expected as u64) {
         return Err("decision definition vtable mismatch");
     }
@@ -67,52 +66,24 @@ pub(crate) fn token(
 }
 
 /// Authored-decision cancel-effect entry; observes invocation only.
-pub const CANCEL_EFFECT_RVA: usize = 0x0077_0120;
+pub const CANCEL_EFFECT_RVA: Rva = Rva(0x0077_0120);
 /// Authored-decision removal-effect entry; observes invocation only.
-pub const REMOVE_EFFECT_RVA: usize = 0x0077_0360;
-/// Three ordinary terminal-effect entry prefixes.
-pub const TERMINAL_EFFECT_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec, 0xf0, 0x00,
-];
+pub const REMOVE_EFFECT_RVA: Rva = Rva(0x0077_0360);
 /// Authored targeted-decision cancel-effect entry.
-pub const TARGETED_CANCEL_EFFECT_RVA: usize = 0x0077_05a0;
+pub const TARGETED_CANCEL_EFFECT_RVA: Rva = Rva(0x0077_05a0);
 /// Authored targeted-decision removal-effect entry.
-pub const TARGETED_REMOVE_EFFECT_RVA: usize = 0x0077_0be0;
-/// Targeted cancel/removal entry prefixes.
-pub const TARGETED_TERMINAL_EFFECT_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
-];
+pub const TARGETED_REMOVE_EFFECT_RVA: Rva = Rva(0x0077_0be0);
 /// Targeted decision's execute-effect entry.
-pub const TARGETED_EXECUTE_EFFECT_RVA: usize = 0x0077_08c0;
+pub const TARGETED_EXECUTE_EFFECT_RVA: Rva = Rva(0x0077_08c0);
 /// The ordinary timed-mission success caller of execution.
-pub const MISSION_COMPLETION_RETURN_RVA: usize = 0x0077_f3f9;
+pub const MISSION_COMPLETION_RETURN_RVA: Rva = Rva(0x0077_f3f9);
 
 /// Event-feed-owned decision entries. Targeted timeout is forwarded by the
 /// politics owner and therefore has no second patch here.
-pub const EVENT_FEED_ENTRIES: [(&str, usize, [u8; 16]); 5] = [
-    (
-        "DecisionCancellationEffects",
-        CANCEL_EFFECT_RVA,
-        TERMINAL_EFFECT_SENTINEL,
-    ),
-    (
-        "DecisionRemovalEffects",
-        REMOVE_EFFECT_RVA,
-        TERMINAL_EFFECT_SENTINEL,
-    ),
-    (
-        "TargetedDecisionCancellationEffects",
-        TARGETED_CANCEL_EFFECT_RVA,
-        TARGETED_TERMINAL_EFFECT_SENTINEL,
-    ),
-    (
-        "TargetedDecisionRemovalEffects",
-        TARGETED_REMOVE_EFFECT_RVA,
-        TARGETED_TERMINAL_EFFECT_SENTINEL,
-    ),
-    (
-        "TargetedDecisionExecuted",
-        TARGETED_EXECUTE_EFFECT_RVA,
-        TARGETED_TERMINAL_EFFECT_SENTINEL,
-    ),
+pub const EVENT_FEED_ENTRIES: [(&str, Rva); 5] = [
+    ("DecisionCancellationEffects", CANCEL_EFFECT_RVA),
+    ("DecisionRemovalEffects", REMOVE_EFFECT_RVA),
+    ("TargetedDecisionCancellationEffects", TARGETED_CANCEL_EFFECT_RVA),
+    ("TargetedDecisionRemovalEffects", TARGETED_REMOVE_EFFECT_RVA),
+    ("TargetedDecisionExecuted", TARGETED_EXECUTE_EFFECT_RVA),
 ];

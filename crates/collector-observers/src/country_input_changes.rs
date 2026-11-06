@@ -1300,11 +1300,11 @@ pub struct Counts {
 /// A worker publishes one hour's counts and, after a complete census, the
 /// census's country id bound for sizing.
 pub fn record(table: Table, counts: &Counts, ids: Option<usize>) {
-    for (total, value) in READS[table as usize].iter().zip([
-        counts.marked,
-        counts.read,
-        u64::from(counts.full),
-    ]) {
+    for (total, value) in
+        READS[table as usize]
+            .iter()
+            .zip([counts.marked, counts.read, u64::from(counts.full)])
+    {
         total.fetch_add(value, Ordering::Relaxed);
     }
     DOMAIN.hours[table as usize].fetch_add(1, Ordering::Relaxed);
@@ -1396,9 +1396,10 @@ impl Hooks {
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "country_input_changes")
-            && MUTATIONS.iter().all(|(site, _, _)| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            })
+            && MUTATIONS
+                .iter()
+                .all(|(site, _, _)| crate::located(base, site.rva).is_ok())
+            && let Ok(weather) = engine_sites::hook(base, sites::PROVINCE_WEATHER_REBUILD_RVA)
         {
             BASE.store(base, Ordering::Release);
             let callbacks: [usize; SITES] = [
@@ -1502,30 +1503,27 @@ impl Hooks {
                 remove_sent_expeditionary as *const () as usize,
             ];
             for (index, (site, _, _)) in MUTATIONS.iter().enumerate() {
+                let code = engine_sites::hook(base, site.rva)?;
+                let original = code.sentinel::<16>()?;
                 let hook = if index == sites::WEATHER_EXPIRY_REBUILD {
-                    let hook =
-                        unsafe { Hook::new_call(base + site.rva, callbacks[index], site.sentinel) }
-                            .map_err(|cause| {
-                                format!(
-                                    "country_input_changes hook {} construction failed: {cause}",
-                                    site.name
-                                )
-                            })?;
+                    let hook = unsafe { Hook::new_call(code.address, callbacks[index], original) }
+                        .map_err(|cause| {
+                            format!(
+                                "country_input_changes hook {} construction failed: {cause}",
+                                site.name
+                            )
+                        })?;
                     // The detour calls the CALL's target itself.
-                    ORIGINAL[index].store(
-                        base + sites::PROVINCE_WEATHER_REBUILD_RVA,
-                        Ordering::Release,
-                    );
+                    ORIGINAL[index].store(weather.address, Ordering::Release);
                     hook
                 } else {
-                    let hook =
-                        unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                            .map_err(|cause| {
-                                format!(
-                                    "country_input_changes hook {} construction failed: {cause}",
-                                    site.name
-                                )
-                            })?;
+                    let hook = unsafe { Hook::new(code.address, callbacks[index], original) }
+                        .map_err(|cause| {
+                            format!(
+                                "country_input_changes hook {} construction failed: {cause}",
+                                site.name
+                            )
+                        })?;
                     ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                     hook
                 };

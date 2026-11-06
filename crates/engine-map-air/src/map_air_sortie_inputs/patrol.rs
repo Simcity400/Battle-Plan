@@ -1,5 +1,6 @@
 //! Raw disruption operands borrowed by the registered-mission worker.
 use super::*;
+use engine_sites::Rva;
 
 const DISRUPTION: usize = 0xa8;
 const ATTACK_STAT: usize = 0x30;
@@ -9,7 +10,7 @@ const COMBAT_ATTACK: u32 = 0x6f;
 const COMBAT_DEFENCE: u32 = 0x70;
 
 /// Loaded dynamic mission spotting-factor array.
-pub const SPOTTING_FACTORS_RVA: usize = 0x033e_7208;
+pub const SPOTTING_FACTORS_RVA: Rva = Rva(0x033e_7208);
 
 /// One worker pass's original header and independent per-kind observations.
 /// The fixed width is the simulation mask's bit width, not a content cap.
@@ -34,7 +35,7 @@ impl SpottingFactors {
             return value;
         }
         let header = *self.header.get_or_insert_with(|| {
-            base.checked_add(SPOTTING_FACTORS_RVA)
+            engine_sites::at(base, SPOTTING_FACTORS_RVA)
                 .and_then(|at| Array::read(memory, at, 8))
                 .ok_or("Air patrol spotting-factor array unreadable")
         });
@@ -245,7 +246,7 @@ mod tests {
         }
         impl Memory for Factors {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-                if at == SPOTTING_FACTORS_RVA {
+                if at == SPOTTING_FACTORS_RVA.0 {
                     self.header_reads.set(self.header_reads.get() + 1);
                     if self.header_fault {
                         return false;
@@ -343,7 +344,7 @@ mod tests {
         );
         put(
             REGION,
-            &(crate::cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(REGION + crate::cstrategic_region::ID, &7_u32.to_le_bytes());
         put(
@@ -363,7 +364,7 @@ mod tests {
         for (pointer, id) in [(FIRST, 1_u32), (SECOND, 2)] {
             put(
                 pointer,
-                &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+                &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(pointer + crate::cprovince::ID, &id.to_le_bytes());
         }

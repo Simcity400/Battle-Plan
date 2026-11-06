@@ -34,9 +34,7 @@ pub fn capture(
         base_fuel: field(memory, wing, BASE_FUEL),
         ..Default::default()
     };
-    if base
-        .checked_add(air_mission::VTABLE_RVA)
-        .map(|at| at as u64)
+    if engine_sites::at(base, air_mission::VTABLE_RVA).map(|at| at as u64)
         != field(memory, wing, MISSION)
     {
         return out;
@@ -102,7 +100,7 @@ mod tests {
     fn memory(current: i32) -> Traced {
         let mut bytes = vec![0; WING + BASE_FUEL + 16];
         bytes[WING + MISSION..WING + MISSION + 8]
-            .copy_from_slice(&(air_mission::VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(air_mission::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[WING + BASE_FUEL..WING + BASE_FUEL + 8].copy_from_slice(&123_456_i64.to_le_bytes());
         bytes[WING + MISSION + air_mission::CURRENT_TYPE
             ..WING + MISSION + air_mission::CURRENT_TYPE + 4]

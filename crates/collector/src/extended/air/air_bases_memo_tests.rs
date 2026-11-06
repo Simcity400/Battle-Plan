@@ -186,7 +186,7 @@ fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
         bytes[data + text.len()] = 0;
     };
     kit::put64(&mut bytes, kit::GUI_SINGLETON, GUI as u64);
-    kit::put64(&mut bytes, GUI, engine_native::cgame_gui::VTABLE_RVA as u64);
+    kit::put64(&mut bytes, GUI, engine_native::cgame_gui::VTABLE_RVA.0 as u64);
     array(&mut bytes, GUI + 0xcb0, POOLS, 3);
     array(&mut bytes, POOLS + cpdx_array::STRIDE, SPRITE, 1);
     heap(

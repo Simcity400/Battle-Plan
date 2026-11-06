@@ -1,9 +1,10 @@
 //! Air-wing combat records in game memory.
 
 use crate::Memory;
+use engine_sites::Rva;
 
 /// Primary record vtable.
-pub const VTABLE_RVA: usize = 0x02a9_99d0;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_99d0);
 /// Array stride, used for reverse scans and growth.
 pub const STRIDE: usize = 0x98;
 /// Wing ID, u32.
@@ -82,9 +83,7 @@ pub(crate) fn read_row(
     {
         return Err("air combat record fields unreadable");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(head[..8].try_into().unwrap()) != expected as u64 {
         return Err("air combat record vtable mismatch");
     }

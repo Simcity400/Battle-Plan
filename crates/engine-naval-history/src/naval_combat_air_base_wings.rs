@@ -4,6 +4,7 @@
 //! occurrences nor wing handles are deduplicated. Only combat-referenced bases
 //! are supplied; `UniqueHandles` gathers them once in first-reference order.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cair_base, cair_wing, cair_wing_pool, ccountry_air_container, cpdx_array::Array,
     creference_registry, read, walk::Outcome,
@@ -320,11 +321,9 @@ fn vtable(
     memory: &impl Memory,
     module_base: usize,
     pointer: usize,
-    rva: usize,
+    key: Rva,
 ) -> Result<(), &'static str> {
-    let expected = module_base
-        .checked_add(rva)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(module_base, key).ok_or("module address overflow")? as u64;
     if read::<u64>(memory, pointer) == Some(expected) {
         Ok(())
     } else {
@@ -385,7 +384,7 @@ mod tests {
         fn new() -> Self {
             let mut f = Self::default();
             f.word(
-                creference_registry::LOW_ROOTS_RVA + cair_base::TYPE as usize * 8,
+                creference_registry::LOW_ROOTS_RVA.0 + cair_base::TYPE as usize * 8,
                 0x1000,
             );
             f.word(0x1000 + creference_registry::ENTRIES, 0x2000);
@@ -397,27 +396,27 @@ mod tests {
             f.registry_entry(BASE_ID, BASE);
             f.registry_entry(EMPTY_ID, EMPTY_BASE);
 
-            f.word(BASE, cair_base::VTABLE_RVA as u64);
+            f.word(BASE, cair_base::VTABLE_RVA.0 as u64);
             f.word(BASE + cair_base::HANDLE, BASE_ID);
             f.vector(BASE + cair_base::REGISTERED_CONTAINERS, DENSE, 2);
             f.word(DENSE, CONTAINER as u64);
             f.word(DENSE + 8, CONTAINER as u64);
-            f.word(EMPTY_BASE, cair_base::VTABLE_RVA as u64);
+            f.word(EMPTY_BASE, cair_base::VTABLE_RVA.0 as u64);
             f.word(EMPTY_BASE + cair_base::HANDLE, EMPTY_ID);
             f.vector(EMPTY_BASE + cair_base::REGISTERED_CONTAINERS, 0, 0);
 
-            f.word(CONTAINER, ccountry_air_container::VTABLE_RVA as u64);
+            f.word(CONTAINER, ccountry_air_container::VTABLE_RVA.0 as u64);
             f.vector(CONTAINER + ccountry_air_container::POOLS, POOLS, 1);
             f.word(POOLS, POOL as u64);
-            f.word(POOL, cair_wing_pool::VTABLE_RVA as u64);
+            f.word(POOL, cair_wing_pool::VTABLE_RVA.0 as u64);
             f.vector(POOL + cair_wing_pool::WINGS, WINGS, 2);
             f.word(WINGS, WING_A as u64);
             f.word(WINGS + 8, WING_B as u64);
             for (pointer, handle) in [(WING_A, WING_A_ID), (WING_B, WING_B_ID)] {
-                f.word(pointer, cair_wing::VTABLE_RVA as u64);
+                f.word(pointer, cair_wing::VTABLE_RVA.0 as u64);
                 f.word(
                     pointer + cair_wing::SECONDARY,
-                    cair_wing::SECONDARY_VTABLE_RVA as u64,
+                    cair_wing::SECONDARY_VTABLE_RVA.0 as u64,
                 );
                 f.word(pointer + cair_wing::REFERENCE_TYPE, handle);
             }

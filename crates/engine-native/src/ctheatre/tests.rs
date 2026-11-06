@@ -24,8 +24,8 @@ fn handle(kind: u32) -> u64 {
     (u64::from(u32::MAX) << 32) | u64::from(kind)
 }
 
-fn object(bytes: &mut [u8], address: usize, vtable: usize, kind: u32) {
-    put(bytes, address, ((MODULE + vtable) as u64).to_le_bytes());
+fn object(bytes: &mut [u8], address: usize, vtable: Rva, kind: u32) {
+    put(bytes, address, ((MODULE + vtable.0) as u64).to_le_bytes());
     put(bytes, address + 8, handle(kind).to_le_bytes());
 }
 
@@ -49,7 +49,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY_POINTER,
-        ((MODULE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+        ((MODULE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -592,7 +592,7 @@ fn stationed_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             area,
-            ((MODULE + ccontroller_area::VTABLE_RVA) as u64).to_le_bytes(),
+            ((MODULE + ccontroller_area::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
     }
     put(
@@ -612,7 +612,7 @@ fn stationed_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             province,
-            ((MODULE + cprovince::VTABLE_RVA) as u64).to_le_bytes(),
+            ((MODULE + cprovince::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, province + cprovince::ID, id.to_le_bytes());
     }
@@ -622,7 +622,7 @@ fn stationed_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         UNIT_A,
-        ((MODULE + carmy::VTABLE_RVA) as u64).to_le_bytes(),
+        ((MODULE + carmy::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -632,7 +632,7 @@ fn stationed_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         UNIT_B,
-        ((MODULE + ctask_force::VTABLE_RVA) as u64).to_le_bytes(),
+        ((MODULE + ctask_force::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(&mut bytes, UNIT_B + cunit::HANDLE, u64::MAX.to_le_bytes());
     bytes
@@ -729,7 +729,7 @@ fn wide_area_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             province,
-            ((MODULE + cprovince::VTABLE_RVA) as u64).to_le_bytes(),
+            ((MODULE + cprovince::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -949,7 +949,7 @@ fn many_theatres(countries: usize, members: usize) -> Vec<u8> {
         put(
             &mut bytes,
             country,
-            ((MODULE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+            ((MODULE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

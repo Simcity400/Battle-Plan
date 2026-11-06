@@ -483,11 +483,11 @@ fn copy_country_roots(
 /// resource vectors. Takes are unconditional over
 /// discoverable addresses (a superset); the replay derives every outcome.
 fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, states: &Array) {
-    let state_vtable = match base.checked_add(cstate::VTABLE_RVA) {
+    let state_vtable = match engine_sites::at(base, cstate::VTABLE_RVA) {
         Some(v) => v as u64,
         None => return,
     };
-    let template_vtable = match base.checked_add(cstate_template::VTABLE_RVA) {
+    let template_vtable = match engine_sites::at(base, cstate_template::VTABLE_RVA) {
         Some(v) => v as u64,
         None => return,
     };
@@ -632,12 +632,10 @@ fn copy_construction_queue(
                 continue;
             };
             let vtable = c_pool_u64(log, vtable_start);
-            let building_vtable = base
-                .checked_add(cbuilding_production_line::VTABLE_RVA)
-                .map(|v| v as u64);
-            let railway_vtable = base
-                .checked_add(crailway_production_line::VTABLE_RVA)
-                .map(|v| v as u64);
+            let building_vtable =
+                engine_sites::at(base, cbuilding_production_line::VTABLE_RVA).map(|v| v as u64);
+            let railway_vtable =
+                engine_sites::at(base, crailway_production_line::VTABLE_RVA).map(|v| v as u64);
             // Common fields (reference, factories, cost/speed/produced,
             // priority/amount, created date, owner).
             let _ = cspan(
@@ -787,9 +785,7 @@ fn copy_construction_target(
         return;
     };
     if Some(c_pool_u64(log, vt))
-        != base
-            .checked_add(cbuilding_status::VTABLE_RVA)
-            .map(|p| p as u64)
+        != engine_sites::at(base, cbuilding_status::VTABLE_RVA).map(|p| p as u64)
     {
         return;
     }
@@ -833,7 +829,7 @@ fn copy_construction_target(
     let Some(vt) = cspan(log, memory, Some(pointer), 8, M_C_BLD) else {
         return;
     };
-    if Some(c_pool_u64(log, vt)) != base.checked_add(vtable).map(|p| p as u64)
+    if Some(c_pool_u64(log, vt)) != engine_sites::at(base, vtable).map(|p| p as u64)
         || pointer.checked_add(status_offset) != Some(status)
     {
         return;
@@ -860,7 +856,7 @@ fn copy_construction_target(
     let Some(vt) = cspan(log, memory, Some(state), 8, M_C_BLD) else {
         return;
     };
-    if Some(c_pool_u64(log, vt)) != base.checked_add(cstate::VTABLE_RVA).map(|p| p as u64) {
+    if Some(c_pool_u64(log, vt)) != engine_sites::at(base, cstate::VTABLE_RVA).map(|p| p as u64) {
         return;
     }
     let Some(id) = cspan(log, memory, state.checked_add(cstate::ID), 4, M_C_BLD) else {
@@ -893,7 +889,7 @@ fn copy_occupation_walk(
     if let Some(at) = cspan(
         log,
         memory,
-        base.checked_add(coccupation_law::DATABASE_RVA),
+        engine_sites::at(base, coccupation_law::DATABASE_RVA),
         8,
         M_C_OCC,
     ) && let Ok(database) = usize::try_from(c_pool_u64(log, at))
@@ -1163,8 +1159,7 @@ fn copy_occupation_entries(
         let identity: [u8; 20] = log.bytes[id_start..id_start + 20].try_into().unwrap();
         let word = |at: usize| u64::from_le_bytes(identity[at..at + 8].try_into().unwrap());
         if let Some(slots) = slots
-            && base
-                .checked_add(ccountry_occupation_data::VTABLE_RVA)
+            && engine_sites::at(base, ccountry_occupation_data::VTABLE_RVA)
                 .map(|vtable| vtable as u64)
                 == Some(word(0))
             && word(ccountry_occupation_data::PARENT_STATUS) == status as u64
@@ -1477,8 +1472,10 @@ fn copy_collaboration_walk(
                                     [rel, target, progress],
                                     [8, 4, 8],
                                     [mask; 3],
-                                ) && base.checked_add(ccountry_collaboration_data::VTABLE_RVA)
-                                    == usize::try_from(c_pool_u64(log, identity)).ok()
+                                ) && engine_sites::at(
+                                    base,
+                                    ccountry_collaboration_data::VTABLE_RVA,
+                                ) == usize::try_from(c_pool_u64(log, identity)).ok()
                                 {
                                     let raw = c_pool_u32(log, target);
                                     copy_collaboration_link(log, memory, links, raw);

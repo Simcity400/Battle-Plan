@@ -157,7 +157,7 @@ fn scalar_details(
         crate::cterrain_type::NULL_VTABLE_RVA,
     ]
     .into_iter()
-    .any(|rva| base.checked_add(rva).map(|p| p as u64) == Some(stored_vtable))
+    .any(|key| engine_sites::at(base, key).map(|p| p as u64) == Some(stored_vtable))
     {
         return Err("land stored terrain vtable mismatch");
     }
@@ -209,8 +209,7 @@ fn scalar_details(
             reader.field::<u64>(tactic, 0)?
         };
         if Some(tactic_vtable)
-            == base
-                .checked_add(crate::ccombat_tactic::VTABLE_RVA)
+            == engine_sites::at(base, crate::ccombat_tactic::VTABLE_RVA)
                 .map(|v| v as u64)
         {
             side.tactic_kind = 2;
@@ -220,8 +219,7 @@ fn scalar_details(
         } else if tactic == 0 {
             side.tactic_kind = 0;
         } else if Some(tactic_vtable)
-            != base
-                .checked_add(crate::cnull_combat_tactic::VTABLE_RVA)
+            != engine_sites::at(base, crate::cnull_combat_tactic::VTABLE_RVA)
                 .map(|v| v as u64)
         {
             return Err("land detail tactic vtable mismatch");
@@ -332,13 +330,13 @@ fn details_leaf_batches_match_scalar_values_every_fault_and_changed_read() {
         fixture.u64(COMBAT + ATTACKER_BONUS, i64::MAX as u64);
         fixture.u64(COMBAT + DEFENDER_BONUS, u64::MAX);
         if border {
-            fixture.u64(COMBAT, (BASE + cland_border_war_combat::VTABLE_RVA) as u64);
+            fixture.u64(COMBAT, (BASE + cland_border_war_combat::VTABLE_RVA.0) as u64);
             fixture.u64(
                 COMBAT + BODY,
-                (BASE + cland_border_war_combat::BODY_VTABLE_RVA) as u64,
+                (BASE + cland_border_war_combat::BODY_VTABLE_RVA.0) as u64,
             );
             for side in [ATTACK, DEFEND] {
-                fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA) as u64);
+                fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA.0) as u64);
                 fixture.u64(side + cland_combatant::BORDER_MODIFIER, i64::MIN as u64);
                 fixture.u64(
                     side + cland_combatant::BORDER_DIG_IN_FACTOR,
@@ -349,7 +347,7 @@ fn details_leaf_batches_match_scalar_values_every_fault_and_changed_read() {
                 fixture.u64(side + 0x4c8, 0x8a00);
                 fixture.u64(side + 0x500 + 24, 15);
                 fixture.u64(side + 0x520 + 24, 15);
-                fixture.u64(0x8a00, (BASE + crate::cstate::VTABLE_RVA) as u64);
+                fixture.u64(0x8a00, (BASE + crate::cstate::VTABLE_RVA.0) as u64);
                 fixture.u32(0x8a00 + crate::cstate::ID, 19);
             }
         }
@@ -451,7 +449,7 @@ fn details_keep_loss_ring_stored_terrain_and_first_header_gates() {
     fixture.u64(COMBAT + STORED_TERRAIN, 0x8e00);
     fixture.u64(
         0x8e00,
-        (BASE + crate::cterrain_type::NULL_VTABLE_RVA) as u64,
+        (BASE + crate::cterrain_type::NULL_VTABLE_RVA.0) as u64,
     );
     let trace = assert_detail_attempt(&fixture, &[], None, None, 8);
     assert!(!trace.contains(&(ATTACK + cland_combatant::ORGANISATION_LOSS_WINDOW, 8)));
@@ -652,13 +650,13 @@ impl Fixture {
         value.array(STATE + cgame_state::COMBATS + 8, REGISTRY, 2);
         value.u64(REGISTRY, COMBAT as u64);
         value.u64(REGISTRY + 8, NAVAL as u64);
-        value.u64(NAVAL, (BASE + cnaval_combat::VTABLE_RVA) as u64);
+        value.u64(NAVAL, (BASE + cnaval_combat::VTABLE_RVA.0) as u64);
         value.array(STATE + cgame_state::PROVINCES, PROVINCES, 2);
         value.u64(PROVINCES + 8, PROVINCE_OBJECT as u64);
-        value.u64(PROVINCE_OBJECT, (BASE + cprovince::VTABLE_RVA) as u64);
+        value.u64(PROVINCE_OBJECT, (BASE + cprovince::VTABLE_RVA.0) as u64);
         value.u32(PROVINCE_OBJECT + cprovince::ID, 1);
-        value.u64(COMBAT, (BASE + VTABLE_RVA) as u64);
-        value.u64(COMBAT + BODY, (BASE + BODY_VTABLE_RVA) as u64);
+        value.u64(COMBAT, (BASE + VTABLE_RVA.0) as u64);
+        value.u64(COMBAT + BODY, (BASE + BODY_VTABLE_RVA.0) as u64);
         value.u64(COMBAT + HANDLE, (0xf000_0001_u64 << 32) | TYPE_WORD as u64);
         value.u64(COMBAT + PROVINCE, PROVINCE_OBJECT as u64);
         value.u32(COMBAT + DURATION, 24);
@@ -668,7 +666,7 @@ impl Fixture {
         for (side, attacker, units, count) in
             [(ATTACK, 1, ATTACK_UNITS, 2), (DEFEND, 0, DEFEND_UNITS, 1)]
         {
-            value.u64(side, (BASE + cland_combatant::VTABLE_RVA) as u64);
+            value.u64(side, (BASE + cland_combatant::VTABLE_RVA.0) as u64);
             value.u64(side + cland_combatant::COMBAT, COMBAT as u64);
             value.0[side + cland_combatant::IS_ATTACKER - STATE] = attacker;
             value.array(side + cland_combatant::UNITS, units, count);
@@ -677,10 +675,10 @@ impl Fixture {
         value.u64(ATTACK_UNITS + 8, UNIT_A as u64);
         value.u64(DEFEND_UNITS, UNIT_C as u64);
         for (unit, id) in [(UNIT_A, 1), (UNIT_B, u64::MAX - 4), (UNIT_C, 62)] {
-            value.u64(unit, (BASE + carmy::VTABLE_RVA) as u64);
+            value.u64(unit, (BASE + carmy::VTABLE_RVA.0) as u64);
             value.u64(
                 unit + carmy::SECONDARY_BASE,
-                (BASE + carmy::SECONDARY_VTABLE_RVA) as u64,
+                (BASE + carmy::SECONDARY_VTABLE_RVA.0) as u64,
             );
             value.u64(unit + cunit::HANDLE, id);
         }
@@ -758,17 +756,17 @@ fn mixed_registry_preserves_full_native_handles_and_participant_order() {
 #[test]
 fn a_non_division_participant_is_kept_with_its_class() {
     let mut fixture = Fixture::new();
-    fixture.u64(UNIT_A, (BASE + crate::crailway_gun::VTABLE_RVA) as u64);
+    fixture.u64(UNIT_A, (BASE + crate::crailway_gun::VTABLE_RVA.0) as u64);
     fixture.u32(UNIT_A + cunit::CLASS, RAILWAY_GUN_CLASS);
     fixture.u64(
         UNIT_A + carmy::SECONDARY_BASE,
-        (BASE + crate::crailway_gun::SECONDARY_VTABLE_RVA) as u64,
+        (BASE + crate::crailway_gun::SECONDARY_VTABLE_RVA.0) as u64,
     );
-    fixture.u64(UNIT_C, (BASE + crate::ctask_force::VTABLE_RVA) as u64);
+    fixture.u64(UNIT_C, (BASE + crate::ctask_force::VTABLE_RVA.0) as u64);
     fixture.u32(UNIT_C + cunit::CLASS, TASK_FORCE_CLASS);
     fixture.u64(
         UNIT_C + carmy::SECONDARY_BASE,
-        (BASE + crate::ctask_force::SECONDARY_VTABLE_RVA) as u64,
+        (BASE + crate::ctask_force::SECONDARY_VTABLE_RVA.0) as u64,
     );
     let (captured, _, participants, classes) = fixture.capture_classes();
     assert_eq!(captured.outcome, Outcome::Rows { len: 1 });
@@ -822,16 +820,16 @@ impl Memory for DetailMemory<'_> {
         self.copies.set(self.copies.get() + 1);
         self.bytes.set(self.bytes.get() + destination.len());
         use crate::modifier_definition as md;
-        if address == BASE + md::TABLE_RVA && destination.len() == 8 {
+        if address == BASE + md::TABLE_RVA.0 && destination.len() == 8 {
             destination.copy_from_slice(&0x200000_u64.to_le_bytes());
             return true;
         }
-        if address == BASE + md::ELIGIBILITY_CALLBACK_RVA && destination.len() == 8 {
+        if address == BASE + md::ELIGIBILITY_CALLBACK_RVA.0 && destination.len() == 8 {
             destination
-                .copy_from_slice(&((BASE + md::ELIGIBILITY_FLAGS_GETTER_RVA) as u64).to_le_bytes());
+                .copy_from_slice(&((BASE + md::ELIGIBILITY_FLAGS_GETTER_RVA.0) as u64).to_le_bytes());
             return true;
         }
-        if address == BASE + md::TRADE_FEATURE_FLAGS_RVA && destination.len() == 4 {
+        if address == BASE + md::TRADE_FEATURE_FLAGS_RVA.0 && destination.len() == 4 {
             destination.copy_from_slice(&0x80000002_u32.to_le_bytes());
             return true;
         }
@@ -841,13 +839,13 @@ impl Memory for DetailMemory<'_> {
             }
             return true;
         }
-        if address == BASE + crate::naval_commander_inputs::SKILL_DATABASE_RVA
+        if address == BASE + crate::naval_commander_inputs::SKILL_DATABASE_RVA.0
             && destination.len() == 8
         {
             destination.copy_from_slice(&0x11000_u64.to_le_bytes());
             return true;
         }
-        if address == BASE + crate::naval_commander_inputs::LEARNING_THRESHOLD_RVA
+        if address == BASE + crate::naval_commander_inputs::LEARNING_THRESHOLD_RVA.0
             && destination.len() == 8
         {
             destination.copy_from_slice(&5_000_i64.to_le_bytes());
@@ -859,13 +857,13 @@ impl Memory for DetailMemory<'_> {
 
 fn detail_fixture() -> Fixture {
     let mut fixture = Fixture::new();
-    fixture.u64(0x8200, (BASE + crate::cterrain_type::VTABLE_RVA) as u64);
+    fixture.u64(0x8200, (BASE + crate::cterrain_type::VTABLE_RVA.0) as u64);
     fixture.u64(COMBAT + STORED_TERRAIN, 0x8200);
     fixture.0[0x8200 + crate::cterrain_type::VALID - STATE] = 1;
     fixture.u64(0x8200 + crate::cterrain_type::NAME, 0x6e69616c70);
     fixture.u64(0x8200 + crate::cterrain_type::NAME + 16, 5);
     fixture.u64(0x8200 + crate::cterrain_type::NAME + 24, 15);
-    fixture.u64(0x8600, (BASE + crate::ccombat_tactic::VTABLE_RVA) as u64);
+    fixture.u64(0x8600, (BASE + crate::ccombat_tactic::VTABLE_RVA.0) as u64);
     fixture.u32(0x8600 + crate::ccombat_tactic::ID, 8);
     fixture.u32(0x8600 + crate::ccombat_tactic::COUNTER_ID, 9);
     fixture.u64(0x8600 + crate::ccombat_tactic::TOKEN, 0xff61);
@@ -1117,16 +1115,16 @@ fn commander_fixture() -> Fixture {
         (UNIT_A, 0x9200, 0xb200, 0xd200, 1, 42),
     ] {
         fixture.u64(unit + carmy::ORDERS_GROUP, group as u64);
-        fixture.u64(group, (BASE + corders_group::VTABLE_RVA) as u64);
+        fixture.u64(group, (BASE + corders_group::VTABLE_RVA.0) as u64);
         fixture.u64(group + corders_group::LEADER, leader as u64);
-        fixture.u64(leader, (BASE + carmy_leader::VTABLE_RVA) as u64);
+        fixture.u64(leader, (BASE + carmy_leader::VTABLE_RVA.0) as u64);
         fixture.u64(
             leader + cunit_leader::TYPE,
             (id << 32) | cunit_leader::REFERENCE_TYPE as u64,
         );
         fixture.u64(leader + cunit_leader::SKILL, skill as u64);
         fixture.u32(leader + cunit_leader::CATEGORY, category);
-        fixture.u64(skill, (BASE + cunit_leader_skill::VTABLE_RVA) as u64);
+        fixture.u64(skill, (BASE + cunit_leader_skill::VTABLE_RVA.0) as u64);
         fixture.u32(skill + cunit_leader_skill::LEVEL, 4);
     }
     const LEADER: usize = COMMANDER;
@@ -1144,11 +1142,11 @@ fn commander_fixture() -> Fixture {
     }
     fixture.array(0x11000 + 0xe8 + 0x18, 0x11180, 1);
     fixture.u64(0x11180, 0x11200);
-    fixture.u64(0x11200, (BASE + cunit_leader_skill::VTABLE_RVA) as u64);
+    fixture.u64(0x11200, (BASE + cunit_leader_skill::VTABLE_RVA.0) as u64);
     fixture.u64(LEADER + cunit_leader::EXPERIENCE, i64::MAX as u64);
     fixture.array(LEADER + cunit_leader::TRAIT_DATA, 0xe000, 1);
     fixture.u64(0xe000, TRAIT as u64);
-    fixture.u64(TRAIT, (BASE + cunit_leader_trait::VTABLE_RVA) as u64);
+    fixture.u64(TRAIT, (BASE + cunit_leader_trait::VTABLE_RVA.0) as u64);
     fixture.u32(TRAIT + cunit_leader_trait::TOKEN_ID, 1234);
     fixture.u32(TRAIT + cunit_leader_trait::ORDINAL, 7);
     fixture.u32(TRAIT + cunit_leader_trait::KIND, 2);
@@ -1744,7 +1742,7 @@ fn tactic_context_records_a_side_whose_country_set_emptied() {
     fixture.u64(COUNTRIES + 8, COUNTRY as u64);
     fixture.array(STATE + cgame_state::COUNTRY_LINKS, LINKS, 2);
     fixture.u32(LINKS + 4, 1);
-    fixture.u64(COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+    fixture.u64(COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
     fixture.u32(COUNTRY + ccountry::ID, 1);
     let capture = |fixture: &Fixture| {
         let memory = Defines(DetailMemory {
@@ -1923,19 +1921,19 @@ fn country_sets_refuse_broken_links_and_keep_what_the_game_stored() {
 #[test]
 fn border_war_has_native_dynamic_type_and_subclass_sides() {
     let mut fixture = Fixture::new();
-    fixture.u64(COMBAT, (BASE + cland_border_war_combat::VTABLE_RVA) as u64);
+    fixture.u64(COMBAT, (BASE + cland_border_war_combat::VTABLE_RVA.0) as u64);
     fixture.u64(
         COMBAT + BODY,
-        (BASE + cland_border_war_combat::BODY_VTABLE_RVA) as u64,
+        (BASE + cland_border_war_combat::BODY_VTABLE_RVA.0) as u64,
     );
     fixture.u64(COMBAT + HANDLE, u64::MAX);
     for side in [ATTACK, DEFEND] {
-        fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA) as u64);
+        fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA.0) as u64);
     }
     let (captured, rows, _) = fixture.capture();
     assert_eq!(captured.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[0].id, u64::MAX);
-    fixture.u64(DEFEND, (BASE + cland_combatant::VTABLE_RVA) as u64);
+    fixture.u64(DEFEND, (BASE + cland_combatant::VTABLE_RVA.0) as u64);
     assert!(matches!(
         fixture.capture().0.outcome,
         Outcome::Unavailable { .. }
@@ -2106,10 +2104,10 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
     )
     .unwrap();
     assert!(row.border_war.is_none()); // ordinary side extensions are all invalid here.
-    fixture.u64(COMBAT, (BASE + cland_border_war_combat::VTABLE_RVA) as u64);
+    fixture.u64(COMBAT, (BASE + cland_border_war_combat::VTABLE_RVA.0) as u64);
     fixture.u64(
         COMBAT + BODY,
-        (BASE + cland_border_war_combat::BODY_VTABLE_RVA) as u64,
+        (BASE + cland_border_war_combat::BODY_VTABLE_RVA.0) as u64,
     );
     fixture.0[COMBAT + 0xf0 - STATE] = 9;
     fixture.u64(
@@ -2117,11 +2115,11 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
         (-1_i64) as u64,
     );
     for (side, country, state) in [(ATTACK, -7_i32, 19), (DEFEND, 11, 21)] {
-        fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA) as u64);
+        fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA.0) as u64);
         fixture.u32(side + 0x4c0, country as u32);
         let pointer = 0x10300 + if side == ATTACK { 0 } else { 0x100 };
         fixture.u64(side + 0x4c8, pointer as u64);
-        fixture.u64(pointer, (BASE + crate::cstate::VTABLE_RVA) as u64);
+        fixture.u64(pointer, (BASE + crate::cstate::VTABLE_RVA.0) as u64);
         fixture.u32(pointer + crate::cstate::ID, state);
         for (offset, id) in [
             (0x500, b"event.1".as_slice()),
@@ -2222,7 +2220,7 @@ fn movement_combat_reads_the_movement_word_and_attacking_units_by_combat_kind() 
     put(
         &mut bytes,
         SIDE,
-        (BASE + cland_combatant::VTABLE_RVA) as u64,
+        (BASE + cland_combatant::VTABLE_RVA.0) as u64,
     );
     put(&mut bytes, SIDE + cland_combatant::COMBAT, COMBAT as u64);
     put(&mut bytes, SIDE + cland_combatant::UNITS, UNITS as u64);
@@ -2245,12 +2243,12 @@ fn movement_combat_reads_the_movement_word_and_attacking_units_by_combat_kind() 
     };
     for vtable in [VTABLE_RVA, cland_border_war_combat::VTABLE_RVA] {
         assert_eq!(
-            read(&bytes, vtable),
+            read(&bytes, vtable.0),
             (Ok(Some(-12_345)), vec![1, 0xa100, 0xa200])
         );
     }
     assert_eq!(
-        read(&bytes, cnaval_combat::VTABLE_RVA),
+        read(&bytes, cnaval_combat::VTABLE_RVA.0),
         (Ok(None), vec![1, 0xa100, 0xa200])
     );
     assert_eq!(
@@ -2259,7 +2257,7 @@ fn movement_combat_reads_the_movement_word_and_attacking_units_by_combat_kind() 
     );
     put(&mut bytes, SIDE + cland_combatant::COMBAT, 0);
     assert_eq!(
-        read(&bytes, VTABLE_RVA),
+        read(&bytes, VTABLE_RVA.0),
         (Err("movement combat side identity mismatch"), vec![1])
     );
 }

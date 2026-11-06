@@ -1406,10 +1406,10 @@ mod ship_names_tests {
     }
     fn memory(cache: &[u8], override_name: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0; 0xf00];
-        word(&mut bytes, SHIP, cship::VTABLE_RVA as u64);
+        word(&mut bytes, SHIP, cship::VTABLE_RVA.0 as u64);
         word(&mut bytes, SHIP + cship::HANDLE, HANDLE);
         word(&mut bytes, SHIP + cship::NAME_MEMBER, MEMBER as u64);
-        word(&mut bytes, MEMBER, member::VTABLE_RVA as u64);
+        word(&mut bytes, MEMBER, member::VTABLE_RVA.0 as u64);
         bytes[MEMBER + member::TYPE..MEMBER + member::TYPE + 4]
             .copy_from_slice(&1_i32.to_le_bytes());
         bytes[MEMBER + member::ORDER..MEMBER + member::ORDER + 4]
@@ -1421,7 +1421,11 @@ mod ship_names_tests {
             MEMBER + member::NAMING_EQUIPMENT,
             EQUIPMENT as u64,
         );
-        word(&mut bytes, EQUIPMENT, cequipment_variant::VTABLE_RVA as u64);
+        word(
+            &mut bytes,
+            EQUIPMENT,
+            cequipment_variant::VTABLE_RVA.0 as u64,
+        );
         word(
             &mut bytes,
             EQUIPMENT + 8,

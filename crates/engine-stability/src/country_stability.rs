@@ -62,6 +62,7 @@ use crate::{
     read, read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 mod batched;
 mod observed;
@@ -131,7 +132,7 @@ pub const DYNAMIC_CONSTANT: usize = 0xf8;
 pub const DYNAMIC_VALUE_ROWS: usize = 0x1b8;
 pub const DYNAMIC_VALUE_ROW_STRIDE: usize = 0xd8;
 /// Static-modifier database holding the bound static slots.
-pub const STATIC_DATABASE_RVA: usize = 0x033d_e590;
+pub const STATIC_DATABASE_RVA: Rva = Rva(0x033d_e590);
 /// Static-modifier script name stored as an MSVC string and hashed for lookup.
 pub const STATIC_NAME: usize = 0x1a8;
 /// Diplomacy word tested by mode-1 war predicates on the counterpart;
@@ -148,19 +149,19 @@ const RING_SATURATION: i64 = 0x53e2_d620_fb40;
 
 /// Define globals in `CountryStabilityInputRow` field order. Loaded values
 /// use fixed5 except interception war-support scale, which uses Q15.
-pub const DEFINE_RVAS: [usize; DEFINES] = [
-    0x033e_2868, // BASE_STABILITY_WAR_FACTOR
-    0x033e_2908, // BASE_STABILITY_PARTY_POPULARITY_FACTOR
-    0x033e_4480, // MIN_STABILITY
-    0x033e_4400, // MAX_STABILITY
-    0x033e_2c48, // WAR_SUPPORT_OFFNSIVE_WAR
-    0x033e_2ce0, // WAR_SUPPORT_DEFENSIVE_WAR
-    0x033e_2d70, // WAR_SUPPORT_TENSION_IMPACT
-    0x033e_45d8, // MIN_WAR_SUPPORT
-    0x033e_4528, // MAX_WAR_SUPPORT
-    0x033d_f5f0, // INTERCEPTION_WAR_SUPPORT_SCALE, Q15
-    0x033d_f678, // INTERCEPTION_BOMBING_WAR_SUPPORT_IMPACT
-    0x033d_f9e0, // BASE_MAX_COMMAND_POWER
+pub const DEFINE_RVAS: [Rva; DEFINES] = [
+    Rva(0x033e_2868), // BASE_STABILITY_WAR_FACTOR
+    Rva(0x033e_2908), // BASE_STABILITY_PARTY_POPULARITY_FACTOR
+    Rva(0x033e_4480), // MIN_STABILITY
+    Rva(0x033e_4400), // MAX_STABILITY
+    Rva(0x033e_2c48), // WAR_SUPPORT_OFFNSIVE_WAR
+    Rva(0x033e_2ce0), // WAR_SUPPORT_DEFENSIVE_WAR
+    Rva(0x033e_2d70), // WAR_SUPPORT_TENSION_IMPACT
+    Rva(0x033e_45d8), // MIN_WAR_SUPPORT
+    Rva(0x033e_4528), // MAX_WAR_SUPPORT
+    Rva(0x033d_f5f0), // INTERCEPTION_WAR_SUPPORT_SCALE, Q15
+    Rva(0x033d_f678), // INTERCEPTION_BOMBING_WAR_SUPPORT_IMPACT
+    Rva(0x033d_f9e0), // BASE_MAX_COMMAND_POWER
 ];
 pub const DEFINES: usize = 12;
 
@@ -363,7 +364,7 @@ impl Context {
     ) -> Result<Self, &'static str> {
         let mut defines = [0; DEFINES];
         for (value, rva) in defines.iter_mut().zip(DEFINE_RVAS) {
-            *value = read::<i64>(memory, at(base, rva)?).ok_or("stability define unreadable")?;
+            *value = read::<i64>(memory, site(base, rva)?).ok_or("stability define unreadable")?;
         }
         let mut manager = [cworld_threat::ManagerRow::default()];
         let world = cworld_threat::Reader::new(memory, base, game_state)?;
@@ -376,8 +377,8 @@ impl Context {
                 *operand = Some(modifier_definition::operands(memory, base, key)?);
             }
         }
-        let database = pointer(memory, at(base, STATIC_DATABASE_RVA)?)?;
-        let static_vtable = at(base, cstatic_modifier::VTABLE_RVA)? as u64;
+        let database = pointer(memory, site(base, STATIC_DATABASE_RVA)?)?;
+        let static_vtable = site(base, cstatic_modifier::VTABLE_RVA)? as u64;
         let mut statics = [0; STATIC_SLOTS.len()];
         for (value, slot) in statics.iter_mut().zip(STATIC_SLOTS) {
             let address = read::<u64>(memory, at(database, slot.offset)?)
@@ -435,7 +436,7 @@ impl Context {
 /// Active-language singleton: its first word points to the language string.
 /// A null root or string supplies the empty result.
 fn language(memory: &impl Memory, base: usize) -> Result<Vec<u8>, &'static str> {
-    let root = read::<u64>(memory, at(base, localization_root_layout::SINGLETON_RVA)?)
+    let root = read::<u64>(memory, site(base, localization_root_layout::SINGLETON_RVA)?)
         .ok_or("language root unreadable")?;
     if root == 0 {
         return Ok(Vec::new());
@@ -978,11 +979,11 @@ fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, 
     phase!(Popularity);
     let status = pointer(memory, at(country, ccountry::POLITICAL_STATUS)?)?;
     let head = read::<[u8; 8]>(memory, status).ok_or("political status unreadable")?;
-    if u64::from_le_bytes(head) != at(base, cpolitical_status::VTABLE_RVA)? as u64 {
+    if u64::from_le_bytes(head) != site(base, cpolitical_status::VTABLE_RVA)? as u64 {
         return Err("political status vtable mismatch");
     }
     let party = pointer(memory, at(status, cpolitical_status::RULING_PARTY)?)?;
-    if read::<u64>(memory, party) != Some(at(base, cpolitical_party::VTABLE_RVA)? as u64) {
+    if read::<u64>(memory, party) != Some(site(base, cpolitical_party::VTABLE_RVA)? as u64) {
         return Err("ruling party vtable mismatch");
     }
     read::<i64>(memory, at(party, cpolitical_party::POPULARITY)?)
@@ -1014,14 +1015,14 @@ fn war_flags<M: Memory>(
     {
         return Err("country diplomacy unreadable");
     }
-    if u64::from_le_bytes(head) != at(base, cdiplomacy_status::VTABLE_RVA)? as u64 {
+    if u64::from_le_bytes(head) != site(base, cdiplomacy_status::VTABLE_RVA)? as u64 {
         return Err("country diplomacy vtable mismatch");
     }
     if pointer_from(&owner)? != country.pointer {
         return Err("country diplomacy owner is another country");
     }
     let owned = Array::from_header(owned, 8).ok_or("owned relation array invalid")?;
-    let war_vtable = at(base, cwar_relation::VTABLE_RVA)? as u64;
+    let war_vtable = site(base, cwar_relation::VTABLE_RVA)? as u64;
     let same = |raw: u32| -> Result<bool, &'static str> {
         Ok(raw == country.id
             || (raw != 0
@@ -1119,7 +1120,7 @@ fn read_children(
         crate::allocation::resize(&mut scratch.backward, count, NONE)
             .map_err(|_| "stability pairing storage allocation failed")?;
     }
-    let vtable = at(base, cmodifier::VTABLE_RVA)? as u64;
+    let vtable = site(base, cmodifier::VTABLE_RVA)? as u64;
     let mut index = 0;
     // Each page's child heads (vtable, accumulator header, display string
     // header) in one guarded gather instead of one scattered copy per
@@ -1369,8 +1370,8 @@ fn candidates(
     let status = pointer(memory, at(c, ccountry::POLITICAL_STATUS)?)?;
     let ideas = Array::read(memory, at(status, cpolitical_status::IDEAS)?, 8)
         .ok_or("active idea array invalid")?;
-    let primary = at(base, cidea::VTABLE_RVA)? as u64;
-    let secondary = at(base, cidea::SECONDARY_VTABLE_RVA)? as u64;
+    let primary = site(base, cidea::VTABLE_RVA)? as u64;
+    let secondary = site(base, cidea::SECONDARY_VTABLE_RVA)? as u64;
     batched::pointer_pages(memory, ideas, |pointers| {
         batched::objects(memory, pointers, 8, IDEA_MODIFIER, false);
         // CIdea can be reached through its secondary base. Authenticate its
@@ -1475,7 +1476,7 @@ fn candidates(
     if let Some(leader) = leader_pointer
         && let Some(head) = read::<[u8; 16]>(&memory.prepared(), leader)
         && u64::from_le_bytes(head[..8].try_into().unwrap())
-            == at(base, ccountry_leader::VTABLE_RVA)? as u64
+            == site(base, ccountry_leader::VTABLE_RVA)? as u64
         && let Ok(character) = pointer_from(&head[8..])
     {
         memory.gather([(character, 16)], false);
@@ -1486,7 +1487,7 @@ fn candidates(
     }
     if let Some(group) = group_pointer
         && read::<u64>(&memory.prepared(), group)
-            == Some(at(base, cideology_group::VTABLE_RVA)? as u64)
+            == Some(site(base, cideology_group::VTABLE_RVA)? as u64)
         && let Some(modifier) = group.checked_add(IDEOLOGY_GROUP_MODIFIER)
     {
         modifiers[len] = modifier;
@@ -1499,7 +1500,7 @@ fn candidates(
         let mut head = [0_u8; 16];
         if !read_slice(memory, leader, &mut head)
             || u64::from_le_bytes(head[..8].try_into().unwrap())
-                != at(base, ccountry_leader::VTABLE_RVA)? as u64
+                != site(base, ccountry_leader::VTABLE_RVA)? as u64
         {
             return Err("country leader unreadable or vtable mismatch");
         }
@@ -1514,7 +1515,7 @@ fn candidates(
     }
     phase!(Ideology);
     let group = pointer_from(&group)?;
-    if read::<u64>(memory, group) != Some(at(base, cideology_group::VTABLE_RVA)? as u64) {
+    if read::<u64>(memory, group) != Some(site(base, cideology_group::VTABLE_RVA)? as u64) {
         return Err("ruling ideology group vtable mismatch");
     }
     list.source(
@@ -1533,7 +1534,7 @@ fn candidates(
         let object = usize::try_from(object).map_err(|_| "country characters overflow")?;
         let head = read::<[u8; 16]>(memory, object).ok_or("country characters unreadable")?;
         if u64::from_le_bytes(head[..8].try_into().unwrap())
-            != at(base, ccountry_characters::VTABLE_RVA)? as u64
+            != site(base, ccountry_characters::VTABLE_RVA)? as u64
             || pointer_from(&head[8..])? != c
         {
             return Err("country characters vtable or owner mismatch");
@@ -1544,7 +1545,7 @@ fn candidates(
             8,
         )
         .ok_or("appointed advisor array invalid")?;
-        let vtable = at(base, cadvisor::VTABLE_RVA)? as u64;
+        let vtable = site(base, cadvisor::VTABLE_RVA)? as u64;
         batched::pointer_pages(memory, advisors, |pointers| {
             batched::objects(memory, pointers, 24, ADVISOR_MODIFIER, true);
             let mut modifiers = [0; 64];
@@ -1638,7 +1639,7 @@ fn candidates(
         let mut valid = 0;
         for &definition in &definitions[..len] {
             if read::<u64>(&memory.prepared(), definition)
-                == Some(at(base, cdynamic_modifier::VTABLE_RVA)? as u64)
+                == Some(site(base, cdynamic_modifier::VTABLE_RVA)? as u64)
                 && let Some(modifier) = definition.checked_add(DYNAMIC_CONSTANT)
             {
                 modifiers[valid] = modifier;
@@ -1867,7 +1868,7 @@ impl Candidate {
 fn character_id(memory: &impl Memory, base: usize, character: usize) -> Result<u32, &'static str> {
     let identity = read::<[u8; 16]>(memory, character).ok_or("character unreadable")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap())
-        != at(base, ccharacter::VTABLE_RVA)? as u64
+        != site(base, ccharacter::VTABLE_RVA)? as u64
         || u32::from_le_bytes(
             identity[ccharacter::TYPE..ccharacter::ID]
                 .try_into()
@@ -2149,6 +2150,9 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)
         .ok_or("country stability address overflow")
+}
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("country stability address overflow")
 }
 fn pointer_from(bytes: &[u8]) -> Result<usize, &'static str> {
     usize::try_from(u64::from_le_bytes(bytes[..8].try_into().unwrap()))

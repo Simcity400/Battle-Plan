@@ -24,6 +24,7 @@
 //!   handles, classes and backlinks.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// The writers, in callback order: `add_unit` and `remove_unit`. Each takes
 /// the province in RCX; a detour forwards RCX..R9 and returns RAX
@@ -34,22 +35,14 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // saving RDI follow.
     MutationSite {
         name: "add_unit",
-        rva: 0xee_b1d0,
-        sentinel: [
-            0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x68, 0x18, 0x48, 0x89, 0x70,
-            0x20, 0x57,
-        ],
+        rva: Rva(0xee_b1d0),
     },
     // The five-byte RBX spill to RCX's home slot relocates. Saving RDI and
     // reserving 0x20 stack bytes follow, then zeroing EBX, retaining the
     // receiver in RDI and the start of loading the mixed list's count into ECX.
     MutationSite {
         name: "remove_unit",
-        rva: 0xef_10d0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xdb, 0x48, 0x8b,
-            0xf9, 0x8b,
-        ],
+        rva: Rva(0xef_10d0),
     },
 ];
 
@@ -57,22 +50,9 @@ pub const MUTATIONS: [MutationSite; 2] = [
 mod tests {
     use super::*;
 
-    const EXPECTED_ADD_RVA: usize = 0xee_b1d0;
-    const EXPECTED_REMOVE_RVA: usize = 0xef_10d0;
-
-    /// Each patch covers whole leading instructions: append's stack-pointer
-    /// copy with its first spill, and erase's five-byte spill.
     #[test]
-    fn the_sentinels_open_with_whole_relocated_instructions() {
+    fn the_sites_are_distinct() {
         let [add, remove] = MUTATIONS;
-        assert_eq!(
-            add.sentinel[..7],
-            [0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10]
-        );
-        assert_eq!(remove.sentinel[..5], [0x48, 0x89, 0x5c, 0x24, 0x08]);
-        assert_eq!(
-            (add.rva, remove.rva),
-            (EXPECTED_ADD_RVA, EXPECTED_REMOVE_RVA)
-        );
+        assert_ne!(add.rva, remove.rva);
     }
 }

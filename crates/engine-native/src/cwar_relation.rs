@@ -18,6 +18,7 @@ use crate::{
     read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 pub mod overview;
 pub mod participation;
@@ -25,12 +26,12 @@ pub mod participation;
 /// Ordered goal handles for each stored endpoint.
 pub const GOALS: [usize; 2] = [0x168, 0x180];
 /// Installed default naming-prefix location.
-pub const NAME_PREFIX_RVA: usize = 0x029d_dc90;
+pub const NAME_PREFIX_RVA: Rva = Rva(0x029d_dc90);
 /// Installed naming-prefix byte count before its terminating NUL.
 pub const NAME_PREFIX_LEN: usize = 8;
 
 /// CWarRelation primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_cc08;
+pub const VTABLE_RVA: Rva = Rva(0x029d_cc08);
 /// CWarRelation native type word.
 pub const TYPE: u32 = 0x380a;
 /// CWarRelation first known casualties, signed i64 integer.
@@ -1019,12 +1020,9 @@ impl<M: Memory> Fields<'_, M> {
             .map_err(|_| "war relation pointer overflow")
     }
 
-    fn vtable(&self, pointer: usize, rva: usize, reason: &'static str) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(rva)
-            .ok_or("module address overflow")?;
-        if read::<u64>(self.memory, pointer) == Some(expected as u64) {
+    fn vtable(&self, pointer: usize, rva: Rva, reason: &'static str) -> Result<(), &'static str> {
+        let expected = engine_sites::at(self.base, rva).map(|a| a as u64);
+        if expected.is_some() && read::<u64>(self.memory, pointer) == expected {
             Ok(())
         } else {
             Err(reason)
@@ -1093,10 +1091,7 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
     }
 
     fn active(&self, pointer: usize) -> Result<bool, &'static str> {
-        let expected = self
-            .base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(self.base, VTABLE_RVA).ok_or("war vtable withheld")?;
         let mut vtable = [0; 8];
         let mut relation_type = [0; 4];
         let mut retired = [0; 1];
@@ -1172,10 +1167,8 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
         ];
         const LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&FIELDS, 20).expect("valid record layout");
-        let expected = self
-            .base
-            .checked_add(crelation_status::VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(self.base, crelation_status::VTABLE_RVA)
+            .ok_or("relation status vtable withheld")?;
         let mut bytes = [0; 20];
         let copied =
             self.memory

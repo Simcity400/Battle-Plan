@@ -14,23 +14,24 @@
 
 #[cfg(test)]
 use super::pointer;
-use super::{CountryIdentity, at, identity, state, value, verify_vtable};
+use super::{CountryIdentity, identity, state, value, verify_vtable};
 #[cfg(test)]
 use crate::cdiplomacy_status;
 use crate::{Memory, ccountry, cgame_state, crelation, cstate, cwar_relation, peace_conference};
+use engine_sites::Rva;
 
 /// One call site reaching an observed operation: the native return address
 /// its CALL pushes, and the replay route that names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caller {
-    pub return_rva: usize,
+    pub return_rva: Rva,
     pub route: &'static str,
 }
 
-const fn caller(call_rva: usize, route: &'static str) -> Caller {
+const fn caller(call_rva: Rva, route: &'static str) -> Caller {
     // Every listed CALL is the five-byte E8 rel32 form.
     Caller {
-        return_rva: call_rva + 5,
+        return_rva: call_rva.after(5),
         route,
     }
 }
@@ -41,8 +42,7 @@ const fn caller(call_rva: usize, route: &'static str) -> Caller {
 #[derive(Debug, Clone, Copy)]
 pub struct Entry {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
     /// Every caller, or empty when the entry names its route itself.
     pub callers: &'static [Caller],
 }
@@ -53,18 +53,14 @@ pub struct Entry {
 /// else the one named. Its five callers are below.
 pub const JOIN_WAR: Entry = Entry {
     name: "JoinWar",
-    rva: 0x00da_4e70,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x20,
-        0x55,
-    ],
+    rva: Rva(0x00da_4e70),
     callers: &[
-        caller(0x0118_c33d, "DeclarationJoin"),
-        caller(0x0036_500f, "AddToWarEffect"),
-        caller(0x00d8_9b5b, "SubjectJoinsOverlord"),
-        caller(0x00d8_9e1b, "OverlordJoinsSubject"),
-        caller(0x0118_e40a, "JoinAlly"),
-        caller(0x011c_61b2, "CallAlly"),
+        caller(Rva(0x0118_c33d), "DeclarationJoin"),
+        caller(Rva(0x0036_500f), "AddToWarEffect"),
+        caller(Rva(0x00d8_9b5b), "SubjectJoinsOverlord"),
+        caller(Rva(0x00d8_9e1b), "OverlordJoinsSubject"),
+        caller(Rva(0x0118_e40a), "JoinAlly"),
+        caller(Rva(0x011c_61b2), "CallAlly"),
     ],
 };
 
@@ -73,18 +69,14 @@ pub const JOIN_WAR: Entry = Entry {
 /// readable at entry.
 pub const END_WAR: Entry = Entry {
     name: "EndWar",
-    rva: 0x00d7_e5c0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
-        0x48,
-    ],
+    rva: Rva(0x00d7_e5c0),
     callers: &[
-        caller(0x0116_88a8, "CivilWarTransferEnd"),
-        caller(0x0071_d06a, "AnnexEnd"),
-        caller(0x00d8_973e, "SubjectOverlordEnd"),
-        caller(0x00d8_98d1, "SubjectWarsEnd"),
-        caller(0x00d8_00fb, "StatusResetEnd"),
-        caller(0x00eb_14d2, "PeaceEnd"),
+        caller(Rva(0x0116_88a8), "CivilWarTransferEnd"),
+        caller(Rva(0x0071_d06a), "AnnexEnd"),
+        caller(Rva(0x00d8_973e), "SubjectOverlordEnd"),
+        caller(Rva(0x00d8_98d1), "SubjectWarsEnd"),
+        caller(Rva(0x00d8_00fb), "StatusResetEnd"),
+        caller(Rva(0x00eb_14d2), "PeaceEnd"),
     ],
 };
 
@@ -93,17 +85,13 @@ pub const END_WAR: Entry = Entry {
 /// then the winner; creation queues it and starts it through [`START_CONFERENCE`] before returning.
 pub const CREATE_CONFERENCE: Entry = Entry {
     name: "CreateConference",
-    rva: 0x00c1_2630,
-    sentinel: [
-        0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x10, 0x49, 0x89, 0x6b, 0x18, 0x49, 0x89, 0x73, 0x20,
-        0x57,
-    ],
+    rva: Rva(0x00c1_2630),
     callers: &[
-        caller(0x002b_0244, "ConsolePeace"),
-        caller(0x0037_f045, "StartPeaceConferenceEffect"),
-        caller(0x0038_182f, "WhitePeaceEffect"),
-        caller(0x0072_a906, "Surrender"),
-        caller(0x0118_f1fd, "PeaceProposal"),
+        caller(Rva(0x002b_0244), "ConsolePeace"),
+        caller(Rva(0x0037_f045), "StartPeaceConferenceEffect"),
+        caller(Rva(0x0038_182f), "WhitePeaceEffect"),
+        caller(Rva(0x0072_a906), "Surrender"),
+        caller(Rva(0x0118_f1fd), "PeaceProposal"),
     ],
 };
 
@@ -111,11 +99,7 @@ pub const CREATE_CONFERENCE: Entry = Entry {
 /// wars and annex its losers at once.
 pub const START_CONFERENCE: Entry = Entry {
     name: "StartConference",
-    rva: 0x00eb_e3e0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
-        0x55,
-    ],
+    rva: Rva(0x00eb_e3e0),
     callers: &[],
 };
 
@@ -125,11 +109,7 @@ pub const START_CONFERENCE: Entry = Entry {
 /// processing, so it is one route.
 pub const APPLY_CONFERENCE: Entry = Entry {
     name: "ApplyConference",
-    rva: 0x00eb_0ce0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x41,
-        0x56,
-    ],
+    rva: Rva(0x00eb_0ce0),
     callers: &[],
 };
 
@@ -139,22 +119,18 @@ pub const APPLY_CONFERENCE: Entry = Entry {
 /// feed's [`super::ANNEX`] call.
 pub const ANNEX: Entry = Entry {
     name: "Annex",
-    rva: 0x0071_ba50,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x44, 0x88, 0x4c, 0x24, 0x20, 0x89, 0x54, 0x24, 0x10, 0x48,
-        0x89,
-    ],
+    rva: Rva(0x0071_ba50),
     callers: &[
-        caller(0x0116_70c7, "CivilWarAnnex"),
-        caller(0x0025_6319, "ConsoleAnnex"),
-        caller(0x0025_6548, "ConsoleAnnexSecond"),
-        caller(0x006b_fe63, "Integration"),
-        caller(0x0148_a9aa, "BorderWarAnnex"),
-        caller(0x0148_ab0c, "BorderWarAnnexSecond"),
-        caller(0x014f_1ae6, "PeaceAnnex"),
-        caller(0x0036_5fee, "AnnexEffect"),
-        caller(0x0032_b195, "TransferStateToAnnex"),
-        caller(0x0038_0137, "TransferStateAnnex"),
+        caller(Rva(0x0116_70c7), "CivilWarAnnex"),
+        caller(Rva(0x0025_6319), "ConsoleAnnex"),
+        caller(Rva(0x0025_6548), "ConsoleAnnexSecond"),
+        caller(Rva(0x006b_fe63), "Integration"),
+        caller(Rva(0x0148_a9aa), "BorderWarAnnex"),
+        caller(Rva(0x0148_ab0c), "BorderWarAnnexSecond"),
+        caller(Rva(0x014f_1ae6), "PeaceAnnex"),
+        caller(Rva(0x0036_5fee), "AnnexEffect"),
+        caller(Rva(0x0032_b195), "TransferStateToAnnex"),
+        caller(Rva(0x0038_0137), "TransferStateAnnex"),
     ],
 };
 
@@ -162,17 +138,13 @@ pub const ANNEX: Entry = Entry {
 /// moving each core state of the target through released-state transfer.
 pub const RELEASE: Entry = Entry {
     name: "Release",
-    rva: 0x0075_4b10,
-    sentinel: [
-        0x40, 0x56, 0x57, 0x41, 0x54, 0x41, 0x57, 0x48, 0x83, 0xec, 0x48, 0x80, 0x3d, 0xef, 0xaa,
-        0xf3,
-    ],
+    rva: Rva(0x0075_4b10),
     callers: &[
-        caller(0x0035_e88f, "ReleasePuppetEffect"),
-        caller(0x0035_e5ef, "ReleasePuppetOnControlledEffect"),
-        caller(0x0035_e568, "ReleaseEffect"),
-        caller(0x0035_e518, "ReleaseOnControlledEffect"),
-        caller(0x0037_4d1a, "ReleaseAutonomyEffect"),
+        caller(Rva(0x0035_e88f), "ReleasePuppetEffect"),
+        caller(Rva(0x0035_e5ef), "ReleasePuppetOnControlledEffect"),
+        caller(Rva(0x0035_e568), "ReleaseEffect"),
+        caller(Rva(0x0035_e518), "ReleaseOnControlledEffect"),
+        caller(Rva(0x0037_4d1a), "ReleaseAutonomyEffect"),
     ],
 };
 
@@ -180,12 +152,8 @@ pub const RELEASE: Entry = Entry {
 /// and a u8 argument, returns a u8 result and follows the same state walk.
 pub const RELEASE_COMMAND: Entry = Entry {
     name: "ReleaseCommand",
-    rva: 0x0075_4c30,
-    sentinel: [
-        0x40, 0x56, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x40, 0x80, 0x3d, 0xd1, 0xa9, 0xf3, 0x02,
-        0x00,
-    ],
-    callers: &[caller(0x011e_22c9, "ReleaseCommand")],
+    rva: Rva(0x0075_4c30),
+    callers: &[caller(Rva(0x011e_22c9), "ReleaseCommand")],
 };
 
 pub const ENTRIES: [Entry; 8] = [
@@ -201,66 +169,65 @@ pub const ENTRIES: [Entry; 8] = [
 
 /// The callers of diplomatic action dispatch, which takes an action pointer.
 pub const DIPLOMACY_CALLERS: [Caller; 9] = [
-    caller(0x0118_acb7, "DiplomaticCommand"),
-    caller(0x0036_c949, "DeclareWarEffect"),
-    caller(0x0116_76e4, "CivilWarDeclaration"),
-    caller(0x0037_0950, "GiveGuaranteeEffect"),
-    caller(0x0037_0ba3, "GiveMilitaryAccessEffect"),
-    caller(0x0036_e543, "EmbargoEffect"),
-    caller(0x0031_d743, "GiveMarketAccessEffect"),
-    caller(0x0169_c8f0, "OfferJoinFaction"),
-    caller(0x0025_b8d3, "ConsoleDiplomacy"),
+    caller(Rva(0x0118_acb7), "DiplomaticCommand"),
+    caller(Rva(0x0036_c949), "DeclareWarEffect"),
+    caller(Rva(0x0116_76e4), "CivilWarDeclaration"),
+    caller(Rva(0x0037_0950), "GiveGuaranteeEffect"),
+    caller(Rva(0x0037_0ba3), "GiveMilitaryAccessEffect"),
+    caller(Rva(0x0036_e543), "EmbargoEffect"),
+    caller(Rva(0x0031_d743), "GiveMarketAccessEffect"),
+    caller(Rva(0x0169_c8f0), "OfferJoinFaction"),
+    caller(Rva(0x0025_b8d3), "ConsoleDiplomacy"),
 ];
 
 /// The callers of civil-war start.
 pub const CIVIL_WAR_CALLERS: [Caller; 4] = [
-    caller(0x0037_eb96, "StartCivilWarEffect"),
-    caller(0x00b2_d936, "Coup"),
-    caller(0x0025_a483, "ConsoleCivilWar"),
-    caller(0x0025_a53b, "ConsoleCivilWarSecond"),
+    caller(Rva(0x0037_eb96), "StartCivilWarEffect"),
+    caller(Rva(0x00b2_d936), "Coup"),
+    caller(Rva(0x0025_a483), "ConsoleCivilWar"),
+    caller(Rva(0x0025_a53b), "ConsoleCivilWarSecond"),
 ];
 
 /// The callers of state owner assignment, which takes a state pointer, u32
 /// owner and two u8 arguments.
 pub const STATE_OWNER_CALLERS: [Caller; 20] = [
-    caller(0x0020_7cbc, "StateOwnerFix"),
-    caller(0x0071_c8bd, "StateAnnex"),
-    caller(0x0037_cc9b, "SetStateOwnerEffect"),
-    caller(0x014f_204d, "StatePeaceWinner"),
-    caller(0x00a2_2362, "StateDaily"),
-    caller(0x00a2_6c24, "StateRead"),
-    caller(0x0116_7972, "StateCivilWar"),
-    caller(0x0116_7ba8, "StateCivilWarSecond"),
-    caller(0x0029_ca2a, "ConsoleStateOwner"),
-    caller(0x014f_5d1e, "StatePeaceLiberated"),
-    caller(0x0032_b0fc, "TransferStateToEffect"),
-    caller(0x0075_4e01, "StateRelease"),
-    caller(0x014f_146f, "StatePeaceBeneficiary"),
-    caller(0x0148_a953, "StateBorderWar"),
-    caller(0x0148_aab5, "StateBorderWarSecond"),
-    caller(0x0038_00b6, "TransferStateEffect"),
-    caller(0x0116_7ce3, "StateCivilWarTransfer"),
-    caller(0x0032_9b80, "SetStateOwnerToEffect"),
-    caller(0x00a2_8741, "StateImpassable"),
-    caller(0x0163_d5ec, "StateHistory"),
+    caller(Rva(0x0020_7cbc), "StateOwnerFix"),
+    caller(Rva(0x0071_c8bd), "StateAnnex"),
+    caller(Rva(0x0037_cc9b), "SetStateOwnerEffect"),
+    caller(Rva(0x014f_204d), "StatePeaceWinner"),
+    caller(Rva(0x00a2_2362), "StateDaily"),
+    caller(Rva(0x00a2_6c24), "StateRead"),
+    caller(Rva(0x0116_7972), "StateCivilWar"),
+    caller(Rva(0x0116_7ba8), "StateCivilWarSecond"),
+    caller(Rva(0x0029_ca2a), "ConsoleStateOwner"),
+    caller(Rva(0x014f_5d1e), "StatePeaceLiberated"),
+    caller(Rva(0x0032_b0fc), "TransferStateToEffect"),
+    caller(Rva(0x0075_4e01), "StateRelease"),
+    caller(Rva(0x014f_146f), "StatePeaceBeneficiary"),
+    caller(Rva(0x0148_a953), "StateBorderWar"),
+    caller(Rva(0x0148_aab5), "StateBorderWarSecond"),
+    caller(Rva(0x0038_00b6), "TransferStateEffect"),
+    caller(Rva(0x0116_7ce3), "StateCivilWarTransfer"),
+    caller(Rva(0x0032_9b80), "SetStateOwnerToEffect"),
+    caller(Rva(0x00a2_8741), "StateImpassable"),
+    caller(Rva(0x0163_d5ec), "StateHistory"),
 ];
 
-/// The route of a call returning to `return_rva`, if `callers` lists it.
-pub fn route(callers: &[Caller], return_rva: usize) -> Option<&'static str> {
+/// The route of a call returning to the live `return_address`, if `callers` lists it. Outside every
+/// located function a withheld caller cannot be ruled out, so the read scope is tainted.
+pub fn route(base: usize, callers: &[Caller], return_address: usize) -> Option<&'static str> {
+    let Some(key) = engine_sites::reference(base, return_address) else {
+        for caller in callers {
+            if engine_sites::at(base, caller.return_rva).is_none() {
+                break;
+            }
+        }
+        return None;
+    };
     callers
         .iter()
-        .find(|caller| caller.return_rva == return_rva)
+        .find(|caller| caller.return_rva == key)
         .map(|caller| caller.route)
-}
-
-/// Verify an entry's sentinel before publication, once the collector's build
-/// gate admits the family; a sentinel is not installation or unwind approval.
-pub fn verify(memory: &impl Memory, base: usize, entry: Entry) -> Result<usize, &'static str> {
-    let address = at(base, entry.rva)?;
-    if crate::read::<[u8; 16]>(memory, address) != Some(entry.sentinel) {
-        return Err("event feed entry sentinel unreadable or differs");
-    }
-    Ok(address)
 }
 
 /// The current world's countries, read once per observation.

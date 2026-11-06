@@ -4,8 +4,9 @@
 //! scope country is valid. The
 //! ability argument shares this layout; no separate effect-scope layout is established.
 
+use engine_sites::Rva;
 /// CEventScope primary vtable.
-pub const VTABLE_RVA: usize = 0x0285_2168;
+pub const VTABLE_RVA: Rva = Rva(0x0285_2168);
 /// CEventScope FROM scope pointer.
 pub const FROM: usize = 0x20;
 /// CEventScope ROOT binding. An address is never a recorded scope ID.
@@ -29,9 +30,9 @@ pub const SIZE: usize = 0xb0;
 /// CEventScope country value meaning no country.
 pub const NO_COUNTRY: u32 = 0;
 /// Scope country setter.
-pub const SET_COUNTRY_RVA: usize = 0x0058_1970;
+pub const SET_COUNTRY_RVA: Rva = Rva(0x0058_1970);
 /// Scope equality used in pending-event lookup.
-pub const EQUALS_RVA: usize = 0x0057_f3a0;
+pub const EQUALS_RVA: Rva = Rva(0x0057_f3a0);
 
 /// Packed object references, in native field order: character, operation,
 /// ace, unit, industrial organisation, purchase contract, raid, project,
@@ -135,6 +136,8 @@ pub fn copy_graph(
         // Discovering a node initializes its work slot. The sentinel address
         // after the discovered prefix is unnecessary: all IDs originate here.
         let mut discovered = 1;
+        let vtable = engine_sites::at(base, VTABLE_RVA)
+            .ok_or("event scope vtable unreadable or differs")? as u64;
         while len < discovered {
             let address = nodes[len].address;
             let field = |offset: usize| {
@@ -142,9 +145,7 @@ pub fn copy_graph(
                     .checked_add(offset)
                     .ok_or("event scope field address overflow")
             };
-            if crate::read::<u64>(memory, address)
-                != base.checked_add(VTABLE_RVA).map(|value| value as u64)
-            {
+            if crate::read::<u64>(memory, address) != Some(vtable) {
                 return Err("event scope vtable unreadable or differs");
             }
             let country =
@@ -174,11 +175,9 @@ pub fn copy_graph(
                 None
             } else {
                 use engine_native::cstrategic_region;
-                if crate::read::<u64>(memory, region)
-                    != base
-                        .checked_add(cstrategic_region::VTABLE_RVA)
-                        .map(|value| value as u64)
-                {
+                let vtable = engine_sites::at(base, cstrategic_region::VTABLE_RVA)
+                    .ok_or("event scope strategic region vtable unreadable or differs")?;
+                if crate::read::<u64>(memory, region) != Some(vtable as u64) {
                     return Err("event scope strategic region vtable unreadable or differs");
                 }
                 Some(

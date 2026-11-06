@@ -776,7 +776,7 @@ mod tests {
             let pointer = 0x2000 - 0x1000 + country * 8;
             bytes[pointer..pointer + 8].copy_from_slice(&(manager as u64).to_le_bytes());
             let at = manager - 0x1000;
-            bytes[at..at + 8].copy_from_slice(&(native::VTABLE_RVA as u64).to_le_bytes());
+            bytes[at..at + 8].copy_from_slice(&(native::VTABLE_RVA.0 as u64).to_le_bytes());
             bytes[at + native::GROUPS..at + native::GROUPS + 8]
                 .copy_from_slice(&0x4000_u64.to_le_bytes());
             bytes[at + native::GROUPS + 8..at + native::GROUPS + 12]
@@ -787,7 +787,7 @@ mod tests {
                 .copy_from_slice(&(country as u32).to_le_bytes());
         }
         bytes[0x3000..0x3008].copy_from_slice(&0x5000_u64.to_le_bytes());
-        bytes[0x4000..0x4008].copy_from_slice(&(groups::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x4000..0x4008].copy_from_slice(&(groups::VTABLE_RVA.0 as u64).to_le_bytes());
         let reference = (7_u64 << 32) | u64::from(engine_native::corders_group::REFERENCE_TYPE);
         bytes[0x4000 + groups::GROUP..0x4000 + groups::GROUP + 8]
             .copy_from_slice(&reference.to_le_bytes());

@@ -138,7 +138,7 @@ mod tests {
             header[12..].copy_from_slice(&count.to_le_bytes());
             header
         };
-        let global = base + native::MANAGER_RVA;
+        let global = base + native::MANAGER_RVA.0;
         let pointer = (manager as u64).to_le_bytes();
         put(
             manager + native::MANAGER_TREE + native::TREE_NODES,
@@ -163,7 +163,7 @@ mod tests {
             );
             put(
                 province(index + 1),
-                &((base + engine_native::cprovince::VTABLE_RVA) as u64).to_le_bytes(),
+                &((base + engine_native::cprovince::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 province(index + 1) + engine_native::cprovince::ID,

@@ -697,12 +697,12 @@ fn garrison_equipment_fixture() -> Vec<u8> {
             1,
         ),
     ] {
-        put(kit::GAR_OBJ + offset, &(vtable as u64).to_le_bytes());
+        put(kit::GAR_OBJ + offset, &(vtable.0 as u64).to_le_bytes());
         put(kit::GAR_OBJ + offset + 8, &(data as u64).to_le_bytes());
         put(kit::GAR_OBJ + offset + 16, &count.to_le_bytes());
         put(kit::GAR_OBJ + offset + 20, &count.to_le_bytes());
     }
-    put(EQUIPMENT, &(ty::VTABLE_RVA as u64).to_le_bytes());
+    put(EQUIPMENT, &(ty::VTABLE_RVA.0 as u64).to_le_bytes());
     put(EQUIPMENT + ty::TOKEN, &700_u32.to_le_bytes());
     put(EQUIPMENT + ty::ACTIVE, &[1]);
     put(EQUIPMENT + ty::ARCHETYPE, &(EQUIPMENT as u64).to_le_bytes());
@@ -743,8 +743,14 @@ fn garrison_equipment_first_acquisition_grows_operands_and_matches_owned_read_wi
     };
     assert!(inputs.failure.is_none());
     assert_eq!(inputs.rows.len(), GARRISON_OPERANDS);
-    assert_eq!(inputs.rows[GARRISON_OPERANDS - 1].required_raw, 100_000 + GARRISON_OPERANDS as i64 - 1);
-    assert_eq!(inputs.rows[GARRISON_OPERANDS - 1].required_lookup_raw, 100_000);
+    assert_eq!(
+        inputs.rows[GARRISON_OPERANDS - 1].required_raw,
+        100_000 + GARRISON_OPERANDS as i64 - 1
+    );
+    assert_eq!(
+        inputs.rows[GARRISON_OPERANDS - 1].required_lookup_raw,
+        100_000
+    );
     assert_eq!(inputs.rows[GARRISON_OPERANDS - 1].allocated_raw, 50_000);
     assert_eq!(inputs.rows[GARRISON_OPERANDS - 1].weight_raw, 200_003);
 }
@@ -953,7 +959,7 @@ fn occupation_group_and_database_laws_survive_raw_copy_without_changing_state_ze
     }
     impl Memory for DatabaseMemory<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == coccupation_law::DATABASE_RVA && destination.len() == 8 {
+            if address == coccupation_law::DATABASE_RVA.0 && destination.len() == 8 {
                 destination.copy_from_slice(&(DATABASE as u64).to_le_bytes());
                 return true;
             }
@@ -1095,7 +1101,10 @@ fn a_failed_state_or_country_root_refuses_only_the_families_that_read_it() {
         ];
         if failure == STATE_ROOT {
             assert!(matches!(resources, Outcome::Unavailable { .. }));
-            assert!(matches!(split.garrisons.outcome, Outcome::Unavailable { .. }));
+            assert!(matches!(
+                split.garrisons.outcome,
+                Outcome::Unavailable { .. }
+            ));
             assert!(
                 countries
                     .iter()

@@ -16,6 +16,7 @@ test-support = ["collector-hooks/test-support", "collector-lifetime/test-support
 engine-allocation.workspace = true
 engine-events.workspace = true
 engine-native.workspace = true
+engine-sites.workspace = true
 replay-data.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-hooks.workspace = true

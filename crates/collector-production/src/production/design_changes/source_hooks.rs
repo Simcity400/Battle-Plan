@@ -68,9 +68,9 @@ pub(super) fn enabled() -> bool {
         && CONTENT_ENABLED.load(Ordering::Acquire)
 }
 fn clock(memory: &impl Memory, base: usize) -> Result<i32, &'static str> {
-    let state =
-        engine_native::read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
-            .ok_or("design source clock unreadable")?;
+    let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .ok_or("design source clock unreadable")?;
     engine_native::read(
         memory,
         state as usize + engine_native::cgame_state::CURRENT_HOUR,
@@ -149,11 +149,9 @@ pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, reti
     let result = (|| {
         let hour = clock(memory, base)?;
         if let sources::Key::Provider(pointer) = key {
-            let state = engine_native::read::<u64>(
-                memory,
-                base + engine_native::cgame_state::SINGLETON_RVA,
-            )
-            .ok_or("design provider world unreadable")? as usize;
+            let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                .and_then(|at| engine_native::read::<u64>(memory, at))
+                .ok_or("design provider world unreadable")? as usize;
             let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
             let country = countries.resolve(owner)?;
             if engine_native::cproduction_status::manager(memory, base, country)? != pointer {
@@ -279,7 +277,7 @@ pub(super) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let callbacks = [
             callback::<0> as *const () as usize,
             callback::<1> as *const () as usize,
@@ -290,18 +288,22 @@ impl Hooks {
         ];
         let mut hooks = Vec::new();
         if MUTATIONS.iter().all(|site| {
-            engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+            engine_sites::hook(base, site.rva)
+                .and_then(|code| code.sentinel::<16>())
+                .is_ok()
         }) {
             for (index, site) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| match index {
-                    0 => "design-source ReadAppliedSource hook construction failed",
-                    1 => "design-source ResetAppliedSource hook construction failed",
-                    2 => "design-source PostprocessIdeaSources hook construction failed",
-                    3 => "design-source DestroyAppliedSource hook construction failed",
-                    4 => "design-source AppendNamedSource hook construction failed",
-                    _ => "design-source RemoveNamedSource hook construction failed",
-                })?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|_| match index {
+                            0 => "design-source ReadAppliedSource hook construction failed",
+                            1 => "design-source ResetAppliedSource hook construction failed",
+                            2 => "design-source PostprocessIdeaSources hook construction failed",
+                            3 => "design-source DestroyAppliedSource hook construction failed",
+                            4 => "design-source AppendNamedSource hook construction failed",
+                            _ => "design-source RemoveNamedSource hook construction failed",
+                        })?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }

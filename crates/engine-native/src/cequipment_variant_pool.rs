@@ -3,6 +3,7 @@
 //! Amounts are native signed i64 fixed point. The serializer omits zero
 //! entries unless ALLOW_ZERO is set. Array order can matter to consumers.
 
+use engine_sites::Rva;
 use crate::{
     Memory, allocation_equipment_row, carmy, ccountry, cequipment_variant,
     cpdx_array::Array,
@@ -15,7 +16,7 @@ use crate::{
 pub use equipment_entry::Row;
 
 /// CEquipmentVariantPool primary vtable.
-pub const VTABLE_RVA: usize = 0x27c6ec8;
+pub const VTABLE_RVA: Rva = Rva(0x27c6ec8);
 /// Equipment-pool archetype-allocation array, initialized before the variant array (`ITEMS`).
 pub const ALLOCATIONS: usize = 0x08;
 /// CEquipmentVariantPool row array pointer.
@@ -98,8 +99,7 @@ fn model_selection_entries(
     observed_flags: &mut u64,
 ) -> Result<(usize, u64), &'static str> {
     *observed_flags = 0;
-    let expected = module_base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(module_base, VTABLE_RVA)
         .ok_or("equipment pool vtable address overflow")?;
     if read::<u64>(memory, pool) != Some(expected as u64) {
         return Err("equipment pool vtable unreadable or mismatch");
@@ -168,8 +168,7 @@ fn transport_variant_flags(
     let identity =
         read::<[u8; 16]>(memory, variant).ok_or("ship equipment variant identity unreadable")?;
     cequipment_variant::identity_from_header(
-        module_base
-            .checked_add(cequipment_variant::VTABLE_RVA)
+        engine_sites::at(module_base, cequipment_variant::VTABLE_RVA)
             .ok_or("ship equipment module overflow")?,
         identity,
     )?;
@@ -229,8 +228,7 @@ fn authenticated_array(
     field: usize,
     stride: usize,
 ) -> Result<Array, &'static str> {
-    let expected = module_base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(module_base, VTABLE_RVA)
         .ok_or("equipment pool vtable address overflow")?;
     let actual = read::<u64>(memory, pool).ok_or("equipment pool vtable unreadable")?;
     if actual != expected as u64 {
@@ -391,7 +389,7 @@ fn walk_divisions_buffer(
         let mut identities = [0_u8; BATCH * 16];
         // Relocated once for the whole walk, but still reported at the entry
         // whose identity would have computed it, so its precedence is intact.
-        let relocated = module_base.checked_add(cequipment_variant::VTABLE_RVA);
+        let relocated = engine_sites::at(module_base, cequipment_variant::VTABLE_RVA);
         let mut len = 0usize;
         let mut unread_rows = 0_u32;
         for division in divisions.iter().filter(|division| keep(division)) {

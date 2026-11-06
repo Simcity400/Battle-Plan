@@ -8,11 +8,12 @@ use crate::{
     Memory, cair_base, cbuilding, cbuilding_status, cbuilding_template, cpdx_array::Array, cstate,
     read,
 };
+use engine_sites::Rva;
 
 /// Signed building-template weight; the first positive weight qualifies.
 const MISSILE_SLOT_WEIGHT: usize = 0x310;
 /// Building-template primary vtable.
-const BUILDING_TEMPLATE_VTABLE_RVA: usize = 0x0286_1988;
+const BUILDING_TEMPLATE_VTABLE_RVA: Rva = Rva(0x0286_1988);
 /// First contribution array, with separate signed flagged and unflagged maxima.
 const PRIMARY_CONTRIBUTIONS: usize = 0x10;
 /// Second contribution array, adding unflagged levels.
@@ -277,11 +278,9 @@ fn require_vtable(
     memory: &impl Memory,
     module_base: usize,
     object: usize,
-    rva: usize,
+    rva: Rva,
 ) -> Result<(), &'static str> {
-    let expected = module_base
-        .checked_add(rva)
-        .ok_or("rocket vtable address overflow")?;
+    let expected = engine_sites::at(module_base, rva).ok_or("rocket vtable address overflow")?;
     if read::<u64>(memory, object) == Some(expected as u64) {
         Ok(())
     } else {
@@ -348,7 +347,7 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x12000];
-        put(&mut bytes, BASE, (MODULE + cair_base::VTABLE_RVA) as u64);
+        put(&mut bytes, BASE, (MODULE + cair_base::VTABLE_RVA.0) as u64);
         put(
             &mut bytes,
             BASE + cair_base::HANDLE,
@@ -356,12 +355,12 @@ mod tests {
         );
         put(&mut bytes, BASE + cair_base::KIND, 1_i32);
         put(&mut bytes, BASE + cair_base::STATE, STATE as u64);
-        put(&mut bytes, STATE, (MODULE + cstate::VTABLE_RVA) as u64);
+        put(&mut bytes, STATE, (MODULE + cstate::VTABLE_RVA.0) as u64);
         put(&mut bytes, STATE + cstate::ID, 25_u32);
         put(
             &mut bytes,
             STATUS,
-            (MODULE + cbuilding_status::VTABLE_RVA) as u64,
+            (MODULE + cbuilding_status::VTABLE_RVA.0) as u64,
         );
         put(&mut bytes, STATUS + cbuilding_status::ID, 25_u32);
         put(
@@ -384,7 +383,7 @@ mod tests {
             put(
                 &mut bytes,
                 building,
-                (MODULE + cbuilding::VTABLE_RVA) as u64,
+                (MODULE + cbuilding::VTABLE_RVA.0) as u64,
             );
             put(&mut bytes, building + cbuilding::TYPE_ID, token);
             put(
@@ -396,7 +395,7 @@ mod tests {
             put(
                 &mut bytes,
                 template,
-                (MODULE + BUILDING_TEMPLATE_VTABLE_RVA) as u64,
+                (MODULE + BUILDING_TEMPLATE_VTABLE_RVA.0) as u64,
             );
             put(&mut bytes, template + cbuilding_template::TYPE_ID, token);
             put(&mut bytes, template + MISSILE_SLOT_WEIGHT, weight);

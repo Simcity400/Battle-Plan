@@ -195,9 +195,9 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    if pointer != 0 && base.checked_add(vtable).map(|p| p as u64) == read(memory, pointer) {
+    if pointer != 0 && engine_sites::at(base, vtable).map(|p| p as u64) == read(memory, pointer) {
         Ok(())
     } else {
         Err("strategic action object identity mismatch")

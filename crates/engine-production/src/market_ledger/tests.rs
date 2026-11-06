@@ -157,7 +157,7 @@ fn pool_fixture() -> Vec<u8> {
     u64(
         &mut bytes,
         HOLDER,
-        cequipment_variant_pool::VTABLE_RVA as u64,
+        cequipment_variant_pool::VTABLE_RVA.0 as u64,
     );
     array(
         &mut bytes,
@@ -166,7 +166,7 @@ fn pool_fixture() -> Vec<u8> {
         3,
     );
     bytes[HOLDER + cequipment_variant_pool::ALLOW_ZERO] = 1;
-    u64(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA as u64);
+    u64(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA.0 as u64);
     u64(&mut bytes, VARIANT + 8, (5000_u64 << 32) | 70);
     for (index, amount) in [0_i64, -9, i64::from(i32::MAX) + 17]
         .into_iter()
@@ -220,7 +220,7 @@ fn market_pool_refuses_a_wrong_variant_type_and_an_unreadable_zero_policy() {
 fn subsidy_fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x1000];
     array(&mut bytes, HOLDER, ITEMS, 2);
-    u64(&mut bytes, ARCHETYPE, cequipment_type::VTABLE_RVA as u64);
+    u64(&mut bytes, ARCHETYPE, cequipment_type::VTABLE_RVA.0 as u64);
     u32(&mut bytes, ARCHETYPE + cequipment_type::TOKEN, 98765);
     for index in 0..2 {
         let entry = ITEMS + index * SUBSIDY_STRIDE;
@@ -242,7 +242,7 @@ fn subsidy_fixture() -> Vec<u8> {
     let second = ITEMS + SUBSIDY_STRIDE;
     bytes[second + SUBSIDY_KIND] = 1;
     u64(&mut bytes, second + SUBSIDY_CONDITION, TRIGGER as u64);
-    u64(&mut bytes, TRIGGER, SUBSIDY_TRIGGER_VTABLE_RVA as u64);
+    u64(&mut bytes, TRIGGER, SUBSIDY_TRIGGER_VTABLE_RVA.0 as u64);
     let name = TRIGGER + SUBSIDY_TRIGGER_NAME;
     bytes[name..name + 11].copy_from_slice(b"mod_trigger");
     u64(&mut bytes, name + msvc_string::LENGTH, 11);
@@ -369,7 +369,7 @@ fn market_contract_prices_and_requested_amounts_are_independent_pools() {
     const REQUEST_ITEMS: usize = 0x600;
     const HANDLE: u64 = (5000_u64 << 32) | contract::TYPE as u64;
     let mut bytes = vec![0; 0x1000];
-    u64(&mut bytes, CONTRACT, contract::VTABLE_RVA as u64);
+    u64(&mut bytes, CONTRACT, contract::VTABLE_RVA.0 as u64);
     u64(&mut bytes, CONTRACT + contract::ID_TYPE, HANDLE);
     for (pool_address, items, amount) in [
         (CONTRACT + DRAFT, PRICE_ITEMS, 99_999_i64),
@@ -382,7 +382,7 @@ fn market_contract_prices_and_requested_amounts_are_independent_pools() {
         u64(
             &mut bytes,
             pool_address,
-            cequipment_variant_pool::VTABLE_RVA as u64,
+            cequipment_variant_pool::VTABLE_RVA.0 as u64,
         );
         array(
             &mut bytes,
@@ -393,7 +393,7 @@ fn market_contract_prices_and_requested_amounts_are_independent_pools() {
         u64(&mut bytes, items, VARIANT as u64);
         u64(&mut bytes, items + 8, amount as u64);
     }
-    u64(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA as u64);
+    u64(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA.0 as u64);
     u64(&mut bytes, VARIANT + 8, (1234_u64 << 32) | 70);
     array(&mut bytes, CONTRACT + DRAFT + DRAFT_SUBSIDIES, 0, 0);
     let levels = CONTRACT + DRAFT + DRAFT_PRICE_LEVELS;

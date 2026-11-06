@@ -1,9 +1,10 @@
 //! CConferenceWinnerParticipant automatic civil-war outcomes.
 
+use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, read};
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_c848;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_c848);
 /// Raw winner country reference used when applying state ownership.
 pub const COUNTRY: usize = 8;
 /// Ordered signed state IDs, appended and then consumed during settlement.
@@ -16,7 +17,7 @@ pub fn copy(
 ) -> Result<(u32, Array), &'static str> {
     let bytes =
         read::<[u8; 12]>(memory, pointer).ok_or("peace winner participant identity unreadable")?;
-    if base.checked_add(VTABLE_RVA).map(|value| value as u64)
+    if engine_sites::at(base, VTABLE_RVA).map(|value| value as u64)
         != Some(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
     {
         return Err("peace winner participant vtable mismatch");

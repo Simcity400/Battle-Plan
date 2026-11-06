@@ -29,14 +29,14 @@ fn stockpile_fixture() -> Vec<u8> {
         (0x4000, 3, 0x8000, 0x2200, 1),
         (0x6000, 2, 0x9000, 0x2300, 2),
     ] {
-        p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, country + ccountry::ID, id);
         p64(
             &mut bytes,
             country + ccountry::PRODUCTION_STATUS,
             manager as u64,
         );
-        p64(&mut bytes, manager, cproduction_status::VTABLE_RVA as u64);
+        p64(&mut bytes, manager, cproduction_status::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             manager + cproduction_status::COUNTRY,
@@ -45,7 +45,7 @@ fn stockpile_fixture() -> Vec<u8> {
         p64(
             &mut bytes,
             manager + cproduction_status::STOCKPILE_POOL,
-            VTABLE_RVA as u64,
+            VTABLE_RVA.0 as u64,
         );
         array(
             &mut bytes,
@@ -62,7 +62,7 @@ fn stockpile_fixture() -> Vec<u8> {
             );
         }
     }
-    p64(&mut bytes, 0xa000, cequipment_variant::VTABLE_RVA as u64);
+    p64(&mut bytes, 0xa000, cequipment_variant::VTABLE_RVA.0 as u64);
     p64(&mut bytes, 0xa008, 0xfedc_ba98_0000_0046);
     bytes
 }
@@ -160,7 +160,7 @@ fn division_dependencies_and_later_pool_headers_are_preserved() {
     ];
     for (source, data, count) in [(sources[0], 0x2200, 1), (sources[1], 0x2300, 2)] {
         let pool = source.pointer + carmy::EQUIPMENT_POOL;
-        p64(&mut bytes, pool, VTABLE_RVA as u64);
+        p64(&mut bytes, pool, VTABLE_RVA.0 as u64);
         array(&mut bytes, pool + ITEMS, data, count);
     }
     let memory = SliceMemory {
@@ -234,7 +234,7 @@ fn filtered_worker_division_equipment_grows_for_mod_pools_without_roster_growth(
     let pool = sources[0].pointer + carmy::EQUIPMENT_POOL;
     let mut bytes = stockpile_fixture();
     bytes.resize(DATA + 17 * equipment_entry::STRIDE, 0);
-    p64(&mut bytes, pool, VTABLE_RVA as u64);
+    p64(&mut bytes, pool, VTABLE_RVA.0 as u64);
     for ordinal in 0..17 {
         p64(&mut bytes, DATA + ordinal * equipment_entry::STRIDE, 0xa000);
         p64(
@@ -288,7 +288,7 @@ fn bank(entries: usize) -> Vec<u8> {
     const DATA: usize = 0x4000;
     const VARIANT: usize = 0x8000;
     let mut bytes = vec![0_u8; VARIANT + (entries + 1) * 0x40];
-    p64(&mut bytes, POOL + carmy::EQUIPMENT_POOL, VTABLE_RVA as u64);
+    p64(&mut bytes, POOL + carmy::EQUIPMENT_POOL, VTABLE_RVA.0 as u64);
     array(
         &mut bytes,
         POOL + carmy::EQUIPMENT_POOL + ITEMS,
@@ -304,7 +304,7 @@ fn bank(entries: usize) -> Vec<u8> {
             slot + equipment_entry::AMOUNT,
             (i64::MIN + entry as i64) as u64,
         );
-        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             variant + 8,
@@ -401,7 +401,7 @@ fn a_bank_census_costs_two_guarded_gathers_per_batch_not_two_per_entry() {
     const DATA: usize = 0x4000;
     const VARIANT: usize = 0x8000;
     let mut bytes = vec![0_u8; VARIANT + (ENTRIES + 1) * 0x40];
-    p64(&mut bytes, POOL + carmy::EQUIPMENT_POOL, VTABLE_RVA as u64);
+    p64(&mut bytes, POOL + carmy::EQUIPMENT_POOL, VTABLE_RVA.0 as u64);
     array(
         &mut bytes,
         POOL + carmy::EQUIPMENT_POOL + ITEMS,
@@ -417,7 +417,7 @@ fn a_bank_census_costs_two_guarded_gathers_per_batch_not_two_per_entry() {
             slot + equipment_entry::AMOUNT,
             (i64::MIN + entry as i64) as u64,
         );
-        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             variant + 8,
@@ -455,7 +455,7 @@ fn a_bank_census_costs_two_guarded_gathers_per_batch_not_two_per_entry() {
 #[test]
 fn empty_pool_requires_the_correct_object_and_bounded_header() {
     let mut bytes = [0_u8; 0x40];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     let memory = SliceMemory {
         base: 0x1000,
         bytes: &bytes,

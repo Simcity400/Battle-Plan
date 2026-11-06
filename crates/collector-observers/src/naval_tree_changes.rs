@@ -337,9 +337,9 @@ impl Hooks {
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "naval_tree_changes")
-            && MUTATIONS[COUNTRY_SITES..].iter().all(|site| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            })
+            && MUTATIONS[COUNTRY_SITES..]
+                .iter()
+                .all(|site| crate::located(base, site.rva).is_ok())
         {
             let callbacks: [usize; PATCHED_SITES] = [
                 recalculate_leader_modifiers as *const () as usize,
@@ -349,8 +349,10 @@ impl Hooks {
                 destroy_leader as *const () as usize,
             ];
             for (offset, site) in MUTATIONS[COUNTRY_SITES..].iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[offset], site.sentinel) }
-                    .map_err(|cause| {
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[offset], code.sentinel::<16>()?) }
+                        .map_err(|cause| {
                         format!(
                             "naval_tree_changes hook {} construction failed: {cause}",
                             site.name

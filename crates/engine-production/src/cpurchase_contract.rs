@@ -6,9 +6,10 @@ use crate::{
     Memory, ccountry, cequipment_market_status, market_contract_manager::Contracts, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CPurchaseContract primary vtable.
-pub const VTABLE_RVA: usize = 0x29e83d0;
+pub const VTABLE_RVA: Rva = Rva(0x29e83d0);
 /// CPurchaseContract persistent handle type, u32.
 pub const ID_TYPE: usize = 0x08;
 /// CPurchaseContract persistent handle id, u32.
@@ -229,7 +230,7 @@ fn verify_memberships(
 fn read_row(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'static str> {
     let header = read::<[u8; 16]>(memory, pointer).ok_or("market contract identity unreadable")?;
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
-    if base.checked_add(VTABLE_RVA).map(|p| p as u64) != Some(vtable) {
+    if engine_sites::at(base, VTABLE_RVA).map(|p| p as u64) != Some(vtable) {
         return Err("market contract vtable mismatch");
     }
     let id = u64::from_le_bytes(header[8..].try_into().unwrap());
@@ -323,7 +324,7 @@ mod tests {
             );
         }
         for (pointer, id, status) in [(COUNTRY1, 4, 0x8000), (COUNTRY2, 2, 0x8100)] {
-            p64(&mut bytes, pointer, ccountry::VTABLE_RVA as u64);
+            p64(&mut bytes, pointer, ccountry::VTABLE_RVA.0 as u64);
             p32(&mut bytes, pointer + ccountry::ID, id);
             p64(
                 &mut bytes,
@@ -346,7 +347,7 @@ mod tests {
             for vector in [OWNED, SELLERS, BUYERS] {
                 p64(&mut bytes, vector + index * 8, pointer as u64);
             }
-            p64(&mut bytes, pointer, VTABLE_RVA as u64);
+            p64(&mut bytes, pointer, VTABLE_RVA.0 as u64);
             p64(
                 &mut bytes,
                 pointer + ID_TYPE,

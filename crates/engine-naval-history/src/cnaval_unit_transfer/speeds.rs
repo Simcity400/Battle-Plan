@@ -37,7 +37,7 @@ pub fn province_region(
         usize::try_from(read::<u64>(memory, entry).ok_or("transport province entry unreadable")?)
             .map_err(|_| "transport province pointer invalid")?;
     if pointer == 0
-        || value::<u64>(memory, pointer, 0)? != at(base, cprovince::VTABLE_RVA)? as u64
+        || value::<u64>(memory, pointer, 0)? != key(base, cprovince::VTABLE_RVA)? as u64
         || value::<u32>(memory, pointer, cprovince::ID)? != province
     {
         return Err("transport province identity mismatch");
@@ -206,7 +206,7 @@ impl<M: Memory> Shared<'_, M> {
         let (memory, base, state) = (self.memory, self.base, self.state);
         let array = memo(&mut self.cache.weather_regions, || {
             let manager = pointer(memory, state, cgame_state::WEATHER_MANAGER)?;
-            if value::<u64>(memory, manager, 0)? != at(base, cweather_manager::VTABLE_RVA)? as u64 {
+            if value::<u64>(memory, manager, 0)? != key(base, cweather_manager::VTABLE_RVA)? as u64 {
                 return Err("transport weather manager identity mismatch");
             }
             let root = at(manager, cweather_manager::REGIONS)?;
@@ -217,7 +217,7 @@ impl<M: Memory> Shared<'_, M> {
             // Out-of-range regions yield no weather modifier.
             return Ok(0);
         };
-        if value::<u64>(memory, row, 0)? != at(base, sweather_per_region::VTABLE_RVA)? as u64
+        if value::<u64>(memory, row, 0)? != key(base, sweather_per_region::VTABLE_RVA)? as u64
             || value::<u32>(memory, row, sweather_per_region::ID)? != region
         {
             return Err("transport weather region identity mismatch");
@@ -248,11 +248,11 @@ impl<M: Memory> Shared<'_, M> {
             self.countries,
         );
         memo(&mut self.penalty, || {
-            let flags = value::<u32>(memory, base, modifier_definition::TRADE_FEATURE_FLAGS_RVA)?;
+            let flags = global::<u32>(memory, base, modifier_definition::TRADE_FEATURE_FLAGS_RVA)?;
             if flags & (1 << 4) == 0 {
                 return Ok(None);
             }
-            let definitions = pointer(memory, base, MODIFIER_SET_RVA)?;
+            let definitions = global_pointer(memory, base, MODIFIER_SET_RVA)?;
             let definition = value::<u64>(memory, definitions, TRANSPORT_MODIFIER)?;
             if definition == 0 {
                 return Ok(None);
@@ -260,7 +260,7 @@ impl<M: Memory> Shared<'_, M> {
             let definition =
                 usize::try_from(definition).map_err(|_| "transport modifier pointer invalid")?;
             if value::<u64>(memory, definition, 0)?
-                != at(base, cstatic_modifier::VTABLE_RVA)? as u64
+                != key(base, cstatic_modifier::VTABLE_RVA)? as u64
             {
                 return Err("transport modifier identity mismatch");
             }
@@ -371,7 +371,7 @@ impl<M: Memory> Shared<'_, M> {
         };
         let (total, mean) = self.totals(region)?;
         let maximum = memo(&mut self.maximum, || {
-            value::<i64>(memory, base, MAXIMUM_TOTAL_RVA)
+            global::<i64>(memory, base, MAXIMUM_TOTAL_RVA)
         })?;
         let bounded = if total < 0 {
             0
@@ -396,16 +396,16 @@ impl<M: Memory> Shared<'_, M> {
         };
         let (minimum, upper, scale) = if first_fraction != 0 {
             let minimum = memo(&mut self.minimum, || {
-                value::<i64>(memory, base, MINIMUM_INTEL_RVA)
+                global::<i64>(memory, base, MINIMUM_INTEL_RVA)
             })?;
             if mean.wrapping_sub(minimum) > 0 {
                 (
                     minimum,
                     memo(&mut self.upper, || {
-                        value::<i64>(memory, base, MAXIMUM_INTEL_RVA)
+                        global::<i64>(memory, base, MAXIMUM_INTEL_RVA)
                     })?,
                     memo(&mut self.scale, || {
-                        value::<i64>(memory, base, INTEL_REDUCTION_RVA)
+                        global::<i64>(memory, base, INTEL_REDUCTION_RVA)
                     })?,
                 )
             } else {
@@ -429,7 +429,7 @@ impl<M: Memory> Shared<'_, M> {
             return Ok(ComposedInputs::Zero);
         }
         let category = memo(&mut self.category, || {
-            let metadata = pointer(memory, base, modifier_definition::TABLE_RVA)?;
+            let metadata = global_pointer(memory, base, modifier_definition::TABLE_RVA)?;
             let category_at = at(
                 at(metadata, SPEED_TOKEN as usize * modifier_definition::STRIDE)?,
                 modifier_definition::CATEGORY_MASK,
@@ -542,7 +542,7 @@ pub fn movement_speeds_inputs<M: Memory>(
                 }
             }?;
             let speed = memo(&mut shared.speed, || {
-                value::<i64>(memory, base, BASE_SPEED_RVA)
+                global::<i64>(memory, base, BASE_SPEED_RVA)
             })?;
             let weather = match shared.cache.regions[index].weather {
                 Some(weather) => weather,
@@ -577,7 +577,7 @@ fn region_identity(
     let entry = census
         .element(slot, 8)
         .ok_or("transport region slot outside census")?;
-    let vtable = at(base, cstrategic_region::VTABLE_RVA)? as u64;
+    let vtable = key(base, cstrategic_region::VTABLE_RVA)? as u64;
     if pointer == 0
         || region_id > i32::MAX as u32
         || read::<u64>(memory, entry) != Some(pointer as u64)

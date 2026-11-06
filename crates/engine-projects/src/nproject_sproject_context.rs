@@ -2,8 +2,9 @@
 //! their presence byte is set. Absent payload words may remain indeterminate and
 //! must never be read as zero.
 
+use engine_sites::Rva;
 /// Project-context primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_f360;
+pub const VTABLE_RVA: Rva = Rva(0x029f_f360);
 /// Context signed i32 province.
 pub const PROVINCE: usize = 0x08;
 /// Context signed i32 progress.
@@ -23,7 +24,7 @@ pub const STATE_REFERENCE: usize = 0x28;
 /// State-presence u8 flag.
 pub const STATE_PRESENT: usize = 0x2c;
 /// Context constructor clearing presence bytes without initializing absent payloads.
-pub const CONSTRUCT_RVA: usize = 0x01ac_ae90;
+pub const CONSTRUCT_RVA: Rva = Rva(0x01ac_ae90);
 
 use crate::{Memory, read};
 
@@ -44,9 +45,7 @@ pub struct Row {
 /// Reads no optional payload unless the corresponding native presence byte is
 /// nonzero, matching the serializer. Absent storage may be indeterminate.
 pub fn read_row(memory: &impl Memory, base: usize, address: usize) -> Result<Row, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("project context vtable overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("project context vtable overflow")?;
     if read::<u64>(memory, address) != Some(expected as u64) {
         return Err("project context vtable unreadable or mismatched");
     }
@@ -116,7 +115,7 @@ mod tests {
     #[test]
     fn absent_payloads_are_never_read_and_native_bits_survive() {
         let mut bytes = [0xff; 0x30];
-        bytes[..8].copy_from_slice(&(0x1000_u64 + VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(0x1000_u64 + VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[PROVINCE..PROVINCE + 4].copy_from_slice(&(-7_i32).to_le_bytes());
         for offset in [COUNTRY_PRESENT, SCIENTIST_PRESENT, STATE_PRESENT] {
             bytes[offset] = 0;
@@ -137,7 +136,7 @@ mod tests {
     #[test]
     fn present_payloads_are_exact_and_faults_are_not_absence() {
         let mut bytes = [0; 0x30];
-        bytes[..8].copy_from_slice(&(0x1000_u64 + VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(0x1000_u64 + VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[COUNTRY_PRESENT] = 1;
         bytes[COUNTRY_REFERENCE..COUNTRY_REFERENCE + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         let memory = SliceMemory {

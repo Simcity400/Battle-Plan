@@ -56,17 +56,17 @@ pub(crate) fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             record,
-            &(csunk_ship_info::VTABLE_RVA as u64).to_le_bytes(),
+            &(csunk_ship_info::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             record + csunk_ship_info::SINK_DATE,
-            &(cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+            &(cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             record + csunk_ship_info::SINK_DATE_PERSISTENT,
-            &(cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+            &(cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -156,7 +156,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         (CLASS, 11u32, csub_unit_definition::VTABLE_RVA),
         (NULL_CLASS, 0u32, csub_unit_definition::NULL_VTABLE_RVA),
     ] {
-        put(&mut bytes, class, &(vtable as u64).to_le_bytes());
+        put(&mut bytes, class, &(vtable.0 as u64).to_le_bytes());
         put(
             &mut bytes,
             class + csub_unit_definition::TOKEN,
@@ -167,7 +167,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         MAP_PROVINCE,
-        &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,

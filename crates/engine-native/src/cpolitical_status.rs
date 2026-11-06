@@ -9,9 +9,10 @@ use crate::{
     Memory, ccharacter, ccountry, ccountry_leader, cidea, cideology_group, cpdx_array::Array,
     cpolitical_party, msvc_string, read, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Political-status primary vtable.
-pub const VTABLE_RVA: usize = 0x029c_cb08;
+pub const VTABLE_RVA: Rva = Rva(0x029c_cb08);
 /// Owning-country pointer authenticated by backlink.
 pub const COUNTRY: usize = 0xc8;
 /// Political power, signed i64/100000, accumulated and clamped as a full qword.
@@ -30,7 +31,7 @@ pub const IDEA_COUNT: usize = 0x5c;
 pub const TIMED_IDEAS: usize = 0x68;
 pub const TIMED_IDEA_STRIDE: usize = 0x18;
 /// Timed-idea primary vtable for roster entries.
-pub const TIMED_IDEA_VTABLE_RVA: usize = 0x029c_cab8;
+pub const TIMED_IDEA_VTABLE_RVA: Rva = Rva(0x029c_cab8);
 /// Last-election raw hour, i32, written by the election and daily update paths.
 pub const LAST_ELECTION: usize = 0xa0;
 /// Cached date needed only when an initializer last date is ambiguous.
@@ -279,9 +280,8 @@ pub struct Reader<'a, M: Memory> {
 
 impl<'a, M: Memory> Reader<'a, M> {
     pub fn new(memory: &'a M, base: usize, country: usize) -> Result<Self, &'static str> {
-        let expected = base
-            .checked_add(ccountry::VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected =
+            engine_sites::at(base, ccountry::VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(memory, country) != Some(expected as u64) {
             return Err("politics country vtable mismatch");
         }
@@ -291,9 +291,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
             .ok_or("political status pointer unreadable or null")?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(memory, status) != Some(expected as u64) {
             return Err("political status vtable mismatch");
         }
@@ -660,9 +658,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 carry.carry(token, &mut output[..rows]);
                 return Ok(Outcome::Rows { len: rows });
             }
-            let leader_vtable = self
-                .base
-                .checked_add(ccountry_leader::VTABLE_RVA)
+            let leader_vtable = engine_sites::at(self.base, ccountry_leader::VTABLE_RVA)
                 .ok_or("module address overflow")? as u64;
             let mut len = 0_usize;
             let mut unread_rows = 0_u32;
@@ -800,13 +796,9 @@ impl<'a, M: Memory> Reader<'a, M> {
             let mut required_bytes = 0_usize;
             let mut unread_rows = 0;
             output.ensure(array.count as usize)?;
-            let primary_vtable = self
-                .base
-                .checked_add(cidea::VTABLE_RVA)
-                .ok_or("module address overflow")?;
-            let secondary_vtable = self
-                .base
-                .checked_add(cidea::SECONDARY_VTABLE_RVA)
+            let primary_vtable =
+                engine_sites::at(self.base, cidea::VTABLE_RVA).ok_or("module address overflow")?;
+            let secondary_vtable = engine_sites::at(self.base, cidea::SECONDARY_VTABLE_RVA)
                 .ok_or("module address overflow")?;
             for ordinal in 0..array.count {
                 let slot = array
@@ -893,17 +885,14 @@ impl<'a, M: Memory> Reader<'a, M> {
                     .ok_or("timed idea entry address overflow")?;
                 let entry = read::<[u8; TIMED_IDEA_STRIDE]>(self.memory, address)
                     .ok_or("timed idea entry unreadable")?;
-                if self
-                    .base
-                    .checked_add(TIMED_IDEA_VTABLE_RVA)
-                    .map(|p| p as u64)
+                if engine_sites::at(self.base, TIMED_IDEA_VTABLE_RVA).map(|p| p as u64)
                     != Some(u64::from_le_bytes(entry[..8].try_into().unwrap()))
                 {
                     return Err("timed idea entry vtable mismatch");
                 }
                 let pointer = usize::try_from(u64::from_le_bytes(entry[8..16].try_into().unwrap()))
                     .map_err(|_| "timed idea definition address overflow")?;
-                if self.base.checked_add(cidea::VTABLE_RVA).map(|p| p as u64)
+                if engine_sites::at(self.base, cidea::VTABLE_RVA).map(|p| p as u64)
                     != read::<u64>(self.memory, pointer)
                 {
                     return Err("timed idea definition vtable mismatch");

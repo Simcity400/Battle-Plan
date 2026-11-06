@@ -32,34 +32,26 @@ use crate::{
     event_feed_sites::{CountryIdentity, identity},
     manpower_value_entry, read,
 };
+use engine_sites::Rva;
 
 /// A function entry this family patches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Site {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 
 /// Impact takes nuke and province pointers in RCX and RDX, saved immediately; no other argument is
 /// read. The five patched bytes save RDX to its home slot.
 pub const IMPACT: Site = Site {
     name: "impact",
-    rva: 0x0111_fdf0,
-    sentinel: [
-        0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41,
-        0x54,
-    ],
+    rva: Rva(0x0111_fdf0),
 };
 /// Notification takes nuke and province pointers, entered only by the impact's tail jump; RCX and
 /// RDX are kept in RSI and RDI. The five patched bytes save RBX to its home slot.
 pub const NOTIFY: Site = Site {
     name: "notify",
-    rva: 0x0112_19b0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
-        0x55,
-    ],
+    rva: Rva(0x0112_19b0),
 };
 /// Unit damage takes nuke and province pointers and returns u64, called by both province-damage
 /// branches of the impact. It walks the province's mixed occupants (up to their count) in order.
@@ -68,11 +60,7 @@ pub const NOTIFY: Site = Site {
 /// tag. The five patched bytes push RBX, RBP, RSI and RDI; RAX is returned unchanged.
 pub const UNIT_DAMAGE: Site = Site {
     name: "unit_damage",
-    rva: 0x0111_f4d0,
-    sentinel: [
-        0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x30, 0x83, 0x79, 0x38, 0x01,
-        0x4c,
-    ],
+    rva: Rva(0x0111_f4d0),
 };
 pub const SITES: [Site; 3] = [IMPACT, NOTIFY, UNIT_DAMAGE];
 
@@ -121,10 +109,10 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
     reason: &'static str,
 ) -> Result<(), &'static str> {
-    let expected = base.checked_add(vtable).ok_or(reason)? as u64;
+    let expected = engine_sites::at(base, vtable).ok_or(reason)? as u64;
     if object == 0 || read::<u64>(memory, object) != Some(expected) {
         return Err(reason);
     }
@@ -393,7 +381,7 @@ mod tests {
     impl World {
         fn new() -> Self {
             let mut world = Self(vec![0; 0x4800]);
-            world.u64(NUKE, cnuke::VTABLE_RVA as u64);
+            world.u64(NUKE, cnuke::VTABLE_RVA.0 as u64);
             world.u64(NUKE + cnuke::COUNTRY, COUNTRY as u64);
             world.u32(NUKE + cnuke::TYPE, 1);
             // Slots 0 (reserved), 1 (launcher) and 2 (owner); raw reference
@@ -406,18 +394,18 @@ mod tests {
                 (2, OWNER, 2, 0xcccc),
             ] {
                 world.u64(SLOTS + slot * 8, country as u64);
-                world.u64(country, ccountry::VTABLE_RVA as u64);
+                world.u64(country, ccountry::VTABLE_RVA.0 as u64);
                 world.u32(country + ccountry::ID, id);
                 world.u32(country + ccountry::SURRENDER_TARGET, instance);
             }
             for (raw, slot) in [0, 1, 2, 2].into_iter().enumerate() {
                 world.u32(LINKS + raw * 4, slot);
             }
-            world.u64(PROVINCE, cprovince::VTABLE_RVA as u64);
+            world.u64(PROVINCE, cprovince::VTABLE_RVA.0 as u64);
             world.u32(PROVINCE + cprovince::ID, 13_000);
             world.u64(PROVINCE + cprovince::STATE, STATE as u64);
             world.u32(PROVINCE + cprovince::CONTROLLER, 77);
-            world.u64(STATE, cstate::VTABLE_RVA as u64);
+            world.u64(STATE, cstate::VTABLE_RVA.0 as u64);
             world.u32(STATE + cstate::ID, 1_204);
             world.u32(STATE + cstate::OWNER, 3);
             world
@@ -503,7 +491,7 @@ mod tests {
         for (index, unit) in [ARMY, SHIPS, GUN, 0x3400].into_iter().enumerate() {
             world.u64(OCCUPANTS + index * 8, unit as u64);
         }
-        world.u64(ARMY, carmy::VTABLE_RVA as u64);
+        world.u64(ARMY, carmy::VTABLE_RVA.0 as u64);
         world.u32(ARMY + cunit::CLASS, ARMY_CLASS);
         world.u64(ARMY + cunit::HANDLE, (7 << 32) | 0x41);
         world.u32(ARMY + cunit::ROSTER_OWNER, 3);
@@ -514,7 +502,7 @@ mod tests {
         world.u32(MANPOWER + manpower_value_entry::COUNT, 9_000);
         world.u32(MANPOWER + 8 + manpower_value_entry::COUNT, (-1_i32) as u32);
         world.u32(SHIPS + cunit::CLASS, SKIPPED_CLASS);
-        world.u64(GUN, crailway_gun::VTABLE_RVA as u64);
+        world.u64(GUN, crailway_gun::VTABLE_RVA.0 as u64);
         world.u32(GUN + cunit::CLASS, RAILWAY_GUN_CLASS);
         world.u64(GUN + cunit::HANDLE, (8 << 32) | 0x42);
         world.u32(GUN + cunit::ROSTER_OWNER, 5);

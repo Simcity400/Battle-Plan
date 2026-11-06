@@ -39,7 +39,7 @@ struct Bench {
 impl Memory for Bench {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         self.copies.set(self.copies.get() + 1);
-        if address == MODULE + subunit::DATABASE_RVA && output.len() == 8 {
+        if address == MODULE + subunit::DATABASE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(self.database as u64).to_le_bytes());
             return true;
         }
@@ -70,13 +70,13 @@ fn build(countries: u32, templates: usize) -> Bench {
     let mut world = World::new(MODULE, countries, ccountry::DEPLOYMENT_MANAGER + 8);
     let archetypes = [world.alloc(0x20), world.alloc(0x20)];
     for (index, &archetype) in archetypes.iter().enumerate() {
-        world.u64(archetype, (MODULE + cequipment_type::VTABLE_RVA) as u64);
+        world.u64(archetype, (MODULE + cequipment_type::VTABLE_RVA.0) as u64);
         world.u32(archetype + cequipment_type::TOKEN, 100 + index as u32);
         world.put(archetype + cequipment_type::ACTIVE, &[1]);
     }
     let definition = |world: &mut World, token: u32, index: i32, amount: i64| {
         let at = world.alloc(DEFINITION + archetypes.len() * 16);
-        world.u64(at, (MODULE + subunit::VTABLE_RVA) as u64);
+        world.u64(at, (MODULE + subunit::VTABLE_RVA.0) as u64);
         world.u32(at + subunit::TOKEN, token);
         world.put(at + subunit::IS_REAL, &[1]);
         world.put(at + subunit::DATABASE_INDEX, &index.to_le_bytes());
@@ -107,7 +107,7 @@ fn build(countries: u32, templates: usize) -> Bench {
     for slot in 1..=countries as usize {
         let object = world.object(slot as u32);
         let manager = world.alloc(cdeployment_status::OWNER + 8);
-        world.u64(manager, (MODULE + cdeployment_status::VTABLE_RVA) as u64);
+        world.u64(manager, (MODULE + cdeployment_status::VTABLE_RVA.0) as u64);
         world.u64(manager + cdeployment_status::OWNER, object as u64);
         world.u64(object + ccountry::DEPLOYMENT_MANAGER, manager as u64);
         let mut clones = [0; CLONES];
@@ -140,7 +140,7 @@ fn build(countries: u32, templates: usize) -> Bench {
         for ordinal in 0..end - begin {
             let at = world.alloc(TEMPLATE + GROUPED * template::SUBUNIT_COUNT_STRIDE);
             world.u64(roster + ordinal * 8, at as u64);
-            world.u64(at, (MODULE + template::VTABLE_RVA) as u64);
+            world.u64(at, (MODULE + template::VTABLE_RVA.0) as u64);
             let id = (begin + ordinal + 1) as u64;
             world.u64(
                 at + template::TYPE,

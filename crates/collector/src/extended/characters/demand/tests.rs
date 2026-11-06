@@ -44,7 +44,7 @@ impl World {
         };
         let manager = world.alloc(0x40);
         world.u64(STATE + cgame_state::CHARACTER_MANAGER, manager as u64);
-        world.u64(manager, (BASE + ccharacter_manager::VTABLE_RVA) as u64);
+        world.u64(manager, (BASE + ccharacter_manager::VTABLE_RVA.0) as u64);
         let roster = world.alloc(COUNT * 8);
         world.array(
             manager + ccharacter_manager::HISTORICAL_CHARACTERS,
@@ -56,12 +56,12 @@ impl World {
             let unit = world.alloc(0x1000);
             world.units.push(unit);
             world.u64(roster + (id - 1) * 8, character as u64);
-            world.u64(character, (BASE + ccharacter::VTABLE_RVA) as u64);
+            world.u64(character, (BASE + ccharacter::VTABLE_RVA.0) as u64);
             world.u32(character + ccharacter::TYPE, ccharacter::REFERENCE_TYPE);
             world.u32(character + ccharacter::ID, id as u32);
             world.u32(character + ccharacter::COUNTRY, id as u32);
             world.u64(character + ccharacter::UNIT_LEADER, unit as u64);
-            world.u64(unit, (BASE + cunit_leader::VTABLE_RVA) as u64);
+            world.u64(unit, (BASE + cunit_leader::VTABLE_RVA.0) as u64);
             for offset in [cunit_leader::NAME, cunit_leader::TOKEN] {
                 world.u64(unit + offset + 24, 15);
             }
@@ -74,7 +74,7 @@ impl World {
             );
             world.u32(unit + cunit_leader::CHARACTER_ID, id as u32);
             let definition = world.alloc(cunit_leader_trait::SIZE);
-            world.u64(definition, (BASE + cunit_leader_trait::VTABLE_RVA) as u64);
+            world.u64(definition, (BASE + cunit_leader_trait::VTABLE_RVA.0) as u64);
             world.u32(definition + cunit_leader_trait::TOKEN_ID, id as u32);
             world.u32(definition + cunit_leader_trait::ORDINAL, id as u32);
             world.put(definition + cunit_leader_trait::TOKEN, TOKEN);

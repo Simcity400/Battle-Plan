@@ -52,7 +52,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p32(&mut bytes, LTAB, 0);
     p32(&mut bytes, LTAB + 4, 1);
     p32(&mut bytes, LTAB + 8, 1);
-    p64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
+    p64(&mut bytes, C0, ccountry::VTABLE_RVA.0 as u64);
     p32(&mut bytes, C0 + ccountry::ID, 1);
     p64(
         &mut bytes,
@@ -62,7 +62,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         MANAGER,
-        engine_native::cstrategic_air_manager::VTABLE_RVA as u64,
+        engine_native::cstrategic_air_manager::VTABLE_RVA.0 as u64,
     );
     header(
         &mut bytes,
@@ -75,7 +75,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         OWNER_AIR,
-        engine_native::cstrategic_air::VTABLE_RVA as u64,
+        engine_native::cstrategic_air::VTABLE_RVA.0 as u64,
     );
     p32(
         &mut bytes,
@@ -92,7 +92,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         POOL,
-        engine_native::cair_wing_pool::VTABLE_RVA as u64,
+        engine_native::cair_wing_pool::VTABLE_RVA.0 as u64,
     );
     p64(
         &mut bytes,
@@ -116,11 +116,11 @@ pub(crate) fn fixture() -> Vec<u8> {
         (WING, 0x4500_0001u64, 3i32, 1000i64),
         (WING2, 0x4500_0002u64, -5i32, i64::MAX),
     ] {
-        p64(&mut bytes, wing, cair_wing::VTABLE_RVA as u64);
+        p64(&mut bytes, wing, cair_wing::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             wing + cair_wing::SECONDARY,
-            cair_wing::SECONDARY_VTABLE_RVA as u64,
+            cair_wing::SECONDARY_VTABLE_RVA.0 as u64,
         );
         p64(&mut bytes, wing + cair_wing::SECONDARY + 8, id);
         p64(&mut bytes, wing + cair_wing::POOL, POOL as u64);
@@ -150,7 +150,7 @@ pub(crate) fn fixture() -> Vec<u8> {
             (0x39100usize, vec![(VARIANT, 7i64)])
         };
         let pool = wing + cair_wing::EQUIPMENT_POOL;
-        p64(&mut bytes, pool, cequipment_variant_pool::VTABLE_RVA as u64);
+        p64(&mut bytes, pool, cequipment_variant_pool::VTABLE_RVA.0 as u64);
         header(
             &mut bytes,
             pool + cequipment_variant_pool::ITEMS,
@@ -171,7 +171,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         }
     }
     for (variant, id) in [(VARIANT, 11u32), (VARIANT2, 12u32)] {
-        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             variant + 8,

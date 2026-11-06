@@ -33,7 +33,7 @@ fn fixture(progress: i64) -> Vec<u8> {
     put(
         &mut bytes,
         TARGET,
-        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, TARGET + ccountry::ID, &3_u32.to_le_bytes());
     put(
@@ -44,7 +44,7 @@ fn fixture(progress: i64) -> Vec<u8> {
     put(
         &mut bytes,
         TARGET_STATUS,
-        &(ccountry_collaboration_status::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry_collaboration_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -72,7 +72,7 @@ fn fixture(progress: i64) -> Vec<u8> {
         put(
             &mut bytes,
             relation,
-            &(ccountry_collaboration_data::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_collaboration_data::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -273,9 +273,9 @@ fn collaboration_owned_wrong_kind_refuses_only_its_hour_and_decode_uses_owned_va
         game_state: kit::BASE,
     };
     for vtable in [
-        ccountry::VTABLE_RVA,
+        ccountry::VTABLE_RVA.0,
         0,
-        ccountry_collaboration_data::VTABLE_RVA,
+        ccountry_collaboration_data::VTABLE_RVA.0,
     ] {
         let mut bytes = fixture(12_345);
         put(&mut bytes, SOURCE_RELATION, &(vtable as u64).to_le_bytes());
@@ -292,7 +292,7 @@ fn collaboration_owned_wrong_kind_refuses_only_its_hour_and_decode_uses_owned_va
         bytes.fill(0);
         captured.reset();
         captured.decode_construction_rest_payload(0, kit::BASE, &job, &mut [0; 10]);
-        if vtable == ccountry_collaboration_data::VTABLE_RVA {
+        if vtable == ccountry_collaboration_data::VTABLE_RVA.0 {
             assert_rows(&captured, 12_345);
         } else {
             assert_eq!(
@@ -694,7 +694,7 @@ fn collaboration_owned_grows_to_fifteen_hundred_countries_with_outgoing_and_inco
         put(
             &mut bytes,
             country,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -709,7 +709,7 @@ fn collaboration_owned_grows_to_fifteen_hundred_countries_with_outgoing_and_inco
         put(
             &mut bytes,
             status,
-            &(ccountry_collaboration_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_collaboration_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -737,7 +737,7 @@ fn collaboration_owned_grows_to_fifteen_hundred_countries_with_outgoing_and_inco
         put(
             &mut bytes,
             relation,
-            &(ccountry_collaboration_data::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_collaboration_data::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

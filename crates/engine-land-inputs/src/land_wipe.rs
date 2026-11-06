@@ -20,14 +20,12 @@ use crate::{
     cland_combat as combat, cland_combatant as side, cnaval_combatant, cpdx_array::Array,
     cprovince, cunit, read,
 };
+use engine_sites::Rva;
 
-pub const RETURN_RVA: usize = 0x147fa46;
+pub const RETURN_RVA: Rva = Rva(0x147fa46);
 /// Base lifecycle after land leader-experience effects. Naval combatants
 /// share this virtual path and their vtable is excluded below.
-pub const LIFECYCLE_RVA: usize = 0x147d4a0;
-pub const LIFECYCLE_SENTINEL: [u8; 16] = [
-    0x40, 0x53, 0x41, 0x57, 0x48, 0x83, 0xec, 0x58, 0x48, 0x8b, 0x02, 0x4c, 0x8b, 0xfa, 0x48, 0x89,
-];
+pub const LIFECYCLE_RVA: Rva = Rva(0x147d4a0);
 /// CPdxArray<u32>; base lifecycle loads its data and signed count.
 const COUNTRY_ARRAY: usize = 0x68;
 
@@ -46,14 +44,18 @@ impl WipePlan {
         combatant: usize,
         army: usize,
     ) -> Result<Option<Self>, &'static str> {
-        let side_vtable = field::<u64>(memory, combatant, 0)?;
-        if side_vtable == address(base, cnaval_combatant::VTABLE_RVA)? as u64 {
-            return Ok(None);
-        }
-        let border = side_vtable == address(base, cland_border_war_combatant::VTABLE_RVA)? as u64;
-        if !border && side_vtable != address(base, side::VTABLE_RVA)? as u64 {
-            return Err("combat wipe class unsupported");
-        }
+        let side_vtable = field::<u64>(memory, combatant, 0)? as usize;
+        let classes = [
+            cnaval_combatant::VTABLE_RVA,
+            cland_border_war_combatant::VTABLE_RVA,
+            side::VTABLE_RVA,
+        ];
+        let border = match engine_sites::which(base, side_vtable, &classes) {
+            Some(cnaval_combatant::VTABLE_RVA) => return Ok(None),
+            Some(cland_border_war_combatant::VTABLE_RVA) => true,
+            Some(_) => false,
+            None => return Err("combat wipe class unsupported"),
+        };
         let expected_side = if border {
             cland_border_war_combatant::VTABLE_RVA
         } else {
@@ -87,7 +89,7 @@ impl WipePlan {
         if field::<u64>(memory, opposite, side::COMBAT)? != parent as u64 {
             return Err("combat wipe opposite backlink differs");
         }
-        let state = read::<u64>(memory, address(base, cgame_state::SINGLETON_RVA)?)
+        let state = read::<u64>(memory, module(base, cgame_state::SINGLETON_RVA)?)
             .ok_or("combat wipe game state unreadable")? as usize;
         let hour = field::<i32>(memory, state, cgame_state::CURRENT_HOUR)?;
         let countries = Array::read(memory, address(opposite, COUNTRY_ARRAY)?, 4)
@@ -142,10 +144,9 @@ impl WipePlan {
             if pointer == self.trigger_pointer {
                 return Err("combat wipe triggering reference was not removed");
             }
-            let vtable = field::<u64>(memory, pointer, 0)?;
-            if vtable != address(base, combat::VTABLE_RVA)? as u64
-                && vtable != address(base, cland_border_war_combat::VTABLE_RVA)? as u64
-            {
+            let vtable = field::<u64>(memory, pointer, 0)? as usize;
+            let classes = [combat::VTABLE_RVA, cland_border_war_combat::VTABLE_RVA];
+            if engine_sites::which(base, vtable, &classes).is_none() {
                 return Err("combat wipe remaining class unsupported");
             }
             put(field(memory, pointer, combat::HANDLE)?);
@@ -173,6 +174,9 @@ fn address(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("combat wipe address overflow")
 }
+fn module(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("combat wipe address overflow")
+}
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
@@ -187,9 +191,9 @@ fn identity(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    if field::<u64>(memory, pointer, 0)? != address(base, vtable)? as u64 {
+    if field::<u64>(memory, pointer, 0)? != module(base, vtable)? as u64 {
         return Err("combat wipe pointer identity differs");
     }
     Ok(())

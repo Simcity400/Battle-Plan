@@ -34,7 +34,7 @@ fn references(heap: &mut Heap, kind: u32, objects: &[(usize, u64)]) {
     let distance = capacity.trailing_zeros() + 2;
     let table = heap.alloc(registry::SIZE);
     let buckets = heap.alloc((capacity + distance as usize + 1) * bucket::STRIDE);
-    heap.u64(registry::LOW_ROOTS_RVA + kind as usize * 8, heap.ptr(table));
+    heap.u64(registry::LOW_ROOTS_RVA.0 + kind as usize * 8, heap.ptr(table));
     heap.u64(table + registry::ENTRIES, heap.ptr(buckets));
     heap.u32(table + registry::COUNT, objects.len() as u32);
     heap.u32(table + registry::MASK, capacity as u32 - 1);
@@ -193,7 +193,7 @@ fn build_in(mut bytes: Vec<u8>) -> World {
                 heap.array(at + CHILD_DATA, entries, 2);
                 for (child, &target) in children.iter().enumerate() {
                     let entry = entries + child * CHILD_STRIDE;
-                    heap.vtable(entry, CHILD_VTABLE);
+                    heap.u64(entry, heap.ptr(CHILD_VTABLE));
                     heap.u64(entry + 8, heap.ptr(target));
                     heap.u32(entry + 0x20, if child == 0 { u32::MAX } else { 0 });
                     heap.u32(entry + 0x24, child as u32);
@@ -205,7 +205,7 @@ fn build_in(mut bytes: Vec<u8>) -> World {
                 }
             }
             if kind == order::TYPE_INVASION {
-                heap.vtable(at + 8, SUBSCRIBER_VTABLE);
+                heap.u64(at + 8, heap.ptr(SUBSCRIBER_VTABLE));
                 heap.u32(at + 0x10, index as u32 + 2);
                 heap.u64(at + order::ACCUMULATED_PREPARATION, 123_456 + index as u64);
             }

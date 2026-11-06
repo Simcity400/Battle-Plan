@@ -3,6 +3,7 @@
 //! compare every read in the unshared order and every failure with its reason.
 #![allow(dead_code, clippy::all)]
 
+use engine_sites::Rva;
 use crate::{Memory, carmy, ccountry, cgame_state, cpdx_array::Array, cprovince, cunit, read};
 
 pub const MODIFIER_LIMIT: usize = 96;
@@ -110,8 +111,8 @@ fn element(array: Array, index: u32, stride: usize) -> Result<usize, &'static st
         .ok_or("reinforcement array index invalid")
 }
 
-fn auth(memory: &impl Memory, base: usize, p: usize, rva: usize) -> Result<(), &'static str> {
-    if p == 0 || base.checked_add(rva).map(|n| n as u64) != Some(field(memory, p, 0)?) {
+fn auth(memory: &impl Memory, base: usize, p: usize, key: Rva) -> Result<(), &'static str> {
+    if p == 0 || engine_sites::at(base, key).map(|n| n as u64) != Some(field(memory, p, 0)?) {
         return Err("reinforcement dependency identity invalid");
     }
     Ok(())
@@ -192,7 +193,7 @@ fn append_modifiers(
         }
     }
     use crate::modifier_definition as metadata;
-    let table = pointer(memory, base, metadata::TABLE_RVA)?;
+    let table = pointer(memory, base, metadata::TABLE_RVA.0)?;
     for term in &mut output[start..*len] {
         if term.present != 0 {
             let row = table
@@ -340,7 +341,7 @@ fn infrastructure(
     auth(memory, base, state, cstate::VTABLE_RVA)?;
     row.flags[9] = 1;
     row.ids[3] = field(memory, state, cstate::ID)?;
-    let database = pointer(memory, base, cbuilding_database::SINGLETON_RVA)?;
+    let database = pointer(memory, base, cbuilding_database::SINGLETON_RVA.0)?;
     let definition = pointer(memory, database, 0x3b0)?;
     if database == 0 || definition == 0 {
         return Err("reinforcement infrastructure definition null");
@@ -494,11 +495,11 @@ fn transport_context(
     let mut row = ContextRow::default();
     row.flags[11] = 2;
     row.ids[0] = field(memory, location, cprovince::ID)?;
-    row.ids[5] = field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?;
-    let callback = pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?;
+    row.ids[5] = field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA.0)?;
+    let callback = pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA.0)?;
     row.ids[6] = if callback == 0 {
         0
-    } else if base.checked_add(metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
+    } else if engine_sites::at(base, metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
         1
     } else {
         return Err("reinforcement modifier callback unsupported");
@@ -627,7 +628,7 @@ fn transport_context(
                 modifiers,
                 &mut row.modifier_count,
             )?;
-            let metadata_table = pointer(memory, base, metadata::TABLE_RVA)?;
+            let metadata_table = pointer(memory, base, metadata::TABLE_RVA.0)?;
             row.scalar_values[29] = i64::from(field::<u32>(
                 memory,
                 metadata_table,
@@ -716,15 +717,15 @@ pub fn capture_context(
     row.flags[..4].copy_from_slice(&formation_flags(memory, army)?);
     row.flags[5] = u8::from(carmy::movement_attacking(memory, base, game, army)?);
     use crate::modifier_definition as metadata;
-    let callback = pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?;
+    let callback = pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA.0)?;
     row.ids[6] = if callback == 0 {
         0
-    } else if base.checked_add(metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
+    } else if engine_sites::at(base, metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
         1
     } else {
         return Err("reinforcement modifier callback unsupported");
     };
-    row.ids[5] = field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?;
+    row.ids[5] = field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA.0)?;
     let country_keys = [0x2b, 0x1e9, 0x5e, 0x17f, 0x286];
     append_modifiers(
         memory,

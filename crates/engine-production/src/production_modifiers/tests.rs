@@ -26,13 +26,13 @@ impl Fixture {
         let equipment = world.alloc(0x5c0);
         let factories = world.alloc(24);
         let bonuses = world.alloc(9 * 16);
-        world.u64(variant, cequipment_variant::VTABLE_RVA as u64);
+        world.u64(variant, cequipment_variant::VTABLE_RVA.0 as u64);
         world.u64(
             variant + 8,
             (9 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
         );
         world.u64(variant + cequipment_variant::DEFINITION, equipment as u64);
-        world.u64(equipment, ty::VTABLE_RVA as u64);
+        world.u64(equipment, ty::VTABLE_RVA.0 as u64);
         world.u64(equipment + ty::ARCHETYPE, equipment as u64);
         for (index, value) in [-1_i64, 3276800, 123456].into_iter().enumerate() {
             world.u64(factories + index * 8, value as u64);
@@ -60,7 +60,7 @@ impl Fixture {
             let country = world.object(slot);
             let status = world.alloc(0x400);
             world.u64(country + ccountry::PRODUCTION_STATUS, status as u64);
-            world.u64(status, cproduction_status::VTABLE_RVA as u64);
+            world.u64(status, cproduction_status::VTABLE_RVA.0 as u64);
             world.u64(status + cproduction_status::COUNTRY, country as u64);
             world.u64(status + 0x3c0, 50000);
             if active {
@@ -68,7 +68,7 @@ impl Fixture {
                 let roster = world.alloc(8);
                 world.u64(roster, pointer as u64);
                 world.array(status + cproduction_status::LINES, roster, 1);
-                world.u64(pointer, cmilitary_production_line::VTABLE_RVA as u64);
+                world.u64(pointer, cmilitary_production_line::VTABLE_RVA.0 as u64);
                 world.u64(pointer + 8, (u64::from(slot) << 32) | 56);
                 world.u64(pointer + cproduction_line::PRODUCTION_STATUS, status as u64);
                 world.u32(pointer + cproduction_line::ACTIVE_FACTORIES, 1);
@@ -85,16 +85,19 @@ impl Fixture {
             }
         }
         let mut globals = BTreeMap::new();
-        globals.insert(DEFINE_RVAS[0], (-3_i32).to_le_bytes().to_vec());
-        globals.insert(DEFINE_RVAS[1], 87_i32.to_le_bytes().to_vec());
+        globals.insert(DEFINE_RVAS[0].0, (-3_i32).to_le_bytes().to_vec());
+        globals.insert(DEFINE_RVAS[1].0, 87_i32.to_le_bytes().to_vec());
         for (rva, value) in DEFINE_RVAS[2..]
             .iter()
             .zip([123_i64, 345, 100, 200, 300, 400])
         {
-            globals.insert(*rva, value.to_le_bytes().to_vec());
+            globals.insert(rva.0, value.to_le_bytes().to_vec());
         }
         for (category, key) in (700_u32..707).enumerate() {
-            globals.insert(BONUS_KEYS_RVA + category * 0x28, key.to_le_bytes().to_vec());
+            globals.insert(
+                BONUS_KEYS_RVA.0 + category * 0x28,
+                key.to_le_bytes().to_vec(),
+            );
         }
         for (rva, value) in [0x033e_1020, 0x033e_109c, 0x033e_1130, 0x033e_11b4]
             .into_iter()
@@ -104,7 +107,7 @@ impl Fixture {
         }
         globals.insert(0x033e_23e8, (-450_i64).to_le_bytes().to_vec());
         globals.insert(
-            crate::dlc_feature_state::MASK_RVA,
+            crate::dlc_feature_state::MASK_RVA.0,
             0_u32.to_le_bytes().to_vec(),
         );
         for (vtable, predicate) in [
@@ -113,7 +116,7 @@ impl Fixture {
             (crailway_gun_production_line::VTABLE_RVA, 0x0011_d530),
             (cship_refit_production_line::VTABLE_RVA, 0x0018_8d90),
         ] {
-            globals.insert(vtable + 0xd8, predicate.to_le_bytes().to_vec());
+            globals.insert(vtable.0 + 0xd8, predicate.to_le_bytes().to_vec());
         }
         Self {
             world,
@@ -309,7 +312,7 @@ fn reader_keeps_type_classifier_variant_flags_dlc_conversion_and_virtual_refit_s
         .u64(fixture.equipment + ty::PRIMARY_CATEGORY_FLAGS, 0x40);
     fixture
         .world
-        .u64(pointer, cnaval_production_line::VTABLE_RVA as u64);
+        .u64(pointer, cnaval_production_line::VTABLE_RVA.0 as u64);
     let (result, sample) = acquire(&fixture, 1, 3);
     assert_eq!(result, Ok(()));
     assert!(sample.lines[0].naval_efficiency);
@@ -317,14 +320,14 @@ fn reader_keeps_type_classifier_variant_flags_dlc_conversion_and_virtual_refit_s
     assert!(!sample.lines[0].refit_output);
     fixture
         .world
-        .u64(pointer, crailway_gun_production_line::VTABLE_RVA as u64);
+        .u64(pointer, crailway_gun_production_line::VTABLE_RVA.0 as u64);
     let (result, sample) = acquire(&fixture, 1, 3);
     assert_eq!(result, Ok(()));
     assert_eq!(sample.lines[0].kind, line::KIND_RAILWAY_GUN);
     assert!(!sample.lines[0].refit_output);
     fixture
         .world
-        .u64(pointer, cship_refit_production_line::VTABLE_RVA as u64);
+        .u64(pointer, cship_refit_production_line::VTABLE_RVA.0 as u64);
     fixture
         .world
         .u64(fixture.equipment + ty::PRIMARY_CATEGORY_FLAGS, 4);
@@ -332,7 +335,7 @@ fn reader_keeps_type_classifier_variant_flags_dlc_conversion_and_virtual_refit_s
     fixture.world.u64(fixture.variant + 0x3f8, 1);
     fixture.world.put(pointer + 0xec, &[1]);
     fixture.globals.insert(
-        crate::dlc_feature_state::MASK_RVA,
+        crate::dlc_feature_state::MASK_RVA.0,
         (1_u32 << 7).to_le_bytes().to_vec(),
     );
     let (result, sample) = acquire(&fixture, 1, 3);
@@ -340,12 +343,12 @@ fn reader_keeps_type_classifier_variant_flags_dlc_conversion_and_virtual_refit_s
     assert!(sample.lines[0].refit_output);
     assert!(!sample.lines[0].conversion_output);
     fixture.globals.insert(
-        crate::dlc_feature_state::MASK_RVA,
+        crate::dlc_feature_state::MASK_RVA.0,
         0_u32.to_le_bytes().to_vec(),
     );
     assert!(acquire(&fixture, 1, 3).1.lines[0].conversion_output);
     fixture.globals.insert(
-        cship_refit_production_line::VTABLE_RVA + 0xd8,
+        cship_refit_production_line::VTABLE_RVA.0 + 0xd8,
         123_u64.to_le_bytes().to_vec(),
     );
     assert_eq!(
@@ -572,7 +575,7 @@ fn slot_parts_match_the_whole_walk_at_scale_and_under_every_fault() {
     };
     let power = status(&fixture, 1_500) + 0x3c0;
     let line = fixture.lines[3_499] + cproduction_line::ACTIVE_FACTORIES;
-    for (fault, slot) in [(power, 1_500), (line, 3_500), (DEFINE_RVAS[0], 1)] {
+    for (fault, slot) in [(power, 1_500), (line, 3_500), (DEFINE_RVAS[0].0, 1)] {
         for once in [false, true] {
             fixture.fault = Some(fault);
             fixture.once = once;

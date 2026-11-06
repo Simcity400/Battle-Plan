@@ -2,8 +2,9 @@
 //! the CCountryCharacters appointed list (`ccountry_characters::APPOINTED_ADVISORS`)
 //! (`ccountry_characters.rs`).
 
+use engine_sites::Rva;
 /// Advisor-role vtable.
-pub const VTABLE_RVA: usize = 0x02a2_31d0;
+pub const VTABLE_RVA: Rva = Rva(0x02a2_31d0);
 /// Parent CCharacter pointer requiring authentication.
 pub const CHARACTER: usize = 0x10;
 /// Idea-token string.
@@ -101,9 +102,7 @@ pub fn modifier_demand(
     base: usize,
     game_state: usize,
 ) -> Result<ModifierDemand, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let mut demand = ModifierDemand::default();
     crate::ccharacter_manager::visit(memory, base, game_state, |entry| {
         let mut tree = crate::msvc_tree_node::Cursor::read(
@@ -566,9 +565,7 @@ fn walk_entry_inner_buffer(
         walk::Outcome,
     };
     let result = (|| {
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let mut len = 0;
         let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
@@ -863,7 +860,7 @@ mod tests {
             STATE + cgame_state::CHARACTER_MANAGER,
             MANAGER as u64,
         );
-        word(&mut bytes, MANAGER, ccharacter_manager::VTABLE_RVA as u64);
+        word(&mut bytes, MANAGER, ccharacter_manager::VTABLE_RVA.0 as u64);
         let header = MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS;
         word(&mut bytes, header, ROSTER as u64);
         integer(&mut bytes, header + 8, COUNT as u32);
@@ -874,7 +871,7 @@ mod tests {
             let node = character + 0x340;
             let role = character + 0x400;
             word(&mut bytes, ROSTER + index * 8, character as u64);
-            word(&mut bytes, character, ccharacter::VTABLE_RVA as u64);
+            word(&mut bytes, character, ccharacter::VTABLE_RVA.0 as u64);
             integer(
                 &mut bytes,
                 character + ccharacter::TYPE,
@@ -902,7 +899,7 @@ mod tests {
                 node + crate::character_advisor_node::ADVISOR,
                 role as u64,
             );
-            word(&mut bytes, role, VTABLE_RVA as u64);
+            word(&mut bytes, role, VTABLE_RVA.0 as u64);
             word(&mut bytes, role + CHARACTER, character as u64);
             let header = role + MODIFIER_ENTRIES;
             word(&mut bytes, header, (role + 0x200) as u64);

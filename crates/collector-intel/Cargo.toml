@@ -17,6 +17,7 @@ opinion_changes = []
 variable_changes = []
 
 [dependencies]
+engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-events.workspace = true
 engine-intelligence.workspace = true

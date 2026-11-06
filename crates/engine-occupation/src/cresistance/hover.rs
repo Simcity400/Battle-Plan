@@ -123,14 +123,13 @@ pub fn read_inputs(
     let diplomacy = field::<u64>(memory, controller.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
     let occupied_diplomacy =
         field::<u64>(memory, occupied.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
+    let diplomacy_vtable = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+        .ok_or("occupation hover diplomacy identity mismatch")? as u64;
     for (diplomacy, country) in [
         (diplomacy, controller.pointer),
         (occupied_diplomacy, occupied.pointer),
     ] {
-        if read::<u64>(memory, diplomacy)
-            != base
-                .checked_add(cdiplomacy_status::VTABLE_RVA)
-                .map(|v| v as u64)
+        if read::<u64>(memory, diplomacy) != Some(diplomacy_vtable)
             || field::<u64>(memory, diplomacy, cdiplomacy_status::COUNTRY)? != country as u64
         {
             return Err("occupation hover diplomacy identity mismatch");
@@ -141,10 +140,7 @@ pub fn read_inputs(
     let host_diplomacy = if result.exile_host > 0 {
         let host = resolve(result.exile_host as u32)?;
         let diplomacy = field::<u64>(memory, host.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
-        if read::<u64>(memory, diplomacy)
-            != base
-                .checked_add(cdiplomacy_status::VTABLE_RVA)
-                .map(|v| v as u64)
+        if read::<u64>(memory, diplomacy) != Some(diplomacy_vtable)
             || field::<u64>(memory, diplomacy, cdiplomacy_status::COUNTRY)? != host.pointer as u64
         {
             return Err("occupation exile host diplomacy identity mismatch");
@@ -158,8 +154,9 @@ pub fn read_inputs(
     if result.flow > 0 {
         let state = field::<u64>(memory, object, FLOW_FROM)? as usize;
         if state != 0 {
-            if read::<u64>(memory, state) != base.checked_add(cstate::VTABLE_RVA).map(|v| v as u64)
-            {
+            let expected = engine_sites::at(base, cstate::VTABLE_RVA)
+                .ok_or("occupation resistance flow state identity mismatch")?;
+            if read::<u64>(memory, state) != Some(expected as u64) {
                 return Err("occupation resistance flow state identity mismatch");
             }
             result.flow_from = field(memory, state, cstate::ID)?;
@@ -197,10 +194,9 @@ pub fn read_inputs(
         .and_then(|p| read::<u64>(memory, p))
         .ok_or("occupation hover relation slot unreadable")? as usize;
     if relation != 0 {
-        if read::<u64>(memory, relation)
-            != base
-                .checked_add(engine_native::crelation_status::VTABLE_RVA)
-                .map(|v| v as u64)
+        let expected = engine_sites::at(base, engine_native::crelation_status::VTABLE_RVA)
+            .ok_or("occupation relation identity mismatch")?;
+        if read::<u64>(memory, relation) != Some(expected as u64)
             || field::<u64>(
                 memory,
                 relation,
@@ -308,7 +304,7 @@ pub(super) mod tests {
             put(
                 &mut bytes,
                 country,
-                (ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                (ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, country + ccountry::ID, slot.to_le_bytes());
             put(
@@ -319,7 +315,7 @@ pub(super) mod tests {
             put(
                 &mut bytes,
                 diplomacy,
-                (cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+                (cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -333,7 +329,7 @@ pub(super) mod tests {
             put(
                 &mut bytes,
                 pointer,
-                (cstate::VTABLE_RVA as u64).to_le_bytes(),
+                (cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, pointer + cstate::ID, id.to_le_bytes());
         }
@@ -344,7 +340,7 @@ pub(super) mod tests {
             0x12000_u64.to_le_bytes(),
         );
         let object = 0x6000 + cstate::RESISTANCE;
-        put(&mut bytes, object, (VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, object, (VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, object + STATE, 0x6000_u64.to_le_bytes());
         put(&mut bytes, object + COUNTRY, 3_u32.to_le_bytes());
         put(&mut bytes, object + ACTIVE, [1]);
@@ -364,7 +360,7 @@ pub(super) mod tests {
         put(
             &mut bytes,
             0xb000,
-            (engine_native::crelation_status::VTABLE_RVA as u64).to_le_bytes(),
+            (engine_native::crelation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -513,11 +509,11 @@ pub(super) mod tests {
         struct EffectMemory<'a>(&'a [u8], Cell<usize>, bool);
         impl Memory for EffectMemory<'_> {
             fn copy(&self, address: usize, out: &mut [u8]) -> bool {
-                if address == engine_native::modifier_definition::TABLE_RVA {
+                if address == engine_native::modifier_definition::TABLE_RVA.0 {
                     out.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
                     return true;
                 }
-                if address == engine_native::modifier_definition::ELIGIBILITY_CALLBACK_RVA {
+                if address == engine_native::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0 {
                     out.copy_from_slice(&0_u64.to_le_bytes());
                     return true;
                 }

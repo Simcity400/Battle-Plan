@@ -5,9 +5,10 @@ use crate::{
     cunit_leader_skill, cunit_leader_trait, msvc_string, read as read_native, read_slice,
     unit_leader_trait_experience_entry, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CUnitLeader base vtable.
-pub const VTABLE_RVA: usize = 0x029d_2530;
+pub const VTABLE_RVA: Rva = Rva(0x029d_2530);
 /// CUnitLeader reference type u32.
 pub const REFERENCE_TYPE: u32 = 4713;
 /// CUnitLeader reference type u32.
@@ -60,11 +61,11 @@ pub const CHARACTER_ID: usize = 0xf4c;
 /// CUnitLeader copied character-reference type u32.
 pub const CHARACTER_TYPE: usize = 0xf48;
 /// CUnitLeader base constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00c6_1da0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c6_1da0);
 /// CUnitLeader experience update.
-pub const ADD_EXPERIENCE_RVA: usize = 0x00c6_a580;
+pub const ADD_EXPERIENCE_RVA: Rva = Rva(0x00c6_a580);
 /// CUnitLeader name/token updater.
-pub const SET_NAME_RVA: usize = 0x00c7_cc10;
+pub const SET_NAME_RVA: Rva = Rva(0x00c7_cc10);
 
 /// Raw army-category formation reference used by late-join scaling and communications.
 /// The caller supplies the authenticated kind and category from the established
@@ -110,7 +111,8 @@ pub fn read_timed_traits(
     array: Array,
     mut visit: impl FnMut(TimedTrait),
 ) -> Result<(), &'static str> {
-    let expected = at(base, cunit_leader_trait::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, cunit_leader_trait::VTABLE_RVA)
+        .ok_or("unit leader address overflow")? as u64;
     let mut batch = [0_u8; 64 * TIMED_TRAIT_STRIDE];
     for first in (0..array.count).step_by(64) {
         let count = (array.count - first).min(64) as usize;
@@ -230,7 +232,8 @@ pub fn read(
     let skill = usize::try_from(u64::from_le_bytes(skill))
         .map_err(|_| "unit leader skill pointer overflow")?;
     if skill != 0 {
-        let expected = at(base, cunit_leader_skill::VTABLE_RVA)?;
+        let expected = engine_sites::at(base, cunit_leader_skill::VTABLE_RVA)
+            .ok_or("unit leader address overflow")?;
         let mut vtable = [0; 8];
         let mut valid = [0; 1];
         let mut scalars = [0; 12];
@@ -598,7 +601,8 @@ fn trait_definition(
     base: usize,
     definition: usize,
 ) -> Result<(i32, i32, Literal), &'static str> {
-    let expected = at(base, cunit_leader_trait::VTABLE_RVA)?;
+    let expected = engine_sites::at(base, cunit_leader_trait::VTABLE_RVA)
+        .ok_or("unit leader address overflow")?;
     let mut header = [0; 12];
     let mut ordinal = [0; 4];
     let mut token_header = [0; 32];
@@ -678,7 +682,8 @@ fn visit_training(
 ) -> Result<usize, &'static str> {
     let array = Array::read(memory, at(pointer, offset)?, 16)
         .ok_or("unit leader training vector invalid or unreadable")?;
-    let expected = at(base, cunit_leader_trait::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, cunit_leader_trait::VTABLE_RVA)
+        .ok_or("unit leader address overflow")? as u64;
     for ordinal in 0..array.count {
         let address = array
             .element(ordinal, 16)
@@ -899,9 +904,16 @@ pub fn identity(
 /// [`identity`] over its 16 header bytes, already copied.
 fn identity_from_header(base: usize, header: [u8; 16]) -> Result<(u8, u32, u32), &'static str> {
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
-    let relative = usize::try_from(vtable)
-        .ok()
-        .and_then(|value| value.checked_sub(base));
+    let relative = engine_sites::which(
+        base,
+        vtable as usize,
+        &[
+            VTABLE_RVA,
+            carmy_leader::VTABLE_RVA,
+            cnavy_leader::VTABLE_RVA,
+            coperative_leader::VTABLE_RVA,
+        ],
+    );
     let kind = match relative {
         Some(VTABLE_RVA) => KIND_BASE,
         Some(carmy_leader::VTABLE_RVA) => KIND_ARMY,

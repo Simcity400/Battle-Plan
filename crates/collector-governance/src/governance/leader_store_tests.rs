@@ -33,13 +33,13 @@ fn world() -> Vec<u8> {
     for index in 0..COUNTRIES {
         let at = index * REGION;
         let b = &mut bytes;
-        word(b, at + 0x100, ccountry::VTABLE_RVA as u64);
+        word(b, at + 0x100, ccountry::VTABLE_RVA.0 as u64);
         word(
             b,
             at + 0x100 + ccountry::POLITICAL_STATUS,
             (at + 0x1200) as u64,
         );
-        word(b, at + 0x1200, cpolitical_status::VTABLE_RVA as u64);
+        word(b, at + 0x1200, cpolitical_status::VTABLE_RVA.0 as u64);
         word(
             b,
             at + 0x1200 + cpolitical_status::COUNTRY,
@@ -57,14 +57,14 @@ fn world() -> Vec<u8> {
         );
         let (party, leader, character) = objects(index);
         word(b, at + 0x1400, party as u64);
-        word(b, party, cpolitical_party::VTABLE_RVA as u64);
+        word(b, party, cpolitical_party::VTABLE_RVA.0 as u64);
         word(b, party + cpolitical_party::ID, 7);
         word(
             b,
             party + cpolitical_party::IDEOLOGY_GROUP,
             (at + 0x1600) as u64,
         );
-        word(b, at + 0x1600, cideology_group::VTABLE_RVA as u64);
+        word(b, at + 0x1600, cideology_group::VTABLE_RVA.0 as u64);
         word(b, at + 0x1600 + cideology_group::ID, 7);
         word(
             b,
@@ -77,10 +77,10 @@ fn world() -> Vec<u8> {
             (1 << 32) | 1,
         );
         word(b, at + 0x1700, leader as u64);
-        word(b, leader, ccountry_leader::VTABLE_RVA as u64);
+        word(b, leader, ccountry_leader::VTABLE_RVA.0 as u64);
         word(b, leader + ccountry_leader::CHARACTER, character as u64);
         word(b, leader + ccountry_leader::LEADER_ID, 12);
-        word(b, character, ccharacter::VTABLE_RVA as u64);
+        word(b, character, ccharacter::VTABLE_RVA.0 as u64);
         word(
             b,
             character + ccharacter::TYPE,

@@ -4,9 +4,10 @@
 use crate::{
     Memory, ccountry, msvc_string, nproject_cprogram_status, read, read_slice, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Program primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_e080;
+pub const VTABLE_RVA: Rva = Rva(0x029e_e080);
 /// Program reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 83;
 /// Program u32 reference type.
@@ -376,9 +377,7 @@ fn read_row(
     base: usize,
     pointer: usize,
 ) -> Result<(Row, usize), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     let header = read::<[u8; 16]>(memory, pointer).ok_or("program identity unreadable")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64 {
         return Err("program vtable mismatch");
@@ -485,8 +484,7 @@ mod tests {
     use crate::memory::SliceMemory;
 
     #[test]
-    fn gap_research_grants_supporting_assignments_preserve_occurrences_timers_and_null_omission()
-     {
+    fn gap_research_grants_supporting_assignments_preserve_occurrences_timers_and_null_omission() {
         const BASE: usize = 0x1000;
         const DATA: usize = 0x200;
         const COUNT: usize = 3;
@@ -559,7 +557,7 @@ mod tests {
 
     fn program() -> [u8; 0x188] {
         let mut bytes = [0; 0x188];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[TYPE..TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
         bytes[ID..ID + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         bytes[OWNER_PRIMARY..OWNER_PRIMARY + 4].copy_from_slice(&439_u32.to_le_bytes());

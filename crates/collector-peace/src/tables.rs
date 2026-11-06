@@ -270,7 +270,7 @@ mod tests {
         ];
         for (index, (vtable, name)) in forms.iter().enumerate() {
             let at = 0x20000 + index * 0x70;
-            fixture.u64(at, *vtable as u64);
+            fixture.u64(at, vtable.0 as u64);
             let text = at + engine_peace::peace_action::CACHED_NAME;
             fixture.bytes[text..text + name.len()].copy_from_slice(name.as_bytes());
             fixture.u64(text + engine_native::msvc_string::LENGTH, name.len() as u64);

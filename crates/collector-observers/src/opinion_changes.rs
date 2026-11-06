@@ -475,9 +475,9 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let hooks = if cfg!(feature = "opinion_changes") {
-            unsafe { Self::install(memory, base) }.unwrap_or_else(|reason| {
+            unsafe { Self::install(base) }.unwrap_or_else(|reason| {
                 crate::hook::installation::refused(
                     crate::hook::installation::Kind::Construction,
                     None,
@@ -493,7 +493,7 @@ impl Hooks {
     }
 
     /// Every sentinel is checked before any detour is created.
-    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
+    unsafe fn install(base: usize) -> Result<Vec<Hook>, &'static str> {
         let callbacks: [usize; SITES] = [
             recompute_opinion as *const () as usize,
             reset as *const () as usize,
@@ -517,13 +517,12 @@ impl Hooks {
         ];
         let sites = || MUTATIONS.iter().chain(&RELATIONS);
         for site in sites() {
-            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
-                return Err("opinion hook sentinel differs");
-            }
+            crate::located(base, site.rva)?;
         }
         let mut hooks = Vec::new();
         for (index, site) in sites().enumerate() {
-            let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+            let code = engine_sites::hook(base, site.rva)?;
+            let hook = unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
                 .map_err(|_| "native hook construction failed")?;
             ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
             hooks.push(hook);
@@ -896,9 +895,11 @@ mod tests {
         assert_eq!(hooks.set_enabled(true), Ok(true));
         let (mut consumed, mut output, mut required) = (cursor(), [Mark::default(); 4], 0);
         assert_eq!(drain(&mut consumed, &mut output, &mut required), None);
-        assert_eq!(
-            serde_json::to_value(status()).unwrap()["unhooked"],
-            "opinion hook sentinel differs"
+        assert!(
+            serde_json::to_value(status()).unwrap()["unhooked"]
+                .as_str()
+                .unwrap()
+                .contains("withheld")
         );
     }
 

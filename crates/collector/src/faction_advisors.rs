@@ -143,8 +143,7 @@ impl Store {
             return;
         }
         if !owner.slots.is_empty() && self.null_date.is_none() {
-            self.null_date = base
-                .checked_add(native::UNSET_CHANGE_HOUR_RVA)
+            self.null_date = engine_sites::at(base, native::UNSET_CHANGE_HOUR_RVA)
                 .and_then(|at| engine_native::read(memory, at));
             if self.null_date.is_none() {
                 self.null_date_failed = true;
@@ -346,7 +345,7 @@ mod tests {
     impl Memory for Counted {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
-            if at == native::UNSET_CHANGE_HOUR_RVA && out.len() == 4 {
+            if at == native::UNSET_CHANGE_HOUR_RVA.0 && out.len() == 4 {
                 out.copy_from_slice(&engine_native::cgame_date::NULL_RAW_HOUR.to_le_bytes());
                 return true;
             }
@@ -367,7 +366,7 @@ mod tests {
         put(
             &mut bytes,
             status,
-            (native::VTABLE_RVA as u64).to_le_bytes(),
+            (native::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -387,12 +386,12 @@ mod tests {
             put(
                 &mut bytes,
                 date,
-                (engine_native::cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+                (engine_native::cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
                 date + engine_native::cgame_date::PERSISTENT_BASE,
-                (engine_native::cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+                (engine_native::cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -404,7 +403,7 @@ mod tests {
                 put(
                     &mut bytes,
                     modifier,
-                    (engine_stability::cmodifier::VTABLE_RVA as u64).to_le_bytes(),
+                    (engine_stability::cmodifier::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,

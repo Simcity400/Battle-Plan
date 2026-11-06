@@ -13,7 +13,7 @@ impl Fixture {
             roots: Vec::new(),
         };
         for (i, pointer) in [0x1000, 0x3000].into_iter().enumerate() {
-            f.put(pointer, VTABLE_RVA as u64);
+            f.put(pointer, VTABLE_RVA.0 as u64);
             f.put(
                 pointer + TYPE,
                 ((i as u64 + 1) << 32) | u64::from(REFERENCE_TYPE),
@@ -216,7 +216,7 @@ fn worker_portrait_paths_grow_source_rows_country_slot_memo_and_long_tag_bytes()
             &(COUNTRY as u64).to_le_bytes(),
         );
         bytes.put(LINKS + countries as usize * 4, &countries.to_le_bytes());
-        bytes.put(COUNTRY, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        bytes.put(COUNTRY, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes.put(COUNTRY + ccountry::ID, &countries.to_le_bytes());
         bytes.put(COUNTRY + ccountry::ORIGINAL_TAG, &countries.to_le_bytes());
         let tag = TAGS + countries as usize * msvc_string::STRIDE;
@@ -229,7 +229,7 @@ fn worker_portrait_paths_grow_source_rows_country_slot_memo_and_long_tag_bytes()
             .map(|index| {
                 let pointer = LEADERS + index * 0x1000;
                 let leader = ((index as u64 + 1) << 32) | u64::from(REFERENCE_TYPE);
-                bytes.put(pointer, &(VTABLE_RVA as u64).to_le_bytes());
+                bytes.put(pointer, &(VTABLE_RVA.0 as u64).to_le_bytes());
                 bytes.put(pointer + TYPE, &leader.to_le_bytes());
                 bytes.put(pointer + super::COUNTRY, &countries.to_le_bytes());
                 (leader, pointer)
@@ -258,7 +258,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     let sources = [(ids[0], 0x6000), (ids[1], 0x7000)];
     for (id, pointer, raw) in [(ids[0], 0x6000, 2u32), (ids[1], 0x7000, 3)] {
         f.put(pointer, &[0; 0x1000]);
-        f.put(pointer, &(VTABLE_RVA as u64).to_le_bytes());
+        f.put(pointer, &(VTABLE_RVA.0 as u64).to_le_bytes());
         f.put(pointer + 8, &id.to_le_bytes());
         f.put(pointer + super::COUNTRY, &raw.to_le_bytes());
         for offset in PORTRAIT_STRINGS {
@@ -280,7 +280,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     f.put(LINKS + 4, &1u32.to_le_bytes());
     f.put(LINKS + 8, &1u32.to_le_bytes());
     f.put(COUNTRY, &[0; 0x1400]);
-    f.put(COUNTRY, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    f.put(COUNTRY, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     f.put(COUNTRY + ccountry::ID, &2u32.to_le_bytes());
     f.put(COUNTRY + ccountry::ORIGINAL_TAG, &1i32.to_le_bytes());
     f.put(TAGS, &[0; 0x80]);
@@ -324,7 +324,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
             reason: "unit leader vtable mismatch"
         }
     );
-    f.put(0x6000, &(VTABLE_RVA as u64).to_le_bytes());
+    f.put(0x6000, &(VTABLE_RVA.0 as u64).to_le_bytes());
 
     // Two raw aliases resolve to the same authenticated object. All leader
     // and country authentication reads remain; only one complete tag is read.
@@ -458,7 +458,10 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     }
     array(&mut f, GS + gs::COUNTRY_LINKS, LINKS, 66);
     f.put(OTHER_COUNTRY, &[0; 0x1400]);
-    f.put(OTHER_COUNTRY, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    f.put(
+        OTHER_COUNTRY,
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
+    );
     f.put(OTHER_COUNTRY + ccountry::ID, &65u32.to_le_bytes());
     f.put(OTHER_COUNTRY + ccountry::ORIGINAL_TAG, &2i32.to_le_bytes());
     f.put(TAGS + 0x40, b"FRA");
@@ -467,7 +470,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     f.put(0x7000 + super::COUNTRY, &65u32.to_le_bytes());
     let third = (9u64 << 32) | 4713;
     f.put(0x8000, &[0; 0x1000]);
-    f.put(0x8000, &(VTABLE_RVA as u64).to_le_bytes());
+    f.put(0x8000, &(VTABLE_RVA.0 as u64).to_le_bytes());
     f.put(0x8008, &third.to_le_bytes());
     f.put(0x8000 + super::COUNTRY, &3u32.to_le_bytes());
     let sources = [sources[0], sources[1], (third, 0x8000)];

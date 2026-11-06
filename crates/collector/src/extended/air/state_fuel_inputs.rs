@@ -548,9 +548,9 @@ fn read_membership<M: Memory>(
         if !seen.insert(pointer) {
             continue;
         }
-        if read::<u64>(recorded, pointer)
-            != image.checked_add(container::VTABLE_RVA).map(|v| v as u64)
-        {
+        let expected = engine_sites::at(image, container::VTABLE_RVA)
+            .ok_or("state air-base container identity mismatch")? as u64;
+        if read::<u64>(recorded, pointer) != Some(expected) {
             return Err("state air-base container identity mismatch");
         }
         let country = field::<u32>(recorded, pointer, container::COUNTRY)?;
@@ -613,11 +613,9 @@ fn read_pools<M: Memory>(
             .and_then(|value| usize::try_from(value).ok())
             .filter(|pointer| *pointer != 0)
             .ok_or("state air-base pool occurrence unavailable")?;
-        if read::<u64>(recorded, pointer)
-            != image
-                .checked_add(cair_wing_pool::VTABLE_RVA)
-                .map(|v| v as u64)
-        {
+        let expected = engine_sites::at(image, cair_wing_pool::VTABLE_RVA)
+            .ok_or("state air-base pool identity mismatch")? as u64;
+        if read::<u64>(recorded, pointer) != Some(expected) {
             return Err("state air-base pool identity mismatch");
         }
         let members = array(recorded, pointer, cair_wing_pool::WINGS)?;

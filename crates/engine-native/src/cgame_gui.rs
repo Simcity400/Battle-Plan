@@ -3,9 +3,10 @@
 //! The ordinary container factory and registration operations are inherited
 //! from CGui; this identity does not prove arbitrary root-graph ancestry.
 
+use engine_sites::Rva;
 /// CGameGui primary vtable.
-pub const VTABLE_RVA: usize = 0x029c_7580;
+pub const VTABLE_RVA: Rva = Rva(0x029c_7580);
 /// CGameGui secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029c_7658;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029c_7658);
 /// CGameGui constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00b9_49a0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00b9_49a0);

@@ -21,6 +21,7 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 use engine_native::modifier_definition;
+use engine_sites::Rva;
 
 /// A present key's successful metadata is shared only within this parked
 /// walk. Values and presence remain current per accumulator; failed metadata
@@ -53,7 +54,7 @@ fn effective(
 }
 
 /// The live bad-efficiency threshold define, i64 fixed5.
-pub const BAD_EFFICIENCY_THRESHOLD_RVA: usize = 0x33e_3598;
+pub const BAD_EFFICIENCY_THRESHOLD_RVA: Rva = Rva(0x33e_3598);
 
 /// A convoy client's handle (u32 type, u32 id) and its two efficiency factors.
 /// The type word is minted from the live dynamic-type counter, not a class tag.
@@ -67,7 +68,7 @@ pub const CLIENT_EFFICIENCY_A: usize = 0x48;
 pub const CLIENT_EFFICIENCY_B: usize = 0x50;
 
 /// Resource-origin client: the embedded route.
-pub const ORIGIN_VTABLE_RVA: usize = 0x29d_8dc0;
+pub const ORIGIN_VTABLE_RVA: Rva = Rva(0x29d_8dc0);
 pub const ORIGIN_ROUTE: usize = 0x350;
 pub const ORIGIN_STATE: usize = 0x80;
 /// The origin's efficiency product, which the resource icon reads.
@@ -81,11 +82,11 @@ pub const RIGHTS_STRIDE: usize = 8;
 pub const RIGHTS_ORIGINS: usize = 0x7b8;
 pub const RIGHTS_ORIGIN_STRIDE: usize = 0x10;
 /// Resource-exchange client ([`cresource_exchange`]).
-pub const EXCHANGE_VTABLE_RVA: usize = cresource_exchange::VTABLE_RVA;
+pub const EXCHANGE_VTABLE_RVA: Rva = cresource_exchange::VTABLE_RVA;
 /// A country's delivery routes, one per canonical importer slot.
 pub const DELIVERY_ROUTES: usize = 0x788;
 /// Lend-lease client: its route pointer and receiver.
-pub const LEND_LEASE_VTABLE_RVA: usize = 0x2a9_9cf8;
+pub const LEND_LEASE_VTABLE_RVA: Rva = Rva(0x2a9_9cf8);
 pub const LEND_LEASE_ROUTE: usize = 0xc0;
 pub const LEND_LEASE_RECEIVER: usize = 0xb8;
 pub const LEND_LEASE_GIVEN: usize = 0x758;
@@ -99,14 +100,14 @@ const MARKET_BUYERS: usize = 0x48;
 const MARKET_COUNTRY_STRIDE: usize = 0x18;
 /// Market-contract client, embedded in the contract: its route pointer.
 pub const CONTRACT_CLIENT: usize = 0xf0;
-pub const CONTRACT_CLIENT_VTABLE_RVA: usize = 0x29e_8330;
+pub const CONTRACT_CLIENT_VTABLE_RVA: Rva = Rva(0x29e_8330);
 pub const CONTRACT_CLIENT_ROUTE: usize = 0xc8;
 pub const CONTRACT_SELLER: usize = 0x58;
 #[cfg(test)]
 pub const CONTRACT_BUYER: usize = 0x5c;
 pub const MARKET_OWNED_CONTRACTS: usize = 0;
 /// Supply-transfer client: the embedded route.
-pub const SUPPLY_VTABLE_RVA: usize = 0x2a1_eb80;
+pub const SUPPLY_VTABLE_RVA: Rva = Rva(0x2a1_eb80);
 pub const SUPPLY_ROUTE: usize = 0xa0;
 pub const SUPPLY_COUNTRY_SYSTEMS: usize = 0x108;
 pub const SUPPLY_TRANSFERS: usize = 0xd0;
@@ -114,7 +115,7 @@ pub const SUPPLY_TRANSFER_STRIDE: usize = 40;
 pub const SUPPLY_TRANSFER_CLIENT: usize = 0x20;
 
 /// Route object.
-pub const ROUTE_VTABLE_RVA: usize = 0x29d_8d70;
+pub const ROUTE_VTABLE_RVA: Rva = Rva(0x29d_8d70);
 pub const ROUTE_KIND: usize = 0x08;
 pub const ROUTE_FROM: usize = 0x10;
 pub const ROUTE_TO: usize = 0x18;
@@ -316,8 +317,8 @@ fn pair_u32(memory: &impl Memory, address: usize) -> Option<[u32; 2]> {
     ])
 }
 
-fn vtable(base: usize, rva: usize) -> Result<usize, &'static str> {
-    base.checked_add(rva).ok_or("module address overflow")
+fn vtable(base: usize, rva: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, rva).ok_or("module address overflow")
 }
 
 fn push<T: Default>(
@@ -350,8 +351,12 @@ fn outcome(len: usize, unread_rows: u32) -> Outcome {
 
 /// The live threshold that turns a route line the bad colour.
 pub fn bad_efficiency_threshold(memory: &impl Memory, base: usize) -> Result<i64, &'static str> {
-    read::<i64>(memory, at(base, BAD_EFFICIENCY_THRESHOLD_RVA)?)
-        .ok_or("bad-efficiency threshold unreadable")
+    read::<i64>(
+        memory,
+        engine_sites::at(base, BAD_EFFICIENCY_THRESHOLD_RVA)
+            .ok_or("resources map address overflow")?,
+    )
+    .ok_or("bad-efficiency threshold unreadable")
 }
 
 /// A client's or exchange's efficiency: the product of its two fixed5
@@ -531,7 +536,7 @@ impl<M: Memory> Walk<'_, M> {
     fn client(
         &self,
         client: usize,
-        expected: usize,
+        expected: Rva,
         category: u8,
         owner: u32,
         other: u32,

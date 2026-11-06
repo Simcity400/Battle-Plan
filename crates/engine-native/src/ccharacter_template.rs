@@ -4,9 +4,10 @@
 //! Other writers do not alter these identity fields.
 
 use crate::{Memory, ccharacter::Literal};
+use engine_sites::Rva;
 
 /// Character-template primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_74d8;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_74d8);
 /// Template lexer token, u32, copied to the built character and saved as its template tag.
 pub const TAG: usize = 0x08;
 /// Content source-file string, set before parsing; empty after construction.
@@ -56,9 +57,7 @@ pub(crate) fn read(
     if memory.copy_scattered([pointer, generated_at], &mut [&mut header, &mut generated]) != 2 {
         return Err("character template unreadable");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64 {
         return Err("character template vtable mismatch");
     }

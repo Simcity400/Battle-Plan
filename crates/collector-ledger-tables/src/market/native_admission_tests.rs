@@ -33,7 +33,7 @@ impl Native {
         s.u64(GAME + cgame_state::MARKET_MANAGER, MANAGER as u64);
         s.u64(
             VARIANT,
-            engine_native::cequipment_variant::VTABLE_RVA as u64,
+            engine_native::cequipment_variant::VTABLE_RVA.0 as u64,
         );
         s.u64(VARIANT + 8, VARIANT_ID);
         s.country(0, 0x1000, 0, 1);
@@ -64,7 +64,7 @@ impl Native {
     fn pool(&mut self, at: usize, entries: usize, amount: i64) {
         self.u64(
             at,
-            engine_native::cequipment_variant_pool::VTABLE_RVA as u64,
+            engine_native::cequipment_variant_pool::VTABLE_RVA.0 as u64,
         );
         self.array(
             at + engine_native::cequipment_variant_pool::ITEMS,
@@ -84,7 +84,7 @@ impl Native {
         let status = pointer + 0x1800;
         let stock = pointer + 0x1900;
         let resources = pointer + 0x1a00;
-        self.u64(pointer, ccountry::VTABLE_RVA as u64);
+        self.u64(pointer, ccountry::VTABLE_RVA.0 as u64);
         self.u32(pointer + ccountry::ID, id);
         self.u32(pointer + ccountry::SURRENDER_TARGET, surrender_target);
         self.u64(pointer + ccountry::EQUIPMENT_MARKET_STATUS, status as u64);
@@ -128,7 +128,7 @@ impl Native {
     }
     fn contract(&mut self, at: usize, n: u32) {
         self.bytes[at..at + 0x400].fill(0);
-        self.u64(at, contract::VTABLE_RVA as u64);
+        self.u64(at, contract::VTABLE_RVA.0 as u64);
         self.u64(at + contract::ID_TYPE, id(n));
         self.bytes[at + contract::REGISTERED] = 1;
         self.u32(at + contract::SELLER, 5000);
@@ -149,7 +149,7 @@ impl Native {
     fn variables(&mut self, at: usize, seed: u32) {
         let store = at + market::CONTRACT_VARIABLES;
         let storage = at + 0x600;
-        self.u64(store, engine_scripts::cvariables::VTABLE_RVA as u64);
+        self.u64(store, engine_scripts::cvariables::VTABLE_RVA.0 as u64);
         self.u32(store + engine_scripts::cvariables::SEED, seed);
         self.u64(store + engine_scripts::cvariables::STORAGE, storage as u64);
         self.u32(store + engine_scripts::cvariables::ENTRY_COUNT, 1);
@@ -199,7 +199,7 @@ impl Memory for Native {
                 .all(|r| at + out.len() <= r.start || at >= r.end),
             "removed holder read at {at:#x}"
         );
-        if at == cgame_state::SINGLETON_RVA && out.len() == 8 {
+        if at == cgame_state::SINGLETON_RVA.0 && out.len() == 8 {
             out.copy_from_slice(&(GAME as u64).to_le_bytes());
             return true;
         }

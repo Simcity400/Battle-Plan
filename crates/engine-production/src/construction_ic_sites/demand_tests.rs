@@ -19,12 +19,12 @@ impl Fixture {
         let building = world.alloc(8);
         world.u64(
             building,
-            (BASE + cbuilding_production_line::VTABLE_RVA) as u64,
+            (BASE + cbuilding_production_line::VTABLE_RVA.0) as u64,
         );
         let railway = world.alloc(crailway_production_line::ROUTE_COUNT + 4);
         world.u64(
             railway,
-            (BASE + crailway_production_line::VTABLE_RVA) as u64,
+            (BASE + crailway_production_line::VTABLE_RVA.0) as u64,
         );
         let route_data = world.alloc(4);
         world.array(
@@ -35,7 +35,7 @@ impl Fixture {
         let repair = world.alloc(8);
         world.u64(
             repair,
-            (BASE + cbuilding_production_line::RAILWAY_GUN_REPAIR_VTABLE_RVA) as u64,
+            (BASE + cbuilding_production_line::RAILWAY_GUN_REPAIR_VTABLE_RVA.0) as u64,
         );
         let queue = world.alloc(4 * 8);
         for (ordinal, line) in [building, building, railway, repair]
@@ -49,7 +49,7 @@ impl Fixture {
             let country = world.object(slot);
             let status = world.alloc(cproduction_status::COUNTRY + 8);
             world.u64(country + crate::ccountry::PRODUCTION_STATUS, status as u64);
-            world.u64(status, (BASE + cproduction_status::VTABLE_RVA) as u64);
+            world.u64(status, (BASE + cproduction_status::VTABLE_RVA.0) as u64);
             world.u64(status + cproduction_status::COUNTRY, country as u64);
             world.array(status + cproduction_status::CONSTRUCTION_LINES, queue, 4);
             statuses.push(status);

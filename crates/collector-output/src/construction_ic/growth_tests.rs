@@ -3,7 +3,7 @@ use super::*;
 struct Menu;
 impl Memory for Menu {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address != engine_native::cgame_state::SINGLETON_RVA || output.len() != 8 {
+        if address != engine_native::cgame_state::SINGLETON_RVA.0 || output.len() != 8 {
             return false;
         }
         output.fill(0);

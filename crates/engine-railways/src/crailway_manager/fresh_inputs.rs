@@ -6,7 +6,8 @@
 //! rows; this supplement cannot alter them. No call, allocation, retry or
 //! pointer retention crosses capture.
 
-use super::{eta_address, eta_array, eta_building_efficiency, eta_pointer, eta_ratio, eta_read};
+use engine_sites::Rva;
+use super::{eta_address, eta_array, eta_building_efficiency, eta_global, eta_global_pointer, eta_key, eta_pointer, eta_ratio, eta_read};
 use crate::{
     Memory, cbuilding as building, cbuilding_database as database, cbuilding_status as status,
     cbuilding_template as template,
@@ -249,7 +250,7 @@ fn once<T: Copy>(cache: &mut Option<Input<T>>, read: impl FnOnce() -> Input<T>) 
 impl Controls {
     fn definition(&mut self, memory: &impl Memory, base: usize) -> Input<Definition> {
         once(&mut self.definition, || {
-            let database = eta_pointer(memory, base, database::SINGLETON_RVA)?;
+            let database = eta_global_pointer(memory, base, database::SINGLETON_RVA)?;
             // Select the infrastructure definition from its database field.
             let template = eta_pointer(memory, database, 0x3b0)?;
             let enabled =
@@ -291,7 +292,7 @@ impl Controls {
             if fallback > 0 {
                 return Ok(fallback);
             }
-            eta_read(memory, base, 0x033e_5274)
+            eta_global(memory, base, Rva(0x033e_5274))
         })
     }
 }
@@ -369,7 +370,7 @@ pub fn state_fractions_carried(
                     return Err("ETA infrastructure status unreadable");
                 }
                 let bytes = current.row(index, 24);
-                if word(bytes) != eta_address(base, status::VTABLE_RVA)? as u64 {
+                if word(bytes) != eta_key(base, status::VTABLE_RVA)? as u64 {
                     return Err("ETA railway source vtable mismatch");
                 }
                 if fields < 2 {
@@ -470,7 +471,7 @@ pub fn state_fractions_carried(
                     return Err("ETA infrastructure building unreadable");
                 }
                 let bytes = current.row(index, 30);
-                if word(bytes) != eta_address(base, building::VTABLE_RVA)? as u64 {
+                if word(bytes) != eta_key(base, building::VTABLE_RVA)? as u64 {
                     return Err("ETA railway source vtable mismatch");
                 }
                 if fields < 2 {
@@ -609,7 +610,7 @@ pub(super) fn railway_buildings(
                     return Err("fresh railway building health unreadable");
                 }
                 let bytes = current.row(index, 18);
-                if word(bytes) != eta_address(base, building::VTABLE_RVA)? as u64 {
+                if word(bytes) != eta_key(base, building::VTABLE_RVA)? as u64 {
                     return Err("ETA railway source vtable mismatch");
                 }
                 if fields < 2 {

@@ -1,6 +1,7 @@
 //! Equipment-module collection embedded in a variant. Its count is signed.
 //! The header's identity word does not authenticate a vtable.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cequipment_module, cequipment_variant,
     cpdx_array::Array,
@@ -11,7 +12,7 @@ use crate::{
 };
 
 /// Candidate collection identity word; not used for authentication.
-pub const IDENTITY_WORD_RVA_CANDIDATE: usize = 0x030f_d000;
+pub const IDENTITY_WORD_RVA_CANDIDATE: Rva = Rva(0x030f_d000);
 /// Candidate module-container data pointer.
 pub const ENTRIES_CANDIDATE: usize = 0x08;
 
@@ -38,8 +39,7 @@ pub fn walk(
     output: &mut Vec<Row>,
 ) -> Outcome {
     let result = (|| {
-        let expected = base
-            .checked_add(cequipment_module::VTABLE_RVA)
+        let expected = engine_sites::at(base, cequipment_module::VTABLE_RVA)
             .ok_or("module definition address overflow")?;
         let mut len = 0_usize;
         // One chunk's module entries are read with a single contiguous copy
@@ -177,7 +177,7 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x300];
-        bytes[..8].copy_from_slice(&(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8..16].copy_from_slice(&0x1234_5678_0000_0046_u64.to_le_bytes());
         bytes[0xb0..0xb8].fill(0xee);
         bytes[0xb8..0xc0].copy_from_slice(&0x1180_u64.to_le_bytes());
@@ -185,7 +185,7 @@ mod tests {
         bytes[0xc4..0xc8].copy_from_slice(&1_u32.to_le_bytes());
         bytes[0x180..0x184].copy_from_slice(&u32::MAX.to_le_bytes());
         bytes[0x188..0x190].copy_from_slice(&0x1200_u64.to_le_bytes());
-        bytes[0x200..0x208].copy_from_slice(&(cequipment_module::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x200..0x208].copy_from_slice(&(cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x208..0x20c].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
         bytes[0x210] = 0xff;
         bytes

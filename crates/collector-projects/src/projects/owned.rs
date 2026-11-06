@@ -371,7 +371,7 @@ fn copy_breakthrough_tree(
     let Some(address) = status.checked_add(nproject_cprogram_status::BREAKTHROUGH) else {
         return false;
     };
-    let Some(expected) = base.checked_add(nproject_cbreakthrough_progress::VTABLE_RVA) else {
+    let Some(expected) = engine_sites::at(base, nproject_cbreakthrough_progress::VTABLE_RVA) else {
         return false;
     };
     let Some(header_address) = address.checked_add(nproject_cbreakthrough_progress::TREE_HEADER)
@@ -549,7 +549,7 @@ fn copy_census(
     if countries.count < 2 || links.count == 0 {
         return None;
     }
-    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    let vtable = engine_sites::at(base, ccountry::VTABLE_RVA)? as u64;
     if log.worker_growth_enabled()
         && engine_allocation::reserve(census, countries.count as usize).is_err()
     {
@@ -865,8 +865,8 @@ fn copy_status(
     let header_start = span(log, memory, Some(status), 20, M_ALL)?;
     let mut header = [0u8; 20];
     header.copy_from_slice(&log.bytes[header_start..header_start + 20]);
-    let expected = base.checked_add(nproject_cprogram_status::VTABLE_RVA)? as u64;
-    let secondary = base.checked_add(nproject_cprogram_status::SECONDARY_VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, nproject_cprogram_status::VTABLE_RVA)? as u64;
+    let secondary = engine_sites::at(base, nproject_cprogram_status::SECONDARY_VTABLE_RVA)? as u64;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected
         || u64::from_le_bytes(header[8..16].try_into().unwrap()) != secondary
     {
@@ -890,7 +890,7 @@ pub(super) fn copy_program_row(
     pointer: usize,
     references: &mut Vec<u64>,
 ) -> bool {
-    let expected = match base.checked_add(nproject_cprogram::VTABLE_RVA) {
+    let expected = match engine_sites::at(base, nproject_cprogram::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };

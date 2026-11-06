@@ -8,9 +8,10 @@ use crate::{
     Memory, ccharacter, cnavy_leader, cpdx_array::Array, cunit_leader, cunit_leader_skill,
     cunit_leader_trait, read,
 };
+use engine_sites::Rva;
 
 /// Portrait-tooltip minimum fraction for displaying learning traits.
-pub const LEARNING_THRESHOLD_RVA: usize = 0x033e_4ce0;
+pub const LEARNING_THRESHOLD_RVA: Rva = Rva(0x033e_4ce0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CommanderPortraitModifier {
@@ -33,7 +34,7 @@ pub struct CommanderPortraitTooltip {
     pub text_len: usize,
 }
 
-pub const SKILL_DATABASE_RVA: usize = 0x033d_d518;
+pub const SKILL_DATABASE_RVA: Rva = Rva(0x033d_d518);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PortraitEntry {
@@ -179,7 +180,7 @@ pub fn capture(
         country: r.field(pointer, 0x120)?,
         category: r.field(pointer, cunit_leader::CATEGORY)?,
         experience: r.field(pointer, cunit_leader::EXPERIENCE)?,
-        learning_threshold: r.field(base, LEARNING_THRESHOLD_RVA)?,
+        learning_threshold: r.field(r.global(LEARNING_THRESHOLD_RVA)?, 0)?,
         ..Row::default()
     };
     row.name_len = r.text(pointer, cunit_leader::NAME, &mut row.name)?;
@@ -364,22 +365,28 @@ impl<M: Memory> Reader<'_, M> {
     fn pointer(&self, p: usize, o: usize) -> Result<usize, &'static str> {
         usize::try_from(self.field::<u64>(p, o)?).map_err(|_| "commander pointer overflow")
     }
-    fn vtable(&self, p: usize, rva: usize) -> Result<(), &'static str> {
-        if self.base.checked_add(rva).map(|v| v as u64) != Some(self.field(p, 0)?) {
+    fn global(&self, key: Rva) -> Result<usize, &'static str> {
+        engine_sites::at(self.base, key).ok_or("commander site withheld")
+    }
+    fn vtable(&self, p: usize, rva: Rva) -> Result<(), &'static str> {
+        if engine_sites::at(self.base, rva).map(|v| v as u64) != Some(self.field(p, 0)?) {
             return Err("commander field unreadable or overflow");
         }
         Ok(())
     }
     fn leader(&self, p: usize) -> Result<u64, &'static str> {
         let vtable = self.field::<u64>(p, 0)?;
-        if ![
-            cunit_leader::VTABLE_RVA,
-            crate::carmy_leader::VTABLE_RVA,
-            cnavy_leader::VTABLE_RVA,
-            crate::coperative_leader::VTABLE_RVA,
-        ]
-        .into_iter()
-        .any(|rva| self.base.checked_add(rva).map(|v| v as u64) == Some(vtable))
+        if engine_sites::which(
+            self.base,
+            vtable as usize,
+            &[
+                cunit_leader::VTABLE_RVA,
+                crate::carmy_leader::VTABLE_RVA,
+                cnavy_leader::VTABLE_RVA,
+                crate::coperative_leader::VTABLE_RVA,
+            ],
+        )
+        .is_none()
         {
             return Err("commander leader vtable mismatch");
         }
@@ -472,7 +479,7 @@ impl<M: Memory> Reader<'_, M> {
         if !(0..4).contains(&category) {
             return Err("commander skill category invalid");
         }
-        let db = self.pointer(self.base, SKILL_DATABASE_RVA)?;
+        let db = self.pointer(self.global(SKILL_DATABASE_RVA)?, 0)?;
         let offset = 0xe8 + category as usize * 0x18;
         let a = self.array(db, offset, 8)?;
         if a.count == 0 {
@@ -594,9 +601,7 @@ pub(crate) fn capture_modifier_metadata(
     key: u32,
 ) -> Result<[u32; 3], &'static str> {
     use crate::modifier_definition as md;
-    let root = base
-        .checked_add(md::TABLE_RVA)
-        .ok_or("commander metadata root overflow")?;
+    let root = engine_sites::at(base, md::TABLE_RVA).ok_or("commander metadata root withheld")?;
     let table = read::<u64>(memory, root)
         .filter(|&p| p != 0)
         .ok_or("commander metadata root unreadable")?;
@@ -621,19 +626,15 @@ pub(crate) fn capture_modifier_gate(
     base: usize,
 ) -> Result<(u32, u8), &'static str> {
     use crate::modifier_definition as md;
-    let callback_address = base
-        .checked_add(md::ELIGIBILITY_CALLBACK_RVA)
-        .ok_or("commander modifier callback address overflow")?;
-    let flags_address = base
-        .checked_add(md::TRADE_FEATURE_FLAGS_RVA)
-        .ok_or("commander modifier flags address overflow")?;
+    let callback_address = engine_sites::at(base, md::ELIGIBILITY_CALLBACK_RVA)
+        .ok_or("commander modifier callback withheld")?;
+    let flags_address = engine_sites::at(base, md::TRADE_FEATURE_FLAGS_RVA)
+        .ok_or("commander modifier flags withheld")?;
     let callback =
         read::<u64>(memory, callback_address).ok_or("commander modifier callback unreadable")?;
     let kind = if callback == 0 {
         0
-    } else if base
-        .checked_add(md::ELIGIBILITY_FLAGS_GETTER_RVA)
-        .map(|p| p as u64)
+    } else if engine_sites::at(base, md::ELIGIBILITY_FLAGS_GETTER_RVA).map(|p| p as u64)
         == Some(callback)
     {
         1
@@ -668,15 +669,15 @@ mod tests {
                 return false;
             }
             use crate::modifier_definition as md;
-            if address == md::TABLE_RVA && out.len() == 8 {
+            if address == md::TABLE_RVA.0 && out.len() == 8 {
                 out.copy_from_slice(&0x200000_u64.to_le_bytes());
                 return true;
             }
-            if address == md::ELIGIBILITY_CALLBACK_RVA && out.len() == 8 {
+            if address == md::ELIGIBILITY_CALLBACK_RVA.0 && out.len() == 8 {
                 out.copy_from_slice(&self.callback.to_le_bytes());
                 return true;
             }
-            if address == md::TRADE_FEATURE_FLAGS_RVA && out.len() == 4 {
+            if address == md::TRADE_FEATURE_FLAGS_RVA.0 && out.len() == 4 {
                 out.copy_from_slice(&0x80000002_u32.to_le_bytes());
                 return true;
             }
@@ -686,20 +687,20 @@ mod tests {
                 }
                 return true;
             }
-            if (address == crate::creference_registry::HIGH_ROOT_RVA
+            if (address == crate::creference_registry::HIGH_ROOT_RVA.0
                 || address
-                    == crate::creference_registry::LOW_ROOTS_RVA
+                    == crate::creference_registry::LOW_ROOTS_RVA.0
                         + ccharacter::REFERENCE_TYPE as usize * 8)
                 && out.len() == 8
             {
                 out.copy_from_slice(&0x1000_u64.to_le_bytes());
                 return true;
             }
-            if address == SKILL_DATABASE_RVA && out.len() == 8 {
+            if address == SKILL_DATABASE_RVA.0 && out.len() == 8 {
                 out.copy_from_slice(&0x1800_u64.to_le_bytes());
                 return true;
             }
-            if address == LEARNING_THRESHOLD_RVA && out.len() == 8 {
+            if address == LEARNING_THRESHOLD_RVA.0 && out.len() == 8 {
                 out.copy_from_slice(&100_i64.to_le_bytes());
                 return true;
             }
@@ -736,7 +737,7 @@ mod tests {
             bytes_read: 0.into(),
             reads: RefCell::new(Vec::new()),
             fail: None,
-            callback: crate::modifier_definition::ELIGIBILITY_FLAGS_GETTER_RVA as u64,
+            callback: crate::modifier_definition::ELIGIBILITY_FLAGS_GETTER_RVA.0 as u64,
         };
         f.u64(0x1000 + registry::ENTRIES, 0x1100);
         f.u32(0x1000 + registry::COUNT, 1);
@@ -751,7 +752,7 @@ mod tests {
         f.bytes[entry + 4] = 1;
         f.u64(entry + 8, HANDLE);
         f.u64(entry + 16, LEADER as u64);
-        f.u64(LEADER, cnavy_leader::VTABLE_RVA as u64);
+        f.u64(LEADER, cnavy_leader::VTABLE_RVA.0 as u64);
         f.u64(LEADER + cunit_leader::TYPE, HANDLE);
         f.u32(LEADER + cunit_leader::CATEGORY, 2);
         f.u64(LEADER + cunit_leader::EXPERIENCE, i64::MIN as u64);
@@ -765,7 +766,7 @@ mod tests {
         {
             let skill = 0x6000 + index * 0x200;
             f.u64(LEADER + offset, skill as u64);
-            f.u64(skill, cunit_leader_skill::VTABLE_RVA as u64);
+            f.u64(skill, cunit_leader_skill::VTABLE_RVA.0 as u64);
             f.bytes[skill + 8] = 1;
             f.u32(skill + cunit_leader_skill::LEVEL, 4);
         }
@@ -782,13 +783,13 @@ mod tests {
         }
         f.array(0x1800 + 0xe8 + 2 * 0x18, 0x1a00, 1);
         f.u64(0x1a00, 0x6a00);
-        f.u64(0x6a00, cunit_leader_skill::VTABLE_RVA as u64);
+        f.u64(0x6a00, cunit_leader_skill::VTABLE_RVA.0 as u64);
         f.array(0x6020, 0x7000, 1);
         f.u32(0x7000, 0x5f);
         f.u64(0x7008, i64::MAX as u64);
         f.array(LEADER + cunit_leader::TRAIT_DATA, 0x8000, 1);
         f.u64(0x8000, 0x8100);
-        f.u64(0x8100, cunit_leader_trait::VTABLE_RVA as u64);
+        f.u64(0x8100, cunit_leader_trait::VTABLE_RVA.0 as u64);
         f.u32(0x8100 + cunit_leader_trait::TOKEN_ID, 55);
         f.text(0x8100 + cunit_leader_trait::TOKEN, b"navy_trait");
         f.u32(0x8100 + cunit_leader_trait::ORDINAL, 7);
@@ -868,15 +869,15 @@ mod tests {
         assert_eq!((row.next_skill.present, row.next_skill.valid), (1, 0));
         let reads = f.reads.borrow();
         for address in [
-            crate::creference_registry::HIGH_ROOT_RVA,
+            crate::creference_registry::HIGH_ROOT_RVA.0,
             LEADER + cunit_leader::CHARACTER_TYPE,
             LEADER + cunit_leader::TRAIT_DATA,
             LEADER + cunit_leader::TRAIT_EXPERIENCE_DATA,
-            SKILL_DATABASE_RVA,
+            SKILL_DATABASE_RVA.0,
             0x1800 + 0xe8 + 2 * 0x18,
-            crate::modifier_definition::TABLE_RVA,
-            crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA,
-            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+            crate::modifier_definition::TABLE_RVA.0,
+            crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0,
+            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
         ] {
             assert_eq!(
                 reads.iter().filter(|read| read.0 == address).count(),
@@ -1006,10 +1007,10 @@ mod tests {
             Ok([0x10, u32::MAX, 2])
         );
         assert_eq!((f.copies.get(), f.bytes_read.get()), (2, 20));
-        assert_eq!(*f.reads.borrow(), [(md::TABLE_RVA, 8), (address, 12)]);
+        assert_eq!(*f.reads.borrow(), [(md::TABLE_RVA.0, 8), (address, 12)]);
         for (callback, result, calls, bytes) in [
             (
-                md::ELIGIBILITY_FLAGS_GETTER_RVA as u64,
+                md::ELIGIBILITY_FLAGS_GETTER_RVA.0 as u64,
                 Ok((0x80000002, 1)),
                 2,
                 12,
@@ -1023,7 +1024,7 @@ mod tests {
             assert_eq!((f.copies.get(), f.bytes_read.get()), (calls, bytes));
         }
         for (fail, calls, bytes, reason) in [
-            (md::TABLE_RVA, 1, 8, "commander metadata root unreadable"),
+            (md::TABLE_RVA.0, 1, 8, "commander metadata root unreadable"),
             (address, 2, 20, "commander metadata unreadable"),
         ] {
             let mut f = fixture();
@@ -1034,13 +1035,13 @@ mod tests {
         }
         for (fail, calls, bytes, reason) in [
             (
-                md::ELIGIBILITY_CALLBACK_RVA,
+                md::ELIGIBILITY_CALLBACK_RVA.0,
                 1,
                 8,
                 "commander modifier callback unreadable",
             ),
             (
-                md::TRADE_FEATURE_FLAGS_RVA,
+                md::TRADE_FEATURE_FLAGS_RVA.0,
                 2,
                 12,
                 "commander modifier feature flags unreadable",
@@ -1192,7 +1193,7 @@ mod tests {
         f.u64(0x1100 + slot * 24 + 8, character);
         f.u64(0x1100 + slot * 24 + 16, CHARACTER as u64);
         f.u64(LEADER + cunit_leader::CHARACTER_TYPE, character);
-        f.u64(CHARACTER, ccharacter::VTABLE_RVA as u64);
+        f.u64(CHARACTER, ccharacter::VTABLE_RVA.0 as u64);
         f.u64(CHARACTER + ccharacter::TYPE, character);
         f.u64(CHARACTER + ccharacter::UNIT_LEADER, LEADER as u64);
         f.array(CHARACTER + ccharacter::PORTRAIT_DATA, 0x10000, COUNT as u32);

@@ -35,7 +35,8 @@ struct World {
 }
 impl World {
     fn new() -> Self {
-        let invalid_at = creference_registry::INVALID_REFERENCE_RVA - cgame_state::SINGLETON_RVA;
+        let invalid_at =
+            creference_registry::INVALID_REFERENCE_RVA.0 - cgame_state::SINGLETON_RVA.0;
         let globals_end = (invalid_at + size_of::<u64>())
             .max(0x100 + cgame_state::CURRENT_HOUR + size_of::<i32>());
         let mut world = Self {
@@ -46,8 +47,8 @@ impl World {
         let base = world.base();
         world.globals[0] = world.state() as u64;
         world.globals[invalid_at / 8] = u64::MAX;
-        world.combat[0] = (base + cnaval_combat::VTABLE_RVA) as u64;
-        world.result[0] = (base + cnaval_combat_results::VTABLE_RVA) as u64;
+        world.combat[0] = (base + cnaval_combat::VTABLE_RVA.0) as u64;
+        world.result[0] = (base + cnaval_combat_results::VTABLE_RVA.0) as u64;
         world.combat[cnaval_combat::HANDLE / 8] = 0xf001_0000_0000_0046;
         world.combat[0x20 / 8] = 1;
         world.result[cnaval_combat_results::HANDLE / 8] = 0xf002_0000_0000_0046;
@@ -56,7 +57,7 @@ impl World {
         world
     }
     fn base(&self) -> usize {
-        self.globals.as_ptr() as usize - cgame_state::SINGLETON_RVA
+        self.globals.as_ptr() as usize - cgame_state::SINGLETON_RVA.0
     }
     fn state(&self) -> usize {
         self.globals.as_ptr() as usize + 0x100
@@ -763,7 +764,6 @@ fn constructor_relocation_and_sentinel_restore_exactly() {
     let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
         .try_into()
         .unwrap();
-    assert_eq!(&sentinel[..5], &native::CONSTRUCTOR.sentinel[..5]);
     setup(1, 0);
     ENABLED.store(false, Ordering::SeqCst);
     let mut hook =

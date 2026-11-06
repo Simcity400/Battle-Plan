@@ -8,6 +8,7 @@ use crate::{
     cnon_aggression_pact_relation, coffer_air_base_access_relation, coffer_docking_rights_relation,
     coffer_military_access_relation, csubject_relation, cwar_relation,
 };
+use engine_sites::Rva;
 
 /// Stored relation type identifier.
 pub const TYPE_ID: usize = 0x08;
@@ -29,12 +30,12 @@ pub const CANCEL: usize = 0x48;
 pub const RETIRED: usize = 0x49;
 
 /// Base relation constructor installing vtable and passed type.
-pub const CONSTRUCTOR_RVA: usize = 0x00d7_9400;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d7_9400);
 
 /// Supported relation subclasses as primary vtable RVA and type-word pairs.
 /// War and subject relations have separate recorded tables but remain admitted
 /// here so unclassified vtables produce explicit failures.
-pub const CLASSES: [(usize, u32); 19] = [
+pub const CLASSES: [(Rva, u32); 19] = [
     (
         cnaval_blockade_relation::VTABLE_RVA,
         cnaval_blockade_relation::TYPE,
@@ -95,8 +96,19 @@ pub const CLASSES: [(usize, u32); 19] = [
     ),
 ];
 
-/// Type word paired with this supported primary vtable RVA.
-pub fn class_type(vtable_rva: usize) -> Option<u32> {
+/// The supported primary vtables, in [`CLASSES`] order.
+pub const CLASS_VTABLES: [Rva; CLASSES.len()] = {
+    let mut out = [CLASSES[0].0; CLASSES.len()];
+    let mut index = 0;
+    while index < CLASSES.len() {
+        out[index] = CLASSES[index].0;
+        index += 1;
+    }
+    out
+};
+
+/// Type word paired with this supported primary vtable.
+pub fn class_type(vtable_rva: Rva) -> Option<u32> {
     let mut index = 0;
     while index < CLASSES.len() {
         if CLASSES[index].0 == vtable_rva {
@@ -120,7 +132,7 @@ mod tests {
             }
             assert_eq!(class_type(*vtable), Some(*type_word));
         }
-        assert_eq!(class_type(0), None);
+        assert_eq!(class_type(crate::ccountry::VTABLE_RVA), None);
         assert_eq!(
             class_type(cwar_relation::VTABLE_RVA),
             Some(TENSION_CAP_TYPE)

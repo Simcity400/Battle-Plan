@@ -1,7 +1,8 @@
 //! CCountryDatabase tag strings and source paths; IDs here are canonical slots, not raw country links.
 
+use engine_sites::Rva;
 /// Country-database singleton pointer.
-pub const SINGLETON_RVA: usize = 0x033d_f288;
+pub const SINGLETON_RVA: Rva = Rva(0x033d_f288);
 /// Tag-string array.
 pub const TAGS: usize = 0;
 /// First dynamic canonical slot, u32, set to tag count at the marker.

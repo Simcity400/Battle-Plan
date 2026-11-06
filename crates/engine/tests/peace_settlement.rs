@@ -41,7 +41,7 @@ fn peace_authentication_short_reads_and_cycles_never_become_empty_success() {
         f.copy(&mut [], &mut [Action::default()]).failure,
         Some("peace action vtable unsupported")
     );
-    f.u64(0x20000, engine_peace::ctake_state_action::VTABLE_RVA as u64);
+    f.u64(0x20000, engine_peace::ctake_state_action::VTABLE_RVA.0 as u64);
     // Keep the pointer list readable while shortening only the action.
     f.array(0x910, 0xa00, 1, 8);
     f.u64(0xa00, 0x20000);
@@ -60,15 +60,15 @@ fn peace_concrete_operands_respect_the_government_allocation() {
     let mut f = Fixture::new(0, 1);
     for (vtable, form) in [
         (
-            engine_peace::cliberate_country_action::VTABLE_RVA,
+            engine_peace::cliberate_country_action::VTABLE_RVA.0,
             peace_action::Form::Liberate,
         ),
         (
-            engine_peace::cpuppet_country_action::VTABLE_RVA,
+            engine_peace::cpuppet_country_action::VTABLE_RVA.0,
             peace_action::Form::Puppet,
         ),
         (
-            engine_peace::cforce_government_action::VTABLE_RVA,
+            engine_peace::cforce_government_action::VTABLE_RVA.0,
             peace_action::Form::Government,
         ),
     ] {
@@ -122,7 +122,7 @@ fn peace_full_action_arena_stops_before_reading_unstored_operands() {
     // An accepted navy bid whose selected ship cannot be read: only its status is needed.
     f.u64(
         0x20000 + 0x70,
-        engine_peace::ctake_navy_peace_action::VTABLE_RVA as u64,
+        engine_peace::ctake_navy_peace_action::VTABLE_RVA.0 as u64,
     );
     f.u64(
         0x20000 + 0x70 + engine_peace::ctake_navy_peace_action::SHIP,
@@ -143,7 +143,7 @@ fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
     // An excluded bid's form-specific operands are never read.
     f.u64(
         0x20000 + 2 * 0x70,
-        engine_peace::ctake_navy_peace_action::VTABLE_RVA as u64,
+        engine_peace::ctake_navy_peace_action::VTABLE_RVA.0 as u64,
     );
     f.u64(
         0x20000 + 2 * 0x70 + engine_peace::ctake_navy_peace_action::SHIP,
@@ -168,7 +168,7 @@ fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
     // Resident bids still keep every status, so the same arena truncates.
     f.u64(
         0x20000 + 0x70,
-        engine_peace::ctake_state_action::VTABLE_RVA as u64,
+        engine_peace::ctake_state_action::VTABLE_RVA.0 as u64,
     );
     f.bytes[0x100 + c::FINALIZED] = 0;
     let bids = p::copy_bids(
@@ -260,7 +260,7 @@ fn peace_action_operands_use_one_scattered_span_after_authentication() {
     let mut f = Fixture::new(0, 1);
     f.u64(
         0x20000,
-        engine_peace::cpuppet_country_action::VTABLE_RVA as u64,
+        engine_peace::cpuppet_country_action::VTABLE_RVA.0 as u64,
     );
     let memory = Span {
         memory: SliceMemory {
@@ -334,15 +334,15 @@ fn peace_resident_bids_keep_rejected_actions_and_navy_references_are_owned() {
         Some("peace settlement finalized byte differs")
     );
 
-    let literal = engine_peace::ctake_navy_peace_action::LABEL_LITERAL_RVA;
+    let literal = engine_peace::ctake_navy_peace_action::LABEL_LITERAL_RVA.0;
     f.bytes.resize(literal + 32, 0);
     f.bytes[literal..literal + 12].copy_from_slice(b"modded_navy\0");
     f.u64(
         0x20000,
-        engine_peace::ctake_navy_peace_action::VTABLE_RVA as u64,
+        engine_peace::ctake_navy_peace_action::VTABLE_RVA.0 as u64,
     );
     f.u64(0x20048, 0xe00);
-    f.u64(0xe00, engine_native::cship::VTABLE_RVA as u64);
+    f.u64(0xe00, engine_native::cship::VTABLE_RVA.0 as u64);
     f.u64(0xe08, 0x9900000011);
     f.u64(0x20050, (-3_i64) as u64);
     let navy = peace_action::copy(
@@ -378,7 +378,7 @@ fn peace_automatic_transfers_are_separate_and_owned() {
     f.u64(0xa00, 0xb00);
     f.u64(
         0xb00,
-        engine_peace::conference_winner_participant::VTABLE_RVA as u64,
+        engine_peace::conference_winner_participant::VTABLE_RVA.0 as u64,
     );
     f.u32(0xb08, 0xe0000001);
     f.array(
@@ -510,7 +510,7 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
     f.array(0x100 + c::LIBERATED_PARTICIPANTS, participants, count, 8);
     f.u64(
         0xb00,
-        engine_peace::conference_liberated_participant::VTABLE_RVA as u64,
+        engine_peace::conference_liberated_participant::VTABLE_RVA.0 as u64,
     );
     for i in 0..count {
         f.u64(participants + i * 8, 0xb00);
@@ -523,7 +523,7 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
     f.u64(0xa00, 0xb00);
     f.u64(
         0xb00,
-        engine_peace::conference_winner_participant::VTABLE_RVA as u64,
+        engine_peace::conference_winner_participant::VTABLE_RVA.0 as u64,
     );
     let states = f.bytes.len();
     let count = 262_145;
@@ -560,7 +560,7 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
 #[test]
 fn peace_navy_name_reads_only_the_evidenced_literal_storage() {
     let mut f = Fixture::new(0, 1);
-    let literal = engine_peace::ctake_navy_peace_action::LABEL_LITERAL_RVA;
+    let literal = engine_peace::ctake_navy_peace_action::LABEL_LITERAL_RVA.0;
     f.bytes.resize(
         literal + engine_peace::ctake_navy_peace_action::LABEL_LITERAL_BYTES,
         0,
@@ -568,7 +568,7 @@ fn peace_navy_name_reads_only_the_evidenced_literal_storage() {
     f.bytes[literal..].copy_from_slice(b"synthetic_navy_name_2\0");
     f.u64(
         0x20000,
-        engine_peace::ctake_navy_peace_action::VTABLE_RVA as u64,
+        engine_peace::ctake_navy_peace_action::VTABLE_RVA.0 as u64,
     );
     f.u64(0x20048, 0);
     let row = peace_action::copy(

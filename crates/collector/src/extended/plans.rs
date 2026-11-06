@@ -1300,7 +1300,7 @@ mod tests {
         }
         image.u64(ORDER + corder_instance::FRONT_BINDING, FRONT);
         // The front's registry root is null: an absent front, no row.
-        let root = registry::LOW_ROOTS_RVA + cfront::REFERENCE_TYPE as usize * 8;
+        let root = registry::LOW_ROOTS_RVA.0 + cfront::REFERENCE_TYPE as usize * 8;
         image.u64(root, 0);
         // An empty province table: the invasion walk's first own read.
         let provinces = engine_native::cgame_state::PROVINCES;
@@ -1407,8 +1407,8 @@ mod tests {
     const ORDER: usize = 0x4000;
     fn image() -> Image {
         let mut m = Image::default();
-        m.u64(registry::INVALID_REFERENCE_RVA, 0);
-        m.u64(registry::LOW_ROOTS_RVA + 53 * 8, 0x1000);
+        m.u64(registry::INVALID_REFERENCE_RVA.0, 0);
+        m.u64(registry::LOW_ROOTS_RVA.0 + 53 * 8, 0x1000);
         m.put(0x1000, &[0; 32]);
         m.u64(0x1008, 0x2000);
         m.u32(0x1010, 1);
@@ -1420,7 +1420,7 @@ mod tests {
         m.u64(0x2000 + bucket::TYPE, (7 << 32) | 53);
         m.u64(0x2000 + bucket::OBJECT, GROUP as u64);
         m.put(GROUP, &[0; 0x240]);
-        m.u64(GROUP, corders_group::VTABLE_RVA as u64);
+        m.u64(GROUP, corders_group::VTABLE_RVA.0 as u64);
         m.u64(GROUP + 8, (7 << 32) | 53);
         m.u32(GROUP + corders_group::COUNTRY, 1);
         // An empty inline name: capacity 15, length 0.
@@ -1431,7 +1431,7 @@ mod tests {
         m.u32(root + 12, 1);
         m.u64(0x3800, ORDER as u64);
         m.put(ORDER, &[0; 0x400]);
-        m.u64(ORDER, corder_instance::VTABLE_RVA as u64);
+        m.u64(ORDER, corder_instance::VTABLE_RVA.0 as u64);
         m.u64(ORDER + corder_instance::OWNER, GROUP as u64);
         m.u32(ORDER + corder_instance::ID, 9);
         m
@@ -1785,14 +1785,14 @@ mod tests {
                 planes: 1,
                 ships: 0,
             });
-        world.bytes[engine_native::cgame_state::SINGLETON_RVA
-            ..engine_native::cgame_state::SINGLETON_RVA + 8]
+        world.bytes[engine_native::cgame_state::SINGLETON_RVA.0
+            ..engine_native::cgame_state::SINGLETON_RVA.0 + 8]
             .copy_from_slice(&(world.state as u64).to_le_bytes());
         let mut image = execution_image();
-        image.u64(GROUP, (world.base + corders_group::VTABLE_RVA) as u64);
-        image.u64(ORDER, (world.base + corder_instance::VTABLE_RVA) as u64);
-        image.u64(world.base + registry::LOW_ROOTS_RVA + 53 * 8, 0x1000);
-        image.u64(world.base + registry::INVALID_REFERENCE_RVA, 0);
+        image.u64(GROUP, (world.base + corders_group::VTABLE_RVA.0) as u64);
+        image.u64(ORDER, (world.base + corder_instance::VTABLE_RVA.0) as u64);
+        image.u64(world.base + registry::LOW_ROOTS_RVA.0 + 53 * 8, 0x1000);
+        image.u64(world.base + registry::INVALID_REFERENCE_RVA.0, 0);
         struct Combined<'a> {
             image: &'a Image,
             world: &'a crate::unit_scale_tests::fixture::World,
@@ -1847,7 +1847,7 @@ mod tests {
             if reserved_present {
                 bytes[kit::CTAB..kit::CTAB + 8].copy_from_slice(&(RESERVED as u64).to_le_bytes());
                 bytes[RESERVED..RESERVED + 8]
-                    .copy_from_slice(&(ccountry::VTABLE_RVA as u64).to_le_bytes());
+                    .copy_from_slice(&(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
                 bytes[RESERVED + ccountry::ID..RESERVED + ccountry::ID + 4]
                     .copy_from_slice(&0_u32.to_le_bytes());
             }
@@ -2312,7 +2312,7 @@ mod tests {
             m.u32(root + 12, 2);
             m.u64(0x3808, SECOND as u64);
             m.put(SECOND, &[0; 0x400]);
-            m.u64(SECOND, corder_instance::VTABLE_RVA as u64);
+            m.u64(SECOND, corder_instance::VTABLE_RVA.0 as u64);
             m.u64(SECOND + corder_instance::OWNER, GROUP as u64);
             m.u32(SECOND + corder_instance::ID, 10);
             m.u64(ORDER + corder_instance::SUCCESSOR_DATA, 0x3900);

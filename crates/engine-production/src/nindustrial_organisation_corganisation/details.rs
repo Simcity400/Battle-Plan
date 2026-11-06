@@ -3,6 +3,7 @@
 use crate::{Memory, allocation, cpdx_array::Array, read};
 use engine_native::{cgame_date, msvc_tree_node::Cursor};
 use engine_scripts::{cflag_manager, cscript_flag, cvariables};
+use engine_sites::Rva;
 
 pub const RESEARCH_BONUS: usize = 0xa0;
 pub const TASK_CAPACITY: usize = 0xa8;
@@ -26,8 +27,8 @@ pub const SOURCE_LOCATION: usize = 0x1b0;
 pub const SOURCE_LOCATION_ACTIVE: usize = 0x1b8;
 pub const VARIABLES: usize = 0x1c0;
 pub const FLAGS: usize = 0x1f8;
-const TRAIT_ID_VTABLE_RVA: usize = 0x027c_31e0;
-const TECHNOLOGY_VTABLE_RVA: usize = 0x029f_17a0;
+const TRAIT_ID_VTABLE_RVA: Rva = Rva(0x027c_31e0);
+const TECHNOLOGY_VTABLE_RVA: Rva = Rva(0x029f_17a0);
 const TECHNOLOGY_TEMPLATE: usize = 0x160;
 const TECHNOLOGY_STATUS: usize = 0x158;
 const TECHNOLOGY_HANDLE: usize = 8;
@@ -36,7 +37,7 @@ const TECHNOLOGY_TEMPLATE_INDEX: usize = 0x38;
 const TECHNOLOGY_TEMPLATE_TOKEN: usize = 0x3c;
 const UNLOCKED_TRAIT_VALUE: usize = 0x20;
 const UNLOCKED_TRAIT_TOKEN: usize = 0x28;
-const TASK_VTABLE_RVA: usize = 0x0286_48a8;
+const TASK_VTABLE_RVA: Rva = Rva(0x0286_48a8);
 const POLICY_NAME: usize = 0x10;
 const POLICY_COUNTRY: usize = 0x30;
 const POLICY_CACHED_SCORE: usize = 0x50;
@@ -215,8 +216,7 @@ pub fn capture_policies_selected(
             return Err("organisation policy fields unreadable");
         }
         if u64::from_le_bytes(identity[..8].try_into().unwrap())
-            != base
-                .checked_add(crate::cproduction_status::POLICY_VTABLE_RVA)
+            != engine_sites::at(base, crate::cproduction_status::POLICY_VTABLE_RVA)
                 .ok_or("organisation policy module overflow")? as u64
         {
             return Err("organisation policy vtable mismatch");
@@ -385,8 +385,7 @@ pub fn capture_selected(
         let mut index = 0;
         while let Some(node) = cursor.next(memory)? {
             if field::<u64>(memory, node, UNLOCKED_TRAIT_VALUE)?
-                != base
-                    .checked_add(TRAIT_ID_VTABLE_RVA)
+                != engine_sites::at(base, TRAIT_ID_VTABLE_RVA)
                     .ok_or("organisation trait module overflow")? as u64
             {
                 return Err("organisation unlocked trait identity mismatch");
@@ -415,9 +414,7 @@ pub fn capture_selected(
             u64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap()) as usize
         });
         if fields[0]
-            != base
-                .checked_add(TASK_VTABLE_RVA)
-                .ok_or("organisation task module overflow")?
+            != engine_sites::at(base, TASK_VTABLE_RVA).ok_or("organisation task module overflow")?
         {
             return Err("organisation task vtable mismatch");
         }
@@ -425,8 +422,7 @@ pub fn capture_selected(
             None
         } else {
             if pointer_field(memory, fields[1], 0)?
-                != base
-                    .checked_add(TECHNOLOGY_VTABLE_RVA)
+                != engine_sites::at(base, TECHNOLOGY_VTABLE_RVA)
                     .ok_or("organisation technology module overflow")?
             {
                 return Err("organisation task technology vtable mismatch");
@@ -447,15 +443,13 @@ pub fn capture_selected(
             let header = field::<[u8; 16]>(memory, fields[2], 0)?;
             let vtable = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
                 .map_err(|_| "organisation line pointer overflow")?;
-            if ![
+            let candidates = [
                 engine_native::cmilitary_production_line::VTABLE_RVA,
                 engine_native::cnaval_production_line::VTABLE_RVA,
                 engine_native::cship_refit_production_line::VTABLE_RVA,
                 engine_native::crailway_gun_production_line::VTABLE_RVA,
-            ]
-            .iter()
-            .any(|&rva| base.checked_add(rva) == Some(vtable))
-            {
+            ];
+            if engine_sites::which(base, vtable, &candidates).is_none() {
                 return Err("organisation task line identity mismatch");
             }
             Some(u64::from_le_bytes(header[8..].try_into().unwrap()))

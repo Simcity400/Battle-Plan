@@ -124,15 +124,8 @@ impl Family {
     /// What the build gate must verify before this family touches the game.
     fn piece(self) -> Piece {
         match self {
-            Self::Hourly => Piece::new(
-                "hourly sampling",
-                "hourly hook site, clock, country sizing and every sampled struct layout",
-            ),
-            // A sentinel proves 16 bytes, not function identity, branch targets or the writer set.
-            _ => Piece::new(
-                self.name(),
-                "hook sites, calling contracts, writer inventory and struct layouts",
-            ),
+            Self::Hourly => Piece::new("hourly sampling"),
+            _ => Piece::new(self.name()),
         }
     }
     fn verified(self) -> Verified<()> {
@@ -779,9 +772,8 @@ fn audit_report(
         }));
     }
     if report.sites.iter().any(|site| {
-        !declared
-            .iter()
-            .any(|patch| base.checked_add(patch.rva) == Some(*site))
+        let key = engine_sites::reference(base, *site);
+        !declared.iter().any(|patch| key == Some(patch.rva))
     }) {
         report.failure = Some(ObservedFailure {
             kind: Kind::Registration,
@@ -793,9 +785,10 @@ fn audit_report(
         return Ok(None);
     };
     let site = if let Some(at) = failure.site {
+        let key = engine_sites::reference(base, at);
         patches
             .iter()
-            .find(|patch| base.checked_add(patch.rva) == Some(at))
+            .find(|patch| key == Some(patch.rva))
             .map(|patch| patch.name.clone())
             .ok_or("installation failure site is not registered")?
     } else {

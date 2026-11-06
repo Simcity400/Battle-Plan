@@ -39,14 +39,14 @@ impl Fixture {
         let status = pointer + cstate::BUILDING_STATUS;
         let building = BUILDINGS + index * 0x220;
         let vectors = VECTORS + index * 0x20;
-        self.put(pointer, (cstate::VTABLE_RVA as u64).to_le_bytes());
+        self.put(pointer, (cstate::VTABLE_RVA.0 as u64).to_le_bytes());
         self.put(pointer + cstate::ID, (index as u32 + 1).to_le_bytes());
-        self.put(status, (status::VTABLE_RVA as u64).to_le_bytes());
+        self.put(status, (status::VTABLE_RVA.0 as u64).to_le_bytes());
         self.array(status + status::BUILDING_INDICES, vectors, 2);
         self.put(vectors + 4, 0_i32.to_le_bytes());
         self.array(status + status::BUILDINGS, vectors + 8, 1);
         self.put(vectors + 8, (building as u64).to_le_bytes());
-        self.put(building, (building::VTABLE_RVA as u64).to_le_bytes());
+        self.put(building, (building::VTABLE_RVA.0 as u64).to_le_bytes());
         self.put(
             building + building::BUILDING_STATUS,
             (status as u64).to_le_bytes(),
@@ -78,7 +78,7 @@ impl Fixture {
         let building = BUILDINGS + index * 0x220;
         let status = 0x50000 + index * 0x400;
         self.put(info + info::BUILDING, (building as u64).to_le_bytes());
-        self.put(building, (building::VTABLE_RVA as u64).to_le_bytes());
+        self.put(building, (building::VTABLE_RVA.0 as u64).to_le_bytes());
         self.put(
             building + building::BUILDING_STATUS,
             (status as u64).to_le_bytes(),
@@ -117,7 +117,7 @@ impl Memory for Fixture {
             }
             return false;
         }
-        if address == database::SINGLETON_RVA && output.len() == 8 {
+        if address == database::SINGLETON_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
             return true;
         }

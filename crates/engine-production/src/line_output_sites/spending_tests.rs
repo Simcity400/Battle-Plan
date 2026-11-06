@@ -23,7 +23,7 @@ impl Memory for World {
             ),
             (INSTANT_ARMY_TRAINING, self.training),
         ] {
-            if address == BASE + rva {
+            if address == BASE + rva.0 {
                 assert_eq!(output.len(), 1);
                 return flag.is_some_and(|value| {
                     output[0] = value;
@@ -31,7 +31,7 @@ impl Memory for World {
                 });
             }
         }
-        if address == BASE + cgame_state::SINGLETON_RVA {
+        if address == BASE + cgame_state::SINGLETON_RVA.0 {
             assert_eq!(output.len(), 8);
             return self.singleton.is_some_and(|value| {
                 output.copy_from_slice(&(value as u64).to_le_bytes());
@@ -79,7 +79,7 @@ impl World {
             world.dword(LINKS + raw * 4, slot);
         }
         for (country, raw) in [(0x2000, 5), (0x4000, 7)] {
-            world.word(country, (BASE + ccountry::VTABLE_RVA) as u64);
+            world.word(country, (BASE + ccountry::VTABLE_RVA.0) as u64);
             world.dword(country + ccountry::ID, raw);
         }
         world.dword(STATE + cgame_state::LOCAL_PLAYER_COUNTRY, 5);

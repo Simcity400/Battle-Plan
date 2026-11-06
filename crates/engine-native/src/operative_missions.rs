@@ -20,10 +20,12 @@ use crate::{
     cstate,
     csubject_relation::{Name, NameWalk},
     memory::Raw,
-    modifier_accumulator, modifier_definition::NamedKey, operative_action,
-    operative_action_implementation, read,
+    modifier_accumulator,
+    modifier_definition::NamedKey,
+    operative_action, operative_action_implementation, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Script name of the modifier whose effective values scale a
 /// root-out-resistance mission. Its key is resolved by name when first asked
@@ -38,20 +40,18 @@ pub const RESISTANCE_ACTIVE: usize = 0x208;
 const MAP_SELECTED: usize = 0xf64;
 const OPERATIVE_CONTROLLER: usize = 0xa48;
 const WARNING_HANDLES: usize = 0x1b8;
-const STATIC_MODIFIER_DATABASE: usize = 0x033d_e590;
+const STATIC_MODIFIER_DATABASE: Rva = Rva(0x033d_e590);
 const NATIONALITY_MODIFIER: usize = 0x130;
-const NETWORK_GAIN_CHEAT: usize = 0x033d_da94;
+const NETWORK_GAIN_CHEAT: Rva = Rva(0x033d_da94);
 const CLIENT_COUNTRY: usize = 0x520;
 const CLIENT_COUNTRY_FALLBACK: usize = 0x524;
 
 fn warning_handles(memory: &impl Memory, base: usize) -> Result<Vec<u64>, &'static str> {
     use crate::command_inputs::{IDLER_RVA, IN_GAME_IDLER_VTABLE_RVA};
-    let idler = field::<u64>(memory, base, IDLER_RVA)? as usize;
+    let idler = field::<u64>(memory, site(base, IDLER_RVA)?, 0)? as usize;
     if idler == 0
         || read::<u64>(memory, idler)
-            != base
-                .checked_add(IN_GAME_IDLER_VTABLE_RVA)
-                .map(|value| value as u64)
+            != engine_sites::at(base, IN_GAME_IDLER_VTABLE_RVA).map(|value| value as u64)
     {
         return Err("operative map idler unavailable");
     }
@@ -209,9 +209,7 @@ fn walk_keyed(
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut mission_vtables = operative_action_implementation::Vtables::new(base);
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("operative vtable address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("operative vtable withheld")?;
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let warnings = warning_handles(memory, base).ok();
@@ -376,9 +374,8 @@ fn ideology(
     if group == 0 {
         return Ok(None);
     }
-    let expected = base
-        .checked_add(cideology_group::VTABLE_RVA)
-        .ok_or("operative mission ideology vtable overflow")?;
+    let expected = engine_sites::at(base, cideology_group::VTABLE_RVA)
+        .ok_or("operative mission ideology vtable withheld")?;
     if read::<u64>(memory, group) != Some(expected as u64) {
         return Err("operative mission ideology vtable mismatch");
     }
@@ -545,7 +542,9 @@ pub fn effect_roots<M: Memory>(
     let (keys, key_count) = match variant {
         operative_action::BUILD_NETWORK => ([0x212, 0x213], 2),
         operative_action::COUNTER_INTELLIGENCE => ([0x1ff, 0], 1),
-        operative_action::ROOT_OUT_RESISTANCE => ([resolve_root_out(root_out, memory, base)?, 0], 1),
+        operative_action::ROOT_OUT_RESISTANCE => {
+            ([resolve_root_out(root_out, memory, base)?, 0], 1)
+        }
         operative_action::BOOST_IDEOLOGY => ([0x20e, 0], 1),
         operative_action::CONTROL_TRADE => ([0x20b, 0], 1),
         operative_action::DIPLOMATIC_PRESSURE => ([0x20c, 0], 1),
@@ -587,12 +586,12 @@ pub fn effect_roots<M: Memory>(
     }
     roots[1] = at(row.native_pointer, MODIFIER_ACCUMULATOR)?;
     if has_nationality(memory, countries, row.native_pointer, context)? {
-        let database = field::<u64>(memory, base, STATIC_MODIFIER_DATABASE)? as usize;
+        let database = field::<u64>(memory, site(base, STATIC_MODIFIER_DATABASE)?, 0)? as usize;
         if database != 0 {
             let modifier = field::<u64>(memory, database, NATIONALITY_MODIFIER)? as usize;
             if modifier != 0 {
                 if field::<u64>(memory, modifier, 0)?
-                    != at(base, crate::cstatic_modifier::VTABLE_RVA)? as u64
+                    != site(base, crate::cstatic_modifier::VTABLE_RVA)? as u64
                 {
                     return Err("operative nationality modifier identity mismatch");
                 }
@@ -611,7 +610,7 @@ pub fn effect_roots<M: Memory>(
     };
     let mut network_gain_scale = 1;
     if variant == operative_action::BUILD_NETWORK
-        && field::<u8>(memory, base, NETWORK_GAIN_CHEAT)? != 0
+        && field::<u8>(memory, site(base, NETWORK_GAIN_CHEAT)?, 0)? != 0
     {
         let mut client = field::<u32>(memory, game, CLIENT_COUNTRY)?;
         if client as i32 <= 0 {
@@ -716,15 +715,17 @@ fn has_nationality<M: Memory>(
 
 /// A mission's nonnull target state, authenticated, and its id.
 fn state_id(memory: &impl Memory, base: usize, state: usize) -> Result<i32, &'static str> {
-    let expected = base
-        .checked_add(cstate::VTABLE_RVA)
-        .ok_or("operative mission state vtable overflow")?;
+    let expected = engine_sites::at(base, cstate::VTABLE_RVA)
+        .ok_or("operative mission state vtable withheld")?;
     if read::<u64>(memory, state) != Some(expected as u64) {
         return Err("operative mission state vtable mismatch");
     }
     field(memory, state, cstate::ID)
 }
 
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("operative site withheld")
+}
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)

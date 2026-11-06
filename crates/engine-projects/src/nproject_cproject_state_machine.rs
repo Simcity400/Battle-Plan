@@ -6,9 +6,10 @@ use crate::{
     memory::{RecordField, RecordLayout},
     nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
 };
+use engine_sites::Rva;
 
 /// Project-state-machine primary vtable.
-pub const VTABLE_RVA: usize = 0x02aa_8930;
+pub const VTABLE_RVA: Rva = Rva(0x02aa_8930);
 /// Current-state pointer required to name one of four inline states.
 pub const CURRENT_STATE: usize = 0x08;
 /// Not-completed u8 flag, restricted to zero or one.
@@ -173,7 +174,7 @@ pub(crate) struct Decoder {
 impl Decoder {
     pub(crate) fn new(base: usize) -> Result<Self, &'static str> {
         let relocated = |rva| {
-            base.checked_add(rva)
+            engine_sites::at(base, rva)
                 .map(|v| v as u64)
                 .ok_or("module address overflow")
         };
@@ -246,7 +247,7 @@ mod tests {
 
     fn machine() -> [u8; 0x268] {
         let mut bytes = [0; 0x268];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8..16].copy_from_slice(&(0x1000_u64 + SIMPLE_STATE_1 as u64).to_le_bytes());
         bytes[NOT_COMPLETED] = 1;
         for (index, offset) in STATES.into_iter().enumerate() {
@@ -255,7 +256,7 @@ mod tests {
             } else {
                 simple::VTABLE_RVA
             };
-            bytes[offset..offset + 8].copy_from_slice(&(vtable as u64).to_le_bytes());
+            bytes[offset..offset + 8].copy_from_slice(&(vtable.0 as u64).to_le_bytes());
             bytes[offset + simple::STATE_ENUM..offset + simple::STATE_ENUM + 4]
                 .copy_from_slice(&(index as u32 + 10).to_le_bytes());
         }

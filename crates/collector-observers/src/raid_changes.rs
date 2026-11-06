@@ -375,8 +375,8 @@ pub trait Changes: Sync {
 
 impl Changes for Watches {
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64> {
-        let origin_calls = (family == Family::Routes)
-            .then(|| self.origin_calls.load(Ordering::Acquire));
+        let origin_calls =
+            (family == Family::Routes).then(|| self.origin_calls.load(Ordering::Acquire));
         if family == Family::Routes && self.origin_flights.load(Ordering::SeqCst) != 0 {
             return None;
         }
@@ -624,12 +624,12 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "raid_changes")
-            && MUTATIONS.iter().all(|(site, _)| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            })
+            && MUTATIONS
+                .iter()
+                .all(|(site, _)| crate::located(base, site.rva).is_ok())
         {
             BASE.store(base, Ordering::Release);
             let callbacks: [usize; SITES] = [
@@ -670,20 +670,23 @@ impl Hooks {
                 refresh_origin_trade_route as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| "native hook construction failed")?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
             // Without the daily pass's patch every store takes the setter's
             // own path.
             let daily = DAILY_CAPACITIES;
-            if crate::hook::installation::sentinel(memory, base + daily.rva, daily.sentinel) {
+            if crate::located(base, daily.rva).is_ok() {
+                let code = engine_sites::hook(base, daily.rva)?;
                 let hook = unsafe {
                     Hook::new(
-                        base + daily.rva,
+                        code.address,
                         daily_refresh_base_capacities as *const () as usize,
-                        daily.sentinel,
+                        code.sentinel::<16>()?,
                     )
                 }
                 .map_err(|_| "native hook construction failed")?;
@@ -1579,7 +1582,7 @@ mod tests {
         }
         fn pass(&self) {
             BASE.store(
-                self.at(0) - engine_native::cgame_state::SINGLETON_RVA,
+                self.at(0) - engine_native::cgame_state::SINGLETON_RVA.0,
                 Ordering::Release,
             );
             ORIGINAL[CAPACITY_SITE].store(store as *const () as usize, Ordering::Release);
@@ -1793,7 +1796,7 @@ mod tests {
             0
         }
         BASE.store(
-            at - engine_native::cgame_state::SINGLETON_RVA,
+            at - engine_native::cgame_state::SINGLETON_RVA.0,
             Ordering::Release,
         );
         ORIGINAL[CAPACITY_SITE].store(store as *const () as usize, Ordering::Release);

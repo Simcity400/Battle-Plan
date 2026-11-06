@@ -1923,9 +1923,14 @@ pub(crate) fn capture(
     if let Some(note) = &content.order_note {
         println!("Content order is unverified: {note}");
     }
-    // The loaded campaign is read through the recognised build's memory layout.
-    if !exe.recognised() {
-        println!("The loaded campaign can't be read on this unrecognised build; attaching now.");
+    // The loaded campaign is read only once the game's struct layouts verify on this build.
+    let base = crate::game_sites::module_base(&process, pid)?;
+    let readable = crate::game_sites::locate(&process.path, base)?
+        .layouts()
+        .map_err(|withheld| withheld.to_string())
+        .and_then(|()| engine_native::cgame_state::clock_sites(base).map_err(str::to_owned));
+    if let Err(withheld) = readable {
+        println!("The loaded campaign can't be read on this build ({withheld}); attaching now.");
     } else if !wait_for_loaded_campaign(&process, pid, control)? {
         return Ok(CaptureOutcome {
             detach_requested: true,
@@ -3503,16 +3508,8 @@ fn wait_for_loaded_campaign(
     pid: u32,
     control: &Control,
 ) -> Result<bool, String> {
-    let name = process
-        .path
-        .file_name()
-        .ok_or("game executable has no name")?
-        .to_owned();
-    let base = windows::modules(pid)?
-        .into_iter()
-        .find(|module| module.path.file_name() == Some(name.as_os_str()))
-        .ok_or("game module not found")?
-        .base;
+    let base = crate::game_sites::module_base(process, pid)?;
+    crate::game_sites::locate(&process.path, base)?;
     let memory = ProcessMemory(&process.handle);
     let mut announced = false;
     loop {
@@ -3713,6 +3710,9 @@ fn print_status(path: &Path) {
     {
         if let Some((site, reason)) = destruction_refusal(&value) {
             eprintln!("EquipmentDestruction refusal site={site}: {reason}");
+        }
+        if let Some(panic) = value["worker_panic"].as_str() {
+            eprintln!("Collector worker panic: {panic}");
         }
         if let Some(error) = value["error"]
             .as_str()

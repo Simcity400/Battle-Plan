@@ -4,9 +4,10 @@ use crate::{
     Memory, ccontinuous_national_focus, ccountry, cnational_focus, cnational_focus_tree,
     cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CNationalFocusProgress primary vtable.
-pub const VTABLE_RVA: usize = 0x027b_7ad8;
+pub const VTABLE_RVA: Rva = Rva(0x027b_7ad8);
 /// Focus progress's owning country pointer; the constructor stores its RDX
 /// argument here.
 pub const COUNTRY: usize = 0x08;
@@ -29,10 +30,10 @@ pub const COMPLETED_STRIDE: usize = 8;
 pub const PAUSED: usize = 0xb0;
 
 /// Focus daily update follows country/diplomacy joins and completes before hourly return.
-pub const DAILY_UPDATE_RVA: usize = 0x002e_8bd0;
+pub const DAILY_UPDATE_RVA: Rva = Rva(0x002e_8bd0);
 
 /// National-focus completion entry; no event hook is installed.
-pub const COMPLETED_RVA: usize = 0x002e_7d00;
+pub const COMPLETED_RVA: Rva = Rva(0x002e_7d00);
 /// Exact national-focus completion entry bytes.
 pub const COMPLETED_SENTINEL: [u8; 16] = [
     0x4c, 0x89, 0x4c, 0x24, 0x20, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
@@ -215,8 +216,7 @@ pub fn walk_buffer(
     let memory = &batched;
     let result = match root {
         Some(root)
-            if base
-                .checked_add(VTABLE_RVA)
+            if engine_sites::at(base, VTABLE_RVA)
                 .is_some_and(|expected| read::<u64>(memory, root) == Some(expected as u64)) =>
         {
             let outcome = summary(memory, country, country_id, root, &mut rows, &mut arena)
@@ -465,7 +465,7 @@ mod tests {
             let mut fixture = Self(vec![0; 0x5000]);
             fixture.u64(COUNTRY + ccountry::FOCUS_PROGRESS, ROOT as u64);
             fixture.u64(COUNTRY + ccountry::FOCUS_TREE, 0x4000);
-            fixture.u64(ROOT, (BASE + VTABLE_RVA) as u64);
+            fixture.u64(ROOT, (BASE + VTABLE_RVA.0) as u64);
             fixture.u64(ROOT + CURRENT, 0x4100);
             fixture.u64(ROOT + CONTINUOUS, 0x4200);
             fixture.u64(ROOT + PROGRESS, (i64::MAX - 17) as u64);

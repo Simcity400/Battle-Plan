@@ -1507,7 +1507,7 @@ mod raid_memos {
             GAME + cgame_state::RAID_SYSTEM,
             &(SYSTEM as u64).to_le_bytes(),
         );
-        put(SYSTEM, &(craid_system::VTABLE_RVA as u64).to_le_bytes());
+        put(SYSTEM, &(craid_system::VTABLE_RVA.0 as u64).to_le_bytes());
         for ((memo, table), distance) in MEMOS.into_iter().zip(TABLES).zip([900_000i64, 500_000]) {
             put(SYSTEM + memo + BUCKETS, &(table as u64).to_le_bytes());
             put(SYSTEM + memo + COUNT, &1u32.to_le_bytes());

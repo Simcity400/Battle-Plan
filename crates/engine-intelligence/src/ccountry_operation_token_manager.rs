@@ -1,13 +1,14 @@
 //! Country operation-token manager. Repeated reads do not establish hourly
 //! writer coverage or consistency.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, operation_token_map::Header, operation_token_target_entry as entry, read,
     walk::Outcome,
 };
 
 /// Operation-token manager vtable.
-pub const VTABLE_RVA: usize = 0x02a3_9558;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_9558);
 /// Owning country pointer.
 pub const COUNTRY: usize = 0x08;
 /// Inline target-country map using hash-table insertion.
@@ -77,11 +78,9 @@ pub fn walk_buffer(
 ) -> Walk {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
+        let expected = engine_sites::at(base, VTABLE_RVA)
             .ok_or("operation token vtable address overflow")?;
-        let empty_storage = base
-            .checked_add(crate::operation_token_map::EMPTY_TARGET_STORAGE_RVA)
+        let empty_storage = engine_sites::at(base, crate::operation_token_map::EMPTY_TARGET_STORAGE_RVA)
             .ok_or("operation token empty storage address overflow")?;
         let mut found_country = false;
         let mut len = 0_usize;
@@ -241,7 +240,7 @@ mod tests {
             put(
                 &mut bytes,
                 country,
-                &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(&mut bytes, country + ccountry::ID, &id.to_le_bytes());
             put(
@@ -252,7 +251,7 @@ mod tests {
             put(
                 &mut bytes,
                 manager,
-                &((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -262,7 +261,7 @@ mod tests {
             put(
                 &mut bytes,
                 manager + TARGETS + operation_token_map::TABLE,
-                &((BASE + operation_token_map::EMPTY_TARGET_STORAGE_RVA) as u64).to_le_bytes(),
+                &((BASE + operation_token_map::EMPTY_TARGET_STORAGE_RVA.0) as u64).to_le_bytes(),
             );
         }
         let header = FIRST_MANAGER + TARGETS;
@@ -451,7 +450,7 @@ mod tests {
         put(
             &mut bytes,
             header + operation_token_map::TABLE,
-            &((BASE + operation_token_map::EMPTY_TARGET_STORAGE_RVA) as u64).to_le_bytes(),
+            &((BASE + operation_token_map::EMPTY_TARGET_STORAGE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, header + operation_token_map::COUNT, &[0; 9]);
         assert_eq!(

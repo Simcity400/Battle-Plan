@@ -56,21 +56,21 @@ impl Fixture {
         for index in 1..4 {
             f.u32(0x10820 + index * 4, 1);
         }
-        f.pointer(COUNTRY, BASE + ccountry::VTABLE_RVA);
+        f.pointer(COUNTRY, BASE + ccountry::VTABLE_RVA.0);
         f.u32(COUNTRY + ccountry::ID, 3);
         f.pointer(GAME + cgame_state::STRATEGIC_AIR_MANAGER, MANAGER);
-        f.pointer(MANAGER, BASE + cstrategic_air_manager::VTABLE_RVA);
+        f.pointer(MANAGER, BASE + cstrategic_air_manager::VTABLE_RVA.0);
         f.array(MANAGER + cstrategic_air_manager::COUNTRY_AIR, 0x12800, 3);
         f.pointer(0x12808, AIR);
-        f.pointer(AIR, BASE + cstrategic_air::VTABLE_RVA);
+        f.pointer(AIR, BASE + cstrategic_air::VTABLE_RVA.0);
         f.u32(AIR + cstrategic_air::COUNTRY, 2);
         f.array(AIR + cstrategic_air::HISTORY_TABLE, 0x13800, 24);
         f.pointer(0x13800 + 23 * 8, HISTORY);
-        f.pointer(HISTORY, BASE + cloop_history::VTABLE_RVA);
+        f.pointer(HISTORY, BASE + cloop_history::VTABLE_RVA.0);
         f.pointer(HISTORY + cloop_history::SELF_REFERENCE, HISTORY);
         f.u32(HISTORY + cloop_history::FIELD_COUNT, FIELD_COUNT as u32);
         f.pointer(HISTORY + cloop_history::DAILY_WINDOW, WINDOW);
-        f.pointer(WINDOW, BASE + loop_history_window::VTABLE_RVA);
+        f.pointer(WINDOW, BASE + loop_history_window::VTABLE_RVA.0);
         f.array(WINDOW + loop_history_window::RECORDS, 0x15800, 30);
         f.u32(WINDOW + loop_history_window::CAPACITY, 30);
         f.u32(WINDOW + loop_history_window::CURRENT_SLOT, 29);
@@ -80,11 +80,11 @@ impl Fixture {
         f.pointer(0x15800 + 29 * 8, RECORD);
         f.array(RECORD, VALUES, FIELD_COUNT as u32);
         f.pointer(RECORD + loop_history_record_fields::HISTORY, HISTORY);
-        f.pointer(REGION, BASE + cstrategic_region::VTABLE_RVA);
+        f.pointer(REGION, BASE + cstrategic_region::VTABLE_RVA.0);
         f.u32(REGION + cstrategic_region::ID, 23);
         f.array(AIR + cstrategic_air::POOLS, 0x138c0, 1);
         f.pointer(0x138c0, POOL);
-        f.pointer(POOL, BASE + cair_wing_pool::VTABLE_RVA);
+        f.pointer(POOL, BASE + cair_wing_pool::VTABLE_RVA.0);
         f.array(POOL + 0x28, 0x19800, 2);
         f
     }
@@ -348,10 +348,10 @@ fn air_loss_family_selection_keeps_native_priority_unknown_and_content_flags() {
     let mut f = Fixture::new();
     const WING: usize = 0x19100;
     const DEFINITION: usize = 0x1a000;
-    f.pointer(WING, BASE + cair_wing::VTABLE_RVA);
+    f.pointer(WING, BASE + cair_wing::VTABLE_RVA.0);
     f.pointer(WING + cair_wing::POOL, POOL);
     f.pointer(POOL + cair_wing_pool::DEFINITION, DEFINITION);
-    f.pointer(DEFINITION, BASE + csub_unit_definition::VTABLE_RVA);
+    f.pointer(DEFINITION, BASE + csub_unit_definition::VTABLE_RVA.0);
     for (flags, own, credited) in [
         (1_u64 << 32, 3, 44),
         (1 << 17, 10, 51),
@@ -370,14 +370,14 @@ fn air_loss_family_selection_keeps_native_priority_unknown_and_content_flags() {
         assert_eq!(selected_family(&f.memory(), BASE, WING, 0), Ok(own));
         assert_eq!(selected_family(&f.memory(), BASE, WING, 1), Ok(credited));
     }
-    f.pointer(DEFINITION, BASE + csub_unit_definition::NULL_VTABLE_RVA);
+    f.pointer(DEFINITION, BASE + csub_unit_definition::NULL_VTABLE_RVA.0);
     assert_eq!(selected_family(&f.memory(), BASE, WING, 0), Ok(0));
     f.pointer(DEFINITION, 0);
     assert_eq!(
         selected_family(&f.memory(), BASE, WING, 0),
         Err("air loss definition form unsupported")
     );
-    f.pointer(DEFINITION, BASE + csub_unit_definition::VTABLE_RVA);
+    f.pointer(DEFINITION, BASE + csub_unit_definition::VTABLE_RVA.0);
     let memory = SliceMemory {
         base: GAME,
         bytes: &f.0[..DEFINITION - GAME + csub_unit_definition::AIR_FLAGS + 7],
@@ -439,18 +439,18 @@ impl ScaleFixture {
         f.array(cgame_state::COUNTRIES, countries_at, countries + 1);
         f.array(cgame_state::COUNTRY_LINKS, links_at, countries + 1);
         f.pointer(cgame_state::STRATEGIC_AIR_MANAGER, address + 0x1000);
-        f.pointer(0x1000, BASE + cstrategic_air_manager::VTABLE_RVA);
+        f.pointer(0x1000, BASE + cstrategic_air_manager::VTABLE_RVA.0);
         f.array(
             0x1000 + cstrategic_air_manager::COUNTRY_AIR,
             manager_slots,
             countries + 1,
         );
-        f.pointer(0x2000, BASE + csub_unit_definition::VTABLE_RVA);
+        f.pointer(0x2000, BASE + csub_unit_definition::VTABLE_RVA.0);
         f.bytes(
             0x2000 + csub_unit_definition::AIR_FLAGS,
             &(1_u64 << 18).to_le_bytes(),
         );
-        f.pointer(0x2800, BASE + cstrategic_region::VTABLE_RVA);
+        f.pointer(0x2800, BASE + cstrategic_region::VTABLE_RVA.0);
         f.u32(0x2800 + cstrategic_region::ID, 1);
         for country in 1..=countries {
             let first = bundles_at + (country - 1) * BUNDLE;
@@ -463,18 +463,18 @@ impl ScaleFixture {
             let wing = first + 0x6e0;
             f.pointer(countries_at + country * 8, address + first);
             f.u32(links_at + country * 4, country as u32);
-            f.pointer(first, BASE + ccountry::VTABLE_RVA);
+            f.pointer(first, BASE + ccountry::VTABLE_RVA.0);
             f.u32(first + ccountry::ID, country as u32);
             f.pointer(manager_slots + country * 8, address + air);
-            f.pointer(air, BASE + cstrategic_air::VTABLE_RVA);
+            f.pointer(air, BASE + cstrategic_air::VTABLE_RVA.0);
             f.u32(air + cstrategic_air::COUNTRY, country as u32);
             f.array(air + cstrategic_air::HISTORY_TABLE, first + 0x570, 2);
             f.pointer(first + 0x578, address + history);
-            f.pointer(history, BASE + cloop_history::VTABLE_RVA);
+            f.pointer(history, BASE + cloop_history::VTABLE_RVA.0);
             f.pointer(history + cloop_history::SELF_REFERENCE, address + history);
             f.u32(history + cloop_history::FIELD_COUNT, FIELD_COUNT as u32);
             f.pointer(history + cloop_history::DAILY_WINDOW, address + window);
-            f.pointer(window, BASE + loop_history_window::VTABLE_RVA);
+            f.pointer(window, BASE + loop_history_window::VTABLE_RVA.0);
             f.array(window + loop_history_window::RECORDS, first + 0x580, 30);
             f.u32(window + loop_history_window::CAPACITY, 30);
             f.u32(window + loop_history_window::CURRENT_SLOT, 29);
@@ -492,11 +492,11 @@ impl ScaleFixture {
             );
             f.array(air + cstrategic_air::POOLS, first + 0x6d0, 1);
             f.pointer(first + 0x6d0, address + pool);
-            f.pointer(pool, BASE + cair_wing_pool::VTABLE_RVA);
+            f.pointer(pool, BASE + cair_wing_pool::VTABLE_RVA.0);
             f.array(pool + cair_wing_pool::WINGS, first + 0x720, 1);
             f.pointer(first + 0x720, address + wing);
             f.pointer(pool + cair_wing_pool::DEFINITION, address + 0x2000);
-            f.pointer(wing, BASE + cair_wing::VTABLE_RVA);
+            f.pointer(wing, BASE + cair_wing::VTABLE_RVA.0);
             f.pointer(wing + cair_wing::POOL, address + pool);
             f.airs.push(address + air);
             f.wings.push(address + wing);

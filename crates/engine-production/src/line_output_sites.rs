@@ -32,20 +32,19 @@ use crate::{
     cmilitary_production_line, cnaval_production_line, cpdx_array::Array, cproduction_line,
     cproduction_status, crailway_gun_production_line, cship_refit_production_line, read,
 };
+use engine_sites::Rva;
 
 pub struct HookSite {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
     /// The return address (RVA) of each equipment-production call, by
     /// [`PRODUCERS`] index: the same index pairs a delivery with its credit.
-    pub callers: [usize; 4],
+    pub callers: [Rva; 4],
 }
 
 /// An entry observation site that needs no caller classification.
 pub struct EntrySite {
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 
 /// Equipment-production implementations, in the order of [`HookSite::callers`].
@@ -59,13 +58,13 @@ pub const PRODUCERS: [&str; 4] = ["military", "naval", "railway gun", "ship refi
 /// line at entry. Its entry instruction spills RBX to the stack.
 pub const CREDIT: HookSite = HookSite {
     name: "credit",
-    rva: 0x019b_ece0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x48, 0x83, 0xec, 0x20,
-        0x48,
+    rva: Rva(0x019b_ece0),
+    callers: [
+        Rva(0x00ff_2ef7),
+        Rva(0x00ff_3980),
+        Rva(0x00ff_478c),
+        Rva(0x00ff_62f5),
     ],
-
-    callers: [0x00ff_2ef7, 0x00ff_3980, 0x00ff_478c, 0x00ff_62f5],
 };
 
 /// Delivery entry: RCX is the country's logistics status, RDX the variant
@@ -74,29 +73,25 @@ pub const CREDIT: HookSite = HookSite {
 /// to the stack.
 pub const DELIVERY: HookSite = HookSite {
     name: "delivery",
-    rva: 0x0140_ab50,
-    sentinel: [
-        0x4c, 0x89, 0x44, 0x24, 0x18, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-        0x41,
+    rva: Rva(0x0140_ab50),
+    callers: [
+        Rva(0x00ff_2e94),
+        Rva(0x00ff_38ec),
+        Rva(0x00ff_440d),
+        Rva(0x00ff_62d0),
     ],
-
-    callers: [0x00ff_2e94, 0x00ff_38ec, 0x00ff_440d, 0x00ff_62d0],
 };
 
 /// Rocket production entry; RCX is the line. Its six-byte entry prefix has
 /// no relative operands. The daily caller ignores RAX, which observers preserve.
 pub const ROCKET_ADVANCE: EntrySite = EntrySite {
-    rva: 0x00ff_5980,
-    sentinel: [
-        0x40, 0x57, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x8b, 0x41, 0x40, 0x48, 0x8b, 0xf9, 0x4d, 0x85,
-        0xc0,
-    ],
+    rva: Rva(0x00ff_5980),
 };
 
 /// DELIVERY's rocket-production caller.
-pub const ROCKET_DELIVERY_RETURN: usize = 0x00ff_5a7a;
+pub const ROCKET_DELIVERY_RETURN: Rva = Rva(0x00ff_5a7a);
 /// Rocket primary vtable.
-pub const ROCKET_VTABLE: usize = 0x029f_8a98;
+pub const ROCKET_VTABLE: Rva = Rva(0x029f_8a98);
 /// Rocket's owning production status.
 pub const ROCKET_STATUS: usize = 0x38;
 /// Rocket's bound variant pointer, passed to DELIVERY.
@@ -194,7 +189,7 @@ pub fn converting(memory: &impl Memory, line: usize) -> Result<bool, &'static st
 }
 
 /// Console flag tested by naval and railway-gun production.
-pub const INSTANT_ARMY_TRAINING: usize = 0x033d_da9b;
+pub const INSTANT_ARMY_TRAINING: Rva = Rva(0x033d_da9b);
 
 /// Classifies the already-applied CREDIT RDX input. Owner and producer must be
 /// authenticated first. A refusal affects both spending fields, not the
@@ -209,8 +204,7 @@ pub fn applied_spending(
     if producer >= PRODUCERS.len() {
         return Err("production output producer unsupported");
     }
-    let instant = base
-        .checked_add(crate::construction_ic_sites::INSTANT_CONSTRUCTION)
+    let instant = engine_sites::at(base, crate::construction_ic_sites::INSTANT_CONSTRUCTION)
         .and_then(|address| read::<u8>(memory, address))
         .ok_or("production output instant flag unreadable")?
         != 0;
@@ -218,14 +212,12 @@ pub fn applied_spending(
         return Ok((0, speed));
     }
     if matches!(producer, 1 | 2) {
-        let instant_training = base
-            .checked_add(INSTANT_ARMY_TRAINING)
+        let instant_training = engine_sites::at(base, INSTANT_ARMY_TRAINING)
             .and_then(|address| read::<u8>(memory, address))
             .ok_or("production output instant army training flag unreadable")?
             != 0;
         if instant_training {
-            let state = base
-                .checked_add(cgame_state::SINGLETON_RVA)
+            let state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
                 .and_then(|address| read::<u64>(memory, address))
                 .and_then(|pointer| usize::try_from(pointer).ok())
                 .filter(|&pointer| pointer != 0)
@@ -347,11 +339,9 @@ pub fn read_rocket_spending(
         RocketFailure::Country
     } else if design.is_none() {
         RocketFailure::Design
-    } else if field(0).and_then(|address| read::<u64>(memory, address))
-        != base
-            .checked_add(ROCKET_VTABLE)
-            .map(|address| address as u64)
-    {
+    } else if engine_sites::at(base, ROCKET_VTABLE).is_none_or(|vtable| {
+        field(0).and_then(|address| read::<u64>(memory, address)) != Some(vtable as u64)
+    }) {
         RocketFailure::Line
     } else {
         RocketFailure::None
@@ -363,8 +353,7 @@ pub fn read_rocket_spending(
         tick.failure = RocketFailure::Amount;
         return Some(tick);
     };
-    let instant = base
-        .checked_add(crate::construction_ic_sites::INSTANT_CONSTRUCTION)
+    let instant = engine_sites::at(base, crate::construction_ic_sites::INSTANT_CONSTRUCTION)
         .and_then(|address| read::<u8>(memory, address));
     match instant {
         Some(0) => tick.spent_raw = speed,
@@ -417,7 +406,7 @@ pub fn owning_country(
     memory: &impl Memory,
     base: usize,
     line: usize,
-    vtables: &[usize],
+    vtables: &[Rva],
 ) -> Result<u32, &'static str> {
     let mut identity = [0; 16];
     let mut status = [0; 8];
@@ -434,10 +423,7 @@ pub fn owning_country(
         return Err("production line owner unreadable");
     }
     let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap()) as usize;
-    if !vtables
-        .iter()
-        .any(|&rva| base.checked_add(rva) == Some(vtable))
-    {
+    if engine_sites::which(base, vtable, vtables).is_none() {
         return Err("production line vtable mismatch");
     }
     if u64::from_le_bytes(identity[8..].try_into().unwrap()) == 0 {
@@ -452,8 +438,8 @@ fn production_status_country(
     status: usize,
 ) -> Result<u32, &'static str> {
     if status == 0
-        || read::<u64>(memory, status).map(|v| v as usize)
-            != base.checked_add(cproduction_status::VTABLE_RVA)
+        || engine_sites::at(base, cproduction_status::VTABLE_RVA)
+            .is_none_or(|vtable| read::<u64>(memory, status) != Some(vtable as u64))
     {
         return Err("production status vtable mismatch");
     }
@@ -477,7 +463,7 @@ fn production_status_country(
         return Err("production country unreadable");
     }
     if Some(u64::from_le_bytes(country_identity[..8].try_into().unwrap()) as usize)
-        != base.checked_add(ccountry::VTABLE_RVA)
+        != engine_sites::at(base, ccountry::VTABLE_RVA)
     {
         return Err("production country vtable mismatch");
     }
@@ -516,12 +502,12 @@ mod tests {
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; COUNTRY + ccountry::PRODUCTION_STATUS + 8];
         for (address, value) in [
-            (LINE, BASE + cmilitary_production_line::VTABLE_RVA),
+            (LINE, BASE + cmilitary_production_line::VTABLE_RVA.0),
             (LINE + LINE_HANDLE, 0x11_0000_0021),
             (LINE + cproduction_line::PRODUCTION_STATUS, STATUS),
-            (STATUS, BASE + cproduction_status::VTABLE_RVA),
+            (STATUS, BASE + cproduction_status::VTABLE_RVA.0),
             (STATUS + cproduction_status::COUNTRY, COUNTRY),
-            (COUNTRY, BASE + ccountry::VTABLE_RVA),
+            (COUNTRY, BASE + ccountry::VTABLE_RVA.0),
             (COUNTRY + ccountry::ID, 5001),
             (COUNTRY + ccountry::PRODUCTION_STATUS, STATUS),
         ] {
@@ -543,7 +529,7 @@ mod tests {
             cship_refit_production_line::VTABLE_RVA,
         ] {
             let mut bytes = fixture();
-            bytes[LINE..LINE + 8].copy_from_slice(&((BASE + vtable) as u64).to_le_bytes());
+            bytes[LINE..LINE + 8].copy_from_slice(&((BASE + vtable.0) as u64).to_le_bytes());
             assert_eq!(country(&bytes, LINE), Ok(5001));
         }
     }

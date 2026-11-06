@@ -1,5 +1,6 @@
 //! CFaction's native identity, literal name, template, colour and ordered country membership.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cfaction_system, cfaction_template,
     memory::{RecordField, RecordLayout, RecordSources},
@@ -8,7 +9,7 @@ use crate::{
 };
 
 /// CFaction primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_2b58;
+pub const VTABLE_RVA: Rva = Rva(0x029e_2b58);
 
 /// CFaction packed reference (low u32 type, high u32 id).
 pub const REFERENCE: usize = 0x08;
@@ -36,7 +37,7 @@ pub const COLOR: usize = 0x9d0;
 /// Offset of the first of the four f32 components inside `CColor`.
 pub const COLOR_COMPONENTS: usize = 0x10;
 /// Colour primary vtable.
-pub const COLOR_VTABLE_RVA: usize = 0x0279_6208;
+pub const COLOR_VTABLE_RVA: Rva = Rva(0x0279_6208);
 /// Colour-override byte: clear for the leader country's colour, set for
 /// template or explicit colour. Saved raw after colour and before ideology.
 pub const COLOR_OVERRIDDEN: usize = 0x9c0;
@@ -85,8 +86,7 @@ pub fn manpower_into(
     let pool = faction
         .checked_add(MANPOWER_POOL)
         .ok_or("faction manpower pool address overflow")?;
-    let expected = base
-        .checked_add(crate::carmy_manpower_values::VTABLE_RVA)
+    let expected = engine_sites::at(base, crate::carmy_manpower_values::VTABLE_RVA)
         .ok_or("faction manpower vtable address overflow")? as u64;
     if read::<u64>(memory, pool) != Some(expected) {
         return Err("faction manpower pool vtable mismatch");
@@ -170,8 +170,7 @@ pub fn walk_advisors_buffer(
 ) -> NameWalk {
     let result = (|| {
         let roster = cfaction_system::roster(memory, base, game_state)?;
-        let advisor_vtable = base
-            .checked_add(crate::cadvisor::VTABLE_RVA)
+        let advisor_vtable = engine_sites::at(base, crate::cadvisor::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let mut len = 0_usize;
         let mut bytes_len = 0_usize;
@@ -434,8 +433,7 @@ pub(crate) fn identity(
     base: usize,
     pointer: usize,
 ) -> Result<u64, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("faction vtable mismatch");
@@ -502,8 +500,8 @@ fn presentation(
     }
     let qword = |bytes: &[u8], at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
     let dword = |bytes: &[u8], at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-    let module = |rva: usize| {
-        base.checked_add(rva)
+    let module = |key: Rva| {
+        engine_sites::at(base, key)
             .map(|address| address as u64)
             .ok_or("module address overflow")
     };
@@ -599,11 +597,11 @@ mod advisor_tests {
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x7000];
         p64(&mut bytes, GS + cgame_state::FACTION_SYSTEM, SYSTEM as u64);
-        p64(&mut bytes, SYSTEM, cfaction_system::VTABLE_RVA as u64);
+        p64(&mut bytes, SYSTEM, cfaction_system::VTABLE_RVA.0 as u64);
         array(&mut bytes, SYSTEM + cfaction_system::FACTIONS, ROSTER, 2);
         for (index, (faction, id)) in FACTIONS.into_iter().enumerate() {
             p64(&mut bytes, ROSTER + index * 8, faction as u64);
-            p64(&mut bytes, faction, VTABLE_RVA as u64);
+            p64(&mut bytes, faction, VTABLE_RVA.0 as u64);
             p64(&mut bytes, faction + REFERENCE, id);
         }
         array(&mut bytes, FACTIONS[0].0 + ADVISOR_SLOTS, SLOTS, 3);
@@ -617,7 +615,7 @@ mod advisor_tests {
             (ADVISORS[0], b"GER_theorist".as_slice()),
             (ADVISORS[1], LONG),
         ] {
-            p64(&mut bytes, advisor, cadvisor::VTABLE_RVA as u64);
+            p64(&mut bytes, advisor, cadvisor::VTABLE_RVA.0 as u64);
             string(&mut bytes, advisor + cadvisor::IDEA_TOKEN, token);
         }
         bytes

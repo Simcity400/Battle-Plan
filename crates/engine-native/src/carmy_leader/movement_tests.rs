@@ -265,21 +265,21 @@ impl Fixture {
             flags: 1 << 17,
         };
         f.word(ARMY + carmy::ORDERS_GROUP, GROUP as u64);
-        f.word(HQ, carmy::VTABLE_RVA as u64);
+        f.word(HQ, carmy::VTABLE_RVA.0 as u64);
         f.word(
             HQ + carmy::SECONDARY_BASE,
-            carmy::SECONDARY_VTABLE_RVA as u64,
+            carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         f.word(HQ + cunit::HANDLE, 1);
         f.word(HQ + carmy::ORDERS_GROUP, GROUP as u64);
-        f.word(GROUP, group::VTABLE_RVA as u64);
+        f.word(GROUP, group::VTABLE_RVA.0 as u64);
         f.word(GROUP + group::HANDLE, group::REFERENCE_TYPE as u64);
         f.word(GROUP + group::LEADER, LEADER as u64);
         f.word(
             GROUP + group::HQ_PROVIDER,
             (HQ + crate::corders_group_member::HOST_OFFSET) as u64,
         );
-        f.word(LEADER, VTABLE_RVA as u64);
+        f.word(LEADER, VTABLE_RVA.0 as u64);
         f.word(
             LEADER + crate::cunit_leader::TYPE,
             crate::cunit_leader::REFERENCE_TYPE as u64,
@@ -297,7 +297,7 @@ impl Fixture {
     fn root(&mut self, owner: usize, offset: usize, unit: usize) {
         self.array(owner + offset, ROOTS, 1);
         self.word(ROOTS, ROOT as u64);
-        self.word(ROOT, order::VTABLE_RVA as u64);
+        self.word(ROOT, order::VTABLE_RVA.0 as u64);
         self.word(ROOT + order::OWNER, owner as u64);
         self.array(ROOT + order::ASSIGNED_MEMBER_DATA, MEMBERS, 1);
         self.word(
@@ -308,7 +308,8 @@ impl Fixture {
 }
 impl Memory for Fixture {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA && destination.len() == 4
+        if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0
+            && destination.len() == 4
         {
             destination.copy_from_slice(&self.flags.to_le_bytes());
             return true;
@@ -348,7 +349,7 @@ fn a_nonzero_class_never_reads_the_trade_feature_flags() {
         Ok(Some(LEADER + 0x418))
     );
     assert_eq!(
-        source.count(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA),
+        source.count(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
         0
     );
 }
@@ -478,7 +479,7 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
             for address in [
                 GROUP + group::LEADER,
                 GROUP + group::HQ_PROVIDER,
-                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
             ] {
                 assert!(memoized.count(address) <= 1, "{fault:?} {address:#x}");
             }
@@ -554,7 +555,7 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
         Some(GROUP),
         Some(GROUP + group::LEADER),
         Some(LEADER),
-        Some(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA),
+        Some(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
         Some(GROUP + group::HQ_PROVIDER),
         Some(MEMBERS),
     ] {
@@ -608,7 +609,7 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
                 GROUP + group::LEADER,
                 GROUP + group::TRAINING,
                 GROUP + group::HQ_PROVIDER,
-                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
             ] {
                 assert_eq!(census.count(address), 1, "hour {hour} {address:#x}");
             }
@@ -744,7 +745,7 @@ fn only_primary_roots_and_immediate_parent_participate() {
     f.root(GROUP, group::SECONDARY_ORDER_DATA, ARMY);
     assert_eq!(movement_accumulator(&f, 0, ARMY), Ok(Some(LEADER + 0x418)));
     f.word(GROUP + group::PARENT, PARENT as u64);
-    f.word(PARENT, crate::carmy_group::VTABLE_RVA as u64);
+    f.word(PARENT, crate::carmy_group::VTABLE_RVA.0 as u64);
     f.word(PARENT + group::HANDLE, group::REFERENCE_TYPE as u64);
     f.root(PARENT, group::PRIMARY_ORDER_DATA, ARMY);
     f.bytes[ARMY + crate::corders_group_member::HOST_OFFSET + PRIMARY_ROOT_DIRTY] = 1;
@@ -778,7 +779,7 @@ fn counter_dig_in_factor_keeps_native_one_and_wrapping_commander_modifier() {
     struct Definitions<'a>(&'a Fixture);
     impl Memory for Definitions<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == crate::modifier_definition::TABLE_RVA && output.len() == 8 {
+            if address == crate::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
                 return true;
             }
@@ -846,7 +847,7 @@ fn prepared_movement_ranges_preserve_serial_faults_and_shared_admission() {
         Some(GROUP),
         Some(GROUP + group::LEADER),
         Some(LEADER),
-        Some(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA),
+        Some(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
         Some(GROUP + group::HQ_PROVIDER),
         Some(ROOTS),
         Some(MEMBERS),

@@ -256,7 +256,7 @@ fn sized_railways(count: usize, pair_count: usize, level_count: usize) -> Vec<u8
         cgame_state::RAIL_MANAGER,
         0x1400_u64.to_le_bytes(),
     );
-    put(&mut bytes, 0x400, (VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, 0x400, (VTABLE_RVA.0 as u64).to_le_bytes());
     array(
         &mut bytes,
         0x400 + PROVINCE_INFO_TABLE,
@@ -291,7 +291,7 @@ fn sized_railways(count: usize, pair_count: usize, level_count: usize) -> Vec<u8
         put(
             &mut bytes,
             province,
-            (cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            (cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, province + cprovince::ID, id.to_le_bytes());
         put(
@@ -309,7 +309,7 @@ fn sized_railways(count: usize, pair_count: usize, level_count: usize) -> Vec<u8
             definition + crate::province_definition::NEIGHBOUR_COUNT,
             (level_count as i32).to_le_bytes(),
         );
-        put(&mut bytes, node, (info::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, node, (info::VTABLE_RVA.0 as u64).to_le_bytes());
         put(
             &mut bytes,
             node + info::PROVINCE_RECORD,

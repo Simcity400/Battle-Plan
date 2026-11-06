@@ -1,4 +1,5 @@
 //! Selected runtime decision records for writer observations and demanded baselines.
+use engine_sites::Rva;
 use crate::{
     Memory, cdecision, cdecision_cooldown as cooldown, cdecision_status as status,
     cpdx_array::Array, ctargeted_decision as targeted, ctimed_decision as timed, read,
@@ -64,7 +65,9 @@ pub fn record(
         ),
         _ => return Err("decision runtime container differs"),
     };
-    if read::<u64>(memory, pointer) != base.checked_add(vtable).map(|v| v as u64) {
+    let vtable =
+        engine_sites::at(base, vtable).ok_or("decision runtime instance identity differs")?;
+    if read::<u64>(memory, pointer) != Some(vtable as u64) {
         return Err("decision runtime instance identity differs");
     }
     let definition = if container == 0 {
@@ -72,8 +75,9 @@ pub fn record(
     } else {
         field::<u64>(memory, pointer, definition)? as usize
     };
-    if read::<u64>(memory, definition) != base.checked_add(cdecision::VTABLE_RVA).map(|v| v as u64)
-    {
+    let expected = engine_sites::at(base, cdecision::VTABLE_RVA)
+        .ok_or("decision runtime definition identity differs")?;
+    if read::<u64>(memory, definition) != Some(expected as u64) {
         return Err("decision runtime definition identity differs");
     }
     let mut value = Record {
@@ -136,7 +140,7 @@ pub const IGNORED_TOKENS: usize = 0x14f8;
 pub const REMOVAL_PASS_ACTIVE: usize = 0x1c1;
 pub const EXPLICIT_TARGETS: usize = 0x21;
 
-pub const ADMISSION_OVERRIDE_RVA: usize = 0x033ddaa2;
+pub const ADMISSION_OVERRIDE_RVA: Rva = Rva(0x033ddaa2);
 
 #[cfg(test)]
 mod tests {
@@ -146,7 +150,7 @@ mod tests {
         let mut bytes = vec![0; 0xc00];
         let pointer = 0x1000;
         let definition = 0x1100;
-        bytes[..8].copy_from_slice(&(targeted::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(targeted::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x10..0x18].copy_from_slice(&(definition as u64).to_le_bytes());
         bytes[0x20..0x24].copy_from_slice(&17_u32.to_le_bytes());
         bytes[0x24..0x28].copy_from_slice(&(-19_i32).to_le_bytes());
@@ -154,7 +158,7 @@ mod tests {
         bytes[0x2c] = 1;
         bytes[0x2d] = 1;
         bytes[0x30..0x34].copy_from_slice(&i32::MIN.to_le_bytes());
-        bytes[0x100..0x108].copy_from_slice(&(cdecision::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x100..0x108].copy_from_slice(&(cdecision::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x100 + PERMANENT] = 1;
         let memory = crate::memory::SliceMemory {
             base: pointer,

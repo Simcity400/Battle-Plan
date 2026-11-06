@@ -58,6 +58,7 @@
 //!   removal and fleet addition call it; fleet loading invalidates the hour.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// The writers, each forwarded RCX..R9 by its detour (none takes a stack
 /// argument). [`RECEIVER_ARGUMENT`] names the argument that is the receiver.
@@ -65,89 +66,49 @@ pub const MUTATIONS: [MutationSite; 10] = [
     // The four-byte DL spill to its home slot and saving RBP relocate.
     MutationSite {
         name: "recalculate_equipment_stats",
-        rva: 0xc9_37d0,
-        sentinel: [
-            0x88, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0xc9_37d0),
     },
     // The five-byte R9 spill to its home slot relocates.
     MutationSite {
         name: "refit",
-        rva: 0xc8_a2a0,
-        sentinel: [
-            0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24,
-            0x10, 0x55,
-        ],
+        rva: Rva(0xc8_a2a0),
     },
     // The five-byte RBX spill to RDX's home slot relocates.
     MutationSite {
         name: "rebuild_experience_modifiers",
-        rva: 0xc9_3590,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54,
-            0x41, 0x55,
-        ],
+        rva: Rva(0xc9_3590),
     },
     // The five-byte RBX spill to R9's home slot relocates.
     MutationSite {
         name: "add_carrier_air_base",
         rva: crate::cstrategic_air_manager::ADD_CARRIER_AIR_BASE_RVA,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
     },
     MutationSite {
         name: "destroy_air_base",
-        rva: 0xca_4f20,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0xca_4f20),
     },
     MutationSite {
         name: "rebuild_medal_modifiers",
-        rva: 0x14e_87f0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0x14e_87f0),
     },
     MutationSite {
         name: "rebuild_doctrine_tree",
-        rva: 0xdc_c750,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0xdc_c750),
     },
     // Saving RBP, RDI and R12 occupies five relocated bytes.
     MutationSite {
         name: "rebuild_region_weather_modifiers",
-        rva: 0xfa_4fc0,
-        sentinel: [
-            0x40, 0x55, 0x57, 0x41, 0x54, 0x48, 0x83, 0xec, 0x40, 0x48, 0x8b, 0xf9, 0x48, 0x83,
-            0xc1, 0x58,
-        ],
+        rva: Rva(0xfa_4fc0),
     },
     // The five-byte RBX spill to R8's home slot relocates.
     MutationSite {
         name: "bind_fleet_leader",
-        rva: 0xdc_0550,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec,
-            0x30, 0x83,
-        ],
+        rva: Rva(0xdc_0550),
     },
     // Reserve conversion clears the fleet's leader without the binder; the RBX spill relocates.
     MutationSite {
         name: "reset_reserve_fleet",
-        rva: 0xdc_0810,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
-            0x48, 0x83,
-        ],
+        rva: Rva(0xdc_0810),
     },
 ];
 
@@ -161,22 +122,8 @@ pub const RECEIVER_ARGUMENT: [usize; 10] = [0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
 mod tests {
     use super::*;
 
-    const EXPECTED_CARRIER_BASE_RVA: usize = 0xca_8850;
-
-    /// Each sentinel opens with a relocatable stack store; the sites are
-    /// distinct and the carrier site is the one the air manager names.
     #[test]
-    fn the_sentinels_open_with_relocatable_stack_stores() {
-        for site in MUTATIONS {
-            assert!(
-                matches!(
-                    site.sentinel[..2],
-                    [0x88, 0x54] | [0x4c, 0x89] | [0x48, 0x89] | [0x40, 0x55]
-                ),
-                "{}",
-                site.name
-            );
-        }
+    fn the_sites_are_distinct() {
         for (index, site) in MUTATIONS.iter().enumerate() {
             assert!(
                 MUTATIONS[index + 1..]
@@ -184,6 +131,9 @@ mod tests {
                     .all(|other| other.rva != site.rva)
             );
         }
-        assert_eq!(MUTATIONS[3].rva, EXPECTED_CARRIER_BASE_RVA);
+        assert_eq!(
+            MUTATIONS[3].rva,
+            crate::cstrategic_air_manager::ADD_CARRIER_AIR_BASE_RVA
+        );
     }
 }

@@ -1,9 +1,10 @@
 //! CDecisionCooldown state in CDecisionStatus's re-enable and removal arrays.
 
+use engine_sites::Rva;
 use crate::{Memory, read};
 
 /// CDecisionCooldown primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_85f0;
+pub const VTABLE_RVA: Rva = Rva(0x0286_85f0);
 /// CDecisionCooldown CDecision pointer.
 pub const DEFINITION: usize = 0x08;
 /// CDecisionCooldown i32 remaining days.
@@ -20,9 +21,7 @@ pub(crate) fn record(
     base: usize,
     pointer: usize,
 ) -> Result<Record, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     let bytes = read::<[u8; 20]>(memory, pointer).ok_or("decision cooldown unreadable")?;
     if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected as u64 {
         return Err("decision cooldown vtable mismatch");

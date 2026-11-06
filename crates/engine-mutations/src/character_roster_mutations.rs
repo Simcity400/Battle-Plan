@@ -39,6 +39,7 @@
 //! Every site takes only integer or pointer arguments and returns RAX unchanged.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// Which observation a site's call moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,11 +65,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "roster_push",
-            rva: 0x6f_a550,
-            sentinel: [
-                0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x41, 0x56, 0x48, 0x83,
-                0xec, 0x20,
-            ],
+            rva: Rva(0x6f_a550),
         },
         Domain::Roster,
     ),
@@ -76,11 +73,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "roster_clear",
-            rva: 0x70_2520,
-            sentinel: [
-                0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x48, 0x83, 0xec, 0x20, 0x48, 0x63, 0x69, 0x0c,
-                0x48, 0x8b,
-            ],
+            rva: Rva(0x70_2520),
         },
         Domain::Roster,
     ),
@@ -88,11 +81,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_build",
-            rva: 0x14a_7530,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24,
-                0x08, 0x57,
-            ],
+            rva: Rva(0x14a_7530),
         },
         Domain::Scientists,
     ),
@@ -100,11 +89,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_attach",
-            rva: 0x102_7600,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf9, 0x48,
-                0x8b, 0xd1,
-            ],
+            rva: Rva(0x102_7600),
         },
         Domain::Scientists,
     ),
@@ -112,11 +97,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_clear",
-            rva: 0x102_a640,
-            sentinel: [
-                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0x89, 0xc0, 0x00,
-                0x00, 0x00,
-            ],
+            rva: Rva(0x102_a640),
         },
         Domain::Scientists,
     ),
@@ -124,11 +105,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_trait_add",
-            rva: 0x14a_6890,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x8b, 0x51, 0x30,
-                0x48, 0x8b,
-            ],
+            rva: Rva(0x14a_6890),
         },
         Domain::Scientists,
     ),
@@ -137,11 +114,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_trait_remove",
-            rva: 0x14a_8c90,
-            sentinel: [
-                0x48, 0x83, 0xec, 0x28, 0x44, 0x8b, 0x51, 0x3c, 0x33, 0xc0, 0x48, 0x89, 0x7c, 0x24,
-                0x20, 0x48,
-            ],
+            rva: Rva(0x14a_8c90),
         },
         Domain::Scientists,
     ),
@@ -150,11 +123,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_trait_reset",
-            rva: 0x14a_8a20,
-            sentinel: [
-                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x68, 0x18, 0x48, 0x89, 0x70,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x14a_8a20),
         },
         Domain::Scientists,
     ),

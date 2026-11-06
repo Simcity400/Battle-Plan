@@ -166,8 +166,7 @@ fn leader_arrays(
     base: usize,
     country: Country,
 ) -> Result<[Array; 2], &'static str> {
-    let vtable = base
-        .checked_add(ccountry_characters::VTABLE_RVA)
+    let vtable = engine_sites::at(base, ccountry_characters::VTABLE_RVA)
         .ok_or("country characters module address overflow")? as u64;
     let Some(object) = ccountry_characters::characters_object(memory, &country, vtable)? else {
         return Ok([Array::default(); 2]);

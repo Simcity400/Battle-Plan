@@ -149,7 +149,7 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
     p64(
         &mut bytes,
         ALTERNATE,
-        creferenced_division_template::VTABLE_RVA as u64,
+        creferenced_division_template::VTABLE_RVA.0 as u64,
     );
     p64(&mut bytes, ALTERNATE + 8, handle(23, 52));
     // The seed also carries the separate-counter byte and the alternate
@@ -376,7 +376,7 @@ fn fixture() -> Vec<u8> {
         p32(&mut b, LINKS + slot * 4, id);
     }
     for (country, id, data, count) in [(C1, 3, FIRST, 3), (C2, 2, SECOND, 2)] {
-        p64(&mut b, country, ccountry::VTABLE_RVA as u64);
+        p64(&mut b, country, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut b, country + 8, id);
         array(&mut b, country + 0x290, data, count);
     }
@@ -388,11 +388,15 @@ fn fixture() -> Vec<u8> {
     p64(&mut b, SECOND + 8, A3 as u64);
     p64(&mut b, PROVINCES, u64::MAX);
     p64(&mut b, PROVINCES + 8, P1 as u64);
-    p64(&mut b, P1, cprovince::VTABLE_RVA as u64);
+    p64(&mut b, P1, cprovince::VTABLE_RVA.0 as u64);
     p32(&mut b, P1 + 0xa4, 1);
-    p64(&mut b, T1, creferenced_division_template::VTABLE_RVA as u64);
+    p64(
+        &mut b,
+        T1,
+        creferenced_division_template::VTABLE_RVA.0 as u64,
+    );
     p64(&mut b, T1 + 8, handle(0, 52)); // A one-zero-word handle is not null.
-    p64(&mut b, G1, corders_group::VTABLE_RVA as u64);
+    p64(&mut b, G1, corders_group::VTABLE_RVA.0 as u64);
     p64(&mut b, G1 + 8, handle(57, corders_group::REFERENCE_TYPE));
     // A3 keeps the native null parent, which is not a failed read.
     for (at, id, owner, group) in [
@@ -400,8 +404,8 @@ fn fixture() -> Vec<u8> {
         (A2, handle(9, 51), 3, G1),
         (A3, handle(1, 0), 2, 0),
     ] {
-        p64(&mut b, at, carmy::VTABLE_RVA as u64);
-        p64(&mut b, at + 0x10, carmy::SECONDARY_VTABLE_RVA as u64);
+        p64(&mut b, at, carmy::VTABLE_RVA.0 as u64);
+        p64(&mut b, at + 0x10, carmy::SECONDARY_VTABLE_RVA.0 as u64);
         p64(&mut b, at + 0x18, id);
         p64(&mut b, at + carmy::ORDERS_GROUP, group as u64);
         p32(&mut b, at + 0x1d8, owner);
@@ -455,7 +459,7 @@ fn raw_fields_and_native_roster_order_survive_country_aliases_and_holes() {
 fn orders_group_parent_is_authenticated_and_a_null_parent_is_not_a_failure() {
     let mut b = fixture();
     // An army-group parent uses the derived vtable and the same type word.
-    p64(&mut b, G1, carmy_group::VTABLE_RVA as u64);
+    p64(&mut b, G1, carmy_group::VTABLE_RVA.0 as u64);
     let mut out = [Row::default(); 5];
     assert_eq!(run(&b, &mut out), Outcome::Rows { len: 3 });
     assert_eq!(
@@ -463,7 +467,7 @@ fn orders_group_parent_is_authenticated_and_a_null_parent_is_not_a_failure() {
         handle(57, corders_group::REFERENCE_TYPE)
     );
     // A foreign vtable at the back-pointer is a failure, never a zero row.
-    p64(&mut b, G1, cprovince::VTABLE_RVA as u64);
+    p64(&mut b, G1, cprovince::VTABLE_RVA.0 as u64);
     assert_eq!(
         run(&b, &mut out),
         Outcome::Unavailable {
@@ -471,7 +475,7 @@ fn orders_group_parent_is_authenticated_and_a_null_parent_is_not_a_failure() {
         }
     );
     // So is a group object whose reference type is not type 53.
-    p64(&mut b, G1, corders_group::VTABLE_RVA as u64);
+    p64(&mut b, G1, corders_group::VTABLE_RVA.0 as u64);
     p64(&mut b, G1 + 8, handle(57, 61));
     assert_eq!(
         run(&b, &mut out),
@@ -1112,7 +1116,7 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
         packed.reads.borrow().iter().all(|&(address, _)| {
             address != 0xdead_beef + corders_group::TRAINING
                 && address != A1 + carmy::DEPLOYMENT_TYPE
-                && address != carmy::EXERCISE_MAXIMUM_LEVEL_RVA
+                && address != carmy::EXERCISE_MAXIMUM_LEVEL_RVA.0
         }),
         "group authentication excludes private training and exercise dependencies"
     );
@@ -1129,11 +1133,11 @@ fn presentation_fixture() -> PresentationMemory {
         p64(
             &mut bytes,
             army + carmy::ACCLIMATIZATION,
-            crate::acclimatization_data::VTABLE_RVA as u64,
+            crate::acclimatization_data::VTABLE_RVA.0 as u64,
         );
     }
     p64(&mut bytes, A1 + cunit::STAT_BLOCK, 0x11000);
-    p64(&mut bytes, 0x11000, stats::VTABLE_RVA as u64);
+    p64(&mut bytes, 0x11000, stats::VTABLE_RVA.0 as u64);
     p64(&mut bytes, 0x11000 + stats::MAXIMUM_STRENGTH, 200_000);
     p64(
         &mut bytes,
@@ -1164,18 +1168,18 @@ fn presentation_fixture() -> PresentationMemory {
         bytes,
         globals: [
             (
-                carmy::COUNTER_ATTRITION_THRESHOLD_RVA,
+                carmy::COUNTER_ATTRITION_THRESHOLD_RVA.0,
                 500_i64.to_le_bytes().to_vec(),
             ),
             (
-                carmy::EXERCISE_MAXIMUM_LEVEL_RVA,
+                carmy::EXERCISE_MAXIMUM_LEVEL_RVA.0,
                 2_i32.to_le_bytes().to_vec(),
             ),
             (
-                carmy::EXERCISE_MINIMUM_STRENGTH_RVA,
+                carmy::EXERCISE_MINIMUM_STRENGTH_RVA.0,
                 50_000_i64.to_le_bytes().to_vec(),
             ),
-            (carmy::EXPERIENCE_THRESHOLDS_RVA, thresholds_header),
+            (carmy::EXPERIENCE_THRESHOLDS_RVA.0, thresholds_header),
         ]
         .into(),
     }
@@ -1215,7 +1219,7 @@ fn normal_route_fixture() -> PresentationMemory {
         (3, 0x18400, 0x18700, 0x17400),
     ] {
         p64(b, PROVINCES + id as usize * 8, province as u64);
-        p64(b, province, cprovince::VTABLE_RVA as u64);
+        p64(b, province, cprovince::VTABLE_RVA.0 as u64);
         p32(b, province + cprovince::ID, id);
         p64(b, province + cprovince::DEFINITION, definition as u64);
         p32(b, definition + crate::province_definition::ID, id);
@@ -1226,23 +1230,23 @@ fn normal_route_fixture() -> PresentationMemory {
     p32(b, 0x1f000, 2);
     p32(b, 0x1f004, 3);
     p64(b, GS + crate::cgame_state::WEATHER_MANAGER, 0x19000);
-    p64(b, 0x19000, crate::cweather_manager::VTABLE_RVA as u64);
+    p64(b, 0x19000, crate::cweather_manager::VTABLE_RVA.0 as u64);
     p64(
         b,
         T1 + creferenced_division_template::PRIORITY_UNIT,
         0x1a000,
     );
-    p64(b, 0x1a000, crate::csub_unit_definition::VTABLE_RVA as u64);
+    p64(b, 0x1a000, crate::csub_unit_definition::VTABLE_RVA.0 as u64);
     p64(b, C1 + ccountry::DIPLOMACY_STATUS, 0x1b000);
     array(b, C1 + ccountry::MODIFIER_ACCUMULATOR, 0x1c000, 1);
     p32(b, 0x1c000, 0x2b);
     p64(b, 0x1c008, 10_001);
     memory.globals.insert(
-        crate::modifier_definition::TABLE_RVA,
+        crate::modifier_definition::TABLE_RVA.0,
         0x1d000_u64.to_le_bytes().to_vec(),
     );
     memory.globals.insert(
-        crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA,
+        crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA.0,
         7_i64.to_le_bytes().to_vec(),
     );
     for (rva, value) in [
@@ -1262,7 +1266,7 @@ fn normal_route_fixture() -> PresentationMemory {
 fn state_movement_modifier_keeps_raw_values_for_aliased_owners_and_fails_each_read() {
     let mut source = normal_route_fixture();
     let state = 0x28000;
-    p64(&mut source.bytes, state, crate::cstate::VTABLE_RVA as u64);
+    p64(&mut source.bytes, state, crate::cstate::VTABLE_RVA.0 as u64);
     p64(
         &mut source.bytes,
         state + crate::cstate::COUNTRY_MODIFIERS,
@@ -1349,7 +1353,7 @@ fn the_static_map_memo_reuses_provinces_until_the_session_changes() {
     );
     // A reload changes the play session, which clears the whole memo.
     memory.globals.insert(
-        crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA,
+        crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA.0,
         8_i64.to_le_bytes().to_vec(),
     );
     assert!(statics.begin(&memory, 0, GS));
@@ -1361,14 +1365,14 @@ fn the_static_map_memo_reuses_provinces_until_the_session_changes() {
 #[test]
 fn embark_define_refreshes_without_a_session_or_province_census_change() {
     let mut memory = normal_route_fixture();
-    let define = crate::cunit::EMBARK_MOVEMENT_DISTANCE_RVA;
+    let define = crate::cunit::EMBARK_MOVEMENT_DISTANCE_RVA.0;
     let mut statics = cprovince::StaticGeometry::default();
     memory
         .globals
         .insert(define, 12_345_i64.to_le_bytes().to_vec());
     assert!(statics.begin(&memory, 0, GS));
     assert_eq!(statics.embark(&memory, 0), Ok(12_345));
-    let key = memory.globals[&crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA].clone();
+    let key = memory.globals[&crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA.0].clone();
     // Reuse within one frozen acquisition, then emulate define reload
     // between hours without replacing any key field or province array.
     memory
@@ -1379,7 +1383,7 @@ fn embark_define_refreshes_without_a_session_or_province_census_change() {
     assert_eq!(statics.counters().cleared, 0);
     assert_eq!(statics.embark(&memory, 0), Ok(67_890));
     assert_eq!(
-        memory.globals[&crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA],
+        memory.globals[&crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA.0],
         key
     );
 
@@ -1609,10 +1613,10 @@ fn movement_combat_fixture() -> (
             ..presentation_source()[0]
         }
     });
-    p64(&mut source.bytes, 0x16000, combat::VTABLE_RVA as u64);
+    p64(&mut source.bytes, 0x16000, combat::VTABLE_RVA.0 as u64);
     p64(&mut source.bytes, 0x16000 + combat::ATTACKER, 0x17000);
     p64(&mut source.bytes, 0x16000 + combat::PROVINCE, P1 as u64);
-    p64(&mut source.bytes, 0x17000, side::VTABLE_RVA as u64);
+    p64(&mut source.bytes, 0x17000, side::VTABLE_RVA.0 as u64);
     p64(&mut source.bytes, 0x17000 + side::COMBAT, 0x16000);
     p64(&mut source.bytes, 0x17000 + side::COUNTRIES, 0x18000);
     p32(&mut source.bytes, 0x18000, 3);
@@ -1859,12 +1863,12 @@ fn movement_combat_memo_preserves_rows_raw_owner_keys_and_first_pointer_reads() 
                 p64(
                     &mut source.bytes,
                     0x16000,
-                    crate::cland_border_war_combat::VTABLE_RVA as u64,
+                    crate::cland_border_war_combat::VTABLE_RVA.0 as u64,
                 );
                 p64(
                     &mut source.bytes,
                     0x17000,
-                    crate::cland_border_war_combatant::VTABLE_RVA as u64,
+                    crate::cland_border_war_combatant::VTABLE_RVA.0 as u64,
                 );
             }
             let direct = ScalarBatchMemory::new(&source);
@@ -2270,13 +2274,13 @@ fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
     p64(
         &mut source.bytes,
         FOREIGN_STATS,
-        stats::NULL_VTABLE_RVA as u64,
+        stats::NULL_VTABLE_RVA.0 as u64,
     );
     p64(&mut source.bytes, FOREIGN_STATS + stats::MAXIMUM_SPEED, 7);
     p64(
         &mut source.bytes,
         STATIONARY_STATS,
-        stats::VTABLE_RVA as u64,
+        stats::VTABLE_RVA.0 as u64,
     );
     p64(
         &mut source.bytes,
@@ -2377,7 +2381,7 @@ fn presentation_demand_sizes_names_and_origins_without_selected_transport_member
     p64(
         &mut memory.bytes,
         MEMBER,
-        cname_group_member::VTABLE_RVA as u64,
+        cname_group_member::VTABLE_RVA.0 as u64,
     );
     let name = MEMBER + cname_group_member::CACHED_NAME;
     memory.bytes[name..name + 10].copy_from_slice(b"exact name");
@@ -2745,7 +2749,7 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
         15_000_000,
     );
     memory.globals.insert(
-        acclimatization_data::CAMO_SHOW_AT_RVA,
+        acclimatization_data::CAMO_SHOW_AT_RVA.0,
         50_000_i64.to_le_bytes().to_vec(),
     );
     let entry = |memory: &mut PresentationMemory, index: usize, category: usize, weight: i64| {
@@ -2764,7 +2768,7 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
     entry(&mut memory, 2, 0x16200, -1);
     // The registry lists both categories, in a different order.
     memory.globals.insert(
-        acclimatization_category::REGISTRY_RVA,
+        acclimatization_category::REGISTRY_RVA.0,
         0x16800_u64.to_le_bytes().to_vec(),
     );
     array(&mut memory.bytes, 0x16800, 0x16900, 2);
@@ -2857,7 +2861,7 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
     // An unreadable define refuses only a winner it would decide.
     let define = memory
         .globals
-        .remove(&acclimatization_data::CAMO_SHOW_AT_RVA)
+        .remove(&acclimatization_data::CAMO_SHOW_AT_RVA.0)
         .unwrap();
     assert_eq!(camouflage(&memory, &mut packet), None);
     entry(&mut memory, 0, 0x16100, 0);
@@ -2865,7 +2869,7 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
     assert_eq!(camouflage(&memory, &mut packet), none);
     memory
         .globals
-        .insert(acclimatization_data::CAMO_SHOW_AT_RVA, define);
+        .insert(acclimatization_data::CAMO_SHOW_AT_RVA.0, define);
     entry(&mut memory, 0, 0x16100, 9_000_000);
     assert_eq!(camouflage(&memory, &mut packet), shown(7));
     // An unauthenticated object is not an empty acclimatization.
@@ -2883,7 +2887,7 @@ fn division_status_camouflage_equals_the_full_weight_decision() {
     memory.bytes.resize(0x40000, 0);
     let object = A1 + carmy::ACCLIMATIZATION;
     memory.globals.insert(
-        acclimatization_category::REGISTRY_RVA,
+        acclimatization_category::REGISTRY_RVA.0,
         0x30000_u64.to_le_bytes().to_vec(),
     );
     array(&mut memory.bytes, 0x30000, 0x30100, 4);
@@ -2919,7 +2923,7 @@ fn division_status_camouflage_equals_the_full_weight_decision() {
         let maximum = [0_i64, 100_000, 10_000_000, -10_000_000, i64::MAX][next(5)];
         let show_at = [0_i64, 50_000, 100_000, 75_000, -50_000][next(5)];
         memory.globals.insert(
-            acclimatization_data::CAMO_SHOW_AT_RVA,
+            acclimatization_data::CAMO_SHOW_AT_RVA.0,
             show_at.to_le_bytes().to_vec(),
         );
         array(
@@ -2984,7 +2988,7 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
     memory.bytes.resize(0x40000, 0);
     let b = &mut memory.bytes;
     p64(b, G1 + corders_group::LEADER, LEADER as u64);
-    p64(b, LEADER, carmy_leader::VTABLE_RVA as u64);
+    p64(b, LEADER, carmy_leader::VTABLE_RVA.0 as u64);
     p32(b, LEADER + cunit_leader::TYPE, cunit_leader::REFERENCE_TYPE);
     for (block, data, value) in [
         (carmy_leader::MOVEMENT_MODIFIER, 0x21000, 1_u64),
@@ -2997,7 +3001,7 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         p64(b, data + 24, 1);
     }
     // A second group whose commander lies outside readable memory.
-    p64(b, OTHER, corders_group::VTABLE_RVA as u64);
+    p64(b, OTHER, corders_group::VTABLE_RVA.0 as u64);
     p32(
         b,
         OTHER + corders_group::HANDLE,
@@ -3005,14 +3009,14 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
     );
     p64(b, OTHER + corders_group::LEADER, 0x50000);
     // A group without a commander.
-    p64(b, OTHER + 0x1000, corders_group::VTABLE_RVA as u64);
+    p64(b, OTHER + 0x1000, corders_group::VTABLE_RVA.0 as u64);
     p32(
         b,
         OTHER + 0x1000 + corders_group::HANDLE,
         corders_group::REFERENCE_TYPE,
     );
     memory.globals.insert(
-        crate::modifier_definition::TABLE_RVA,
+        crate::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
     // Authenticated, no commander, two non-groups, an unreadable group,
@@ -3088,7 +3092,7 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
     memory.bytes.resize(0x40000, 0);
     let b = &mut memory.bytes;
     p64(b, G1 + corders_group::LEADER, LEADER as u64);
-    p64(b, LEADER, carmy_leader::VTABLE_RVA as u64);
+    p64(b, LEADER, carmy_leader::VTABLE_RVA.0 as u64);
     p64(
         b,
         LEADER + cunit_leader::TYPE,
@@ -3108,7 +3112,7 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
         p64(b, data + 8, 1);
     }
     memory.globals.insert(
-        crate::modifier_definition::TABLE_RVA,
+        crate::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
     /// Fails every copy that covers the faulted byte.
@@ -3292,7 +3296,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
     // river crossing entry, which the same read keeps raw.
     let b = &mut memory.bytes;
     p64(b, G1 + corders_group::LEADER, LEADER as u64);
-    p64(b, LEADER, carmy_leader::VTABLE_RVA as u64);
+    p64(b, LEADER, carmy_leader::VTABLE_RVA.0 as u64);
     p32(b, LEADER + cunit_leader::TYPE, cunit_leader::REFERENCE_TYPE);
     for (block, data, movement) in [
         (
@@ -3316,7 +3320,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         p64(b, data + 40, 0);
     }
     memory.globals.insert(
-        crate::modifier_definition::TABLE_RVA,
+        crate::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
     // The hourly status never reads the bans, in combat or not.
@@ -3540,7 +3544,7 @@ fn status_membership_packet_preserves_rows_gaps_and_later_scalar_faults() {
         1,
     );
     p64(&mut memory.bytes, 0x17000, 0x18000);
-    p64(&mut memory.bytes, 0x18000, order::VTABLE_RVA as u64);
+    p64(&mut memory.bytes, 0x18000, order::VTABLE_RVA.0 as u64);
     p64(&mut memory.bytes, 0x18000 + order::OWNER, G1 as u64);
     array(
         &mut memory.bytes,
@@ -3687,7 +3691,7 @@ fn status_retains_first_pass_membership_growth_through_projection_and_recycling(
         1,
     );
     p64(&mut memory.bytes, 0x17000, 0x18000);
-    p64(&mut memory.bytes, 0x18000, order::VTABLE_RVA as u64);
+    p64(&mut memory.bytes, 0x18000, order::VTABLE_RVA.0 as u64);
     p64(&mut memory.bytes, 0x18000 + order::OWNER, G1 as u64);
     array(
         &mut memory.bytes,
@@ -3986,9 +3990,10 @@ fn attrition_counter_uses_effective_country_modifier_and_rejects_unknown_feature
         1_000_000,
     );
     let entry = 0x0100_0000 + 0x54 * metadata::STRIDE;
-    memory
-        .globals
-        .insert(metadata::TABLE_RVA, 0x0100_0000_u64.to_le_bytes().to_vec());
+    memory.globals.insert(
+        metadata::TABLE_RVA.0,
+        0x0100_0000_u64.to_le_bytes().to_vec(),
+    );
     memory.globals.insert(
         entry + metadata::FLAGS,
         metadata::CLAMP_MAXIMUM.to_le_bytes().to_vec(),
@@ -4096,7 +4101,7 @@ fn presentation_supporting_reads_authenticate_maxima_country_sets_and_player_fal
     assert!(cland_combatant::contains_country(&memory, 0, GS, 0x17000, 2).is_err());
     array(&mut memory.bytes, GS + cgame_state::HUMAN_STATUS, 0, 0);
     array(&mut memory.bytes, GS + 0xf8, 0x19000, 1);
-    p64(&mut memory.bytes, 0x19000, chuman::VTABLE_RVA as u64);
+    p64(&mut memory.bytes, 0x19000, chuman::VTABLE_RVA.0 as u64);
     p32(&mut memory.bytes, 0x19000 + chuman::COUNTRY_TAG, 3);
     assert_eq!(
         cgame_state::autonomous_country(&memory, 0, GS, 1),
@@ -4253,9 +4258,9 @@ fn seeded_icon_inputs_read_no_division_field() {
     let pointer = POINTER;
     let division: u64 = 51 | (9 << 32);
     let mut bytes = vec![0_u8; 0x800];
-    bytes[pointer..pointer + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[pointer..pointer + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[pointer + SECONDARY_BASE..pointer + SECONDARY_BASE + 8]
-        .copy_from_slice(&(SECONDARY_VTABLE_RVA as u64).to_le_bytes());
+        .copy_from_slice(&(SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[pointer + cunit::HANDLE..pointer + cunit::HANDLE + 8]
         .copy_from_slice(&division.to_le_bytes());
     bytes[pointer + cunit::ROSTER_OWNER..pointer + cunit::ROSTER_OWNER + 4]
@@ -4363,7 +4368,7 @@ fn strategic_action_owned_movement_matches_direct_and_withholds_only_the_glyph()
     memory.bytes[A1 + cunit::RETREAT] = 0;
     memory.bytes[A1 + cunit::STRATEGIC_REDEPLOYMENT] = 1;
     p64(&mut memory.bytes, P1 + cprovince::STATE, STATE as u64);
-    p64(&mut memory.bytes, STATE, cstate::VTABLE_RVA as u64);
+    p64(&mut memory.bytes, STATE, cstate::VTABLE_RVA.0 as u64);
     p32(&mut memory.bytes, STATE + cstate::CONTROLLER, 2);
     p64(
         &mut memory.bytes,
@@ -4383,7 +4388,7 @@ fn strategic_action_owned_movement_matches_direct_and_withholds_only_the_glyph()
     );
     p64(&mut memory.bytes, VALUES + 24, 17);
     memory.globals.insert(
-        modifier_definition::TABLE_RVA,
+        modifier_definition::TABLE_RVA.0,
         (DEFINITIONS as u64).to_le_bytes().to_vec(),
     );
     memory.globals.insert(
@@ -4575,7 +4580,7 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
     let b = &mut source.bytes;
     array(b, GS + crate::cgame_state::PROVINCES, PROVINCES, 5);
     p64(b, PROVINCES + 4 * 8, LAST as u64);
-    p64(b, LAST, cprovince::VTABLE_RVA as u64);
+    p64(b, LAST, cprovince::VTABLE_RVA.0 as u64);
     p32(b, LAST + cprovince::ID, 4);
     p64(b, LAST + cprovince::DEFINITION, DEFINITION as u64);
     p32(b, DEFINITION + crate::province_definition::ID, 4);
@@ -4583,15 +4588,15 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
     b[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
     p32(b, LAST + cprovince::CONTROLLER, 2);
     p64(b, C2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    p64(b, DIPLOMACY, diplomacy::VTABLE_RVA as u64);
+    p64(b, DIPLOMACY, diplomacy::VTABLE_RVA.0 as u64);
     p64(b, DIPLOMACY + diplomacy::COUNTRY, C2 as u64);
     array(b, DIPLOMACY + diplomacy::RELATIONS, RELATIONS, 4);
     p64(b, RELATIONS + 8, RELATION as u64);
-    p64(b, RELATION, relation::VTABLE_RVA as u64);
+    p64(b, RELATION, relation::VTABLE_RVA.0 as u64);
     p64(b, RELATION + relation::DIPLOMACY_STATUS, DIPLOMACY as u64);
     p32(b, RELATION + relation::TARGET_COUNTRY, 3);
     p64(b, RELATION + relation::WAR_RELATION, WAR as u64);
-    p64(b, WAR, crate::cwar_relation::VTABLE_RVA as u64);
+    p64(b, WAR, crate::cwar_relation::VTABLE_RVA.0 as u64);
     p32(
         b,
         WAR + crate::crelation::TYPE_ID,
@@ -4755,7 +4760,7 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
         15_000_000,
     );
     memory.globals.insert(
-        acclimatization_data::CAMO_SHOW_AT_RVA,
+        acclimatization_data::CAMO_SHOW_AT_RVA.0,
         50_000_i64.to_le_bytes().to_vec(),
     );
     for (index, category, token, weight) in [
@@ -4771,7 +4776,7 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
         );
     }
     memory.globals.insert(
-        acclimatization_category::REGISTRY_RVA,
+        acclimatization_category::REGISTRY_RVA.0,
         0x16800_u64.to_le_bytes().to_vec(),
     );
     array(&mut memory.bytes, 0x16800, 0x16900, 2);
@@ -4846,7 +4851,7 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
     // A failed exercise read refuses Status whole, but only the witness's exercising.
     let define = memory
         .globals
-        .remove(&carmy::EXERCISE_MINIMUM_STRENGTH_RVA)
+        .remove(&carmy::EXERCISE_MINIMUM_STRENGTH_RVA.0)
         .unwrap();
     assert_eq!(status_model_columns(&memory), None);
     assert_eq!(
@@ -4858,7 +4863,7 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
     );
     memory
         .globals
-        .insert(carmy::EXERCISE_MINIMUM_STRENGTH_RVA, define);
+        .insert(carmy::EXERCISE_MINIMUM_STRENGTH_RVA.0, define);
 
     // A2 shares the training group but has no stat block: only its exercising fails.
     let sources = [

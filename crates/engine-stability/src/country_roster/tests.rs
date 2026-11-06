@@ -34,7 +34,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             pointer,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, pointer + ccountry::ID, &id.to_le_bytes());
     }

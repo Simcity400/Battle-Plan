@@ -1,5 +1,6 @@
 //! Polymorphic operative-action implementations selected by a mission.
 
+use engine_sites::Rva;
 /// Stored raw country tag shared by all eight action implementations.
 pub const TARGET_COUNTRY: usize = 0x10;
 /// State-based action state pointer; country-based forms have no state here.
@@ -8,22 +9,22 @@ pub const TARGET_POINTER: usize = 0x18;
 pub const BOOST_IDEOLOGY: usize = 0x40;
 
 /// Concrete action vtables in dispatch order, independent of authored mission definitions.
-pub const VTABLE_RVAS: [usize; 8] = [
-    0x02a9_8bd8,
-    0x02a9_92b8,
-    0x02a9_8f90,
-    0x02a9_9440,
-    0x02a9_8940,
-    0x02a9_8df0,
-    0x02a9_90f0,
-    0x02aa_22e0,
+pub const VTABLE_RVAS: [Rva; 8] = [
+    Rva(0x02a9_8bd8),
+    Rva(0x02a9_92b8),
+    Rva(0x02a9_8f90),
+    Rva(0x02a9_9440),
+    Rva(0x02a9_8940),
+    Rva(0x02a9_8df0),
+    Rva(0x02a9_90f0),
+    Rva(0x02aa_22e0),
 ];
 
 /// Country-tag virtual dispatch shared by concrete action implementations.
 /// Authenticate each executable vtable once per walk, retaining failures, while
 /// checking every object's own vtable.
 pub(crate) const COUNTRY_GETTER_SLOT: usize = 0x50;
-pub(crate) const COUNTRY_GETTER_RVA: usize = 0x01ac_42f0;
+pub(crate) const COUNTRY_GETTER_RVA: Rva = Rva(0x01ac_42f0);
 
 /// A mission implementation's stored targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,10 +102,8 @@ impl Vtables {
             .and_then(|raw| usize::try_from(raw).ok())
             .filter(|&at| at != 0)
             .ok_or("operative mission implementation unreadable or null")?;
-        let expected = self
-            .base
-            .checked_add(VTABLE_RVAS[index])
-            .ok_or("operative mission vtable overflow")?;
+        let expected = engine_sites::at(self.base, VTABLE_RVAS[index])
+            .ok_or("operative mission vtable withheld")?;
         if crate::read::<u64>(memory, pointer) != Some(expected as u64) {
             return Err("unsupported operative mission implementation vtable");
         }
@@ -112,10 +111,8 @@ impl Vtables {
             let slot = expected
                 .checked_add(COUNTRY_GETTER_SLOT)
                 .ok_or("operative mission getter slot overflow")?;
-            let getter = self
-                .base
-                .checked_add(COUNTRY_GETTER_RVA)
-                .ok_or("operative mission getter address overflow")?;
+            let getter = engine_sites::at(self.base, COUNTRY_GETTER_RVA)
+                .ok_or("operative mission getter withheld")?;
             if crate::read::<u64>(memory, slot) != Some(getter as u64) {
                 return Err("unsupported operative mission country getter");
             }

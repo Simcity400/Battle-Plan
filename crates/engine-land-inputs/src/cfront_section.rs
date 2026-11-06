@@ -9,9 +9,10 @@ use crate::{
     },
     read, read_slice,
 };
+use engine_sites::Rva;
 
 /// Front-section primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_2360;
+pub const VTABLE_RVA: Rva = Rva(0x029f_2360);
 /// Front-section id used for section lookup.
 pub const ID: usize = 8;
 /// Owning front pointer.
@@ -44,7 +45,8 @@ pub(crate) fn header(
     pointer: usize,
     front: usize,
 ) -> Result<(u32, Array), &'static str> {
-    if read::<u64>(memory, pointer) != base.checked_add(VTABLE_RVA).map(|v| v as u64)
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("front section identity mismatch")?;
+    if read::<u64>(memory, pointer) != Some(expected as u64)
         || crate::corder_instance::plan_field::<u64>(memory, pointer, FRONT)? != front as u64
     {
         return Err("front section identity mismatch");
@@ -74,7 +76,10 @@ pub(crate) fn copy_pairs(
     output: &mut Vec<u32>,
     start: usize,
 ) -> Result<(), &'static str> {
-    let vtable = base.checked_add(cprovince::VTABLE_RVA).map(|v| v as u64);
+    let vtable = Some(
+        engine_sites::at(base, cprovince::VTABLE_RVA).ok_or("front province identity mismatch")?
+            as u64,
+    );
     let mut batch = [0_u8; PAIR_BATCH * 16];
     let mut provinces = [0_usize; PAIR_BATCH * 2];
     let mut records = [0_u8; PAIR_BATCH * 2 * PROVINCE_STRIDE];

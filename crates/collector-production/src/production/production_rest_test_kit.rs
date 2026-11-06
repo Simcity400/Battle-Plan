@@ -64,7 +64,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY,
-        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, COUNTRY + ccountry::ID, &2_u32.to_le_bytes());
     put(
@@ -81,7 +81,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         PROD,
-        &(cproduction_status::VTABLE_RVA as u64).to_le_bytes(),
+        &(cproduction_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -102,7 +102,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         PROD + cproduction_status::STOCKPILE_POOL,
-        &(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes(),
+        &(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(&mut bytes, PROD + cproduction_status::STOCKPILE, SDATA, 1);
     put(&mut bytes, SDATA, &(VARIANT as u64).to_le_bytes());
@@ -111,7 +111,7 @@ pub fn fixture() -> Vec<u8> {
     for (offset, value) in [
         (
             0,
-            engine_native::cmilitary_production_line::VTABLE_RVA as u64,
+            engine_native::cmilitary_production_line::VTABLE_RVA.0 as u64,
         ),
         (cproduction_line::REFERENCE_TYPE, 0x8000_1234_0000_0038),
         (cproduction_line::PRODUCTION_STATUS, PROD as u64),
@@ -158,7 +158,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         EQUIPMENT_TYPE,
-        &(engine_native::cequipment_type::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -174,7 +174,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         VARIANT,
-        &(cequipment_variant::VTABLE_RVA as u64).to_le_bytes(),
+        &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -185,7 +185,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         RECORD,
-        &(cequipment_production_license::VTABLE_RVA as u64).to_le_bytes(),
+        &(cequipment_production_license::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -221,7 +221,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         DEPLOY,
-        &(cdeployment_status::VTABLE_RVA as u64).to_le_bytes(),
+        &(cdeployment_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -233,7 +233,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         CONVEYOR,
-        &(cmilitary_deployment_conveyor::VTABLE_RVA as u64).to_le_bytes(),
+        &(cmilitary_deployment_conveyor::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -295,7 +295,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         TEMPLATE,
-        &(creferenced_division_template::VTABLE_RVA as u64).to_le_bytes(),
+        &(creferenced_division_template::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -305,7 +305,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         LINE,
-        &(cmilitary_deployment_line::VTABLE_RVA as u64).to_le_bytes(),
+        &(cmilitary_deployment_line::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -335,7 +335,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         NAME_OBJECT,
-        &(cname_group_member::VTABLE_RVA as u64).to_le_bytes(),
+        &(cname_group_member::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -357,17 +357,17 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         DEPLOYMENT,
-        &(cmilitary_deployment::VTABLE_RVA as u64).to_le_bytes(),
+        &(cmilitary_deployment::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
         DEPLOYMENT + cmilitary_deployment::SECONDARY_VTABLE,
-        &(cmilitary_deployment::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        &(cmilitary_deployment::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
         DEPLOYMENT + cmilitary_deployment::EQUIPMENT_POOL,
-        &(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes(),
+        &(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -430,7 +430,7 @@ pub fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             DEPLOYMENT + offset,
-            &(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes(),
+            &(carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         array(
             &mut bytes,

@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn politics_staging_demand_presizes_the_daily_backlog_without_a_loaded_world() {
         let memory = engine_native::memory::SliceMemory {
-            base: cgame_state::SINGLETON_RVA,
+            base: cgame_state::SINGLETON_RVA.0,
             bytes: &[0; 8],
         };
         for slots in [1_501, 5_001] {
@@ -1341,7 +1341,7 @@ mod tests {
         );
         let null = [0; 8];
         let menu = engine_native::memory::SliceMemory {
-            base: cgame_state::SINGLETON_RVA,
+            base: cgame_state::SINGLETON_RVA.0,
             bytes: &null,
         };
         assert_eq!(observe_politics(&menu, 0), Ok(None));
@@ -1419,7 +1419,7 @@ mod tests {
         impl Memory for Loading {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 let pointer = match address {
-                    cgame_state::SINGLETON_RVA => Some(0x1000_u64),
+                    address if address == cgame_state::SINGLETON_RVA.0 => Some(0x1000_u64),
                     address if address == 0x1000 + cgame_state::STRATEGIC_AIR_MANAGER => {
                         Some(self.manager as u64)
                     }
@@ -1569,7 +1569,7 @@ mod tests {
                 _ => word(at + 12, count as u64),
             };
             let within = |at: usize, len: usize| (at..at + len).contains(&address);
-            let singleton = BASE + tactic::DATABASE_RVA;
+            let singleton = BASE + tactic::DATABASE_RVA.0;
             if within(singleton, 8) {
                 return Some(word(singleton, TACTIC_DATABASE as u64));
             }
@@ -1587,8 +1587,8 @@ mod tests {
                 let index = (address - TACTIC_OBJECTS) / TACTIC_OBJECT;
                 let object = TACTIC_OBJECTS + index * TACTIC_OBJECT;
                 let vtable = match index {
-                    0 => engine_native::cnull_combat_tactic::VTABLE_RVA,
-                    _ => tactic::VTABLE_RVA,
+                    0 => engine_native::cnull_combat_tactic::VTABLE_RVA.0,
+                    _ => tactic::VTABLE_RVA.0,
                 };
                 return Some(match address - object {
                     0..8 => word(object, (BASE + vtable) as u64),
@@ -1637,12 +1637,12 @@ mod tests {
                 8..12 => word(at + 8, slots),
                 _ => word(at + 12, slots),
             };
-            let singleton = BASE + gs::SINGLETON_RVA;
+            let singleton = BASE + gs::SINGLETON_RVA.0;
             if (singleton..singleton + 8).contains(&address) {
                 return word(singleton, STATE as u64);
             }
             // Naming operands: no dynamic countries, one shared diplomacy.
-            let database = BASE + engine_native::ccountry_database::SINGLETON_RVA;
+            let database = BASE + engine_native::ccountry_database::SINGLETON_RVA.0;
             if (database..database + 8).contains(&address) {
                 return word(database, DATABASE as u64);
             }
@@ -1658,7 +1658,7 @@ mod tests {
             if (DIPLOMACY..DIPLOMACY + 8).contains(&address) {
                 return word(
                     DIPLOMACY,
-                    (BASE + engine_native::cdiplomacy_status::VTABLE_RVA) as u64,
+                    (BASE + engine_native::cdiplomacy_status::VTABLE_RVA.0) as u64,
                 );
             }
             if let Some((enemies, allies)) = self.bloc {
@@ -1716,7 +1716,7 @@ mod tests {
                 let culture = ccountry::GRAPHICAL_CULTURE + msvc_string::CAPACITY;
                 let culture_2d = ccountry::GRAPHICAL_CULTURE_2D + msvc_string::CAPACITY;
                 return match offset {
-                    0..8 => word(object, (BASE + ccountry::VTABLE_RVA) as u64),
+                    0..8 => word(object, (BASE + ccountry::VTABLE_RVA.0) as u64),
                     o if (ccountry::ID..ccountry::ID + 4).contains(&o) => {
                         word(object + ccountry::ID, slot as u64)
                     }
@@ -1748,7 +1748,7 @@ mod tests {
             if self.intel && (INTEL_TABLES..INTEL_TABLES + self.slots * 0x20).contains(&address) {
                 let table = INTEL_TABLES + (address - INTEL_TABLES) / 0x20 * 0x20;
                 return match address - table {
-                    0..8 => word(table, (BASE + ccountry_intel::VTABLE_RVA) as u64),
+                    0..8 => word(table, (BASE + ccountry_intel::VTABLE_RVA.0) as u64),
                     0x10..0x18 => word(table + 0x10, INTEL_RECORDS as u64),
                     0x18..0x1c => word(table + 0x18, slots),
                     0x1c..0x20 => word(table + 0x1c, slots),
@@ -1785,7 +1785,7 @@ mod tests {
                 }
                 a if (AIR_MANAGER..AIR_MANAGER + 8).contains(&a) => word(
                     AIR_MANAGER,
-                    (BASE + engine_native::cstrategic_air_manager::VTABLE_RVA) as u64,
+                    (BASE + engine_native::cstrategic_air_manager::VTABLE_RVA.0) as u64,
                 ),
                 a if (AIR_MANAGER + 0x30..AIR_MANAGER + 0x40).contains(&a) => {
                     match a - AIR_MANAGER - 0x30 {
@@ -1808,7 +1808,7 @@ mod tests {
                     match a - object {
                         0..8 => word(
                             object,
-                            (BASE + engine_native::cstrategic_air::VTABLE_RVA) as u64,
+                            (BASE + engine_native::cstrategic_air::VTABLE_RVA.0) as u64,
                         ),
                         o if (0x90..0x94).contains(&o) => word(object + 0x90, slot as u64),
                         o if (table..table + 8).contains(&o) => word(
@@ -1843,7 +1843,7 @@ mod tests {
                     match a - at {
                         0..8 => word(
                             at,
-                            (BASE + engine_air_history::cloop_history::VTABLE_RVA) as u64,
+                            (BASE + engine_air_history::cloop_history::VTABLE_RVA.0) as u64,
                         ),
                         0x10..0x28 => {
                             let level = (a - at - 0x10) / 8;
@@ -1866,7 +1866,7 @@ mod tests {
                     match a - at {
                         0..8 => word(
                             at,
-                            (BASE + engine_air_history::loop_history_window::VTABLE_RVA) as u64,
+                            (BASE + engine_air_history::loop_history_window::VTABLE_RVA.0) as u64,
                         ),
                         8..24 => header(at + 8, records, ring),
                         0x20..0x24 => word(at + 0x20, ring as u64),

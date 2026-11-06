@@ -8,11 +8,12 @@ use crate::{
     Memory, carmy_group, ccountry, cgame_state, corders_group, cpdx_array::Array, cprovince,
     creferenced_division_template, cunit, read, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Primary division vtable.
-pub const VTABLE_RVA: usize = 0x029d_6d98;
+pub const VTABLE_RVA: Rva = Rva(0x029d_6d98);
 /// Secondary division vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029d_6f78;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029d_6f78);
 /// Secondary subobject displacement.
 pub const SECONDARY_BASE: usize = 0x10;
 /// Low-supply counter input, i64 fixed5.
@@ -82,13 +83,13 @@ pub const ENTRENCHMENT_CAP: usize = 0x460;
 /// Attrition-icon input, separate from total attrition.
 pub const COUNTER_ATTRITION: usize = 0x438;
 /// Icon threshold, i64, tested after applying the country modifier.
-pub const COUNTER_ATTRITION_THRESHOLD_RVA: usize = 0x033e_0008;
+pub const COUNTER_ATTRITION_THRESHOLD_RVA: Rva = Rva(0x033e_0008);
 /// Maximum exercise level define, i32.
-pub const EXERCISE_MAXIMUM_LEVEL_RVA: usize = 0x033e_3ff4;
+pub const EXERCISE_MAXIMUM_LEVEL_RVA: Rva = Rva(0x033e_3ff4);
 /// Minimum effective strength fraction define, i64.
-pub const EXERCISE_MINIMUM_STRENGTH_RVA: usize = 0x033e_40b0;
+pub const EXERCISE_MINIMUM_STRENGTH_RVA: Rva = Rva(0x033e_40b0);
 /// Ordered i64 experience-threshold array.
-pub const EXPERIENCE_THRESHOLDS_RVA: usize = 0x033e_6ec0;
+pub const EXPERIENCE_THRESHOLDS_RVA: Rva = Rva(0x033e_6ec0);
 /// Requests-object pointer selecting the serialized upgrade group.
 pub const REQUESTS: usize = 0x478;
 /// Retained land model number, i32, selected from priority subunit and
@@ -109,11 +110,11 @@ pub const FUEL_CANDIDATE: usize = 0x620;
 pub const SEPARATE_COUNTER: usize = 0x630;
 
 /// Constructor followed by registration of the full handle.
-pub const CONSTRUCTOR_RVA: usize = 0x00cc_a1b0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00cc_a1b0);
 /// Synchronous hourly division update.
-pub const HOURLY_UPDATE_RVA: usize = 0x00ce_4fc0;
+pub const HOURLY_UPDATE_RVA: Rva = Rva(0x00ce_4fc0);
 /// Active-stat recalculation in staggered parallel work joined before returning.
-pub const UPDATE_ACTIVE_STATS_RVA: usize = 0x00ce_a3c0;
+pub const UPDATE_ACTIVE_STATS_RVA: Rva = Rva(0x00ce_a3c0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -167,12 +168,9 @@ pub fn read_icon_inputs(
             .checked_add(offset)
             .ok_or("army icon address overflow")
     };
-    let primary = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("army icon module address overflow")?;
-    let secondary = base
-        .checked_add(SECONDARY_VTABLE_RVA)
-        .ok_or("army icon module address overflow")?;
+    let primary = engine_sites::at(base, VTABLE_RVA).ok_or("army icon module address overflow")?;
+    let secondary =
+        engine_sites::at(base, SECONDARY_VTABLE_RVA).ok_or("army icon module address overflow")?;
     let identity = || {
         let matches = if source.pointer == 0 || source.division == 0 {
             false
@@ -249,8 +247,7 @@ fn template_handle(memory: &impl Memory, base: usize, pointer: usize) -> Result<
     if pointer == 0 {
         return Ok(0);
     }
-    let expected = base
-        .checked_add(creferenced_division_template::VTABLE_RVA)
+    let expected = engine_sites::at(base, creferenced_division_template::VTABLE_RVA)
         .ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("division template vtable mismatch");
@@ -765,7 +762,12 @@ pub fn capture_division_movers(memory: &impl Memory, seeds: &mut [DivisionSeed])
             next += 1;
         }
         total += gather_u32s(memory, &routes[..count], 0, &mut heads[..count]);
-        total += gather_u32s(memory, &locations[..count], cprovince::ID, &mut ids[..count]);
+        total += gather_u32s(
+            memory,
+            &locations[..count],
+            cprovince::ID,
+            &mut ids[..count],
+        );
         for row in 0..count {
             let seed = &mut seeds[movers[row]];
             seed.route_head = Some(heads[row]);
@@ -931,6 +933,16 @@ fn shared_presentation_read<T: crate::memory::Raw>(
     }
 }
 
+fn presentation_global<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    engine_sites::at(base, key)
+        .and_then(|p| read(memory, p))
+        .ok_or("division presentation field unreadable")
+}
+
 fn presentation_field<T: crate::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
@@ -1004,7 +1016,7 @@ pub fn movement_definition(
 ) -> Result<usize, &'static str> {
     if province == 0
         || read::<u64>(memory, province)
-            != base.checked_add(cprovince::VTABLE_RVA).map(|p| p as u64)
+            != engine_sites::at(base, cprovince::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("movement province identity mismatch");
     }
@@ -1286,9 +1298,7 @@ pub(crate) fn movement_priority_unit(
     );
     if template == 0
         || fields.get::<u64>(memory, 0)
-            != base
-                .checked_add(creferenced_division_template::VTABLE_RVA)
-                .map(|p| p as u64)
+            != engine_sites::at(base, creferenced_division_template::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("movement template identity mismatch");
     }
@@ -1321,18 +1331,16 @@ pub(crate) fn movement_priority_unit(
                 0,
             )?
         } else {
-            movement_pointer(memory, base, crate::csub_unit_definition::NULL_OBJECT_RVA)?
+            presentation_global::<u64>(memory, base, crate::csub_unit_definition::NULL_OBJECT_RVA)?
+                as usize
         };
     }
     let vtable = read::<u64>(memory, selected);
     if selected == 0
         || (vtable
-            != base
-                .checked_add(crate::csub_unit_definition::VTABLE_RVA)
-                .map(|p| p as u64)
+            != engine_sites::at(base, crate::csub_unit_definition::VTABLE_RVA).map(|p| p as u64)
             && vtable
-                != base
-                    .checked_add(crate::csub_unit_definition::NULL_VTABLE_RVA)
+                != engine_sites::at(base, crate::csub_unit_definition::NULL_VTABLE_RVA)
                     .map(|p| p as u64))
     {
         return Err("movement selected unit identity mismatch");
@@ -1982,17 +1990,28 @@ impl StatusPacket {
         Ok(())
     }
     /// Inspect captured footer bytes only; skipped units have no native sample.
-    pub fn supply_at(&self, index: usize) -> (
+    pub fn supply_at(
+        &self,
+        index: usize,
+    ) -> (
         Option<crate::cunit_supply_inputs::Inputs>,
         Option<crate::cunit_supply_inputs::Failure>,
         Option<&[crate::cunit_supply_inputs::Origin]>,
     ) {
-        let unit = self.supply.get(index).copied().filter(|_| index < self.supply_len)
+        let unit = self
+            .supply
+            .get(index)
+            .copied()
+            .filter(|_| index < self.supply_len)
             .unwrap_or_default();
         let inputs = unit.inputs.ok();
-        let failure = unit.inputs.err().or_else(|| inputs.and_then(|v| v.origins_len.err()));
+        let failure = unit
+            .inputs
+            .err()
+            .or_else(|| inputs.and_then(|v| v.origins_len.err()));
         let origins = inputs.and_then(|v| v.origins_len.ok()).and_then(|len| {
-            self.supply_origins.get(..self.supply_origins_len)?
+            self.supply_origins
+                .get(..self.supply_origins_len)?
                 .get(unit.origins_start..unit.origins_start.checked_add(len)?)
         });
         (inputs, failure, origins)
@@ -2119,7 +2138,7 @@ impl StatusPacket {
         let mut staged_len = 0;
         let mut pointers = [0_usize; 64];
         let mut len = 0;
-        let identity = base.checked_add(VTABLE_RVA).map(|at| at as u64);
+        let identity = engine_sites::at(base, VTABLE_RVA).map(|at| at as u64);
         for (index, seed) in seeds.iter().enumerate() {
             if seed.primary_vtable != identity
                 || seed.handle != Some(seed.division)
@@ -2226,7 +2245,7 @@ impl StatusPacket {
                 self.attrition_metadata = Some((|| {
                     use crate::modifier_definition as metadata;
                     let table =
-                        presentation_field::<u64>(memory, base, metadata::TABLE_RVA)? as usize;
+                        presentation_global::<u64>(memory, base, metadata::TABLE_RVA)? as usize;
                     let entry = table
                         .checked_add(keys::UNIT_UPKEEP_ATTRITION_FACTOR as usize * metadata::STRIDE)
                         .filter(|_| table != 0)
@@ -2251,7 +2270,7 @@ impl StatusPacket {
             }
         }
         if self.attrition_define.is_none() {
-            self.attrition_define = Some(presentation_field::<i64>(
+            self.attrition_define = Some(presentation_global::<i64>(
                 memory,
                 base,
                 COUNTER_ATTRITION_THRESHOLD_RVA,
@@ -2330,7 +2349,9 @@ impl StatusPacket {
         }
         // The census selected this division's block once for every consumer.
         let accumulator = match seed.selected {
-            Some(selected) => selected.block.map(|block| block.map(|(accumulator, _)| accumulator)),
+            Some(selected) => selected
+                .block
+                .map(|block| block.map(|(accumulator, _)| accumulator)),
             None => crate::carmy_leader::movement_accumulator_seeded(memory, base, seed),
         }?
         .ok_or("retreat ban leader vanished")?;
@@ -2491,7 +2512,7 @@ impl StatusPacket {
             self.commander_bans.clear();
             self.commander_index.fill(0);
             self.commander_divisions.clear();
-        self.commander_order.clear();
+            self.commander_order.clear();
             self.commander_memo
                 .get_mut()
                 .unwrap_or_else(|error| error.into_inner())
@@ -2555,7 +2576,7 @@ impl StatusPacket {
         result.unwrap_or_else(|reason| {
             // A failed read keeps no partly filled, unsorted division list.
             self.commander_divisions.clear();
-        self.commander_order.clear();
+            self.commander_order.clear();
             Outcome::Unavailable { reason }
         })
     }
@@ -2647,7 +2668,7 @@ impl StatusPacket {
         let fraction = status_experience_fraction(manpower, experience.unwrap_or(0));
         if self.thresholds_header.is_none() {
             self.thresholds_header = Some(
-                base.checked_add(EXPERIENCE_THRESHOLDS_RVA)
+                engine_sites::at(base, EXPERIENCE_THRESHOLDS_RVA)
                     .and_then(|p| read::<[u8; 16]>(memory, p))
                     .ok_or("exercise thresholds invalid"),
             );
@@ -2743,7 +2764,7 @@ impl StatusPacket {
             .ok_or("division presentation field unreadable")?;
         inputs.maximum_level = (*self
             .maximum_level
-            .get_or_insert_with(|| presentation_field(memory, base, EXERCISE_MAXIMUM_LEVEL_RVA)))?;
+            .get_or_insert_with(|| presentation_global(memory, base, EXERCISE_MAXIMUM_LEVEL_RVA)))?;
         inputs.autonomous = autonomous(self, owner)?;
         if inputs.autonomous {
             let level = self.capture_level(memory, base, seed.pointer, held_experience)?;
@@ -2765,7 +2786,7 @@ impl StatusPacket {
         inputs.strength = Some(strength);
         let fraction = status_strength_fraction(strength, maximum_hp(self)?);
         let minimum = (*self.minimum_strength.get_or_insert_with(|| {
-            presentation_field(memory, base, EXERCISE_MINIMUM_STRENGTH_RVA)
+            presentation_global(memory, base, EXERCISE_MINIMUM_STRENGTH_RVA)
         }))?;
         inputs.minimum_strength = Some(minimum);
         if fraction <= minimum {
@@ -2923,9 +2944,9 @@ impl StatusPacket {
         let Some((category, weight)) = winner.filter(|(category, _)| *category != 0) else {
             return Ok(Camouflage { category: None });
         };
-        let show_at = *self
-            .camouflage_show_at
-            .get_or_insert_with(|| presentation_field::<i64>(memory, base, data::CAMO_SHOW_AT_RVA));
+        let show_at = *self.camouflage_show_at.get_or_insert_with(|| {
+            presentation_global::<i64>(memory, base, data::CAMO_SHOW_AT_RVA)
+        });
         let maximum =
             i64::from_le_bytes(object[data::MAXIMUM..data::MAXIMUM + 8].try_into().unwrap());
         if !data::shows(weight, maximum, show_at?) {
@@ -3052,7 +3073,7 @@ impl StatusPacket {
             });
             let mut batch = crate::csub_unit_definition::MaximaBatch::new();
             let mut selected = [SelectedMaxima::default(); 64];
-            let identity = base.checked_add(VTABLE_RVA).map(|at| at as u64);
+            let identity = engine_sites::at(base, VTABLE_RVA).map(|at| at as u64);
             for (index, seed) in seeds[..count].iter().enumerate() {
                 if index.is_multiple_of(64) {
                     let end = (index + 64).min(count);
@@ -3576,7 +3597,7 @@ impl AcclimatizationBatch {
                 continue;
             };
             if Some(u64::from_le_bytes(object[..8].try_into().unwrap()))
-                != base.checked_add(data::VTABLE_RVA).map(|at| at as u64)
+                != engine_sites::at(base, data::VTABLE_RVA).map(|at| at as u64)
             {
                 continue;
             }
@@ -3622,7 +3643,7 @@ fn acclimatization_winner(
         .acclimatization
         .ok_or("division presentation field unreadable")?;
     if Some(u64::from_le_bytes(object[..8].try_into().unwrap()))
-        != base.checked_add(data::VTABLE_RVA).map(|p| p as u64)
+        != engine_sites::at(base, data::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("division acclimatization identity mismatch");
     }
@@ -4074,11 +4095,8 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("country link unreadable or outside country table")
     }
 
-    fn vtable(&self, pointer: usize, rva: usize, reason: &'static str) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(rva)
-            .ok_or("module address overflow")?;
+    fn vtable(&self, pointer: usize, rva: Rva, reason: &'static str) -> Result<(), &'static str> {
+        let expected = engine_sites::at(self.base, rva).ok_or("module address overflow")?;
         if read::<u64>(self.memory, pointer) == Some(expected as u64) {
             Ok(())
         } else {
@@ -4160,13 +4178,9 @@ impl<M: Memory> Reader<'_, M> {
         let identity = read::<[u8; 16]>(self.memory, pointer)
             .ok_or("division orders group identity unreadable")?;
         let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
-        let normal = self
-            .base
-            .checked_add(corders_group::VTABLE_RVA)
+        let normal = engine_sites::at(self.base, corders_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let group = self
-            .base
-            .checked_add(carmy_group::VTABLE_RVA)
+        let group = engine_sites::at(self.base, carmy_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if vtable != normal && vtable != group {
             return Err("division orders group vtable mismatch");
@@ -4182,10 +4196,8 @@ impl<M: Memory> Reader<'_, M> {
         if pointer == 0 {
             return Ok(0);
         }
-        let expected = self
-            .base
-            .checked_add(cprovince::VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected =
+            engine_sites::at(self.base, cprovince::VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(self.memory, pointer) != Some(expected as u64) {
             return Err("division province vtable mismatch");
         }
@@ -4216,10 +4228,8 @@ impl<M: Memory> Reader<'_, M> {
         if pointer == 0 {
             return Ok(0);
         }
-        let expected = self
-            .base
-            .checked_add(cprovince::VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected =
+            engine_sites::at(self.base, cprovince::VTABLE_RVA).ok_or("module address overflow")?;
         if shared_presentation_read::<u64>(self.memory, inputs, pointer) != Some(expected as u64) {
             return Err("division province vtable mismatch");
         }

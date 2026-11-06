@@ -115,7 +115,7 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
     }
 }
 
-fn constructor_sites(family: Family) -> Vec<usize> {
+fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
     use engine_air_history::{air_history_mutations, air_loss_sites, air_record_mutations};
     use engine_characters::ccharacter_portraits;
     use engine_events::{
@@ -232,7 +232,6 @@ fn constructor_sites(family: Family) -> Vec<usize> {
         ]
         .into_iter()
         .chain(fuel_awards::LAND)
-        .map(|(rva, _)| rva)
         .collect(),
         Family::OperationOutcomes => vec![operation_outcome_sites::COMPLETION_RVA],
         Family::Politics => crate::politics_changes::entry_sites()
@@ -242,8 +241,8 @@ fn constructor_sites(family: Family) -> Vec<usize> {
             .collect(),
         Family::Logistics => clogistics_status::BALANCE_CALLS
             .into_iter()
-            .chain(clogistics_status::HISTORY_CALLS)
-            .map(|(rva, _, _)| rva)
+            .map(|(rva, _)| rva)
+            .chain(clogistics_status::HISTORY_CALLS.map(|(rva, _)| rva))
             .collect(),
         Family::Peace => vec![peace_finalizer_site::RVA],
         Family::NavalResultSources => sites!(naval_result_sources::SITES, s => s.rva),
@@ -277,7 +276,7 @@ fn constructor_sites(family: Family) -> Vec<usize> {
             .map(|s| s.rva)
             .collect(),
         Family::NavalManagement => collector_naval_management::changes::patch_sites()
-            .map(|(_, rva, _)| rva)
+            .map(|(_, rva)| rva)
             .collect(),
         Family::WarParticipation => engine_mutations::war_participation_sites::SITES
             .iter()
@@ -333,13 +332,9 @@ fn constructor_sites(family: Family) -> Vec<usize> {
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| *i != 5)
-                    .map(|(_, (_, rva, _))| *rva),
+                    .map(|(_, (_, rva))| *rva),
             );
-            sites.extend(
-                engine_naval_history::cnaval_accident_report::WRITERS
-                    .iter()
-                    .map(|(rva, _)| *rva),
-            );
+            sites.extend(engine_naval_history::cnaval_accident_report::WRITERS);
             sites.extend(
                 engine_mutations::navy_ledger_mutations::MUTATIONS
                     .iter()
@@ -413,11 +408,7 @@ fn constructor_sites(family: Family) -> Vec<usize> {
                     .iter()
                     .map(|s| s.rva),
             );
-            sites.extend(
-                engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES
-                    .iter()
-                    .map(|(rva, _)| *rva),
-            );
+            sites.extend(engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES);
         }
         Family::Politics => {
             sites.push(engine_events::script_event_sites::decisions::TARGETED_SELECTION_RESULT.rva)
@@ -437,7 +428,7 @@ fn constructor_sites(family: Family) -> Vec<usize> {
             sites.extend(
                 engine_decisions::cdecision::EVENT_FEED_ENTRIES
                     .iter()
-                    .map(|(_, rva, _)| *rva),
+                    .map(|(_, rva)| *rva),
             );
             sites.extend(
                 engine_events::script_event_sites::LIFECYCLE_TAPS
@@ -554,7 +545,7 @@ fn omitted_or_wrong_family_native_site_is_a_registration_failure() {
     );
     // A real site's existence under another family does not authorize its construction here.
     let at = engine_events::equipment_destruction::SITES[0].rva;
-    let (_, report) = installation::capture(|| installation::site(at));
+    let (_, report) = installation::capture(|| installation::site(at.0));
     assert_eq!(
         audit_report(Family::Portrait, 0, report)
             .unwrap()
@@ -631,11 +622,13 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
         .find(|f| f["family"] == "equipment_destruction")
         .unwrap();
     assert_eq!(root["stage"], "sentinel");
-    assert_eq!(
-        root["site"],
-        engine_events::equipment_destruction::SITES[0].name
+    assert!(
+        root["site"]
+            .as_str()
+            .unwrap()
+            .contains(engine_events::equipment_destruction::SITES[0].name)
     );
-    assert!(root["cause"].as_str().unwrap().contains("sentinel"));
+    assert!(root["cause"].as_str().unwrap().contains("withheld"));
     reset_session();
     let building = FamilyHooks::<crate::building_changes::Hooks>::construct(0, || unsafe {
         crate::building_changes::Hooks::new(&Unreadable, 0)

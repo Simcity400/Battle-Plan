@@ -273,7 +273,7 @@ mod tests {
                 put(entry + 4, &[1]);
                 put(entry + 8, &(index as u32 + 1).to_le_bytes());
                 put(entry + 0x10, &(base as u64).to_le_bytes());
-                put(base, &(cnaval_base::VTABLE_RVA as u64).to_le_bytes());
+                put(base, &(cnaval_base::VTABLE_RVA.0 as u64).to_le_bytes());
                 put(base + cnaval_base::HOLDER, &(holder as u64).to_le_bytes());
                 put(
                     base + cnaval_base::PROVINCE_ID,

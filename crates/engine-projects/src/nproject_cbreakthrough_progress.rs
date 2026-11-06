@@ -2,8 +2,9 @@
 //! sentinel's minimum-node link and follows successors, preserving ancestors.
 //! The walk checks the exact declared size rather than accepting a prefix.
 
+use engine_sites::Rva;
 /// Breakthrough-progress primary vtable.
-pub const VTABLE_RVA: usize = 0x02aa_49b0;
+pub const VTABLE_RVA: Rva = Rva(0x02aa_49b0);
 /// MSVC tree sentinel pointer.
 pub const TREE_HEADER: usize = 0x08;
 /// Tree u64 size checked against the exact traversed count.
@@ -127,9 +128,7 @@ pub fn walk_progress_buffer(
     mut output: crate::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("breakthrough vtable overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("breakthrough vtable overflow")?;
         if read::<u64>(memory, address) != Some(expected as u64) {
             return Err("breakthrough vtable unreadable or mismatched");
         }
@@ -298,7 +297,7 @@ mod tests {
         write(
             &mut bytes,
             ADDRESS,
-            &((IMAGE + VTABLE_RVA) as u64).to_le_bytes(),
+            &((IMAGE + VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         write(
             &mut bytes,

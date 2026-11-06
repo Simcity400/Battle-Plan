@@ -47,7 +47,7 @@ fn history(
     use engine_air_history::{
         cloop_history, cloop_history::air_stats, loop_history_record_fields, loop_history_window,
     };
-    p64(bytes, history, (BASE + cloop_history::VTABLE_RVA) as u64);
+    p64(bytes, history, (BASE + cloop_history::VTABLE_RVA.0) as u64);
     p32(
         bytes,
         history + cloop_history::FIELD_COUNT,
@@ -62,7 +62,7 @@ fn history(
     p64(
         bytes,
         window,
-        (BASE + loop_history_window::VTABLE_RVA) as u64,
+        (BASE + loop_history_window::VTABLE_RVA.0) as u64,
     );
     header(bytes, window + loop_history_window::RECORDS, slots, 5);
     p32(bytes, window + loop_history_window::CAPACITY, 5);
@@ -106,7 +106,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p32(&mut bytes, LTAB + 4, 1);
     p32(&mut bytes, LTAB + 8, 1);
     p32(&mut bytes, LTAB + 12, 1);
-    p64(&mut bytes, COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+    p64(&mut bytes, COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
     p32(&mut bytes, COUNTRY + ccountry::ID, 3);
     p64(
         &mut bytes,
@@ -116,7 +116,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         MANAGER,
-        (BASE + cstrategic_air_manager::VTABLE_RVA) as u64,
+        (BASE + cstrategic_air_manager::VTABLE_RVA.0) as u64,
     );
     header(
         &mut bytes,
@@ -127,7 +127,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(&mut bytes, OWNER_TAB, 0);
     p64(&mut bytes, OWNER_TAB + 8, AIR as u64);
     p64(&mut bytes, OWNER_TAB + 16, 0);
-    p64(&mut bytes, AIR, (BASE + cstrategic_air::VTABLE_RVA) as u64);
+    p64(&mut bytes, AIR, (BASE + cstrategic_air::VTABLE_RVA.0) as u64);
     p32(&mut bytes, AIR + cstrategic_air::COUNTRY, 2);
     header(&mut bytes, AIR + cstrategic_air::HISTORY_TABLE, HIST_TAB, 2);
     p64(&mut bytes, HIST_TAB, HISTORY1 as u64);
@@ -151,7 +151,7 @@ pub(crate) fn add_reserved_alias_and_null_slot(bytes: &mut [u8]) {
     p64(bytes, CTAB + 8, RESERVED as u64);
     p64(bytes, CTAB + 16, 0);
     p64(bytes, CTAB + 24, COUNTRY as u64);
-    p64(bytes, RESERVED, (BASE + ccountry::VTABLE_RVA) as u64);
+    p64(bytes, RESERVED, (BASE + ccountry::VTABLE_RVA.0) as u64);
     p32(bytes, RESERVED + ccountry::ID, 0);
     p32(bytes, LTAB + 4, 0);
     p32(bytes, LTAB + 8, 3);

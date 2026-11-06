@@ -2,6 +2,7 @@
 //! The caller authenticates the supported module and world/sample boundary.
 //! These are simulation operands, independent of selection or hover caches.
 use crate::{Memory, read};
+use engine_sites::Rva;
 
 pub const NAMES: [&str; 6] = [
     "river_small",
@@ -12,13 +13,13 @@ pub const NAMES: [&str; 6] = [
     "move_organisation_threshold",
 ];
 // Loaded globals authenticated by their installed name bytes, with warning operands read as qwords.
-pub const RVAS: [usize; 6] = [
-    0x033e_1140,
-    0x033e_11d8,
-    0x033e_3278,
-    0x033e_1520,
-    0x029c_fa30,
-    0x029c_fa28,
+pub const RVAS: [Rva; 6] = [
+    Rva(0x033e_1140),
+    Rva(0x033e_11d8),
+    Rva(0x033e_3278),
+    Rva(0x033e_1520),
+    Rva(0x029c_fa30),
+    Rva(0x029c_fa28),
 ];
 const UNREADABLE: [&str; 6] = [
     "river_small global unreadable",
@@ -49,7 +50,7 @@ pub fn capture(memory: &impl Memory, base: usize, sample_hour: i32) -> Inputs {
     Inputs {
         sample_hour,
         values: std::array::from_fn(|index| {
-            base.checked_add(RVAS[index])
+            engine_sites::at(base, RVAS[index])
                 .and_then(|address| read(memory, address))
                 .ok_or(UNREADABLE[index])
         }),
@@ -67,7 +68,7 @@ mod tests {
     impl Memory for Source {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.borrow_mut().push(address);
-            let Some(index) = RVAS.iter().position(|&rva| rva == address) else {
+            let Some(index) = RVAS.iter().position(|&rva| rva.0 == address) else {
                 return false;
             };
             if index == self.refuse || output.len() != 8 {
@@ -87,7 +88,7 @@ mod tests {
             };
             let result = capture(&source, 0, 17);
             assert_eq!(result.sample_hour, 17);
-            assert_eq!(&*source.calls.borrow(), &RVAS);
+            assert_eq!(&*source.calls.borrow(), &RVAS.map(|rva| rva.0));
             for (index, value) in result.values.iter().enumerate() {
                 assert_eq!(value.is_err(), index == refuse);
             }

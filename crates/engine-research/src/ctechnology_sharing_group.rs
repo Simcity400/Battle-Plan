@@ -3,9 +3,10 @@
 //! These layouts do not establish hourly consistency.
 
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read, walk::Outcome};
+use engine_sites::Rva;
 
 /// CTechnologySharingGroup primary vtable.
-pub const VTABLE_RVA: usize = 0x0279_f740;
+pub const VTABLE_RVA: Rva = Rva(0x0279_f740);
 /// CTechnologySharingGroup lexer ordinal u32.
 pub const ID_TOKEN: usize = 0x08;
 /// Raw base bonus, i64 with denominator 100,000.
@@ -185,9 +186,7 @@ struct Header {
 }
 
 fn header(memory: &impl Memory, base: usize, pointer: usize) -> Result<Header, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("technology-sharing group vtable mismatch");
     }
@@ -265,7 +264,7 @@ mod tests {
         let mut memory = MemoryImage::default();
         memory.array(GAME + cgame_state::TECH_SHARING_GROUPS, 0x2000, 1);
         memory.put(0x2000, &(GROUP as u64).to_le_bytes());
-        memory.put(GROUP, &((BASE + VTABLE_RVA) as u64).to_le_bytes());
+        memory.put(GROUP, &((BASE + VTABLE_RVA.0) as u64).to_le_bytes());
         memory.put(GROUP + ID_TOKEN, &1_u32.to_le_bytes());
         memory.put(GROUP + BASE_BONUS, &(-7_000_000_001_i64).to_le_bytes());
         memory.array(GROUP + MEMBERS, 0x6000, 2);
@@ -285,7 +284,7 @@ mod tests {
         for (pointer, id) in [(0x4000, 1_u32), (0x4100, 2)] {
             memory.put(
                 pointer,
-                &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             memory.put(pointer + ccountry::ID, &id.to_le_bytes());
         }

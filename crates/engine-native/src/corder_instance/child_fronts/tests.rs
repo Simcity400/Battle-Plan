@@ -46,7 +46,7 @@ impl Image {
     }
     fn entry(&mut self, index: usize, start: i32, end: i32) {
         let at = ENTRIES + index * STRIDE;
-        self.u64(at, (BASE + ENTRY_VTABLE_RVA) as u64);
+        self.u64(at, (BASE + ENTRY_VTABLE_RVA.0) as u64);
         self.u64(at + 8, GROUP as u64);
         self.u32(at + 0x20, start as u32);
         self.u32(at + 0x24, end as u32);
@@ -56,10 +56,10 @@ fn fixture(area: i32, count: u32) -> Image {
     let mut image = Image::default();
     image.array(STATE + crate::cgame_state::PROVINCES, PROVINCES, 2);
     image.u64(PROVINCES + 8, PROVINCE as u64);
-    image.u64(PROVINCE, (BASE + cprovince::VTABLE_RVA) as u64);
+    image.u64(PROVINCE, (BASE + cprovince::VTABLE_RVA.0) as u64);
     image.u32(PROVINCE + cprovince::ID, 1);
     image.u64(PROVINCE + cprovince::CONTROLLER_AREA, AREA as u64);
-    image.u64(AREA, (BASE + ccontroller_area::VTABLE_RVA) as u64);
+    image.u64(AREA, (BASE + ccontroller_area::VTABLE_RVA.0) as u64);
     image.u32(AREA + ccontroller_area::PROVINCE_COUNT, area as u32);
     image.array(ORDER + DATA, ENTRIES, count);
     image.put(GROUP + corders_group::IS_ARMY_GROUP, &[1]);

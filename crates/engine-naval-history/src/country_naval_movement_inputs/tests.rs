@@ -74,7 +74,7 @@ fn world() -> TestMemory {
     );
     list(&mut bytes, 0x3100, &[0, 1, 2, 1]);
     for (country, id) in [(COUNTRY_ZERO, 0), (COUNTRY_ONE, 1), (0x4800, 2)] {
-        u64_at(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        u64_at(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         u32_at(&mut bytes, country + ccountry::ID, id);
     }
     u64_at(
@@ -85,7 +85,7 @@ fn world() -> TestMemory {
     u64_at(
         &mut bytes,
         MANAGER_ROOT,
-        cstrategic_navy_manager::VTABLE_RVA as u64,
+        cstrategic_navy_manager::VTABLE_RVA.0 as u64,
     );
     header(
         &mut bytes,
@@ -95,11 +95,11 @@ fn world() -> TestMemory {
     );
     pointers(&mut bytes, 0x6100, &[0, NAVY_ONE, 0x7200, NAVY_ALIAS_SLOT]);
     for navy in [NAVY_ONE, 0x7200, NAVY_ALIAS_SLOT] {
-        u64_at(&mut bytes, navy, cstrategic_navy::VTABLE_RVA as u64);
+        u64_at(&mut bytes, navy, cstrategic_navy::VTABLE_RVA.0 as u64);
         u64_at(
             &mut bytes,
             navy + cstrategic_navy::SECONDARY,
-            cstrategic_navy::SECONDARY_VTABLE_RVA as u64,
+            cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         u64_at(&mut bytes, navy + MANAGER, MANAGER_ROOT as u64);
         // Navy observation deliberately does not read this word.
@@ -119,7 +119,7 @@ fn world() -> TestMemory {
         (3, 0xa400, 0),
         (4, 0xa600, 0xd300),
     ] {
-        u64_at(&mut bytes, province, cprovince::VTABLE_RVA as u64);
+        u64_at(&mut bytes, province, cprovince::VTABLE_RVA.0 as u64);
         u32_at(&mut bytes, province + cprovince::ID, id);
         u64_at(&mut bytes, province + cprovince::CONTROLLER_AREA, area);
     }

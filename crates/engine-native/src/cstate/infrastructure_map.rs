@@ -1,3 +1,4 @@
+use engine_sites::Rva;
 use crate::{Memory, cbuilding, cbuilding_database, cbuilding_status as status, cbuilding_template as template, ccountry, cgame_state, cpdx_array::Array, cprovince, cstate, memory::{RecordField, RecordLayout, RecordSources, gather_records, packed_fields}, modifier_accumulator, read};
 
 const INFRASTRUCTURE_DEFINITIONS: usize = 0x280;
@@ -9,8 +10,8 @@ const NO_GROUP: u32 = 0x165;
 const EXCLUSIVE: usize = 0x2c8;
 const ENABLE_TECHNOLOGIES: usize = 0x1ec;
 const FORT_WEIGHTS: [usize; 2] = [0x304, 0x308];
-const DEFAULT_MAXIMUM: usize = 0x033e_5274;
-const MAXIMUM_SHARED_SLOTS: usize = 0x033e_59cc;
+const DEFAULT_MAXIMUM: Rva = Rva(0x033e_5274);
+const MAXIMUM_SHARED_SLOTS: Rva = Rva(0x033e_59cc);
 const GAME_RULES: usize = 0x440;
 const FORT_MAXIMUM: usize = 0x24;
 const CATEGORY_OVERRIDES: usize = 0x128;
@@ -58,8 +59,12 @@ fn array(memory: &impl Memory, object: usize, offset: usize, stride: usize) -> R
     object.checked_add(offset).and_then(|address| Array::read(memory, address, stride)).ok_or("infrastructure map array invalid")
 }
 
-fn authenticate(memory: &impl Memory, base: usize, object: usize, vtable: usize) -> Result<(), &'static str> {
-    if object == 0 || field::<u64>(memory, object, 0)? != base.checked_add(vtable).ok_or("infrastructure map vtable overflow")? as u64 {
+fn global<T: crate::memory::Raw>(memory: &impl Memory, base: usize, key: Rva) -> Result<T, &'static str> {
+    engine_sites::at(base, key).and_then(|address| read(memory, address)).ok_or("infrastructure map operand unreadable")
+}
+
+fn authenticate(memory: &impl Memory, base: usize, object: usize, vtable: Rva) -> Result<(), &'static str> {
+    if object == 0 || field::<u64>(memory, object, 0)? != engine_sites::at(base, vtable).ok_or("infrastructure map vtable overflow")? as u64 {
         return Err("infrastructure map object identity invalid");
     }
     Ok(())
@@ -191,7 +196,7 @@ fn free_slots(memory: &impl Memory, base: usize, game: usize, state: usize, coun
         let factor = 100_000i64.wrapping_add(modifier(state_accumulator, LOCAL_BUILDING_SLOTS_FACTOR)?).wrapping_add(modifier(country_accumulator, GLOBAL_BUILDING_SLOTS_FACTOR)?);
         slots = factor.wrapping_mul(slots) / 100_000;
     }
-    let maximum = ((slots / 100_000) as i32).wrapping_add(field::<i32>(memory, state, EXTRA_SLOTS)?).max(0).min(field(memory, base, MAXIMUM_SHARED_SLOTS)?);
+    let maximum = ((slots / 100_000) as i32).wrapping_add(field::<i32>(memory, state, EXTRA_SLOTS)?).max(0).min(global(memory, base, MAXIMUM_SHARED_SLOTS)?);
     let mut occupied = 0i32;
     visit_buildings(memory, base, state + cstate::BUILDING_STATUS, |building, definition| {
         if field::<u8>(memory, definition, SHARES_SLOTS)? != 0 {
@@ -220,7 +225,7 @@ pub struct Plan {
 
 impl Plan {
     fn locate(memory: &impl Memory, base: usize) -> Result<(usize, usize), &'static str> {
-        let database = field::<u64>(memory, base, cbuilding_database::SINGLETON_RVA)? as usize;
+        let database = global::<u64>(memory, base, cbuilding_database::SINGLETON_RVA)? as usize;
         let definitions = array(memory, database, INFRASTRUCTURE_DEFINITIONS, 8)?;
         let definition = definitions.element(0, 8).and_then(|address| read::<u64>(memory, address)).ok_or("infrastructure map definition unavailable")? as usize;
         Ok((database, definition))
@@ -231,7 +236,7 @@ impl Plan {
         // The game's province cap reads the province of the status, which a state's status has none of.
         if field::<i32>(memory, definition, PROVINCE_MAXIMUM)? > 0 { return Err("infrastructure map province-capped definition unsupported"); }
         let state_maximum = field::<i32>(memory, definition, STATE_MAXIMUM)?;
-        let maximum = if state_maximum > 0 { state_maximum } else { field(memory, base, DEFAULT_MAXIMUM)? };
+        let maximum = if state_maximum > 0 { state_maximum } else { global(memory, base, DEFAULT_MAXIMUM)? };
         let entries = array(memory, definition, EXCLUSIVE, 4)?;
         let mut exclusive = Vec::new();
         crate::allocation::reserve(&mut exclusive, entries.count as usize).map_err(|_| "infrastructure map exclusivity allocation failed")?;

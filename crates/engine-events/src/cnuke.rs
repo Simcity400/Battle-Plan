@@ -2,9 +2,10 @@
 //! The raw amount is a signed i64 progress quantity; it is not the ready count.
 
 use crate::{Memory, ccountry, cpdx_array::Array, walk::Outcome};
+use engine_sites::Rva;
 
 /// Nuke primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_4640;
+pub const VTABLE_RVA: Rva = Rva(0x0286_4640);
 /// CNuke inline array stride.
 pub const STRIDE: usize = 0x48;
 /// CNuke owning CCountry pointer.
@@ -71,9 +72,7 @@ fn walk_rows(
     mut rows: crate::walk::Buffer<'_, Row>,
 ) -> Result<Outcome, &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("nuke vtable address overflow")? as u64;
+    let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("nuke vtable address overflow")? as u64;
     let mut found_country = false;
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
@@ -207,12 +206,12 @@ mod tests {
         u64_at(&mut bytes, COUNTRIES + 24, OWNER as u64);
         u32_at(&mut bytes, LINKS + 4, 1);
         u32_at(&mut bytes, LINKS + 12, 1);
-        u64_at(&mut bytes, OWNER, ccountry::VTABLE_RVA as u64);
+        u64_at(&mut bytes, OWNER, ccountry::VTABLE_RVA.0 as u64);
         u32_at(&mut bytes, OWNER + ccountry::ID, 3);
         array(&mut bytes, OWNER + ccountry::NUKES, NUKES, TYPE_COUNT);
         for index in 0..TYPE_COUNT {
             let at = NUKES + index as usize * STRIDE;
-            u64_at(&mut bytes, at, VTABLE_RVA as u64);
+            u64_at(&mut bytes, at, VTABLE_RVA.0 as u64);
             u32_at(&mut bytes, at + SERIAL_TYPE, SERIAL_TYPE_VALUE);
             u64_at(&mut bytes, at + COUNTRY, OWNER as u64);
             u64_at(
@@ -338,7 +337,7 @@ mod tests {
         let mut bytes = fixture();
         array(&mut bytes, OWNER + ccountry::NUKES, NUKES, 3);
         let at = NUKES + 2 * STRIDE;
-        u64_at(&mut bytes, at, VTABLE_RVA as u64);
+        u64_at(&mut bytes, at, VTABLE_RVA.0 as u64);
         u32_at(&mut bytes, at + SERIAL_TYPE, LOADED_SERIAL_TYPE_VALUE);
         u64_at(&mut bytes, at + COUNTRY, OWNER as u64);
         u64_at(&mut bytes, at + AMOUNT, 7);

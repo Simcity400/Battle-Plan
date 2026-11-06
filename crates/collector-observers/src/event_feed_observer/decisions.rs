@@ -37,10 +37,8 @@ fn access(
     };
 }
 fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'static str> {
-    if engine_native::read::<u64>(memory, status)
-        != base
-            .checked_add(engine_decisions::cdecision_status::VTABLE_RVA)
-            .map(|p| p as u64)
+    if engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
+        .is_none_or(|vtable| engine_native::read::<u64>(memory, status) != Some(vtable as u64))
     {
         return Err("decision writer owner status differs");
     }

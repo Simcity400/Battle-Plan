@@ -18,6 +18,7 @@ use crate::{
     read, read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 pub mod design_templates;
 
@@ -39,7 +40,7 @@ pub struct LicenseRow {
 }
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_d098;
+pub const VTABLE_RVA: Rva = Rva(0x029e_d098);
 
 /// Production-line pointer-array data.
 pub const LINES: usize = 0x58;
@@ -51,7 +52,7 @@ pub const ORGANISATIONS: usize = 0x130;
 /// Cached allowed-policy roster, rebuilt from content by refresh and loading.
 pub const POLICIES: usize = 0x148;
 /// Policy primary vtable and definition-token layout.
-pub const POLICY_VTABLE_RVA: usize = 0x029b_a5a8;
+pub const POLICY_VTABLE_RVA: Rva = Rva(0x029b_a5a8);
 /// Lexer token used to resolve the localized policy name.
 pub const POLICY_TOKEN: usize = 8;
 /// Construction-line pointer-array data.
@@ -131,9 +132,7 @@ pub fn country_pointer(
     if pointer == 0 {
         return Err("production status vtable mismatch");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     let mut vtable = [0; 8];
     let mut owner = [0; 8];
     let copied = memory.copy_scattered(
@@ -164,7 +163,7 @@ pub fn policies_header(
     if pointer == 0 {
         return Ok(None);
     }
-    if base.checked_add(VTABLE_RVA).map(|p| p as u64) != read::<u64>(memory, pointer) {
+    if engine_sites::at(base, VTABLE_RVA).map(|p| p as u64) != read::<u64>(memory, pointer) {
         return Err("MIO policy production status vtable mismatch");
     }
     if pointer
@@ -197,7 +196,7 @@ pub fn read_policies(
     if output.len() != array.count as usize {
         return Err("MIO policy roster arena capacity exceeded");
     }
-    let vtable = base.checked_add(POLICY_VTABLE_RVA).map(|p| p as u64);
+    let vtable = engine_sites::at(base, POLICY_VTABLE_RVA).map(|p| p as u64);
     let mut pointers = [[0_u8; 8]; BATCH];
     let mut fields = [[0_u8; FIELDS]; BATCH];
     for first in (0..array.count).step_by(BATCH) {
@@ -287,7 +286,7 @@ pub struct FactoryRow {
 }
 
 /// The five civilian consumers in their constructor order with their vtables.
-const CONSUMERS: [(usize, usize); 5] = [
+const CONSUMERS: [(usize, Rva); 5] = [
     (
         CONSUMER_GOODS,
         civ_factory_consumer::CONSUMER_GOODS_VTABLE_RVA,
@@ -351,7 +350,7 @@ fn walk_factories_buffer(
             .iter_mut()
             .zip(std::iter::once(VTABLE_RVA).chain(CONSUMERS.iter().map(|&(_, rva)| rva)))
         {
-            *vtable = base.checked_add(rva).ok_or("module address overflow")?;
+            *vtable = engine_sites::at(base, rva).ok_or("module address overflow")?;
         }
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
@@ -1015,13 +1014,13 @@ mod tests {
             put(&mut bytes, 0x2100 + slot * 4, &1_u32.to_le_bytes());
         }
         for (address, value) in [
-            (COUNTRY_POINTER, ccountry::VTABLE_RVA as u64),
+            (COUNTRY_POINTER, ccountry::VTABLE_RVA.0 as u64),
             (COUNTRY_POINTER + ccountry::PRODUCTION_STATUS, STATUS as u64),
-            (STATUS, VTABLE_RVA as u64),
+            (STATUS, VTABLE_RVA.0 as u64),
             (STATUS + COUNTRY, COUNTRY_POINTER as u64),
             (0x6000, FIRST_LINE as u64),
             (0x6008, SECOND_LINE as u64),
-            (VARIANT, cequipment_variant::VTABLE_RVA as u64),
+            (VARIANT, cequipment_variant::VTABLE_RVA.0 as u64),
             (VARIANT + cequipment_variant::TYPE, 0xfedc_ba98_0000_0046),
         ] {
             put(&mut bytes, address, &value.to_le_bytes());
@@ -1038,7 +1037,7 @@ mod tests {
         put(
             &mut bytes,
             RECORD,
-            &(cequipment_production_license::VTABLE_RVA as u64).to_le_bytes(),
+            &(cequipment_production_license::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1096,7 +1095,7 @@ mod tests {
             ),
         ] {
             for (offset, value) in [
-                (0, vtable as u64),
+                (0, vtable.0 as u64),
                 (cproduction_line::REFERENCE_TYPE, handle),
                 (cproduction_line::PRODUCTION_STATUS, STATUS as u64),
                 (cproduction_line::COST, 9_876_543_210),
@@ -1143,7 +1142,7 @@ mod tests {
         put(
             &mut bytes,
             EQUIPMENT,
-            &(crate::cequipment_type::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1173,7 +1172,7 @@ mod tests {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
             match equipment::MAX_FACTORY_DEFINE_RVAS
                 .iter()
-                .position(|&rva| rva == address)
+                .position(|&rva| rva.0 == address)
             {
                 Some(index) if destination.len() == 4 => match self.defines {
                     Some(values) => {
@@ -1201,8 +1200,8 @@ mod tests {
         }
     }
 
-    fn set_line_kind(bytes: &mut [u8], vtable: usize) {
-        put(bytes, FIRST_LINE, &(vtable as u64).to_le_bytes());
+    fn set_line_kind(bytes: &mut [u8], vtable: Rva) {
+        put(bytes, FIRST_LINE, &(vtable.0 as u64).to_le_bytes());
     }
 
     fn clear_type_maximum(bytes: &mut [u8], offset: usize) {
@@ -1273,7 +1272,7 @@ mod tests {
         put(
             &mut bytes,
             archetype,
-            &(crate::cequipment_type::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         // The type's own optional wins over the archetype's.
         put(
@@ -1882,9 +1881,11 @@ pub fn war_overview_factories(
         memory: &impl crate::Memory,
         base: usize,
         pointer: usize,
-        rva: usize,
+        rva: Rva,
     ) -> Result<(), &'static str> {
-        if pointer == 0 || read::<u64>(memory, pointer) != base.checked_add(rva).map(|p| p as u64) {
+        if pointer == 0
+            || read::<u64>(memory, pointer) != engine_sites::at(base, rva).map(|p| p as u64)
+        {
             Err("war factory vtable mismatch")
         } else {
             Ok(())
@@ -1972,8 +1973,7 @@ pub fn war_overview_factories(
             for index in 0..count {
                 let record = &records[index * 16..];
                 if u64::from_le_bytes(record[..8].try_into().unwrap())
-                    != base
-                        .checked_add(cbuilding::VTABLE_RVA)
+                    != engine_sites::at(base, cbuilding::VTABLE_RVA)
                         .ok_or("war factory vtable address overflow")? as u64
                 {
                     return Err("war factory vtable mismatch");
@@ -2006,8 +2006,7 @@ pub fn war_overview_factories(
                 for index in 0..unread_len {
                     let record = &definitions[index * 24..(index + 1) * 24];
                     if u64::from_le_bytes(record[..8].try_into().unwrap())
-                        != base
-                            .checked_add(cbuilding_template::VTABLE_RVA)
+                        != engine_sites::at(base, cbuilding_template::VTABLE_RVA)
                             .ok_or("war factory template vtable address overflow")?
                             as u64
                     {
@@ -2066,7 +2065,7 @@ mod war_overview_tests {
     fn core_control_null_offsite_occurrences_and_signed_wrapping_are_native() {
         let mut w = World::new(0, 2, 0x1600);
         let production = w.alloc(0x300);
-        w.u64(production, VTABLE_RVA as u64);
+        w.u64(production, VTABLE_RVA.0 as u64);
         w.u64(production + COUNTRY, w.object(1) as u64);
         w.u64(w.object(1) + ccountry::PRODUCTION_STATUS, production as u64);
         let state = w.alloc(0x200);
@@ -2076,16 +2075,16 @@ mod war_overview_tests {
         let template = w.alloc(0x320);
         let cores = w.alloc(24);
         let vector = w.alloc(8);
-        w.u64(state, cstate::VTABLE_RVA as u64);
+        w.u64(state, cstate::VTABLE_RVA.0 as u64);
         w.u32(state + cstate::CONTROLLER, 1);
-        w.u64(foreign, cstate::VTABLE_RVA as u64);
+        w.u64(foreign, cstate::VTABLE_RVA.0 as u64);
         w.u32(foreign + cstate::CONTROLLER, 2);
-        w.u64(offsite, cbuilding_status::VTABLE_RVA as u64);
+        w.u64(offsite, cbuilding_status::VTABLE_RVA.0 as u64);
         w.u64(w.object(1) + ccountry::WAR_OVERVIEW_OFFSITE, offsite as u64);
-        w.u64(building, cbuilding::VTABLE_RVA as u64);
+        w.u64(building, cbuilding::VTABLE_RVA.0 as u64);
         w.u64(building + cbuilding::TEMPLATE, template as u64);
         w.put(building + cbuilding::LEVEL, &3_i16.to_le_bytes());
-        w.u64(template, cbuilding_template::VTABLE_RVA as u64);
+        w.u64(template, cbuilding_template::VTABLE_RVA.0 as u64);
         w.u32(template + cbuilding_template::WAR_OVERVIEW_PRODUCTION[3], 1);
         w.u64(vector, building as u64);
         for status in [
@@ -2113,7 +2112,7 @@ mod war_overview_tests {
         assert_eq!(count(&w), Ok(9));
         w.u64(production, 0);
         assert!(count(&w).is_err());
-        w.u64(production, VTABLE_RVA as u64);
+        w.u64(production, VTABLE_RVA.0 as u64);
         w.u64(production + COUNTRY, w.object(2) as u64);
         assert_eq!(count(&w), Err("war factory production owner mismatch"));
         w.u64(production + COUNTRY, w.object(1) as u64);
@@ -2145,13 +2144,13 @@ mod war_overview_tests {
         let mut w = World::new(0, 2, 0x1600);
         let counted = w.alloc(0x320);
         let skipped = w.alloc(0x320);
-        w.u64(counted, cbuilding_template::VTABLE_RVA as u64);
+        w.u64(counted, cbuilding_template::VTABLE_RVA.0 as u64);
         w.u32(counted + cbuilding_template::WAR_OVERVIEW_PRODUCTION[1], 2);
-        w.u64(skipped, cbuilding_template::VTABLE_RVA as u64);
+        w.u64(skipped, cbuilding_template::VTABLE_RVA.0 as u64);
         let vector = w.alloc(6 * 8);
         for index in 0..6_usize {
             let building = w.alloc(0x200);
-            w.u64(building, cbuilding::VTABLE_RVA as u64);
+            w.u64(building, cbuilding::VTABLE_RVA.0 as u64);
             let template = if index % 3 == 2 { skipped } else { counted };
             w.u64(building + cbuilding::TEMPLATE, template as u64);
             w.put(
@@ -2162,14 +2161,14 @@ mod war_overview_tests {
         }
         for id in [1, 2] {
             let production = w.alloc(0x300);
-            w.u64(production, VTABLE_RVA as u64);
+            w.u64(production, VTABLE_RVA.0 as u64);
             w.u64(production + COUNTRY, w.object(id) as u64);
             w.u64(
                 w.object(id) + ccountry::PRODUCTION_STATUS,
                 production as u64,
             );
             let offsite = w.alloc(0x80);
-            w.u64(offsite, cbuilding_status::VTABLE_RVA as u64);
+            w.u64(offsite, cbuilding_status::VTABLE_RVA.0 as u64);
             w.array(offsite + cbuilding_status::ACTIVE_BUILDINGS, vector, 6);
             w.u64(
                 w.object(id) + ccountry::WAR_OVERVIEW_OFFSITE,
@@ -2263,7 +2262,7 @@ mod policy_tests {
         let mut bytes = vec![0; ROSTER + count * 8];
         for index in 0..4 {
             let policy = POLICIES + index * STRIDE;
-            let vtable = (BASE + POLICY_VTABLE_RVA) as u64;
+            let vtable = (BASE + POLICY_VTABLE_RVA.0) as u64;
             bytes[policy..policy + 8].copy_from_slice(&vtable.to_le_bytes());
             let token = 500 + index as u32;
             bytes[policy + POLICY_TOKEN..policy + POLICY_TOKEN + 4]

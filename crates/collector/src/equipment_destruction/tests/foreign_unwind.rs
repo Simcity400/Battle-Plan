@@ -155,7 +155,6 @@ fn production_land_detour_foreign_unwind() {
     let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
         .try_into()
         .unwrap();
-    assert_eq!(&sentinel[..5], &native::LAND.sentinel[..5]);
     let original: ArmyFn = land_foreign_damage_target;
     let body: unsafe extern "system-unwind" fn(
         usize,
@@ -182,7 +181,7 @@ fn production_land_detour_foreign_unwind() {
         setup(8, 1);
         boundary(clock(1, 1));
         boundary(clock(2, 1));
-        let base = land_foreign_damage_return as *const () as usize - native::LAND_COMBAT_RETURN;
+        let base = land_foreign_damage_return as *const () as usize - native::LAND_COMBAT_RETURN.0;
         BASE.store(base, Ordering::SeqCst);
         let mut world = World::new(1);
         world.rebase(base);

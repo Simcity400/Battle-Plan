@@ -201,7 +201,7 @@ mod many {
             put(
                 &mut bytes,
                 object,
-                &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, object + ccountry::ID, &slot.to_le_bytes());
             header(
@@ -218,11 +218,15 @@ mod many {
                 );
             }
         }
-        put(&mut bytes, ARMY, &(carmy::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            ARMY,
+            &(carmy::VTABLE_RVA.0 as u64).to_le_bytes(),
+        );
         put(
             &mut bytes,
             ARMY + carmy::SECONDARY_BASE,
-            &(carmy::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            &(carmy::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         bytes
     }
@@ -723,16 +727,19 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
     let group_handle =
         (u32::MAX as u64) << 32 | engine_native::corders_group::REFERENCE_TYPE as u64;
     for (address, value) in [
-        (colliding[0], cprovince::VTABLE_RVA as u64),
+        (colliding[0], cprovince::VTABLE_RVA.0 as u64),
         (kit::PTAB + 16, colliding[0] as u64),
         (
             colliding[1],
-            creferenced_division_template::VTABLE_RVA as u64,
+            creferenced_division_template::VTABLE_RVA.0 as u64,
         ),
         // The original core accepts any nonzero template handle. Do not
         // strengthen that contract by borrowing a stricter engine helper.
         (colliding[1] + creferenced_division_template::TYPE, u64::MAX),
-        (colliding[2], engine_native::carmy_group::VTABLE_RVA as u64),
+        (
+            colliding[2],
+            engine_native::carmy_group::VTABLE_RVA.0 as u64,
+        ),
         (colliding[2] + 8, group_handle),
     ] {
         bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
@@ -1151,7 +1158,7 @@ fn refused_selection_storage_never_ends_the_recording() {
     struct Commanded(Vec<u8>);
     impl Memory for Commanded {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == TRADE_FEATURE_FLAGS_RVA && output.len() == 4 {
+            if address == TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4 {
                 output.copy_from_slice(&(1_u32 << 17).to_le_bytes());
                 return true;
             }
@@ -1175,11 +1182,11 @@ fn refused_selection_storage_never_ends_the_recording() {
     let mut bytes = vec![0_u8; 0x10000];
     let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     let handle = (7 << 32) | u64::from(cunit_leader::REFERENCE_TYPE);
-    put(LEADER, carmy_leader::VTABLE_RVA as u64);
+    put(LEADER, carmy_leader::VTABLE_RVA.0 as u64);
     put(LEADER + cunit_leader::TYPE, handle);
     for (own, parent, host) in GROUPS {
         for at in [own, parent] {
-            put(at, group::VTABLE_RVA as u64);
+            put(at, group::VTABLE_RVA.0 as u64);
             put(at + group::HANDLE, u64::from(group::REFERENCE_TYPE));
         }
         put(own + group::LEADER, LEADER as u64);
@@ -1188,10 +1195,10 @@ fn refused_selection_storage_never_ends_the_recording() {
             own + group::HQ_PROVIDER,
             (host + member::HOST_OFFSET) as u64,
         );
-        put(host, carmy::VTABLE_RVA as u64);
+        put(host, carmy::VTABLE_RVA.0 as u64);
         put(
             host + carmy::SECONDARY_BASE,
-            carmy::SECONDARY_VTABLE_RVA as u64,
+            carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         put(host + cunit::HANDLE, 1);
         put(host + member::HOST_OFFSET + member::GROUP, own as u64);
@@ -1317,13 +1324,13 @@ fn held_groups_are_read_again_only_after_a_writer_names_them() {
     }
     let mut bytes = vec![0_u8; 0x10000];
     let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-    put(LEADER, carmy_leader::VTABLE_RVA as u64);
+    put(LEADER, carmy_leader::VTABLE_RVA.0 as u64);
     put(
         LEADER + cunit_leader::TYPE,
         (7 << 32) | u64::from(cunit_leader::REFERENCE_TYPE),
     );
     for at in GROUPS.into_iter().chain([NEW]) {
-        put(at, group::VTABLE_RVA as u64);
+        put(at, group::VTABLE_RVA.0 as u64);
         put(at + group::HANDLE, u64::from(group::REFERENCE_TYPE));
         put(at + group::LEADER, LEADER as u64);
     }

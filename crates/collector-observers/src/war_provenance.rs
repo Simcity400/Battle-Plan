@@ -152,8 +152,9 @@ fn performed(route: EventFeedRoute, state: Option<u32>, flags: u8) -> EventFeedC
 /// The route `callers` names for a call returning to the absolute address
 /// `caller`; `None`, counted, outside the list.
 fn route(callers: &[Caller], caller: usize) -> EventFeedRoute {
-    let return_rva = caller.wrapping_sub(BASE.load(Ordering::Relaxed));
-    match native::route(callers, return_rva).and_then(EventFeedRoute::named) {
+    match native::route(BASE.load(Ordering::Relaxed), callers, caller)
+        .and_then(EventFeedRoute::named)
+    {
         Some(route) => route,
         None => {
             UNCLASSIFIED.fetch_add(1, Ordering::Relaxed);
@@ -475,12 +476,18 @@ const CALLBACKS: [unsafe extern "system-unwind" fn(); ENTRIES] = [
 /// The memory source and base must identify the authenticated executable in
 /// this process. The caller owns this family exclusively and must restore
 /// its hooks and quiesce native calls before releasing code or unloading.
-pub unsafe fn hooks(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
+pub unsafe fn hooks(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
     let mut hooks = Vec::with_capacity(ENTRIES);
     for (index, (entry, callback)) in native::ENTRIES.iter().zip(CALLBACKS).enumerate() {
-        let address = native::verify(memory, base, *entry)?;
-        let hook = unsafe { Hook::new(address, callback as *const () as usize, entry.sentinel) }
-            .map_err(|_| "Event feed entry detour construction failed")?;
+        let code = engine_sites::hook(base, entry.rva)?;
+        let hook = unsafe {
+            Hook::new(
+                code.address,
+                callback as *const () as usize,
+                code.sentinel::<16>()?,
+            )
+        }
+        .map_err(|_| "Event feed entry detour construction failed")?;
         ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
         hooks.push(hook);
     }

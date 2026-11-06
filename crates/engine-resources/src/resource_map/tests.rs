@@ -96,7 +96,10 @@ fn route_walk_keeps_scalar_values_prefixes_and_every_ordered_source_refusal() {
                     (reference, expected),
                     "count {count}, fault {denied:?}"
                 );
-                assert!(actual_memory.faults.get() <= 1, "a failed source was retried");
+                assert!(
+                    actual_memory.faults.get() <= 1,
+                    "a failed source was retried"
+                );
                 if denied.is_none() && count >= 2 {
                     assert_eq!(actual_memory.guards.get(), scalar.guards.get());
                 }
@@ -174,7 +177,7 @@ fn client(f: &mut Fixture, address: usize, vtable: usize, handle: u32, efficienc
 
 fn route(f: &mut Fixture, address: usize, kind: u8, ends: [usize; 2], path: &[usize]) {
     f.put(address, &[0; 0x70]);
-    f.u64(address, ROUTE_VTABLE_RVA as u64);
+    f.u64(address, ROUTE_VTABLE_RVA.0 as u64);
     f.put(address + ROUTE_KIND, &[kind]);
     let (ends_at, list) = if kind == NAVAL {
         (ROUTE_FROM_PORT, ROUTE_SEA_REGIONS)
@@ -199,7 +202,7 @@ fn route(f: &mut Fixture, address: usize, kind: u8, ends: [usize; 2], path: &[us
 /// country 7 and has one naval supply transfer.
 fn world() -> Fixture {
     let mut f = Fixture::new();
-    f.u64(BAD_EFFICIENCY_THRESHOLD_RVA, THRESHOLD as u64);
+    f.u64(BAD_EFFICIENCY_THRESHOLD_RVA.0, THRESHOLD as u64);
     for (country, resources) in [(0x2000, 0x6000), (0x4000, 0x7000)] {
         f.array(country + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
         for list in [
@@ -216,7 +219,7 @@ fn world() -> Fixture {
     // Country 7's origin of state 101: a bad production line on a naval route.
     f.array(0x6000 + ccountry_resources::RESOURCE_ORIGINS, 0x20800, 1);
     f.u64(0x20800, 0x20000);
-    client(&mut f, 0x20000, ORIGIN_VTABLE_RVA, 41, [100_000, 70_000]);
+    client(&mut f, 0x20000, ORIGIN_VTABLE_RVA.0, 41, [100_000, 70_000]);
     f.u64(0x20000 + ORIGIN_STATE, 0x30000);
     f.u64(0x20000 + ORIGIN_EFFICIENCY, 70_000);
     f.u64(0x20000 + ORIGIN_ROUTE_FACTOR, 110_000);
@@ -252,7 +255,7 @@ fn world() -> Fixture {
     f.array(0x51000 + SUPPLY_TRANSFERS, 0x51800, 1);
     f.put(0x51800, &[0; SUPPLY_TRANSFER_STRIDE]);
     f.u64(0x51800 + SUPPLY_TRANSFER_CLIENT, 0x52000);
-    client(&mut f, 0x52000, SUPPLY_VTABLE_RVA, 77, [100_000, 100_000]);
+    client(&mut f, 0x52000, SUPPLY_VTABLE_RVA.0, 77, [100_000, 100_000]);
     route(&mut f, 0x52000 + SUPPLY_ROUTE, 0, [0, 0], &[]);
     // A market contract from country 7 to country 2 on the same delivery route.
     f.u64(GAME_STATE + cgame_state::MARKET_MANAGER, 0x60000);
@@ -263,7 +266,7 @@ fn world() -> Fixture {
     client(
         &mut f,
         0x61000 + CONTRACT_CLIENT,
-        CONTRACT_CLIENT_VTABLE_RVA,
+        CONTRACT_CLIENT_VTABLE_RVA.0,
         88,
         [100_000, 50_000],
     );
@@ -336,7 +339,7 @@ fn effective_metadata_is_pass_local_and_keeps_current_values_absence_and_faults(
         memory.image.u64(ENTRY + 8, 123_456);
         memory
             .image
-            .u64(modifier_definition::TABLE_RVA, TABLE as u64);
+            .u64(modifier_definition::TABLE_RVA.0, TABLE as u64);
         memory
             .image
             .u32(definition + modifier_definition::FEATURE_SELECTOR, selector);
@@ -346,11 +349,11 @@ fn effective_metadata_is_pass_local_and_keeps_current_values_absence_and_faults(
         );
         memory
             .image
-            .u64(modifier_definition::ELIGIBILITY_CALLBACK_RVA, 0);
+            .u64(modifier_definition::ELIGIBILITY_CALLBACK_RVA.0, 0);
     };
     for failed in [
         None,
-        Some(modifier_definition::TABLE_RVA),
+        Some(modifier_definition::TABLE_RVA.0),
         Some(definition + modifier_definition::FEATURE_SELECTOR),
         Some(definition + modifier_definition::FLAGS),
     ] {
@@ -385,7 +388,7 @@ fn effective_metadata_is_pass_local_and_keeps_current_values_absence_and_faults(
                 .spans
                 .borrow()
                 .iter()
-                .any(|&(address, _)| address == modifier_definition::TABLE_RVA)
+                .any(|&(address, _)| address == modifier_definition::TABLE_RVA.0)
         );
         // A new pass cannot retain the preceding pass's metadata.
         cached.image.u32(definition + modifier_definition::FLAGS, 0);
@@ -414,7 +417,7 @@ fn effective_metadata_is_pass_local_and_keeps_current_values_absence_and_faults(
             assert!(
                 !spans
                     .iter()
-                    .any(|&(address, _)| address == modifier_definition::TABLE_RVA)
+                    .any(|&(address, _)| address == modifier_definition::TABLE_RVA.0)
             );
         }
     }
@@ -444,7 +447,7 @@ fn resource_effective_keeps_an_existing_pass_memos_observation() {
     source.image.u64(0xb0008, 123_456);
     source
         .image
-        .u64(modifier_definition::TABLE_RVA, table as u64);
+        .u64(modifier_definition::TABLE_RVA.0, table as u64);
     source.image.u32(
         table + key as usize * modifier_definition::STRIDE + modifier_definition::FEATURE_SELECTOR,
         0,
@@ -464,13 +467,13 @@ fn resource_effective_keeps_an_existing_pass_memos_observation() {
         100_000
     );
     source.spans.borrow_mut().clear();
-    source.fail.set(Some(modifier_definition::TABLE_RVA));
+    source.fail.set(Some(modifier_definition::TABLE_RVA.0));
     let metadata = Default::default();
     assert_eq!(
         effective(&memory, 0, accumulator, key, &metadata),
         Ok(100_000)
     );
-    assert_eq!(source.fail.get(), Some(modifier_definition::TABLE_RVA));
+    assert_eq!(source.fail.get(), Some(modifier_definition::TABLE_RVA.0));
     assert!(metadata.get().is_none());
 }
 
@@ -481,7 +484,7 @@ fn resource_walk_shares_only_metadata_and_resets_it_for_each_walk() {
     let definition = TABLE + PRODUCTION_OIL_FACTOR as usize * modifier_definition::STRIDE;
     memory
         .image
-        .u64(modifier_definition::TABLE_RVA, TABLE as u64);
+        .u64(modifier_definition::TABLE_RVA.0, TABLE as u64);
     memory
         .image
         .u32(definition + modifier_definition::FEATURE_SELECTOR, 0);
@@ -516,7 +519,7 @@ fn resource_walk_shares_only_metadata_and_resets_it_for_each_walk() {
                 .spans
                 .borrow()
                 .iter()
-                .filter(|&&(at, _)| at == modifier_definition::TABLE_RVA)
+                .filter(|&&(at, _)| at == modifier_definition::TABLE_RVA.0)
                 .count(),
             1
         );
@@ -605,7 +608,7 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
     for handle in [false, true] {
         let mut memory = Copies::new(handle.then_some(0x52000 + CLIENT_HANDLE_ID));
         if !handle {
-            memory.image.u64(0x52000, ROUTE_VTABLE_RVA as u64);
+            memory.image.u64(0x52000, ROUTE_VTABLE_RVA.0 as u64);
         }
         let countries = ccountry::Reader::new(&memory, 0, GAME_STATE).unwrap();
         let walk = Walk {
@@ -682,7 +685,10 @@ fn convoy_clients_admit_whatever_dynamic_type_word_their_handles_carry() {
     // Two clients whose references differ only by type word share the id the
     // table is keyed by: the census refuses by name rather than merge them.
     let mut f = world();
-    f.u32(0x61000 + CONTRACT_CLIENT + CLIENT_HANDLE_TYPE, TYPE_WORD + 1);
+    f.u32(
+        0x61000 + CONTRACT_CLIENT + CLIENT_HANDLE_TYPE,
+        TYPE_WORD + 1,
+    );
     f.u32(0x61000 + CONTRACT_CLIENT + CLIENT_HANDLE_ID, 77);
     let (outcomes, _) = walk(&f);
     assert_eq!(
@@ -844,7 +850,7 @@ fn routes_draw_ports_and_regions_by_sea_and_states_by_land() {
 #[test]
 fn a_client_of_an_unexpected_type_refuses_the_tables_by_name() {
     let mut f = world();
-    f.u64(0x52000, ROUTE_VTABLE_RVA as u64);
+    f.u64(0x52000, ROUTE_VTABLE_RVA.0 as u64);
     let (outcomes, _) = walk(&f);
     assert_eq!(
         outcomes.clients,
@@ -861,7 +867,7 @@ fn a_client_of_an_unexpected_type_refuses_the_tables_by_name() {
 #[test]
 fn an_unreadable_origin_refuses_the_origins_and_rights_alone() {
     let mut f = world();
-    f.u64(0x20000, ROUTE_VTABLE_RVA as u64);
+    f.u64(0x20000, ROUTE_VTABLE_RVA.0 as u64);
     let (outcomes, rows) = walk(&f);
     assert_eq!(
         outcomes.origins,
@@ -893,7 +899,7 @@ fn an_import_whose_exporter_resources_are_not_the_exporters_own_is_refused() {
     let mut f = world();
     // A copy of country 7's resources that names country 7 as its owner, but that country 7
     // does not hold: its owner word alone used to be enough.
-    f.u64(0x6800, ccountry_resources::VTABLE_RVA as u64);
+    f.u64(0x6800, ccountry_resources::VTABLE_RVA.0 as u64);
     f.u32(0x6800 + ccountry_resources::OWNER, 7);
     f.array(0x6800 + DELIVERY_ROUTES, 0x40800, 3);
     f.u64(0xa000 + exchange::EXPORTER_RESOURCES, 0x6800);
@@ -918,7 +924,7 @@ fn a_rights_holder_origin_reads_its_own_route_and_line() {
     f.array(0x7000 + RIGHTS_ORIGINS, 0x21800, 1);
     f.put(0x21800, &[0; RIGHTS_ORIGIN_STRIDE]);
     f.u64(0x21800, 0x21000);
-    client(&mut f, 0x21000, ORIGIN_VTABLE_RVA, 55, [100_000, 60_000]);
+    client(&mut f, 0x21000, ORIGIN_VTABLE_RVA.0, 55, [100_000, 60_000]);
     f.u64(0x21000 + ORIGIN_STATE, 0x31000);
     f.u64(0x21000 + ORIGIN_EFFICIENCY, 60_000);
     f.u64(0x21000 + ORIGIN_ROUTE_FACTOR, 100_000);
@@ -1249,7 +1255,7 @@ fn market_directional_positions_do_not_follow_global_contract_or_handle_order() 
     client(
         &mut f,
         0x66000 + CONTRACT_CLIENT,
-        CONTRACT_CLIENT_VTABLE_RVA,
+        CONTRACT_CLIENT_VTABLE_RVA.0,
         89,
         [100_000, 50_000],
     );
@@ -1278,7 +1284,7 @@ fn market_route_states_are_separate_from_ports_and_authenticate_against_the_stat
     f.u64(address + ROUTE_FROM, 0x30000);
     f.u64(address + ROUTE_TO, 0x31000);
     for state in [0x30000, 0x31000] {
-        f.u64(state, cstate::VTABLE_RVA as u64);
+        f.u64(state, cstate::VTABLE_RVA.0 as u64);
     }
     f.array(GAME_STATE + cgame_state::STATES, 0x80000, 103);
     f.u64(0x80000 + 101 * 8, 0x30000);

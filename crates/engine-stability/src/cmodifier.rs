@@ -1,7 +1,8 @@
 //! CModifier wrapper embedded in CState and CResistance; its accumulator has a separate native layout.
 
+use engine_sites::Rva;
 /// CModifier vtable.
-pub const VTABLE_RVA: usize = 0x0279_65d8;
+pub const VTABLE_RVA: Rva = Rva(0x0279_65d8);
 /// CModifier embedded accumulator.
 pub const ACCUMULATOR: usize = 0x10;
 /// CModifier display-name std::string.
@@ -29,8 +30,7 @@ pub fn read_into(
     modifier: usize,
     output: &mut Snapshot,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("faction modifier vtable address overflow")? as u64;
     if crate::read::<u64>(memory, modifier) != Some(expected) {
         return Err("faction slot modifier vtable mismatch");

@@ -2,8 +2,9 @@
 //! a branch across files and rebuilds same-name definitions within that branch.
 //! Authored identity comes from the live lexical dictionary.
 
+use engine_sites::Rva;
 /// Primary branch vtable.
-pub const VTABLE_RVA: usize = 0x0285_cc30;
+pub const VTABLE_RVA: Rva = Rva(0x0285_cc30);
 /// Branch lexer token.
 pub const TOKEN: usize = 0x08;
 /// Non-null branch valid byte; any nonzero value is valid.

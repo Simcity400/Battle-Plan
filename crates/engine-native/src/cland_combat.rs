@@ -2,6 +2,7 @@
 //! `BODY`. The location is a province pointer. The walker captures two ordered participant vectors
 //! without event-hook or presentation data.
 
+use engine_sites::Rva;
 use crate::{
     Memory, carmy, cgame_state, cland_border_war_combat, cland_border_war_combatant,
     cland_combatant, cnaval_combat, cpdx_array::Array, cprovince, crailway_gun, ctask_force, cunit,
@@ -23,9 +24,9 @@ pub use details::{
 };
 
 /// CLandCombat primary vtable.
-pub const VTABLE_RVA: usize = 0x02a2_37b8;
+pub const VTABLE_RVA: Rva = Rva(0x02a2_37b8);
 /// CLandCombat secondary vtable (`BODY`).
-pub const BODY_VTABLE_RVA: usize = 0x02a2_3898;
+pub const BODY_VTABLE_RVA: Rva = Rva(0x02a2_3898);
 /// CLandCombat secondary-base displacement.
 pub const BODY: usize = 0x10;
 /// Packed full u64 handle: low u32 type and high u32 id, in the reference base.
@@ -117,7 +118,7 @@ pub fn movement_combat_side(
                 .and_then(|address| read::<u64>(memory, address))
                 .ok_or("movement combat field unreadable")
         };
-        let rva = |rva: usize| base.checked_add(rva).map(|p| p as u64);
+        let rva = |key: Rva| engine_sites::at(base, key).map(|p| p as u64);
         let vtable = Some(field(combat, 0)?);
         let land =
             if vtable == rva(VTABLE_RVA) || vtable == rva(cland_border_war_combat::VTABLE_RVA) {
@@ -819,11 +820,8 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("combat roster pointer unreadable or null")
     }
 
-    fn vtable(&self, pointer: usize, offset: usize, rva: usize) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(rva)
-            .ok_or("module address overflow")?;
+    fn vtable(&self, pointer: usize, offset: usize, key: Rva) -> Result<(), &'static str> {
+        let expected = engine_sites::at(self.base, key).ok_or("module address overflow")?;
         if self.field::<u64>(pointer, offset)? == expected as u64 {
             Ok(())
         } else {
@@ -833,14 +831,17 @@ impl<M: Memory> Reader<'_, M> {
 
     fn class(&self, pointer: usize) -> Result<Option<bool>, &'static str> {
         let vtable = self.field::<u64>(pointer, 0)?;
-        let rva = usize::try_from(vtable)
-            .ok()
-            .and_then(|vtable| vtable.checked_sub(self.base))
-            .ok_or("combat registry object vtable mismatch")?;
-        match rva {
-            VTABLE_RVA => Ok(Some(false)),
-            cland_border_war_combat::VTABLE_RVA => Ok(Some(true)),
-            cnaval_combat::VTABLE_RVA => Ok(None),
+        let vtable =
+            usize::try_from(vtable).map_err(|_| "combat registry object vtable mismatch")?;
+        let classes = [
+            VTABLE_RVA,
+            cland_border_war_combat::VTABLE_RVA,
+            cnaval_combat::VTABLE_RVA,
+        ];
+        match engine_sites::which(self.base, vtable, &classes) {
+            Some(VTABLE_RVA) => Ok(Some(false)),
+            Some(cland_border_war_combat::VTABLE_RVA) => Ok(Some(true)),
+            Some(cnaval_combat::VTABLE_RVA) => Ok(None),
             _ => Err("unclassified combat registry object"),
         }
     }
@@ -862,14 +863,15 @@ impl<M: Memory> Reader<'_, M> {
         // The secondary vptr and full reference occupy one exact 16-byte span.
         let identity = self.field::<[u8; 16]>(pointer, BODY)?;
         let secondary = u64::from_le_bytes(identity[..8].try_into().unwrap());
-        let expected = self
-            .base
-            .checked_add(if border_war {
+        let expected = engine_sites::at(
+            self.base,
+            if border_war {
                 cland_border_war_combat::BODY_VTABLE_RVA
             } else {
                 BODY_VTABLE_RVA
-            })
-            .ok_or("module address overflow")?;
+            },
+        )
+        .ok_or("module address overflow")?;
         if secondary != expected as u64 {
             return Err("land combat object vtable mismatch");
         }
@@ -969,8 +971,8 @@ impl<M: Memory> Reader<'_, M> {
         };
         let primary = u64::from_le_bytes(primary[..8].try_into().unwrap());
         let secondary = u64::from_le_bytes(secondary_and_handle[..8].try_into().unwrap());
-        if self.base.checked_add(primary_rva).map(|p| p as u64) != Some(primary)
-            || self.base.checked_add(secondary_rva).map(|p| p as u64) != Some(secondary)
+        if engine_sites::at(self.base, primary_rva).map(|p| p as u64) != Some(primary)
+            || engine_sites::at(self.base, secondary_rva).map(|p| p as u64) != Some(secondary)
         {
             return Err("land combat participant vtable mismatch");
         }

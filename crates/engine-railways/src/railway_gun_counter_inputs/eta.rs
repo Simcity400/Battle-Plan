@@ -5,7 +5,8 @@
 //! applies outer scale, then the fresh supply factor. No client duration
 //! or path cache is read, and no engine getter is called.
 
-use super::{EtaOperands, FreshEtaObservations, Row, at};
+use engine_sites::Rva;
+use super::{EtaOperands, FreshEtaObservations, Row, at, key};
 use crate::{
     Memory, carmy, cequipment_variant, cgame_state, cnaval_unit_transfer, cpdx_array::Array,
     cprovince, crailway_manager, creference_registry::HeaderResolver, fixed_layout, fixed5,
@@ -18,11 +19,11 @@ const VARIANT: usize = 0x338;
 // Independent supply storage, separate from the supply consumer's received ratio.
 const SUPPLY_CAPACITY: usize = 0x400;
 const SUPPLY_REMAINING: usize = 0x410;
-const OUT_OF_SUPPLY_SPEED_RVA: usize = 0x033e_36d0;
+const OUT_OF_SUPPLY_SPEED_RVA: Rva = Rva(0x033e_36d0);
 // Signed fixed5 speed globals.
-const LAND_SCALE_RVA: usize = 0x033e_10c8;
-const NAVAL_SCALE_RVA: usize = 0x033e_2cc0;
-const RAIL_MAX_RVA: usize = 0x033e_0ae0;
+const LAND_SCALE_RVA: Rva = Rva(0x033e_10c8);
+const NAVAL_SCALE_RVA: Rva = Rva(0x033e_2cc0);
+const RAIL_MAX_RVA: Rva = Rva(0x033e_0ae0);
 
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
@@ -30,6 +31,14 @@ fn field<T: crate::memory::Raw>(
     offset: usize,
 ) -> Result<T, &'static str> {
     read(memory, at(pointer, offset)?).ok_or("railway gun ETA input unreadable")
+}
+
+fn global<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    read(memory, super::key(base, key)?).ok_or("railway gun ETA input unreadable")
 }
 
 fn definition(memory: &impl Memory, pointer: usize, id: u32) -> Result<usize, &'static str> {
@@ -54,7 +63,7 @@ fn variant(
     };
     if handle as u32 != cequipment_variant::REFERENCE_TYPE
         || handle >> 32 == 0
-        || field::<u64>(memory, variant, 0)? != at(base, cequipment_variant::VTABLE_RVA)? as u64
+        || field::<u64>(memory, variant, 0)? != key(base, cequipment_variant::VTABLE_RVA)? as u64
         || field::<u64>(memory, variant, cequipment_variant::TYPE)? != handle
     {
         return Err("railway gun ETA equipment variant identity mismatch");
@@ -129,7 +138,7 @@ fn supply_factor(
     if supplied >= fixed5::SCALE {
         return Ok(fixed5::SCALE);
     }
-    let penalty = field::<i64>(memory, base, OUT_OF_SUPPLY_SPEED_RVA)?;
+    let penalty = global::<i64>(memory, base, OUT_OF_SUPPLY_SPEED_RVA)?;
     Ok(fixed5::SCALE
         .wrapping_add(fixed5::SCALE.wrapping_sub(supplied).wrapping_mul(penalty) / fixed5::SCALE))
 }
@@ -218,7 +227,7 @@ pub(super) fn capture(
         let region = usize::try_from(field::<u64>(memory, from, cprovince::STRATEGIC_REGION)?)
             .map_err(|_| "railway gun ETA region pointer overflow")?;
         cnaval_unit_transfer::movement_speed(memory, base, state, row.logical_owner, region)?
-            .wrapping_mul(field::<i64>(memory, base, NAVAL_SCALE_RVA)?)
+            .wrapping_mul(global::<i64>(memory, base, NAVAL_SCALE_RVA)?)
             / fixed5::SCALE
     } else {
         let base_speed = maximum_speed(
@@ -234,10 +243,10 @@ pub(super) fn capture(
         )?;
         let rail = crailway_manager::railway_percentage(memory, base, state, from, to)?;
         let speed = base_speed.wrapping_add(
-            rail.wrapping_mul(field::<i64>(memory, base, RAIL_MAX_RVA)?) / fixed5::SCALE,
+            rail.wrapping_mul(global::<i64>(memory, base, RAIL_MAX_RVA)?) / fixed5::SCALE,
         );
         let scaled =
-            speed.wrapping_mul(field::<i64>(memory, base, LAND_SCALE_RVA)?) / fixed5::SCALE;
+            speed.wrapping_mul(global::<i64>(memory, base, LAND_SCALE_RVA)?) / fixed5::SCALE;
         scaled.wrapping_mul(land_supply_factor(
             memory,
             base,

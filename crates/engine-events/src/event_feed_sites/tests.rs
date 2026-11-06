@@ -38,17 +38,17 @@ impl Image {
     }
 
     fn country(&mut self, country: usize, id: u32, instance: u32, diplomacy: usize, matrix: usize) {
-        self.q(country, BASE + ccountry::VTABLE_RVA);
+        self.q(country, BASE + ccountry::VTABLE_RVA.0);
         self.d(country + ccountry::ID, id);
         self.d(country + ccountry::SURRENDER_TARGET, instance);
         self.q(country + ccountry::DIPLOMACY_STATUS, diplomacy);
-        self.q(diplomacy, BASE + cdiplomacy_status::VTABLE_RVA);
+        self.q(diplomacy, BASE + cdiplomacy_status::VTABLE_RVA.0);
         self.q(diplomacy + cdiplomacy_status::COUNTRY, country);
         self.array(diplomacy + cdiplomacy_status::RELATIONS, matrix, 4);
     }
 
     fn status(&mut self, status: usize, diplomacy: usize, target: u32) {
-        self.q(status, BASE + crelation_status::VTABLE_RVA);
+        self.q(status, BASE + crelation_status::VTABLE_RVA.0);
         self.q(status + crelation_status::DIPLOMACY_STATUS, diplomacy);
         self.d(status + crelation_status::TARGET_COUNTRY, target);
         self.q(status + crelation_status::WAR_RELATION, 0);
@@ -56,7 +56,7 @@ impl Image {
 
     fn new() -> Self {
         let mut image = Self::default();
-        image.q(BASE + cgame_state::SINGLETON_RVA, STATE);
+        image.q(BASE + cgame_state::SINGLETON_RVA.0, STATE);
         image.d(STATE + cgame_state::CURRENT_HOUR, 60828400);
         image.array(STATE + cgame_state::COUNTRIES, 0x4000, 4);
         image.array(STATE + cgame_state::COUNTRY_LINKS, 0x5000, 4);
@@ -73,7 +73,7 @@ impl Image {
         image.q(0x32000 + 8, RECIPROCAL);
         image.status(SELECTED, 0x21000, 2);
         image.status(RECIPROCAL, 0x31000, 1);
-        image.q(CANDIDATE, BASE + cwar_relation::VTABLE_RVA);
+        image.q(CANDIDATE, BASE + cwar_relation::VTABLE_RVA.0);
         image.d(CANDIDATE + crelation::TYPE_ID, cwar_relation::TYPE);
         image.d(CANDIDATE + crelation::FIRST_COUNTRY, 1);
         image.d(CANDIDATE + crelation::SECOND_COUNTRY, 2);
@@ -82,15 +82,8 @@ impl Image {
         image.q(STACK + 0x448, BASE + 0x00d8_167d);
         image.q(STACK + 0x438, SELECTED);
         image.q(STACK + 0x4a8, BASE + 0x00d9_8a1e);
-        image.bytes(BASE + 0x00d8_1bf9, &[0xff, 0x90, 0xa8, 0, 0, 0]);
-        image.bytes(BASE + 0x00d8_1678, &[0xe8, 0x03, 0x05, 0, 0]);
-        image.bytes(BASE + 0x00d9_8a19, &[0xe8, 0xb2, 0x8a, 0xfe, 0xff]);
-        image.bytes(BASE + 0x00d9_ed05, &[0xe8, 0xc6, 0x27, 0xfe, 0xff]);
-        image.bytes(BASE + 0x0116_8723, &[0xe8, 0xa8, 0x8d, 0xc1, 0xff]);
-        image.bytes(BASE + WAR.rva, &WAR.sentinel);
-        image.bytes(BASE + ANNEX.rva, &ANNEX.sentinel);
-        image.q(SCOPE, BASE + cevent_scope::VTABLE_RVA);
-        image.q(FROM, BASE + cevent_scope::VTABLE_RVA);
+        image.q(SCOPE, BASE + cevent_scope::VTABLE_RVA.0);
+        image.q(FROM, BASE + cevent_scope::VTABLE_RVA.0);
         image.q(SCOPE + cevent_scope::FROM, FROM);
         image.d(SCOPE + cevent_scope::COUNTRY_TAG, 1);
         image.d(FROM + cevent_scope::COUNTRY_TAG, 2);
@@ -132,37 +125,6 @@ fn annex_frame() -> AnnexFrame {
         rbp: SCOPE - 0xa0,
         r8: SCOPE,
         r9: 0,
-    }
-}
-
-#[test]
-fn both_call_sentinels_require_every_byte_and_full_read() {
-    for site in [WAR, ANNEX] {
-        assert_eq!(site.return_rva, site.rva + 5);
-        let displacement = i32::from_le_bytes(site.sentinel[1..5].try_into().unwrap());
-        assert_eq!(
-            (site.return_rva as i64 + i64::from(displacement)) as usize,
-            site.target_rva
-        );
-        let mut image = Image::new();
-        assert_eq!(verify(&image, BASE, site), Ok(BASE + site.rva));
-        for offset in 0..16 {
-            image.bytes(BASE + site.rva + offset, &[site.sentinel[offset] ^ 1]);
-            assert_eq!(
-                verify(&image, BASE, site),
-                Err("event feed CALL sentinel unreadable or differs")
-            );
-            image.bytes(BASE + site.rva + offset, &site.sentinel[offset..offset + 1]);
-        }
-        image.0.remove(&(BASE + site.rva + 15));
-        assert_eq!(
-            verify(&image, BASE, site),
-            Err("event feed CALL sentinel unreadable or differs")
-        );
-        assert_eq!(
-            verify(&image, usize::MAX, site),
-            Err("event feed operand address overflow")
-        );
     }
 }
 
@@ -243,18 +205,6 @@ fn malformed_source_frame_or_instruction_never_guesses_a_cause() {
     assert_eq!(
         war_before(&image, BASE, frame()).err(),
         Some("event feed war producer is unclassified")
-    );
-    image.q(STACK + 0x4a8, BASE + 0x0116_8728);
-    image.bytes(BASE + 0x0116_8723, &[0x90]);
-    assert_eq!(
-        war_before(&image, BASE, frame()).err(),
-        Some("event feed war source CALL unreadable or differs")
-    );
-    let mut image = Image::new();
-    image.bytes(BASE + 0x00d8_1bf9, &[0xe8]);
-    assert_eq!(
-        war_before(&image, BASE, frame()).err(),
-        Some("event feed war creator instruction differs")
     );
     assert!(
         war_before(
@@ -420,7 +370,7 @@ fn fresh_postproof_refuses_replaced_country_and_world_roots() {
     );
     let mut image = Image::new();
     let pending = war_before(&image, BASE, frame()).unwrap();
-    image.q(BASE + cgame_state::SINGLETON_RVA, STATE + 0x1000);
+    image.q(BASE + cgame_state::SINGLETON_RVA.0, STATE + 0x1000);
     assert_eq!(
         war_returned(&image, BASE, pending),
         Err("event feed game state changed during native operation")
@@ -501,23 +451,13 @@ mod provenance_sites {
     const PROVINCE_STATE: usize = 0x91000;
 
     #[test]
-    fn entry_sentinels_require_every_byte_and_callers_name_their_returns() {
+    fn callers_name_their_returns() {
         for entry in ENTRIES {
-            let mut image = Image::new();
-            image.bytes(BASE + entry.rva, &entry.sentinel);
-            assert_eq!(
-                provenance::verify(&image, BASE, entry),
-                Ok(BASE + entry.rva)
-            );
-            image.bytes(BASE + entry.rva + 15, &[entry.sentinel[15] ^ 1]);
-            assert_eq!(
-                provenance::verify(&image, BASE, entry),
-                Err("event feed entry sentinel unreadable or differs")
-            );
             for caller in entry.callers {
-                assert_eq!(route(entry.callers, caller.return_rva), Some(caller.route));
+                let at = BASE + caller.return_rva.0;
+                assert_eq!(route(BASE, entry.callers, at), Some(caller.route));
                 // The CALL instruction itself is not a return address.
-                assert_eq!(route(entry.callers, caller.return_rva - 5), None);
+                assert_eq!(route(BASE, entry.callers, at - 5), None);
             }
         }
         let annex = STATE_OWNER_CALLERS
@@ -525,10 +465,13 @@ mod provenance_sites {
             .find(|caller| caller.route == "StateAnnex")
             .unwrap();
         assert_eq!(
-            route(&STATE_OWNER_CALLERS, annex.return_rva),
+            route(BASE, &STATE_OWNER_CALLERS, BASE + annex.return_rva.0),
             Some("StateAnnex")
         );
-        assert_eq!(route(&STATE_OWNER_CALLERS, annex.return_rva - 5), None);
+        assert_eq!(
+            route(BASE, &STATE_OWNER_CALLERS, BASE + annex.return_rva.0 - 5),
+            None
+        );
     }
 
     #[test]
@@ -548,7 +491,7 @@ mod provenance_sites {
             [1, 2]
         );
         // A conference names its winner and loser.
-        image.q(CONFERENCE, BASE + peace_conference::VTABLE_RVA);
+        image.q(CONFERENCE, BASE + peace_conference::VTABLE_RVA.0);
         image.q(CONFERENCE + peace_conference::REFERENCE, 0x7_0000_0031);
         image.d(CONFERENCE + provenance::MAIN_LOSER, 2);
         image.d(CONFERENCE + provenance::MAIN_WINNER, 1);
@@ -564,7 +507,7 @@ mod provenance_sites {
         // Other objects fail their vtables.
         assert!(world.war_endpoints(CONFERENCE).is_err());
         assert!(world.country_object(CANDIDATE).is_err());
-        image.q(PROVINCE_STATE, BASE + cstate::VTABLE_RVA);
+        image.q(PROVINCE_STATE, BASE + cstate::VTABLE_RVA.0);
         image.d(PROVINCE_STATE + cstate::ID, 64);
         image.d(PROVINCE_STATE + cstate::OWNER, 2);
         assert_eq!(state_owner(&image, BASE, PROVINCE_STATE), Ok((64, 2)));

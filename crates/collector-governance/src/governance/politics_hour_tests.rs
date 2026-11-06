@@ -129,12 +129,12 @@ impl World {
     fn country(&mut self, index: usize) {
         let at = country(index);
         let status = status(index);
-        self.word(at, ccountry::VTABLE_RVA as u64);
+        self.word(at, ccountry::VTABLE_RVA.0 as u64);
         self.int(at + ccountry::ID, index as i32 + 1);
         self.word(at + ccountry::POLITICAL_STATUS, status as u64);
         self.int(at + ccountry::CAPITAL, 100 + index as i32);
         self.int(at + ccountry::ORIGINAL_CAPITAL, 200 + index as i32);
-        self.word(status, cpolitical_status::VTABLE_RVA as u64);
+        self.word(status, cpolitical_status::VTABLE_RVA.0 as u64);
         self.word(status + cpolitical_status::COUNTRY, at as u64);
         self.word(
             status + cpolitical_status::PARTIES,
@@ -155,10 +155,10 @@ impl World {
             let party = party(index, which);
             let ideology = ideology(index, which);
             self.word(party_array(index) + which * 8, party as u64);
-            self.word(party, cpolitical_party::VTABLE_RVA as u64);
+            self.word(party, cpolitical_party::VTABLE_RVA.0 as u64);
             self.word(party + cpolitical_party::ID, id);
             self.word(party + cpolitical_party::IDEOLOGY_GROUP, ideology as u64);
-            self.word(ideology, cideology_group::VTABLE_RVA as u64);
+            self.word(ideology, cideology_group::VTABLE_RVA.0 as u64);
             self.word(ideology + cideology_group::ID, id);
             self.string(
                 ideology + cideology_group::TOKEN,
@@ -178,10 +178,10 @@ impl World {
             self.word(party + cpolitical_party::COUNTRY_LEADERS, vector as u64);
             self.word(party + cpolitical_party::COUNTRY_LEADERS + 8, (1 << 32) | 1);
             self.word(vector, leader as u64);
-            self.word(leader, ccountry_leader::VTABLE_RVA as u64);
+            self.word(leader, ccountry_leader::VTABLE_RVA.0 as u64);
             self.word(leader + ccountry_leader::CHARACTER, character as u64);
             self.word(leader + ccountry_leader::LEADER_ID, 12 + which as u64);
-            self.word(character, ccharacter::VTABLE_RVA as u64);
+            self.word(character, ccharacter::VTABLE_RVA.0 as u64);
             self.word(
                 character + ccharacter::TYPE,
                 ((91 + 10 * index as u64 + which as u64) << 32)
@@ -198,7 +198,7 @@ impl World {
             self.word(node + 0x28, leader as u64);
             let idea = idea(index, which);
             self.word(idea_array(index) + which * 8, idea as u64);
-            self.word(idea, cidea::VTABLE_RVA as u64);
+            self.word(idea, cidea::VTABLE_RVA.0 as u64);
             self.string(
                 idea + cidea::TOKEN,
                 [b"idea_a".as_slice(), b"idea_b"][which],

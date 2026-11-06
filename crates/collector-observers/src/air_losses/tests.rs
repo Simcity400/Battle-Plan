@@ -264,7 +264,7 @@ impl World {
         self.storage.as_ptr() as usize + offset
     }
     fn base(&self) -> usize {
-        self.pointer(0) - cgame_state::SINGLETON_RVA
+        self.pointer(0) - cgame_state::SINGLETON_RVA.0
     }
     fn u32(&mut self, offset: usize, value: u32) {
         let word = &mut self.storage[offset / 8];
@@ -312,18 +312,18 @@ impl World {
                 world.country_table() + country * 8,
                 world.pointer(object) as u64,
             );
-            world.word(object, (world.base() + ccountry::VTABLE_RVA) as u64);
+            world.word(object, (world.base() + ccountry::VTABLE_RVA.0) as u64);
             world.u32(object + ccountry::ID, country as u32);
         }
         world.word(
             Self::AIR,
-            (world.base() + cstrategic_air::VTABLE_RVA) as u64,
+            (world.base() + cstrategic_air::VTABLE_RVA.0) as u64,
         );
         world.array(Self::AIR + cstrategic_air::HISTORY_TABLE, 0x3800, 24);
         world.word(0x3800 + 23 * 8, world.pointer(Self::HISTORY) as u64);
         world.word(
             Self::HISTORY,
-            (world.base() + cloop_history::VTABLE_RVA) as u64,
+            (world.base() + cloop_history::VTABLE_RVA.0) as u64,
         );
         world.word(
             Self::HISTORY + cloop_history::SELF_REFERENCE,
@@ -339,7 +339,7 @@ impl World {
         );
         world.word(
             Self::WINDOW,
-            (world.base() + loop_history_window::VTABLE_RVA) as u64,
+            (world.base() + loop_history_window::VTABLE_RVA.0) as u64,
         );
         world.array(Self::WINDOW + loop_history_window::RECORDS, 0x5800, 30);
         world.u32(Self::WINDOW + loop_history_window::CAPACITY, 30);
@@ -362,9 +362,9 @@ impl World {
         world.u32(Self::REGION + 0x58, 23);
         world.word(
             Self::REGION,
-            (world.base() + cstrategic_region::VTABLE_RVA) as u64,
+            (world.base() + cstrategic_region::VTABLE_RVA.0) as u64,
         );
-        world.word(Self::WING, (world.base() + cair_wing::VTABLE_RVA) as u64);
+        world.word(Self::WING, (world.base() + cair_wing::VTABLE_RVA.0) as u64);
         world.word(
             Self::WING + cair_wing::POOL,
             world.pointer(Self::POOL) as u64,
@@ -372,7 +372,7 @@ impl World {
         world.word(Self::WING + 0x100, world.pointer(Self::VALUES) as u64);
         world.word(
             Self::POOL,
-            (world.base() + cair_wing_pool::VTABLE_RVA) as u64,
+            (world.base() + cair_wing_pool::VTABLE_RVA.0) as u64,
         );
         world.word(
             Self::POOL + cair_wing_pool::DEFINITION,
@@ -380,7 +380,7 @@ impl World {
         );
         world.word(
             Self::DEFINITION,
-            (world.base() + csub_unit_definition::VTABLE_RVA) as u64,
+            (world.base() + csub_unit_definition::VTABLE_RVA.0) as u64,
         );
         world.word(Self::DEFINITION + csub_unit_definition::AIR_FLAGS, 1 << 18);
         world.owner(1);

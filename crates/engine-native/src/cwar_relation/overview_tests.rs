@@ -33,7 +33,7 @@ fn fixture(count: u32) -> World {
     let mut roots = Vec::new();
     for slot in 1..=count {
         let production = world.alloc(0x300);
-        world.u64(production, crate::cproduction_status::VTABLE_RVA as u64);
+        world.u64(production, crate::cproduction_status::VTABLE_RVA.0 as u64);
         world.u64(
             production + crate::cproduction_status::COUNTRY,
             world.object(slot) as u64,
@@ -48,13 +48,13 @@ fn fixture(count: u32) -> World {
             world.object(slot) + ccountry::DIPLOMACY_STATUS,
             diplomacy as u64,
         );
-        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
         world.u64(
             diplomacy + cdiplomacy_status::COUNTRY,
             world.object(slot) as u64,
         );
         let offsite = world.alloc(0x80);
-        world.u64(offsite, crate::cbuilding_status::VTABLE_RVA as u64);
+        world.u64(offsite, crate::cbuilding_status::VTABLE_RVA.0 as u64);
         world.u64(
             world.object(slot) + ccountry::WAR_OVERVIEW_OFFSITE,
             offsite as u64,
@@ -64,7 +64,7 @@ fn fixture(count: u32) -> World {
     }
     for first in (1..count).step_by(2) {
         let relation = world.alloc(0x1b0);
-        world.u64(relation, super::super::VTABLE_RVA as u64);
+        world.u64(relation, super::super::VTABLE_RVA.0 as u64);
         world.u32(relation + crelation::TYPE_ID, super::super::TYPE);
         world.u32(relation + crelation::FIRST_COUNTRY, first);
         world.u32(relation + crelation::SECOND_COUNTRY, first + 1);
@@ -207,7 +207,7 @@ fn cost_fixture(count: u32) -> World {
     use crate::{cbuilding, cbuilding_status, cbuilding_template, cstate};
     let mut w = fixture(count);
     let template = w.alloc(cbuilding_template::SIZE);
-    w.u64(template, cbuilding_template::VTABLE_RVA as u64);
+    w.u64(template, cbuilding_template::VTABLE_RVA.0 as u64);
     w.u32(template + cbuilding_template::WAR_OVERVIEW_PRODUCTION[0], 1);
     for slot in 1..=count {
         let root =
@@ -227,13 +227,13 @@ fn cost_fixture(count: u32) -> World {
         let cores = w.alloc(4 * 8);
         for index in 0..4 {
             let state = w.alloc(0x200);
-            w.u64(state, cstate::VTABLE_RVA as u64);
+            w.u64(state, cstate::VTABLE_RVA.0 as u64);
             w.u32(state + cstate::CONTROLLER, slot);
             w.u64(cores + index * 8, state as u64);
             let buildings = w.alloc(8 * 8);
             for i in 0..8 {
                 let building = w.alloc(0x200);
-                w.u64(building, cbuilding::VTABLE_RVA as u64);
+                w.u64(building, cbuilding::VTABLE_RVA.0 as u64);
                 w.u64(building + cbuilding::TEMPLATE, template as u64);
                 w.put(building + cbuilding::LEVEL, &3_i16.to_le_bytes());
                 w.u64(buildings + i * 8, building as u64);
@@ -255,7 +255,7 @@ fn cost_fixture(count: u32) -> World {
     let matrix = w.alloc((count as usize + 1) * 8);
     for target in 2..=count {
         let status = w.alloc(0x340);
-        w.u64(status, crelation_status::VTABLE_RVA as u64);
+        w.u64(status, crelation_status::VTABLE_RVA.0 as u64);
         w.u64(status + crelation_status::DIPLOMACY_STATUS, root as u64);
         w.u32(status + crelation_status::TARGET_COUNTRY, target);
         w.u64(matrix + target as usize * 8, status as u64);
@@ -336,7 +336,7 @@ fn shared_templates_keep_every_factory_score_native() {
     let words: [[u32; 2]; 4] = [[1, 0], [0, 0], [0, (-5_i32) as u32], [i32::MAX as u32, 1]];
     let templates = words.map(|[first, second]| {
         let template = w.alloc(cbuilding_template::SIZE);
-        w.u64(template, cbuilding_template::VTABLE_RVA as u64);
+        w.u64(template, cbuilding_template::VTABLE_RVA.0 as u64);
         w.u32(
             template + cbuilding_template::WAR_OVERVIEW_PRODUCTION[0],
             first,
@@ -545,7 +545,7 @@ fn template_and_subject_failures_are_scores_only_and_unreachable_factories_are_n
             }
         ]
     );
-    w.u64(template, crate::cbuilding_template::VTABLE_RVA as u64);
+    w.u64(template, crate::cbuilding_template::VTABLE_RVA.0 as u64);
     let root = read::<u64>(&w.memory(), w.object(1) + ccountry::DIPLOMACY_STATUS).unwrap() as usize;
     let matrix = read::<u64>(&w.memory(), root + cdiplomacy_status::RELATIONS).unwrap() as usize;
     let status = read::<u64>(&w.memory(), matrix + 2 * 8).unwrap() as usize;
@@ -682,7 +682,7 @@ fn retired_viewpoint_counterparts_keep_scores_when_native_sides_can_reach_them()
         w.put(w.object(country) + ccountry::DYNAMIC_MAJOR, &[0]);
     }
     let relation = w.alloc(0x1b0);
-    w.u64(relation, super::super::VTABLE_RVA as u64);
+    w.u64(relation, super::super::VTABLE_RVA.0 as u64);
     w.u32(relation + crelation::TYPE_ID, super::super::TYPE);
     w.u32(relation + crelation::FIRST_COUNTRY, 1);
     w.u32(relation + crelation::SECOND_COUNTRY, 3);
@@ -753,7 +753,7 @@ fn a_flush_partway_through_a_country_keeps_its_later_pages_previous_rows() {
     // so the flush at the 64th row lands on page 2's first previous row.
     fn war(w: &mut World) -> usize {
         let relation = w.alloc(0x1b0);
-        w.u64(relation, super::super::VTABLE_RVA as u64);
+        w.u64(relation, super::super::VTABLE_RVA.0 as u64);
         w.u32(relation + crelation::TYPE_ID, super::super::TYPE);
         w.u32(relation + crelation::FIRST_COUNTRY, 1);
         w.u32(relation + crelation::SECOND_COUNTRY, 2);

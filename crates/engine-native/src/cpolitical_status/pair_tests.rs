@@ -55,7 +55,7 @@ impl TraceMemory {
         }
         memory.put(
             PARTY,
-            &((BASE + cpolitical_party::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cpolitical_party::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         memory.put(PARTY + cpolitical_party::ID, &33_u32.to_le_bytes());
         memory.put(
@@ -64,7 +64,7 @@ impl TraceMemory {
         );
         memory.put(
             IDEOLOGY,
-            &((BASE + cideology_group::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cideology_group::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         memory.put(IDEOLOGY + cideology_group::ID, &33_u32.to_le_bytes());
         memory
@@ -211,7 +211,7 @@ fn idea_capacity_still_validates_tokens_without_reading_omitted_heap_payloads() 
                 array[12..].copy_from_slice(&1_u32.to_le_bytes());
                 memory.put(STATUS + IDEAS, &array);
                 memory.put(POINTERS, &(IDEA as u64).to_le_bytes());
-                memory.put(IDEA, &((BASE + cidea::VTABLE_RVA) as u64).to_le_bytes());
+                memory.put(IDEA, &((BASE + cidea::VTABLE_RVA.0) as u64).to_le_bytes());
                 let mut header = [0; msvc_string::STRIDE];
                 if inline {
                     header[..3].copy_from_slice(&[0xff, 0, b'a']);

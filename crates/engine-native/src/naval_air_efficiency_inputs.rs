@@ -2,6 +2,7 @@
 //! These readers evaluate no efficiency, maximum organisation, fighter bonus or
 //! kill aggregation.
 use crate::{Memory, cnaval_combatant::field, cpdx_array::Array};
+use engine_sites::Rva;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Modifier {
@@ -54,8 +55,11 @@ fn add(pointer: usize, offset: usize) -> Result<usize, &'static str> {
 fn ptr(memory: &impl Memory, pointer: usize, offset: usize) -> Result<usize, &'static str> {
     field::<u64>(memory, pointer, offset).map(|p| p as usize)
 }
-fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: usize) -> Result<(), &'static str> {
-    if pointer == 0 || field::<u64>(memory, pointer, 0)? != add(base, rva)? as u64 {
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("naval air source site withheld")
+}
+fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(), &'static str> {
+    if pointer == 0 || field::<u64>(memory, pointer, 0)? != site(base, rva)? as u64 {
         return Err("naval air source identity mismatch");
     }
     Ok(())
@@ -233,7 +237,7 @@ pub fn read(
         row.base_crowding = field(memory, container, 0xd8)?;
     }
     use crate::modifier_definition as md;
-    let definitions = ptr(memory, base, md::TABLE_RVA)?;
+    let definitions = ptr(memory, site(base, md::TABLE_RVA)?, 0)?;
     if definitions == 0 {
         return Err("naval air modifier metadata absent");
     }
@@ -244,15 +248,15 @@ pub fn read(
             field(memory, at, md::FEATURE_SELECTOR)?,
         ];
     }
-    let callback = field::<u64>(memory, base, md::ELIGIBILITY_CALLBACK_RVA)?;
+    let callback = field::<u64>(memory, site(base, md::ELIGIBILITY_CALLBACK_RVA)?, 0)?;
     row.eligibility_callback = if callback == 0 {
         0
-    } else if callback == add(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
+    } else if callback == site(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
         1
     } else {
         return Err("naval air modifier callback unsupported");
     };
-    row.feature_flags = field(memory, base, md::TRADE_FEATURE_FLAGS_RVA)?;
+    row.feature_flags = field(memory, site(base, md::TRADE_FEATURE_FLAGS_RVA)?, 0)?;
     Ok(row)
 }
 
@@ -373,7 +377,7 @@ mod tests {
     }
     impl Memory for Fixture {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == crate::creference_registry::LOW_ROOTS_RVA + 69 * 8
+            if address == crate::creference_registry::LOW_ROOTS_RVA.0 + 69 * 8
                 && destination.len() == 8
             {
                 destination.copy_from_slice(&self.root.to_le_bytes());
@@ -409,8 +413,8 @@ mod tests {
                 bytes: vec![0; 0x8000],
                 root: 0x2000,
             };
-            result.q(PLANE, crate::cfex_air::VTABLE_RVA as u64);
-            result.q(COMBAT, crate::cnaval_combat::VTABLE_RVA as u64);
+            result.q(PLANE, crate::cfex_air::VTABLE_RVA.0 as u64);
+            result.q(COMBAT, crate::cnaval_combat::VTABLE_RVA.0 as u64);
             result.array(PLANE + 0x40, 0x1500, 1);
             result.q(0x1500, HANDLE);
             result.q(0x2008, 0x3000);
@@ -425,8 +429,8 @@ mod tests {
             result.bytes[0x3000 + slot * 24 + 4] = 1;
             result.q(0x3000 + slot * 24 + 8, HANDLE);
             result.q(0x3000 + slot * 24 + 16, (WING + 0x10) as u64);
-            result.q(WING, crate::cair_wing::VTABLE_RVA as u64);
-            result.q(WING + 0x10, crate::cair_wing::SECONDARY_VTABLE_RVA as u64);
+            result.q(WING, crate::cair_wing::VTABLE_RVA.0 as u64);
+            result.q(WING + 0x10, crate::cair_wing::SECONDARY_VTABLE_RVA.0 as u64);
             result.q(WING + 0x18, HANDLE);
             result.array(WING + 0x9f8, 0x5000, 2);
             for (index, count) in [i32::MIN, i32::MAX].into_iter().enumerate() {

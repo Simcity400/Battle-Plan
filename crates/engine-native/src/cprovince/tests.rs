@@ -86,7 +86,7 @@ fn put_movement(bytes: &mut [u8], province: usize, id: u32, definition: usize, t
     put(
         bytes,
         terrain,
-        &(cterrain_type::VTABLE_RVA as u64).to_le_bytes(),
+        &(cterrain_type::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         bytes,
@@ -119,7 +119,7 @@ fn many_provinces(count: usize) -> Vec<u8> {
             0x300 + index * 8,
             &(offset as u64 + 0x1000).to_le_bytes(),
         );
-        put(&mut bytes, offset, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, offset, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, offset + ID, &(index as u32).to_le_bytes());
         put(&mut bytes, offset + STATE, &0x13000_u64.to_le_bytes());
         put(
@@ -138,7 +138,7 @@ fn many_provinces(count: usize) -> Vec<u8> {
     put(
         &mut bytes,
         0x12000,
-        &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, 0x12000 + cstate::ID, &89_u32.to_le_bytes());
     put(&mut bytes, 0x12000 + cstate::OWNER, &u32::MAX.to_le_bytes());
@@ -431,7 +431,7 @@ fn state_cache_full_pointer_keys_survive_collisions_and_failures_are_not_cached(
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
             for (index, &pointer) in self.pointers.iter().enumerate() {
                 if address == pointer {
-                    destination.copy_from_slice(&(cstate::VTABLE_RVA as u64).to_le_bytes());
+                    destination.copy_from_slice(&(cstate::VTABLE_RVA.0 as u64).to_le_bytes());
                     return true;
                 }
                 if address == pointer + cstate::ID {
@@ -484,7 +484,7 @@ fn state_cache_retains_collisions_beyond_the_former_probe_limit() {
     impl Memory for States {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
             match address & 0xfff {
-                0 => destination.copy_from_slice(&(cstate::VTABLE_RVA as u64).to_le_bytes()),
+                0 => destination.copy_from_slice(&(cstate::VTABLE_RVA.0 as u64).to_le_bytes()),
                 cstate::ID => destination.copy_from_slice(&((address >> 12) as u32).to_le_bytes()),
                 cstate::OWNER => {
                     self.0.set(self.0.get() + 1);
@@ -574,7 +574,7 @@ fn provinces() -> Vec<u8> {
         (0x400, 1_u32, 0x1a00_u64, 0xf123_4567_u32),
         (0x600, 2_u32, 0_u64, 0_u32),
     ] {
-        put(&mut bytes, offset, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, offset, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, offset + ID, &id.to_le_bytes());
         put(&mut bytes, offset + STATE, &state.to_le_bytes());
         put(&mut bytes, offset + CONTROLLER, &controller.to_le_bytes());
@@ -589,7 +589,7 @@ fn provinces() -> Vec<u8> {
     put(
         &mut bytes,
         0xa00,
-        &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, 0xa00 + cstate::ID, &99_u32.to_le_bytes());
     put(
@@ -844,7 +844,7 @@ fn address_overflow_keeps_the_original_field_and_semantic_precedence() {
     let mut bytes = provinces();
     let pointer = usize::MAX - 0x100;
     put(&mut bytes, 0x308, &(pointer as u64).to_le_bytes());
-    let vtable = (VTABLE_RVA as u64).to_le_bytes();
+    let vtable = (VTABLE_RVA.0 as u64).to_le_bytes();
     let no_state = 0_u64.to_le_bytes();
     for (id, reason) in [
         (1_u32, "province address overflow"),
@@ -868,7 +868,7 @@ fn address_overflow_keeps_the_original_field_and_semantic_precedence() {
     let mut bytes = provinces();
     let pointer = usize::MAX - 0xa0;
     put(&mut bytes, 0x400 + STATE, &(pointer as u64).to_le_bytes());
-    let vtable = (cstate::VTABLE_RVA as u64).to_le_bytes();
+    let vtable = (cstate::VTABLE_RVA.0 as u64).to_le_bytes();
     for (id, reason) in [
         (99_u32, "state owner unreadable"),
         (0_u32, "non-null state has zero id"),
@@ -1078,13 +1078,13 @@ fn ownership_comes_from_the_state_and_raw_controller_zero_is_preserved() {
     put(&mut bytes, 0x2b8, &2_u32.to_le_bytes());
     put(&mut bytes, 0x2bc, &2_u32.to_le_bytes());
     put(&mut bytes, 0x308, &0x1400_u64.to_le_bytes());
-    put(&mut bytes, 0x400, &(VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, 0x400, &(VTABLE_RVA.0 as u64).to_le_bytes());
     put(&mut bytes, 0x4a4, &1_u32.to_le_bytes());
     put(&mut bytes, 0x4c0, &0x1600_u64.to_le_bytes());
     put(
         &mut bytes,
         0x600,
-        &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, 0x658, &7_u32.to_le_bytes());
     put(&mut bytes, 0x6c8, &42_u32.to_le_bytes());
@@ -1317,7 +1317,7 @@ struct ConflictMemory {
 }
 
 const REGISTRY_ROOT: usize =
-    crate::creference_registry::LOW_ROOTS_RVA + crate::corders_group::REFERENCE_TYPE as usize * 8;
+    crate::creference_registry::LOW_ROOTS_RVA.0 + crate::corders_group::REFERENCE_TYPE as usize * 8;
 
 impl Memory for ConflictMemory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -1378,7 +1378,7 @@ fn conflict_fixture() -> ConflictMemory {
     put(
         &mut bytes,
         combat,
-        &(cland_border_war_combat::VTABLE_RVA as u64).to_le_bytes(),
+        &(cland_border_war_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     // One registry with eight buckets (overflow 5, sentinel at 13).
     let (table, entries) = (0x1a000, 0x1a100);
@@ -1399,7 +1399,7 @@ fn conflict_fixture() -> ConflictMemory {
         put(
             &mut bytes,
             side,
-            &(cland_border_war_combatant::VTABLE_RVA as u64).to_le_bytes(),
+            &(cland_border_war_combatant::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         let handle = (u64::from(id) << 32) | u64::from(corders_group::REFERENCE_TYPE);
         put(
@@ -1410,7 +1410,7 @@ fn conflict_fixture() -> ConflictMemory {
         put(
             &mut bytes,
             group,
-            &(corders_group::VTABLE_RVA as u64).to_le_bytes(),
+            &(corders_group::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1807,7 +1807,7 @@ fn dense_records_preserve_invalid_source_prefix_without_retry() {
             // Permit this synthetic first field so a following overflow
             // must fail without retrying or skipping its earlier read.
             if address == self.pointer && destination.len() == 8 {
-                destination.copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+                destination.copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
                 return true;
             }
             destination.fill(0xee);
@@ -1959,7 +1959,7 @@ fn province_names_grow_on_first_and_later_mod_sized_samples_without_restarting_r
                 table + (index + 1) * 8,
                 &((object + 0x1000) as u64).to_le_bytes(),
             );
-            put(&mut bytes, object, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, object, &(VTABLE_RVA.0 as u64).to_le_bytes());
             put(&mut bytes, object + ID, &((index + 1) as u32).to_le_bytes());
             let literal = object + NAME_OVERRIDE;
             if name_len <= 15 {
@@ -2113,7 +2113,7 @@ fn carry_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             state,
-            &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+            &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, state + cstate::ID, &id.to_le_bytes());
         put(&mut bytes, state + cstate::OWNER, &owner.to_le_bytes());
@@ -2391,7 +2391,7 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     };
     put(&mut bytes, ARRAY + 2 * 8, PROVINCE as u64);
-    put(&mut bytes, PROVINCE, (BASE + VTABLE_RVA) as u64);
+    put(&mut bytes, PROVINCE, (BASE + VTABLE_RVA.0) as u64);
     bytes[PROVINCE + ID..PROVINCE + ID + 4].copy_from_slice(&2_u32.to_le_bytes());
     put(&mut bytes, PROVINCE + STATE, 0x5100);
     bytes[PROVINCE + CONTROLLER..PROVINCE + CONTROLLER + 4].copy_from_slice(&7_u32.to_le_bytes());
@@ -2489,7 +2489,7 @@ fn movement_world() -> (Vec<u8>, Array, Vec<u32>) {
             continue;
         }
         put(&mut bytes, ARRAY + id as usize * 8, province as u64);
-        let vtable = (MOVEMENT_BASE + VTABLE_RVA) as u64 + u64::from(id % 10 == 4);
+        let vtable = (MOVEMENT_BASE + VTABLE_RVA.0) as u64 + u64::from(id % 10 == 4);
         put(&mut bytes, province, vtable);
         put4(&mut bytes, province + ID, id + u32::from(id % 10 == 5));
         put(&mut bytes, province + STATE, 0x10_0000 + u64::from(id));

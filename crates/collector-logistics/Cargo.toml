@@ -13,6 +13,7 @@ doctest = false
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
 engine-native.workspace = true
+engine-sites.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-primitives.workspace = true
 collector-status.workspace = true

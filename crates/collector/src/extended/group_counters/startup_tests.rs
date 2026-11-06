@@ -24,7 +24,7 @@ const TEMPLATE: u64 = (1 << 32) | 52;
 struct World(Vec<u8>);
 impl Memory for World {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8
+        if address == registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8
             && output.len() == 8
         {
             output.copy_from_slice(&(TABLE as u64).to_le_bytes());
@@ -64,20 +64,20 @@ impl World {
             for (at, value) in [
                 (entry + bucket::TYPE, handle),
                 (entry + bucket::OBJECT, group as u64),
-                (group, corders_group::VTABLE_RVA as u64),
+                (group, corders_group::VTABLE_RVA.0 as u64),
                 (group + corders_group::HANDLE, handle),
                 (group + corders_group::COUNTRY, 1),
                 (group + hq::HOLDER, holder as u64),
                 (group + hq::TARGET, TEMPLATE),
-                (holder, hq::HOLDER_VTABLE_RVA as u64),
+                (holder, hq::HOLDER_VTABLE_RVA.0 as u64),
                 (
                     holder + HOLDER_PERSISTENT,
-                    hq::HOLDER_PERSISTENT_VTABLE_RVA as u64,
+                    hq::HOLDER_PERSISTENT_VTABLE_RVA.0 as u64,
                 ),
                 (holder + HOLDER_OWNER, 1),
                 (
                     holder + HOLDER_EQUIPMENT,
-                    cequipment_variant_pool::VTABLE_RVA as u64,
+                    cequipment_variant_pool::VTABLE_RVA.0 as u64,
                 ),
                 (holder + HOLDER_REQUIREMENTS, REQUIRED_POOL_VTABLE),
                 (holder + HOLDER_ORDER, ordinal as u64 + 1),

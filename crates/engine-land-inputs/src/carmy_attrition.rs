@@ -7,6 +7,7 @@ use crate::{
     corders_group, cpdx_array::Array, cprovince, crelation, cstate, cterrain_type,
     cweather_manager, modifier_accumulator, modifier_keys, read, sweather_per_province,
 };
+use engine_sites::Rva;
 
 pub type Field<T> = Result<T, &'static str>;
 pub const ONE: i64 = 100_000;
@@ -30,19 +31,19 @@ pub const KEYS: [u32; 10] = [
 ];
 
 /// Unit-upkeep attrition define.
-pub const UNIT_UPKEEP_ATTRITION_RVA: usize = 0x033e_0008;
+pub const UNIT_UPKEEP_ATTRITION_RVA: Rva = Rva(0x033e_0008);
 /// Multiplier for out-of-supply attrition.
-pub const OUT_OF_SUPPLY_ATTRITION_RVA: usize = 0x033e_3908;
+pub const OUT_OF_SUPPLY_ATTRITION_RVA: Rva = Rva(0x033e_3908);
 /// Supply threshold, clamped by loading to zero through ONE.
-pub const SUPPLY_THRESHOLD_RVA: usize = 0x033e_43a8;
+pub const SUPPLY_THRESHOLD_RVA: Rva = Rva(0x033e_43a8);
 /// Signed divisor for stored out-of-supply days.
-pub const MAX_OUT_OF_SUPPLY_DAYS_RVA: usize = 0x033e_3844;
+pub const MAX_OUT_OF_SUPPLY_DAYS_RVA: Rva = Rva(0x033e_3844);
 /// Signed hours divisor for remaining grace.
-pub const SUPPLY_GRACE_RVA: usize = 0x033e_3678;
+pub const SUPPLY_GRACE_RVA: Rva = Rva(0x033e_3678);
 /// Exercise-branch attrition define.
-pub const TRAINING_ATTRITION_RVA: usize = 0x033e_0750;
+pub const TRAINING_ATTRITION_RVA: Rva = Rva(0x033e_0750);
 /// Border-war attrition factor.
-pub const BORDER_WAR_ATTRITION_FACTOR_RVA: usize = 0x033e_4650;
+pub const BORDER_WAR_ATTRITION_FACTOR_RVA: Rva = Rva(0x033e_4650);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Terrain {
@@ -265,10 +266,13 @@ fn field<T: crate::memory::Raw>(memory: &impl Memory, pointer: usize, offset: us
     read(memory, at(pointer, offset)?).ok_or("attrition field unreadable")
 }
 
-fn identity(memory: &impl Memory, base: usize, pointer: usize, vtable: usize) -> Field<()> {
-    let expected = base
-        .checked_add(vtable)
-        .ok_or("attrition module address overflow")?;
+fn global<T: crate::memory::Raw>(memory: &impl Memory, base: usize, key: Rva) -> Field<T> {
+    let address = engine_sites::at(base, key).ok_or("attrition pointer invalid or overflow")?;
+    read(memory, address).ok_or("attrition field unreadable")
+}
+
+fn identity(memory: &impl Memory, base: usize, pointer: usize, vtable: Rva) -> Field<()> {
+    let expected = engine_sites::at(base, vtable).ok_or("attrition module address overflow")?;
     if field::<u64>(memory, pointer, 0)? != expected as u64 {
         return Err("attrition object identity mismatch");
     }
@@ -513,11 +517,12 @@ pub fn capture_memoized(
     fresh: Option<Field<i64>>,
     memo: &mut Memo,
 ) -> Inputs {
-    if seed.primary_vtable != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
-        || seed.secondary_vtable
-            != base
-                .checked_add(carmy::SECONDARY_VTABLE_RVA)
-                .map(|p| p as u64)
+    let primary = engine_sites::at(base, carmy::VTABLE_RVA).map(|p| p as u64);
+    let secondary = engine_sites::at(base, carmy::SECONDARY_VTABLE_RVA).map(|p| p as u64);
+    if primary.is_none()
+        || secondary.is_none()
+        || seed.primary_vtable != primary
+        || seed.secondary_vtable != secondary
         || seed.handle != Some(seed.division)
         || seed.division == 0
         || seed.class != Some(0)
@@ -563,7 +568,7 @@ pub fn capture_memoized(
     output.upkeep = upkeep_modifier.and_then(|value| {
         Ok(product(
             ONE.wrapping_add(value).max(0),
-            field(memory, base, UNIT_UPKEEP_ATTRITION_RVA)?,
+            global(memory, base, UNIT_UPKEEP_ATTRITION_RVA)?,
         ))
     });
     output.sources[UPKEEP_SOURCE] = upkeep_modifier.and_then(|value| {
@@ -630,7 +635,7 @@ pub fn capture_memoized(
     });
     output.supply = Ok(Supply {
         penalty: supply_penalty(memory, base, seed, country_accumulator, memo),
-        attrition_factor: field(memory, base, OUT_OF_SUPPLY_ATTRITION_RVA),
+        attrition_factor: global(memory, base, OUT_OF_SUPPLY_ATTRITION_RVA),
     });
 
     let weather_gate = moving.and_then(|moving| {
@@ -734,7 +739,7 @@ pub fn capture_memoized(
     });
     output.training_attrition = output.training.and_then(|training| {
         if training {
-            field(memory, base, TRAINING_ATTRITION_RVA).map(Some)
+            global(memory, base, TRAINING_ATTRITION_RVA).map(Some)
         } else {
             Ok(None)
         }
@@ -752,7 +757,7 @@ pub fn capture_memoized(
             country: seed
                 .logical_owner
                 .ok_or("attrition logical owner unavailable"),
-            factor: field(memory, base, BORDER_WAR_ATTRITION_FACTOR_RVA),
+            factor: global(memory, base, BORDER_WAR_ATTRITION_FACTOR_RVA),
         }))
     });
     output.country_attrition_modifier =
@@ -908,8 +913,7 @@ pub fn fresh_acclimatization(
         .acclimatization
         .ok_or("attrition acclimatization unavailable")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap())
-        != base
-            .checked_add(crate::acclimatization_data::VTABLE_RVA)
+        != engine_sites::at(base, crate::acclimatization_data::VTABLE_RVA)
             .ok_or("attrition module address overflow")? as u64
     {
         return Err("attrition acclimatization identity mismatch");
@@ -984,9 +988,8 @@ fn thermal(
             0
         } else {
             let vtable = field::<u64>(memory, group, 0)?;
-            if ![corders_group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
-                .iter()
-                .any(|rva| base.checked_add(*rva).map(|pointer| pointer as u64) == Some(vtable))
+            let groups = [corders_group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA];
+            if engine_sites::which(base, vtable as usize, &groups).is_none()
                 || field::<u32>(memory, group, corders_group::HANDLE)?
                     != corders_group::REFERENCE_TYPE
             {
@@ -1039,7 +1042,7 @@ fn supply_penalty(
         let grace = seed
             .supply_grace_remaining
             .ok_or("attrition remaining supply grace unavailable")?;
-        let hours = i64::from(field::<i32>(memory, base, SUPPLY_GRACE_RVA)?).wrapping_mul(ONE);
+        let hours = i64::from(global::<i32>(memory, base, SUPPLY_GRACE_RVA)?).wrapping_mul(ONE);
         fraction(grace, hours)?
             .max(
                 seed.counter_supply_status
@@ -1047,7 +1050,7 @@ fn supply_penalty(
             )
             .clamp(0, ONE)
     };
-    let threshold = field::<i64>(memory, base, SUPPLY_THRESHOLD_RVA)?;
+    let threshold = global::<i64>(memory, base, SUPPLY_THRESHOLD_RVA)?;
     let normalized = if threshold == 0 {
         ONE
     } else {
@@ -1056,7 +1059,7 @@ fn supply_penalty(
     .min(ONE);
     let days = i64::from(field::<i32>(memory, seed.pointer, 0x498)?).wrapping_mul(ONE);
     let maximum =
-        i64::from(field::<i32>(memory, base, MAX_OUT_OF_SUPPLY_DAYS_RVA)?).wrapping_mul(ONE);
+        i64::from(global::<i32>(memory, base, MAX_OUT_OF_SUPPLY_DAYS_RVA)?).wrapping_mul(ONE);
     let penalty = product(
         ONE.wrapping_sub(normalized).clamp(0, ONE),
         fraction(days, maximum)?,

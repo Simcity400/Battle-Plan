@@ -25,7 +25,7 @@ impl Memory for OriginalCounterMemory<'_> {
 fn original_counter_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
-    put64(&mut bytes, root, crate::cnaval_mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root, crate::cnaval_mission::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         root + crate::cnaval_mission::TASK_FORCE,
@@ -551,21 +551,21 @@ fn fixture() -> Vec<u8> {
     put64(&mut bytes, COUNTRIES + 24, COUNTRY as u64);
     put32(&mut bytes, LINKS + 4, 1);
     put32(&mut bytes, LINKS + 12, 1);
-    put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+    put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     put32(&mut bytes, COUNTRY + ccountry::ID, 3);
     array(&mut bytes, COUNTRY + ccountry::FLEETS, FLEET_ROSTER, 1);
     put64(&mut bytes, FLEET_ROSTER, FLEET as u64);
-    put64(&mut bytes, FLEET, VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET, VTABLE_RVA.0 as u64);
     put64(&mut bytes, FLEET + HANDLE, (11_u64 << 32) | 61);
     put64(&mut bytes, FLEET + OWNER, COUNTRY as u64);
     put64(&mut bytes, FLEET + HOME_BASE, PROVINCE as u64);
     array(&mut bytes, FLEET + TASK_FORCES, TASK_ROSTER, 1);
     put64(&mut bytes, TASK_ROSTER, TASK as u64);
-    put64(&mut bytes, TASK, ctask_force::VTABLE_RVA as u64);
+    put64(&mut bytes, TASK, ctask_force::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         TASK + ctask_force::SECONDARY_BASE,
-        ctask_force::SECONDARY_VTABLE_RVA as u64,
+        ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
     );
     // The task force uses the ship id space. Its complete handle is retained.
     put64(&mut bytes, TASK + cunit::HANDLE, (11_u64 << 32) | 51);
@@ -578,7 +578,7 @@ fn fixture() -> Vec<u8> {
     array(&mut bytes, TASK + ctask_force::SHIPS, SHIP_ROSTER, 2);
     for (index, pointer) in [SHIP, SHIP2].into_iter().enumerate() {
         put64(&mut bytes, SHIP_ROSTER + index * 8, pointer as u64);
-        put64(&mut bytes, pointer, cship::VTABLE_RVA as u64);
+        put64(&mut bytes, pointer, cship::VTABLE_RVA.0 as u64);
         put64(
             &mut bytes,
             pointer + cship::HANDLE,
@@ -597,7 +597,7 @@ fn fixture() -> Vec<u8> {
         put64(&mut bytes, pointer + cship::TASK_FORCE, TASK as u64);
     }
     put64(&mut bytes, PROVINCES + 8, PROVINCE as u64);
-    put64(&mut bytes, PROVINCE, cprovince::VTABLE_RVA as u64);
+    put64(&mut bytes, PROVINCE, cprovince::VTABLE_RVA.0 as u64);
     put32(&mut bytes, PROVINCE + cprovince::ID, 1);
     bytes
 }
@@ -906,7 +906,7 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
     use crate::{cnaval_mission as mission, cstrategic_region};
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
-    put64(&mut bytes, root, mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root, mission::VTABLE_RVA.0 as u64);
     put64(&mut bytes, root + mission::TASK_FORCE, TASK as u64);
     bytes[root + mission::IS_IN_REGIONS] = 255;
     bytes[root + mission::RUNNING_AWAY] = 1;
@@ -917,7 +917,7 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
         root + mission::BOMBARDMENT_REGION,
         REGION as u64,
     );
-    put64(&mut bytes, REGION, cstrategic_region::VTABLE_RVA as u64);
+    put64(&mut bytes, REGION, cstrategic_region::VTABLE_RVA.0 as u64);
     put32(&mut bytes, REGION + cstrategic_region::ID, 2);
     array(&mut bytes, GS + cgame_state::STRATEGIC_REGIONS, REGIONS, 3);
     put64(&mut bytes, REGIONS + 16, REGION as u64);
@@ -1067,7 +1067,7 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
     use crate::{cname_group_member::Names, cnaval_mission};
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
-    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA.0 as u64);
     put64(&mut bytes, root + cnaval_mission::TASK_FORCE, TASK as u64);
     array(
         &mut bytes,
@@ -1198,7 +1198,7 @@ fn missions_are_authenticated_when_the_counter_buffer_is_exhausted() {
     const ACCESSIBLE: usize = 0xb500;
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
-    put64(&mut bytes, root, mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root, mission::VTABLE_RVA.0 as u64);
     put64(&mut bytes, root + mission::TASK_FORCE, TASK as u64);
     array(&mut bytes, GS + cgame_state::STRATEGIC_REGIONS, REGIONS, 2);
     put64(&mut bytes, REGIONS + 8, REGION as u64);
@@ -1246,7 +1246,7 @@ fn task_force_supply_uses_the_admitted_primary_root_and_preserves_name_and_scala
     use crate::{cname_group_member::Names, cnaval_mission, cunit_supply_inputs as supply};
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
-    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA.0 as u64);
     put64(&mut bytes, root + cnaval_mission::TASK_FORCE, TASK as u64);
     array(
         &mut bytes,
@@ -1390,7 +1390,7 @@ fn optional_supply_preserves_legacy_trace_and_never_reads_an_unadmitted_prefix()
     }
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
-    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA.0 as u64);
     put64(&mut bytes, root + cnaval_mission::TASK_FORCE, TASK as u64);
     array(
         &mut bytes,
@@ -1583,20 +1583,20 @@ fn growing_task_force_supply_and_port_arenas_capture_every_owner_before_publicat
         let slot = index as u32 + 1;
         put64(&mut bytes, countries + (index + 1) * 8, country as u64);
         put32(&mut bytes, links + (index + 1) * 4, slot);
-        put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        put64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         put32(&mut bytes, country + ccountry::ID, slot);
         array(&mut bytes, country + ccountry::FLEETS, fleet_roster, 1);
         put64(&mut bytes, fleet_roster, fleet as u64);
-        put64(&mut bytes, fleet, VTABLE_RVA as u64);
+        put64(&mut bytes, fleet, VTABLE_RVA.0 as u64);
         put64(&mut bytes, fleet + HANDLE, ((index as u64 + 1) << 32) | 61);
         put64(&mut bytes, fleet + OWNER, country as u64);
         array(&mut bytes, fleet + TASK_FORCES, task_roster, 1);
         put64(&mut bytes, task_roster, task as u64);
-        put64(&mut bytes, task, ctask_force::VTABLE_RVA as u64);
+        put64(&mut bytes, task, ctask_force::VTABLE_RVA.0 as u64);
         put64(
             &mut bytes,
             task + ctask_force::SECONDARY_BASE,
-            ctask_force::SECONDARY_VTABLE_RVA as u64,
+            ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
         );
         put64(
             &mut bytes,
@@ -1608,7 +1608,7 @@ fn growing_task_force_supply_and_port_arenas_capture_every_owner_before_publicat
         put64(
             &mut bytes,
             task + ctask_force::NAVAL_MISSION,
-            crate::cnaval_mission::VTABLE_RVA as u64,
+            crate::cnaval_mission::VTABLE_RVA.0 as u64,
         );
         put64(
             &mut bytes,
@@ -1771,7 +1771,7 @@ fn census_world(count: usize) -> (Vec<u8>, Vec<CensusObjects>) {
     );
     array(&mut bytes, GS + cgame_state::PROVINCES, WORLD_PROVINCES, 2);
     put64(&mut bytes, WORLD_PROVINCES + 8, WORLD_PROVINCE as u64);
-    put64(&mut bytes, WORLD_PROVINCE, cprovince::VTABLE_RVA as u64);
+    put64(&mut bytes, WORLD_PROVINCE, cprovince::VTABLE_RVA.0 as u64);
     put32(&mut bytes, WORLD_PROVINCE + cprovince::ID, 1);
     let mut objects = vec![CensusObjects::default(); count + 1];
     let mut handle = 0_u64;
@@ -1782,7 +1782,7 @@ fn census_world(count: usize) -> (Vec<u8>, Vec<CensusObjects>) {
         let country = world_alloc(&mut bytes, 0x300);
         put64(&mut bytes, countries + slot * 8, country as u64);
         put32(&mut bytes, links + slot * 4, slot as u32);
-        put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        put64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         put32(&mut bytes, country + ccountry::ID, slot as u32);
         let fleets = slot % 3;
         let roster = world_alloc(&mut bytes, 8 * fleets.max(1));
@@ -1797,7 +1797,7 @@ fn census_world(count: usize) -> (Vec<u8>, Vec<CensusObjects>) {
             found.fleets.push(fleet);
             handle += 1;
             put64(&mut bytes, roster + f * 8, fleet as u64);
-            put64(&mut bytes, fleet, VTABLE_RVA as u64);
+            put64(&mut bytes, fleet, VTABLE_RVA.0 as u64);
             put64(&mut bytes, fleet + HANDLE, (handle << 32) | 61);
             put64(&mut bytes, fleet + OWNER, country as u64);
             if (slot + f) % 2 == 0 {
@@ -1818,11 +1818,11 @@ fn census_world(count: usize) -> (Vec<u8>, Vec<CensusObjects>) {
                 found.tasks.push(task);
                 handle += 1;
                 put64(&mut bytes, task_roster + t * 8, task as u64);
-                put64(&mut bytes, task, ctask_force::VTABLE_RVA as u64);
+                put64(&mut bytes, task, ctask_force::VTABLE_RVA.0 as u64);
                 put64(
                     &mut bytes,
                     task + ctask_force::SECONDARY_BASE,
-                    ctask_force::SECONDARY_VTABLE_RVA as u64,
+                    ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
                 );
                 put64(&mut bytes, task + cunit::HANDLE, (handle << 32) | 51);
                 put64(&mut bytes, task + ctask_force::FLEET, fleet as u64);
@@ -1845,7 +1845,7 @@ fn census_world(count: usize) -> (Vec<u8>, Vec<CensusObjects>) {
                     found.ships.push(ship);
                     handle += 1;
                     put64(&mut bytes, ship_roster + s * 8, ship as u64);
-                    put64(&mut bytes, ship, cship::VTABLE_RVA as u64);
+                    put64(&mut bytes, ship, cship::VTABLE_RVA.0 as u64);
                     put64(&mut bytes, ship + cship::HANDLE, (handle << 32) | 51);
                     put64(&mut bytes, ship + cship::STRENGTH, handle * 1_000);
                     put64(&mut bytes, ship + cship::ORGANISATION, handle * 7);
@@ -2214,14 +2214,14 @@ fn certified_fleet_region_payload_keeps_occurrences_and_authenticates_each_refer
     put64(
         &mut bytes,
         region,
-        crate::cstrategic_region::VTABLE_RVA as u64,
+        crate::cstrategic_region::VTABLE_RVA.0 as u64,
     );
     put32(&mut bytes, region + crate::cstrategic_region::ID, 7);
     let other = 0x600;
     put64(
         &mut bytes,
         other,
-        crate::cstrategic_region::VTABLE_RVA as u64,
+        crate::cstrategic_region::VTABLE_RVA.0 as u64,
     );
     put32(&mut bytes, other + crate::cstrategic_region::ID, 3);
     for (at, pointer) in [region, other, region].into_iter().enumerate() {

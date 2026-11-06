@@ -10,16 +10,16 @@ fn decision_random_items_preserve_full_store_and_signed_words() {
         let items = world.alloc(RANDOM_ITEM_STRIDE * 2);
         let definition = world.alloc(cdecision::TOKEN + 32);
         world.u64(owner + ccountry::DECISION_STATUS, status as u64);
-        world.u64(status, (IMAGE + VTABLE_RVA) as u64);
+        world.u64(status, (IMAGE + VTABLE_RVA.0) as u64);
         world.u64(status + COUNTRY, owner as u64);
         world.array(status + RANDOM_ITEMS, items, 2);
-        world.u64(definition, (IMAGE + cdecision::VTABLE_RVA) as u64);
+        world.u64(definition, (IMAGE + cdecision::VTABLE_RVA.0) as u64);
         world.put(definition + cdecision::TOKEN, b"test\xff");
         world.u64(definition + cdecision::TOKEN + 16, 5);
         world.u64(definition + cdecision::TOKEN + 24, 15);
         for (ordinal, (count, target)) in [(i32::MIN, i32::MAX), (17, -1)].into_iter().enumerate() {
             let entry = items + ordinal * RANDOM_ITEM_STRIDE;
-            world.u64(entry, (IMAGE + RANDOM_ITEM_VTABLE_RVA) as u64);
+            world.u64(entry, (IMAGE + RANDOM_ITEM_VTABLE_RVA.0) as u64);
             world.u64(entry + 8, definition as u64);
             world.put(entry + 16, &count.to_le_bytes());
             world.put(entry + 20, &target.to_le_bytes());
@@ -112,18 +112,18 @@ fn word(bytes: &mut [u8], address: usize, value: i32) {
 
 fn empty() -> Vec<u8> {
     let mut bytes = vec![0; 0x4000];
-    qword(&mut bytes, COUNTRY_ADDRESS, IMAGE + ccountry::VTABLE_RVA);
+    qword(&mut bytes, COUNTRY_ADDRESS, IMAGE + ccountry::VTABLE_RVA.0);
     qword(
         &mut bytes,
         COUNTRY_ADDRESS + ccountry::DECISION_STATUS,
         STATUS_ADDRESS,
     );
-    qword(&mut bytes, STATUS_ADDRESS, IMAGE + VTABLE_RVA);
+    qword(&mut bytes, STATUS_ADDRESS, IMAGE + VTABLE_RVA.0);
     qword(&mut bytes, STATUS_ADDRESS + COUNTRY, COUNTRY_ADDRESS);
     qword(
         &mut bytes,
         DEFINITION_ADDRESS,
-        IMAGE + cdecision::VTABLE_RVA,
+        IMAGE + cdecision::VTABLE_RVA.0,
     );
     let token = DEFINITION_ADDRESS + cdecision::TOKEN;
     put(&mut bytes, token, b"test\xff");
@@ -175,7 +175,7 @@ fn every_decision_container_and_token_arena_grows_from_original_mod_sized_header
                 ctargeted_decision::DAYS,
             ),
         };
-        qword(&mut bytes, record, IMAGE + vtable);
+        qword(&mut bytes, record, IMAGE + vtable.0);
         qword(&mut bytes, record + definition, DEFINITION_ADDRESS);
         word(&mut bytes, record + days, i32::MIN + index as i32);
         if index == 2 {
@@ -292,7 +292,7 @@ fn timed_rows_keep_nonactive_states_and_full_signed_fields() {
     qword(
         &mut bytes,
         RECORD_ADDRESS,
-        IMAGE + ctimed_decision::VTABLE_RVA,
+        IMAGE + ctimed_decision::VTABLE_RVA.0,
     );
     qword(
         &mut bytes,
@@ -326,7 +326,7 @@ fn targeted_container_labels_match_native_serializer_sources() {
     qword(
         &mut bytes,
         RECORD_ADDRESS,
-        IMAGE + ctargeted_decision::VTABLE_RVA,
+        IMAGE + ctargeted_decision::VTABLE_RVA.0,
     );
     qword(
         &mut bytes,
@@ -351,7 +351,7 @@ fn targeted_rows_retain_both_native_slots_and_validate_the_bool_only() {
     qword(
         &mut bytes,
         RECORD_ADDRESS,
-        IMAGE + ctargeted_decision::VTABLE_RVA,
+        IMAGE + ctargeted_decision::VTABLE_RVA.0,
     );
     qword(
         &mut bytes,
@@ -428,7 +428,7 @@ fn cooldown_capacity_omits_whole_rows_and_requests_full_token_storage() {
     qword(
         &mut bytes,
         RECORD_ADDRESS,
-        IMAGE + cdecision_cooldown::VTABLE_RVA,
+        IMAGE + cdecision_cooldown::VTABLE_RVA.0,
     );
     qword(
         &mut bytes,
@@ -473,7 +473,7 @@ fn wrong_owners_definitions_and_heap_strings_never_become_empty_rows() {
     qword(
         &mut bytes,
         RECORD_ADDRESS,
-        IMAGE + cdecision_cooldown::VTABLE_RVA,
+        IMAGE + cdecision_cooldown::VTABLE_RVA.0,
     );
     qword(
         &mut bytes,
@@ -524,7 +524,7 @@ fn description_seed_reads_only_demanded_targeted_rows_and_preserves_first_match(
     qword(
         &mut bytes,
         RECORD_ADDRESS,
-        IMAGE + ctargeted_decision::VTABLE_RVA,
+        IMAGE + ctargeted_decision::VTABLE_RVA.0,
     );
     qword(
         &mut bytes,
@@ -542,7 +542,7 @@ fn description_seed_reads_only_demanded_targeted_rows_and_preserves_first_match(
     word(&mut bytes, STATUS_ADDRESS + RANDOM_ITEMS + 12, 2);
     for (ordinal, seed) in [(0, i32::MIN), (1, 21)] {
         let at = seed_data + ordinal * RANDOM_ITEM_STRIDE;
-        qword(&mut bytes, at, IMAGE + RANDOM_ITEM_VTABLE_RVA);
+        qword(&mut bytes, at, IMAGE + RANDOM_ITEM_VTABLE_RVA.0);
         qword(&mut bytes, at + RANDOM_ITEM_DEFINITION, DEFINITION_ADDRESS);
         word(&mut bytes, at + RANDOM_ITEM_SEED, seed);
         word(&mut bytes, at + RANDOM_ITEM_TARGET, -17);
@@ -609,7 +609,7 @@ fn country_description_seed_resolves_alias_and_matches_first_definition_key_in_b
     qword(
         &mut bytes,
         RECORD_ADDRESS,
-        IMAGE + ctargeted_decision::VTABLE_RVA,
+        IMAGE + ctargeted_decision::VTABLE_RVA.0,
     );
     qword(
         &mut bytes,
@@ -638,7 +638,7 @@ fn country_description_seed_resolves_alias_and_matches_first_definition_key_in_b
     qword(&mut bytes, COUNTRIES + 8, COUNTRY_ADDRESS);
     word(&mut bytes, LINKS + 4, 1);
     word(&mut bytes, LINKS + 12, 1);
-    qword(&mut bytes, ALIAS_DEFINITION, IMAGE + cdecision::VTABLE_RVA);
+    qword(&mut bytes, ALIAS_DEFINITION, IMAGE + cdecision::VTABLE_RVA.0);
     put(&mut bytes, ALIAS_DEFINITION + cdecision::TOKEN, b"TESTX");
     qword(&mut bytes, ALIAS_DEFINITION + cdecision::TOKEN + 16, 5);
     qword(&mut bytes, ALIAS_DEFINITION + cdecision::TOKEN + 24, 15);
@@ -651,7 +651,7 @@ fn country_description_seed_resolves_alias_and_matches_first_definition_key_in_b
         (2, DEFINITION_ADDRESS, 1, 21),
     ] {
         let at = SEEDS + index * RANDOM_ITEM_STRIDE;
-        qword(&mut bytes, at, IMAGE + RANDOM_ITEM_VTABLE_RVA);
+        qword(&mut bytes, at, IMAGE + RANDOM_ITEM_VTABLE_RVA.0);
         qword(&mut bytes, at + RANDOM_ITEM_DEFINITION, definition);
         word(&mut bytes, at + RANDOM_ITEM_TARGET, target);
         word(&mut bytes, at + RANDOM_ITEM_SEED, seed);

@@ -66,7 +66,7 @@ impl Image {
         }
     }
     fn definition(&mut self, key: u32, flags: u32, selector: u32) {
-        self.u64(crate::modifier_definition::TABLE_RVA, DEFINITIONS as u64);
+        self.u64(crate::modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
         let row = DEFINITIONS + key as usize * crate::modifier_definition::STRIDE;
         self.u32(row + crate::modifier_definition::FLAGS, flags);
         self.u32(row + crate::modifier_definition::FEATURE_SELECTOR, selector);
@@ -83,16 +83,16 @@ fn fixture() -> Image {
     for (slot, pointer) in [(1, COUNTRY1), (2, COUNTRY2)] {
         image.u64(0x8000 + slot * 8, pointer as u64);
         image.u32(0x9000 + slot * 4, slot as u32);
-        image.u64(pointer, ccountry::VTABLE_RVA as u64);
+        image.u64(pointer, ccountry::VTABLE_RVA.0 as u64);
         image.u32(pointer + ccountry::ID, slot as u32);
         image.accumulator(pointer + ccountry::MODIFIER_ACCUMULATOR, 0, &[]);
     }
     image.u32(UNIT + cunit::ROSTER_OWNER, 1);
     image.u32(UNIT + cunit::EXPEDITIONARY_OWNER, 2);
     image.u64(UNIT + cunit::LOCATION, PROVINCE as u64);
-    image.u64(PROVINCE, cprovince::VTABLE_RVA as u64);
+    image.u64(PROVINCE, cprovince::VTABLE_RVA.0 as u64);
     image.u64(PROVINCE + cprovince::STATE, STATE as u64);
-    image.u64(STATE, crate::cstate::VTABLE_RVA as u64);
+    image.u64(STATE, crate::cstate::VTABLE_RVA.0 as u64);
     image.u32(STATE + crate::cstate::CONTROLLER, 2);
     image.put(STATE + crate::cstate::COUNTRY_MODIFIERS, &[0; 17]);
     image.u64(STATE + crate::cstate::COUNTRY_MODIFIERS, BUCKET as u64);
@@ -195,7 +195,7 @@ fn strategic_action_friendly_gate_skips_controller_modifier_in_active_war() {
     const TUPLE: usize = 0x92000;
     const WAR: usize = 0x93000;
     image.u64(COUNTRY2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    image.u64(DIPLOMACY, crate::cdiplomacy_status::VTABLE_RVA as u64);
+    image.u64(DIPLOMACY, crate::cdiplomacy_status::VTABLE_RVA.0 as u64);
     image.u64(
         DIPLOMACY + crate::cdiplomacy_status::COUNTRY,
         COUNTRY2 as u64,
@@ -206,14 +206,14 @@ fn strategic_action_friendly_gate_skips_controller_modifier_in_active_war() {
         3,
     );
     image.u64(RELATIONS + 8, TUPLE as u64);
-    image.u64(TUPLE, crate::crelation_status::VTABLE_RVA as u64);
+    image.u64(TUPLE, crate::crelation_status::VTABLE_RVA.0 as u64);
     image.u64(
         TUPLE + crate::crelation_status::DIPLOMACY_STATUS,
         DIPLOMACY as u64,
     );
     image.u32(TUPLE + crate::crelation_status::TARGET_COUNTRY, 1);
     image.u64(TUPLE + crate::crelation_status::WAR_RELATION, WAR as u64);
-    image.u64(WAR, crate::cwar_relation::VTABLE_RVA as u64);
+    image.u64(WAR, crate::cwar_relation::VTABLE_RVA.0 as u64);
     image.u32(WAR + crate::crelation::TYPE_ID, crate::cwar_relation::TYPE);
     image.put(WAR + crate::crelation::RETIRED, &[0]);
     image.fault = Some(VALUES + 24..VALUES + 32);
@@ -272,7 +272,7 @@ fn strategic_action_effective_getter_feature_before_raw_and_native_clamp() {
     let mut image = Image::default();
     image.accumulator(ACC, VALUES, &[(2, i64::MAX)]);
     image.definition(2, definitions::CLAMP_MAXIMUM, 4);
-    image.u64(definitions::ELIGIBILITY_CALLBACK_RVA, 0);
+    image.u64(definitions::ELIGIBILITY_CALLBACK_RVA.0, 0);
     image.fault = Some(VALUES + 8..VALUES + 16);
     assert_eq!(
         crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
@@ -281,10 +281,10 @@ fn strategic_action_effective_getter_feature_before_raw_and_native_clamp() {
     assert!(!image.touched(VALUES + 8));
     assert!(!image.touched(DEFINITIONS + 2 * definitions::STRIDE + definitions::FLAGS));
     image.u64(
-        definitions::ELIGIBILITY_CALLBACK_RVA,
-        definitions::ELIGIBILITY_FLAGS_GETTER_RVA as u64,
+        definitions::ELIGIBILITY_CALLBACK_RVA.0,
+        definitions::ELIGIBILITY_FLAGS_GETTER_RVA.0 as u64,
     );
-    image.u32(definitions::TRADE_FEATURE_FLAGS_RVA, 4);
+    image.u32(definitions::TRADE_FEATURE_FLAGS_RVA.0, 4);
     image.fault = None;
     assert_eq!(
         crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
@@ -300,7 +300,7 @@ fn strategic_action_effective_getter_feature_before_raw_and_native_clamp() {
         crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Ok(i64::MIN)
     );
-    image.u64(definitions::ELIGIBILITY_CALLBACK_RVA, 77);
+    image.u64(definitions::ELIGIBILITY_CALLBACK_RVA.0, 77);
     assert_eq!(
         crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Err("modifier eligibility callback unsupported")
@@ -317,7 +317,7 @@ fn strategic_action_absent_empty_and_negative_count_are_distinct() {
         Ok(0)
     );
     assert!(!image.touched(VALUES + 8));
-    assert!(!image.touched(crate::modifier_definition::TABLE_RVA));
+    assert!(!image.touched(crate::modifier_definition::TABLE_RVA.0));
     image.u32(ACC + 12, 0);
     assert_eq!(
         crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),

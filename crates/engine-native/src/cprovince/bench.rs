@@ -45,7 +45,7 @@ fn bench_province_gates_and_border_conflicts() {
         let registry_table = arena.alloc(0x20);
         let entries = arena.alloc(16 * bucket::STRIDE);
         arena.u64(
-            base + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8,
+            base + registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8,
             registry_table as u64,
         );
         arena.u64(registry_table + registry::ENTRIES, entries as u64);

@@ -1,8 +1,9 @@
 //! Optional retained last-target information. It copies the target group
 //! member count without retaining target identity.
+use engine_sites::Rva;
 use crate::{Memory, cnaval_combatant::field};
 /// Last-target information primary vtable.
-pub const VTABLE_RVA: usize = 0x02a9_a168;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_a168);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub present: u8,
@@ -15,8 +16,7 @@ pub(crate) fn read(memory: &impl Memory, base: usize, pointer: usize) -> Result<
         return Ok(Row::default());
     }
     if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(VTABLE_RVA)
+        != engine_sites::at(base, VTABLE_RVA)
             .ok_or("last-target module overflow")? as u64
     {
         return Err("last-target identity mismatch");
@@ -42,7 +42,7 @@ mod tests {
         let census = crate::read_census::ReadCensus::new(&memory);
         assert_eq!(read(&census, 0, 0x1000), Ok(Row::default()));
         assert_eq!((census.calls(), census.bytes()), (1, 1));
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8] = 0xfe;
         bytes[0xc..0x10].copy_from_slice(&i32::MIN.to_le_bytes());
         bytes[0x10] = 1;

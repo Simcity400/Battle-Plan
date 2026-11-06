@@ -10,6 +10,7 @@
 - A recording carries every game fact it needs (definitions, localisation, executable tables, map layout), so playback never takes facts from the installed game. Art comes from the current installation, labelled as current; missing art is a named placeholder.
 - An unrecognised game build is a warning, never a refusal. Each build-specific part verifies itself and is withheld by name if it fails.
 - Mods are first-class: read content through the recorded mod stack, hard-code nothing from vanilla, and refuse anything unsupported by name.
+- Game sites are `engine_sites::Rva` keys (positions in the reference build) resolved only through the located image (`engine_sites::at`, `hook`, `which`), never as base + offset. After adding, moving or removing a key, run `python tools/sites.py generate`; on a new game build, `python tools/sites.py relocate` reports what still locates.
 
 ## Building
 

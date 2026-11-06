@@ -647,10 +647,9 @@ impl Store {
             self.read_failure[1] = self.system_failure;
             return;
         };
-        if engine_native::read::<u64>(memory, pointer)
-            != base
-                .checked_add(engine_native::cfaction_system::VTABLE_RVA)
-                .map(|value| value as u64)
+        let vtable = engine_sites::at(base, engine_native::cfaction_system::VTABLE_RVA);
+        if vtable.is_none()
+            || engine_native::read::<u64>(memory, pointer) != vtable.map(|v| v as u64)
         {
             self.system_epoch = self.before;
             self.system_failure = Some("faction system resource owner vtable mismatch");
@@ -955,7 +954,7 @@ mod tests {
         for index in 0..count {
             let owner = FIRST + index * STRIDE;
             let pool = owner + engine_native::cfaction::EXTRACTED_RESOURCES;
-            put(&mut bytes, pool, native::VTABLE_RVA as u64);
+            put(&mut bytes, pool, native::VTABLE_RVA.0 as u64);
             put(&mut bytes, pool + 8, (owner + 0xa00) as u64);
             put(&mut bytes, pool + 16, 3u64 << 32 | 3);
             for slot in 0..3 {

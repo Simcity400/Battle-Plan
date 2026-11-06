@@ -16,6 +16,7 @@ use crate::{
     modifier_accumulator::{self as accumulator, Value},
     modifier_keys as keys, read, sweather_per_region,
 };
+use engine_sites::Rva;
 
 mod convoy_targets;
 pub mod targeted_spotting;
@@ -247,15 +248,15 @@ fn field<T: crate::memory::Raw>(
     read(memory, at(pointer, offset)?).ok_or(what)
 }
 
-fn vtable(base: usize, rva: usize) -> Result<u64, &'static str> {
-    Ok(base.checked_add(rva).ok_or("module address overflow")? as u64)
+fn vtable(base: usize, rva: Rva) -> Result<u64, &'static str> {
+    Ok(engine_sites::at(base, rva).ok_or("naval mission vtable withheld")? as u64)
 }
 
 fn identity(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    rva: usize,
+    rva: Rva,
     what: &'static str,
 ) -> Result<(), &'static str> {
     (read::<u64>(memory, pointer) == Some(vtable(base, rva)?))

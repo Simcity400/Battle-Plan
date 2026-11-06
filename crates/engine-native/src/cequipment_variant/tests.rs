@@ -86,7 +86,7 @@ impl RegistryMemory {
         for index in 0..count {
             let pointer = 0x4000 + index * 32;
             memory.put(0x2000 + index * 8, &(pointer as u64).to_le_bytes());
-            memory.put(pointer, &(VTABLE_RVA as u64).to_le_bytes());
+            memory.put(pointer, &(VTABLE_RVA.0 as u64).to_le_bytes());
             let id = if index == 64 {
                 0
             } else {
@@ -113,7 +113,7 @@ impl Memory for RegistryMemory {
             destination.fill(0xff);
             return false;
         }
-        if address == cgame_state::SINGLETON_RVA && destination.len() == 8 {
+        if address == cgame_state::SINGLETON_RVA.0 && destination.len() == 8 {
             let Some(root) = self.root else {
                 return false;
             };
@@ -374,14 +374,14 @@ fn source(bytes: &[u8]) -> crate::cequipment_variant::RegistryRow {
 
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0xb00];
-    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[8..16]
         .copy_from_slice(&((u64::from(u32::MAX) << 32) | u64::from(REFERENCE_TYPE)).to_le_bytes());
     bytes[EQUIPMENT_TOKEN..EQUIPMENT_TOKEN + 4].copy_from_slice(&0x8000_0042_u32.to_le_bytes());
     bytes[CREATOR_LINK..CREATOR_LINK + 4].copy_from_slice(&900_u32.to_le_bytes());
     bytes[ORIGIN_LINK..ORIGIN_LINK + 4].copy_from_slice(&901_u32.to_le_bytes());
     bytes[DEFINITION..DEFINITION + 8].copy_from_slice(&0x1500_u64.to_le_bytes());
-    bytes[0x500..0x508].copy_from_slice(&(cequipment_type::VTABLE_RVA as u64).to_le_bytes());
+    bytes[0x500..0x508].copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[0x508..0x50c].copy_from_slice(&0x8000_0042_u32.to_le_bytes());
     // An archetype is its own archetype.
     let archetype = 0x500 + cequipment_type::ARCHETYPE;
@@ -404,7 +404,7 @@ fn design_state_preserves_ancestry_attribution_role_and_raw_flags() {
     struct StaleReference<'a>(SliceMemory<'a>);
     impl Memory for StaleReference<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == crate::creference_registry::LOW_ROOTS_RVA + 8 && output.len() == 8 {
+            if address == crate::creference_registry::LOW_ROOTS_RVA.0 + 8 && output.len() == 8 {
                 output.fill(0);
                 true
             } else {
@@ -497,7 +497,8 @@ fn native_null_equipment_archetypes_keep_their_stored_token() {
     bytes.resize(0x1200, 0);
     let archetype = 0x500 + cequipment_type::ARCHETYPE;
     bytes[archetype..archetype + 8].copy_from_slice(&0x2000_u64.to_le_bytes());
-    bytes[0x1000..0x1008].copy_from_slice(&(cequipment_type::NULL_VTABLE_RVA as u64).to_le_bytes());
+    bytes[0x1000..0x1008]
+        .copy_from_slice(&(cequipment_type::NULL_VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[0x1008..0x100c].copy_from_slice(&0xffff_fffe_u32.to_le_bytes());
     let variants = vec![source(&bytes); 100];
     let mut rows = Vec::new();
@@ -505,7 +506,7 @@ fn native_null_equipment_archetypes_keep_their_stored_token() {
         cequipment_type::NULL_VTABLE_RVA,
         cequipment_type::VTABLE_RVA,
     ] {
-        bytes[0x1000..0x1008].copy_from_slice(&(vtable as u64).to_le_bytes());
+        bytes[0x1000..0x1008].copy_from_slice(&(vtable.0 as u64).to_le_bytes());
         let result = walk_definitions(
             &SliceMemory {
                 base: 0x1000,
@@ -1093,7 +1094,7 @@ fn applied_sources_authenticate_plain_and_trait_layout_before_following_the_exte
         bytes[BONUS_SOURCES + 8..BONUS_SOURCES + 12].copy_from_slice(&1_i32.to_le_bytes());
         bytes[BONUS_SOURCES + 12..BONUS_SOURCES + 16].copy_from_slice(&1_i32.to_le_bytes());
         bytes[0xf00..0xf08].copy_from_slice(&0x2000_u64.to_le_bytes());
-        bytes[0x1000..0x1008].copy_from_slice(&(table as u64).to_le_bytes());
+        bytes[0x1000..0x1008].copy_from_slice(&(table.0 as u64).to_le_bytes());
         let memory = CountedFields {
             memory: SliceMemory {
                 base: 0x1000,

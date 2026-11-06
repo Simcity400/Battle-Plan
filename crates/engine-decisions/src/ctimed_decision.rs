@@ -1,9 +1,10 @@
 //! Timed-decision lifecycle records.
 
+use engine_sites::Rva;
 use crate::Memory;
 
 /// CTimedDecision primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_8640;
+pub const VTABLE_RVA: Rva = Rva(0x0286_8640);
 /// CTimedDecision CDecision definition pointer.
 pub const DEFINITION: usize = 0x10;
 /// CTimedDecision i32 remaining days.
@@ -25,9 +26,7 @@ pub(crate) fn record(
     base: usize,
     pointer: usize,
 ) -> Result<Record, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     let fields = pointer
         .checked_add(DEFINITION)
         .ok_or("timed decision address overflow")?;

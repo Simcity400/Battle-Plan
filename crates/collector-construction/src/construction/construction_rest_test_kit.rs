@@ -70,7 +70,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY,
-        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
     put(
@@ -92,7 +92,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         STATE,
-        &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, STATE + cstate::ID, &1_u32.to_le_bytes());
     put(
@@ -103,7 +103,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         TEMPLATE,
-        &(cstate_template::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstate_template::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -132,7 +132,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         res,
-        &(cresistance::VTABLE_RVA as u64).to_le_bytes(),
+        &(cresistance::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -154,7 +154,11 @@ pub fn fixture() -> Vec<u8> {
     put(&mut bytes, res + cresistance::COUNTRY, &1_u32.to_le_bytes());
     put(&mut bytes, res + cresistance::ACTIVE, &[1]);
     // Production status + construction queue (1 building + 1 railway).
-    put(&mut bytes, PROD, &(cstate::VTABLE_RVA as u64).to_le_bytes());
+    put(
+        &mut bytes,
+        PROD,
+        &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
+    );
     put(
         &mut bytes,
         PROD + cproduction_status::COUNTRY,
@@ -180,7 +184,7 @@ pub fn fixture() -> Vec<u8> {
             0xffff_ffff_0000_0001_u64,
         ),
     ] {
-        put(&mut bytes, pointer, &(vtable as u64).to_le_bytes());
+        put(&mut bytes, pointer, &(vtable.0 as u64).to_le_bytes());
         put(
             &mut bytes,
             pointer + cproduction_line::REFERENCE_TYPE,
@@ -240,7 +244,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         BTARGET,
-        &(cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+        &(cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -256,7 +260,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         STATUS_OBJ,
-        &(cbuilding_status::VTABLE_RVA as u64).to_le_bytes(),
+        &(cbuilding_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -321,12 +325,12 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         OCC,
-        &(ccountry_occupation_status::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry_occupation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
         OCC + ccountry_occupation_status::SECONDARY_BASE,
-        &(ccountry_occupation_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry_occupation_status::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -341,7 +345,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         LAW_OBJ,
-        &(coccupation_law::VTABLE_RVA as u64).to_le_bytes(),
+        &(coccupation_law::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -362,7 +366,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         OCC + ccountry_occupation_status::ASSIGNED_MANPOWER,
-        &(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes(),
+        &(carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -411,7 +415,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         OCC_DATA,
-        &(ccountry_occupation_data::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry_occupation_data::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -451,7 +455,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         GAR_OBJ,
-        &(cstate_garrison_data::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstate_garrison_data::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -481,7 +485,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         GAR_OBJ + cstate_garrison_data::ASSIGNED_MANPOWER,
-        &(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes(),
+        &(carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -495,7 +499,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COLLAB,
-        &(ccountry_collaboration_status::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry_collaboration_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,

@@ -69,9 +69,7 @@ fn has_air_capacity_module(
                 .filter(|p| *p != 0)
                 .ok_or("carrier capacity module unreadable or null")?;
             if read::<u64>(memory, module)
-                != base
-                    .checked_add(crate::cequipment_module::VTABLE_RVA)
-                    .map(|p| p as u64)
+                != engine_sites::at(base, crate::cequipment_module::VTABLE_RVA).map(|p| p as u64)
             {
                 return Err("carrier capacity module identity mismatch");
             }
@@ -105,7 +103,7 @@ mod tests {
         put(
             &mut bytes,
             HOST + EQUIPMENT_POOL,
-            cequipment_variant_pool::VTABLE_RVA as u64,
+            cequipment_variant_pool::VTABLE_RVA.0 as u64,
         );
         put(
             &mut bytes,
@@ -119,7 +117,7 @@ mod tests {
         );
         put(&mut bytes, ENTRIES, VARIANT as u64);
         // A zero-quantity stored variant still supplies its modules.
-        put(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA as u64);
+        put(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             VARIANT + cequipment_variant::TYPE,
@@ -139,7 +137,7 @@ mod tests {
         put(
             &mut bytes,
             MODULE,
-            crate::cequipment_module::VTABLE_RVA as u64,
+            crate::cequipment_module::VTABLE_RVA.0 as u64,
         );
         bytes[MODULE + crate::cequipment_module::CARRIER_CACHE_FLAG_CANDIDATE] = 1;
         bytes

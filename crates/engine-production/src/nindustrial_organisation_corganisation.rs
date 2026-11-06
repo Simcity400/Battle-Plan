@@ -11,9 +11,10 @@ use crate::{
     read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Organisation primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_4568;
+pub const VTABLE_RVA: Rva = Rva(0x029e_4568);
 /// Organisation reference-type discriminator.
 pub const REFERENCE_TYPE_ID: u32 = 79;
 /// Organisation full self-reference, two u32 words.
@@ -184,9 +185,8 @@ pub fn demand(
     state: usize,
 ) -> Result<(usize, usize, usize), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("organisation module address overflow")? as u64;
+    let vtable =
+        engine_sites::at(base, VTABLE_RVA).ok_or("organisation module address overflow")? as u64;
     let (mut rows, mut histories, mut bytes) = (0usize, 0usize, 0usize);
     let mut found = false;
     for slot in 1..countries.count() {
@@ -235,9 +235,8 @@ fn walk_inner(
     mut bytes: Buffer<'_, u8>,
     visitor: &mut impl Visitor,
 ) -> Result<Outcomes, &'static str> {
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("organisation module address overflow")? as u64;
+    let vtable =
+        engine_sites::at(base, VTABLE_RVA).ok_or("organisation module address overflow")? as u64;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let mut len = 0;
     let mut unread = 0_u32;
@@ -568,9 +567,9 @@ mod tests {
             put(&mut bytes, 0x2100 + slot * 4, &1_u32.to_le_bytes());
         }
         for (address, value) in [
-            (COUNTRY, ccountry::VTABLE_RVA as u64),
+            (COUNTRY, ccountry::VTABLE_RVA.0 as u64),
             (COUNTRY + ccountry::PRODUCTION_STATUS, STATUS as u64),
-            (STATUS, cproduction_status::VTABLE_RVA as u64),
+            (STATUS, cproduction_status::VTABLE_RVA.0 as u64),
             (STATUS + cproduction_status::COUNTRY, COUNTRY as u64),
             (ARRAY, FIRST as u64),
             (ARRAY + 8, SECOND as u64),
@@ -588,7 +587,7 @@ mod tests {
             (FIRST, CID_FIRST, 0x8000_1234_u32, 2_u32),
             (SECOND, CID_SECOND, 0x8000_1235, 9),
         ] {
-            put(&mut bytes, pointer, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, pointer, &(VTABLE_RVA.0 as u64).to_le_bytes());
             put(&mut bytes, pointer + REFERENCE, &cid.to_le_bytes());
             put(&mut bytes, pointer + TOKEN, &token.to_le_bytes());
             put(&mut bytes, pointer + OWNER, &owner.to_le_bytes());
@@ -777,7 +776,7 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let mut fields = read_fields(&memory, VTABLE_RVA as u64, FIRST).unwrap();
+        let mut fields = read_fields(&memory, VTABLE_RVA.0 as u64, FIRST).unwrap();
         for (history, slots) in [
             (usize::MAX - entry::STRIDE, fields.history_slots),
             (TABLE, usize::MAX / entry::STRIDE + 1),
@@ -881,7 +880,7 @@ mod tests {
                 base: BASE,
                 bytes: &bytes,
             },
-            VTABLE_RVA as u64,
+            VTABLE_RVA.0 as u64,
             FIRST,
         )
         .unwrap();
@@ -996,7 +995,7 @@ mod tests {
             ),
         ] {
             let mut bytes = fixture();
-            put(&mut bytes, END - 16, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, END - 16, &(VTABLE_RVA.0 as u64).to_le_bytes());
             put(&mut bytes, END - 8, &CID_SECOND.to_le_bytes());
             put(&mut bytes, address, &value.to_le_bytes());
             let (outcomes, ..) = run(&bytes, 4, 4);

@@ -7,6 +7,7 @@ use engine_native::{
     cbuilding, cbuilding_status, cbuilding_template, ccharacter, cgame_state, cprovince,
     creference_registry, cstate, modifier_accumulator,
 };
+use engine_sites::Rva;
 
 pub const BYTES: usize = 36;
 pub const BUILDING: u32 = 2;
@@ -33,14 +34,14 @@ const SCIENTIST_MODIFIERS: usize = 0x58;
 const TRAIT_MODIFIERS: usize = 0x58;
 const BREAKTHROUGH_MODIFIER: u32 = 0x27b;
 const TECHNOLOGY_MODIFIER: u32 = 0x27a;
-const MINIMUM_SUPPLY_RVA: usize = 0x33e_46e8;
-const MINIMUM_RESOURCES_RVA: usize = 0x33e_4c18;
-const SUPPORT_FRACTION_RVA: usize = 0x33d_f328;
-const INJURY_FACTOR_RVA: usize = 0x33e_55b8;
-const BREAKTHROUGH_SKILL_GAIN_RVA: usize = 0x33e_525c;
-const TECHNOLOGY_BONUS_RVA: usize = 0x33e_5328;
-const BASIC_EXPERIENCE_RVA: usize = 0x33e_5cd0;
-const SKILL_SPEED_ARRAY_RVA: usize = 0x33e_73d0;
+const MINIMUM_SUPPLY_RVA: Rva = Rva(0x33e_46e8);
+const MINIMUM_RESOURCES_RVA: Rva = Rva(0x33e_4c18);
+const SUPPORT_FRACTION_RVA: Rva = Rva(0x33d_f328);
+const INJURY_FACTOR_RVA: Rva = Rva(0x33e_55b8);
+const BREAKTHROUGH_SKILL_GAIN_RVA: Rva = Rva(0x33e_525c);
+const TECHNOLOGY_BONUS_RVA: Rva = Rva(0x33e_5328);
+const BASIC_EXPERIENCE_RVA: Rva = Rva(0x33e_5cd0);
+const SKILL_SPEED_ARRAY_RVA: Rva = Rva(0x33e_73d0);
 const ONE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -95,13 +96,23 @@ fn pointer(memory: &impl Memory, address: usize, offset: usize) -> Result<usize,
         .filter(|p| *p != 0)
         .ok_or("facility detail pointer is null or invalid")
 }
+fn global<T: engine_native::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    read(memory, site(base, key)?).ok_or("facility detail operand unreadable")
+}
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("facility detail address overflow")
+}
 fn identity(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    expected: usize,
+    expected: Rva,
 ) -> Result<(), &'static str> {
-    if word::<u64>(memory, object, 0)? != at(base, expected)? as u64 {
+    if word::<u64>(memory, object, 0)? != site(base, expected)? as u64 {
         return Err("facility detail object identity mismatch");
     }
     Ok(())
@@ -254,7 +265,7 @@ pub fn observe(
     }
     output(BUILDING, 0, 0, 0, 0, 0, building_factor)?;
     let supply = word::<i64>(memory, program_pointer, SUPPLY_RATIO)?;
-    let minimum = word::<i64>(memory, base, MINIMUM_SUPPLY_RVA)?;
+    let minimum = global::<i64>(memory, base, MINIMUM_SUPPLY_RVA)?;
     // Keep the getter's ordered comparisons even for a modded minimum above one.
     let supply = if supply < minimum {
         minimum
@@ -285,7 +296,7 @@ pub fn observe(
         })
         .transpose()?;
     let resources = if let Some(project) = project {
-        let minimum = word::<i64>(memory, base, MINIMUM_RESOURCES_RVA)?;
+        let minimum = global::<i64>(memory, base, MINIMUM_RESOURCES_RVA)?;
         mul(
             ONE.wrapping_sub(minimum),
             word(memory, project, PROJECT_RESOURCE_RATIO)?,
@@ -369,13 +380,13 @@ pub fn observe(
         .ok_or("facility scientist skills invalid")?;
         let support = ordinal != 0;
         let fraction = if support {
-            word(memory, base, SUPPORT_FRACTION_RVA)?
+            global(memory, base, SUPPORT_FRACTION_RVA)?
         } else {
             ONE
         };
         if let Some(specialization) = specialization {
             let level = skill_level(memory, skills, specialization)?;
-            let levels = Array::read(memory, at(base, SKILL_SPEED_ARRAY_RVA)?, 8)
+            let levels = Array::read(memory, site(base, SKILL_SPEED_ARRAY_RVA)?, 8)
                 .ok_or("scientist skill speed array invalid")?;
             let bonus = word::<i64>(
                 memory,
@@ -412,7 +423,7 @@ pub fn observe(
             )?;
             let level = skill_level(memory, skills, spec)?;
             let breakthrough = if level > 0 {
-                let gain: i32 = word(memory, base, BREAKTHROUGH_SKILL_GAIN_RVA)?;
+                let gain: i32 = global(memory, base, BREAKTHROUGH_SKILL_GAIN_RVA)?;
                 let modifier = modifier_accumulator::requested_effective_at(
                     memory,
                     base,
@@ -429,7 +440,7 @@ pub fn observe(
             } else {
                 ONE
             };
-            let technology_define: i64 = word(memory, base, TECHNOLOGY_BONUS_RVA)?;
+            let technology_define: i64 = global(memory, base, TECHNOLOGY_BONUS_RVA)?;
             let modifier = modifier_accumulator::requested_effective_at(
                 memory,
                 base,
@@ -446,7 +457,7 @@ pub fn observe(
                 ),
                 fraction,
             );
-            let experience = mul(word(memory, base, BASIC_EXPERIENCE_RVA)?, fraction);
+            let experience = mul(global(memory, base, BASIC_EXPERIENCE_RVA)?, fraction);
             output(
                 BREAKTHROUGH,
                 reference,
@@ -477,7 +488,7 @@ pub fn observe(
         }
         if let Some(keys) = keys.filter(|keys| keys.count != 0) {
             let injury = if word::<i32>(memory, scientist, cscientist::INJURY_DAYS)? > 0 {
-                word(memory, base, INJURY_FACTOR_RVA)?
+                global(memory, base, INJURY_FACTOR_RVA)?
             } else {
                 ONE
             };
@@ -524,7 +535,7 @@ mod tests {
     }
     impl Memory for Idle {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == MINIMUM_SUPPLY_RVA && output.len() == 8 {
+            if address == MINIMUM_SUPPLY_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&25_000i64.to_le_bytes());
                 return true;
             }
@@ -559,7 +570,7 @@ mod tests {
         put(
             &mut memory,
             config,
-            &(cbuilding_template::VTABLE_RVA as u64).to_le_bytes(),
+            &(cbuilding_template::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut memory,
@@ -576,7 +587,7 @@ mod tests {
         put(
             &mut memory,
             province,
-            &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut memory, province + cprovince::ID, &1u32.to_le_bytes());
         put(
@@ -587,12 +598,12 @@ mod tests {
         put(
             &mut memory,
             state,
-            &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+            &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut memory,
             state + cstate::BUILDING_STATUS,
-            &(cbuilding_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(cbuilding_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut memory, program + SUPPLY_RATIO, &(-1i64).to_le_bytes());
         put(&mut memory, program + BASIC_FACTOR, &12345i64.to_le_bytes());
@@ -702,16 +713,16 @@ mod tests {
         let province = 0x1800;
         let state = 0x2000;
         memory.u64(program + CONFIGURATION, config as u64);
-        memory.u64(config, cbuilding_template::VTABLE_RVA as u64);
+        memory.u64(config, cbuilding_template::VTABLE_RVA.0 as u64);
         memory.array(cgame_state::PROVINCES, 0x19000, 2);
         memory.u64(0x19008, province as u64);
-        memory.u64(province, cprovince::VTABLE_RVA as u64);
+        memory.u64(province, cprovince::VTABLE_RVA.0 as u64);
         memory.u32(province + cprovince::ID, 1);
         memory.u64(province + cprovince::STATE, state as u64);
-        memory.u64(state, cstate::VTABLE_RVA as u64);
+        memory.u64(state, cstate::VTABLE_RVA.0 as u64);
         memory.u64(
             state + cstate::BUILDING_STATUS,
-            cbuilding_status::VTABLE_RVA as u64,
+            cbuilding_status::VTABLE_RVA.0 as u64,
         );
         memory.put(config + cbuilding_template::LOOKUP_ENABLED_CANDIDATE, &[1]);
         memory.array(
@@ -725,7 +736,7 @@ mod tests {
             1,
         );
         memory.u64(0x17100, 0x17200);
-        memory.u64(0x17200, cbuilding::VTABLE_RVA as u64);
+        memory.u64(0x17200, cbuilding::VTABLE_RVA.0 as u64);
         memory.put(0x17200 + cbuilding::LEVEL, &2i16.to_le_bytes());
         memory.put(0x17200 + cbuilding::HEALTHY_LEVEL, &1i16.to_le_bytes());
         memory.u64(0x17200 + cbuilding::PARTIAL_HEALTH, 5_000_000);
@@ -736,18 +747,18 @@ mod tests {
         memory.u64(0x5008, 0x6000);
         memory.array(cgame_state::COUNTRY_LINKS, 0x5100, 2);
         memory.u32(0x5104, 1);
-        memory.u64(0x6000, ccountry::VTABLE_RVA as u64);
+        memory.u64(0x6000, ccountry::VTABLE_RVA.0 as u64);
         memory.u32(0x6000 + ccountry::ID, 1);
         memory.u64(0x6000 + ccountry::PROGRAM_STATUS, 0x8000);
-        memory.u64(0x8000, status::VTABLE_RVA as u64);
-        memory.u64(0x8008, status::SECONDARY_VTABLE_RVA as u64);
+        memory.u64(0x8000, status::VTABLE_RVA.0 as u64);
+        memory.u64(0x8008, status::SECONDARY_VTABLE_RVA.0 as u64);
         memory.u32(0x8010, 1);
         memory.u64(0x8000 + status::PROJECT_POOL, 0x9000);
-        memory.u64(0x9000, pool::VTABLE_RVA as u64);
+        memory.u64(0x9000, pool::VTABLE_RVA.0 as u64);
         memory.array(0x9000 + pool::PROJECTS, 0xa000, 1);
         memory.u64(0x9030, 0x9400);
         memory.put(0x9400, &[1]);
-        memory.u64(0xa000, project::VTABLE_RVA as u64);
+        memory.u64(0xa000, project::VTABLE_RVA.0 as u64);
         memory.u64(0xa000 + PROJECT_DEFINITION, 0xb018);
         memory.u64(0xa000 + PROJECT_RESOURCE_RATIO, 50_000);
         memory.u32(0xb018, 501);
@@ -759,7 +770,7 @@ mod tests {
         memory.u64(state + cstate::COUNTRY_MODIFIERS, 0x17500);
         let reference = (7u64 << 32) | u64::from(ccharacter::REFERENCE_TYPE);
         memory.u64(
-            creference_registry::LOW_ROOTS_RVA + ccharacter::REFERENCE_TYPE as usize * 8,
+            creference_registry::LOW_ROOTS_RVA.0 + ccharacter::REFERENCE_TYPE as usize * 8,
             0xf000,
         );
         memory.u64(0xf008, 0xf100);
@@ -774,17 +785,17 @@ mod tests {
         memory.put(bucket + 4, &[1]);
         memory.u64(bucket + 8, reference);
         memory.u64(bucket + 16, 0xe000);
-        memory.u64(0xe000, ccharacter::VTABLE_RVA as u64);
+        memory.u64(0xe000, ccharacter::VTABLE_RVA.0 as u64);
         memory.u32(0xe000 + ccharacter::TYPE, ccharacter::REFERENCE_TYPE);
         memory.u32(0xe000 + ccharacter::ID, 7);
         memory.u64(0xe000 + ccharacter::SCIENTIST, 0xd000);
-        memory.u64(0xd000, cscientist::VTABLE_RVA as u64);
+        memory.u64(0xd000, cscientist::VTABLE_RVA.0 as u64);
         memory.array(0xd000 + cscientist::SKILLS, 0xc100, 1);
         memory.u32(0xc100, 501);
         memory.u32(0xc100 + scientist_skill_entry::LEVEL, 2);
         memory.array(0xd000 + cscientist::TRAIT_DATA, 0xc200, 1);
         memory.u64(0xc200, 0xc300);
-        memory.u64(0xc300, cscientist::TRAIT_VTABLE_RVA as u64);
+        memory.u64(0xc300, cscientist::TRAIT_VTABLE_RVA.0 as u64);
         memory.u32(0xc300 + cscientist::TRAIT_TOKEN, 701);
         memory.u32(0xd000 + cscientist::INJURY_DAYS, 8);
         for (address, value) in [
@@ -794,10 +805,10 @@ mod tests {
             (TECHNOLOGY_BONUS_RVA, 1000),
             (BASIC_EXPERIENCE_RVA, 10000),
         ] {
-            memory.u64(address, value);
+            memory.u64(address.0, value);
         }
-        memory.u32(BREAKTHROUGH_SKILL_GAIN_RVA, 2);
-        memory.array(SKILL_SPEED_ARRAY_RVA, 0x11000, 3);
+        memory.u32(BREAKTHROUGH_SKILL_GAIN_RVA.0, 2);
+        memory.array(SKILL_SPEED_ARRAY_RVA.0, 0x11000, 3);
         memory.u64(0x11010, 20000);
         let mut values = Vec::with_capacity(32);
         observe(

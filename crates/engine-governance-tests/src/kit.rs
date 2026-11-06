@@ -7,12 +7,13 @@ use engine_research::{
     climited_use_tech_bonus as bonus, cresearch_slot as slot, ctechnology as tech,
     ctechnology_status as status, ctechnology_template as template,
 };
+use engine_sites::Rva;
 use std::cell::{Cell, RefCell};
 
 pub const GAME: usize = 0x1000;
-pub const IMAGE_START: usize = modifier_definition::TABLE_RVA & !0xffff;
+pub const IMAGE_START: usize = modifier_definition::TABLE_RVA.0 & !0xffff;
 pub const IMAGE_LEN: usize =
-    (tech::BASE_COST_SCALE_RVA + size_of::<i64>()).next_multiple_of(0x10000) - IMAGE_START;
+    (tech::BASE_COST_SCALE_RVA.0 + size_of::<i64>()).next_multiple_of(0x10000) - IMAGE_START;
 const STRIDE: usize = 0x8000;
 pub const STATUS: usize = 0x1800;
 pub const SLOTS: usize = 0x1980;
@@ -60,11 +61,11 @@ impl World {
             let c = Self::country(id);
             world.put(tables + id as usize * 8, (c as u64).to_le_bytes());
             world.put(links + id as usize * 4, id.to_le_bytes());
-            world.put(c, (ccountry::VTABLE_RVA as u64).to_le_bytes());
+            world.put(c, (ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
             world.put(c + ccountry::ID, id.to_le_bytes());
             world.put(c + ccountry::OWNED_STATE_COUNT, 1_u32.to_le_bytes());
             world.pointer(c + ccountry::TECHNOLOGY_STATUS, c + STATUS);
-            world.put(c + STATUS, (status::VTABLE_RVA as u64).to_le_bytes());
+            world.put(c + STATUS, (status::VTABLE_RVA.0 as u64).to_le_bytes());
             world.pointer(c + STATUS + status::COUNTRY, c);
             world.array(c + STATUS + status::RESEARCH_SLOTS_DATA, c + SLOTS, 3);
             world.array(c + STATUS + status::TECHNOLOGIES_DATA, c + 0x5400, 2);
@@ -73,7 +74,7 @@ impl World {
             for (position, index) in [2_u32, 1, 0].into_iter().enumerate() {
                 let s = c + SLOT + position * 0x80;
                 world.pointer(c + SLOTS + position * 8, s);
-                world.put(s, (slot::VTABLE_RVA as u64).to_le_bytes());
+                world.put(s, (slot::VTABLE_RVA.0 as u64).to_le_bytes());
                 world.pointer(s + slot::STATUS, c + STATUS);
                 world.put(s + slot::INDEX, index.to_le_bytes());
                 world.put(
@@ -93,7 +94,7 @@ impl World {
                 world.put(s + slot::TECHNOLOGY_HANDLE, handle.to_le_bytes());
                 world.pointer(s + slot::TECHNOLOGY, t);
                 world.pointer(c + 0x5400 + ordinal * 8, t);
-                world.put(t, (tech::VTABLE_RVA as u64).to_le_bytes());
+                world.put(t, (tech::VTABLE_RVA.0 as u64).to_le_bytes());
                 world.put(t + tech::DEFINITION_INDEX, handle.to_le_bytes());
                 world.pointer(t + tech::STATUS, c + STATUS);
                 world.pointer(t + tech::TEMPLATE, definition);
@@ -145,7 +146,7 @@ impl World {
             }
             world.array(c + STATUS + status::LIMITED_BONUSES, c + 0x4200, 1);
             world.pointer(c + 0x4200, c + 0x4400);
-            world.put(c + 0x4400, (bonus::VTABLE_RVA as u64).to_le_bytes());
+            world.put(c + 0x4400, (bonus::VTABLE_RVA.0 as u64).to_le_bytes());
             world.put(c + 0x4400 + bonus::ID, (-7_i32).to_le_bytes());
             world.text(c + 0x4400 + bonus::NAME, b"mod_bonus");
             world.put(c + 0x4400 + bonus::SPEED_BONUS, (-30_003_i64).to_le_bytes());
@@ -162,7 +163,7 @@ impl World {
             world.put(c + 0x5008, 15_003_i64.to_le_bytes());
             world.pointer(c + ccountry::FOCUS_PROGRESS, c + FOCUS);
             world.pointer(c + ccountry::FOCUS_TREE, c + 0x6100);
-            world.put(c + FOCUS, (focus::VTABLE_RVA as u64).to_le_bytes());
+            world.put(c + FOCUS, (focus::VTABLE_RVA.0 as u64).to_le_bytes());
             world.pointer(c + FOCUS + focus::CURRENT, c + 0x6200);
             world.pointer(c + FOCUS + focus::CONTINUOUS, c + 0x6300);
             world.put(c + FOCUS + focus::PROGRESS, (-125_003_i64).to_le_bytes());
@@ -218,7 +219,8 @@ impl World {
         self.put(at + 16, (bytes.len() as u64).to_le_bytes());
         self.put(at + 24, 15_u64.to_le_bytes());
     }
-    fn image_put(&mut self, at: usize, bytes: &[u8]) {
+    fn image_put(&mut self, key: Rva, bytes: &[u8]) {
+        let at = key.0;
         self.image[at - IMAGE_START..at - IMAGE_START + bytes.len()].copy_from_slice(bytes);
     }
 }

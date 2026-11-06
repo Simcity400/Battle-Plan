@@ -44,10 +44,10 @@ fn world(slots: u32) -> Vec<u8> {
         (RESERVED, 0, RESERVED_DIPLOMACY, RESERVED_MATRIX),
         (POSITIVE, 1, POSITIVE_DIPLOMACY, POSITIVE_MATRIX),
     ] {
-        put64(&mut bytes, country, ccountry::VTABLE_RVA);
+        put64(&mut bytes, country, ccountry::VTABLE_RVA.0);
         put32(&mut bytes, country + ccountry::ID, id);
         put64(&mut bytes, country + ccountry::DIPLOMACY_STATUS, root);
-        put64(&mut bytes, root, diplomacy::VTABLE_RVA);
+        put64(&mut bytes, root, diplomacy::VTABLE_RVA.0);
         put64(&mut bytes, root + diplomacy::COUNTRY, country);
         header(&mut bytes, root + diplomacy::RELATIONS, matrix, slots);
         for slot in 0..slots as usize {
@@ -57,7 +57,7 @@ fn world(slots: u32) -> Vec<u8> {
                 forward_status(slot)
             };
             put64(&mut bytes, matrix + slot * 8, cell);
-            put64(&mut bytes, cell, crelation_status::VTABLE_RVA);
+            put64(&mut bytes, cell, crelation_status::VTABLE_RVA.0);
             put64(&mut bytes, cell + crelation_status::DIPLOMACY_STATUS, root);
             put32(
                 &mut bytes,
@@ -230,7 +230,7 @@ fn cell_status_fault_is_local_and_partial_subject_preserves_order_and_fault() {
         status(0) + crelation_status::SUBJECT_RELATION,
         SUBJECT,
     );
-    put64(&mut bytes, SUBJECT, csubject_relation::VTABLE_RVA);
+    put64(&mut bytes, SUBJECT, csubject_relation::VTABLE_RVA.0);
     put32(
         &mut bytes,
         SUBJECT + crelation::TYPE_ID,

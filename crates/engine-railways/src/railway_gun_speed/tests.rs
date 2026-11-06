@@ -55,8 +55,8 @@ impl Fixture {
         address
     }
 
-    fn vtable(&mut self, address: usize, rva: usize) {
-        self.put(address, ((BASE + rva) as u64).to_le_bytes());
+    fn vtable(&mut self, address: usize, key: Rva) {
+        self.put(address, ((BASE + key.0) as u64).to_le_bytes());
     }
 
     fn array(&mut self, header: usize, data: &[u8], stride: usize) -> usize {

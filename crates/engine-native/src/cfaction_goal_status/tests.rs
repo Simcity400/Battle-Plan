@@ -19,18 +19,18 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
     put(bytes, at + 12, count.to_le_bytes());
 }
 fn date(bytes: &mut [u8], at: usize, hour: i32) {
-    put(bytes, at, (cgame_date::VTABLE_RVA as u64).to_le_bytes());
+    put(bytes, at, (cgame_date::VTABLE_RVA.0 as u64).to_le_bytes());
     put(bytes, at + cgame_date::DATE_BASE, hour.to_le_bytes());
     put(
         bytes,
         at + cgame_date::PERSISTENT_BASE,
-        (cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+        (cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
 }
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x7000];
     let status = FACTION + STATUS;
-    put(&mut bytes, status, (VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, status, (VTABLE_RVA.0 as u64).to_le_bytes());
     put(&mut bytes, status + OWNER, (FACTION as u64).to_le_bytes());
     put(
         &mut bytes,
@@ -41,7 +41,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             DEFINITIONS + offset,
-            (DEFINITION_VTABLE_RVA as u64).to_le_bytes(),
+            (DEFINITION_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

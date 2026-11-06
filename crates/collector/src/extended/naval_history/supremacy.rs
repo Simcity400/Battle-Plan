@@ -170,19 +170,19 @@ fn copy_supremacy_tables(
     if regions.count == 0 {
         return;
     }
-    let region_vtable = match base.checked_add(cstrategic_region::VTABLE_RVA) {
+    let region_vtable = match engine_sites::at(base, cstrategic_region::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return,
     };
-    let secondary_vtable = match base.checked_add(cstrategic_region::SECONDARY_VTABLE_RVA) {
+    let secondary_vtable = match engine_sites::at(base, cstrategic_region::SECONDARY_VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return,
     };
-    let dominance_vtable = match base.checked_add(cnaval_region_dominance::VTABLE_RVA) {
+    let dominance_vtable = match engine_sites::at(base, cnaval_region_dominance::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return,
     };
-    let values_vtable = match base.checked_add(cdominance_values::VTABLE_RVA) {
+    let values_vtable = match engine_sites::at(base, cdominance_values::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return,
     };

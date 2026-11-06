@@ -109,8 +109,8 @@ impl Writer {
         self.put(address, &value.to_le_bytes());
     }
 
-    fn vtable(&mut self, address: usize, rva: usize) {
-        self.u64(address, (kit::BASE + rva) as u64);
+    fn vtable(&mut self, address: usize, rva: engine_sites::Rva) {
+        self.u64(address, (kit::BASE + rva.0) as u64);
     }
 
     fn array(&mut self, address: usize, data: usize, count: u32) {

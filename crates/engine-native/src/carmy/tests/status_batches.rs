@@ -72,7 +72,7 @@ fn manpower_batches_keep_every_word_and_failure_prefix() {
                 if count != 0 {
                     reads.push((A1 + carmy::EXPERIENCE, 8));
                 }
-                reads.push((carmy::EXPERIENCE_THRESHOLDS_RVA, 16));
+                reads.push((carmy::EXPERIENCE_THRESHOLDS_RVA.0, 16));
                 reads.push((0x15100, 8));
                 if count != 0 {
                     reads.push((0x15108, 8));
@@ -224,7 +224,7 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
         array(&mut header, 0, 0x40000, count as u32 + 1);
         source
             .globals
-            .insert(carmy::EXPERIENCE_THRESHOLDS_RVA, header);
+            .insert(carmy::EXPERIENCE_THRESHOLDS_RVA.0, header);
         // Stop at the first strict upper experience threshold. Keep an unread
         // suffix to prove storage growth adds no payload reads.
         p64(&mut source.bytes, 0x40000 + (count - 1) * 8, 151);
@@ -286,10 +286,10 @@ fn worker_acclimatization_registry_grows_from_original_and_later_headers() {
         p64(&mut source.bytes, object + data::MAXIMUM, 250_000);
         source
             .globals
-            .insert(category::REGISTRY_RVA, 0x20000_u64.to_le_bytes().to_vec());
+            .insert(category::REGISTRY_RVA.0, 0x20000_u64.to_le_bytes().to_vec());
         source
             .globals
-            .insert(data::CAMO_SHOW_AT_RVA, 50_000_i64.to_le_bytes().to_vec());
+            .insert(data::CAMO_SHOW_AT_RVA.0, 50_000_i64.to_le_bytes().to_vec());
         array(&mut source.bytes, 0x20000, 0x60000, count as u32);
         for index in 0..count {
             let pointer = 0x80000 + index * 0x40;

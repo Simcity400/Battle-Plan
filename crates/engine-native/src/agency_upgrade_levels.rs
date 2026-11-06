@@ -476,11 +476,19 @@ impl<'a> Capture<'a> {
 }
 
 fn database(memory: &impl Memory, base: usize) -> Result<(Array, Array), &'static str> {
-    let pointer = read::<u64>(memory, at(base, DATABASE_RVA)?)
-        .and_then(|p| usize::try_from(p).ok())
-        .filter(|&p| p != 0)
-        .ok_or("agency upgrade database pointer unreadable or null")?;
-    if read::<u64>(memory, pointer) != Some(at(base, DATABASE_VTABLE_RVA)? as u64) {
+    let pointer = read::<u64>(
+        memory,
+        engine_sites::at(base, DATABASE_RVA).ok_or("agency upgrade address overflow")?,
+    )
+    .and_then(|p| usize::try_from(p).ok())
+    .filter(|&p| p != 0)
+    .ok_or("agency upgrade database pointer unreadable or null")?;
+    if read::<u64>(memory, pointer)
+        != Some(
+            engine_sites::at(base, DATABASE_VTABLE_RVA).ok_or("agency upgrade address overflow")?
+                as u64,
+        )
+    {
         return Err("agency upgrade database vtable mismatch");
     }
     let globals = array(memory, pointer, DATABASE_UPGRADES, 8)?;
@@ -503,7 +511,12 @@ fn branches_each(
         "agency upgrade database branch pointer unreadable",
         |_, pointer| {
             if pointer == 0
-                || read::<u64>(memory, pointer) != Some(at(base, BRANCH_VTABLE_RVA)? as u64)
+                || read::<u64>(memory, pointer)
+                    != Some(
+                        engine_sites::at(base, BRANCH_VTABLE_RVA)
+                            .ok_or("agency upgrade address overflow")?
+                            as u64,
+                    )
             {
                 return Err("agency upgrade database branch vtable mismatch");
             }
@@ -535,7 +548,7 @@ fn identity(
         identity.status = DEFINITION_UNREADABLE;
         return identity;
     };
-    if at(base, DEFINITION_VTABLE_RVA).ok().map(|p| p as u64) != Some(vtable) {
+    if engine_sites::at(base, DEFINITION_VTABLE_RVA).map(|p| p as u64) != Some(vtable) {
         identity.status = DEFINITION_VTABLE_MISMATCH;
         return identity;
     }

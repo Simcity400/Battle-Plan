@@ -214,7 +214,7 @@ pub struct Hooks {
 }
 impl Hooks {
     /// The runtime's build gate admitted this family before construction.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "portrait_changes") {
             let callbacks = [
@@ -226,10 +226,8 @@ impl Hooks {
                 insert as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
-                    return Err("portrait hook sentinel differs");
-                }
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                let (at, original) = crate::located_hook(base, site.rva)?;
+                let hook = unsafe { Hook::new(at, callbacks[index], original) }
                     .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);

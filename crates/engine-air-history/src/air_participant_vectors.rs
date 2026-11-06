@@ -122,8 +122,7 @@ pub fn headers(
     batch: &[(u32, usize, usize)],
     mut emit: impl FnMut(Staged),
 ) -> Result<(), &'static str> {
-    let vtable = base
-        .checked_add(cdiplomacy_status::VTABLE_RVA)
+    let vtable = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
         .ok_or("air participant module address overflow")? as u64;
     let len = batch.len();
     let mut pointers = [0_usize; BATCH];
@@ -288,7 +287,7 @@ mod tests {
             put(
                 &mut bytes,
                 diplomacy,
-                &((BASE + cdiplomacy_status::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + cdiplomacy_status::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
         }
         header(&mut bytes, A + RECIPROCAL_DONORS, DATA as u64, 2);

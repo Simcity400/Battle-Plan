@@ -10,16 +10,16 @@ fn timed_ideas_keep_stored_days_order_and_live_demand() {
         let ideas = world.alloc(TIMED_IDEA_STRIDE * 2);
         let idea = world.alloc(cidea::TOKEN + msvc_string::STRIDE);
         world.u64(owner + ccountry::POLITICAL_STATUS, status as u64);
-        world.u64(status, (BASE + VTABLE_RVA) as u64);
+        world.u64(status, (BASE + VTABLE_RVA.0) as u64);
         world.u64(status + COUNTRY, owner as u64);
         world.array(status + TIMED_IDEAS, ideas, 2);
-        world.u64(idea, (BASE + cidea::VTABLE_RVA) as u64);
+        world.u64(idea, (BASE + cidea::VTABLE_RVA.0) as u64);
         world.put(idea + cidea::TOKEN, b"idea\xff");
         world.u64(idea + cidea::TOKEN + 16, 5);
         world.u64(idea + cidea::TOKEN + 24, 15);
         for (ordinal, days) in [i32::MIN, 17].into_iter().enumerate() {
             let entry = ideas + ordinal * TIMED_IDEA_STRIDE;
-            world.u64(entry, (BASE + TIMED_IDEA_VTABLE_RVA) as u64);
+            world.u64(entry, (BASE + TIMED_IDEA_VTABLE_RVA.0) as u64);
             world.u64(entry + 8, idea as u64);
             world.put(entry + 16, &days.to_le_bytes());
         }
@@ -76,7 +76,7 @@ fn timed_ideas_keep_stored_days_order_and_live_demand() {
         world.array(status + TIMED_IDEAS, entries, 10);
         for ordinal in 0..10 {
             let entry = entries + ordinal * TIMED_IDEA_STRIDE;
-            world.u64(entry, (BASE + TIMED_IDEA_VTABLE_RVA) as u64);
+            world.u64(entry, (BASE + TIMED_IDEA_VTABLE_RVA.0) as u64);
             world.u64(entry + 8, idea);
             world.put(entry + 16, &(-(ordinal as i32)).to_le_bytes());
         }
@@ -153,7 +153,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY_POINTER,
-        ((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -168,7 +168,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         STATUS,
-        ((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -213,7 +213,7 @@ fn party(bytes: &mut [u8], index: u32, token: &[u8]) {
     put(
         bytes,
         pointer,
-        ((BASE + cpolitical_party::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + cpolitical_party::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(bytes, pointer + cpolitical_party::ID, id.to_le_bytes());
     put(
@@ -238,7 +238,7 @@ fn party(bytes: &mut [u8], index: u32, token: &[u8]) {
     put(
         bytes,
         ideology,
-        ((BASE + cideology_group::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + cideology_group::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(bytes, ideology + cpolitical_party::ID, id.to_le_bytes());
     inline(bytes, ideology + cideology_group::TOKEN, token);
@@ -428,12 +428,12 @@ fn active_idea_secondary_base_and_heap_tokens_are_copied_exactly() {
         put(
             &mut bytes,
             pointer,
-            ((BASE + cidea::VTABLE_RVA) as u64).to_le_bytes(),
+            ((BASE + cidea::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             pointer + cidea::SECONDARY_BASE,
-            ((BASE + cidea::SECONDARY_VTABLE_RVA) as u64).to_le_bytes(),
+            ((BASE + cidea::SECONDARY_VTABLE_RVA.0) as u64).to_le_bytes(),
         );
     }
     inline(&mut bytes, 0x4000 + cidea::TOKEN, b"idea_one");
@@ -518,7 +518,7 @@ fn leader_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             leader,
-            ((BASE + ccountry_leader::VTABLE_RVA) as u64).to_le_bytes(),
+            ((BASE + ccountry_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -540,7 +540,7 @@ fn leader_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             character,
-            ((BASE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+            ((BASE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

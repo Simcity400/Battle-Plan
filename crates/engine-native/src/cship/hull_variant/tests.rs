@@ -23,14 +23,14 @@ impl World {
                 (DEFINITION, vec![0; 0x500]),
                 (DATABASE, vec![0; 0x80]),
                 (LIST, vec![0; 16]),
-                (BASE + cequipment_database::SINGLETON_RVA, vec![0; 8]),
+                (BASE + cequipment_database::SINGLETON_RVA.0, vec![0; 8]),
             ],
             reads: RefCell::new(Vec::new()),
             fault: None,
         };
         world.put(
             VARIANT,
-            &(BASE as u64 + cequipment_variant::VTABLE_RVA as u64).to_le_bytes(),
+            &(BASE as u64 + cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         world.put(VARIANT + 8, &HANDLE.to_le_bytes());
         world.put(
@@ -43,17 +43,17 @@ impl World {
         );
         world.put(
             DEFINITION,
-            &(BASE as u64 + cequipment_type::VTABLE_RVA as u64).to_le_bytes(),
+            &(BASE as u64 + cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         world.put(DEFINITION + cequipment_type::TOKEN, &TOKEN.to_le_bytes());
         world.put(DEFINITION + DEFINITION_INDEX, &1_i32.to_le_bytes());
         world.put(
-            BASE + cequipment_database::SINGLETON_RVA,
+            BASE + cequipment_database::SINGLETON_RVA.0,
             &(DATABASE as u64).to_le_bytes(),
         );
         world.put(
             DATABASE,
-            &(BASE as u64 + cequipment_database::VTABLE_RVA as u64).to_le_bytes(),
+            &(BASE as u64 + cequipment_database::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         world.put(DATABASE + DEFINITIONS, &(LIST as u64).to_le_bytes());
         world.put(DATABASE + DEFINITIONS + 8, &2_u32.to_le_bytes());
@@ -226,7 +226,7 @@ fn definition_alias_and_database_faults_withhold_only_the_ordinal() {
             i32::MAX.to_le_bytes().to_vec(),
         ),
         (
-            BASE + cequipment_database::SINGLETON_RVA,
+            BASE + cequipment_database::SINGLETON_RVA.0,
             0_u64.to_le_bytes().to_vec(),
         ),
         (DATABASE, 0_u64.to_le_bytes().to_vec()),
@@ -263,12 +263,12 @@ fn null_ordinal_is_not_admitted_as_a_real_definition_and_other_terms_survive() {
 fn native_null_world() -> World {
     let mut world = World::fixture();
     world.regions.push((
-        BASE + NULL_DEFINITION_SINGLETON_RVA,
+        BASE + NULL_DEFINITION_SINGLETON_RVA.0,
         (DEFINITION as u64).to_le_bytes().to_vec(),
     ));
     world.put(
         DEFINITION,
-        &(BASE as u64 + NULL_DEFINITION_VTABLE_RVA as u64).to_le_bytes(),
+        &(BASE as u64 + NULL_DEFINITION_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     world.put(
         DEFINITION + cequipment_type::TOKEN,
@@ -311,7 +311,7 @@ fn registered_variant_with_actual_null_definition_keeps_minus_one_and_raw_terms(
     assert!(
         !reads
             .iter()
-            .any(|(at, _)| *at == BASE + cequipment_database::SINGLETON_RVA || *at == LIST)
+            .any(|(at, _)| *at == BASE + cequipment_database::SINGLETON_RVA.0 || *at == LIST)
     );
 }
 
@@ -319,7 +319,7 @@ fn registered_variant_with_actual_null_definition_keeps_minus_one_and_raw_terms(
 fn native_null_alias_activity_ordinal_and_partial_faults_withhold_only_the_ordinal() {
     for (address, bytes) in [
         (
-            BASE + NULL_DEFINITION_SINGLETON_RVA,
+            BASE + NULL_DEFINITION_SINGLETON_RVA.0,
             (DEFINITION as u64 + 8).to_le_bytes().to_vec(),
         ),
         (DEFINITION + cequipment_type::ACTIVE, vec![1]),

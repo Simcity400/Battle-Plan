@@ -12,6 +12,7 @@ use crate::{
     cnaval_combatant::field,
     cpdx_array::Array,
 };
+use engine_sites::Rva;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ContextRow {
@@ -216,8 +217,11 @@ fn text<const TERMINAL: bool>(
         }
     })
 }
-fn auth(memory: &impl Memory, base: usize, p: usize, rva: usize) -> Result<(), &'static str> {
-    if p == 0 || field::<u64>(memory, p, 0)? != add(base, rva)? as u64 {
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("naval weapon source site withheld")
+}
+fn auth(memory: &impl Memory, base: usize, p: usize, rva: Rva) -> Result<(), &'static str> {
+    if p == 0 || field::<u64>(memory, p, 0)? != site(base, rva)? as u64 {
         return Err("naval weapon source identity mismatch");
     }
     Ok(())
@@ -471,8 +475,12 @@ fn ocean_terrain<const TERMINAL: bool>(
 ) -> Result<usize, &'static str> {
     // Capture the key from the pinned module instead of assuming English
     // content.
-    let key: [u8; 5] = field(memory, base, 0x029f_5b58)?;
-    let root = ptr(memory, base, crate::cterrain_database::SINGLETON_RVA)?;
+    let key: [u8; 5] = field(memory, site(base, Rva(0x029f_5b58))?, 0)?;
+    let root = ptr(
+        memory,
+        site(base, crate::cterrain_database::SINGLETON_RVA)?,
+        0,
+    )?;
     let types = array(memory, root, 0x40, 8)?;
     let mut found = None;
     for index in 0..types.count {
@@ -940,19 +948,19 @@ fn globals_kept(
         return emit(features(flags, eligibility), None);
     }
     let weights = [
-        field(memory, base, 0x033d_fa90)?,
-        field(memory, base, 0x033d_fb30)?,
+        field(memory, site(base, Rva(0x033d_fa90))?, 0)?,
+        field(memory, site(base, Rva(0x033d_fb30))?, 0)?,
     ];
     emit(defines(weights), None)?;
-    let callback = field::<u64>(memory, base, md::ELIGIBILITY_CALLBACK_RVA)?;
+    let callback = field::<u64>(memory, site(base, md::ELIGIBILITY_CALLBACK_RVA)?, 0)?;
     let eligibility = if callback == 0 {
         0
-    } else if callback == add(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
+    } else if callback == site(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
         1
     } else {
         return Err("naval weapon modifier callback unsupported");
     };
-    let flags = field::<u32>(memory, base, md::TRADE_FEATURE_FLAGS_RVA)?;
+    let flags = field::<u32>(memory, site(base, md::TRADE_FEATURE_FLAGS_RVA)?, 0)?;
     emit(features(flags, eligibility), None)?;
     if let Some(memo) = memo.as_deref_mut() {
         memo.globals = Some((weights, eligibility, flags));
@@ -993,13 +1001,13 @@ pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     selector: u32,
 ) -> Result<[u32; 2], &'static str> {
     use crate::cpdx_lexer as lexer;
-    if field::<u32>(memory, base, lexer::WRITER_FLAG_RVA)? != 0 {
+    if field::<u32>(memory, site(base, lexer::WRITER_FLAG_RVA)?, 0)? != 0 {
         return Err("naval doctrine lexer writer active");
     }
-    let witness: [u8; 64] = field(memory, base, lexer::INITIALIZED_RVA)?;
+    let witness: [u8; 64] = field(memory, lexer::witness_address(base)?, 0)?;
     let _ = lexer::PreparedWitness::from_header(witness)?;
-    let maximum = field::<u32>(memory, base, lexer::MAX_TOKEN_ID_RVA)?;
-    let table = ptr(memory, base, lexer::TOKEN_NAMES_RVA)?;
+    let maximum = field::<u32>(memory, site(base, lexer::MAX_TOKEN_ID_RVA)?, 0)?;
+    let table = ptr(memory, site(base, lexer::TOKEN_NAMES_RVA)?, 0)?;
     let token_text = |token: u32| -> Result<Owned, &'static str> {
         if token > maximum {
             return Err("naval doctrine token outside dictionary");
@@ -1012,8 +1020,8 @@ pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     };
     let selected = token_text(selector)?;
     let generators = [
-        ptr(memory, base, 0x0343_9158)?,
-        ptr(memory, base, 0x0343_9150)?,
+        ptr(memory, site(base, Rva(0x0343_9158))?, 0)?,
+        ptr(memory, site(base, Rva(0x0343_9150))?, 0)?,
     ];
     let mut prefixes = std::array::from_fn::<_, 2, _>(|_| Owned::default());
     let mut suffixes = std::array::from_fn::<_, 2, _>(|_| Owned::default());
@@ -1029,7 +1037,7 @@ pub(crate) fn doctrine_keys<const TERMINAL: bool>(
             "naval doctrine suffix invalid",
         )?;
     }
-    let head = ptr(memory, base, 0x030f_eba8)?;
+    let head = ptr(memory, site(base, Rva(0x030f_eba8))?, 0)?;
     let mut node = ptr(memory, head, 8)?;
     let mut previous = head;
     let mut result = [0; 2];
@@ -1302,7 +1310,7 @@ pub fn visit_sources<const TERMINAL: bool>(
     visit_modifier(emit, 0, add(country.pointer, 0x5a8)?)?;
     let pride = field::<u64>(memory, country.pointer, 0x250)?;
     if pride == field::<u64>(memory, ship, 8)? {
-        let root = ptr(memory, base, 0x033d_e590)?;
+        let root = ptr(memory, site(base, Rva(0x033d_e590))?, 0)?;
         visit_modifier(emit, 1, ptr(memory, root, 0xb0)?)?;
     }
     visit_modifier(emit, 2, add(ship, 0x740)?)?;

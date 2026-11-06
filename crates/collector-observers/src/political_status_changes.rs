@@ -394,14 +394,15 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "political_status_changes")
-            && MUTATIONS.iter().all(|(site, _, _)| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            })
+            && MUTATIONS
+                .iter()
+                .all(|(site, _, _)| crate::located(base, site.rva).is_ok())
+            && let Ok(set_popularity) = engine_sites::hook(base, SET_POPULARITY_RVA)
         {
-            SET_POPULARITY.store(base + SET_POPULARITY_RVA, Ordering::Release);
+            SET_POPULARITY.store(set_popularity.address, Ordering::Release);
             let callbacks: [usize; SITES] = [
                 set_capital as *const () as usize,
                 set_politics as *const () as usize,
@@ -414,12 +415,12 @@ impl Hooks {
                 set_popularities as *const () as usize,
             ];
             for (index, (site, patch, _)) in MUTATIONS.iter().enumerate() {
+                let code = engine_sites::hook(base, site.rva)?;
+                let original = code.sentinel::<16>()?;
                 let hook = match patch {
-                    Patch::Entry => unsafe {
-                        Hook::new(base + site.rva, callbacks[index], site.sentinel)
-                    },
+                    Patch::Entry => unsafe { Hook::new(code.address, callbacks[index], original) },
                     Patch::Call => unsafe {
-                        Hook::new_call(base + site.rva, callbacks[index], site.sentinel)
+                        Hook::new_call(code.address, callbacks[index], original)
                     },
                 }
                 .map_err(|_| "native hook construction failed")?;

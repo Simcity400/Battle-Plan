@@ -40,8 +40,7 @@
 //! lock-free.
 use crate::{hook::Hook, opinion_changes::Padded};
 use engine_land_inputs::{
-    ncombat_log_cmanager as native, ncombat_log_cmanager::PRUNE_RVA,
-    ncombat_log_cmanager::PRUNE_SENTINEL, ncombat_log_cmanager::Row,
+    ncombat_log_cmanager as native, ncombat_log_cmanager::PRUNE_RVA, ncombat_log_cmanager::Row,
 };
 use engine_native::{Memory, walk::Outcome};
 use std::{
@@ -210,10 +209,11 @@ fn observe(manager: usize) {
         Ok((_, Outcome::Truncated { unread_rows, .. })) => unread_rows as usize,
         Ok((_, Outcome::Unavailable { .. })) | Err(_) => return failed_read(),
     };
-    let Some(signal) = base
-        .checked_add(engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA)
-        .and_then(|address| engine_native::read::<i64>(&memory, address))
-    else {
+    let Some(signal) = engine_sites::at(
+        base,
+        engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA,
+    )
+    .and_then(|address| engine_native::read::<i64>(&memory, address)) else {
         return failed_read();
     };
     record(signal, demand, |rows| {
@@ -452,7 +452,7 @@ impl Hooks {
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
-        let hook = unsafe { Self::install(memory, base) }
+        let hook = unsafe { Self::install(base) }
             .map_err(|reason| {
                 let _ = UNHOOKED.set(reason);
             })
@@ -463,16 +463,15 @@ impl Hooks {
         }
     }
 
-    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Hook, &'static str> {
-        if !crate::hook::installation::sentinel(memory, base + PRUNE_RVA, PRUNE_SENTINEL) {
-            return Err("combat log prune sentinel differs");
-        }
+    unsafe fn install(base: usize) -> Result<Hook, &'static str> {
+        crate::located(base, PRUNE_RVA)?;
+        let code = engine_sites::hook(base, PRUNE_RVA)?;
         BASE.store(base, Ordering::Relaxed);
         let hook = unsafe {
             Hook::new(
-                base + PRUNE_RVA,
+                code.address,
                 prune as *const () as usize,
-                PRUNE_SENTINEL,
+                code.sentinel::<16>()?,
             )
         }
         .map_err(|_| "native hook construction failed")?;
@@ -650,7 +649,7 @@ mod tests {
         let _lock = test_lock();
         let mut bytes = vec![0_u64; (GROUPS + GROUP_COUNT * logs::SIZE).div_ceil(8)];
         let at = bytes.as_ptr() as usize;
-        let base = at - (registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8);
+        let base = at - (registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8);
         let handle = (1_u64 << 32) | u64::from(corders_group::REFERENCE_TYPE);
         let hash = handle
             .rotate_left(32)
@@ -677,13 +676,13 @@ mod tests {
             BUCKETS + bucket * reference_bucket::STRIDE + reference_bucket::OBJECT,
             1,
         );
-        word(MANAGER, (base + native::VTABLE_RVA) as u64);
+        word(MANAGER, (base + native::VTABLE_RVA.0) as u64);
         word(MANAGER + native::GROUPS, (at + POINTERS) as u64);
         word(MANAGER + native::COUNTRY, 7);
         for index in 0..GROUP_COUNT {
             let group = GROUPS + index * logs::SIZE;
             word(POINTERS + index * 8, (at + group) as u64);
-            word(group, (base + logs::VTABLE_RVA) as u64);
+            word(group, (base + logs::VTABLE_RVA.0) as u64);
             word(group + logs::GROUP, handle);
         }
         BASE.store(base, Ordering::Relaxed);

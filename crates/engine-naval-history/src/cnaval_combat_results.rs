@@ -1,6 +1,7 @@
 //! Persistent retained naval results include retirement dates and lists.
 //! Presentation predicate sites do not establish rendered visibility.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cgame_state, cnaval_combat_result_side as side, cnaval_combat_ship_entry as member,
     cpdx_array::Array,
@@ -11,7 +12,7 @@ use crate::{
 /// CNavalCombatResults allocation extent.
 pub const SIZE: usize = 0x168;
 /// CNavalCombatResults vtable.
-pub const VTABLE_RVA: usize = 0x029d_a6c0;
+pub const VTABLE_RVA: Rva = Rva(0x029d_a6c0);
 /// CNavalCombatResults packed reference handle u64.
 pub const HANDLE: usize = 0x08;
 /// CNavalCombatResults first embedded CNavalCombatResultSide.
@@ -41,11 +42,11 @@ pub const CATEGORY: usize = 0x148;
 /// CNavalCombatResults admitted country-id u32 array.
 pub const ADMITTED: usize = 0x150;
 /// CNavalCombatResults constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d4_1460;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d4_1460);
 /// CNavalCombatResults merge path.
-pub const MERGE_RVA: usize = 0x00d4_4ea0;
+pub const MERGE_RVA: Rva = Rva(0x00d4_4ea0);
 /// CNavalCombatResults fill from combat.
-pub const FILL_FROM_COMBAT_RVA: usize = 0x00d4_5c60;
+pub const FILL_FROM_COMBAT_RVA: Rva = Rva(0x00d4_5c60);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -298,7 +299,7 @@ fn walk_buffer(
 fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
     let header = read::<[u8; 16]>(memory, pointer).ok_or("naval result identity unreadable")?;
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
-    if Some(vtable) != base.checked_add(VTABLE_RVA).map(|p| p as u64) {
+    if Some(vtable) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64) {
         return Err("naval result vtable mismatch");
     }
     let id = u64::from_le_bytes(header[8..].try_into().unwrap());

@@ -260,14 +260,18 @@ mod tests {
             put32(&mut bytes, LINKS + raw * 4, canonical);
         }
         for (country, id, diplomacy) in [(C1, 7, D1), (C2, 2, D2)] {
-            put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            put64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
             put32(&mut bytes, country + ccountry::ID, id);
             put64(
                 &mut bytes,
                 country + ccountry::DIPLOMACY_STATUS,
                 diplomacy as u64,
             );
-            put64(&mut bytes, diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+            put64(
+                &mut bytes,
+                diplomacy,
+                cdiplomacy_status::VTABLE_RVA.0 as u64,
+            );
             put64(
                 &mut bytes,
                 diplomacy + cdiplomacy_status::COUNTRY,
@@ -280,12 +284,12 @@ mod tests {
             );
         }
         put64(&mut bytes, GS + cgame_state::FACTION_SYSTEM, SYSTEM as u64);
-        put64(&mut bytes, SYSTEM, cfaction_system::VTABLE_RVA as u64);
+        put64(&mut bytes, SYSTEM, cfaction_system::VTABLE_RVA.0 as u64);
         array(&mut bytes, SYSTEM + cfaction_system::FACTIONS, FACTIONS, 2);
         put64(&mut bytes, FACTIONS, FIRST as u64);
         put64(&mut bytes, FACTIONS + 8, SECOND as u64);
         for (faction, id) in [(FIRST, FIRST_ID), (SECOND, SECOND_ID)] {
-            put64(&mut bytes, faction, cfaction::VTABLE_RVA as u64);
+            put64(&mut bytes, faction, cfaction::VTABLE_RVA.0 as u64);
             put64(&mut bytes, faction + cfaction::REFERENCE, id);
             put64(
                 &mut bytes,
@@ -296,7 +300,7 @@ mod tests {
             put64(
                 &mut bytes,
                 faction + cfaction::COLOR,
-                cfaction::COLOR_VTABLE_RVA as u64,
+                cfaction::COLOR_VTABLE_RVA.0 as u64,
             );
             for index in 0..4 {
                 put32(

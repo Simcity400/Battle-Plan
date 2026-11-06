@@ -1,9 +1,10 @@
 //! CStrategicResourcePool; slot zero is the resource database's null object.
 
 use crate::cpdx_array::Array;
+use engine_sites::Rva;
 
 /// Resource-pool primary vtable.
-pub const VTABLE_RVA: usize = 0x29ce1e8;
+pub const VTABLE_RVA: Rva = Rva(0x29ce1e8);
 /// Value-record pointer used by resource-amount predicates.
 pub const VALUES: usize = 0x08;
 /// Value-record stride selected by resource one-based ordinal.
@@ -51,9 +52,7 @@ pub fn read_into(
 }
 
 pub fn from_header(base: usize, header: [u8; 24], count: u32) -> Result<Array, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(header[..8].try_into().expect("fixed vtable width")) != expected as u64 {
         return Err("resource pool vtable mismatch");
     }

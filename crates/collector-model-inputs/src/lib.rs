@@ -15,6 +15,15 @@ use collector_timing::hook_timing;
 pub mod local_subunit_changes;
 pub mod model_inputs;
 
+/// A hook site located with the 16 bytes its hook replaces, refused like a differing sentinel.
+fn located(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
+    engine_sites::hook(base, key)
+        .and_then(|code| code.sentinel::<16>().map(drop))
+        .inspect_err(|cause| {
+            hook::installation::refused(hook::installation::Kind::Sentinel, None, cause);
+        })
+}
+
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: collector_test_support::FailingAllocator =

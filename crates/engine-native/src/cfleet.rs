@@ -1,5 +1,6 @@
 //! CFleet layout; task-force vector entries are complete CTaskForce pointers.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state,
     cpdx_array::Array,
@@ -10,7 +11,7 @@ use crate::{
 };
 
 /// CFleet primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_f3d8;
+pub const VTABLE_RVA: Rva = Rva(0x029d_f3d8);
 /// CFleet reference handle {u32 type, u32 id}.
 pub const HANDLE: usize = 0x08;
 /// CFleet reference type.
@@ -348,8 +349,7 @@ impl ShipRun {
         } else {
             0
         };
-        let expected = base
-            .checked_add(cship::VTABLE_RVA)
+        let expected = engine_sites::at(base, cship::VTABLE_RVA)
             .map(|vtable| vtable as u64);
         let mut index = 0;
         let mut fell_back = false;
@@ -508,7 +508,7 @@ fn walk_named_observed(
 ) -> TimedCapture {
     let mut names_used = 0;
     let invalid_reference = if names.is_some() {
-        base.checked_add(crate::creference_registry::INVALID_REFERENCE_RVA)
+        engine_sites::at(base, crate::creference_registry::INVALID_REFERENCE_RVA)
             .and_then(|address| read::<u64>(memory, address))
     } else {
         None
@@ -539,8 +539,7 @@ fn walk_named_observed(
         let mut fleet_output = Output::from_buffer(fleets);
         let mut task_output = Output::from_buffer(task_forces);
         let mut found_country = false;
-        let expected_fleet_vtable = base
-            .checked_add(VTABLE_RVA)
+        let expected_fleet_vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")?;
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
@@ -806,8 +805,7 @@ pub(crate) fn province(
     if pointer == 0 {
         return Ok(0);
     }
-    let vtable = base
-        .checked_add(cprovince::VTABLE_RVA)
+    let vtable = engine_sites::at(base, cprovince::VTABLE_RVA)
         .ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(vtable as u64) {
         return Err("naval province vtable mismatch");
@@ -906,14 +904,11 @@ fn visit_task_forces_inner<M: Memory>(
     mut select: impl FnMut(usize),
     mut visit: impl FnMut(Visit) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    let fleet_vtable = base
-        .checked_add(VTABLE_RVA)
+    let fleet_vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
-    let primary = base
-        .checked_add(ctask_force::VTABLE_RVA)
+    let primary = engine_sites::at(base, ctask_force::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
-    let secondary = base
-        .checked_add(ctask_force::SECONDARY_VTABLE_RVA)
+    let secondary = engine_sites::at(base, ctask_force::SECONDARY_VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     let fleet_fields = packed_fields([
         (0, 8),

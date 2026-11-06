@@ -1,9 +1,10 @@
 //! CNavalCombatant naval-side layout.
 
+use engine_sites::Rva;
 use crate::{Memory, cfex_member, cpdx_array::Array, cship, memory::Raw, read};
 
 /// CNavalCombatant vtable.
-pub const VTABLE_RVA: usize = 0x02a5_d3b8;
+pub const VTABLE_RVA: Rva = Rva(0x02a5_d3b8);
 /// CNavalCombatant parent CNavalCombat pointer.
 pub const COMBAT: usize = 0x18;
 /// Task-force pointer array: data, capacity and count. Admission requires naval units;
@@ -165,8 +166,8 @@ fn units(
         8,
     )
     .ok_or("naval side unit array unreadable or invalid")?;
-    let module = |rva: usize| {
-        base.checked_add(rva)
+    let module = |key: Rva| {
+        engine_sites::at(base, key)
             .map(|address| address as u64)
             .ok_or("naval side unit vtable overflow")
     };
@@ -236,8 +237,7 @@ pub(crate) fn details(
         0
     } else {
         if field::<u64>(memory, leader, 0)?
-            != base
-                .checked_add(crate::cnavy_leader::VTABLE_RVA)
+            != engine_sites::at(base, crate::cnavy_leader::VTABLE_RVA)
                 .ok_or("naval leader vtable overflow")? as u64
         {
             return Err("naval commander vtable mismatch");
@@ -357,8 +357,7 @@ pub fn side(
         return Err("naval field unreadable");
     }
     if u64::from_le_bytes(vtable)
-        != base
-            .checked_add(VTABLE_RVA)
+        != engine_sites::at(base, VTABLE_RVA)
             .ok_or("naval side vtable overflow")? as u64
     {
         return Err("naval side identity or combat back-reference mismatch");
@@ -430,8 +429,7 @@ pub(crate) fn member(
         return Err("naval field unreadable");
     }
     if u64::from_le_bytes(vtable)
-        != base
-            .checked_add(cfex_member::VTABLE_RVA)
+        != engine_sites::at(base, cfex_member::VTABLE_RVA)
             .ok_or("naval member vtable overflow")? as u64
     {
         return Err("naval member identity or group back-reference mismatch");
@@ -631,11 +629,11 @@ mod damage_source_tests {
                 SIDE + UNITS + 8,
                 ((count as u64) << 32) | count as u64,
             );
-            put(&mut bytes, FORCE, crate::ctask_force::VTABLE_RVA as u64);
+            put(&mut bytes, FORCE, crate::ctask_force::VTABLE_RVA.0 as u64);
             put(
                 &mut bytes,
                 FORCE + crate::ctask_force::SECONDARY_BASE,
-                crate::ctask_force::SECONDARY_VTABLE_RVA as u64,
+                crate::ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
             );
             put(
                 &mut bytes,

@@ -210,8 +210,8 @@ fn seed() -> carmy::DivisionSeed {
         pointer: ARMY,
         division: UNIT,
         handle: Some(UNIT),
-        primary_vtable: Some((BASE + carmy::VTABLE_RVA) as u64),
-        secondary_vtable: Some((BASE + carmy::SECONDARY_VTABLE_RVA) as u64),
+        primary_vtable: Some((BASE + carmy::VTABLE_RVA.0) as u64),
+        secondary_vtable: Some((BASE + carmy::SECONDARY_VTABLE_RVA.0) as u64),
         class: Some(0),
         orders_group: Some(GROUP),
         stat_block: Some(STAT),
@@ -619,7 +619,7 @@ fn stat_identity_is_retained_for_both_leaves_and_aliased_sources() {
     for vtable in [
         None,
         Some(0),
-        Some((BASE + csub_unit_definition::VTABLE_RVA) as u64),
+        Some((BASE + csub_unit_definition::VTABLE_RVA.0) as u64),
     ] {
         let mut image = Image::default();
         if let Some(vtable) = vtable {
@@ -690,14 +690,14 @@ fn stat_identity_is_retained_for_both_leaves_and_aliased_sources() {
 #[test]
 fn naval_stat_fault_preserves_para_sibling_and_seed_fields_are_not_reread() {
     let mut image = Image::default();
-    image.word(STAT, (BASE + csub_unit_definition::VTABLE_RVA) as u64);
+    image.word(STAT, (BASE + csub_unit_definition::VTABLE_RVA.0) as u64);
     image.put(STAT + PARADROP_ELIGIBLE, &[7]);
     image.put(ARMY + member::HOST_OFFSET + member::ORDER_CACHE_DIRTY, &[1]);
     image.word(ARMY + member::HOST_OFFSET + member::ROOT_ORDER, 0);
-    image.word(GROUP, (BASE + corders_group::VTABLE_RVA) as u64);
+    image.word(GROUP, (BASE + corders_group::VTABLE_RVA.0) as u64);
     image.word(GROUP + corders_group::HANDLE, HANDLE);
     image.word(GROUP + corders_group::LEADER, 0);
-    image.word(PROVINCE, (BASE + cprovince::VTABLE_RVA) as u64);
+    image.word(PROVINCE, (BASE + cprovince::VTABLE_RVA.0) as u64);
     image.word(PROVINCE + cprovince::DEFINITION, DEFINITION as u64);
     image.put(PROVINCE + cprovince::ID, &7_u32.to_le_bytes());
     image.put(
@@ -1073,7 +1073,7 @@ fn mid_read_panic_restores_buffers_and_same_capacity_next_pass_recovers() {
         }
     }
     let mut image = Image::default();
-    image.word(STAT, (BASE + csub_unit_definition::VTABLE_RVA) as u64);
+    image.word(STAT, (BASE + csub_unit_definition::VTABLE_RVA.0) as u64);
     image.word(STAT + NAVAL_WEIGHT, i64::MAX as u64);
     let memory = PanicOnce {
         image: &image,
@@ -1181,7 +1181,7 @@ fn execution_advisory_denial_keeps_the_terminal_hook_installed_and_inactive() {
     }
     let _reset = Reset;
     let mut image = Image::default();
-    image.word(BASE + registry::LOW_ROOTS_RVA + 53 * 8, 0x10000);
+    image.word(BASE + registry::LOW_ROOTS_RVA.0 + 53 * 8, 0x10000);
     let mut header = [0; 17];
     header[..8].copy_from_slice(&0x11000_u64.to_le_bytes());
     header[8..12].copy_from_slice(&1_u32.to_le_bytes());

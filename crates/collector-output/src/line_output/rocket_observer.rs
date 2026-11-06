@@ -1,14 +1,11 @@
 //! One CREDIT/DELIVERY/rocket owner. Native calls stay outside Rust frames;
 //! only normal assembly return releases a flight. Escaping calls retain storage.
 use super::{
-    ACTIVE, BASE, CREDIT, DELIVERY, ENABLED, Entry, NOTHING_PENDING, ORIGINAL, OutputKind, PENDING,
-    Pending, append, credit_entry, invalidate, observe_credit, observe_delivery, refuse_delivery,
-    refuse_spending,
+    ACTIVE, BASE, CREDIT, DELIVERY, DELIVERY_CALLERS, ENABLED, Entry, NOTHING_PENDING, ORIGINAL,
+    OutputKind, PENDING, Pending, ROCKET_DELIVERY, append, credit_entry, invalidate,
+    observe_credit, observe_delivery, refuse_delivery, refuse_spending,
 };
-use engine_production::{
-    line_output_sites::ROCKET_ADVANCE, line_output_sites::ROCKET_DELIVERY_RETURN,
-    line_output_sites::RocketTick,
-};
+use engine_production::{line_output_sites::ROCKET_ADVANCE, line_output_sites::RocketTick};
 use std::{
     cell::Cell,
     ops::Range,
@@ -118,11 +115,16 @@ enum DeliverySource {
     Rocket,
     Unsupported,
 }
-fn delivery_source(base: usize, caller: usize) -> DeliverySource {
-    match caller.checked_sub(base) {
-        Some(ROCKET_DELIVERY_RETURN) => DeliverySource::Rocket,
-        Some(rva) if DELIVERY.callers.contains(&rva) => DeliverySource::Equipment,
-        _ => DeliverySource::Unsupported,
+fn delivery_source(caller: usize) -> DeliverySource {
+    if caller == ROCKET_DELIVERY.load(Ordering::Relaxed) {
+        DeliverySource::Rocket
+    } else if DELIVERY_CALLERS
+        .iter()
+        .any(|address| address.load(Ordering::Relaxed) == caller)
+    {
+        DeliverySource::Equipment
+    } else {
+        DeliverySource::Unsupported
     }
 }
 fn rocket_source(kind: u32, caller: usize) -> bool {
@@ -131,7 +133,7 @@ fn rocket_source(kind: u32, caller: usize) -> bool {
     // but must not inflate the rocket counter.
     kind == 2
         || kind == 1
-            && delivery_source(BASE.load(Ordering::Relaxed), caller) == DeliverySource::Rocket
+            && delivery_source(caller) == DeliverySource::Rocket
 }
 unsafe extern "system-unwind" fn before(
     pointer: *mut Context,
@@ -190,7 +192,7 @@ unsafe extern "system-unwind" fn before(
         }
         let base = BASE.load(Ordering::Relaxed);
         if kind == 1 {
-            match delivery_source(base, caller) {
+            match delivery_source(caller) {
                 DeliverySource::Equipment => return,
                 DeliverySource::Rocket => {}
                 DeliverySource::Unsupported => {
@@ -474,7 +476,6 @@ pub(super) fn descriptors() -> [(crate::output_hooks::Site, usize, crate::hook::
         entry(
             crate::output_hooks::Site {
                 rva: ROCKET_ADVANCE.rva,
-                sentinel: ROCKET_ADVANCE.sentinel,
             },
             production_owned_rocket as *const () as usize,
             production_owned_rocket_end as *const () as usize,
@@ -488,6 +489,7 @@ pub(super) fn stub_ranges() -> [Range<usize>; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_production::line_output_sites::ROCKET_DELIVERY_RETURN;
 
     #[test]
     fn changed_world_normal_return_discards_owned_payload_and_settles_its_flight() {
@@ -543,7 +545,7 @@ mod tests {
         super::super::observe_for_test(true);
         let mut line = Line::new(0x11_0000_0021, 0x5_0000_0046, 0x9_0000_004f);
         line.set_converting(true);
-        let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[MILITARY];
+        let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[MILITARY].0;
         let mut context = Context::default();
         unsafe { before(&mut context, line.address(), 7, 0, caller, 0) };
         // The nested refresh clears the control and replaces the design.
@@ -562,20 +564,20 @@ mod tests {
 
     #[test]
     fn sole_delivery_owner_distinguishes_both_native_families_and_unsupported() {
+        let _lock = super::super::test_lock();
         let base = 0x140000000;
+        super::super::bind_callers(base).unwrap();
         for caller in DELIVERY.callers {
-            assert_eq!(
-                delivery_source(base, base + caller),
-                DeliverySource::Equipment
-            );
+            assert_eq!(delivery_source(base + caller.0), DeliverySource::Equipment);
         }
         assert_eq!(
-            delivery_source(base, base + ROCKET_DELIVERY_RETURN),
+            delivery_source(base + ROCKET_DELIVERY_RETURN.0),
             DeliverySource::Rocket
         );
-        for caller in [base - 1, base, base + ROCKET_DELIVERY_RETURN + 1] {
-            assert_eq!(delivery_source(base, caller), DeliverySource::Unsupported);
+        for caller in [base - 1, base, base + ROCKET_DELIVERY_RETURN.0 + 1] {
+            assert_eq!(delivery_source(caller), DeliverySource::Unsupported);
         }
+        super::super::bind_callers(0).unwrap();
     }
 
     #[test]
@@ -585,9 +587,9 @@ mod tests {
         crate::world_lifetime::observe_for_test(false);
         let base = BASE.load(Ordering::Relaxed);
         for (kind, caller, rocket) in [
-            (1, base + DELIVERY.callers[0], false),
-            (0, base + CREDIT.callers[0], false),
-            (1, base + ROCKET_DELIVERY_RETURN, true),
+            (1, base + DELIVERY.callers[0].0, false),
+            (0, base + CREDIT.callers[0].0, false),
+            (1, base + ROCKET_DELIVERY_RETURN.0, true),
             (2, 0, true),
         ] {
             let prior = refusals();
@@ -644,7 +646,7 @@ mod tests {
         let line = super::super::tests::Line::new(0x11_0000_0021, 0x5_0000_0046, 0x9_0000_004f);
         for enabled_at_entry in [false, true] {
             super::super::observe_for_test(enabled_at_entry);
-            let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[super::super::tests::MILITARY];
+            let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[super::super::tests::MILITARY].0;
             let mut context = Context::default();
             unsafe { before(&mut context, line.address(), 17, 9, caller, 0) };
             super::super::observe_for_test(!enabled_at_entry);

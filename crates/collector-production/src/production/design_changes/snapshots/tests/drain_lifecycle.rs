@@ -185,7 +185,7 @@ fn failed_drains_and_terminal_repairs_discard_pre_shrink_states_before_recovery_
     let roster = sources + 3 * stride;
     for ordinal in 0..3 {
         let source = sources + ordinal * stride;
-        let table = (space.base + native::SPECIFIC_BONUS_VTABLE_RVA) as u64;
+        let table = (space.base + native::SPECIFIC_BONUS_VTABLE_RVA.0) as u64;
         put(&mut space, source, &table.to_le_bytes());
         put(
             &mut space,

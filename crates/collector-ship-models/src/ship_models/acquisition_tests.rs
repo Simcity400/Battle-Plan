@@ -111,14 +111,14 @@ fn model_source() -> (Source, cship::Row) {
     let (parent, variant, bank) = (0x2000, 0x3000, 0x4000);
     let ship = (42_u64 << 32) | u64::from(cship::HANDLE_TYPE);
     let task_force = (17_u64 << 32) | u64::from(ctask_force::DEFAULT_HANDLE_TYPE);
-    source.put(BASE, &(cship::VTABLE_RVA as u64).to_le_bytes());
+    source.put(BASE, &(cship::VTABLE_RVA.0 as u64).to_le_bytes());
     source.put(BASE + cship::HANDLE, &ship.to_le_bytes());
     source.put(BASE + cship::TASK_FORCE, &(parent as u64).to_le_bytes());
-    source.put(parent, &(ctask_force::VTABLE_RVA as u64).to_le_bytes());
+    source.put(parent, &(ctask_force::VTABLE_RVA.0 as u64).to_le_bytes());
     source.put(parent + cunit::HANDLE, &task_force.to_le_bytes());
     source.put(
         BASE + cship::EQUIPMENT_POOL,
-        &(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes(),
+        &(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     source.array(
         BASE + cship::EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
@@ -129,7 +129,7 @@ fn model_source() -> (Source, cship::Row) {
     source.put(bank + 8, &i64::MIN.to_le_bytes());
     source.put(
         variant,
-        &(cequipment_variant::VTABLE_RVA as u64).to_le_bytes(),
+        &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     source.put(
         variant + 8,
@@ -717,7 +717,7 @@ impl OptionalModelSource {
         );
         source.put(
             definition,
-            &(cequipment_type::VTABLE_RVA as u64).to_le_bytes(),
+            &(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         source.put(definition + cequipment_type::TOKEN, &123_u32.to_le_bytes());
         source.put(
@@ -727,13 +727,13 @@ impl OptionalModelSource {
         source.put(definition + 0x478, &1_i32.to_le_bytes());
         source.put(
             database,
-            &(cequipment_database::VTABLE_RVA as u64).to_le_bytes(),
+            &(cequipment_database::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         source.array(database + 0x68, list, 2);
         source.put(list + 8, &(definition as u64).to_le_bytes());
         source.put(
             BASE + cship::SUBUNIT_DEFINITION,
-            &(engine_native::csub_unit_definition::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::csub_unit_definition::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         source.put(BASE + cship::SUBUNIT_INDEX, &i32::MIN.to_le_bytes());
         for (offset, value) in [
@@ -750,7 +750,7 @@ impl OptionalModelSource {
 }
 impl Memory for OptionalModelSource {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == engine_native::cequipment_database::SINGLETON_RVA {
+        if address == engine_native::cequipment_database::SINGLETON_RVA.0 {
             self.0.reads.borrow_mut().push((address, output.len()));
             if self.0.fault.get() == Some(address) {
                 return false;
@@ -869,7 +869,7 @@ fn current_hull_packet_and_field_refusals_are_named_and_preserve_independent_ope
         (6, 0x3000 + engine_native::cequipment_variant::DEFINITION),
         (7, 0x5000),
         (7, 0x5000 + 0x478),
-        (7, engine_native::cequipment_database::SINGLETON_RVA),
+        (7, engine_native::cequipment_database::SINGLETON_RVA.0),
         (7, 0x5700),
         (7, 0x5700 + 0x68),
         (7, 0x5800 + 8),
@@ -1035,7 +1035,7 @@ mod fleet {
     /// The game state, which the singleton slot names.
     pub(super) const GAME: usize = LOW;
     /// The singleton's slot, the one module global these reads reach.
-    pub(super) const SINGLETON: usize = IMAGE + cgame_state::SINGLETON_RVA;
+    pub(super) const SINGLETON: usize = IMAGE + cgame_state::SINGLETON_RVA.0;
     const COUNTRIES: usize = LOW + 0x1000;
     const LINKS: usize = LOW + 0x1100;
     pub(super) const COUNTRY: usize = LOW + 0x2000;
@@ -1121,10 +1121,10 @@ mod fleet {
         put(COUNTRIES + 8, &word(COUNTRY));
         put(GAME + cgame_state::COUNTRY_LINKS, &array(LINKS, 2));
         put(LINKS + 4, &1_u32.to_le_bytes());
-        put(COUNTRY, &word(IMAGE + ccountry::VTABLE_RVA));
+        put(COUNTRY, &word(IMAGE + ccountry::VTABLE_RVA.0));
         put(COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
         for (index, &task) in tasks.iter().enumerate() {
-            put(task, &word(IMAGE + ctask_force::VTABLE_RVA));
+            put(task, &word(IMAGE + ctask_force::VTABLE_RVA.0));
             put(task + cunit::HANDLE, &task_handle(index).to_le_bytes());
             put(task + cunit::ROSTER_OWNER, &1_u32.to_le_bytes());
             // An empty doctrine tree: its head is its own successor.
@@ -1132,7 +1132,7 @@ mod fleet {
         }
         put(DOCTRINE, &word(DOCTRINE));
         put(DOCTRINE + 0x19, &[1]);
-        put(VARIANT, &word(IMAGE + cequipment_variant::VTABLE_RVA));
+        put(VARIANT, &word(IMAGE + cequipment_variant::VTABLE_RVA.0));
         put(
             VARIANT + 8,
             &((1_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE)).to_le_bytes(),
@@ -1147,22 +1147,22 @@ mod fleet {
             &(1_u64 << 6).to_le_bytes(),
         );
         put(VARIANT + 0xc4, &3_i32.to_le_bytes());
-        put(DEFINITION, &word(IMAGE + cequipment_type::VTABLE_RVA));
+        put(DEFINITION, &word(IMAGE + cequipment_type::VTABLE_RVA.0));
         put(DEFINITION + cequipment_type::TOKEN, &11_u32.to_le_bytes());
         put(DEFINITION + 0x478, &1_i32.to_le_bytes());
-        put(DATABASE, &word(IMAGE + cequipment_database::VTABLE_RVA));
+        put(DATABASE, &word(IMAGE + cequipment_database::VTABLE_RVA.0));
         put(DATABASE + 0x68, &array(DEFINITIONS, 2));
         put(DEFINITIONS + 8, &word(DEFINITION));
         put(DEFINITION + cequipment_type::HULL_SPRITE, &inline(b"hull"));
         for index in 0..ships {
             let ship = ship(index);
             let bank = ship + 0x980;
-            put(ship, &word(IMAGE + cship::VTABLE_RVA));
+            put(ship, &word(IMAGE + cship::VTABLE_RVA.0));
             put(ship + cship::HANDLE, &census(index).id.to_le_bytes());
             put(ship + cship::TASK_FORCE, &word(tasks[task(index)]));
             put(
                 ship + cship::EQUIPMENT_POOL,
-                &word(IMAGE + cequipment_variant_pool::VTABLE_RVA),
+                &word(IMAGE + cequipment_variant_pool::VTABLE_RVA.0),
             );
             put(
                 ship + cship::EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
@@ -1172,7 +1172,7 @@ mod fleet {
             put(bank + 8, &5_i64.to_le_bytes());
             put(
                 ship + cship::SUBUNIT_DEFINITION,
-                &word(IMAGE + csub_unit_definition::VTABLE_RVA),
+                &word(IMAGE + csub_unit_definition::VTABLE_RVA.0),
             );
             put(ship + cship::CLASS_DATABASE_ID, &CLASS.to_le_bytes());
             put(ship + cship::DEFINITION_VALID, &[1]);
@@ -1236,7 +1236,7 @@ impl Fleet {
             output.copy_from_slice(&(fleet::GAME as u64).to_le_bytes());
             return true;
         }
-        if address == fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA
+        if address == fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA.0
             && output.len() == 8
         {
             output.copy_from_slice(&(fleet::DATABASE as u64).to_le_bytes());
@@ -2281,7 +2281,7 @@ mod carry_cost_bench {
                 let country = objects + index * 0x2000;
                 put(slots + (index + 1) * 8, &word(country));
                 put(links + (index + 1) * 4, &id.to_le_bytes());
-                put(country, &word(fleet::IMAGE + ccountry::VTABLE_RVA));
+                put(country, &word(fleet::IMAGE + ccountry::VTABLE_RVA.0));
                 put(country + ccountry::ID, &id.to_le_bytes());
                 put(task + cunit::ROSTER_OWNER, &id.to_le_bytes());
                 put(task + cunit::LOCATION, &word(locations[0]));
@@ -2291,17 +2291,17 @@ mod carry_cost_bench {
             // The empty class hash selects the native fallback class row.
             for (index, (&location, &definition)) in locations.iter().zip(&definitions).enumerate()
             {
-                put(location, &word(fleet::IMAGE + cprovince::VTABLE_RVA));
+                put(location, &word(fleet::IMAGE + cprovince::VTABLE_RVA.0));
                 put(location + cprovince::ID, &(index as u32).to_le_bytes());
                 put(location + 0xc8, &word(definition));
                 put(definition + 0x30, &word(template));
             }
             put(template + 0x130, &word(terrain));
-            put(terrain, &word(fleet::IMAGE + cterrain_type::VTABLE_RVA));
+            put(terrain, &word(fleet::IMAGE + cterrain_type::VTABLE_RVA.0));
             put(terrain + cterrain_type::VALID, &[1]);
             put(terrain + 0x1b8, &word(bucket));
             put(fleet::GAME + cgame_state::WEATHER_MANAGER, &word(weather));
-            put(weather, &word(fleet::IMAGE + cweather_manager::VTABLE_RVA));
+            put(weather, &word(fleet::IMAGE + cweather_manager::VTABLE_RVA.0));
             put(weather + 0x40, &array(regions, 1));
             put(weather + 0x370, &array(provinces, locations.len()));
             for index in 0..ships {
@@ -2686,7 +2686,7 @@ mod carry_cost_bench {
         world
             .memory
             .watched
-            .set(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA);
+            .set(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA.0);
         world.memory.hits.set(0);
         let current = hour(&world, &mut held, &watches);
         assert_ne!(
@@ -3017,7 +3017,7 @@ mod carry_cost_bench {
                 output.copy_from_slice(&(fleet::GAME as u64).to_le_bytes());
                 return true;
             }
-            if address == fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA
+            if address == fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA.0
                 && output.len() == 8
             {
                 output.copy_from_slice(&(fleet::DATABASE as u64).to_le_bytes());
@@ -3114,7 +3114,7 @@ mod carry_cost_bench {
             {
                 return false;
             }
-            if address == fleet::IMAGE + engine_native::modifier_definition::TABLE_RVA
+            if address == fleet::IMAGE + engine_native::modifier_definition::TABLE_RVA.0
                 && output.len() == 8
             {
                 output.copy_from_slice(&(self.table as u64).to_le_bytes());
@@ -3135,7 +3135,7 @@ mod carry_cost_bench {
                 inner: &world.memory,
                 watched: 0,
                 count_reads: Cell::new(0),
-                fault: Some(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA),
+                fault: Some(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA.0),
             },
             CaptureContext::new(fleet::IMAGE),
             &watches,

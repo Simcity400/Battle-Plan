@@ -363,8 +363,8 @@ mod tests {
                 pointer: id * 0x1000,
                 handle: Some(id as u64),
                 class: Some(0),
-                primary_vtable: Some(engine_native::carmy::VTABLE_RVA as u64),
-                secondary_vtable: Some(engine_native::carmy::SECONDARY_VTABLE_RVA as u64),
+                primary_vtable: Some(engine_native::carmy::VTABLE_RVA.0 as u64),
+                secondary_vtable: Some(engine_native::carmy::SECONDARY_VTABLE_RVA.0 as u64),
                 ..Default::default()
             })
             .collect();

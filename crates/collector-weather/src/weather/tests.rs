@@ -18,7 +18,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         0x2000,
-        &(cweather_manager::VTABLE_RVA as u64).to_le_bytes(),
+        &(cweather_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     for (offset, address, vtable) in [
         (
@@ -35,7 +35,7 @@ fn fixture() -> Vec<u8> {
         put(&mut bytes, 0x2000 + offset, &address.to_le_bytes());
         put(&mut bytes, 0x2000 + offset + 8, &3_u32.to_le_bytes());
         put(&mut bytes, 0x2000 + offset + 12, &1_u32.to_le_bytes());
-        put(&mut bytes, address as usize, &(vtable as u64).to_le_bytes());
+        put(&mut bytes, address as usize, &(vtable.0 as u64).to_le_bytes());
     }
     for (offset, address, value) in [
         (cweather_manager::DISPLAY_SNOW, 0x4800_u64, 200),
@@ -304,7 +304,7 @@ fn two_provinces(gates: [u8; 2]) -> Vec<u8> {
     put(
         &mut bytes,
         0x4180,
-        &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes(),
+        &(sweather_per_province::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -461,7 +461,7 @@ fn display_arrays_longer_than_a_read_chunk_decode_from_the_bulk_copy() {
         put(
             &mut bytes,
             row,
-            &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes(),
+            &(sweather_per_province::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, row + 8, &(index as u32).to_le_bytes());
         put(&mut bytes, snow + index, &[index as u8]);
@@ -640,7 +640,7 @@ fn an_ordinary_province_suffix_fault_preserves_the_admitted_display_and_clock_pr
     put(
         &mut bytes,
         second,
-        &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes(),
+        &(sweather_per_province::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -857,7 +857,7 @@ impl AttackWeatherMemory {
                 .to_le_bytes()
                 .into_iter()
                 .enumerate()
-                .map(|(index, value)| (definition::TABLE_RVA + index, value)),
+                .map(|(index, value)| (definition::TABLE_RVA.0 + index, value)),
         );
         for (key, flags) in [(0xad_u32, 0_u32), (0x1dd, definition::CLAMP_MAXIMUM)] {
             let row = TABLE + key as usize * definition::STRIDE;
@@ -1081,7 +1081,7 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
     );
     assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 0);
     assert_eq!(
-        source.attempts(engine_native::modifier_definition::TABLE_RVA),
+        source.attempts(engine_native::modifier_definition::TABLE_RVA.0),
         0
     );
     // A worker reads each region's raw entries once, during the copy; the
@@ -1104,7 +1104,7 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
     assert_eq!(source.reads.borrow().len(), reads);
     assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 1);
     assert_eq!(
-        source.attempts(engine_native::modifier_definition::TABLE_RVA),
+        source.attempts(engine_native::modifier_definition::TABLE_RVA.0),
         0
     );
     assert_eq!(
@@ -1163,7 +1163,7 @@ fn weather_display_memory(fault: Option<usize>) -> AttackWeatherMemory {
             .to_le_bytes()
             .into_iter()
             .enumerate()
-            .map(|(index, byte)| (engine_native::cmap::SINGLETON_RVA + index, byte)),
+            .map(|(index, byte)| (engine_native::cmap::SINGLETON_RVA.0 + index, byte)),
     );
     put(
         &mut source.bytes,
@@ -1635,7 +1635,7 @@ fn large_fixture(regions: usize, provinces: usize) -> Vec<u8> {
     put(
         &mut bytes,
         0x2000,
-        &(cweather_manager::VTABLE_RVA as u64).to_le_bytes(),
+        &(cweather_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     for (offset, data, count) in [
         (cweather_manager::REGIONS, region_data, regions),
@@ -1661,7 +1661,7 @@ fn large_fixture(regions: usize, provinces: usize) -> Vec<u8> {
         put(
             &mut bytes,
             at,
-            &(sweather_per_region::VTABLE_RVA as u64).to_le_bytes(),
+            &(sweather_per_region::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1675,7 +1675,7 @@ fn large_fixture(regions: usize, provinces: usize) -> Vec<u8> {
         put(
             &mut bytes,
             at,
-            &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes(),
+            &(sweather_per_province::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

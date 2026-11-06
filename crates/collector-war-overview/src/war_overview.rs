@@ -237,8 +237,7 @@ impl Captured {
             {
                 Some((_, prefix)) => prefix,
                 None => {
-                    let bytes = base
-                        .checked_add(cwar_relation::NAME_PREFIX_RVA)
+                    let bytes = engine_sites::at(base, cwar_relation::NAME_PREFIX_RVA)
                         .and_then(|p| read::<[u8; 9]>(memory, p))
                         .ok_or("native war naming prefix unreadable or invalid")?;
                     if bytes[8] != 0 || bytes[..8].contains(&0) {

@@ -1,8 +1,9 @@
 //! Technology status, inventories, research slots and stored doctrine cache.
 //! Layout authentication alone does not establish hourly consistency.
 
+use engine_sites::Rva;
 /// CTechnologyStatus vtable.
-pub const VTABLE_RVA: usize = 0x029f_1860;
+pub const VTABLE_RVA: Rva = Rva(0x029f_1860);
 /// CTechnologyStatus researched CTechnology* vector.
 pub const RESEARCHED_DATA: usize = 0x40;
 /// CTechnologyStatus all-technology pointer vector.
@@ -28,21 +29,21 @@ pub const LAND_DOCTRINE_LEVEL: usize = 0x140;
 pub const POINTER_STRIDE: usize = 8;
 
 /// CTechnologyStatus fresh initialization.
-pub const FRESH_INIT_RVA: usize = 0x00f6_0650;
+pub const FRESH_INIT_RVA: Rva = Rva(0x00f6_0650);
 /// Fresh-initialization entry bytes.
 pub const FRESH_INIT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56,
 ];
 /// CTechnologyStatus completion handler.
-pub const RESEARCH_COMPLETED_RVA: usize = 0x00f6_0950;
+pub const RESEARCH_COMPLETED_RVA: Rva = Rva(0x00f6_0950);
 /// Completion-handler entry bytes.
 pub const RESEARCH_COMPLETED_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55,
 ];
 /// CTechnologyStatus rebuild/transfer path A.
-pub const REBUILD_OR_TRANSFER_A_RVA: usize = 0x00f5_ede0;
+pub const REBUILD_OR_TRANSFER_A_RVA: Rva = Rva(0x00f5_ede0);
 /// CTechnologyStatus rebuild/transfer path B.
-pub const REBUILD_OR_TRANSFER_B_RVA: usize = 0x00f5_ca80;
+pub const REBUILD_OR_TRANSFER_B_RVA: Rva = Rva(0x00f5_ca80);
 
 use crate::{
     Memory, ccountry, cpdx_array::Array, cresearch_slot, ctechnology, ctechnology_template, read,
@@ -96,9 +97,7 @@ pub fn decode_status(base: usize, country: usize, raw: &StatusRaw) -> Result<usi
     if raw.scattered != 2 {
         return Err("technology status identity unreadable");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     if u64::from_le_bytes(raw.vtable) != expected {
         return Err("technology status vtable mismatch");
     }
@@ -301,8 +300,7 @@ pub fn walk_technologies(
             {
                 return Err("technology fields unreadable");
             }
-            let expected = base
-                .checked_add(ctechnology::VTABLE_RVA)
+            let expected = engine_sites::at(base, ctechnology::VTABLE_RVA)
                 .ok_or("module address overflow")? as u64;
             let mut acquired = 0;
             for retained in &retained[..count as usize] {

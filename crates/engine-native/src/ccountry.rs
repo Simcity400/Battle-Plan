@@ -21,6 +21,7 @@ use crate::{
     read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 pub mod launch_sources;
 mod native_reference;
@@ -33,7 +34,7 @@ pub use rosters::{
 };
 
 /// Country primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_4730;
+pub const VTABLE_RVA: Rva = Rva(0x0286_4730);
 /// Country raw link id, u32, resolved through live country links.
 pub const ID: usize = 8;
 /// Display name in the client language. Capture uses [`AppearanceRow`]
@@ -218,7 +219,7 @@ pub const DELAYED_EVENTS_COUNT: usize = 0x129c;
 /// CCountry graphical-culture std::string.
 pub const GRAPHICAL_CULTURE: usize = 0x1028;
 /// Graphical-culture resolver joining name and pointer.
-pub const RESOLVE_GRAPHICAL_CULTURE_RVA: usize = 0x0075_a3e0;
+pub const RESOLVE_GRAPHICAL_CULTURE_RVA: Rva = Rva(0x0075_a3e0);
 /// Loaded two-dimensional graphical-culture string used by equipment icon
 /// fallback selection. Saves omit it.
 pub const GRAPHICAL_CULTURE_2D: usize = 0x1050;
@@ -251,7 +252,7 @@ pub const RADAR_GROUPS_COUNT: usize = RADARS_POOL + cradars_pool::GROUPS_COUNT;
 /// CCountry volunteer-host count u32.
 pub const VOLUNTEER_HOSTS_COUNT: usize = 0x1434;
 /// Name, adjective and definite-name rebuild using cosmetic-first selection.
-pub const REBUILD_LOCALIZED_NAME_RVA: usize = 0x0075_e6d0;
+pub const REBUILD_LOCALIZED_NAME_RVA: Rva = Rva(0x0075_e6d0);
 /// Persistent ability-record array.
 pub const ACTIVE_ABILITIES: usize = 0x15b8;
 /// Fog-network candidate count; hourly acquisition is unverified.
@@ -266,13 +267,13 @@ pub const OWNED_PROVINCES: usize = 0x410;
 pub const VOLUNTEER_TALLIES: usize = 0x1440;
 
 /// Signed stability addition and clamp.
-pub const ADD_STABILITY_RVA: usize = 0x0071_9f40;
+pub const ADD_STABILITY_RVA: Rva = Rva(0x0071_9f40);
 /// Signed war-support addition and clamp.
-pub const ADD_WAR_SUPPORT_RVA: usize = 0x0071_b0b0;
+pub const ADD_WAR_SUPPORT_RVA: Rva = Rva(0x0071_b0b0);
 /// Daily manpower, politics and command-power update.
-pub const DAILY_UPDATE_RVA: usize = 0x0072_f220;
+pub const DAILY_UPDATE_RVA: Rva = Rva(0x0072_f220);
 /// Weekly stability update completed before the full tick returns.
-pub const WEEKLY_UPDATE_RVA: usize = 0x0076_0e30;
+pub const WEEKLY_UPDATE_RVA: Rva = Rva(0x0076_0e30);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -482,7 +483,7 @@ pub struct NamingContext {
 pub fn dynamic_boundary(memory: &impl Memory, base: usize) -> Option<u32> {
     let database = read::<u64>(
         memory,
-        base.checked_add(crate::ccountry_database::SINGLETON_RVA)?,
+        engine_sites::at(base, crate::ccountry_database::SINGLETON_RVA)?,
     )?;
     let database = usize::try_from(database).ok().filter(|&p| p != 0)?;
     read(
@@ -509,8 +510,8 @@ fn ruling_party(
             .and_then(|value| usize::try_from(value).ok())
             .ok_or("country naming pointer unreadable")
     };
-    let object = |address: usize, rva: usize| -> Result<(), &'static str> {
-        (read::<u64>(memory, address) == base.checked_add(rva).map(|v| v as u64))
+    let object = |address: usize, rva: Rva| -> Result<(), &'static str> {
+        (read::<u64>(memory, address) == engine_sites::at(base, rva).map(|v| v as u64))
             .then_some(())
             .ok_or("country naming object identity mismatch")
     };
@@ -555,9 +556,7 @@ fn first_party_leader(
     };
     let leader = pointer(pointer(at(cpolitical_party::COUNTRY_LEADERS)?)?)?;
     if read::<u64>(memory, leader)
-        != base
-            .checked_add(ccountry_leader::VTABLE_RVA)
-            .map(|v| v as u64)
+        != engine_sites::at(base, ccountry_leader::VTABLE_RVA).map(|v| v as u64)
     {
         return Err("country naming object identity mismatch");
     }
@@ -717,8 +716,7 @@ impl ReservedVisibilityObservation {
             observed.faction = Some(Err("reserved faction diplomacy is null"));
             return observed;
         }
-        let identity = base
-            .checked_add(crate::cdiplomacy_status::VTABLE_RVA)
+        let identity = engine_sites::at(base, crate::cdiplomacy_status::VTABLE_RVA)
             .ok_or("reserved naming module address overflow")
             .and_then(|expected| {
                 (read::<u64>(memory, diplomacy) == Some(expected as u64))
@@ -997,9 +995,8 @@ pub(crate) fn observe_reserved_from_array(
         if pointer == 0 {
             return Err("reserved country slot is null");
         }
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("reserved country module address overflow")?;
+        let expected =
+            engine_sites::at(base, VTABLE_RVA).ok_or("reserved country module address overflow")?;
         if read::<u64>(memory, pointer) != Some(expected as u64) {
             return Err("reserved country object identity mismatch");
         }
@@ -1056,17 +1053,18 @@ fn reserved_naming_sources_from_root(
             .and_then(|value| usize::try_from(value).ok())
             .ok_or("reserved naming pointer unreadable")
     };
-    let object = |address: usize, rva: usize| {
-        let expected = base
-            .checked_add(rva)
-            .ok_or("reserved naming module address overflow")?;
+    let object = |address: usize, rva: Rva| {
+        let expected =
+            engine_sites::at(base, rva).ok_or("reserved naming module address overflow")?;
         (read::<u64>(memory, address) == Some(expected as u64))
             .then_some(())
             .ok_or("reserved naming object identity mismatch")
     };
     let country = root.pointer;
     // Raw zero selects content database slot zero, even with a live game state.
-    let database = at(base, crate::ccountry_database::SINGLETON_RVA).and_then(pointer);
+    let database = engine_sites::at(base, crate::ccountry_database::SINGLETON_RVA)
+        .ok_or("reserved naming address overflow")
+        .and_then(pointer);
     if let Some(journal) = journal.as_deref_mut() {
         journal.reserved_database(database);
     }
@@ -1527,9 +1525,8 @@ fn read_appearance_observed_inner<
             .checked_add(offset)
             .ok_or("country appearance address overflow")
     };
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("country appearance module address overflow")?;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("country appearance module address overflow")?;
     if country.pointer == 0
         || country.id == 0
         || read::<u64>(memory, country.pointer) != Some(expected as u64)
@@ -1601,9 +1598,7 @@ fn read_appearance_observed_inner<
         .and_then(|value| usize::try_from(value).ok())
         .ok_or("country diplomacy pointer unreadable")?;
     if read::<u64>(memory, diplomacy)
-        != base
-            .checked_add(crate::cdiplomacy_status::VTABLE_RVA)
-            .map(|v| v as u64)
+        != engine_sites::at(base, crate::cdiplomacy_status::VTABLE_RVA).map(|v| v as u64)
     {
         return Err("country diplomacy vtable mismatch");
     }
@@ -2247,9 +2242,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         if links.count == 0 {
             return Err("country links have no sentinel slot");
         }
-        let vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         Ok(Self {
             memory,
             countries,
@@ -2482,9 +2475,9 @@ fn movement_auth(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    rva: usize,
+    rva: Rva,
 ) -> Result<(), &'static str> {
-    if object == 0 || base.checked_add(rva).map(|p| p as u64) != read::<u64>(memory, object) {
+    if object == 0 || engine_sites::at(base, rva).map(|p| p as u64) != read::<u64>(memory, object) {
         return Err("movement country dependency identity mismatch");
     }
     Ok(())
@@ -2989,9 +2982,7 @@ fn walk_links_observed_inner(
         if links.count == 0 {
             return Err("country links have no sentinel slot");
         }
-        let vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let mapping = |id, journal: &mut Option<&mut crate::raw_country_observations::Journal>| {
             let result = links
                 .element(id, 4)
@@ -3153,8 +3144,7 @@ fn walk_observed_inner<M: Memory>(
         } else {
             let status =
                 usize::try_from(status).map_err(|_| "political status address overflow")?;
-            let vtable = base
-                .checked_add(cpolitical_status::VTABLE_RVA)
+            let vtable = engine_sites::at(base, cpolitical_status::VTABLE_RVA)
                 .ok_or("module address overflow")?;
             if read::<u64>(memory, status) != Some(vtable as u64) {
                 return Err("political status vtable mismatch");
@@ -3229,9 +3219,7 @@ fn walk_observed_inner<M: Memory>(
         if countries.count < 2 {
             return Err("country table has no country slots");
         }
-        let vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let pointer_at = |index| {
             countries
                 .element(index, 8)
@@ -3567,9 +3555,7 @@ fn volunteer_air_modifier(
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("volunteer diplomacy unavailable")?;
     if read::<u64>(memory, diplomacy)
-        != base
-            .checked_add(crate::cdiplomacy_status::VTABLE_RVA)
-            .map(|p| p as u64)
+        != engine_sites::at(base, crate::cdiplomacy_status::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("volunteer diplomacy identity mismatch");
     }
@@ -3586,9 +3572,7 @@ fn volunteer_air_modifier(
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("volunteer relation unavailable")?;
     if read::<u64>(memory, relation)
-        != base
-            .checked_add(crate::crelation_status::VTABLE_RVA)
-            .map(|p| p as u64)
+        != engine_sites::at(base, crate::crelation_status::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("volunteer relation identity mismatch");
     }
@@ -3921,9 +3905,8 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
             .as_ref()
             .map_err(|&reason| reason)?;
         output.ensure(reader.count().saturating_sub(1) as usize)?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("country counter module address overflow")?;
+        let expected =
+            engine_sites::at(base, VTABLE_RVA).ok_or("country counter module address overflow")?;
         let mut len = 0;
         let mut unread_rows = 0_u32;
         let mut found_country = false;
@@ -4013,7 +3996,7 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
                             .map_err(|_| "country first division address overflow")?;
                         let fields = read::<[u8; cunit::HANDLE + 8]>(memory, army)
                             .ok_or("country first division unreadable")?;
-                        if base.checked_add(carmy::VTABLE_RVA)
+                        if engine_sites::at(base, carmy::VTABLE_RVA)
                             != Some(u64::from_le_bytes(fields[..8].try_into().unwrap()) as usize)
                         {
                             return Err("country first division is not an army");
@@ -4167,8 +4150,7 @@ fn walk_civil_wars_buffer(
 ) -> Outcome {
     let result = (|| {
         let reader = Reader::new(memory, base, game_state)?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
+        let expected = engine_sites::at(base, VTABLE_RVA)
             .ok_or("country civil war module address overflow")?;
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
@@ -4276,7 +4258,7 @@ pub mod synthetic {
                 let object = world.object(slot as u32);
                 world.u64(table + slot * 8, object as u64);
                 world.u32(links + slot * 4, slot as u32);
-                world.u64(object, (module + VTABLE_RVA) as u64);
+                world.u64(object, (module + VTABLE_RVA.0) as u64);
                 world.u32(object + ID, slot as u32);
             }
             world
@@ -4441,7 +4423,7 @@ mod tests {
 
     impl Memory for ReservedMemory<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == crate::ccountry_database::SINGLETON_RVA && output.len() == 8 {
+            if address == crate::ccountry_database::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0xe000_u64.to_le_bytes());
                 true
             } else {
@@ -4457,7 +4439,7 @@ mod tests {
     fn reserved_fixture() -> Vec<u8> {
         let mut bytes = appearance_fixture();
         put(&mut bytes, 0x2000, &0x11000_u64.to_le_bytes());
-        put(&mut bytes, 0x11000, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, 0x11000, &(VTABLE_RVA.0 as u64).to_le_bytes());
         short_string(&mut bytes, 0x11000 + COSMETIC_TAG, b"MOD_ZERO");
         movement_test_array(&mut bytes, 0xe000, 0xc000, 4);
         put(
@@ -4700,7 +4682,7 @@ mod tests {
         put(
             &mut bytes,
             DIPLOMACY,
-            &(crate::cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -4789,7 +4771,7 @@ mod tests {
         put(
             &mut bytes,
             DIPLOMACY,
-            &(crate::cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -4826,7 +4808,7 @@ mod tests {
         put(
             &mut bytes,
             DIPLOMACY,
-            &(crate::cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -4836,7 +4818,7 @@ mod tests {
         put(
             &mut bytes,
             FACTION,
-            &(crate::cfaction::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cfaction::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         let handle = (u64::from(u32::MAX) << 32) | u64::from(crate::cfaction::REFERENCE_TYPE);
         put(
@@ -5328,7 +5310,7 @@ mod tests {
         put(
             &mut bytes,
             0xb000,
-            &(crate::cideology_group::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cideology_group::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         short_string(
             &mut bytes,
@@ -5348,7 +5330,7 @@ mod tests {
         put(
             &mut bytes,
             0xb100,
-            &(crate::ccurrent_autonomy_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::ccurrent_autonomy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -5436,9 +5418,9 @@ mod tests {
             &0xa000_u64.to_le_bytes(),
         );
         for (object, vtable) in [
-            (0xa000, cpolitical_status::VTABLE_RVA),
-            (0xa400, cpolitical_party::VTABLE_RVA),
-            (0xa900, ccountry_leader::VTABLE_RVA),
+            (0xa000, cpolitical_status::VTABLE_RVA.0),
+            (0xa400, cpolitical_party::VTABLE_RVA.0),
+            (0xa900, ccountry_leader::VTABLE_RVA.0),
         ] {
             put(&mut bytes, object, &(vtable as u64).to_le_bytes());
         }
@@ -5468,7 +5450,7 @@ mod tests {
         put(
             &mut bytes,
             0xab00,
-            &(ccharacter::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccharacter::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -5670,7 +5652,7 @@ mod tests {
         put(
             &mut bytes,
             0xab00,
-            &(ccharacter::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccharacter::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         // A null or unreadable parent pointer.
         let parent = 0xa900 + ccountry_leader::CHARACTER;
@@ -5788,7 +5770,7 @@ mod tests {
                 0x2000 + slot * 8,
                 &(country as u64).to_le_bytes(),
             );
-            put(&mut bytes, country, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, country, &(VTABLE_RVA.0 as u64).to_le_bytes());
         }
         for (slot, target) in [(1, 1_u32), (2, 2), (3, 2)] {
             put(&mut bytes, 0x2100 + slot * 4, &target.to_le_bytes());
@@ -5804,7 +5786,7 @@ mod tests {
             put(
                 &mut bytes,
                 diplomacy,
-                &(crate::cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+                &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -5822,7 +5804,7 @@ mod tests {
         put(
             &mut bytes,
             0x9000,
-            &(crate::crelation_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::crelation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x9050, &3_u32.to_le_bytes());
         put(&mut bytes, 0x91f0, &0x7000_u64.to_le_bytes());
@@ -5896,7 +5878,7 @@ mod tests {
         put(
             &mut bytes,
             0xa000,
-            &(crate::cwar_relation::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cwar_relation::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -5913,7 +5895,7 @@ mod tests {
         put(
             &mut bytes,
             0xb000,
-            &(crate::csubject_relation::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::csubject_relation::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -5964,13 +5946,13 @@ mod tests {
         put(
             &mut bytes,
             0xd000,
-            &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0xd0a4, &1_u32.to_le_bytes());
         put(
             &mut bytes,
             0x11000,
-            &(crate::ccontroller_area::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::ccontroller_area::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         movement_test_array(&mut bytes, 0x110b0, 0xc008, 1);
         put(
@@ -5981,12 +5963,12 @@ mod tests {
         put(
             &mut bytes,
             0x16000,
-            &(crate::csupply_system::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::csupply_system::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             0x16008,
-            &(crate::csupply_system::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::csupply_system::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         movement_test_array(&mut bytes, 0x16108, 0x17000, 4);
         movement_test_array(&mut bytes, 0x16120, 0x18000, 4);
@@ -5994,12 +5976,12 @@ mod tests {
         put(
             &mut bytes,
             0x1b000,
-            &(crate::ccountry_supply_system::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::ccountry_supply_system::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             0x1b008,
-            &(crate::ccountry_supply_system::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::ccountry_supply_system::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x1b070, &0x16000_u64.to_le_bytes());
         put(&mut bytes, 0x1b078, &0x3000_u64.to_le_bytes());
@@ -6131,7 +6113,7 @@ mod tests {
         put(
             &mut bytes,
             0xd000,
-            &(crate::cstate::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0xd058, &1_u32.to_le_bytes());
         movement_test_array(&mut bytes, 0xd018, 0xc200, 3);
@@ -6154,7 +6136,7 @@ mod tests {
             put(
                 &mut bytes,
                 province,
-                &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+                &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -6174,7 +6156,7 @@ mod tests {
             put(
                 &mut bytes,
                 area,
-                &(crate::ccontroller_area::VTABLE_RVA as u64).to_le_bytes(),
+                &(crate::ccontroller_area::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -6435,7 +6417,7 @@ mod tests {
         );
         at(0x2008, &(COUNTRY as u64).to_le_bytes());
         at(0x2104, &1_u32.to_le_bytes());
-        at(COUNTRY, &(VTABLE_RVA as u64).to_le_bytes());
+        at(COUNTRY, &(VTABLE_RVA.0 as u64).to_le_bytes());
         at(COUNTRY + ID, &1_u32.to_le_bytes());
         at(COUNTRY + VOLUNTEER_HOSTS, &(HOSTS as u64).to_le_bytes());
         at(COUNTRY + 0x1430, &hosts.to_le_bytes());
@@ -6591,7 +6573,7 @@ mod tests {
         at(0x3000 + DIPLOMACY_STATUS, &0x7000_u64.to_le_bytes());
         at(
             0x7000,
-            &(crate::cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         at(
             0x7000 + crate::cdiplomacy_status::COUNTRY,
@@ -6612,7 +6594,7 @@ mod tests {
         at(0x8208, &0x7400_u64.to_le_bytes());
         at(
             0x7400,
-            &(crate::crelation_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(crate::crelation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         at(
             0x7400 + crate::crelation_status::DIPLOMACY_STATUS,
@@ -6759,7 +6741,7 @@ mod tests {
         put(&mut bytes, tag, b"D01");
         put(&mut bytes, tag + 16, &3_u64.to_le_bytes());
         put(&mut bytes, tag + 24, &15_u64.to_le_bytes());
-        put(&mut bytes, 0x1000, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, 0x1000, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, 0x1000 + ID, &7_u32.to_le_bytes());
         // An unused dynamic country can legitimately have an empty display name.
         put(&mut bytes, 0x1000 + NAME + 24, &15_u64.to_le_bytes());
@@ -6794,7 +6776,7 @@ mod tests {
         put(
             &mut bytes,
             0x3000,
-            &(cpolitical_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(cpolitical_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -7246,7 +7228,7 @@ mod tests {
         put(
             &mut bytes,
             0x12100,
-            &(carmy::VTABLE_RVA as u64).to_le_bytes(),
+            &(carmy::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

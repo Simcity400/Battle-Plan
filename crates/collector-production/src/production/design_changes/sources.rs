@@ -464,7 +464,7 @@ mod tests {
     const SOURCE: usize = 0x4000;
     fn direct(value: i64) -> Vec<u8> {
         let mut bytes = vec![0; 0x100];
-        bytes[..8].copy_from_slice(&(native::SPECIFIC_BONUS_VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(native::SPECIFIC_BONUS_VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[native::BONUS_STATS..native::BONUS_STATS + 8]
             .copy_from_slice(&((SOURCE + 0x80) as u64).to_le_bytes());
         bytes[native::BONUS_STATS + 8..native::BONUS_STATS + 12]
@@ -654,9 +654,9 @@ mod tests {
         bytes[header + 8..header + 12].copy_from_slice(&1_u32.to_le_bytes());
         bytes[header + 12..header + 16].copy_from_slice(&1_u32.to_le_bytes());
         bytes[0x1000..0x1008]
-            .copy_from_slice(&(native::NAMED_BONUS_VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(native::NAMED_BONUS_VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x1008..0x1010]
-            .copy_from_slice(&(native::SPECIFIC_BONUS_VTABLE_RVA as u64).to_le_bytes());
+            .copy_from_slice(&(native::SPECIFIC_BONUS_VTABLE_RVA.0 as u64).to_le_bytes());
         for offset in [native::NAMED_BONUS_NAME, native::NAMED_BONUS_DESCRIPTION] {
             bytes[0x1000 + offset + 24..0x1000 + offset + 32]
                 .copy_from_slice(&15_u64.to_le_bytes());

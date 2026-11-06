@@ -22,8 +22,7 @@
 //! The detours run on the simulation thread (the daily production pass is serial);
 //! the log is multi-producer safe anyway, and the railway pairing is per thread.
 //!
-//! A site whose prologue differs from the pinned sentinel, or that cannot be
-//! detoured, leaves the family uninstalled: the collector still attaches and
+//! A site that cannot be located or detoured leaves the family uninstalled: the collector still attaches and
 //! ConstructionLineOutput is unavailable with the reason (`unhooked` in
 //! `status.json`).
 pub use crate::output_log::Drained;
@@ -33,6 +32,7 @@ use crate::{
     output_log::{DrainCounters, Log},
 };
 use engine_native::Memory;
+use engine_sites::Rva;
 use engine_production::{
     construction_ic_sites::BUILDING_COMPLETE, construction_ic_sites::BUILDING_RESET,
     construction_ic_sites::BUILDING_SPEED, construction_ic_sites::BUILDING_SPEND_RETURN,
@@ -97,6 +97,22 @@ static INSTALLED: [AtomicBool; 7] = [const { AtomicBool::new(false) }; 7];
 static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
 /// The module base the RVAs are relative to.
 static BASE: AtomicUsize = AtomicUsize::new(0);
+/// Live return addresses of the spend, completion and linked completion calls.
+static RETURNS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+const RETURN_KEYS: [(Rva, &str); 3] = [
+    (BUILDING_SPEND_RETURN, "construction spend caller withheld"),
+    (COMPLETE_RETURN, "construction completion caller withheld"),
+    (LINKED_COMPLETE_RETURN, "construction linked completion caller withheld"),
+];
+
+/// Callers are matched by live return address; a withheld one refuses the family.
+fn bind_returns(base: usize) -> Result<(), &'static str> {
+    for (slot, (key, withheld)) in RETURNS.iter().zip(RETURN_KEYS) {
+        let address = engine_sites::resolve(base, key).map_err(|_| withheld)?;
+        slot.store(address, Ordering::Relaxed);
+    }
+    Ok(())
+}
 /// The next entry the hourly drain hands over; only the callback moves it.
 static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
 /// Why the hooks are not installed, when they are not.
@@ -327,11 +343,7 @@ fn refuse(reason: &'static str) {
 /// After the getter returned to its advance, its stored speed is the spend.
 /// Other callers do not read observation operands.
 fn observe_building(line: usize, caller: usize) {
-    if caller
-        != BASE
-            .load(Ordering::Relaxed)
-            .wrapping_add(BUILDING_SPEND_RETURN)
-    {
+    if caller != RETURNS[0].load(Ordering::Relaxed) {
         COUNTERS[1].fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -341,7 +353,7 @@ fn observe_building(line: usize, caller: usize) {
 
 fn observe_completion(line: usize, caller: usize, result: u8, railway: bool) {
     let base = BASE.load(Ordering::Relaxed);
-    if result == 0 || caller != base.wrapping_add(COMPLETE_RETURN) {
+    if result == 0 || caller != RETURNS[1].load(Ordering::Relaxed) {
         return;
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -358,7 +370,7 @@ fn observe_completion(line: usize, caller: usize, result: u8, railway: bool) {
 
 fn observe_linked_completion(status: usize, line: usize, caller: usize) {
     let base = BASE.load(Ordering::Relaxed);
-    if caller != base.wrapping_add(LINKED_COMPLETE_RETURN) {
+    if caller != RETURNS[2].load(Ordering::Relaxed) {
         return;
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -622,16 +634,6 @@ pub const SITES: [&Site; 7] = [
     &REMOVE_GENERAL_LINE,
     &BUILDING_RESET,
 ];
-#[cfg(test)]
-fn validate_sentinels(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
-    output_hooks::validate_sentinels(
-        memory,
-        base,
-        &SITES.map(output_hooks::Site::from),
-        "construction line sentinel differs",
-    )
-}
-
 impl Hooks {
     /// The runtime's build gate admitted this family. Installation failure leaves
     /// the output table unavailable; site order preserves paired observation.
@@ -644,7 +646,6 @@ impl Hooks {
         let _ = presize_from_live(memory, base);
         install_offered();
         let domain = output_hooks::Domain {
-            sentinel_error: "construction line sentinel differs",
             failure: output_hooks::Failure::Unavailable,
             observation: &OBSERVATION,
             base: &BASE,
@@ -655,7 +656,6 @@ impl Hooks {
         Self {
             shared: ManuallyDrop::new(unsafe {
                 output_hooks::Hooks::new(
-                    memory,
                     base,
                     SITES.map(output_hooks::Site::from),
                     [
@@ -668,7 +668,7 @@ impl Hooks {
                         building_reset as *const () as usize,
                     ],
                     domain,
-                    Ok(()),
+                    bind_returns(base),
                 )
             }),
         }
@@ -817,6 +817,7 @@ pub fn observe_for_test(enabled: bool, base: usize) {
         reset_log_for_test(crate::output_log::CAPACITY);
     }
     BASE.store(base, Ordering::Relaxed);
+    bind_returns(base).unwrap();
     ENABLED.store(enabled, Ordering::SeqCst);
     CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
     RAILWAY_LINE.set((0, 0));
@@ -879,10 +880,10 @@ mod tests {
         let _lock = test_lock();
         observe_for_test(true, 0);
         // Neither a false result nor another caller may read this null line.
-        observe_completion(0, COMPLETE_RETURN, 0, false);
-        observe_completion(0, COMPLETE_RETURN + 1, 1, false);
+        observe_completion(0, COMPLETE_RETURN.0, 0, false);
+        observe_completion(0, COMPLETE_RETURN.0 + 1, 1, false);
         // A command/hourly removal may never become a linked completion.
-        observe_linked_completion(0, 0, LINKED_COMPLETE_RETURN + 1);
+        observe_linked_completion(0, 0, LINKED_COMPLETE_RETURN.0 + 1);
         for cancelled in [false, true] {
             append(Entry {
                 line: 9,
@@ -931,17 +932,17 @@ mod tests {
     impl Image {
         const INVALID: u64 = 0xffff_ffff_0000_0000;
         fn new() -> Self {
-            let mut bytes = vec![0_u64; (INVALID_REFERENCE - SINGLETON_RVA) / 8 + 1];
-            bytes[(INVALID_REFERENCE - SINGLETON_RVA) / 8] = Self::INVALID;
+            let mut bytes = vec![0_u64; (INVALID_REFERENCE.0 - SINGLETON_RVA.0) / 8 + 1];
+            bytes[(INVALID_REFERENCE.0 - SINGLETON_RVA.0) / 8] = Self::INVALID;
             let mut image = Self { bytes, owner: None };
             image.owner = Some(Owner::new(&mut image, 7, 0));
             image
         }
         fn base(&self) -> usize {
-            (self.bytes.as_ptr() as usize) - SINGLETON_RVA
+            (self.bytes.as_ptr() as usize) - SINGLETON_RVA.0
         }
         fn set_instant(&mut self, on: bool) {
-            self.bytes[(INSTANT_CONSTRUCTION - SINGLETON_RVA) / 8] = u64::from(on);
+            self.bytes[(INSTANT_CONSTRUCTION.0 - SINGLETON_RVA.0) / 8] = u64::from(on);
         }
         fn set_state(&mut self, state: usize) {
             self.bytes[0] = state as u64;
@@ -973,9 +974,9 @@ mod tests {
             };
             let status = owner.status.as_ptr() as u64;
             let country = owner.country.as_ptr() as u64;
-            owner.status[0] = (base + cproduction_status::VTABLE_RVA) as u64;
+            owner.status[0] = (base + cproduction_status::VTABLE_RVA.0) as u64;
             owner.status[cproduction_status::COUNTRY / 8] = country;
-            owner.country[0] = (base + ccountry::VTABLE_RVA) as u64;
+            owner.country[0] = (base + ccountry::VTABLE_RVA.0) as u64;
             owner.country[ccountry::ID / 8] = u64::from(id);
             owner.country[ccountry::PRODUCTION_STATUS / 8] = status;
             owner.state[cgame_state::COUNTRY_LINKS / 8] = owner.links.as_ptr() as u64;
@@ -987,12 +988,12 @@ mod tests {
                 owner.state[field / 8] = owner.map.as_ptr() as u64;
                 owner.state[field / 8 + 1] = 2 | 2 << 32;
             }
-            owner.map_state[0] = (base + cstate::VTABLE_RVA) as u64;
+            owner.map_state[0] = (base + cstate::VTABLE_RVA.0) as u64;
             owner.map_state[cstate::ID / 8] = 1;
             let status = cstate::BUILDING_STATUS;
-            owner.map_state[status / 8] = (base + cbuilding_status::VTABLE_RVA) as u64;
+            owner.map_state[status / 8] = (base + cbuilding_status::VTABLE_RVA.0) as u64;
             owner.map_state[(status + cbuilding_status::FLAGS) / 8] = 2 | 1 << 32;
-            owner.building[0] = (base + cbuilding::VTABLE_RVA) as u64;
+            owner.building[0] = (base + cbuilding::VTABLE_RVA.0) as u64;
             owner.building[cbuilding::TYPE_ID / 8] = 9;
             owner.building[cbuilding::BUILDING_STATUS / 8] =
                 owner.map_state.as_ptr() as u64 + status as u64;
@@ -1017,7 +1018,7 @@ mod tests {
         ) -> Self {
             let base = image.base();
             let mut line = vec![0_u64; 0x20];
-            line[0] = (base + LINE_VTABLES[usize::from(railway)]) as u64;
+            line[0] = (base + LINE_VTABLES[usize::from(railway)].0) as u64;
             line[LINE_HANDLE / 8] = handle;
             line[cproduction_line::COST / 8] = 2_000_000;
             line[cproduction_line::SPEED / 8] = 180_000;
@@ -1086,7 +1087,7 @@ mod tests {
     }
 
     fn spend_site(image: &Image) -> usize {
-        image.base() + BUILDING_SPEND_RETURN
+        image.base() + BUILDING_SPEND_RETURN.0
     }
 
     /// A building line's spend is the speed its advance reads; the repair rate's
@@ -1247,7 +1248,7 @@ mod tests {
         observe_speed(&mut building, 99, spend_site(&image));
         building.line[cproduction_line::AMOUNT / 8] = 3;
         observe_count_reset(building.address());
-        observe_completion(building.address(), image.base() + COMPLETE_RETURN, 1, false);
+        observe_completion(building.address(), image.base() + COMPLETE_RETURN.0, 1, false);
         let mut known = Line::new(&image, false, 0x35_0000_003b, 0, 0, false);
         observe_speed(&mut known, 55, spend_site(&image));
         let (result, entries) = drained(4);
@@ -1561,44 +1562,6 @@ mod tests {
         ENABLED.store(false, Ordering::SeqCst);
         assert_eq!(drained(4).0, Err("construction line hooks are not enabled"));
         observe_for_test(false, 0);
-    }
-
-    #[test]
-    fn unrecognised_prologues_leave_the_table_unavailable() {
-        let _lock = test_lock();
-        let bytes = vec![0_u8; 0x10];
-        let memory = engine_native::memory::SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        let hooks = validate_sentinels(&memory, 0);
-        assert_eq!(hooks.err(), Some("construction line sentinel differs"));
-    }
-
-    #[test]
-    fn every_sentinel_is_checked_before_installation() {
-        struct Prologues([[u8; 16]; 7]);
-        impl Memory for Prologues {
-            fn copy(&self, address: usize, out: &mut [u8]) -> bool {
-                let Some(index) = SITES.iter().position(|s| s.rva == address) else {
-                    return false;
-                };
-                if out.len() != 16 {
-                    return false;
-                }
-                out.copy_from_slice(&self.0[index]);
-                true
-            }
-        }
-        for bad in 0..SITES.len() {
-            let mut memory = Prologues(SITES.map(|s| s.sentinel));
-            assert!(validate_sentinels(&memory, 0).is_ok());
-            memory.0[bad][15] ^= 1;
-            assert_eq!(
-                validate_sentinels(&memory, 0).unwrap_err(),
-                "construction line sentinel differs"
-            );
-        }
     }
 
     #[test]

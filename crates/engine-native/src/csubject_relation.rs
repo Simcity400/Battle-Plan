@@ -9,9 +9,10 @@ use crate::{
     msvc_string, read, read_slice,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CSubjectRelation primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_d388;
+pub const VTABLE_RVA: Rva = Rva(0x029d_d388);
 /// Inherited relation type word.
 pub const TYPE_ID: usize = 0x08;
 /// Expected subject-relation type word.
@@ -29,7 +30,7 @@ pub const AUTONOMY_RATIO: usize = 0x60;
 
 /// Subject constructor initializing base relation with subject type before
 /// installing its primary vtable.
-pub const CONSTRUCTOR_RVA: usize = 0x00d7_9880;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d7_9880);
 
 /// A complete byte string in the caller-owned arena. Empty names remain empty.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -586,13 +587,10 @@ impl<'a, M: Memory> Reader<'a, M> {
     pub(crate) fn vtable(
         &self,
         pointer: usize,
-        rva: usize,
+        rva: Rva,
         reason: &'static str,
     ) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(rva)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(self.base, rva).ok_or("module address overflow")?;
         if read::<u64>(self.memory, pointer) == Some(expected as u64) {
             Ok(())
         } else {
@@ -690,9 +688,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         if self.memory.copy_scattered(addresses, &mut destinations) != 64 * 3 {
             return Err("subject matrix field batch unreadable");
         }
-        let expected = self
-            .base
-            .checked_add(crelation_status::VTABLE_RVA)
+        let expected = engine_sites::at(self.base, crelation_status::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         for index in 0..count {
             if u64::from_le_bytes(fields[index * 3]) != expected {
@@ -817,10 +813,8 @@ impl<'a, M: Memory> Reader<'a, M> {
     ) -> Result<Option<Row>, &'static str> {
         let (retired, overlord, subject) = match head {
             Some(head) => {
-                let expected = self
-                    .base
-                    .checked_add(VTABLE_RVA)
-                    .ok_or("module address overflow")?;
+                let expected =
+                    engine_sites::at(self.base, VTABLE_RVA).ok_or("module address overflow")?;
                 if head.vtable != expected as u64 {
                     return Err("subject relation vtable mismatch");
                 }

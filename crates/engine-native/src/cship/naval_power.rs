@@ -113,7 +113,7 @@ mod tests {
         let word = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
         };
-        word(&mut bytes, definition, cequipment_type::VTABLE_RVA as u64);
+        word(&mut bytes, definition, cequipment_type::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             definition + cequipment_type::ARCHETYPE,

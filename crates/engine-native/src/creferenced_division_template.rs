@@ -1,7 +1,8 @@
 //! Referenced division-template identity and retained model preferences.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029c_c350;
+pub const VTABLE_RVA: Rva = Rva(0x029c_c350);
 /// CReferencedDivisionTemplate reference type.
 pub const REFERENCE_TYPE: u32 = 52;
 /// CReferencedDivisionTemplate u32 type word.
@@ -343,7 +344,7 @@ fn authenticate(base: usize, identity: &[u8]) -> Result<Option<u32>, &'static st
     } else {
         subunit::VTABLE_RVA
     };
-    if base.checked_add(expected).map(|p| p as u64)
+    if engine_sites::at(base, expected).map(|p| p as u64)
         != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
     {
         return Err("template subunit identity mismatch");
@@ -806,7 +807,7 @@ fn fallback_priority_unit(
     } else {
         pointer(
             memory,
-            base.checked_add(subunit::NULL_OBJECT_RVA)
+            engine_sites::at(base, subunit::NULL_OBJECT_RVA)
                 .ok_or("template null singleton overflow")?,
         )?
     };
@@ -1030,8 +1031,7 @@ fn visit_templates(
     ) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
+    let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division template module address overflow")? as u64;
     let mut found_country = false;
     let mut templates = [0_usize; BATCH];
@@ -2225,8 +2225,10 @@ fn walk_icons_inner(
                         let identity = read::<[u8; 12]>(memory, definition)
                             .ok_or("template forbidden equipment unreadable")?;
                         let vtable = word(&identity, 0);
-                        if vtable != (base + crate::cequipment_type::VTABLE_RVA) as u64
-                            && vtable != (base + crate::cequipment_type::NULL_VTABLE_RVA) as u64
+                        let is =
+                            |rva| engine_sites::at(base, rva).map(|p| p as u64) == Some(vtable);
+                        if !is(crate::cequipment_type::VTABLE_RVA)
+                            && !is(crate::cequipment_type::NULL_VTABLE_RVA)
                         {
                             return Err("template forbidden equipment identity mismatch");
                         }
@@ -2253,8 +2255,9 @@ fn walk_icons_inner(
                     }
                     let header = read::<[u8; 40]>(memory, pointer)
                         .ok_or("template naming group unreadable")?;
-                    if word(&header, 0)
-                        != (base + crate::cname_group_member::GROUP_VTABLE_RVA) as u64
+                    if Some(word(&header, 0))
+                        != engine_sites::at(base, crate::cname_group_member::GROUP_VTABLE_RVA)
+                            .map(|p| p as u64)
                     {
                         return Err("template naming group identity mismatch");
                     }
@@ -2339,9 +2342,8 @@ fn walk_icons_inner(
 /// reference type in the low word and the id in the high word. Callers that
 /// accept a null pointer must test for it before calling.
 pub fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("division template module address overflow")?;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("division template module address overflow")?;
     let bytes = read::<[u8; 16]>(memory, pointer).ok_or("division template identity unreadable")?;
     let handle = u64::from_le_bytes(bytes[8..].try_into().unwrap());
     if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected as u64

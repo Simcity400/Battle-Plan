@@ -6,6 +6,7 @@ use crate::{
     Memory, ccombat_tactic, ccountry, cland_combat, cnull_combat_tactic, cpdx_array::Array, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// General's stored preferred-tactic pointer.
 pub const LEADER_PREFERRED_TACTIC: usize = 0x10b0;
@@ -53,18 +54,10 @@ fn array(
 
 fn identity(memory: &impl Memory, base: usize, tactic: usize) -> Result<i32, &'static str> {
     let vtable = field::<u64>(memory, tactic, 0)?;
-    if base
-        .checked_add(cnull_combat_tactic::VTABLE_RVA)
-        .map(|p| p as u64)
-        == Some(vtable)
-    {
+    if engine_sites::at(base, cnull_combat_tactic::VTABLE_RVA).map(|p| p as u64) == Some(vtable) {
         return Ok(0);
     }
-    if base
-        .checked_add(ccombat_tactic::VTABLE_RVA)
-        .map(|p| p as u64)
-        != Some(vtable)
-    {
+    if engine_sites::at(base, ccombat_tactic::VTABLE_RVA).map(|p| p as u64) != Some(vtable) {
         return Err("tactic vtable mismatch");
     }
     let id = field(memory, tactic, ccombat_tactic::ID)?;
@@ -78,13 +71,10 @@ fn authentic(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    rvas: &[usize],
+    rvas: &[Rva],
 ) -> Result<(), &'static str> {
     let vtable = field::<u64>(memory, object, 0)?;
-    if rvas
-        .iter()
-        .any(|rva| base.checked_add(*rva).map(|p| p as u64) == Some(vtable))
-    {
+    if engine_sites::which(base, vtable as usize, rvas).is_some() {
         Ok(())
     } else {
         Err("tactic context vtable mismatch")
@@ -274,14 +264,14 @@ mod tests {
             );
             word(&mut bytes, 0x3008, COUNTRY);
             dword(&mut bytes, 0x3104, 1);
-            word(&mut bytes, COUNTRY, ccountry::VTABLE_RVA);
+            word(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0);
             dword(&mut bytes, COUNTRY + ccountry::ID, 1);
             dword(&mut bytes, LEADER + 0x120, 1);
             for theatre in [THEATRE, LAST_THEATRE] {
-                word(&mut bytes, theatre, crate::ctheatre::VTABLE_RVA);
+                word(&mut bytes, theatre, crate::ctheatre::VTABLE_RVA.0);
             }
             for group in [GROUP, LAST_GROUP] {
-                word(&mut bytes, group, crate::corders_group::VTABLE_RVA);
+                word(&mut bytes, group, crate::corders_group::VTABLE_RVA.0);
             }
             word(
                 &mut bytes,
@@ -293,13 +283,13 @@ mod tests {
                 LAST_GROUP + crate::corders_group::PARENT,
                 PARENT,
             );
-            word(&mut bytes, PARENT, crate::carmy_group::VTABLE_RVA);
+            word(&mut bytes, PARENT, crate::carmy_group::VTABLE_RVA.0);
             word(
                 &mut bytes,
                 PARENT + crate::corders_group::LEADER,
                 PARENT_LEADER,
             );
-            word(&mut bytes, PARENT_LEADER, crate::carmy_leader::VTABLE_RVA);
+            word(&mut bytes, PARENT_LEADER, crate::carmy_leader::VTABLE_RVA.0);
             if theatres {
                 header(&mut bytes, COUNTRY + 0x168, 0x20000, COUNT);
                 for index in 0..COUNT {

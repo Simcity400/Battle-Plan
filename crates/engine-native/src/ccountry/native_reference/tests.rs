@@ -49,7 +49,7 @@ impl Source {
         source.array(GS + cgame_state::COUNTRIES, COUNTRIES, 2);
         source.array(GS + cgame_state::COUNTRY_LINKS, LINKS, 9);
         source.u64(COUNTRIES + 8, OBJECT as u64);
-        source.u64(OBJECT, super::super::VTABLE_RVA as u64);
+        source.u64(OBJECT, super::super::VTABLE_RVA.0 as u64);
         source.u32(OBJECT + super::super::ID, 7);
         for raw in [1, 7, 8] {
             source.u32(LINKS + raw * 4, 1);
@@ -111,7 +111,7 @@ fn population(countries: usize, aliases: usize) -> (Source, usize, usize, usize)
     for slot in 1..=countries {
         let pointer = objects + (slot - 1) * 0x20;
         source.u64(country_words + slot * 8, pointer as u64);
-        source.u64(pointer, super::super::VTABLE_RVA as u64);
+        source.u64(pointer, super::super::VTABLE_RVA.0 as u64);
         source.u32(pointer + super::super::ID, slot as u32);
         for alias in 0..aliases {
             source.u32(link_words + (alias * countries + slot) * 4, slot as u32);
@@ -408,7 +408,7 @@ impl FullObservationSource {
         source.reserved = None;
         source.u64(COUNTRIES, RESERVED.pointer as u64);
         source.u64(COUNTRIES + 8, RESERVED.pointer as u64);
-        source.u64(RESERVED.pointer, super::super::VTABLE_RVA as u64);
+        source.u64(RESERVED.pointer, super::super::VTABLE_RVA.0 as u64);
         source.u32(RESERVED.pointer + super::super::ID, 0);
         source.fail_once = Some(RESERVED.pointer);
         let observation = super::super::read_reserved_observation(&source, 0, GS);

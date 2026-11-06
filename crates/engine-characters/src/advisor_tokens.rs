@@ -16,6 +16,7 @@ use crate::{
     ccharacter_manager, cgame_state, read, read_slice,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// The table inside CCharacterManager.
 pub const TABLE: usize = 0x60;
@@ -28,7 +29,7 @@ pub const MASK: usize = 0x14;
 /// Maximum probe distance, u8, relative to [`TABLE`].
 pub const MAXIMUM_PROBE: usize = 0x18;
 /// The image's empty bucket array the constructor installs.
-pub const EMPTY_BUCKETS_RVA: usize = 0x030f_d240;
+pub const EMPTY_BUCKETS_RVA: Rva = Rva(0x030f_d240);
 /// Bucket stride.
 pub const STRIDE: usize = 0x30;
 /// Distance-plus-one byte: zero is empty, 0xFF the end bucket.
@@ -166,9 +167,8 @@ fn walk_inner(
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
         .ok_or("character manager unreadable or null")?;
-    let vtable = base
-        .checked_add(ccharacter_manager::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let vtable =
+        engine_sites::at(base, ccharacter_manager::VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, manager) != Some(vtable as u64) {
         return Err("character manager vtable mismatch");
     }
@@ -193,9 +193,7 @@ fn walk_inner(
     if count > mask.saturating_add(1) {
         return Err("advisor token count exceeds its buckets");
     }
-    let empty = base
-        .checked_add(EMPTY_BUCKETS_RVA)
-        .ok_or("module address overflow")?;
+    let empty = engine_sites::at(base, EMPTY_BUCKETS_RVA).ok_or("module address overflow")?;
     if buckets == empty {
         // The constructor's image buckets hold no key.
         return if count == 0 {
@@ -330,7 +328,7 @@ mod tests {
             GS + cgame_state::CHARACTER_MANAGER,
             MANAGER as u64,
         );
-        p64(&mut bytes, MANAGER, ccharacter_manager::VTABLE_RVA as u64);
+        p64(&mut bytes, MANAGER, ccharacter_manager::VTABLE_RVA.0 as u64);
         let table = MANAGER + TABLE;
         p64(&mut bytes, table + BUCKETS, BUCKET_ARRAY as u64);
         p32(&mut bytes, table + COUNT, 3);
@@ -422,7 +420,7 @@ mod tests {
     fn the_constructed_empty_table_has_no_rows() {
         let mut bytes = fixture();
         let table = MANAGER + TABLE;
-        p64(&mut bytes, table + BUCKETS, EMPTY_BUCKETS_RVA as u64);
+        p64(&mut bytes, table + BUCKETS, EMPTY_BUCKETS_RVA.0 as u64);
         p32(&mut bytes, table + COUNT, 0);
         p32(&mut bytes, table + MASK, 0);
         bytes[table + MAXIMUM_PROBE] = 0;

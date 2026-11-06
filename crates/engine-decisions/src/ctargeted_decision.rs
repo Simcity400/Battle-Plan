@@ -2,10 +2,11 @@
 //! lifecycle codes and numeric targets until definition-specific meaning is
 //! established.
 
+use engine_sites::Rva;
 use crate::Memory;
 
 /// Targeted-decision primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_86a8;
+pub const VTABLE_RVA: Rva = Rva(0x0286_86a8);
 /// Decision-definition pointer.
 pub const DEFINITION: usize = 0x10;
 /// Country-target reference, u32.
@@ -61,9 +62,7 @@ pub(crate) fn record(
     base: usize,
     pointer: usize,
 ) -> Result<Record, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     let at = |offset| {
         pointer
             .checked_add(offset)

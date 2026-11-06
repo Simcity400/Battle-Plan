@@ -1,6 +1,6 @@
 //! Attach/detach diagnostics, outside native flights and suspended publication.
 use crate::hook::Hook;
-use engine_native::{Memory, read};
+use engine_sites::Rva;
 
 // The host's failure API retains a static reason. Allocate only on the failing
 // attach/detach path so its diagnostic survives that family's destruction.
@@ -13,35 +13,25 @@ pub(crate) fn site(
 ) -> &'static str {
     Box::leak(format!("{family}: {name} (site {index}) {phase}: {cause}").into_boxed_str())
 }
-pub(crate) fn verify(
-    memory: &impl Memory,
+/// The located site and the bytes its hook replaces, or the family's refusal naming why not.
+pub(crate) fn locate(
     base: usize,
-    rva: usize,
-    sentinel: [u8; 16],
+    key: Rva,
     family: &str,
     name: &str,
     index: usize,
-) -> Result<(), &'static str> {
-    let observed = base
-        .checked_add(rva)
-        .and_then(|at| read::<[u8; 16]>(memory, at));
-    match observed {
-        Some(bytes) if bytes == sentinel => Ok(()),
-        Some(_) => Err(site(
-            family,
-            name,
-            index,
-            "sentinel verification failed",
-            "native bytes differ from verified snapshot",
-        )),
-        None => Err(site(
-            family,
-            name,
-            index,
-            "sentinel verification failed",
-            "native bytes unreadable or address overflow",
-        )),
-    }
+) -> Result<(usize, [u8; 16]), &'static str> {
+    engine_sites::code(base, key)
+        .and_then(|code| Ok((code.address, code.original::<16>()?)))
+        .map_err(|withheld| {
+            site(
+                family,
+                name,
+                index,
+                "site verification failed",
+                &withheld.to_string(),
+            )
+        })
 }
 pub(crate) fn publication<'a>(
     family: &str,
@@ -77,33 +67,15 @@ pub(crate) fn publication<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Bytes(Option<[u8; 16]>);
-    impl Memory for Bytes {
-        fn copy(&self, _: usize, out: &mut [u8]) -> bool {
-            if let Some(bytes) = self.0 {
-                out.copy_from_slice(&bytes);
-                true
-            } else {
-                false
-            }
-        }
-    }
     #[test]
     fn installer_failures_keep_family_site_and_underlying_cause() {
         for family in ["intel sources", "network auxiliary", "propaganda"] {
-            assert_eq!(
-                verify(&Bytes(Some([7; 16])), 4096, 0, [7; 16], family, "clear", 23),
-                Ok(())
+            let reason = locate(4096, Rva(0), family, "clear", 23).unwrap_err();
+            assert!(
+                reason.contains(family)
+                    && reason.contains("clear (site 23)")
+                    && reason.contains("site verification failed")
             );
-            for memory in [Bytes(None), Bytes(Some([6; 16]))] {
-                let reason = verify(&memory, 4096, 0, [7; 16], family, "clear", 23).unwrap_err();
-                assert!(
-                    reason.contains(family)
-                        && reason.contains("clear (site 23)")
-                        && reason.contains("sentinel verification failed")
-                );
-                assert!(reason.contains("unreadable") || reason.contains("bytes differ"));
-            }
             let reason = site(
                 family,
                 "getter",

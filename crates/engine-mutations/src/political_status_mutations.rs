@@ -54,6 +54,7 @@
 //! and structure only when the last-election value differs across the call.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// How a site is patched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +87,7 @@ impl Domain {
 }
 
 /// The clamped popularity setter (party, value) invoked by the call sites.
-pub const SET_POPULARITY_RVA: usize = 0x123_3110;
+pub const SET_POPULARITY_RVA: Rva = Rva(0x123_3110);
 
 /// Each site, how it is patched and the domain its call moves.
 pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
@@ -95,11 +96,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_capital",
-            rva: 0x75_8f50,
-            sentinel: [
-                0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x08, 0x49, 0x89, 0x6b, 0x18, 0x49, 0x89, 0x73,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x75_8f50),
         },
         Patch::Entry,
         Domain::Structure,
@@ -109,11 +106,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_politics",
-            rva: 0xbf_b120,
-            sentinel: [
-                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70,
-                0x18, 0x57,
-            ],
+            rva: Rva(0xbf_b120),
         },
         Patch::Entry,
         Domain::Structure,
@@ -123,11 +116,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "force_ruling_party",
-            rva: 0xc0_0af0,
-            sentinel: [
-                0x40, 0x55, 0x48, 0x83, 0xec, 0x30, 0x8b, 0x41, 0x2c, 0x48, 0x8b, 0xe9, 0x48, 0x89,
-                0x5c, 0x24,
-            ],
+            rva: Rva(0xc0_0af0),
         },
         Patch::Entry,
         Domain::Both,
@@ -136,11 +125,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_ruling_party",
-            rva: 0xc0_1a30,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-                0x60, 0x48,
-            ],
+            rva: Rva(0xc0_1a30),
         },
         Patch::Entry,
         Domain::Structure,
@@ -150,11 +135,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_ideas",
-            rva: 0xc0_23f0,
-            sentinel: [
-                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x4c, 0x89, 0x40, 0x18, 0x48, 0x89, 0x50,
-                0x10, 0x55,
-            ],
+            rva: Rva(0xc0_23f0),
         },
         Patch::Entry,
         Domain::Structure,
@@ -163,11 +144,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "add_popularity",
-            rva: 0x123_0770,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x123_0770),
         },
         Patch::Entry,
         Domain::Popularity,
@@ -177,11 +154,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_popularity_redistributing",
-            rva: 0x123_2fe0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x123_2fe0),
         },
         Patch::Entry,
         Domain::Popularity,
@@ -190,11 +163,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_political_party_popularity",
-            rva: 0x37_c50d,
-            sentinel: [
-                0xe8, 0xfe, 0x6b, 0xeb, 0x00, 0x48, 0x8b, 0x5c, 0x24, 0x78, 0x48, 0x8b, 0xb4, 0x24,
-                0x80, 0x00,
-            ],
+            rva: Rva(0x37_c50d),
         },
         Patch::Call,
         Domain::Popularity,
@@ -203,11 +172,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_popularities",
-            rva: 0x37_c847,
-            sentinel: [
-                0xe8, 0xc4, 0x68, 0xeb, 0x00, 0x48, 0x83, 0xc3, 0x10, 0x48, 0x3b, 0xdf, 0x75, 0xeb,
-                0x48, 0x8b,
-            ],
+            rva: Rva(0x37_c847),
         },
         Patch::Call,
         Domain::Popularity,
@@ -224,22 +189,15 @@ pub const FORWARDED: [&str; 2] = ["reset_country", "politics_daily"];
 mod tests {
     use super::*;
 
-    /// Each CALL site's rel32 reaches the clamped setter, every site is
-    /// distinct, and no politics capture site patches the same address.
+    /// Every site is distinct, and no politics capture site patches the same address.
     #[test]
-    fn sites_are_distinct_and_calls_reach_the_setter() {
-        for (index, (site, patch, _)) in MUTATIONS.iter().enumerate() {
+    fn sites_are_distinct_and_patch_no_capture_site() {
+        for (index, (site, _, _)) in MUTATIONS.iter().enumerate() {
             assert!(
                 MUTATIONS[..index]
                     .iter()
                     .all(|(other, _, _)| other.rva != site.rva && other.name != site.name)
             );
-            if *patch == Patch::Call {
-                assert_eq!(site.sentinel[0], 0xe8);
-                let rel = i32::from_le_bytes(site.sentinel[1..5].try_into().unwrap());
-                let target = (site.rva + 5).wrapping_add_signed(rel as isize);
-                assert_eq!(target, SET_POPULARITY_RVA, "{}", site.name);
-            }
             let capture = [
                 crate::politics_sites::ADD_POLITICAL_POWER,
                 crate::politics_sites::ADD_POLITICAL_POWER_NO_DEFICIT,
@@ -254,7 +212,7 @@ mod tests {
             for other in capture.iter().chain(crate::politics_sites::SCOPES.iter()) {
                 // Interior commits may share a function, never the patched bytes.
                 assert!(
-                    other.rva + 5 <= site.rva || site.rva + 5 <= other.rva,
+                    other.rva.after(5) <= site.rva || site.rva.after(5) <= other.rva,
                     "{} overlaps {}",
                     site.name,
                     other.name

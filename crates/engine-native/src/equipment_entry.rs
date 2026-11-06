@@ -85,7 +85,7 @@ mod tests {
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x180];
         bytes[0x100..0x108]
-            .copy_from_slice(&((MODULE + cequipment_variant::VTABLE_RVA) as u64).to_le_bytes());
+            .copy_from_slice(&((MODULE + cequipment_variant::VTABLE_RVA.0) as u64).to_le_bytes());
         bytes[0x108..0x110].copy_from_slice(&(0xfedc_ba98_0000_0046_u64).to_le_bytes());
         for (index, amount) in [0_i64, i64::MIN, i64::MAX].into_iter().enumerate() {
             let offset = index * STRIDE;

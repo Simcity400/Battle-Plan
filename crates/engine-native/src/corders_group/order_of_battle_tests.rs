@@ -29,11 +29,11 @@ fn handle(id: u32, kind: u32) -> u64 {
     (u64::from(id) << 32) | u64::from(kind)
 }
 fn division(bytes: &mut [u8], at: usize, id: u32, group: usize) {
-    p64(bytes, at, carmy::VTABLE_RVA as u64);
+    p64(bytes, at, carmy::VTABLE_RVA.0 as u64);
     p64(
         bytes,
         at + carmy::SECONDARY_BASE,
-        carmy::SECONDARY_VTABLE_RVA as u64,
+        carmy::SECONDARY_VTABLE_RVA.0 as u64,
     );
     p64(bytes, at + cunit::HANDLE, handle(id, 4713));
     p64(bytes, at + carmy::ORDERS_GROUP, group as u64);
@@ -43,7 +43,7 @@ fn division(bytes: &mut [u8], at: usize, id: u32, group: usize) {
 /// holds the third division, so every vector and backlink is exercised.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x9000];
-    p64(&mut bytes, THEATRE_PTR, ctheatre::VTABLE_RVA as u64);
+    p64(&mut bytes, THEATRE_PTR, ctheatre::VTABLE_RVA.0 as u64);
     vector(
         &mut bytes,
         THEATRE_PTR + ctheatre::ORDERS_GROUP_DATA,
@@ -66,7 +66,7 @@ fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         THEATER_GROUP_PTR,
-        ctheater_group::VTABLE_RVA as u64,
+        ctheater_group::VTABLE_RVA.0 as u64,
     );
     p64(
         &mut bytes,
@@ -76,12 +76,12 @@ fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         LEADER_PTR,
-        crate::carmy_leader::VTABLE_RVA as u64,
+        crate::carmy_leader::VTABLE_RVA.0 as u64,
     );
     p64(&mut bytes, LEADER_PTR + 8, handle(279, 4713));
 
     // Army group 431: child vector holds army 57, no units of its own.
-    p64(&mut bytes, GROUP, carmy_group::VTABLE_RVA as u64);
+    p64(&mut bytes, GROUP, carmy_group::VTABLE_RVA.0 as u64);
     p64(&mut bytes, GROUP + HANDLE, handle(431, REFERENCE_TYPE));
     bytes[GROUP + IS_ARMY_GROUP] = 1;
     bytes[GROUP + MOTORIZATION_LEVEL] = 3;
@@ -93,7 +93,7 @@ fn fixture() -> Vec<u8> {
     p64(&mut bytes, CHILDREN, ARMY as u64);
 
     // Army 57: two members, a leader, an HQ provider and the group parent.
-    p64(&mut bytes, ARMY, VTABLE_RVA as u64);
+    p64(&mut bytes, ARMY, VTABLE_RVA.0 as u64);
     p64(&mut bytes, ARMY + HANDLE, handle(57, REFERENCE_TYPE));
     p32(&mut bytes, ARMY + COUNTRY, 7);
     p64(&mut bytes, ARMY + THEATRE, THEATRE_PTR as u64);
@@ -350,7 +350,7 @@ fn theatre_ordinals_follow_raw_roster_order_and_preserve_absence() {
     let mut bytes = fixture();
     // Two ordinary groups, with the native roster opposite census order.
     bytes[GROUP + IS_ARMY_GROUP] = 0;
-    p64(&mut bytes, GROUP, VTABLE_RVA as u64);
+    p64(&mut bytes, GROUP, VTABLE_RVA.0 as u64);
     p64(&mut bytes, ARMY + PARENT, 0);
     vector(
         &mut bytes,
@@ -587,7 +587,7 @@ fn theatre_rosters_reject_wrong_subtype_backlink_duplicates_and_unknown_roots() 
     // An otherwise unrepresented roster subtype must still be checked.
     let mut bytes = fixture();
     bytes[GROUP + IS_ARMY_GROUP] = 0;
-    p64(&mut bytes, GROUP, VTABLE_RVA as u64);
+    p64(&mut bytes, GROUP, VTABLE_RVA.0 as u64);
     p64(&mut bytes, ARMY + PARENT, 0);
     let (walk, ..) = run(&bytes, [4, 4, 4]);
     assert_eq!(

@@ -164,7 +164,10 @@ fn held_rosters(
     if let Some(rosters) = held.get(&country)
         && rosters.iter().zip(lists).all(|(roster, list)| {
             roster.len() == list.len()
-                && roster.iter().zip(list).all(|(&id, entry)| id == entry.operative)
+                && roster
+                    .iter()
+                    .zip(list)
+                    .all(|(&id, entry)| id == entry.operative)
         })
     {
         return std::sync::Arc::clone(rosters);
@@ -3450,9 +3453,8 @@ fn walk_flags_buffer(
         if states.count < 2 {
             return Err("state table has no state slots");
         }
-        let state_vtable = base
-            .checked_add(cstate::VTABLE_RVA)
-            .ok_or("state vtable overflow")?;
+        let state_vtable =
+            engine_sites::at(base, cstate::VTABLE_RVA).ok_or("state vtable overflow")?;
         let mut first = 1;
         let mut found_state = false;
         let mut pointers = [0_u8; 512];
@@ -4386,7 +4388,7 @@ fn copy_capitulation_pass(
 
 /// Mirror of the owned war-goal recipients read by `walk_capitulation`.
 fn copy_war_goals(log: &mut RawLog<1>, memory: &impl Memory, base: usize, goals: Array) {
-    let Some(vtable) = base.checked_add(engine_native::cwar_goal::VTABLE_RVA) else {
+    let Some(vtable) = engine_sites::at(base, engine_native::cwar_goal::VTABLE_RVA) else {
         return;
     };
     for ordinal in 0..goals.count {
@@ -4579,7 +4581,7 @@ pub mod relations_test_kit {
         for owner in 0..3 {
             let country = COUNTRIES[owner];
             let diplomacy = DIPLOMACY[owner];
-            p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA) as u64);
+            p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA.0) as u64);
             p32(&mut bytes, country + ccountry::ID, owner as u32 + 1);
             p64(
                 &mut bytes,
@@ -4589,7 +4591,7 @@ pub mod relations_test_kit {
             p64(
                 &mut bytes,
                 diplomacy,
-                (BASE + cdiplomacy_status::VTABLE_RVA) as u64,
+                (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64,
             );
             p64(
                 &mut bytes,
@@ -4608,7 +4610,7 @@ pub mod relations_test_kit {
                 p64(
                     &mut bytes,
                     object,
-                    (BASE + crelation_status::VTABLE_RVA) as u64,
+                    (BASE + crelation_status::VTABLE_RVA.0) as u64,
                 );
                 p64(
                     &mut bytes,
@@ -4639,12 +4641,12 @@ pub mod relations_test_kit {
     pub fn relation(
         bytes: &mut [u8],
         object: usize,
-        vtable: usize,
+        vtable: engine_sites::Rva,
         type_id: u32,
         first: u32,
         second: u32,
     ) {
-        p64(bytes, object, (BASE + vtable) as u64);
+        p64(bytes, object, (BASE + vtable.0) as u64);
         p32(bytes, object + crelation::TYPE_ID, type_id);
         p32(bytes, object + crelation::FIRST_COUNTRY, first);
         p32(bytes, object + crelation::SECOND_COUNTRY, second);
@@ -5149,18 +5151,18 @@ mod tests {
         for slot in 1..=2 {
             let object = world.alloc(strategic::SIZE);
             world.u64(objects + slot * 8, object as u64);
-            world.u64(object, strategic::VTABLE_RVA as u64);
+            world.u64(object, strategic::VTABLE_RVA.0 as u64);
             world.u32(object + strategic::OWNER, slot as u32);
             if slot == 1 {
                 world.array(object + strategic::NETWORKS_DATA, network_pointers, 1);
             }
         }
         world.u64(network_pointers, network as u64);
-        world.u64(network, ccountry_intel_network::VTABLE_RVA as u64);
+        world.u64(network, ccountry_intel_network::VTABLE_RVA.0 as u64);
         world.u32(network + ccountry_intel_network::TARGET, 2);
         world.u64(
             network + ccountry_intel_network::LOCAL_NETWORK,
-            local::VTABLE_RVA as u64,
+            local::VTABLE_RVA.0 as u64,
         );
         world.u64(
             network + ccountry_intel_network::LOCAL_NETWORK + local::GRAPH,
@@ -5872,7 +5874,7 @@ mod tests {
         put(
             &mut bytes,
             AGENCY,
-            &((BASE + cintelligence_agency::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cintelligence_agency::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -7145,7 +7147,7 @@ mod tests {
         put(
             &mut bytes,
             0x4000,
-            &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x4000 + ccountry::ID, &2_u32.to_le_bytes());
         put(&mut bytes, 0x2200, &u64::MAX.to_le_bytes());
@@ -7153,7 +7155,7 @@ mod tests {
         put(
             &mut bytes,
             0x8000,
-            &((BASE + cstate::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cstate::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x8000 + cstate::ID, &1_u32.to_le_bytes());
         // Two historical characters, ids 44 and 45: 44 owns one flag, 45 an
@@ -7166,7 +7168,7 @@ mod tests {
         put(
             &mut bytes,
             0x5000,
-            &((BASE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + ccharacter_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         let historical = 0x5000 + ccharacter_manager::HISTORICAL_CHARACTERS;
         put(&mut bytes, historical, &0x5100_u64.to_le_bytes());
@@ -7184,7 +7186,7 @@ mod tests {
             put(
                 &mut bytes,
                 character,
-                &((BASE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -7196,7 +7198,7 @@ mod tests {
         put(
             &mut bytes,
             0x6200 + ccharacter::FLAGS,
-            &((BASE + cflag_manager::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cflag_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         for (index, (root, offset)) in [
             (Some(GAME), cgame_state::GLOBAL_FLAGS),
@@ -7219,7 +7221,7 @@ mod tests {
             put(
                 &mut bytes,
                 manager,
-                &((BASE + cflag_manager::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + cflag_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -7247,7 +7249,7 @@ mod tests {
                 put(
                     &mut bytes,
                     row + field,
-                    &((BASE + vtable) as u64).to_le_bytes(),
+                    &((BASE + vtable.0) as u64).to_le_bytes(),
                 );
             }
             put(
@@ -8376,7 +8378,7 @@ mod tests {
         cap_put(
             &mut bytes,
             CAP_COUNTRY,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         cap_put(&mut bytes, CAP_COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
         cap_put(
@@ -8387,7 +8389,7 @@ mod tests {
         cap_put(
             &mut bytes,
             CAP_DIPLO,
-            &(cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         cap_put(
             &mut bytes,
@@ -8539,7 +8541,7 @@ mod tests {
         cap_put(
             &mut bytes,
             RESERVED,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         let memory = SliceMemory {
             base: CAP_GAME,
@@ -8573,7 +8575,7 @@ mod tests {
             cap_put(
                 &mut bytes,
                 goal,
-                &(engine_native::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_native::cwar_goal::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             cap_put(
                 &mut bytes,
@@ -8642,7 +8644,7 @@ mod tests {
         cap_put(
             &mut bytes,
             0x4500,
-            &(engine_native::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::cwar_goal::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         cap_put(
             &mut bytes,
@@ -8718,7 +8720,7 @@ mod tests {
         cap_put(
             &mut bytes,
             0x4500,
-            &(engine_native::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::cwar_goal::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         cap_put(
             &mut bytes,

@@ -1356,12 +1356,7 @@ unsafe extern "system-unwind" fn land(
         return;
     }
     let base = BASE.load(Ordering::Relaxed);
-    let cause = count_cause(
-        caller
-            .checked_sub(base)
-            .map(native::land_cause)
-            .unwrap_or(native::Cause::Unknown),
-    );
+    let cause = count_cause(native::land_cause(base, caller));
     measure_pool(SiteId::Land, a, cause, run);
 }
 
@@ -1395,12 +1390,7 @@ unsafe extern "system-unwind" fn air(a: usize, b: usize, c: usize, caller: usize
         return;
     }
     let base = BASE.load(Ordering::Relaxed);
-    let cause = count_cause(
-        caller
-            .checked_sub(base)
-            .map(native::air_cause)
-            .unwrap_or(native::Cause::Unknown),
-    );
+    let cause = count_cause(native::air_cause(base, caller));
     // Airplane losses accept a negative request and add its negation;
     // observe that native gain as a signed correction too.
     measure_pool(SiteId::Air, a, cause, run);
@@ -1641,10 +1631,7 @@ fn deletion_context(
     army: usize,
     caller: usize,
 ) -> Result<Option<Deletion>, &'static str> {
-    let classified = caller
-        .checked_sub(base)
-        .map(native::deletion_context)
-        .unwrap_or(native::DeletionContext::Loss(native::Cause::Unknown));
+    let classified = native::deletion_context(base, caller);
     let merge_source = classified == native::DeletionContext::Transfer(native::Disposition::Merged);
     let classified = match classified {
         native::DeletionContext::Ignore => return Ok(Some(Deletion::ignored(army))),
@@ -2287,10 +2274,7 @@ unsafe extern "system-unwind" fn queue(state: usize, unit: usize, caller: usize)
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let result = (|| {
-            let classified = caller
-                .checked_sub(base)
-                .map(native::queued_context)
-                .unwrap_or(native::QueuedContext::Loss(native::Cause::Unknown));
+            let classified = native::queued_context(base, caller);
             let (cause, disposition) = match classified {
                 native::QueuedContext::Ignore => return Ok(false),
                 native::QueuedContext::Loss(cause) => (cause, native::Disposition::Loss),
@@ -2851,31 +2835,36 @@ unsafe extern "system-unwind" fn merge(argument: usize) {
     );
 }
 
-fn verify_sites(
-    memory: &impl Memory,
+/// Locate every site of one group before constructing any; a withheld site refuses the group.
+fn locate_sites(
     base: usize,
     supplemental: bool,
-) -> Result<(), Cow<'static, str>> {
+) -> Result<Vec<(&'static native::Site, engine_sites::Code)>, Cow<'static, str>> {
+    let mut located = engine_allocation::vec(native::SITES.len())
+        .map_err(|_| Cow::Borrowed("collector allocation failed"))?;
     for site in native::SITES
         .into_iter()
         .filter(|site| site.id.is_supplemental() == supplemental)
     {
-        if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
-            use std::fmt::Write;
-            let mut reason = String::new();
-            engine_allocation::reserve_string(&mut reason, site.name.len() + 96)
-                .map_err(|_| Cow::Borrowed("collector allocation failed"))?;
-            write!(
-                reason,
-                "{} sentinel differs or unreadable at {:#x}",
-                site.name,
-                base + site.rva
-            )
-            .expect("writing a reserved String cannot fail");
-            return Err(Cow::Owned(reason));
+        match engine_sites::hook(base, site.rva) {
+            Ok(code) => located.push((site, code)),
+            Err(cause) => {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Sentinel,
+                    None,
+                    cause,
+                );
+                use std::fmt::Write;
+                let mut reason = String::new();
+                engine_allocation::reserve_string(&mut reason, site.name.len() + cause.len() + 2)
+                    .map_err(|_| Cow::Borrowed("collector allocation failed"))?;
+                write!(reason, "{}: {cause}", site.name)
+                    .expect("writing a reserved String cannot fail");
+                return Err(Cow::Owned(reason));
+            }
         }
     }
-    Ok(())
+    Ok(located)
 }
 
 fn callback(id: native::SiteId) -> usize {
@@ -2922,36 +2911,36 @@ pub struct Hooks {
 impl Hooks {
     /// The original writers and optional supplemental group verify
     /// and install independently. No member of a refused group is enabled.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         // Initialize the store on the loader before any writer can enter.
         LazyLock::force(&STORE);
         BASE.store(base, Ordering::Relaxed);
         let install = |supplemental| -> Result<Vec<(native::SiteId, Hook)>, Cow<'static, str>> {
-            verify_sites(memory, base, supplemental)?;
-            let count = native::SITES
-                .iter()
-                .filter(|site| site.id.is_supplemental() == supplemental)
-                .count();
-            let mut hooks = engine_allocation::vec(count)
+            native::classification_sites(base).map_err(Cow::Borrowed)?;
+            let located = locate_sites(base, supplemental)?;
+            let mut hooks = engine_allocation::vec(located.len())
                 .map_err(|_| Cow::Borrowed("collector allocation failed"))?;
-            for site in native::SITES
-                .into_iter()
-                .filter(|site| site.id.is_supplemental() == supplemental)
-            {
+            for (site, code) in located {
+                let original = code.sentinel::<16>().map_err(Cow::Borrowed)?;
+                let target = match site.kind {
+                    native::SiteKind::Entry => None,
+                    native::SiteKind::Call { target } => Some(
+                        engine_sites::hook(base, target)
+                            .map(|target| target.address)
+                            .map_err(Cow::Borrowed)?,
+                    ),
+                };
                 let hook = match site.kind {
                     native::SiteKind::Entry => unsafe {
-                        Hook::new(base + site.rva, callback(site.id), site.sentinel)
+                        Hook::new(code.address, callback(site.id), original)
                     },
                     native::SiteKind::Call { .. } => unsafe {
-                        Hook::new_call(base + site.rva, callback(site.id), site.sentinel)
+                        Hook::new_call(code.address, callback(site.id), original)
                     },
                 }
                 .map_err(Cow::Owned)?;
                 ORIGINAL[site.id as usize].store(
-                    match site.kind {
-                        native::SiteKind::Entry => hook.trampoline(),
-                        native::SiteKind::Call { target } => base + target,
-                    },
+                    target.unwrap_or_else(|| hook.trampoline()),
                     Ordering::Release,
                 );
                 hooks.push((site.id, hook));
@@ -3092,7 +3081,7 @@ pub fn status() -> impl serde::Serialize {
     let hooks = std::array::from_fn::<_, { native::SITES.len() }, _>(|i| {
         let site = &native::SITES[i];
         crate::status::status!({
-            "site_index": i, "name": site.name, "rva": site.rva, "group": if site.id.is_supplemental() { "supplemental" } else { "original_writers" }, "sentinel": site.sentinel,
+            "site_index": i, "name": site.name, "rva": site.rva.0, "group": if site.id.is_supplemental() { "supplemental" } else { "original_writers" },
             "installed": INSTALLED[i].load(Ordering::Acquire),
             "enabled": SITE_ENABLED[i].load(Ordering::SeqCst),
             "active": ACTIVE[i].load(Ordering::SeqCst),

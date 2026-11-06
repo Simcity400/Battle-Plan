@@ -1,9 +1,10 @@
 //! Registered acclimatization category definition.
 
 use crate::{Memory, cpdx_array::Array, read, read_slice};
+use engine_sites::Rva;
 
 /// Pointer to the array header of ordered registered category pointers.
-pub const REGISTRY_RVA: usize = 0x033d_e940;
+pub const REGISTRY_RVA: Rva = Rva(0x033d_e940);
 /// Category name string at object start.
 pub const NAME: usize = 0x00;
 /// Category u32 token used to key serialized weights.
@@ -66,8 +67,7 @@ impl Categories {
         growing: bool,
     ) -> Result<(), &'static str> {
         self.entries.clear();
-        let registry = base
-            .checked_add(REGISTRY_RVA)
+        let registry = engine_sites::at(base, REGISTRY_RVA)
             .and_then(|at| read::<u64>(memory, at))
             .and_then(|at| usize::try_from(at).ok())
             .filter(|at| *at != 0)

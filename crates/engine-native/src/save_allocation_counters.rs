@@ -8,25 +8,26 @@
 //! No engine function is called and no hook is installed.
 
 use crate::{Memory, cgame_state, creference_registry, cship, read};
+use engine_sites::Rva;
 
 /// Theater-group index global, saved with token 0x35d2 and restored through its setter.
-pub const THEATER_GROUP_INDEX_RVA: usize = 0x030f_f22c;
+pub const THEATER_GROUP_INDEX_RVA: Rva = Rva(0x030f_f22c);
 /// Deployment-line index global, saved with token 0x34b3 and restored through its setter.
-pub const MILITARY_DEPLOYMENT_LINE_INDEX_RVA: usize = 0x0312_93b8;
+pub const MILITARY_DEPLOYMENT_LINE_INDEX_RVA: Rva = Rva(0x0312_93b8);
 /// Deployment-conveyor index global, saved with token 0x34b4 and restored through its setter.
-pub const MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA: usize = 0x0312_93bc;
+pub const MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA: Rva = Rva(0x0312_93bc);
 /// Order index global, saved with token 0x3036 and restored directly.
-pub const ORDER_INDEX_RVA: usize = 0x030f_f230;
+pub const ORDER_INDEX_RVA: Rva = Rva(0x030f_f230);
 /// Front index global, saved with token 0x35ad and restored directly.
-pub const FRONT_INDEX_RVA: usize = 0x030f_f234;
+pub const FRONT_INDEX_RVA: Rva = Rva(0x030f_f234);
 /// Theatre index global, saved with token 0x35ae and restored directly.
-pub const THEATRE_INDEX_RVA: usize = 0x030f_f238;
+pub const THEATRE_INDEX_RVA: Rva = Rva(0x030f_f238);
 /// Country-leader index global, saved with token 0x393b and restored directly.
-pub const COUNTRY_LEADER_INDEX_RVA: usize = 0x0312_9330;
+pub const COUNTRY_LEADER_INDEX_RVA: Rva = Rva(0x0312_9330);
 /// Equipment-variant index global, saved with token 0x3643 and restored through its setter.
-pub const EQUIPMENT_VARIANT_INDEX_RVA: usize = 0x0312_9388;
+pub const EQUIPMENT_VARIANT_INDEX_RVA: Rva = Rva(0x0312_9388);
 /// RNG draw counter, saved with token 0x2cc3; wraps as signed i32.
-pub const MULTIPLAYER_RANDOM_COUNT_RVA: usize = 0x0350_0360;
+pub const MULTIPLAYER_RANDOM_COUNT_RVA: Rva = Rva(0x0350_0360);
 
 /// One passive sample of the counters the save header serializer emits.
 ///
@@ -59,15 +60,14 @@ pub struct AllocationCounters {
 /// Reads the counters at the sampled tick. `game_state` is the already validated
 /// singleton pointer; every other value is a module-relative global.
 pub fn read_counters(memory: &impl Memory, base: usize, game_state: usize) -> AllocationCounters {
-    let global = |rva: usize| base.checked_add(rva).and_then(|at| read::<i32>(memory, at));
+    let global = |key: Rva| engine_sites::at(base, key).and_then(|at| read::<i32>(memory, at));
     let field = |offset: usize| {
         game_state
             .checked_add(offset)
             .and_then(|at| read::<i32>(memory, at))
     };
     AllocationCounters {
-        debug_current_ref_id: base
-            .checked_add(creference_registry::ID_COUNTER_RVA)
+        debug_current_ref_id: engine_sites::at(base, creference_registry::ID_COUNTER_RVA)
             .and_then(|at| read::<u32>(memory, at)),
         unit: global(cship::NEXT_ID_RVA),
         order_index: global(ORDER_INDEX_RVA),
@@ -144,18 +144,18 @@ mod tests {
         let put = |bytes: &mut Vec<u8>, rva: usize, value: i32| {
             bytes[rva..rva + 4].copy_from_slice(&value.to_le_bytes());
         };
-        globals[creference_registry::ID_COUNTER_RVA..creference_registry::ID_COUNTER_RVA + 4]
+        globals[creference_registry::ID_COUNTER_RVA.0..creference_registry::ID_COUNTER_RVA.0 + 4]
             .copy_from_slice(&u32::MAX.to_le_bytes());
-        put(&mut globals, cship::NEXT_ID_RVA, 4012);
-        put(&mut globals, ORDER_INDEX_RVA, 7693);
-        put(&mut globals, FRONT_INDEX_RVA, 8230);
-        put(&mut globals, THEATRE_INDEX_RVA, 112);
-        put(&mut globals, THEATER_GROUP_INDEX_RVA, 924);
-        put(&mut globals, MILITARY_DEPLOYMENT_LINE_INDEX_RVA, 7841);
-        put(&mut globals, MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA, 744);
-        put(&mut globals, EQUIPMENT_VARIANT_INDEX_RVA, 6295);
-        put(&mut globals, COUNTRY_LEADER_INDEX_RVA, 1);
-        put(&mut globals, MULTIPLAYER_RANDOM_COUNT_RVA, -1_333_963_091);
+        put(&mut globals, cship::NEXT_ID_RVA.0, 4012);
+        put(&mut globals, ORDER_INDEX_RVA.0, 7693);
+        put(&mut globals, FRONT_INDEX_RVA.0, 8230);
+        put(&mut globals, THEATRE_INDEX_RVA.0, 112);
+        put(&mut globals, THEATER_GROUP_INDEX_RVA.0, 924);
+        put(&mut globals, MILITARY_DEPLOYMENT_LINE_INDEX_RVA.0, 7841);
+        put(&mut globals, MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA.0, 744);
+        put(&mut globals, EQUIPMENT_VARIANT_INDEX_RVA.0, 6295);
+        put(&mut globals, COUNTRY_LEADER_INDEX_RVA.0, 1);
+        put(&mut globals, MULTIPLAYER_RANDOM_COUNT_RVA.0, -1_333_963_091);
         let mut state = vec![0_u8; 0x800];
         state[cgame_state::NAVY_ID..cgame_state::NAVY_ID + 4]
             .copy_from_slice(&8263_i32.to_le_bytes());
@@ -197,10 +197,10 @@ mod tests {
     fn an_unreadable_counter_is_absent_without_disturbing_the_others() {
         let (globals, state) = fixture();
         for (index, fail) in [
-            (0, creference_registry::ID_COUNTER_RVA),
-            (1, cship::NEXT_ID_RVA),
+            (0, creference_registry::ID_COUNTER_RVA.0),
+            (1, cship::NEXT_ID_RVA.0),
             (10, STATE + cgame_state::NAVY_ID),
-            (12, MULTIPLAYER_RANDOM_COUNT_RVA),
+            (12, MULTIPLAYER_RANDOM_COUNT_RVA.0),
         ] {
             let memory = Globals {
                 bytes: &globals,

@@ -1,9 +1,10 @@
 //! CDynamicModifier definition, referenced by timed modifier entries.
 
 use crate::{Memory, msvc_string, read};
+use engine_sites::Rva;
 
 /// CDynamicModifier vtable.
-pub const VTABLE_RVA: usize = 0x0285_3e78;
+pub const VTABLE_RVA: Rva = Rva(0x0285_3e78);
 /// CDynamicModifier definition id std::string.
 pub const ID: usize = 0x28;
 /// CDynamicModifier value-expression count i32.
@@ -23,9 +24,7 @@ pub fn token(
     base: usize,
     definition: usize,
 ) -> Result<(usize, usize), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, definition) != Some(expected as u64) {
         return Err("dynamic modifier definition vtable mismatch");
     }

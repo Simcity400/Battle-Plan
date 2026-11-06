@@ -25,9 +25,10 @@
 //! messages do not establish a war name.
 
 use crate::{Memory, cgame_state, cpdx_array::Array, read, walk::Outcome};
+use engine_sites::Rva;
 
 /// Conference primary vtable.
-pub const VTABLE_RVA: usize = 0x029c_da28;
+pub const VTABLE_RVA: Rva = Rva(0x029c_da28);
 /// Conference full reference, two u32 words.
 pub const REFERENCE: usize = 0x08;
 /// Signed i32 turn, incremented live and rebuilt from saved history.
@@ -89,9 +90,8 @@ pub fn walk_buffer(
         if base == 0 || game_state == 0 {
             return Err("peace conference module or game state is null");
         }
-        let expected_vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("peace conference module address overflow")?;
+        let expected_vtable =
+            engine_sites::at(base, VTABLE_RVA).ok_or("peace conference module address overflow")?;
         // Roster append copies pointer slots using the signed capacity/count header.
         let header = game_state
             .checked_add(cgame_state::PEACE_CONFERENCES_DATA)
@@ -205,7 +205,7 @@ mod tests {
             put(
                 &mut bytes,
                 pointer,
-                ((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+                ((BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(&mut bytes, pointer + REFERENCE, id.to_le_bytes());
             put(&mut bytes, pointer + CURRENT_TURN, turn.to_le_bytes());

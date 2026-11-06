@@ -22,14 +22,23 @@ pub(crate) struct Progress {
 
 impl Progress {
     /// Opens (truncating) the session's progress file; without one, every
-    /// step is dropped.
+    /// step is dropped. Writes append, so lines other handles append (a
+    /// worker panic) are never overwritten.
     pub(crate) fn open(directory: &Path) -> Self {
+        let path = directory.join(FILE);
         Self {
-            file: File::create(directory.join(FILE)).ok(),
+            file: File::create(&path)
+                .and_then(|_| std::fs::OpenOptions::new().append(true).open(&path))
+                .ok(),
             opened: Instant::now(),
             #[cfg(test)]
             writer: None,
         }
+    }
+
+    /// When the file was opened, the zero of its step times.
+    pub(crate) fn opened(&self) -> Instant {
+        self.opened
     }
 
     /// Appends `step`, with `count` when it has one.

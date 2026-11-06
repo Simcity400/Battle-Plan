@@ -1,5 +1,6 @@
 //! Province definition reached through a province.
 
+use engine_sites::Rva;
 /// Province-definition allocation size.
 pub const SIZE: usize = 0xd8;
 /// Run-length pixel-span array.
@@ -25,7 +26,7 @@ pub const PORT_SEA: usize = 0xc8;
 /// Terrain-type pointer reached through the province definition.
 pub const TERRAIN: usize = 0xa8;
 /// ID-taking constructor, clearing centroid fields.
-pub const CONSTRUCTOR_RVA: usize = 0x014a_4460;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x014a_4460);
 
 /// Province IDs in the raster are u16, bounding the oracle census to their
 /// representable range. Refuse a larger count before sizing allocation.
@@ -65,7 +66,7 @@ pub fn read_movement_census(
     base: usize,
 ) -> Result<MovementCensus, &'static str> {
     use crate::{cgame_state, cprovince, cterrain_type, province_neighbour as neighbour, read};
-    let module = |rva: usize| base.checked_add(rva).ok_or("module address overflow");
+    let module = |key: Rva| engine_sites::at(base, key).ok_or("province definition site withheld");
     let game_state = read::<u64>(memory, module(cgame_state::SINGLETON_RVA)?)
         .filter(|&pointer| pointer != 0)
         .ok_or("game state unreadable or null")? as usize;
@@ -166,7 +167,7 @@ mod tests {
     };
 
     const MODULE: usize = 0x1_4000_0000;
-    const START: usize = MODULE + cgame_state::SINGLETON_RVA;
+    const START: usize = MODULE + cgame_state::SINGLETON_RVA.0;
     const GAME_STATE: usize = START + 0x100;
     const CENSUS: usize = START + 0x1000;
     const TERRAIN_A: usize = START + 0x2000;
@@ -212,11 +213,11 @@ mod tests {
         let mut image = Image(vec![0; 0x40_000]);
         image.u64(START, GAME_STATE as u64);
         image.array(GAME_STATE + cgame_state::PROVINCES, CENSUS, 3);
-        image.u64(TERRAIN_A, (MODULE + cterrain_type::VTABLE_RVA) as u64);
+        image.u64(TERRAIN_A, (MODULE + cterrain_type::VTABLE_RVA.0) as u64);
         image.u32(TERRAIN_A + cterrain_type::DATABASE_INDEX, 7);
         image.u64(
             NULL_TERRAIN,
-            (MODULE + cterrain_type::NULL_VTABLE_RVA) as u64,
+            (MODULE + cterrain_type::NULL_VTABLE_RVA.0) as u64,
         );
         let rows: [(u32, usize, u8, &[neighbour::Record]); 2] = [
             (
@@ -255,7 +256,7 @@ mod tests {
         ];
         for (id, terrain, flags, records) in rows {
             image.u64(CENSUS + 8 * id as usize, province(id) as u64);
-            image.u64(province(id), (MODULE + cprovince::VTABLE_RVA) as u64);
+            image.u64(province(id), (MODULE + cprovince::VTABLE_RVA.0) as u64);
             image.u32(province(id) + cprovince::ID, id);
             image.u64(province(id) + cprovince::DEFINITION, definition(id) as u64);
             image.u32(definition(id) + ID, id);

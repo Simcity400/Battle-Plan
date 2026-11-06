@@ -220,8 +220,7 @@ fn refuse(part: Part, reason: &'static str) {
 }
 
 fn game_operands(memory: &impl Memory, base: usize) -> Result<(usize, i32), &'static str> {
-    let game = base
-        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+    let game = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
         .and_then(|game| usize::try_from(game).ok())
         .filter(|game| *game != 0)
@@ -314,10 +313,11 @@ pub fn war_support(country: usize) -> Option<WarSupportWatch> {
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let read = (|| {
-        let vtable = BASE
-            .load(Ordering::Relaxed)
-            .checked_add(engine_native::ccountry::VTABLE_RVA)
-            .ok_or("nuclear strike war support country unauthenticated")?;
+        let vtable = engine_sites::at(
+            BASE.load(Ordering::Relaxed),
+            engine_native::ccountry::VTABLE_RVA,
+        )
+        .ok_or("nuclear strike war support country unauthenticated")?;
         if engine_native::read::<u64>(&memory, country) != Some(vtable as u64) {
             return Err("nuclear strike war support country unauthenticated");
         }
@@ -426,10 +426,11 @@ fn crew_manpower(memory: &impl Memory, wing: usize) -> Result<i32, &'static str>
 }
 fn crew(wing: usize) -> Result<Crew, &'static str> {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let vtable = BASE
-        .load(Ordering::Relaxed)
-        .checked_add(engine_native::cair_wing::VTABLE_RVA)
-        .ok_or("nuclear strike wing unauthenticated")?;
+    let vtable = engine_sites::at(
+        BASE.load(Ordering::Relaxed),
+        engine_native::cair_wing::VTABLE_RVA,
+    )
+    .ok_or("nuclear strike wing unauthenticated")?;
     if engine_native::read::<u64>(&memory, wing) != Some(vtable as u64) {
         return Err("nuclear strike wing unauthenticated");
     }
@@ -593,7 +594,7 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
         let callbacks = [
             impact as *const () as usize,
@@ -601,15 +602,15 @@ impl Hooks {
             unit_damage as *const () as usize,
         ];
         let install = || -> Result<Vec<Hook>, &'static str> {
-            if native::SITES.iter().any(|site| {
-                !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            }) {
-                return Err("nuclear strike sentinel differs or unreadable");
+            for site in &native::SITES {
+                crate::located(base, site.rva)?;
             }
             let mut hooks = Vec::with_capacity(native::SITES.len());
             for (index, site) in native::SITES.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| "nuclear strike hook construction failed")?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|_| "nuclear strike hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }

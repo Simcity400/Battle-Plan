@@ -85,7 +85,7 @@ fn script_image() -> WarImage {
     let mut image = WarImage::default();
     let scope = 0x80000;
     image.bytes(scope, &[0; engine_events::cevent_scope::SIZE]);
-    image.q(scope, BASE + engine_events::cevent_scope::VTABLE_RVA);
+    image.q(scope, BASE + engine_events::cevent_scope::VTABLE_RVA.0);
     for offset in [
         engine_events::cevent_scope::ROOT,
         engine_events::cevent_scope::FROM,
@@ -174,7 +174,7 @@ fn script_scopes_record_the_native_country_and_names_each_reference_resolved_to(
     let (this, from) = (0x80000, 0x81000);
     for (scope, country, links) in [(this, 3, [this, from, this]), (from, 1, [from; 3])] {
         image.bytes(scope, &[0; SIZE]);
-        image.q(scope, BASE + VTABLE_RVA);
+        image.q(scope, BASE + VTABLE_RVA.0);
         image.d(scope + COUNTRY_TAG, country);
         for (offset, link) in [ROOT, FROM, PREV].into_iter().zip(links) {
             image.q(scope + offset, link);
@@ -352,7 +352,7 @@ fn retained_registry_image(hour: i32) -> WarImage {
     image.0.extend(script_image().0);
     image.d(GAME + cgame_state::CURRENT_HOUR, hour as u32);
     let definition = 0x90000;
-    image.q(definition, BASE + engine_decisions::cevent::VTABLE_RVA);
+    image.q(definition, BASE + engine_decisions::cevent::VTABLE_RVA.0);
     image.d(definition + engine_decisions::cevent::REFERENCE, 99);
     image.d(definition + engine_decisions::cevent::REFERENCE + 4, 123);
     let mut token = [0; 32];
@@ -687,11 +687,11 @@ fn a_failed_delayed_baseline_recovers_an_empty_queue_after_native_removal() {
 
 fn delayed_timer(image: &mut WarImage, pointer: usize, remaining: i32) {
     use engine_events::{cevent_scope, script_event_registry as registry};
-    image.q(pointer, BASE + registry::DELAYED_VTABLE_RVA);
+    image.q(pointer, BASE + registry::DELAYED_VTABLE_RVA.0);
     image.q(pointer + registry::DELAYED_DEFINITION, 0x90000);
     let scope = pointer + registry::DELAYED_SCOPE;
     image.bytes(scope, &[0; cevent_scope::SIZE]);
-    image.q(scope, BASE + cevent_scope::VTABLE_RVA);
+    image.q(scope, BASE + cevent_scope::VTABLE_RVA.0);
     for offset in [cevent_scope::ROOT, cevent_scope::FROM, cevent_scope::PREV] {
         image.q(scope + offset, scope);
     }
@@ -1603,23 +1603,23 @@ impl WarImage {
         self.d(address + 12, count);
     }
     fn country(&mut self, pointer: usize, id: u32, instance: u32, diplomacy: usize, matrix: usize) {
-        self.q(pointer, BASE + ccountry::VTABLE_RVA);
+        self.q(pointer, BASE + ccountry::VTABLE_RVA.0);
         self.d(pointer + ccountry::ID, id);
         self.d(pointer + ccountry::SURRENDER_TARGET, instance);
         self.q(pointer + ccountry::DIPLOMACY_STATUS, diplomacy);
-        self.q(diplomacy, BASE + cdiplomacy_status::VTABLE_RVA);
+        self.q(diplomacy, BASE + cdiplomacy_status::VTABLE_RVA.0);
         self.q(diplomacy + cdiplomacy_status::COUNTRY, pointer);
         self.array(diplomacy + cdiplomacy_status::RELATIONS, matrix, 4);
     }
     fn status(&mut self, pointer: usize, diplomacy: usize, target: u32) {
-        self.q(pointer, BASE + crelation_status::VTABLE_RVA);
+        self.q(pointer, BASE + crelation_status::VTABLE_RVA.0);
         self.q(pointer + crelation_status::DIPLOMACY_STATUS, diplomacy);
         self.d(pointer + crelation_status::TARGET_COUNTRY, target);
         self.q(pointer + crelation_status::WAR_RELATION, 0);
     }
     fn new() -> Self {
         let mut image = Self::default();
-        image.q(BASE + cgame_state::SINGLETON_RVA, GAME);
+        image.q(BASE + cgame_state::SINGLETON_RVA.0, GAME);
         image.d(GAME + cgame_state::CURRENT_HOUR, (-17_i32) as u32);
         image.array(GAME + cgame_state::COUNTRIES, 0x4000, 4);
         image.array(GAME + cgame_state::COUNTRY_LINKS, 0x5000, 4);
@@ -1636,7 +1636,7 @@ impl WarImage {
         image.q(0x32000 + 8, RECIPROCAL);
         image.status(SELECTED, 0x21000, 3);
         image.status(RECIPROCAL, 0x31000, 1);
-        image.q(CANDIDATE, BASE + cwar_relation::VTABLE_RVA);
+        image.q(CANDIDATE, BASE + cwar_relation::VTABLE_RVA.0);
         image.d(CANDIDATE + crelation::TYPE_ID, cwar_relation::TYPE);
         image.d(CANDIDATE + crelation::FIRST_COUNTRY, 1);
         image.d(CANDIDATE + crelation::SECOND_COUNTRY, 2);
@@ -1826,7 +1826,7 @@ impl WarImage {
         self.q(country + ccountry::POLITICAL_STATUS, 0);
         self.q(country + ccountry::DECISION_STATUS, status);
         self.array(country + decision_runtime::IGNORED_TOKENS, 0, 0);
-        self.q(status, BASE + cdecision_status::VTABLE_RVA);
+        self.q(status, BASE + cdecision_status::VTABLE_RVA.0);
         self.q(status + cdecision_status::COUNTRY, country);
         for offset in decision_runtime::HEADERS
             .into_iter()
@@ -2195,7 +2195,7 @@ fn an_unsupported_decision_owner_retries_until_an_exact_baseline_recovers() {
     assert_eq!(memory.count(status), 2);
     memory.image.q(
         TARGET_STATUS,
-        BASE + engine_decisions::cdecision_status::VTABLE_RVA,
+        BASE + engine_decisions::cdecision_status::VTABLE_RVA.0,
     );
     memory.hour(3);
     let recovered = census_hour(&mut store, &memory, 3, &CENSUS);
@@ -2309,10 +2309,10 @@ fn dispatch_instances_scan_only_unpublished_entries_and_a_discard_republishes() 
 /// A reenable-cooldown decision member with its definition.
 fn decision_member(image: &mut WarImage, pointer: usize, definition: usize) {
     use engine_decisions::{cdecision, cdecision_cooldown as cooldown, decision_runtime};
-    image.q(pointer, BASE + cooldown::VTABLE_RVA);
+    image.q(pointer, BASE + cooldown::VTABLE_RVA.0);
     image.q(pointer + cooldown::DEFINITION, definition);
     image.d(pointer + cooldown::DAYS, 5);
-    image.q(definition, BASE + cdecision::VTABLE_RVA);
+    image.q(definition, BASE + cdecision::VTABLE_RVA.0);
     image.bytes(definition + decision_runtime::PERMANENT, &[0]);
     let mut token = [0; 32];
     token[..10].copy_from_slice(b"cooldown_0");

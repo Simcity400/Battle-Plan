@@ -26,11 +26,7 @@ pub fn naming_growing(
     let pointer = name_member(memory, base, pointer, handle)?;
     let header = member::member(memory, pointer)?;
     let word = |at| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
-    if base
-        .checked_add(member::VTABLE_RVA)
-        .map(|value| value as u64)
-        != Some(word(0))
-    {
+    if engine_sites::at(base, member::VTABLE_RVA).map(|value| value as u64) != Some(word(0)) {
         return Err("ship naming member identity invalid");
     }
     let equipment = match word(member::NAMING_EQUIPMENT) {
@@ -41,9 +37,7 @@ pub fn naming_growing(
             let identity = read::<[u8; 16]>(memory, pointer)
                 .ok_or("ship naming equipment identity unreadable")?;
             let full = u64::from_le_bytes(identity[8..].try_into().unwrap());
-            if base
-                .checked_add(cequipment_variant::VTABLE_RVA)
-                .map(|value| value as u64)
+            if engine_sites::at(base, cequipment_variant::VTABLE_RVA).map(|value| value as u64)
                 != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
                 || full as u32 != cequipment_variant::REFERENCE_TYPE
             {

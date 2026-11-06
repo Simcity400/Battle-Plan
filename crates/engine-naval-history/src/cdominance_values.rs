@@ -3,8 +3,9 @@
 //! The six saved scalars are signed i64 fixed5 values. The daily strategic-region
 //! update publishes them into CNavalRegionDominance's sorted snapshot.
 
+use engine_sites::Rva;
 /// CDominanceValues primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_1040;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_1040);
 /// Dominance country u32 key, required to equal the outer array key.
 pub const COUNTRY: usize = 0x08;
 /// CDominanceValues owning CStrategicRegion pointer.

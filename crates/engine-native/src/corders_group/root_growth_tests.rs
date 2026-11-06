@@ -48,7 +48,7 @@ impl World {
                 bucket + reference_bucket::OBJECT,
                 &(group as u64).to_le_bytes(),
             );
-            world.put(group, &(VTABLE_RVA as u64).to_le_bytes());
+            world.put(group, &(VTABLE_RVA.0 as u64).to_le_bytes());
             world.put(group + HANDLE, &handle.to_le_bytes());
             world.put(group + COUNTRY, &(index as u32 + 1).to_le_bytes());
         }
@@ -65,7 +65,7 @@ impl Memory for World {
         if self.fault == Some(address) {
             return false;
         }
-        if address == registry::LOW_ROOTS_RVA + REFERENCE_TYPE as usize * 8 && output.len() == 8 {
+        if address == registry::LOW_ROOTS_RVA.0 + REFERENCE_TYPE as usize * 8 && output.len() == 8 {
             output.copy_from_slice(&(TABLE as u64).to_le_bytes());
             return true;
         }

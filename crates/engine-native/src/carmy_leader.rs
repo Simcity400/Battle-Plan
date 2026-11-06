@@ -1,7 +1,8 @@
 //! Army-leader extension of unit-leader state. Skills retain signed i32 values.
 
+use engine_sites::Rva;
 /// Army-leader primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_2648;
+pub const VTABLE_RVA: Rva = Rva(0x029d_2648);
 /// Attack skill, i32.
 pub const ATTACK: usize = 0xf58;
 /// Captured byte; when set, serialization retains captor and location.
@@ -312,6 +313,15 @@ fn movement_field<T: crate::memory::Raw>(
     crate::read(memory, movement_at(pointer, offset)?).ok_or("movement leader field unreadable")
 }
 
+fn movement_global<T: crate::memory::Raw>(
+    memory: &impl crate::Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    let at = engine_sites::at(base, key).ok_or("movement leader address overflow")?;
+    crate::read(memory, at).ok_or("movement leader field unreadable")
+}
+
 /// One gathered field, consulted as `movement_field` would read it: address
 /// overflow first, then the gathered value or its read failure.
 fn movement_batched<T: crate::memory::Raw, const N: usize>(
@@ -348,12 +358,15 @@ fn movement_group_leader(
         movement_fields(group, [(0, 8), (HANDLE, 4), (LEADER, 8)]),
     );
     let vtable = movement_batched::<u64, 3>(memory, &batch, 0, group, 0)?;
-    if ![
-        crate::corders_group::VTABLE_RVA,
-        crate::carmy_group::VTABLE_RVA,
-    ]
-    .iter()
-    .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+    if engine_sites::which(
+        base,
+        vtable as usize,
+        &[
+            crate::corders_group::VTABLE_RVA,
+            crate::carmy_group::VTABLE_RVA,
+        ],
+    )
+    .is_none()
         || movement_batched::<u32, 3>(memory, &batch, 1, group, HANDLE)? != REFERENCE_TYPE
     {
         return Err("movement leader group identity mismatch");
@@ -369,7 +382,7 @@ fn movement_leader_identity<const N: usize>(
     batch: &crate::memory::FieldBatch<N>,
 ) -> Result<(), &'static str> {
     if movement_batched::<u64, N>(memory, batch, 0, leader, 0)?
-        != movement_at(base, VTABLE_RVA)? as u64
+        != engine_sites::at(base, VTABLE_RVA).ok_or("movement leader address overflow")? as u64
         || movement_batched::<u32, N>(memory, batch, 1, leader, crate::cunit_leader::TYPE)?
             != crate::cunit_leader::REFERENCE_TYPE
     {
@@ -407,9 +420,12 @@ fn movement_primary_root_internal(
     let authenticate =
         |pointer, cache: &mut Option<&mut PrimaryRootCache>| -> Result<(), &'static str> {
             let vtable = primary_shared::<u64>(memory, pointer, 0, cache)?;
-            if ![group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
-                .iter()
-                .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+            if engine_sites::which(
+                base,
+                vtable as usize,
+                &[group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA],
+            )
+            .is_none()
                 || primary_shared::<u32>(memory, pointer, group::HANDLE, cache)?
                     != group::REFERENCE_TYPE
             {
@@ -445,7 +461,9 @@ fn movement_primary_root_internal(
                 )? as usize;
                 if root == 0
                     || primary_shared::<u64>(memory, root, 0, &mut cache)?
-                        != movement_at(base, order::VTABLE_RVA)? as u64
+                        != engine_sites::at(base, order::VTABLE_RVA)
+                            .ok_or("movement leader address overflow")?
+                            as u64
                     || primary_shared::<u64>(memory, root, order::OWNER, &mut cache)?
                         != owner as u64
                 {
@@ -529,7 +547,7 @@ fn movement_accumulator_internal(
     // main reads them.
     let mut alternate = false;
     if class()? == 0
-        && movement_field::<u32>(
+        && movement_global::<u32>(
             memory,
             base,
             crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
@@ -553,7 +571,7 @@ pub fn separate_hq_order(
     unit: usize,
 ) -> Result<bool, &'static str> {
     if movement_field::<u32>(memory, unit, crate::cunit::CLASS)? != 0
-        || movement_field::<u32>(
+        || movement_global::<u32>(
             memory,
             base,
             crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
@@ -623,9 +641,12 @@ fn movement_hq_provider_root(
     let host = hq
         .checked_sub(corders_group_member::HOST_OFFSET)
         .ok_or("movement HQ host underflow")?;
-    if movement_field::<u64>(memory, host, 0)? != movement_at(base, carmy::VTABLE_RVA)? as u64
+    if movement_field::<u64>(memory, host, 0)?
+        != engine_sites::at(base, carmy::VTABLE_RVA).ok_or("movement leader address overflow")?
+            as u64
         || movement_field::<u64>(memory, host, carmy::SECONDARY_BASE)?
-            != movement_at(base, carmy::SECONDARY_VTABLE_RVA)? as u64
+            != engine_sites::at(base, carmy::SECONDARY_VTABLE_RVA)
+                .ok_or("movement leader address overflow")? as u64
         || movement_field::<u64>(memory, host, cunit::HANDLE)? == 0
         || movement_field::<u64>(memory, hq, corders_group_member::GROUP)? != own as u64
     {
@@ -851,7 +872,7 @@ impl MovementPreparation {
             movement_at(seed.pointer, crate::cunit::CLASS)?;
             if seed.class.ok_or("movement leader field unreadable")? == 0 {
                 let flags = *memo.flags.get_or_insert_with(|| {
-                    movement_field::<u32>(
+                    movement_global::<u32>(
                         memory,
                         base,
                         crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
@@ -940,7 +961,7 @@ pub fn movement_block_prepared(
     if class == 0 {
         let flags = *memo.flags.get_or_insert_with(|| {
             prepared.and_then(|p| p.flags).unwrap_or_else(|| {
-                movement_field::<u32>(
+                movement_global::<u32>(
                     memory,
                     base,
                     crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
@@ -1103,8 +1124,11 @@ pub fn capture_selections(
     );
     groups.sort_unstable_by_key(|entry| entry.group);
     groups.dedup_by_key(|entry| entry.group);
-    let group_vtables = [crate::corders_group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
-        .map(|rva| base.checked_add(rva).map(|vtable| vtable as u64));
+    let group_vtables = [
+        crate::corders_group::VTABLE_RVA,
+        crate::carmy_group::VTABLE_RVA,
+    ]
+    .map(|rva| engine_sites::at(base, rva).map(|vtable| vtable as u64));
     let mut pointers = [0_usize; SELECTION_BATCH];
     let mut rows = [0_usize; SELECTION_BATCH];
     let mut complete = [false; SELECTION_BATCH];
@@ -1183,7 +1207,8 @@ pub fn capture_selections(
     );
     leaders.sort_unstable_by_key(|entry| entry.0);
     leaders.dedup_by_key(|entry| entry.0);
-    let identity = movement_at(base, VTABLE_RVA)? as u64;
+    let identity =
+        engine_sites::at(base, VTABLE_RVA).ok_or("movement leader address overflow")? as u64;
     let mut pending = [0_usize; SELECTION_BATCH];
     let mut leader_bytes = [0_u8; SELECTION_BATCH * 16];
     let mut next = 0;
@@ -1517,7 +1542,7 @@ pub fn retreat_bans_many(
     held: &mut dyn FnMut(usize) -> Option<RetreatBans>,
 ) {
     use crate::{cpdx_array::Array, memory::RecordSources, modifier_entry::STRIDE};
-    let expected = |rva: usize| base.checked_add(rva).map(|value| value as u64);
+    let expected = |rva: Rva| engine_sites::at(base, rva).map(|value| value as u64);
     let group_vtables = [
         expected(crate::corders_group::VTABLE_RVA),
         expected(crate::carmy_group::VTABLE_RVA),

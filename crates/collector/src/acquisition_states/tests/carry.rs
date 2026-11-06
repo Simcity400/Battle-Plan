@@ -242,7 +242,7 @@ fn a_carried_hour_names_categories_without_allocating() {
     put(
         &mut bytes,
         CATEGORY,
-        (cstate::CATEGORY_VTABLE_RVA as u64).to_le_bytes(),
+        (cstate::CATEGORY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -306,12 +306,12 @@ mod infrastructure {
     fn world() -> Vec<u8> {
         let mut bytes = named();
         put(&mut bytes, DEFINITIONS, (DEFINITION as u64).to_le_bytes());
-        put(&mut bytes, DEFINITION, (cbuilding_template::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, DEFINITION, (cbuilding_template::VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, DEFINITION + cbuilding_template::TYPE_ID, TOKEN.to_le_bytes());
         bytes[DEFINITION + cbuilding_template::LOOKUP_ENABLED_CANDIDATE] = 1;
         put(&mut bytes, DEFINITION + 0x2b8, 5_i32.to_le_bytes());
         put(&mut bytes, DEFINITION + 0x2c4, NO_GROUP.to_le_bytes());
-        put(&mut bytes, CATEGORY, (cstate::CATEGORY_VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, CATEGORY, (cstate::CATEGORY_VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, CATEGORY + cstate::CATEGORY_TOKEN, TOKEN.to_le_bytes());
         for ((state, building), level) in [FIRST, LAST].into_iter().zip(BUILDINGS).zip([2_i16, 4]) {
             let status = state + cstate::BUILDING_STATUS;
@@ -320,7 +320,7 @@ mod infrastructure {
             header(&mut bytes, status + cbuilding_status::BUILDING_INDICES, building + 0x200, 1);
             header(&mut bytes, status + cbuilding_status::BUILDINGS, building + 0x210, 1);
             put(&mut bytes, building + 0x210, (building as u64).to_le_bytes());
-            put(&mut bytes, building, (cbuilding::VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, building, (cbuilding::VTABLE_RVA.0 as u64).to_le_bytes());
             put(&mut bytes, building + cbuilding::TEMPLATE, (DEFINITION as u64).to_le_bytes());
             put(&mut bytes, building + cbuilding::LEVEL, level.to_le_bytes());
         }

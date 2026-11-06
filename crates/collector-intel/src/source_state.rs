@@ -119,11 +119,9 @@ impl Owner {
         seed.country
             .checked_add(engine_native::ccountry::OPERATION_TOKEN_MANAGER + 8)
             .ok_or("intel source country span overflow")?;
-        if read::<u64>(memory, seed.root)
-            != base
-                .checked_add(engine_native::ccountry_intel::VTABLE_RVA)
-                .map(|p| p as u64)
-        {
+        let root_vtable = engine_sites::at(base, engine_native::ccountry_intel::VTABLE_RVA)
+            .ok_or("intel source bootstrap root identity mismatch")?;
+        if read::<u64>(memory, seed.root) != Some(root_vtable as u64) {
             return Err("intel source bootstrap root identity mismatch");
         }
         self.raw_owner = read(memory, seed.root + engine_native::ccountry_intel::OWNER)
@@ -169,11 +167,9 @@ impl Owner {
             .country
             .checked_add(engine_native::ccountry::RADARS_POOL)
             .ok_or("intel radar owner address overflow")?;
-        if read::<u64>(memory, radar)
-            != base
-                .checked_add(engine_native::cradars_pool::VTABLE_RVA)
-                .map(|p| p as u64)
-        {
+        let radar_vtable = engine_sites::at(base, engine_native::cradars_pool::VTABLE_RVA)
+            .ok_or("intel radar source identity mismatch")?;
+        if read::<u64>(memory, radar) != Some(radar_vtable as u64) {
             return Err("intel radar source identity mismatch");
         }
         let token = seed
@@ -186,10 +182,12 @@ impl Owner {
         token
             .checked_add(native::TOKEN_REFERENCE + 24)
             .ok_or("intel token reference span overflow")?;
-        if read::<u64>(memory, token)
-            != base
-                .checked_add(engine_intelligence::ccountry_operation_token_manager::VTABLE_RVA)
-                .map(|p| p as u64)
+        let token_vtable = engine_sites::at(
+            base,
+            engine_intelligence::ccountry_operation_token_manager::VTABLE_RVA,
+        )
+        .ok_or("intel token source owner identity mismatch")?;
+        if read::<u64>(memory, token) != Some(token_vtable as u64)
             || read::<u64>(
                 memory,
                 token + engine_intelligence::ccountry_operation_token_manager::COUNTRY,
@@ -660,14 +658,14 @@ mod tests {
                 .max(engine_intelligence::ccountry_operation_token_manager::COUNTRY + 8),
         );
         let radar = country + engine_native::ccountry::RADARS_POOL;
-        world.u64(radar, engine_native::cradars_pool::VTABLE_RVA as u64);
+        world.u64(radar, engine_native::cradars_pool::VTABLE_RVA.0 as u64);
         world.u64(
             country + engine_native::ccountry::OPERATION_TOKEN_MANAGER,
             token as u64,
         );
         world.u64(
             token,
-            engine_intelligence::ccountry_operation_token_manager::VTABLE_RVA as u64,
+            engine_intelligence::ccountry_operation_token_manager::VTABLE_RVA.0 as u64,
         );
         world.u64(
             token + engine_intelligence::ccountry_operation_token_manager::COUNTRY,
@@ -681,7 +679,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            world.u64(reference, native::REFERENCE_VTABLE as u64);
+            world.u64(reference, native::REFERENCE_VTABLE.0 as u64);
             world.u32(reference + 8, 17);
             world.u32(reference + 16, index as u32 + 19);
         }

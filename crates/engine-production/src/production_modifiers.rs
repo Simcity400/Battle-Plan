@@ -8,6 +8,7 @@ use crate::{
     cequipment_variant, cpdx_array::Array, cproduction_line, cproduction_status,
     modifier_keys as keys, read,
 };
+use engine_sites::Rva;
 
 /// Production-tooltip modifier keys in increasing order.
 pub const KEYS: [u32; 11] = [
@@ -25,18 +26,18 @@ pub const KEYS: [u32; 11] = [
 ];
 /// Seven production categories mapped through the runtime token table, distinct from token IDs.
 pub const BONUS_COUNT: usize = 7;
-const BONUS_KEYS_RVA: usize = 0x0343_8320;
+const BONUS_KEYS_RVA: Rva = Rva(0x0343_8320);
 
 /// Signed i32 start/cap percentages, signed fixed5 gain/balance and four fixed5 factory rates.
-const DEFINE_RVAS: [usize; 8] = [
-    0x033e_0dec,
-    0x033e_0e68,
-    0x033e_0ef0,
-    0x033e_0f98,
-    0x033e_0bc0,
-    0x033e_0d68,
-    0x033e_0b28,
-    0x033e_0cd8,
+const DEFINE_RVAS: [Rva; 8] = [
+    Rva(0x033e_0dec),
+    Rva(0x033e_0e68),
+    Rva(0x033e_0ef0),
+    Rva(0x033e_0f98),
+    Rva(0x033e_0bc0),
+    Rva(0x033e_0d68),
+    Rva(0x033e_0b28),
+    Rva(0x033e_0cd8),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,29 +59,30 @@ pub struct Context {
 impl Context {
     pub fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut result = Self {
-            start: field(memory, base, DEFINE_RVAS[0])?,
-            cap: field(memory, base, DEFINE_RVAS[1])?,
-            gain: field(memory, base, DEFINE_RVAS[2])?,
-            balance: field(memory, base, DEFINE_RVAS[3])?,
+            start: global(memory, base, DEFINE_RVAS[0])?,
+            cap: global(memory, base, DEFINE_RVAS[1])?,
+            gain: global(memory, base, DEFINE_RVAS[2])?,
+            balance: global(memory, base, DEFINE_RVAS[3])?,
             ..Self::default()
         };
         for (value, rva) in result.factory_speed.iter_mut().zip(&DEFINE_RVAS[4..]) {
-            *value = field(memory, base, *rva)?;
+            *value = global(memory, base, *rva)?;
         }
+        let bonus_keys = module_at(base, BONUS_KEYS_RVA)?;
         for (category, key) in result.bonus_keys.iter_mut().enumerate() {
-            *key = field(memory, base, BONUS_KEYS_RVA + category * 0x28)?;
+            *key = field(memory, bonus_keys, category * 0x28)?;
         }
-        for (value, rva) in
-            result
-                .retention
-                .iter_mut()
-                .zip([0x033e_1020, 0x033e_109c, 0x033e_1130, 0x033e_11b4])
-        {
-            *value = i64::from(field::<i32>(memory, base, rva)?).wrapping_mul(1000);
+        for (value, rva) in result.retention.iter_mut().zip([
+            Rva(0x033e_1020),
+            Rva(0x033e_109c),
+            Rva(0x033e_1130),
+            Rva(0x033e_11b4),
+        ]) {
+            *value = i64::from(global::<i32>(memory, base, rva)?).wrapping_mul(1000);
         }
-        result.conversion = field(memory, base, 0x033e_23e8)?;
+        result.conversion = global(memory, base, Rva(0x033e_23e8))?;
         // Equipment-category feature gates.
-        let mask = field::<u32>(memory, base, crate::dlc_feature_state::MASK_RVA)?;
+        let mask = global::<u32>(memory, base, crate::dlc_feature_state::MASK_RVA)?;
         result.module_mask = (if mask & (1 << 4) != 0 {
             0x80004001c0
         } else {
@@ -233,6 +235,10 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("production modifier address overflow")
 }
 
+fn module_at(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("production modifier address overflow")
+}
+
 /// Whether military production converts into `variant` while its line's
 /// conversion control is set: the native target gate, before the module
 /// restriction the conversion-output bonus adds. A design with a parent, or of
@@ -252,15 +258,21 @@ pub fn conversion_target(memory: &impl Memory, variant: usize) -> Result<bool, &
     if variant == 0 {
         return Ok(false);
     }
-    let definition = usize::try_from(operand::<u64>(memory, variant, cequipment_variant::DEFINITION)?)
-        .ok()
-        .filter(|&pointer| pointer != 0)
-        .ok_or("conversion target equipment type null")?;
+    let definition = usize::try_from(operand::<u64>(
+        memory,
+        variant,
+        cequipment_variant::DEFINITION,
+    )?)
+    .ok()
+    .filter(|&pointer| pointer != 0)
+    .ok_or("conversion target equipment type null")?;
     use crate::cequipment_type::{CONVERSION_FAMILY, CONVERT_FROM_COUNT};
-    Ok((operand::<u64>(memory, variant, cequipment_variant::PARENT)? != 0
-        || operand::<u8>(memory, definition, CONVERSION_FAMILY)? != 0)
-        && operand::<i32>(memory, variant, cequipment_variant::ORIGIN_LINK)? <= 0
-        || operand::<i32>(memory, definition, CONVERT_FROM_COUNT)? != 0)
+    Ok(
+        (operand::<u64>(memory, variant, cequipment_variant::PARENT)? != 0
+            || operand::<u8>(memory, definition, CONVERSION_FAMILY)? != 0)
+            && operand::<i32>(memory, variant, cequipment_variant::ORIGIN_LINK)? <= 0
+            || operand::<i32>(memory, definition, CONVERT_FROM_COUNT)? != 0,
+    )
 }
 
 fn field<T: crate::memory::Raw>(
@@ -269,6 +281,13 @@ fn field<T: crate::memory::Raw>(
     offset: usize,
 ) -> Result<T, &'static str> {
     read(memory, at(pointer, offset)?).ok_or("production modifier operand unreadable")
+}
+fn global<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    read(memory, module_at(base, key)?).ok_or("production modifier operand unreadable")
 }
 fn add(value: &mut usize, amount: usize) -> Result<(), &'static str> {
     *value = value
@@ -304,7 +323,7 @@ fn naval(
         if pointer == 0 || out.archetypes[..depth].contains(&pointer) {
             return Err("production modifier equipment archetype null or cyclic");
         }
-        if field::<u64>(memory, pointer, 0)? != at(base, ty::VTABLE_RVA)? as u64 {
+        if field::<u64>(memory, pointer, 0)? != module_at(base, ty::VTABLE_RVA)? as u64 {
             return Err("production modifier equipment type vtable mismatch");
         }
         out.archetype_required = out.archetype_required.max(depth + 1);
@@ -551,15 +570,23 @@ fn capture_buffer(
                 .ok_or("production modifier line pointer unreadable or null")?;
             let identity = field::<[u8; 16]>(memory, pointer, 0)?;
             let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
-            let rva = usize::try_from(vtable)
-                .ok()
-                .and_then(|p| p.checked_sub(base))
-                .ok_or("production modifier line vtable mismatch")?;
-            let kind = match rva {
-                crate::cmilitary_production_line::VTABLE_RVA => line::KIND_MILITARY,
-                crate::cnaval_production_line::VTABLE_RVA => line::KIND_NAVAL,
-                crate::cship_refit_production_line::VTABLE_RVA => line::KIND_SHIP_REFIT,
-                crate::crailway_gun_production_line::VTABLE_RVA => line::KIND_RAILWAY_GUN,
+            let address =
+                usize::try_from(vtable).map_err(|_| "production modifier line vtable mismatch")?;
+            use crate::{
+                cmilitary_production_line as military, cnaval_production_line as naval_line,
+                crailway_gun_production_line as railway_gun, cship_refit_production_line as refit,
+            };
+            let candidates = [
+                military::VTABLE_RVA,
+                naval_line::VTABLE_RVA,
+                refit::VTABLE_RVA,
+                railway_gun::VTABLE_RVA,
+            ];
+            let kind = match engine_sites::which(base, address, &candidates) {
+                Some(military::VTABLE_RVA) => line::KIND_MILITARY,
+                Some(naval_line::VTABLE_RVA) => line::KIND_NAVAL,
+                Some(refit::VTABLE_RVA) => line::KIND_SHIP_REFIT,
+                Some(railway_gun::VTABLE_RVA) => line::KIND_RAILWAY_GUN,
                 _ => return Err("production modifier line vtable mismatch"),
             };
             let handle = u64::from_le_bytes(identity[8..].try_into().unwrap());
@@ -667,12 +694,17 @@ fn capture_buffer(
             }
             // The four supported production forms have constant eligibility predicates.
             // Refit selects true; the others select zero. Refuse a different implementation.
-            let refit_output =
-                match field::<u64>(memory, vtable as usize, 0xd8)?.checked_sub(base as u64) {
-                    Some(0x0018_8d90) => true,
-                    Some(0x0011_d530) => false,
-                    _ => return Err("unreached production refit virtual implementation"),
-                };
+            let implementation = usize::try_from(field::<u64>(memory, vtable as usize, 0xd8)?)
+                .map_err(|_| "unreached production refit virtual implementation")?;
+            let refit_output = match engine_sites::which(
+                base,
+                implementation,
+                &[Rva(0x0018_8d90), Rva(0x0011_d530)],
+            ) {
+                Some(Rva(0x0018_8d90)) => true,
+                Some(Rva(0x0011_d530)) => false,
+                _ => return Err("unreached production refit virtual implementation"),
+            };
             out.lines[out.line_len] = Line {
                 handle,
                 country: country.id,

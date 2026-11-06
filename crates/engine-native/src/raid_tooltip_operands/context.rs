@@ -6,18 +6,15 @@ use crate::{
     cair_base, cair_wing_pool, cbuilding, cbuilding_database, cbuilding_status, cbuilding_template,
     cgame_state, cprovince, cstate, cstrategic_air, cstrategic_air_manager, cstrategic_region,
 };
+use engine_sites::Rva;
 
 pub(super) fn authenticate(
     m: &impl Memory,
     base: usize,
     p: usize,
-    vt: usize,
+    vt: Rva,
 ) -> Result<(), &'static str> {
-    if field::<u64>(m, p, 0)?
-        != base
-            .checked_add(vt)
-            .ok_or("raid tooltip vtable address overflow")? as u64
-    {
+    if Some(field::<u64>(m, p, 0)?) != engine_sites::at(base, vt).map(|a| a as u64) {
         return Err("raid tooltip context vtable mismatch");
     }
     Ok(())
@@ -272,9 +269,8 @@ fn interceptors(
     ];
     const LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&SCREEN, 16).expect("valid wing screen layout");
-    let wing_vtable = base
-        .checked_add(cair_wing::VTABLE_RVA)
-        .ok_or("raid tooltip vtable address overflow")? as u64;
+    let wing_vtable =
+        engine_sites::at(base, cair_wing::VTABLE_RVA).ok_or("raid tooltip vtable withheld")? as u64;
     let mut ordinal = 0u32;
     let mut raw = [0u8; BATCH * 8];
     let mut pointers = [0usize; BATCH];
@@ -356,7 +352,9 @@ fn anti_air(
 ) -> Result<(), &'static str> {
     // The building database's air-defence list holds templates with nonzero air defence. Index
     // lookup precedes the healthy-level read.
-    let db = pointer(m, base, cbuilding_database::SINGLETON_RVA)?;
+    let db = engine_sites::at(base, cbuilding_database::SINGLETON_RVA)
+        .ok_or("raid tooltip building database withheld")?;
+    let db = pointer(m, db, 0)?;
     let types = array(m, db, 0x220, 8)?;
     let status = state
         .checked_add(cstate::BUILDING_STATUS)
@@ -546,13 +544,13 @@ mod tests {
         let mut put =
             |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         put(0x100, 0x200);
-        put(0x200, cair_wing_pool::VTABLE_RVA as u64);
+        put(0x200, cair_wing_pool::VTABLE_RVA.0 as u64);
         put(0x200 + cair_wing_pool::WINGS, 0x400);
         put(0x200 + cair_wing_pool::WINGS + 8, 70 << 32 | 70);
         for index in 0..70usize {
             let wing = 0x1000 + index * 0x800;
             put(0x400 + index * 8, wing as u64);
-            put(wing, cair_wing::VTABLE_RVA as u64);
+            put(wing, cair_wing::VTABLE_RVA.0 as u64);
             put(wing + 0xc0, if index % 3 == 0 { REGION as u64 } else { 0 });
             put(wing + 0x90 + crate::air_mission::WING, wing as u64);
             put(wing + 0xa0, 4 | index as u64);

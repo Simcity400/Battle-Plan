@@ -76,7 +76,7 @@ pub(crate) fn add_alias_and_rocket(bytes: &mut [u8]) {
     );
     put64(bytes, RVEC2, 0);
     put64(bytes, RVEC2 + 8, B2 as u64);
-    put64(bytes, B2, cair_base::VTABLE_RVA as u64);
+    put64(bytes, B2, cair_base::VTABLE_RVA.0 as u64);
     put64(
         bytes,
         B2 + cair_base::HANDLE,
@@ -87,9 +87,9 @@ pub(crate) fn add_alias_and_rocket(bytes: &mut [u8]) {
     put64(bytes, B2 + cair_base::HOST_REFERENCE + 16, P2 as u64);
     put32(bytes, B2 + cair_base::HOST_REFERENCE + 24, 42);
     put32(bytes, B2 + cair_base::HOST_REFERENCE + 28, 0);
-    put64(bytes, S2, cstate::VTABLE_RVA as u64);
+    put64(bytes, S2, cstate::VTABLE_RVA.0 as u64);
     put32(bytes, S2 + cstate::ID, 1);
-    put64(bytes, P2, cprovince::VTABLE_RVA as u64);
+    put64(bytes, P2, cprovince::VTABLE_RVA.0 as u64);
     put32(bytes, P2 + cprovince::ID, 7);
     put64(bytes, P2 + cprovince::STATE, S2 as u64);
     header(bytes, B2 + cair_base::COUNTRY_CONTAINERS, CVEC2, 0);
@@ -103,7 +103,7 @@ pub(crate) fn add_reserved_alias(bytes: &mut [u8]) {
     header(bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
     put64(bytes, CTAB, RESERVED as u64);
     put64(bytes, CTAB + 24, RESERVED as u64);
-    put64(bytes, RESERVED, ccountry::VTABLE_RVA as u64);
+    put64(bytes, RESERVED, ccountry::VTABLE_RVA.0 as u64);
     put32(bytes, RESERVED + ccountry::ID, 0);
 }
 
@@ -123,7 +123,7 @@ fn fixture_inner() -> Vec<u8> {
     put32(&mut bytes, LTAB + 8, 2);
     put32(&mut bytes, LTAB + 12, 0);
     for (country, id) in [(C0, 1u32), (C1, 2u32)] {
-        put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        put64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         put32(&mut bytes, country + ccountry::ID, id);
     }
     header(&mut bytes, C0 + ccountry::ACES, ACES0, 2);
@@ -139,7 +139,7 @@ fn fixture_inner() -> Vec<u8> {
     put64(
         &mut bytes,
         MANAGER,
-        cstrategic_air_manager::VTABLE_RVA as u64,
+        cstrategic_air_manager::VTABLE_RVA.0 as u64,
     );
     header(
         &mut bytes,
@@ -174,7 +174,7 @@ fn fixture_inner() -> Vec<u8> {
         (B0, 0x41u64, S0, 1u32, P0, 5u32, 1200i32, 0i32),
         (B1, 0x42u64, S1, 2u32, P1, 6u32, -3i32, 1i32),
     ] {
-        put64(&mut bytes, base, cair_base::VTABLE_RVA as u64);
+        put64(&mut bytes, base, cair_base::VTABLE_RVA.0 as u64);
         put64(
             &mut bytes,
             base + cair_base::HANDLE,
@@ -201,14 +201,14 @@ fn fixture_inner() -> Vec<u8> {
             base + cair_base::HOST_REFERENCE + 28,
             kind as u32,
         );
-        put64(&mut bytes, state, cstate::VTABLE_RVA as u64);
+        put64(&mut bytes, state, cstate::VTABLE_RVA.0 as u64);
         put32(&mut bytes, state + cstate::ID, state_id);
-        put64(&mut bytes, province, cprovince::VTABLE_RVA as u64);
+        put64(&mut bytes, province, cprovince::VTABLE_RVA.0 as u64);
         put32(&mut bytes, province + cprovince::ID, province_id);
         put64(&mut bytes, province + cprovince::STATE, state as u64);
     }
     // Stateless host with a native host reference.
-    put64(&mut bytes, H0, cair_base::VTABLE_RVA as u64);
+    put64(&mut bytes, H0, cair_base::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         H0 + cair_base::HANDLE,
@@ -245,7 +245,7 @@ fn fixture_inner() -> Vec<u8> {
         put64(
             &mut bytes,
             container,
-            ccountry_air_container::VTABLE_RVA as u64,
+            ccountry_air_container::VTABLE_RVA.0 as u64,
         );
         put32(
             &mut bytes,
@@ -260,17 +260,17 @@ fn fixture_inner() -> Vec<u8> {
         );
     }
     put64(&mut bytes, POOLVEC0, POOL0 as u64);
-    put64(&mut bytes, POOL0, cair_wing_pool::VTABLE_RVA as u64);
+    put64(&mut bytes, POOL0, cair_wing_pool::VTABLE_RVA.0 as u64);
     header(&mut bytes, POOL0 + cair_wing_pool::WINGS, WVEC, 2);
     put64(&mut bytes, WVEC, W0 as u64);
     put64(&mut bytes, WVEC + 8, W1 as u64);
     for (wing, handle) in [(W0, WING_HANDLE_0), (W1, WING_HANDLE_1)] {
-        put64(&mut bytes, wing, cair_wing::VTABLE_RVA as u64);
+        put64(&mut bytes, wing, cair_wing::VTABLE_RVA.0 as u64);
         put64(&mut bytes, wing + 8, POOL0 as u64);
         put64(
             &mut bytes,
             wing + 16,
-            cair_wing::SECONDARY_VTABLE_RVA as u64,
+            cair_wing::SECONDARY_VTABLE_RVA.0 as u64,
         );
         put64(&mut bytes, wing + 24, handle);
         put64(&mut bytes, wing + cair_wing::POOL, POOL0 as u64);
@@ -319,7 +319,7 @@ fn ace(
 ) {
     #![allow(clippy::too_many_arguments)]
     use engine_native::{cace, msvc_string};
-    put64(bytes, at, cace::VTABLE_RVA as u64);
+    put64(bytes, at, cace::VTABLE_RVA.0 as u64);
     put64(bytes, at + cace::REFERENCE, (id << 32) | 0xace);
     put32(bytes, at + cace::AIRCRAFT_TYPE_MASK, 0xF);
     put64(bytes, at + cace::OWNER_COUNTRY, owner as u64);
@@ -371,7 +371,7 @@ pub(crate) struct SyntheticMemory<'a> {
 
 impl Memory for SyntheticMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        let address = if address == engine_native::cgui::SINGLETON_RVA && output.len() == 8 {
+        let address = if address == engine_native::cgui::SINGLETON_RVA.0 && output.len() == 8 {
             GUI_SINGLETON
         } else {
             address

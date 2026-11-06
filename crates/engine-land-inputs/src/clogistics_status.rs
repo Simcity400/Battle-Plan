@@ -31,9 +31,10 @@ use crate::{
     read, read_slice,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Logistics-status primary vtable.
-pub const VTABLE_RVA: usize = 0x02a2_ec48;
+pub const VTABLE_RVA: Rva = Rva(0x02a2_ec48);
 /// Logistics history pointer array: capacity and count. Construction fills 19 series; daily update
 /// advances every counted series.
 pub const SERIES: usize = 0x08;
@@ -189,8 +190,8 @@ fn walk_inner(
 ) -> Result<(usize, u32), &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let mut control = cgame_state::AiControl::read(memory, game_state)?;
-    let vtable = |rva: usize| {
-        base.checked_add(rva)
+    let vtable = |key: Rva| {
+        engine_sites::at(base, key)
             .map(|address| address as u64)
             .ok_or("logistics module address overflow")
     };
@@ -478,14 +479,12 @@ fn check_record(
 }
 
 fn read_archetype_list(memory: &impl Memory, base: usize) -> Result<Array, &'static str> {
-    let database = base
-        .checked_add(database::SINGLETON_RVA)
+    let database = engine_sites::at(base, database::SINGLETON_RVA)
         .and_then(|global| read::<u64>(memory, global))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
         .ok_or("equipment database pointer unreadable or null")?;
-    let expected = base
-        .checked_add(database::VTABLE_RVA)
+    let expected = engine_sites::at(base, database::VTABLE_RVA)
         .ok_or("equipment database vtable address overflow")?;
     if read::<u64>(memory, database) != Some(expected as u64) {
         return Err("equipment database vtable unreadable or mismatched");
@@ -504,8 +503,7 @@ fn read_identities(
     list: Array,
     block: &mut [Row],
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(cequipment_type::VTABLE_RVA)
+    let expected = engine_sites::at(base, cequipment_type::VTABLE_RVA)
         .ok_or("equipment type vtable address overflow")? as u64;
     let mut pointer_bytes = [0; BATCH * 8];
     let mut pointers = [0_usize; BATCH];
@@ -629,8 +627,8 @@ pub fn walk_balance_owners(
     let mut walk = || -> Result<(usize, u32), &'static str> {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut control = cgame_state::AiControl::read(memory, game_state)?;
-        let address = |rva| {
-            base.checked_add(rva)
+        let address = |key| {
+            engine_sites::at(base, key)
                 .map(|a| a as u64)
                 .ok_or("logistics module address overflow")
         };
@@ -701,25 +699,8 @@ pub struct BalanceWrite {
     pub available_raw: i64,
 }
 
-pub const BALANCE_WRITE_RVA: usize = 0x015b_3220;
-pub const BALANCE_CALLS: [(usize, [u8; 16], usize); 2] = [
-    (
-        0x0140_bc04,
-        [
-            0xe8, 0x17, 0x76, 0x1a, 0, 0x48, 0xff, 0xc6, 0x49, 0x3b, 0xf6, 0x0f, 0x8c, 0x4b, 0xff,
-            0xff,
-        ],
-        0x90,
-    ),
-    (
-        0x0140_c402,
-        [
-            0xe8, 0x19, 0x6e, 0x1a, 0, 0x48, 0xff, 0xc6, 0x49, 0x3b, 0xf6, 0x0f, 0x8c, 0x5d, 0xff,
-            0xff,
-        ],
-        0x80,
-    ),
-];
+pub const BALANCE_WRITE_RVA: Rva = Rva(0x015b_3220);
+pub const BALANCE_CALLS: [(Rva, usize); 2] = [(Rva(0x0140_bc04), 0x90), (Rva(0x0140_c402), 0x80)];
 
 /// Whether the loop-history value setter stores at all: it writes `values[index]` only when the
 /// signed index is below the signed count at the record's count, and returns otherwise. `None` when
@@ -783,28 +764,8 @@ pub fn balance_write(
 /// History advance zeroes reused records; clear zeroes existing buffers.
 /// Only these logistics call sites reach balance series 16. Appearance reset
 /// clears a different country field, and other setters reach series 0/3/6.
-pub const HISTORY_CALLS: [(usize, [u8; 16], usize); 3] = [
-    (
-        0x0140_ba58,
-        [
-            0xe8, 0x83, 0x63, 0x1a, 0, 0x48, 0xff, 0xc3, 0x49, 0x3b, 0xde, 0x7c, 0xeb, 0x48, 0x8b,
-            0x45,
-        ],
-        0x015b_1de0,
-    ),
-    (
-        0x0140_7d68,
-        [
-            0xe8, 0xb3, 0xa6, 0x1a, 0, 0x48, 0xff, 0xc3, 0x48, 0x3b, 0xde, 0x7c, 0xeb, 0x48, 0x8b,
-            0x5c,
-        ],
-        0x015b_2420,
-    ),
-    (
-        0x0140_be38,
-        [
-            0xe8, 0xe3, 0x65, 0x1a, 0, 0x48, 0x8b, 0x4f, 0x08, 0xba, 0x07, 0, 0, 0, 0x48, 0x8b,
-        ],
-        0x015b_2420,
-    ),
+pub const HISTORY_CALLS: [(Rva, Rva); 3] = [
+    (Rva(0x0140_ba58), Rva(0x015b_1de0)),
+    (Rva(0x0140_7d68), Rva(0x015b_2420)),
+    (Rva(0x0140_be38), Rva(0x015b_2420)),
 ];

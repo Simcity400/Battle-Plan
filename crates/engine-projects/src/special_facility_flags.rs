@@ -47,8 +47,7 @@ pub fn walk_buffer(
     let result = (|| {
         let graphics = province_graphics(memory, base)?;
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let program_vtable = base
-            .checked_add(nproject_cprogram::VTABLE_RVA)
+        let program_vtable = engine_sites::at(base, nproject_cprogram::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let (mut len, mut unread) = (0_usize, 0_u32);
         for slot in 1..countries.count() {
@@ -125,13 +124,11 @@ fn province_graphics(memory: &impl Memory, base: usize) -> Result<Array, &'stati
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
     };
-    let idler = base
-        .checked_add(cin_game_idler::SINGLETON_A_RVA)
+    let idler = engine_sites::at(base, cin_game_idler::SINGLETON_A_RVA)
         .and_then(pointer)
         .ok_or("in-game idler unreadable or null")?;
-    let vtable = base
-        .checked_add(cin_game_idler::VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let vtable =
+        engine_sites::at(base, cin_game_idler::VTABLE_RVA).ok_or("module address overflow")? as u64;
     if read::<u64>(memory, idler) != Some(vtable) {
         return Err("in-game idler vtable mismatch");
     }
@@ -184,7 +181,7 @@ mod tests {
         put(
             &mut bytes,
             COUNTRY,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
         put(
@@ -195,12 +192,12 @@ mod tests {
         put(
             &mut bytes,
             STATUS,
-            &(nproject_cprogram_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(nproject_cprogram_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             STATUS + 8,
-            &(nproject_cprogram_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            &(nproject_cprogram_status::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -222,7 +219,7 @@ mod tests {
             put(
                 &mut bytes,
                 program,
-                &(nproject_cprogram::VTABLE_RVA as u64).to_le_bytes(),
+                &(nproject_cprogram::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -233,7 +230,7 @@ mod tests {
         put(
             &mut bytes,
             IDLER,
-            &(cin_game_idler::VTABLE_RVA as u64).to_le_bytes(),
+            &(cin_game_idler::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -271,7 +268,7 @@ mod tests {
 
     impl Memory for Image<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == cin_game_idler::SINGLETON_A_RVA && destination.len() == 8 {
+            if address == cin_game_idler::SINGLETON_A_RVA.0 && destination.len() == 8 {
                 destination.copy_from_slice(&self.idler.to_le_bytes());
                 return true;
             }

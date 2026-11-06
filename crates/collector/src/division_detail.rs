@@ -442,16 +442,16 @@ mod tests {
         for (address, value) in [
             (
                 source.pointer + carmy::EQUIPMENT_POOL,
-                cequipment_variant_pool::VTABLE_RVA as u64,
+                cequipment_variant_pool::VTABLE_RVA.0 as u64,
             ),
             (
                 source.pointer + carmy::REQUESTS,
                 (group - carmy_upgrades_requests::IN_ARMY_REQUESTS) as u64,
             ),
-            (group, carmy_upgrades_requests::VTABLE_RVA as u64),
+            (group, carmy_upgrades_requests::VTABLE_RVA.0 as u64),
             (
                 group + carmy_upgrades_requests::PERSISTENT_SUBOBJECT,
-                carmy_upgrades_requests::PERSISTENT_VTABLE_RVA as u64,
+                carmy_upgrades_requests::PERSISTENT_VTABLE_RVA.0 as u64,
             ),
             (group + carmy_upgrades_requests::ARMY, source.pointer as u64),
         ] {
@@ -489,7 +489,7 @@ mod tests {
         for (address, value) in [
             (
                 invalid.pointer + carmy::EQUIPMENT_POOL,
-                cequipment_variant_pool::VTABLE_RVA as u64,
+                cequipment_variant_pool::VTABLE_RVA.0 as u64,
             ),
             (
                 invalid.pointer + carmy::REQUESTS,
@@ -631,17 +631,17 @@ mod tests {
             pointers,
             delivery_rows,
         );
-        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             variant + cequipment_variant::TYPE,
             0x8000_0000_0000_0046,
         );
-        word(&mut bytes, delivery, cupgrade_delivery::VTABLE_RVA as u64);
+        word(&mut bytes, delivery, cupgrade_delivery::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             delivery + cupgrade_delivery::PRODUCED_EQUIPMENT_POOL,
-            cequipment_variant_pool::VTABLE_RVA as u64,
+            cequipment_variant_pool::VTABLE_RVA.0 as u64,
         );
         for index in 0..equipment_rows {
             word(
@@ -669,7 +669,7 @@ mod tests {
         array(&mut bytes, state + cgame_state::COUNTRY_LINKS, links, 2);
         word(&mut bytes, country_slots + 8, country as u64);
         bytes[links + 4..links + 8].copy_from_slice(&1_u32.to_le_bytes());
-        word(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        word(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
         bytes[country + ccountry::ID..country + ccountry::ID + 4]
             .copy_from_slice(&1_u32.to_le_bytes());
         word(
@@ -680,7 +680,7 @@ mod tests {
         word(
             &mut bytes,
             status,
-            engine_native::cproduction_status::VTABLE_RVA as u64,
+            engine_native::cproduction_status::VTABLE_RVA.0 as u64,
         );
         word(
             &mut bytes,
@@ -690,15 +690,15 @@ mod tests {
         word(
             &mut bytes,
             status + engine_native::cproduction_status::STOCKPILE_POOL,
-            cequipment_variant_pool::VTABLE_RVA as u64,
+            cequipment_variant_pool::VTABLE_RVA.0 as u64,
         );
         array(&mut bytes, country + ccountry::DIVISIONS, army_slots, 1);
         word(&mut bytes, army_slots, sources[0].pointer as u64);
-        word(&mut bytes, sources[0].pointer, carmy::VTABLE_RVA as u64);
+        word(&mut bytes, sources[0].pointer, carmy::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             sources[0].pointer + carmy::SECONDARY_BASE,
-            carmy::SECONDARY_VTABLE_RVA as u64,
+            carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         word(
             &mut bytes,

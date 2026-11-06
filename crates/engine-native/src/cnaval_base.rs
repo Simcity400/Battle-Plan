@@ -1,7 +1,8 @@
 //! CNavalBase layout.
 
+use engine_sites::Rva;
 /// CNavalBase constructor.
-pub const CONSTRUCT_RVA: usize = 0x00f1_2e40;
+pub const CONSTRUCT_RVA: Rva = Rva(0x00f1_2e40);
 /// Native object allocation size.
 pub const SIZE: usize = 0x58;
 /// Owning country-holder pointer.
@@ -14,7 +15,7 @@ pub const HEALTHY_LEVEL: usize = 0x14;
 pub const LEVEL: usize = 0x18;
 
 /// CNavalBase vtable.
-pub const VTABLE_RVA: usize = 0x029e_f8b0;
+pub const VTABLE_RVA: Rva = Rva(0x029e_f8b0);
 /// Per-base country list: pointer, count and one u32 tag per entry. Membership supplies the
 /// prohibition overlay for the viewer.
 pub const COUNTRY_LIST: usize = 0x40;
@@ -37,7 +38,7 @@ pub fn country_text(
     country: u32,
 ) -> Result<Vec<u8>, &'static str> {
     let array = if country == 0 {
-        base.checked_add(crate::ccountry_database::SINGLETON_RVA)
+        engine_sites::at(base, crate::ccountry_database::SINGLETON_RVA)
             .and_then(|address| read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|&pointer| pointer != 0)
@@ -212,8 +213,7 @@ fn walk_buffer_observed(
         }
         // The chain ends at one terminal cell past the probe window.
         let cells = capacity as usize + usize::from(probe) + 1;
-        let expected = base
-            .checked_add(VTABLE_RVA)
+        let expected = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let mut buffer = [0_u8; CHUNK * ENTRY_STRIDE];
         let mut len = 0_usize;
@@ -390,7 +390,7 @@ mod naval_base_tests {
         struct Tags(Vec<u8>);
         impl Memory for Tags {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == crate::ccountry_database::SINGLETON_RVA && output.len() == 8 {
+                if address == crate::ccountry_database::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
                     return true;
                 }
@@ -468,7 +468,7 @@ mod naval_base_tests {
             entry + ENTRY_VALUE,
             &(BASE as u64).to_le_bytes(),
         );
-        put(&mut bytes, BASE, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, BASE, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, BASE + HOLDER, &(HOLDER_AT as u64).to_le_bytes());
         put(&mut bytes, BASE + PROVINCE_ID, &158_u32.to_le_bytes());
         put(&mut bytes, BASE + LEVEL, &10_u32.to_le_bytes());
@@ -726,7 +726,7 @@ mod naval_base_tests {
                     entry + ENTRY_VALUE,
                     &(base as u64).to_le_bytes(),
                 );
-                put(&mut bytes, base, &(VTABLE_RVA as u64).to_le_bytes());
+                put(&mut bytes, base, &(VTABLE_RVA.0 as u64).to_le_bytes());
                 put(&mut bytes, base + HOLDER, &(HOLDER_AT as u64).to_le_bytes());
                 put(
                     &mut bytes,

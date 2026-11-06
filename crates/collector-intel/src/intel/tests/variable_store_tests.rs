@@ -92,13 +92,13 @@ fn empty_store(bytes: &mut [u8], container: usize, seed: u32) {
     put(
         bytes,
         container,
-        &((BASE + cvariables::VTABLE_RVA) as u64).to_le_bytes(),
+        &((BASE + cvariables::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(bytes, container + cvariables::SEED, &seed.to_le_bytes());
     put(
         bytes,
         container + cvariables::STORAGE,
-        &((BASE + cvariables::EMPTY_STORAGE_RVA) as u64).to_le_bytes(),
+        &((BASE + cvariables::EMPTY_STORAGE_RVA.0) as u64).to_le_bytes(),
     );
 }
 
@@ -131,7 +131,7 @@ fn variable_scopes() -> Vec<u8> {
         put(
             &mut bytes,
             container,
-            &((BASE + cvariables::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cvariables::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -573,7 +573,7 @@ fn a_store_created_or_destroyed_walks_every_scope() {
             put(
                 bytes,
                 0x6400,
-                &((BASE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 bytes,
@@ -589,7 +589,7 @@ fn a_store_created_or_destroyed_walks_every_scope() {
             put(
                 bytes,
                 0x8800,
-                &((BASE + cstate::VTABLE_RVA) as u64).to_le_bytes(),
+                &((BASE + cstate::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(bytes, 0x8800 + cstate::ID, &2_u32.to_le_bytes());
             put(bytes, 0x8800 + cstate::VARIABLES, &0xc300_u64.to_le_bytes());

@@ -1215,26 +1215,14 @@ impl Hooks {
             Self { entry: None }
         })
     }
-    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Self, String> {
-        if !crate::hook::installation::sentinel(
-            memory,
-            base + native::COMPLETION_RVA,
-            native::COMPLETION_SENTINEL,
-        ) {
-            COUNTERS[3].fetch_add(1, Ordering::Relaxed);
-            return Err(
-                engine_allocation::string("operation completion entry sentinel differs")
-                    .unwrap_or_default(),
-            );
-        }
+    unsafe fn install(_memory: &impl Memory, base: usize) -> Result<Self, String> {
+        let (at, original) =
+            crate::located_hook(base, native::COMPLETION_RVA).map_err(|cause| {
+                COUNTERS[3].fetch_add(1, Ordering::Relaxed);
+                engine_allocation::string(cause).unwrap_or_default()
+            })?;
         BASE.store(base, Ordering::Relaxed);
-        let hook = unsafe {
-            Hook::new(
-                base + native::COMPLETION_RVA,
-                completion as *const () as usize,
-                native::COMPLETION_SENTINEL,
-            )
-        }?;
+        let hook = unsafe { Hook::new(at, completion as *const () as usize, original) }?;
         ORIGINAL.store(hook.trampoline(), Ordering::Release);
         Ok(Self { entry: Some(hook) })
     }
@@ -1286,7 +1274,7 @@ mod tests {
     }
     impl Memory for Fixture {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == BASE + cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == BASE + cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&(STATE as u64).to_le_bytes());
                 return true;
             }
@@ -1307,7 +1295,7 @@ mod tests {
             let put = |bytes: &mut [u8], address: usize, value: u64| {
                 bytes[address..address + 8].copy_from_slice(&value.to_le_bytes())
             };
-            put(&mut bytes, INSTANCE, (BASE + operation::VTABLE_RVA) as u64);
+            put(&mut bytes, INSTANCE, (BASE + operation::VTABLE_RVA.0) as u64);
             put(
                 &mut bytes,
                 INSTANCE + operation::HANDLE,
@@ -1323,13 +1311,13 @@ mod tests {
                 INSTANCE + operation::DEFINITION,
                 DEFINITION as u64,
             );
-            put(&mut bytes, COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+            put(&mut bytes, COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
             bytes[COUNTRY + ccountry::ID..COUNTRY + ccountry::ID + 4]
                 .copy_from_slice(&1_u32.to_le_bytes());
             put(
                 &mut bytes,
                 DEFINITION,
-                (BASE + coperation::VTABLE_RVA) as u64,
+                (BASE + coperation::VTABLE_RVA.0) as u64,
             );
             bytes[DEFINITION + coperation::TOKEN_ID..DEFINITION + coperation::TOKEN_ID + 4]
                 .copy_from_slice(&0xfabc_1234_u32.to_le_bytes());

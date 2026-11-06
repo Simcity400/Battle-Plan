@@ -69,13 +69,13 @@ impl World {
         arena.vector(state + cgame_state::COUNTRY_LINKS, links, countries + 1);
         for slot in 1..=countries {
             let country = arena.alloc(ccountry::MODIFIER_ACCUMULATOR + 0x40);
-            arena.word(country, (base + ccountry::VTABLE_RVA) as u64);
+            arena.word(country, (base + ccountry::VTABLE_RVA.0) as u64);
             arena.put(country + ccountry::ID, &(slot as u32).to_le_bytes());
             arena.word(slots + slot * 8, country as u64);
             arena.put(links + slot * 4, &(slot as u32).to_le_bytes());
         }
-        arena.word(base + COUNTER_ATTRITION_THRESHOLD_RVA, 50_000);
-        arena.word(base + data::CAMO_SHOW_AT_RVA, 35_000);
+        arena.word(base + COUNTER_ATTRITION_THRESHOLD_RVA.0, 50_000);
+        arena.word(base + data::CAMO_SHOW_AT_RVA.0, 35_000);
         let registry = arena.alloc(16);
         let categories = arena.alloc(16);
         let climate: [usize; 2] = std::array::from_fn(|index| {
@@ -89,7 +89,7 @@ impl World {
             object
         });
         arena.vector(registry, categories, climate.len());
-        arena.word(base + category::REGISTRY_RVA, registry as u64);
+        arena.word(base + category::REGISTRY_RVA.0, registry as u64);
         let blocks: Vec<_> = (0..divisions.div_ceil(10))
             .map(|index| {
                 let pointer = arena.alloc(0x600);
@@ -99,7 +99,7 @@ impl World {
                     strength: 2_500_000 + index as i64,
                     can_exfiltrate_from_coast: (index % 3) as u8,
                 };
-                arena.word(pointer, (base + stats::VTABLE_RVA) as u64);
+                arena.word(pointer, (base + stats::VTABLE_RVA.0) as u64);
                 arena.word(
                     pointer + stats::MAXIMUM_ORGANISATION,
                     maxima.organisation as u64,
@@ -124,7 +124,7 @@ impl World {
                     arena.word(at + entry::WEIGHT, 50_000 + (ordinal % 2) as u64 * 10_000);
                 }
                 let mut object = [0; 0x40];
-                object[..8].copy_from_slice(&((base + data::VTABLE_RVA) as u64).to_le_bytes());
+                object[..8].copy_from_slice(&((base + data::VTABLE_RVA.0) as u64).to_le_bytes());
                 object[data::DATA..data::DATA + 8].copy_from_slice(&(entries as u64).to_le_bytes());
                 object[data::CAPACITY..data::CAPACITY + 4]
                     .copy_from_slice(&(count as u32).to_le_bytes());
@@ -139,7 +139,7 @@ impl World {
                 DivisionSeed {
                     pointer: army,
                     division,
-                    primary_vtable: Some((base + VTABLE_RVA) as u64),
+                    primary_vtable: Some((base + VTABLE_RVA.0) as u64),
                     handle: Some(division),
                     stat_block: Some(maxima.pointer),
                     roster_owner: Some((index % countries + 1) as u32),

@@ -1,7 +1,8 @@
 //! Project reward-history record.
 
+use engine_sites::Rva;
 /// Project-history primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_f3b0;
+pub const VTABLE_RVA: Rva = Rva(0x029f_f3b0);
 /// Project-history record stride.
 pub const STRIDE: usize = 0x58;
 /// Reward u32 lexer token.
@@ -42,9 +43,7 @@ pub fn read_row(
     project: u32,
     ordinal: u32,
 ) -> Result<Row, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("project history vtable overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("project history vtable overflow")?;
     if read::<u64>(memory, address) != Some(expected as u64) {
         return Err("project history vtable unreadable or mismatched");
     }
@@ -81,10 +80,10 @@ mod tests {
     #[test]
     fn history_keeps_owner_project_ordinal_and_checks_both_vtables() {
         let mut bytes = [0; STRIDE];
-        bytes[..8].copy_from_slice(&(0x1000_u64 + VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(0x1000_u64 + VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8..16].fill(0xff);
         bytes[CONTEXT..CONTEXT + 8].copy_from_slice(
-            &(0x1000_u64 + nproject_sproject_context::VTABLE_RVA as u64).to_le_bytes(),
+            &(0x1000_u64 + nproject_sproject_context::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         bytes[DATE..DATE + 4].copy_from_slice(&i32::MIN.to_le_bytes());
         let memory = SliceMemory {

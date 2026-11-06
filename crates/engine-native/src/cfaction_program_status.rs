@@ -1,10 +1,11 @@
 //! A faction's ordered programme references. The save retains the full native
 //! references without resolving them; stale and null references remain data.
 
+use engine_sites::Rva;
 use crate::{Memory, allocation, cpdx_array::Array, read};
 
 pub const STATUS: usize = 0x7c8;
-pub const VTABLE_RVA: usize = 0x029e_2b08;
+pub const VTABLE_RVA: Rva = Rva(0x029e_2b08);
 pub const PROGRAMS: usize = 0x08;
 
 pub fn read_into(
@@ -16,8 +17,7 @@ pub fn read_into(
     let status = faction
         .checked_add(STATUS)
         .ok_or("faction programme status address overflow")?;
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("faction programme vtable address overflow")?;
     if read::<u64>(memory, status) != Some(expected as u64) {
         return Err("faction programme status vtable mismatch");

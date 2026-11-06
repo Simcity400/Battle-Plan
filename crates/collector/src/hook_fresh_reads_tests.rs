@@ -645,7 +645,7 @@ impl Native {
 }
 impl engine_native::Memory for Native {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-        if at == engine_native::csub_unit_definition::DATABASE_RVA && output.len() == 8 {
+        if at == engine_native::csub_unit_definition::DATABASE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x9800_u64.to_le_bytes());
             return true;
         }
@@ -687,20 +687,20 @@ fn failed_local_observer_reads_changed_native_requirements_and_keeps_dependent_i
     memory.array(state + cgame_state::COUNTRY_LINKS, 0x2100, 2);
     memory.word(0x2008, country);
     memory.put(0x2104, &1_u32.to_le_bytes());
-    memory.word(country, ccountry::VTABLE_RVA);
+    memory.word(country, ccountry::VTABLE_RVA.0);
     memory.put(country + ccountry::ID, &1_u32.to_le_bytes());
     memory.word(country + ccountry::DEPLOYMENT_MANAGER, status);
-    memory.word(status, cdeployment_status::VTABLE_RVA);
+    memory.word(status, cdeployment_status::VTABLE_RVA.0);
     memory.word(status + cdeployment_status::OWNER, country);
     memory.array(status + cdeployment_status::LOCAL_SUBUNITS, 0x5500, 1);
     memory.word(0x5500, clone);
     memory.array(0x9800 + csub_unit_definition::DATABASE_VECTOR, 0x9900, 2);
     memory.word(0x9908, global);
-    memory.word(archetype, cequipment_type::VTABLE_RVA);
+    memory.word(archetype, cequipment_type::VTABLE_RVA.0);
     memory.put(archetype + cequipment_type::TOKEN, &71_u32.to_le_bytes());
     memory.put(archetype + cequipment_type::ACTIVE, &[1]);
     for (pointer, amount) in [(global, 100_000_i64), (clone, 200_000)] {
-        memory.word(pointer, csub_unit_definition::VTABLE_RVA);
+        memory.word(pointer, csub_unit_definition::VTABLE_RVA.0);
         memory.put(pointer + csub_unit_definition::TOKEN, &5_u32.to_le_bytes());
         memory.put(pointer + csub_unit_definition::IS_REAL, &[1]);
         memory.put(

@@ -8,6 +8,7 @@
 //! requires the main thread; fill and merge check the game-state thread guard.
 //! Ordinary hourly finalization and coordinated strikes can both reach these sites.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cair_wing, cgame_state, cnaval_combat, cnaval_combat_results, cpdx_array::Array,
     creference_registry, read,
@@ -15,37 +16,29 @@ use crate::{
 
 pub struct Site {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
-    pub sentinel_len: usize,
+    pub rva: Rva,
+    /// Bytes the hook owns at the site.
+    pub span: usize,
 }
 
 /// Five-byte fill call after result identity assignment. No branch target
 /// lies inside the patched call; preserve the original frame.
 pub const NEW: Site = Site {
     name: "naval_result_new",
-    rva: 0x0166_1510,
-    sentinel_len: 16,
-    sentinel: [
-        0xe8, 0x4b, 0x47, 0x6e, 0xff, 0x80, 0x3d, 0xf5, 0xe0, 0x02, 0x02, 0x00, 0x0f, 0x84, 0xc7,
-        0x00,
-    ],
+    rva: Rva(0x0166_1510),
+    span: 16,
 };
 
 /// Five-byte merge call with the existing result in RCX, returning to the
-/// original epilogue. Verify only the owned 13-byte sentinel.
+/// original epilogue. It owns only the 13 bytes before the next function.
 pub const MERGE: Site = Site {
     name: "naval_result_merge",
-    rva: 0x0166_1613,
-    sentinel_len: 13,
-    sentinel: [
-        0xe8, 0x88, 0x38, 0x6e, 0xff, 0xeb, 0xde, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x48, 0x89,
-        0x5c,
-    ],
+    rva: Rva(0x0166_1613),
+    span: 13,
 };
 
 /// Original CALL targets; never invoke a relocated mid-function continuation.
-pub const TARGETS: [usize; 2] = [
+pub const TARGETS: [Rva; 2] = [
     cnaval_combat_results::FILL_FROM_COMBAT_RVA,
     cnaval_combat_results::MERGE_RVA,
 ];
@@ -55,12 +48,8 @@ pub const TARGETS: [usize; 2] = [
 /// observer can pass the return PC in RDX while preserving RCX.
 pub const CONSTRUCTOR: Site = Site {
     name: "naval_combat_constructor",
-    rva: 0x0165_e980,
-    sentinel_len: 16,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
-        0x57,
-    ],
+    rva: Rva(0x0165_e980),
+    span: 16,
 };
 
 pub const SITES: [&Site; 3] = [&NEW, &MERGE, &CONSTRUCTOR];
@@ -78,12 +67,24 @@ pub enum BirthKind {
 /// construction; save loading restores a reference rather than creating a birth.
 /// Temporary unit, convoy and port strikes resolve, finalize and destroy in one
 /// call without registering the complete object's reference subobject.
-pub fn constructor_caller(return_rva: usize) -> BirthKind {
-    match return_rva {
-        0x00c0_b22d | 0x00c0_b3ad | 0x00c0_b91f | 0x00c0_d813 => BirthKind::Persistent,
+pub const CONSTRUCTOR_CALLERS: [Rva; 8] = [
+    Rva(0x00c0_b22d),
+    Rva(0x00c0_b3ad),
+    Rva(0x00c0_b91f),
+    Rva(0x00c0_d813),
+    Rva(0x00c0_bbb3),
+    Rva(0x00c0_bdb9),
+    Rva(0x00c0_bf4c),
+    Rva(0x00c0_dc19),
+];
 
-        0x00c0_bbb3 | 0x00c0_bdb9 | 0x00c0_bf4c => BirthKind::Transient,
-        0x00c0_dc19 => BirthKind::Loaded,
+pub fn constructor_caller(base: usize, return_address: usize) -> BirthKind {
+    match engine_sites::which(base, return_address, &CONSTRUCTOR_CALLERS) {
+        Some(Rva(0x00c0_b22d) | Rva(0x00c0_b3ad) | Rva(0x00c0_b91f) | Rva(0x00c0_d813)) => {
+            BirthKind::Persistent
+        }
+        Some(Rva(0x00c0_bbb3) | Rva(0x00c0_bdb9) | Rva(0x00c0_bf4c)) => BirthKind::Transient,
+        Some(Rva(0x00c0_dc19)) => BirthKind::Loaded,
         _ => BirthKind::Unknown,
     }
 }
@@ -101,7 +102,7 @@ pub struct Inputs {
 /// Raw game hour copied into retained results. Combat day and duration fields
 /// are counters, distinct from absolute birth, so construction uses the live clock.
 pub fn creation_hour(memory: &impl Memory, base: usize) -> Result<i32, &'static str> {
-    let state = field::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
+    let state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     if state == 0 {
         return Err("naval source game state is null");
     }
@@ -113,7 +114,7 @@ pub fn creation_hour(memory: &impl Memory, base: usize) -> Result<i32, &'static 
 /// changes and coordinated port strikes. Population is distinct from event count:
 /// one wing can emit several targets. Observed demand and live headroom cover bursts.
 pub fn population(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
-    let state = field::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
+    let state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     if state == 0 {
         return Err("naval source game state is null");
     }
@@ -145,14 +146,13 @@ pub fn read_inputs(
     ] {
         if object == 0
             || field::<u64>(memory, object, 0)?
-                != base
-                    .checked_add(vtable)
-                    .ok_or("naval source vtable address overflow")? as u64
+                != engine_sites::at(base, vtable).ok_or("naval source vtable address overflow")?
+                    as u64
         {
             return Err("naval source object identity mismatch");
         }
     }
-    let invalid = field::<u64>(memory, base, creference_registry::INVALID_REFERENCE_RVA)?;
+    let invalid = global::<u64>(memory, base, creference_registry::INVALID_REFERENCE_RVA)?;
     let result_reference = field::<u64>(memory, result, cnaval_combat_results::HANDLE)?;
     // Identity registration writes the complete result's reference field.
     if !boolean(memory, result, 0x10)? || result_reference == invalid {
@@ -191,6 +191,15 @@ fn field<T: crate::memory::Raw>(
     let at = object
         .checked_add(offset)
         .ok_or("naval source operand address overflow")?;
+    read(memory, at).ok_or("naval source operand unreadable")
+}
+
+fn global<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    let at = engine_sites::at(base, key).ok_or("naval source operand address overflow")?;
     read(memory, at).ok_or("naval source operand unreadable")
 }
 
@@ -239,14 +248,14 @@ mod tests {
         let mut bytes = Bytes::default();
         bytes.put(
             RESULT,
-            &((BASE + cnaval_combat_results::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cnaval_combat_results::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         bytes.put(
             COMBAT,
-            &((BASE + cnaval_combat::VTABLE_RVA) as u64).to_le_bytes(),
+            &((BASE + cnaval_combat::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         bytes.put(
-            BASE + creference_registry::INVALID_REFERENCE_RVA,
+            BASE + creference_registry::INVALID_REFERENCE_RVA.0,
             &INVALID.to_le_bytes(),
         );
         bytes.put(
@@ -258,7 +267,7 @@ mod tests {
         bytes.put(COMBAT + 0x20, &[1]);
         bytes.put(COMBAT + cnaval_combat::RESULT_FLAG_A, &[0, 0]);
         bytes.put(
-            BASE + cgame_state::SINGLETON_RVA,
+            BASE + cgame_state::SINGLETON_RVA.0,
             &(STATE as u64).to_le_bytes(),
         );
         bytes.put(STATE + cgame_state::CURRENT_HOUR, &(-123i32).to_le_bytes());
@@ -356,14 +365,14 @@ mod tests {
     #[test]
     fn constructor_callers_cover_fresh_temporary_and_load_without_guessing() {
         for caller in [0x00c0_b22d, 0x00c0_b3ad, 0x00c0_b91f, 0x00c0_d813] {
-            assert_eq!(constructor_caller(caller), BirthKind::Persistent);
-            assert_eq!(constructor_caller(caller + 1), BirthKind::Unknown);
+            assert_eq!(constructor_caller(0, caller), BirthKind::Persistent);
+            assert_eq!(constructor_caller(0, caller + 1), BirthKind::Unknown);
         }
         for caller in [0x00c0_bbb3, 0x00c0_bdb9, 0x00c0_bf4c] {
-            assert_eq!(constructor_caller(caller), BirthKind::Transient);
+            assert_eq!(constructor_caller(0, caller), BirthKind::Transient);
         }
-        assert_eq!(constructor_caller(0x00c0_dc19), BirthKind::Loaded);
-        assert_eq!(constructor_caller(0), BirthKind::Unknown);
+        assert_eq!(constructor_caller(0, 0x00c0_dc19), BirthKind::Loaded);
+        assert_eq!(constructor_caller(0, 0), BirthKind::Unknown);
     }
 
     const WING_TABLE: usize = 0x4000;
@@ -377,7 +386,7 @@ mod tests {
         bytes.put(combat_array + 8, &5000u32.to_le_bytes());
         bytes.put(combat_array + 12, &5000u32.to_le_bytes());
         bytes.put(
-            BASE + creference_registry::LOW_ROOTS_RVA + cair_wing::TYPE as usize * 8,
+            BASE + creference_registry::LOW_ROOTS_RVA.0 + cair_wing::TYPE as usize * 8,
             &(WING_TABLE as u64).to_le_bytes(),
         );
         bytes.put(
@@ -413,7 +422,7 @@ mod tests {
         // Every wing counts, even without reading its mission or plane count.
         // A null type-specific registry is the native successful empty case.
         bytes.put(
-            BASE + creference_registry::LOW_ROOTS_RVA + cair_wing::TYPE as usize * 8,
+            BASE + creference_registry::LOW_ROOTS_RVA.0 + cair_wing::TYPE as usize * 8,
             &0u64.to_le_bytes(),
         );
         assert_eq!(population(&bytes, BASE), Ok(5000));
@@ -452,7 +461,7 @@ mod tests {
             Err("naval source combat registry unreadable or invalid")
         );
         bytes = population_fixture();
-        bytes.put(BASE + cgame_state::SINGLETON_RVA, &0u64.to_le_bytes());
+        bytes.put(BASE + cgame_state::SINGLETON_RVA.0, &0u64.to_le_bytes());
         assert_eq!(
             population(&bytes, BASE),
             Err("naval source game state is null")
@@ -461,20 +470,5 @@ mod tests {
             population(&bytes, usize::MAX),
             Err("naval source operand address overflow")
         );
-    }
-
-    #[test]
-    fn call_sentinels_decode_to_verified_native_targets() {
-        assert_eq!(SITES.len(), 3);
-        for (site, target) in SITES[..2].iter().copied().zip(TARGETS) {
-            assert_eq!(site.sentinel[0], 0xe8);
-            let relative = i32::from_le_bytes(site.sentinel[1..5].try_into().unwrap());
-            assert_eq!(site.rva as i64 + 5 + relative as i64, target as i64);
-        }
-        assert_eq!(&CONSTRUCTOR.sentinel[..5], &[0x48, 0x89, 0x5c, 0x24, 0x08]);
-        assert_eq!(NEW.sentinel_len, 16);
-        assert_eq!(CONSTRUCTOR.sentinel_len, 16);
-        assert_eq!(MERGE.sentinel_len, 13);
-        assert_eq!(MERGE.rva + MERGE.sentinel_len, 0x0166_1620);
     }
 }

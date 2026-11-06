@@ -10,15 +10,16 @@ use crate::{
     msvc_string, read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 pub mod fuel_inputs;
 pub mod replacement;
 pub mod transport_operands;
 
 /// Primary wing vtable.
-pub const VTABLE_RVA: usize = 0x029f_7748;
+pub const VTABLE_RVA: Rva = Rva(0x029f_7748);
 /// Secondary wing vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029f_7780;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029f_7780);
 /// Secondary subobject displacement.
 pub const SECONDARY: usize = 0x10;
 /// Registry type value.
@@ -1225,8 +1226,7 @@ fn walk_projected(
             // Its primary vtable is distinct from its secondary base's.
             let vtable =
                 read::<u64>(memory, manager).ok_or("strategic air manager vtable unreadable")?;
-            let expected = base
-                .checked_add(cstrategic_air_manager::VTABLE_RVA)
+            let expected = engine_sites::at(base, cstrategic_air_manager::VTABLE_RVA)
                 .ok_or("module address overflow")?;
             if vtable != expected as u64 {
                 return Err("strategic air manager vtable mismatch");
@@ -1524,11 +1524,8 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("air wing roster pointer unreadable or address overflow")
     }
 
-    fn vtable(&self, pointer: usize, rva: usize, reason: &'static str) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(rva)
-            .ok_or("module address overflow")?;
+    fn vtable(&self, pointer: usize, rva: Rva, reason: &'static str) -> Result<(), &'static str> {
+        let expected = engine_sites::at(self.base, rva).ok_or("module address overflow")?;
         if read::<u64>(self.memory, pointer) == Some(expected as u64) {
             Ok(())
         } else {
@@ -1611,13 +1608,9 @@ impl<M: Memory> Reader<'_, M> {
             name: _,
         } = *fields;
         let leaf = (|| {
-            let expected_primary = self
-                .base
-                .checked_add(VTABLE_RVA)
-                .ok_or("module address overflow")?;
-            let expected_secondary = self
-                .base
-                .checked_add(SECONDARY_VTABLE_RVA)
+            let expected_primary =
+                engine_sites::at(self.base, VTABLE_RVA).ok_or("module address overflow")?;
+            let expected_secondary = engine_sites::at(self.base, SECONDARY_VTABLE_RVA)
                 .ok_or("module address overflow")?;
             if completed == 0 || u64::from_le_bytes(primary) != expected_primary as u64 {
                 return Err("air wing primary vtable mismatch");

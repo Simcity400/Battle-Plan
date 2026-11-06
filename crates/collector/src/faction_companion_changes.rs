@@ -164,23 +164,16 @@ pub struct Hooks {
 impl Hooks {
     /// # Safety
     /// Attach owns the authenticated image, patch publication and hook lifetime.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
         let available = [cfg!(feature = "faction_changes"); FAMILIES];
+        let mut located = [(0, [0; 16]); MUTATIONS.len()];
         if cfg!(feature = "faction_changes") {
-            for (site, _, _) in &MUTATIONS {
-                if base
-                    .checked_add(site.rva)
-                    .and_then(|at| engine_native::read::<[u8; 16]>(memory, at))
-                    != Some(site.sentinel)
-                {
-                    return Err(site_error(
-                        site.name,
-                        "sentinel verification",
-                        "unreadable or differs from verified bytes",
-                    ));
-                }
+            for ((site, _, _), slot) in MUTATIONS.iter().zip(&mut located) {
+                *slot = engine_sites::hook(base, site.rva)
+                    .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                    .map_err(|cause| site_error(site.name, "sentinel verification", cause))?;
             }
         }
         if available.iter().any(|value| *value) {
@@ -267,7 +260,9 @@ impl Hooks {
             ];
             engine_allocation::reserve(&mut hooks, MUTATIONS.len())
                 .map_err(|cause| site_error("all sites", "hook allocation", cause))?;
-            for (index, (site, family, patch)) in MUTATIONS.iter().enumerate() {
+            for (index, ((site, family, patch), &(at, original))) in
+                MUTATIONS.iter().zip(&located).enumerate()
+            {
                 if !available[*family as usize] {
                     continue;
                 }
@@ -275,7 +270,7 @@ impl Hooks {
                     Patch::Tap => OwnedHook::Store(
                         unsafe {
                             Tap::new(
-                                base + site.rva,
+                                at,
                                 if *family as usize == Family::Accounts as usize {
                                     account_store
                                 } else if *family as usize == Family::Pools as usize {
@@ -284,30 +279,27 @@ impl Hooks {
                                     unlock
                                 },
                                 index,
-                                site.sentinel,
+                                original,
                             )
                         }
                         .map_err(|cause| site_error(site.name, "construction", cause))?,
                     ),
                     Patch::Call => {
-                        let at = base + site.rva;
-                        let displacement =
-                            i32::from_le_bytes(site.sentinel[1..5].try_into().unwrap());
+                        let displacement = i32::from_le_bytes(original[1..5].try_into().unwrap());
                         let target = at
                             .checked_add(5)
                             .and_then(|at| at.checked_add_signed(displacement as isize))
                             .ok_or_else(|| {
                                 site_error(site.name, "call target", "address overflow")
                             })?;
-                        let hook = unsafe { Hook::new_call(at, callbacks[index], site.sentinel) }
+                        let hook = unsafe { Hook::new_call(at, callbacks[index], original) }
                             .map_err(|cause| site_error(site.name, "construction", cause))?;
                         ORIGINAL[index].store(target, Ordering::Release);
                         OwnedHook::Entry(hook)
                     }
                     _ => {
-                        let hook =
-                            unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                                .map_err(|cause| site_error(site.name, "construction", cause))?;
+                        let hook = unsafe { Hook::new(at, callbacks[index], original) }
+                            .map_err(|cause| site_error(site.name, "construction", cause))?;
                         ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                         OwnedHook::Entry(hook)
                     }
@@ -510,8 +502,7 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
     if site == 67 {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Acquire);
-        let canonical = base
-            .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+        let canonical = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
             .and_then(|at| engine_native::read::<u64>(&memory, at))
             .and_then(|state| usize::try_from(state).ok())
             .and_then(|state| engine_native::ccountry::Reader::new(&memory, base, state).ok())

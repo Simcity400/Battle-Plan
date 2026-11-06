@@ -54,7 +54,7 @@ fn entries32(bytes: &mut [u8], data: usize, values: &[u32]) {
 /// statuses below overwrite the war link and vectors afterwards.
 fn status_init(bytes: &mut [u8], owner: usize, target: usize, raw_target: u32) {
     let at = status(owner, target);
-    p64(bytes, at, crelation_status::VTABLE_RVA as u64);
+    p64(bytes, at, crelation_status::VTABLE_RVA.0 as u64);
     p64(
         bytes,
         at + crelation_status::DIPLOMACY_STATUS,
@@ -89,14 +89,14 @@ pub(crate) fn fixture() -> Vec<u8> {
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRY_LINKS, LTAB, 5);
     entries32(&mut bytes, LTAB, &[0, 1, 2, 3, 1]);
     for owner in 0..3 {
-        p64(&mut bytes, C[owner], ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, C[owner], ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, C[owner] + ccountry::ID, (owner + 1) as u32);
         p64(
             &mut bytes,
             C[owner] + ccountry::DIPLOMACY_STATUS,
             D[owner] as u64,
         );
-        p64(&mut bytes, D[owner], cdiplomacy_status::VTABLE_RVA as u64);
+        p64(&mut bytes, D[owner], cdiplomacy_status::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             D[owner] + cdiplomacy_status::COUNTRY,
@@ -147,7 +147,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     // Foreign-type entry: skipped right after the type gather.
     p32(&mut bytes, OTHER + crelation::TYPE_ID, 0x28da);
     // Retired war: authenticated but inactive, skipped without rows.
-    p64(&mut bytes, RETIRED, cwar_relation::VTABLE_RVA as u64);
+    p64(&mut bytes, RETIRED, cwar_relation::VTABLE_RVA.0 as u64);
     p32(
         &mut bytes,
         RETIRED + crelation::TYPE_ID,
@@ -172,7 +172,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         (WAR2, 1u32, 5, 6, 0u8, [11, 22], [33, 44], 0u8),
     ] {
         let first = if war == WAR1 { 1u32 } else { 3u32 };
-        p64(&mut bytes, war, cwar_relation::VTABLE_RVA as u64);
+        p64(&mut bytes, war, cwar_relation::VTABLE_RVA.0 as u64);
         p32(&mut bytes, war + crelation::TYPE_ID, cwar_relation::TYPE);
         p32(&mut bytes, war + crelation::FIRST_COUNTRY, first);
         p32(&mut bytes, war + crelation::SECOND_COUNTRY, second);

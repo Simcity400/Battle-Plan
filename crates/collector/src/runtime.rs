@@ -696,6 +696,8 @@ fn run(
     prepared_process_start: u64,
     spool_final: &mut bool,
 ) -> Result<(), &'static str> {
+    // Game sites resolve only through the located image from here on.
+    engine_sites::production();
     // Calibrate hook timing over the whole attachment, before any hook exists.
     crate::hook_timing::start();
     crate::thread_cpu::register(crate::thread_cpu::Role::Runtime);
@@ -806,21 +808,63 @@ fn run(
     )
     .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let progress = crate::progress::Progress::open(&config.output_dir);
+    // Before any worker starts; released after the decode hook it chains under, or retained
+    // with workers that outlive a refused detach.
+    let worker_panic = crate::worker_panic::Guard::install(
+        &config.output_dir.join(crate::progress::FILE),
+        progress.opened(),
+    );
     progress.step("attach_started", None);
-    // Nothing reads or patches the game unless every essential family verifies on this build.
-    crate::hook_failures::admit_essential()?;
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
-    let rva = cgame_state::HOURLY_UPDATE_RVA;
-    let sentinel = cgame_state::HOURLY_UPDATE_SENTINEL;
-    if read::<[u8; 16]>(&memory, base + rva) != Some(sentinel) {
-        let _ = crate::hook_failures::refuse(
-            RestoreFamily::Hourly,
-            "sentinel",
-            "hourly boundary sentinel differs",
-        );
-        return Err("hourly boundary sentinel differs");
+    // SAFETY: the game executable stays loaded for the life of the process.
+    let image = unsafe { engine_sites::Image::module(base) }
+        .map_err(|_| "game executable headers unreadable")?;
+    let located = engine_sites::install(engine_sites::Located::locate(
+        &image,
+        engine_sites::layout_checked(&exe.sha256),
+    ));
+    let sites = located.summary();
+    progress.step(
+        format_args!(
+            "sites_located verified={} of={} functions={}/{} layouts={} us={}",
+            sites.keys_verified,
+            sites.keys,
+            sites.functions_found,
+            sites.functions,
+            match (sites.layout_checked, sites.layout_verified) {
+                (true, _) => "checked",
+                (false, true) => "witnessed",
+                (false, false) => "unverified",
+            },
+            sites.elapsed.as_micros(),
+        ),
+        None,
+    );
+    for (_, withheld) in located.withheld() {
+        progress.step(format_args!("site {withheld}"), None);
     }
+    progress.step(format_args!("sites_moved {}", located.moved().count()), None);
+    // On the reference build every key must be where the reference build has it.
+    if engine_sites::layout_checked(&exe.sha256) {
+        for (key, live) in located.moved() {
+            progress.step(
+                format_args!("site_moved {} {:#x} -> {live:#x}", engine_sites::name(key), key.0),
+                None,
+            );
+        }
+    }
+    // Nothing else reads or patches the game unless every essential family verifies on this build.
+    crate::hook_failures::admit_essential()?;
+    let hourly = engine_sites::hook(base, cgame_state::HOURLY_UPDATE_RVA)
+        .and_then(|code| Ok((code.address, code.sentinel::<16>()?)));
+    let (hourly_site, sentinel) = match hourly {
+        Ok(site) => site,
+        Err(cause) => {
+            let _ = crate::hook_failures::refuse(RestoreFamily::Hourly, "sentinel", cause);
+            return Err(cause);
+        }
+    };
     // The recorder uses this same exclusive handle before every finalization.
     // It protects both existing histories and campaigns with no replay yet.
     let output_lock = reserve_output(&config, &detach)?;
@@ -864,7 +908,7 @@ fn run(
     let mut processor = Processor::new(&config.output_dir, history, session.clone())
         .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
     let validation_refusals = processor.validation_refusals();
-    let mut hook = unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }
+    let mut hook = unsafe { Hook::new(hourly_site, sampling::tick as *const () as usize, sentinel) }
         .map_err(|cause| {
             let _ = crate::hook_failures::refuse(RestoreFamily::Hourly, "construction", &cause);
             installation_message(format!("hourly hook construction failed: {cause}"))
@@ -996,7 +1040,8 @@ fn run(
             ),
         )
     })?;
-    let naval_state = read::<u64>(&memory, base + cgame_state::SINGLETON_RVA)
+    let naval_state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
+        .and_then(|at| read::<u64>(&memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .unwrap_or(0);
     let mut naval_management_hooks = FamilyHooks::construct(base, || unsafe {
@@ -1813,7 +1858,10 @@ fn run(
         ($reason:expr, $fault:expr, $workers:expr) => {{
             let reason: &'static str = $reason;
             let fault: Option<&'static str> = $fault;
-            let error = fault.or_else(decode::panic_failure).unwrap_or(reason);
+            let error = fault
+                .or_else(decode::panic_failure)
+                .or_else(crate::worker_panic::first)
+                .unwrap_or(reason);
             refuse_detach!(error, |_error| {
                 shared.recording.store(false, Ordering::Release);
                 shared.cancel_buffer_wait.store(true, Ordering::Release);
@@ -1845,7 +1893,7 @@ fn run(
                     air_loss_hooks, bombing_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
                     construction_hooks, experience_hooks, command_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
-                    peace_hooks, shared, output_lock, _payload_pools, decode_panic_hook,
+                    peace_hooks, shared, output_lock, _payload_pools, decode_panic_hook, worker_panic,
                 ));
             });
         }};
@@ -2128,7 +2176,7 @@ fn run(
     progress.step("spool_finished", None);
     let spool_outcome = spool
         .join()
-        .map_err(|_| "spool thread failed")
+        .map_err(|_| crate::worker_panic::first().unwrap_or("spool thread failed"))
         .and_then(|result| result);
     priority_reconciler.finish();
     let history_release_error = history_worker.finish().err().map(|error| error.to_string());
@@ -2275,6 +2323,7 @@ fn run(
             shared,
             _payload_pools,
             decode_panic_hook,
+            worker_panic,
         ),
         || {},
     );
@@ -3099,6 +3148,7 @@ fn decode_status() -> impl serde::Serialize {
 fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     use crate::status::{DebugValue, map, sequence, status};
     let base = status!({
+        "worker_panic": crate::worker_panic::first(),
         "decode_work": decode::calibration_json(),
         "hook_timing": crate::hook_timing::status(),
         "attach_callbacks": crate::attach_diagnostics::Status,
@@ -8279,7 +8329,7 @@ mod tests {
                 bytes[field + 8..field + 12].copy_from_slice(&count.get().to_le_bytes());
                 bytes[field + 12..field + 16].copy_from_slice(&count.get().to_le_bytes());
             }
-            if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&(STATE as u64).to_le_bytes());
                 return true;
             }
@@ -8387,7 +8437,7 @@ mod tests {
         }
         impl engine_native::Memory for Combats {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&0x1000u64.to_le_bytes());
                     return true;
                 }
@@ -8400,8 +8450,8 @@ mod tests {
         }
         let mut memory = Combats(vec![0; 0x6000]);
         memory.array(0x1000 + cgame_state::COUNTRIES, 0x5800, 2);
-        memory.word(0x2000, combat::VTABLE_RVA as u64);
-        memory.word(0x2000 + combat::BODY, combat::BODY_VTABLE_RVA as u64);
+        memory.word(0x2000, combat::VTABLE_RVA.0 as u64);
+        memory.word(0x2000 + combat::BODY, combat::BODY_VTABLE_RVA.0 as u64);
         memory.word(
             0x2000 + combat::HANDLE,
             (1 << 32) | u64::from(combat::TYPE_WORD),
@@ -8409,14 +8459,14 @@ mod tests {
         memory.word(0x2000 + combat::ATTACKER, 0x3000);
         memory.word(0x2000 + combat::DEFENDER, 0x4000);
         memory.word(0x2000 + combat::STORED_TERRAIN, 0x5000);
-        memory.word(0x5000, cterrain_type::NULL_VTABLE_RVA as u64);
+        memory.word(0x5000, cterrain_type::NULL_VTABLE_RVA.0 as u64);
         for (pointer, attacker) in [(0x3000, 1), (0x4000, 0)] {
-            memory.word(pointer, side::VTABLE_RVA as u64);
+            memory.word(pointer, side::VTABLE_RVA.0 as u64);
             memory.word(pointer + side::COMBAT, 0x2000);
             memory.put(pointer + side::IS_ATTACKER, &[attacker]);
         }
         memory.word(0x2000 + combat::PROVINCE, 0x5200);
-        memory.word(0x5200, cprovince::VTABLE_RVA as u64);
+        memory.word(0x5200, cprovince::VTABLE_RVA.0 as u64);
         memory.put(0x5200 + cprovince::ID, &1u32.to_le_bytes());
         memory.word(0x5408, 0x5200);
         memory.array(0x1000 + cgame_state::PROVINCES, 0x5400, 2);
@@ -8773,7 +8823,7 @@ mod tests {
                     return true;
                 }
                 let mut bytes = [0_u8; 0x300];
-                bytes[..8].copy_from_slice(&(craid_system::VTABLE_RVA as u64).to_le_bytes());
+                bytes[..8].copy_from_slice(&(craid_system::VTABLE_RVA.0 as u64).to_le_bytes());
                 for memo in [raid_path_memo::LAND_MEMO, raid_path_memo::NAVAL_MEMO] {
                     bytes[memo + 8..memo + 16].copy_from_slice(&0x10_0000_u64.to_le_bytes());
                     bytes[memo + 0x14..memo + 0x18].copy_from_slice(&self.mask.get().to_le_bytes());
@@ -8915,7 +8965,7 @@ mod tests {
         }
         impl Memory for RacingHint {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&0x1000_u64.to_le_bytes());
                     return true;
                 }
@@ -8959,7 +9009,7 @@ mod tests {
         put(
             &mut memory.bytes,
             0x4000,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut memory.bytes,

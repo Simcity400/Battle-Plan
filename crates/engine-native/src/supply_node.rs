@@ -1,6 +1,7 @@
 //! Supply companion node, distinct from the country node-settings record.
 //! No hourly consistency lifetime is established by this layout alone.
 
+use engine_sites::Rva;
 /// Node-array stride.
 pub const STRIDE: usize = 0xe8;
 /// Node index, u32, used for weight-vector selection and initialized from
@@ -20,7 +21,7 @@ pub const CONSUMED: usize = 0x40;
 /// a supply-route resource bonus when that maximum is positive.
 pub const ROUTE_VALUE: usize = 0x78;
 /// Node constructor initializing the `KIND`.
-pub const CONSTRUCTOR_RVA: usize = 0x012a_6a60;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x012a_6a60);
 
 use crate::{
     Memory, cpdx_array::Array, csupply_system, read, supply_companion, supply_parent_map,
@@ -379,8 +380,7 @@ impl ProvinceMemo {
         let root = state
             .checked_add(crate::cgame_state::PROVINCES)
             .and_then(|address| read::<[u8; 16]>(memory, address));
-        let session = base
-            .checked_add(crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA)
+        let session = engine_sites::at(base, crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA)
             .and_then(|address| read::<i64>(memory, address));
         let key = root
             .zip(session)
@@ -796,9 +796,7 @@ fn validate_province(
         crate::prefetch::span(id, 4);
     }
     if read::<u64>(memory, p)
-        != base
-            .checked_add(crate::cprovince::VTABLE_RVA)
-            .map(|v| v as u64)
+        != engine_sites::at(base, crate::cprovince::VTABLE_RVA).map(|v| v as u64)
         || read::<u32>(memory, p + crate::cprovince::ID) != Some(province)
     {
         return Err(ProvinceCheck::IdentityMismatch);
@@ -837,7 +835,8 @@ mod tests {
                 destination[12..].copy_from_slice(&Self::COUNT.to_le_bytes());
                 return true;
             }
-            if address == crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA && destination.len() == 8
+            if address == crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA.0
+                && destination.len() == 8
             {
                 destination.copy_from_slice(&1_i64.to_le_bytes());
                 return true;
@@ -850,7 +849,7 @@ mod tests {
                 }
                 if address == pointer && destination.len() == 8 {
                     destination
-                        .copy_from_slice(&(crate::cprovince::VTABLE_RVA as u64).to_le_bytes());
+                        .copy_from_slice(&(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
                     return true;
                 }
                 if address == pointer + crate::cprovince::ID && destination.len() == 4 {
@@ -901,7 +900,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 pointer: POINTER,
-                vtable: crate::cprovince::VTABLE_RVA as u64,
+                vtable: crate::cprovince::VTABLE_RVA.0 as u64,
                 id: 1,
                 fail: None,
                 reads: RefCell::new(Vec::new()),

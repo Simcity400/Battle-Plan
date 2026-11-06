@@ -10,6 +10,7 @@
 //! are caller-owned. A refused vector exposes no prefix and retains its known
 //! full demand. Drop/clear removes private pointers before a frozen pass ends.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_navy, cstrategic_navy_manager,
     read,
@@ -46,11 +47,9 @@ fn vtable(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    rva: usize,
+    key: Rva,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(rva)
-        .ok_or("naval movement module overflow")? as u64;
+    let expected = engine_sites::at(base, key).ok_or("naval movement module overflow")? as u64;
     if object == 0 || read::<u64>(memory, object) != Some(expected) {
         return Err("naval movement identity mismatch");
     }
@@ -140,13 +139,9 @@ impl<'a, M: Memory> Reader<'a, M> {
         {
             return Err("naval movement navy identity unreadable");
         }
-        let expected = self
-            .base
-            .checked_add(cstrategic_navy::VTABLE_RVA)
+        let expected = engine_sites::at(self.base, cstrategic_navy::VTABLE_RVA)
             .ok_or("naval movement module overflow")? as u64;
-        let secondary_expected = self
-            .base
-            .checked_add(cstrategic_navy::SECONDARY_VTABLE_RVA)
+        let secondary_expected = engine_sites::at(self.base, cstrategic_navy::SECONDARY_VTABLE_RVA)
             .ok_or("naval movement module overflow")? as u64;
         if u64::from_le_bytes(primary) != expected
             || u64::from_le_bytes(secondary) != secondary_expected

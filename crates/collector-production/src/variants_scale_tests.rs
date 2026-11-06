@@ -129,9 +129,9 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
     // Keep empty native reference roots inside this same buffer for guarded
     // and slice readers. Unresolved frozen authors still require readable
     // roots for the independently observed save-admission witness.
-    let reference_extent = engine_native::creference_registry::LOW_ROOTS_RVA
+    let reference_extent = engine_native::creference_registry::LOW_ROOTS_RVA.0
         + engine_native::creference_registry::LOW_ROOT_COUNT as usize * 8
-        - cgame_state::SINGLETON_RVA;
+        - cgame_state::SINGLETON_RVA.0;
     let variants = countries * per_country;
     let plans: Vec<(usize, usize)> = (0..variants)
         .map(|index| {
@@ -159,11 +159,11 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         used: 0,
     };
     let singleton = writer.alloc(reference_extent);
-    let base = singleton - cgame_state::SINGLETON_RVA;
-    let vtable = |rva: usize| (base + rva) as u64;
+    let base = singleton - cgame_state::SINGLETON_RVA.0;
+    let vtable = |rva: engine_sites::Rva| (base + rva.0) as u64;
     let game_state = writer.alloc(0x720);
     writer.u64(singleton, game_state as u64);
-    let definitions = |writer: &mut Writer, count: usize, rva: usize, kind: &str| {
+    let definitions = |writer: &mut Writer, count: usize, rva: engine_sites::Rva, kind: &str| {
         (0..count)
             .map(|index| {
                 let at = writer.alloc(if kind == "type" {
@@ -442,10 +442,7 @@ fn digest(views: &[TableView; 4]) -> u64 {
 
 #[test]
 fn scaled_variant_rows_match_the_recorded_digests() {
-    for (countries, golden) in [
-        (2, 0xa55e_52ae_5273_9aa1),
-        (440, 0xea38_fc2c_9476_520c),
-    ] {
+    for (countries, golden) in [(2, 0xa55e_52ae_5273_9aa1), (440, 0xea38_fc2c_9476_520c)] {
         let space = space(countries, 16);
         let (views, _) = capture(&space.memory(), &space, countries * 16);
         assert!(

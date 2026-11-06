@@ -1,9 +1,10 @@
 //! Country project pool.
 
 use crate::{Memory, cpdx_array::Array, nproject_cprogram_status, nproject_cproject, read};
+use engine_sites::Rva;
 
 /// Project-pool primary vtable.
-pub const VTABLE_RVA: usize = 0x02a4_0e38;
+pub const VTABLE_RVA: Rva = Rva(0x02a4_0e38);
 /// First project pointer in the contiguous pool.
 pub const PROJECTS: usize = 0x10;
 /// Project u32 capacity in the low half of the header.
@@ -83,11 +84,9 @@ pub fn active_pointer(
             let pointer = projects
                 .element(index as u32, nproject_cproject::POOL_STRIDE)
                 .ok_or("project index outside pool")?;
-            if read::<u64>(memory, pointer)
-                != base
-                    .checked_add(nproject_cproject::VTABLE_RVA)
-                    .map(|n| n as u64)
-            {
+            let expected = engine_sites::at(base, nproject_cproject::VTABLE_RVA)
+                .ok_or("active project vtable mismatch")?;
+            if read::<u64>(memory, pointer) != Some(expected as u64) {
                 return Err("active project vtable mismatch");
             }
             return Ok(Some(pointer));
@@ -110,9 +109,7 @@ pub(crate) fn from_status(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("project pool pointer unreadable or null")?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, pool) != Some(vtable as u64) {
         return Err("project pool vtable mismatch");
     }
@@ -139,14 +136,14 @@ mod tests {
             nproject_cprogram_status::PROJECT_POOL,
             0x1100u64.to_le_bytes(),
         );
-        put(&mut bytes, 0x100, (VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, 0x100, (VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, 0x110, 0x1200u64.to_le_bytes());
         put(&mut bytes, 0x118, ((1u64 << 32) | 1).to_le_bytes());
         put(&mut bytes, 0x130, 0x1180u64.to_le_bytes());
         put(
             &mut bytes,
             0x200,
-            (nproject_cproject::VTABLE_RVA as u64).to_le_bytes(),
+            (nproject_cproject::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x21c, 4u32.to_le_bytes());
         let read = |bytes: &[u8]| {

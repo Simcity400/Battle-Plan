@@ -14,7 +14,7 @@ fn fixture(countries: u32) -> (World, Vec<usize>) {
         );
         let division = world.alloc(crate::cunit::HANDLE + 8);
         let divisions = world.alloc(8);
-        world.u64(division, (world.module + crate::carmy::VTABLE_RVA) as u64);
+        world.u64(division, (world.module + crate::carmy::VTABLE_RVA.0) as u64);
         world.u64(
             division + crate::cunit::HANDLE,
             (u64::from(country) << 32) | 4,
@@ -36,11 +36,11 @@ fn fixture(countries: u32) -> (World, Vec<usize>) {
         world.u64(owner + crate::ccountry::CHARACTERS, characters as u64);
         world.u64(
             characters,
-            (world.module + ccountry_characters::VTABLE_RVA) as u64,
+            (world.module + ccountry_characters::VTABLE_RVA.0) as u64,
         );
         world.u64(characters + ccountry_characters::OWNER, owner as u64);
         let leader = world.alloc(0x10);
-        world.u64(leader, (world.module + cunit_leader::VTABLE_RVA) as u64);
+        world.u64(leader, (world.module + cunit_leader::VTABLE_RVA.0) as u64);
         world.u64(
             leader + cunit_leader::TYPE,
             (u64::from(country) << 32) | 4713,
@@ -73,7 +73,7 @@ fn effect_rosters_preserve_order_and_fail_independently() {
         world.u64(owner + crate::ccountry::PRODUCTION_STATUS, status as u64);
         world.u64(
             status,
-            (world.module + cproduction_status::VTABLE_RVA) as u64,
+            (world.module + cproduction_status::VTABLE_RVA.0) as u64,
         );
         world.u64(status + cproduction_status::COUNTRY, owner as u64);
         world.array(status + cproduction_status::POLICIES, roster, 2);
@@ -81,7 +81,7 @@ fn effect_rosters_preserve_order_and_fail_independently() {
         world.u64(roster + 8, policy as u64);
         world.u64(
             policy,
-            (world.module + cproduction_status::POLICY_VTABLE_RVA) as u64,
+            (world.module + cproduction_status::POLICY_VTABLE_RVA.0) as u64,
         );
         world.u32(policy + cproduction_status::POLICY_TOKEN, country + 80_000);
     }

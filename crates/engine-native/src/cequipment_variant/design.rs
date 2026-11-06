@@ -1,4 +1,5 @@
 //! Stored design operands beyond naming, module and upgrade assignments.
+use engine_sites::Rva;
 use super::*;
 
 pub const PARENT: usize = 0x3f8;
@@ -24,12 +25,12 @@ pub const BUILD_RESOURCES: usize = 0x3d8;
 pub const DESIGN_TEAM_TRAITS: usize = 0x4b0;
 pub const NAMED_BONUSES: usize = 0xe8;
 pub const BONUS_SOURCES: usize = 0xd0;
-pub const SPECIFIC_BONUS_VTABLE_RVA: usize = 0x0279_69f0;
-pub const TRAIT_BONUS_VTABLE_RVA: usize = 0x0286_7878;
+pub const SPECIFIC_BONUS_VTABLE_RVA: Rva = Rva(0x0279_69f0);
+pub const TRAIT_BONUS_VTABLE_RVA: Rva = Rva(0x0286_7878);
 pub const BONUS_STATS: usize = 0x40;
 pub const BONUS_TERRAIN: usize = 0x58;
 pub const BONUS_IDEA: usize = 0x78;
-pub const NAMED_BONUS_VTABLE_RVA: usize = 0x029e_cff8;
+pub const NAMED_BONUS_VTABLE_RVA: Rva = Rva(0x029e_cff8);
 pub const COUNTRY_NAMED_BONUSES: usize = 0x178;
 pub const NAMED_BONUS_STRIDE: usize = 200;
 pub const NAMED_BONUS_HANDLE: usize = 0xc0;
@@ -43,9 +44,9 @@ pub fn bonus_source_size(
     pointer: usize,
 ) -> Result<usize, &'static str> {
     let table = word::<u64>(memory, pointer, 0)?;
-    if table == at(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64 {
+    if table == site(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64 {
         Ok(BONUS_IDEA)
-    } else if table == at(base, TRAIT_BONUS_VTABLE_RVA)? as u64 {
+    } else if table == site(base, TRAIT_BONUS_VTABLE_RVA)? as u64 {
         Ok(BONUS_IDEA + 8)
     } else {
         Err("variant bonus source identity mismatch")
@@ -170,6 +171,10 @@ impl<S> VariantDesignState<S> {
             unresolved_stats: self.unresolved_stats,
         }
     }
+}
+
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("variant address overflow")
 }
 
 fn word<T: crate::memory::Raw>(
@@ -374,7 +379,7 @@ fn read_design_fields(
             None
         } else {
             if word::<u64>(memory, group, 0)?
-                != at(base, crate::cname_group_member::GROUP_VTABLE_RVA)? as u64
+                != site(base, crate::cname_group_member::GROUP_VTABLE_RVA)? as u64
             {
                 return Err("variant division naming group identity mismatch");
             }
@@ -503,7 +508,7 @@ pub fn read_bonus_source(
         None
     } else {
         // The bonus holds the complete primary idea object.
-        if word::<u64>(memory, idea, 0)? != at(base, crate::cidea::VTABLE_RVA)? as u64 {
+        if word::<u64>(memory, idea, 0)? != site(base, crate::cidea::VTABLE_RVA)? as u64 {
             return Err("variant bonus idea identity mismatch");
         }
         let header = word(memory, idea, crate::cidea::TOKEN)?;
@@ -541,8 +546,8 @@ pub fn read_named_bonus_source(
     owner: u32,
     handle: u32,
 ) -> Result<VariantBonusSource, &'static str> {
-    if word::<u64>(memory, pointer, 0)? != at(base, NAMED_BONUS_VTABLE_RVA)? as u64
-        || word::<u64>(memory, pointer, 8)? != at(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64
+    if word::<u64>(memory, pointer, 0)? != site(base, NAMED_BONUS_VTABLE_RVA)? as u64
+        || word::<u64>(memory, pointer, 8)? != site(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64
     {
         return Err("variant named source identity mismatch");
     }
@@ -585,7 +590,7 @@ pub fn visit_named_sources(
     } else {
         word(memory, object, CREATOR_LINK)?
     };
-    let state = word::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
+    let state = word::<u64>(memory, site(base, cgame_state::SINGLETON_RVA)?, 0)? as usize;
     let countries = crate::ccountry::Reader::new(memory, base, state)?;
     let country = countries.resolve(owner)?;
     let status = crate::cproduction_status::manager(memory, base, country)?;
@@ -606,9 +611,9 @@ pub fn visit_named_sources(
                 .element(index, NAMED_BONUS_STRIDE)
                 .ok_or("variant named source address overflow")?;
             if word::<u32>(memory, pointer, NAMED_BONUS_HANDLE)? == handle {
-                if word::<u64>(memory, pointer, 0)? != at(base, NAMED_BONUS_VTABLE_RVA)? as u64
+                if word::<u64>(memory, pointer, 0)? != site(base, NAMED_BONUS_VTABLE_RVA)? as u64
                     || word::<u64>(memory, pointer, 8)?
-                        != at(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64
+                        != site(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64
                 {
                     return Err("variant named source identity mismatch");
                 }
@@ -656,7 +661,7 @@ fn module_exclusions(
         let module = word::<u64>(memory, entry, 0)? as usize;
         let header = word::<[u8; 12]>(memory, module, 0)?;
         if u64::from_le_bytes(header[..8].try_into().unwrap())
-            != at(base, crate::cequipment_module::VTABLE_RVA)? as u64
+            != site(base, crate::cequipment_module::VTABLE_RVA)? as u64
         {
             return Err("variant excluded module identity mismatch");
         }

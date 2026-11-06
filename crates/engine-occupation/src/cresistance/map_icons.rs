@@ -7,13 +7,14 @@ use crate::{
     pdx_robin_hood_table, read,
 };
 use engine_native::allocation;
+use engine_sites::Rva;
 
 pub const STORED_TARGET: usize = 0x28;
 pub const STATE_RESISTANCE_DEFINITIONS: usize = 0x210;
 pub const STATE_COMPLIANCE_DEFINITIONS: usize = 0x228;
 pub const CORE_RESISTANCE_DEFINITIONS: usize = 0x58;
 pub const CORE_COMPLIANCE_DEFINITIONS: usize = 0x70;
-pub const DEFINITION_VTABLE_RVA: usize = 0x02a3_5550;
+pub const DEFINITION_VTABLE_RVA: Rva = Rva(0x02a3_5550);
 pub const DEFINITION_NAME: usize = 0x10;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -63,10 +64,9 @@ fn append_definitions(
             .and_then(|p| read::<u64>(memory, p))
             .and_then(|p| usize::try_from(p).ok())
             .ok_or("occupation map definition pointer unreadable")?;
-        if definition == 0
-            || base.checked_add(DEFINITION_VTABLE_RVA).map(|v| v as u64)
-                != read::<u64>(memory, definition)
-        {
+        let expected = engine_sites::at(base, DEFINITION_VTABLE_RVA)
+            .ok_or("occupation map definition identity mismatch")?;
+        if definition == 0 || read::<u64>(memory, definition) != Some(expected as u64) {
             return Err("occupation map definition identity mismatch");
         }
         let mut token = Vec::new();
@@ -159,10 +159,9 @@ pub fn read_inputs(
         )
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("occupation map core scope pointer unreadable")?;
-        if pointer == 0
-            || base.checked_add(ccountry::VTABLE_RVA).map(|v| v as u64)
-                != read::<u64>(memory, pointer)
-        {
+        let expected = engine_sites::at(base, ccountry::VTABLE_RVA)
+            .ok_or("occupation map core scope country identity mismatch")?;
+        if pointer == 0 || read::<u64>(memory, pointer) != Some(expected as u64) {
             return Err("occupation map core scope country identity mismatch");
         }
         markers.core_country = Some(
@@ -201,10 +200,10 @@ mod tests {
         let mut put =
             |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         put(0x2000 + ccountry::OCCUPATION_STATUS, 0xc000);
-        put(0xc000, ccountry_occupation_status::VTABLE_RVA as u64);
+        put(0xc000, ccountry_occupation_status::VTABLE_RVA.0 as u64);
         put(
             0xc000 + ccountry_occupation_status::SECONDARY_BASE,
-            ccountry_occupation_status::SECONDARY_VTABLE_RVA as u64,
+            ccountry_occupation_status::SECONDARY_VTABLE_RVA.0 as u64,
         );
         put(
             0xc000 + ccountry_occupation_status::OCCUPATION_DATA_TABLE,
@@ -217,7 +216,7 @@ mod tests {
         put(0x11300, 1u64 << 32);
         put(0x11300 + 8, 2);
         put(0x11300 + 16, 0xd000);
-        put(0xd000, ccountry_occupation_data::VTABLE_RVA as u64);
+        put(0xd000, ccountry_occupation_data::VTABLE_RVA.0 as u64);
         put(0xd000 + ccountry_occupation_data::PARENT_STATUS, 0xc000);
         put(0xd000 + ccountry_occupation_data::OCCUPIED_COUNTRY, 3);
         put(
@@ -231,7 +230,7 @@ mod tests {
             put(header, storage);
             put(header + 8, 1 | (1u64 << 32));
             put(storage as usize, definition);
-            put(definition as usize, DEFINITION_VTABLE_RVA as u64);
+            put(definition as usize, DEFINITION_VTABLE_RVA.0 as u64);
             put(definition as usize + DEFINITION_NAME + 16, 1);
             put(definition as usize + DEFINITION_NAME + 24, 15);
         }
@@ -297,7 +296,7 @@ mod tests {
         put(0x408, 0x480);
         put(0x410, 0x500);
         for (definition, token) in [(0x480, b"state".as_slice()), (0x500, b"core".as_slice())] {
-            put(definition, DEFINITION_VTABLE_RVA as u64);
+            put(definition, DEFINITION_VTABLE_RVA.0 as u64);
             put(definition + DEFINITION_NAME + 16, token.len() as u64);
             put(definition + DEFINITION_NAME + 24, 15);
         }

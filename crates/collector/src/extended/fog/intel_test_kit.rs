@@ -39,16 +39,16 @@ pub(crate) fn fixture() -> Vec<u8> {
     put32(&mut bytes, LTAB, 0);
     put32(&mut bytes, LTAB + 4, 1);
     put32(&mut bytes, LTAB + 8, 0);
-    put64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
+    put64(&mut bytes, C0, ccountry::VTABLE_RVA.0 as u64);
     put32(&mut bytes, C0 + ccountry::ID, 1);
     header(&mut bytes, C0 + ccountry::DIVISIONS, 0x40000, 1);
     put64(&mut bytes, 0x40000, DIVISION as u64);
     header(&mut bytes, C0 + ccountry::FLEETS, 0x41000, 1);
     put64(&mut bytes, 0x41000, FLEET as u64);
-    put64(&mut bytes, FLEET, cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET, cfleet::VTABLE_RVA.0 as u64);
     header(&mut bytes, FLEET + cfleet::TASK_FORCES, 0x42000, 1);
     put64(&mut bytes, 0x42000, TASK_FORCE as u64);
-    put64(&mut bytes, DIVISION, carmy::VTABLE_RVA as u64);
+    put64(&mut bytes, DIVISION, carmy::VTABLE_RVA.0 as u64);
     put64(&mut bytes, DIVISION + cunit::HANDLE, (7u64 << 32) | 3);
     header(&mut bytes, DIVISION + cunit::VIEWER_DATA, VIEWERS, 2);
     for (index, (viewer, level)) in [(1u32, 3u8), (2, 255)].into_iter().enumerate() {
@@ -59,7 +59,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         );
         bytes[VIEWERS + index * unit_viewer_entry::STRIDE + unit_viewer_entry::LEVEL] = level;
     }
-    put64(&mut bytes, TASK_FORCE, ctask_force::VTABLE_RVA as u64);
+    put64(&mut bytes, TASK_FORCE, ctask_force::VTABLE_RVA.0 as u64);
     put64(&mut bytes, TASK_FORCE + cunit::HANDLE, u64::MAX);
     header(&mut bytes, TASK_FORCE + cunit::VIEWER_DATA, 0, 0);
     bytes

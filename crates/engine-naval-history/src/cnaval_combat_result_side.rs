@@ -6,6 +6,7 @@
 //! authentication. Failure withholds this result detail row alone; its independent result identity
 //! survives with unknown details.
 
+use engine_sites::Rva;
 use crate::{Memory, read};
 
 /// Commander references and HQ support character references. The native range
@@ -182,7 +183,7 @@ pub fn visit_entries(
 }
 
 /// CNavalCombatResultSide vtable.
-pub const VTABLE_RVA: usize = 0x029d_a670;
+pub const VTABLE_RVA: Rva = Rva(0x029d_a670);
 
 /// CNavalCombatResultSide extent 0x70.
 pub const SIZE: usize = 0x70;
@@ -196,15 +197,14 @@ pub const COUNTRIES_CAPACITY: usize = 0x40;
 /// CNavalCombatResultSide country count u32.
 pub const COUNTRIES_COUNT: usize = 0x44;
 /// CNavalCombatResultSide constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d4_1340;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d4_1340);
 
 pub(crate) fn authenticate(
     memory: &impl Memory,
     base: usize,
     side: usize,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")?;
     if read::<u64>(memory, side) != Some(expected as u64) {
         return Err("naval result side vtable mismatch");
@@ -226,7 +226,7 @@ mod detail_tests {
     }
     impl Memory for HqMemory<'_> {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-            if at == self.base + crate::creference_registry::LOW_ROOTS_RVA + 8 {
+            if at == self.base + crate::creference_registry::LOW_ROOTS_RVA.0 + 8 {
                 out.copy_from_slice(&0x1000u64.to_le_bytes());
                 return true;
             }
@@ -280,7 +280,7 @@ mod detail_tests {
         let mut bytes = vec![0; 0x800];
         let base = 0x1_4000_0000usize;
         for (at, value) in [
-            (0x100, (base + VTABLE_RVA) as u64),
+            (0x100, (base + VTABLE_RVA.0) as u64),
             (0x150, 0xaabb_ccdd_1234_5678),
             (0x158, HQ),
             (0x160, 0x300),
@@ -327,7 +327,7 @@ mod detail_tests {
     fn entry_lists_and_empty_influences_keep_initial_headers_and_native_order() {
         let base = 0x1_4000_0000usize;
         let mut bytes = vec![0; 0x400];
-        bytes[0x100..0x108].copy_from_slice(&((base + VTABLE_RVA) as u64).to_le_bytes());
+        bytes[0x100..0x108].copy_from_slice(&((base + VTABLE_RVA.0) as u64).to_le_bytes());
         for offset in [8, MEMBERS] {
             let at = 0x100 + offset;
             bytes[at..at + 8].copy_from_slice(&0x300u64.to_le_bytes());
@@ -404,9 +404,9 @@ mod detail_tests {
         struct InfluenceMemory<'a>(&'a [u8]);
         impl Memory for InfluenceMemory<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                let special = if address == BASE + registry::LOW_ROOTS_RVA + 8 {
+                let special = if address == BASE + registry::LOW_ROOTS_RVA.0 + 8 {
                     Some(0x1000u64)
-                } else if address == BASE + md::TABLE_RVA {
+                } else if address == BASE + md::TABLE_RVA.0 {
                     assert_eq!(output.len(), 16);
                     output[..8].copy_from_slice(&0x6000u64.to_le_bytes());
                     output[8..12].copy_from_slice(&64u32.to_le_bytes());
@@ -434,7 +434,7 @@ mod detail_tests {
         let slot = ((hash >> 32) as u32 ^ hash as u32) & 7;
         let bucket = 0x1100 + slot as usize * reference_bucket::STRIDE;
         for (at, value) in [
-            (0x100, (BASE + VTABLE_RVA) as u64),
+            (0x100, (BASE + VTABLE_RVA.0) as u64),
             (0x158, REFERENCE),
             (0x160, 0x300),
             (0x168, 0x310),
@@ -530,7 +530,7 @@ mod detail_tests {
     fn absent_hq_commander_never_dereferences_a_freed_borrowed_range() {
         let base = 0x1_4000_0000usize;
         let mut bytes = vec![0; 0x200];
-        bytes[0x100..0x108].copy_from_slice(&((base + VTABLE_RVA) as u64).to_le_bytes());
+        bytes[0x100..0x108].copy_from_slice(&((base + VTABLE_RVA.0) as u64).to_le_bytes());
         // Even a malformed/unreadable range is irrelevant when the native
         // window hides HQ controls. Known absence is distinct from a fault.
         bytes[0x160..0x168].copy_from_slice(&0xffff_ffff_ffff_fff0u64.to_le_bytes());

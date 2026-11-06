@@ -2,11 +2,12 @@
 //! the described fields remain within its allocation.
 
 use crate::{Memory, ccountry, cpdx_array::Array, read};
+use engine_sites::Rva;
 
 /// Program-status primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_e0d8;
+pub const VTABLE_RVA: Rva = Rva(0x029e_e0d8);
 /// Program-status secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029e_e0f8;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029e_e0f8);
 /// Program-status secondary-vtable pointer.
 pub const SECONDARY_VTABLE: usize = 0x08;
 /// Program-status allocation size.
@@ -38,12 +39,9 @@ pub fn from_country(
     if pointer == 0 {
         return Err("project status pointer is null");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
-    let secondary = base
-        .checked_add(SECONDARY_VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
+    let secondary =
+        engine_sites::at(base, SECONDARY_VTABLE_RVA).ok_or("module address overflow")?;
     let header = read::<[u8; 20]>(memory, pointer).ok_or("project status header unreadable")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64
         || u64::from_le_bytes(header[8..16].try_into().unwrap()) != secondary as u64
@@ -91,7 +89,7 @@ mod tests {
             (2 << 32) | 2,
         );
         put(&mut bytes, LINKS, 1 << 32);
-        put(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        put(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         put(&mut bytes, COUNTRY + ccountry::ID, 1);
         for country_pointer in [0, COUNTRY as u64] {
             put(&mut bytes, ARRAY + 8, country_pointer);

@@ -981,8 +981,8 @@ mod tests {
     impl engine_native::Memory for Live {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let root = match address {
-                cdlc_manager::SINGLETON_RVA => Self::MANAGER,
-                cdlc_manager::SEARCH_PATH_RVA => Self::ROOT,
+                a if a == cdlc_manager::SINGLETON_RVA.0 => Self::MANAGER,
+                a if a == cdlc_manager::SEARCH_PATH_RVA.0 => Self::ROOT,
                 _ => {
                     return engine_native::memory::SliceMemory {
                         base: 0,

@@ -10,6 +10,7 @@ use crate::{
     Memory, carmy, ccountry, cgame_state, cpdx_array::Array, cprovince, cunit,
     modifier_keys as keys, read, walk::Buffer,
 };
+use engine_sites::Rva;
 
 /// Scopes:0 country;1 selected contextual leader;2 location-state;
 ///3 province weather;4 region weather;5 priority subunit;6 category;
@@ -110,6 +111,10 @@ fn copy_input_spans<const N: usize>(
     }
 }
 
+fn global(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or(UNREADABLE)
+}
+
 fn formation_flags(memory: &impl Memory, army: usize) -> Result<[u8; 4], &'static str> {
     let mut values = [[0; 1]; 4];
     copy_input_spans(
@@ -135,9 +140,9 @@ fn supply_scalars(
             (army, 0x40),
             (army, 0x58),
             (army, 0x498),
-            (base, 0x033e_3678),
-            (base, 0x033e_3844),
-            (base, 0x033e_3990),
+            (global(base, Rva(0x033e_3678))?, 0),
+            (global(base, Rva(0x033e_3844))?, 0),
+            (global(base, Rva(0x033e_3990))?, 0),
         ],
         &mut std::array::from_fn(|index| {
             &mut fields.next().unwrap()[..if (4..7).contains(&index) { 4 } else { 8 }]
@@ -171,8 +176,8 @@ fn element(array: Array, index: u32, stride: usize) -> Result<usize, &'static st
         .ok_or("reinforcement array index invalid")
 }
 
-fn auth(memory: &impl Memory, base: usize, p: usize, rva: usize) -> Result<(), &'static str> {
-    if p == 0 || base.checked_add(rva).map(|n| n as u64) != Some(field(memory, p, 0)?) {
+fn auth(memory: &impl Memory, base: usize, p: usize, rva: Rva) -> Result<(), &'static str> {
+    if p == 0 || engine_sites::at(base, rva).map(|n| n as u64) != Some(field(memory, p, 0)?) {
         return Err("reinforcement dependency identity invalid");
     }
     Ok(())
@@ -245,7 +250,8 @@ fn append_modifiers(
         }
     }
     use crate::modifier_definition as metadata;
-    let table = sources.field::<u64>(memory, base, metadata::TABLE_RVA, UNREADABLE)? as usize;
+    let table =
+        sources.field::<u64>(memory, global(base, metadata::TABLE_RVA)?, 0, UNREADABLE)? as usize;
     for term in &mut output[start..*len] {
         if term.present != 0 {
             let key = term.key;
@@ -417,7 +423,7 @@ fn infrastructure(
     auth(memory, base, state, cstate::VTABLE_RVA)?;
     row.flags[9] = 1;
     row.ids[3] = field(memory, state, cstate::ID)?;
-    let database = pointer(memory, base, cbuilding_database::SINGLETON_RVA)?;
+    let database = pointer(memory, global(base, cbuilding_database::SINGLETON_RVA)?, 0)?;
     let definition = pointer(memory, database, 0x3b0)?;
     if database == 0 || definition == 0 {
         return Err("reinforcement infrastructure definition null");
@@ -426,10 +432,11 @@ fn infrastructure(
     if row.scalar_values[20] < 1 {
         row.scalar_values[21] = i64::from(field::<i32>(memory, definition, 0x2b8)?);
         if row.scalar_values[21] < 1 {
-            row.scalar_values[22] = i64::from(field::<i32>(memory, base, 0x033e_5274)?);
+            row.scalar_values[22] =
+                i64::from(field::<i32>(memory, global(base, Rva(0x033e_5274))?, 0)?);
         }
     }
-    row.scalar_values[23] = field(memory, base, 0x033e_5080)?;
+    row.scalar_values[23] = field(memory, global(base, Rva(0x033e_5080))?, 0)?;
     row.flags[10] = field(
         memory,
         definition,
@@ -528,10 +535,10 @@ fn auth_shared(
     base: usize,
     sources: &mut Sources,
     p: usize,
-    rva: usize,
+    rva: Rva,
 ) -> Result<(), &'static str> {
     if p == 0
-        || base.checked_add(rva).map(|n| n as u64)
+        || engine_sites::at(base, rva).map(|n| n as u64)
             != Some(sources.field::<u64>(memory, p, 0, UNREADABLE)?)
     {
         return Err("reinforcement dependency identity invalid");
@@ -791,10 +798,13 @@ fn air(
     if row.scalar_values[14] > 0 {
         row.scalar_values[15] = values[2];
         row.scalar_values[16] = field(memory, stats, 0x220)?;
-        row.scalar_values[17] = sources.field(memory, base, 0x033e_1850, UNREADABLE)?;
+        row.scalar_values[17] =
+            sources.field(memory, global(base, Rva(0x033e_1850))?, 0, UNREADABLE)?;
         if row.scalar_values[16] != 0 {
-            row.scalar_values[18] = sources.field(memory, base, 0x033e_18b8, UNREADABLE)?;
-            row.scalar_values[19] = sources.field(memory, base, 0x033e_1830, UNREADABLE)?;
+            row.scalar_values[18] =
+                sources.field(memory, global(base, Rva(0x033e_18b8))?, 0, UNREADABLE)?;
+            row.scalar_values[19] =
+                sources.field(memory, global(base, Rva(0x033e_1830))?, 0, UNREADABLE)?;
         }
     }
     Ok(())
@@ -927,13 +937,21 @@ fn transport_context(
     let mut row = ContextRow::default();
     row.flags[11] = 2;
     row.ids[0] = sources.field(memory, location, cprovince::ID, UNREADABLE)?;
-    row.ids[5] = sources.field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA, UNREADABLE)?;
-    let callback =
-        sources.field::<u64>(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA, UNREADABLE)?
-            as usize;
+    row.ids[5] = sources.field(
+        memory,
+        global(base, metadata::TRADE_FEATURE_FLAGS_RVA)?,
+        0,
+        UNREADABLE,
+    )?;
+    let callback = sources.field::<u64>(
+        memory,
+        global(base, metadata::ELIGIBILITY_CALLBACK_RVA)?,
+        0,
+        UNREADABLE,
+    )? as usize;
     row.ids[6] = if callback == 0 {
         0
-    } else if base.checked_add(metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
+    } else if engine_sites::at(base, metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
         1
     } else {
         return Err("reinforcement modifier callback unsupported");
@@ -978,7 +996,8 @@ fn transport_context(
     let countries = ccountry::Reader::new(memory, base, game)?;
     let owner = countries.resolve(owner_raw)?;
     if row.ids[5] & (1 << 4) != 0 {
-        let definitions = sources.field::<u64>(memory, base, 0x033d_e590, UNREADABLE)? as usize;
+        let definitions =
+            sources.field::<u64>(memory, global(base, Rva(0x033d_e590))?, 0, UNREADABLE)? as usize;
         if definitions == 0 {
             return Err("reinforcement transport static modifier set null");
         }
@@ -1044,12 +1063,13 @@ fn transport_context(
                 return Err(reason);
             }
             for (index, rva) in [
-                (25, 0x033e_1d68),
-                (26, 0x033e_1000),
-                (27, 0x033e_1088),
-                (28, 0x033e_2200),
+                (25, Rva(0x033e_1d68)),
+                (26, Rva(0x033e_1000)),
+                (27, Rva(0x033e_1088)),
+                (28, Rva(0x033e_2200)),
             ] {
-                row.scalar_values[index] = sources.field(memory, base, rva, UNREADABLE)?;
+                row.scalar_values[index] =
+                    sources.field(memory, global(base, rva)?, 0, UNREADABLE)?;
             }
             append_modifiers(
                 memory,
@@ -1072,7 +1092,8 @@ fn transport_context(
                 &mut row.modifier_count,
             )?;
             let metadata_table =
-                sources.field::<u64>(memory, base, metadata::TABLE_RVA, UNREADABLE)? as usize;
+                sources.field::<u64>(memory, global(base, metadata::TABLE_RVA)?, 0, UNREADABLE)?
+                    as usize;
             row.scalar_values[29] = i64::from(sources.field::<u32>(
                 memory,
                 metadata_table,
@@ -1216,17 +1237,25 @@ pub fn capture_context_buffer(
     row.flags[..4].copy_from_slice(&formation_flags(memory, army)?);
     row.flags[5] = u8::from(carmy::movement_attacking(memory, base, game, army)?);
     use crate::modifier_definition as metadata;
-    let callback =
-        sources.field::<u64>(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA, UNREADABLE)?
-            as usize;
+    let callback = sources.field::<u64>(
+        memory,
+        global(base, metadata::ELIGIBILITY_CALLBACK_RVA)?,
+        0,
+        UNREADABLE,
+    )? as usize;
     row.ids[6] = if callback == 0 {
         0
-    } else if base.checked_add(metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
+    } else if engine_sites::at(base, metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
         1
     } else {
         return Err("reinforcement modifier callback unsupported");
     };
-    row.ids[5] = sources.field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA, UNREADABLE)?;
+    row.ids[5] = sources.field(
+        memory,
+        global(base, metadata::TRADE_FEATURE_FLAGS_RVA)?,
+        0,
+        UNREADABLE,
+    )?;
     let country_keys = [
         keys::ARMY_SPEED_FACTOR,
         keys::ARMY_ATTACK_SPEED_FACTOR,
@@ -1368,21 +1397,26 @@ pub fn capture_context_buffer(
                 row.flags[8] = 1;
                 row.scalar_values[9] = sources.field(
                     memory,
-                    base,
-                    if row.scalar_values[10] > 0 {
-                        0x033e_3ad0
-                    } else {
-                        0x033e_3a20
-                    },
+                    global(
+                        base,
+                        if row.scalar_values[10] > 0 {
+                            Rva(0x033e_3ad0)
+                        } else {
+                            Rva(0x033e_3a20)
+                        },
+                    )?,
+                    0,
                     UNREADABLE,
                 )?;
             }
         }
     }
     if row.flags[0] != 0 {
-        row.scalar_values[11] = sources.field(memory, base, 0x033e_3c20, UNREADABLE)?;
+        row.scalar_values[11] =
+            sources.field(memory, global(base, Rva(0x033e_3c20))?, 0, UNREADABLE)?;
     } else if row.flags[1] != 0 {
-        row.scalar_values[12] = sources.field(memory, base, 0x033e_3cb8, UNREADABLE)?;
+        row.scalar_values[12] =
+            sources.field(memory, global(base, Rva(0x033e_3cb8))?, 0, UNREADABLE)?;
     }
     let infrastructure_state = if next == 0 {
         actual_state

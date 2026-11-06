@@ -4,6 +4,7 @@
 use crate::combat_log_history as layout;
 use crate::{Memory, cpdx_array::Array, equipment_entry, read};
 use crate::{ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as group};
+use engine_sites::Rva;
 
 /// Fixed-size staging element. Neither a machine pointer nor this private wire
 /// is written to a recording. `root` identifies the affected group or battle;
@@ -59,8 +60,8 @@ pub const DAMAGE_FROM: usize = 8;
 pub const DAMAGE_RECEIVER: usize = 12;
 pub const DAMAGE_TO: usize = 16;
 pub const DAMAGE_VALUE: usize = 24;
-pub const ACTIVITY_VTABLE_RVA: usize = 0x029d_a080;
-pub const DAMAGE_VTABLE_RVA: usize = 0x029d_a030;
+pub const ACTIVITY_VTABLE_RVA: Rva = Rva(0x029d_a080);
+pub const DAMAGE_VTABLE_RVA: Rva = Rva(0x029d_a030);
 
 pub const ARRAYS: [usize; 9] = [
     group::REASONS,
@@ -135,10 +136,10 @@ fn header<const N: usize>(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<[u8; N], &'static str> {
     let bytes: [u8; N] = field(memory, pointer, 0)?;
-    if base.checked_add(vtable).map(|p| p as u64) != Some(word(&bytes, 0)) {
+    if engine_sites::at(base, vtable).map(|p| p as u64) != Some(word(&bytes, 0)) {
         return Err("combat log event class differs");
     }
     Ok(bytes)
@@ -214,9 +215,7 @@ pub fn month(
 ) -> Result<(), &'static str> {
     let bytes = header::<{ loss::SIZE }>(memory, base, pointer, loss::VTABLE_RVA)?;
     let p = loss::POOL;
-    if base
-        .checked_add(crate::cequipment_variant_pool::VTABLE_RVA)
-        .map(|p| p as u64)
+    if engine_sites::at(base, crate::cequipment_variant_pool::VTABLE_RVA).map(|p| p as u64)
         != Some(word(&bytes, p))
     {
         return Err("combat log event month pool class differs");
@@ -388,7 +387,7 @@ pub fn seed_group(
     put: &mut impl FnMut(Fact),
 ) -> Result<(), &'static str> {
     if bytes.len() != group::SIZE
-        || base.checked_add(group::VTABLE_RVA).map(|p| p as u64) != Some(word(bytes, 0))
+        || engine_sites::at(base, group::VTABLE_RVA).map(|p| p as u64) != Some(word(bytes, 0))
     {
         return Err("combat log seed group class differs");
     }
@@ -481,7 +480,7 @@ fn side_data_inner(
     put: &mut impl FnMut(Fact),
 ) -> Result<(), &'static str> {
     if bytes.len() != layout::SIDE_SIZE
-        || base.checked_add(layout::SIDE_VTABLE_RVA).map(|p| p as u64) != Some(word(bytes, 0))
+        || engine_sites::at(base, layout::SIDE_VTABLE_RVA).map(|p| p as u64) != Some(word(bytes, 0))
     {
         return Err("combat log event side class differs");
     }
@@ -511,9 +510,7 @@ fn side_data_inner(
     .enumerate()
     {
         let p = &bytes[at..];
-        if base
-            .checked_add(crate::cequipment_variant_pool::VTABLE_RVA)
-            .map(|p| p as u64)
+        if engine_sites::at(base, crate::cequipment_variant_pool::VTABLE_RVA).map(|p| p as u64)
             != Some(word(p, 0))
         {
             return Err("combat log event side pool class differs");
@@ -727,9 +724,7 @@ pub fn observer(
             );
         }
         let pool_at = ACTIVITY_EQUIPMENT_POOL;
-        if base
-            .checked_add(crate::cequipment_variant_pool::VTABLE_RVA)
-            .map(|p| p as u64)
+        if engine_sites::at(base, crate::cequipment_variant_pool::VTABLE_RVA).map(|p| p as u64)
             != Some(word(&entry, pool_at))
         {
             return Err("combat log activity pool class differs");
@@ -796,7 +791,7 @@ pub fn observer(
 pub fn count(memory: &impl Memory, base: usize, id: u32) -> Result<i16, &'static str> {
     let list = Array::read(
         memory,
-        base.checked_add(layout::BATTLE_COUNTS_RVA)
+        engine_sites::at(base, layout::BATTLE_COUNTS_RVA)
             .ok_or("combat log event address overflow")?,
         2,
     )
@@ -818,14 +813,14 @@ pub fn settled_counts(
     }
     let counts = Array::read(
         memory,
-        base.checked_add(layout::BATTLE_COUNTS_RVA)
+        engine_sites::at(base, layout::BATTLE_COUNTS_RVA)
             .ok_or("combat log event address overflow")?,
         2,
     )
     .ok_or("combat log event count array invalid")?;
     let used = Array::read(
         memory,
-        base.checked_add(layout::BATTLE_USED_RVA)
+        engine_sites::at(base, layout::BATTLE_USED_RVA)
             .ok_or("combat log event address overflow")?,
         1,
     )

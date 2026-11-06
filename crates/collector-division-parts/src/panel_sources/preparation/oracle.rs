@@ -74,7 +74,7 @@ impl Fixture {
         for (army, entries) in [(0x1000, 0x6000), (0x2000, 0x6100)] {
             memory.put(
                 army + carmy::EQUIPMENT_POOL,
-                &(pool::VTABLE_RVA as u64).to_le_bytes(),
+                &(pool::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             memory.array(army + carmy::EQUIPMENT_POOL + pool::ITEMS, entries, 3);
             for (ordinal, amount) in [0_i64, -1, i64::MAX].into_iter().enumerate() {
@@ -82,7 +82,7 @@ impl Fixture {
                 memory.put(entries + ordinal * 16 + 8, &amount.to_le_bytes());
             }
         }
-        memory.put(0x5000, &(variant::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(0x5000, &(variant::VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(
             0x5008,
             &((1_u64 << 32) | u64::from(variant::REFERENCE_TYPE)).to_le_bytes(),
@@ -95,7 +95,7 @@ impl Fixture {
         for (index, raw) in [i64::MIN, -1, i64::MAX].into_iter().enumerate() {
             memory.put(0x7000 + index * 8, &raw.to_le_bytes());
         }
-        memory.put(0x3000, &(cstate::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(0x3000, &(cstate::VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(0x3000 + cstate::COUNTRY_MODIFIERS, &[0; 17]);
         memory.put(
             0x3000 + cstate::COUNTRY_MODIFIERS,
@@ -109,7 +109,7 @@ impl Fixture {
         ];
         keys.sort_unstable();
         memory.array(0x3000 + cstate::BASE_MODIFIERS, 0x8100, 3);
-        memory.put(definition::TABLE_RVA, &0x9000_u64.to_le_bytes());
+        memory.put(definition::TABLE_RVA.0, &0x9000_u64.to_le_bytes());
         for (index, key) in keys.into_iter().enumerate() {
             memory.put(0x8100 + index * 16, &u64::from(key).to_le_bytes());
             memory.put(

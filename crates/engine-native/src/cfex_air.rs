@@ -1,7 +1,8 @@
 //! CFEXAir active naval air slot.
+use engine_sites::Rva;
 use crate::{Memory, cequipment_variant, cnaval_combatant::field, cpdx_array::Array};
 
-pub const VTABLE_RVA: usize = 0x02a9_a568;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_a568);
 
 // The two localisation caches are derived. Capture only the wing vectors' subunit indices for
 // viewer localisation. The damage multiplier is saved; update recomputes five weighted wing values
@@ -152,8 +153,7 @@ pub(crate) fn read_buffer(
     plane_wings_required: &mut usize,
 ) -> Result<Row, &'static str> {
     if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(VTABLE_RVA)
+        != engine_sites::at(base, VTABLE_RVA)
             .ok_or("naval plane module overflow")? as u64
         || field::<u64>(memory, pointer, 8)? != group as u64
     {
@@ -165,8 +165,7 @@ pub(crate) fn read_buffer(
         0
     } else {
         if field::<u64>(memory, carrier, 0)?
-            != base
-                .checked_add(crate::cfex_member::VTABLE_RVA)
+            != engine_sites::at(base, crate::cfex_member::VTABLE_RVA)
                 .ok_or("naval plane carrier module overflow")? as u64
             || field::<i32>(memory, carrier, crate::cfex_member::BATTLE_SLOT)? != carrier_slot
             || field::<u64>(memory, carrier, crate::cfex_member::GROUP)? != group as u64
@@ -192,8 +191,7 @@ pub(crate) fn read_buffer(
     let variant = field::<u64>(memory, pointer, 0xf0)? as usize;
     if variant != 0 {
         if field::<u64>(memory, variant, 0)?
-            != base
-                .checked_add(cequipment_variant::VTABLE_RVA)
+            != engine_sites::at(base, cequipment_variant::VTABLE_RVA)
                 .ok_or("naval plane variant module overflow")? as u64
         {
             return Err("naval plane variant identity mismatch");
@@ -250,12 +248,10 @@ pub(crate) fn read_buffer(
                     .checked_sub(crate::cair_wing::SECONDARY)
                     .ok_or("naval air wing primary address underflow")?;
                 if field::<u64>(memory, wing, 0)?
-                    != base
-                        .checked_add(crate::cair_wing::VTABLE_RVA)
+                    != engine_sites::at(base, crate::cair_wing::VTABLE_RVA)
                         .ok_or("naval air wing module overflow")? as u64
                     || field::<u64>(memory, secondary, 0)?
-                        != base
-                            .checked_add(crate::cair_wing::SECONDARY_VTABLE_RVA)
+                        != engine_sites::at(base, crate::cair_wing::SECONDARY_VTABLE_RVA)
                             .ok_or("naval air wing secondary module overflow")?
                             as u64
                     || field::<u64>(memory, wing, crate::cair_wing::REFERENCE_TYPE)? != handle
@@ -264,8 +260,7 @@ pub(crate) fn read_buffer(
                 }
                 let pool = field::<u64>(memory, wing, crate::cair_wing::POOL)? as usize;
                 if field::<u64>(memory, pool, 0)?
-                    != base
-                        .checked_add(crate::cair_wing_pool::VTABLE_RVA)
+                    != engine_sites::at(base, crate::cair_wing_pool::VTABLE_RVA)
                         .ok_or("naval air wing pool module overflow")? as u64
                 {
                     return Err("naval air wing pool identity mismatch");
@@ -304,7 +299,7 @@ mod presentation_cache_tests {
             }
         }
         let mut bytes = vec![0; 0x400];
-        bytes[ENTRY..ENTRY + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[ENTRY..ENTRY + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[ENTRY + 0x88..ENTRY + 0xc0].fill(0xff);
         bytes[ENTRY + 0xc0..ENTRY + 0xf0].fill(0xff);
         let mut memory = Guard(bytes);
@@ -377,7 +372,7 @@ mod presentation_cache_tests {
         memory.0.resize(DATA + COUNT * 8, 0);
         for (at, value) in [
             (ENTRY + 0x100, DATA as u64),
-            (HIT, crate::naval_combat_hit::VTABLE_RVA as u64),
+            (HIT, crate::naval_combat_hit::VTABLE_RVA.0 as u64),
             (HIT + 0x28, crate::msvc_string::INLINE_CAPACITY),
             (HIT + 0x38, i64::MIN as u64),
         ] {
@@ -403,7 +398,7 @@ mod presentation_cache_tests {
         let (mut types, mut wings) = (Vec::new(), Vec::new());
         for count in [15_usize, 50, 82] {
             let mut bytes = vec![0; DATA + count * 16];
-            bytes[PLANE..PLANE + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+            bytes[PLANE..PLANE + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
             for (offset, first) in [(0x28, DATA), (0x40, DATA + count * 8)] {
                 bytes[PLANE + offset..PLANE + offset + 8]
                     .copy_from_slice(&(first as u64).to_le_bytes());

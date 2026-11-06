@@ -108,8 +108,7 @@ pub fn walk_buffer(
         output.records.ensure(roster.count as usize)?;
         // Definitions can change on a load. Read current flags in this callback;
         // a feature callback is not equivalent to a passive accumulator lookup.
-        let definitions = base
-            .checked_add(modifier_definition::TABLE_RVA)
+        let definitions = engine_sites::at(base, modifier_definition::TABLE_RVA)
             .and_then(|p| read::<u64>(memory, p))
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
@@ -578,11 +577,11 @@ mod tests {
             (DEFINITIONS, vec![0; 0x5000]),
             (STRINGS, vec![0; 0x1000]),
             (RANGE, vec![0; 0x1000]),
-            (modifier_definition::TABLE_RVA, vec![0; 8]),
+            (modifier_definition::TABLE_RVA.0, vec![0; 8]),
         ]));
         m.qword(GS + cgame_state::POWER_BALANCE_MANAGER, MANAGER as u64);
         m.header(MANAGER + RECORDS, RECORD, 1);
-        m.qword(modifier_definition::TABLE_RVA, DEFINITIONS as u64);
+        m.qword(modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
         m.dword(
             DEFINITIONS
                 + modifier_keys::POWER_BALANCE_DAILY as usize * modifier_definition::STRIDE
@@ -594,7 +593,7 @@ mod tests {
         m.header(GS + cgame_state::COUNTRY_LINKS, GS + 0x900, 3);
         m.dword(GS + 0x904, 1);
         m.dword(GS + 0x908, 1);
-        m.qword(COUNTRY, ccountry::VTABLE_RVA as u64);
+        m.qword(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         m.dword(COUNTRY + ccountry::ID, 1);
         m.header(COUNTRY + ccountry::MODIFIER_ACCUMULATOR, MODIFIER_DATA, 2);
         m.dword(MODIFIER_DATA, modifier_keys::POWER_BALANCE_DAILY);

@@ -153,7 +153,7 @@ fn game_score_status_counts_current_read_prefix_errors_after_census_failure() {
         2,
     );
     put64(&mut bytes, 0x3e000, FLEET as u64);
-    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA.0 as u64);
     put64(&mut bytes, FLEET + engine_native::cfleet::HANDLE, 61);
     bytes[kit::WING + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
     struct Fault<'a>(&'a [u8]);
@@ -403,7 +403,7 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     for index in 0..3 {
         put64(&mut bytes, 0x3e000 + index * 8, FLEET as u64);
     }
-    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA.0 as u64);
     put64(&mut bytes, FLEET + engine_native::cfleet::HANDLE, 61);
     put32(
         &mut bytes,
@@ -420,7 +420,7 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     put64(
         &mut bytes,
         SITE,
-        engine_native::cair_base::VTABLE_RVA as u64,
+        engine_native::cair_base::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, SITE + 8, 65);
     put32(
@@ -573,7 +573,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     put64(
         &mut bytes,
         BASE,
-        engine_native::cair_base::VTABLE_RVA as u64,
+        engine_native::cair_base::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, BASE + 8, 65);
     put32(
@@ -742,7 +742,7 @@ fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressur
         1,
     );
     put64(&mut bytes, 0x3e000, FLEET as u64);
-    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA.0 as u64);
     put64(&mut bytes, FLEET + engine_native::cfleet::HANDLE, 61);
     put32(
         &mut bytes,
@@ -759,7 +759,7 @@ fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressur
     put64(
         &mut bytes,
         0x3f100,
-        engine_native::cair_base::VTABLE_RVA as u64,
+        engine_native::cair_base::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, 0x3f108, 65);
     // No access: the native bounds test certifies false without a container.

@@ -2,10 +2,11 @@
 //! by its existing roster acquisition, and reads this companion only after its
 //! goal writer certificate changed. No roster walk or game getter lives here.
 
+use engine_sites::Rva;
 use crate::{Memory, allocation, cgame_date, cpdx_array::Array, read};
 
 pub const STATUS: usize = 0x620;
-pub const VTABLE_RVA: usize = 0x029b_8d78;
+pub const VTABLE_RVA: Rva = Rva(0x029b_8d78);
 pub const OWNER: usize = 0x08;
 pub const MANIFEST: usize = 0x10;
 pub const GOALS: usize = 0x18;
@@ -21,7 +22,7 @@ pub const GOAL_PROGRESS_STATUS: usize = 0x10;
 /// trigger again could produce a newer value than the game currently shows.
 pub const GOAL_PROGRESS: usize = 0x520;
 pub const GOAL_DATE: usize = 0x528;
-pub const DEFINITION_VTABLE_RVA: usize = 0x0279_7990;
+pub const DEFINITION_VTABLE_RVA: Rva = Rva(0x0279_7990);
 pub const DEFINITION_TOKEN: usize = 0x08;
 pub const DATE_STRIDE: usize = 0x18;
 
@@ -90,7 +91,9 @@ fn definition(
     if pointer == 0 {
         return Ok(None);
     }
-    if read::<u64>(memory, pointer) != Some(at(base, DEFINITION_VTABLE_RVA)? as u64) {
+    let vtable = engine_sites::at(base, DEFINITION_VTABLE_RVA)
+        .ok_or("faction goal definition vtable mismatch")?;
+    if read::<u64>(memory, pointer) != Some(vtable as u64) {
         return Err("faction goal definition vtable mismatch");
     }
     word(memory, pointer, DEFINITION_TOKEN).map(Some)
@@ -152,7 +155,9 @@ fn read_selected_into(
     progress: bool,
 ) -> Result<(), &'static str> {
     let status = at(faction, STATUS)?;
-    if read::<u64>(memory, status) != Some(at(base, VTABLE_RVA)? as u64) {
+    let vtable =
+        engine_sites::at(base, VTABLE_RVA).ok_or("faction goal status vtable mismatch")?;
+    if read::<u64>(memory, status) != Some(vtable as u64) {
         return Err("faction goal status vtable mismatch");
     }
     if word::<u64>(memory, status, OWNER)? != faction as u64 {

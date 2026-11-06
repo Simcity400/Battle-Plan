@@ -9,6 +9,7 @@ use crate::{
     crelation, crelation_status, csubject_relation, cwar_goal, read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OwnedRow {
@@ -75,13 +76,9 @@ fn array(
         .and_then(|p| Array::read(memory, p, stride))
         .ok_or("war overview array invalid or unreadable")
 }
-fn vtable(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    rva: usize,
-) -> Result<(), &'static str> {
-    if pointer == 0 || read::<u64>(memory, pointer) != base.checked_add(rva).map(|p| p as u64) {
+fn vtable(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(), &'static str> {
+    let expected = engine_sites::at(base, rva).map(|p| p as u64);
+    if pointer == 0 || expected.is_none() || read::<u64>(memory, pointer) != expected {
         Err("war overview vtable mismatch")
     } else {
         Ok(())
@@ -447,9 +444,7 @@ fn copy_wars(
     for (index, occurrence) in pending.iter().enumerate() {
         let record = &bytes[index * 53..(index + 1) * 53];
         if pointer(record)
-            != base
-                .checked_add(super::VTABLE_RVA)
-                .ok_or("war vtable address overflow")?
+            != engine_sites::at(base, super::VTABLE_RVA).ok_or("war vtable withheld")?
             || word(&record[8..]) != super::TYPE
         {
             return Err("war overview vtable mismatch");
@@ -844,9 +839,8 @@ fn walk_cached_buffer(
                     let root = roots[index];
                     let record = &records[index * 32..(index + 1) * 32];
                     if pointer(record)
-                        != base
-                            .checked_add(cdiplomacy_status::VTABLE_RVA)
-                            .ok_or("war diplomacy vtable address overflow")?
+                        != engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+                            .ok_or("war diplomacy vtable withheld")?
                     {
                         return Err("war overview vtable mismatch");
                     }

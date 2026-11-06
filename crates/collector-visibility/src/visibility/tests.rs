@@ -39,15 +39,15 @@ fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
             let mask = 0x1234_5678_u32.to_le_bytes();
             let human = [7];
             let manager = 0x2000_u64.to_le_bytes();
-            let vtable = (cweather_manager::VTABLE_RVA as u64).to_le_bytes();
-            let bytes: &[u8] = if address == engine_dlc::dlc_feature_state::MASK_RVA {
+            let vtable = (cweather_manager::VTABLE_RVA.0 as u64).to_le_bytes();
+            let bytes: &[u8] = if address == engine_dlc::dlc_feature_state::MASK_RVA.0 {
                 &mask
-            } else if address == native::INSTANT_DECISIONS_RVA {
+            } else if address == native::INSTANT_DECISIONS_RVA.0 {
                 let Some(instant) = &self.1 else {
                     return false;
                 };
                 std::slice::from_ref(instant)
-            } else if address == native::HUMAN_AI_RVA {
+            } else if address == native::HUMAN_AI_RVA.0 {
                 &human
             } else if address == 0x1000 + engine_native::cgame_state::WEATHER_MANAGER {
                 &manager

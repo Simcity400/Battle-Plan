@@ -1,15 +1,16 @@
 //! CCharacterManager owns both serialized character vectors. Its name index is a lossy cache.
 
+use engine_sites::Rva;
 /// Character-manager vtable.
-pub const VTABLE_RVA: usize = 0x0286_3228;
+pub const VTABLE_RVA: Rva = Rva(0x0286_3228);
 /// Serialized historical character-pointer array.
 pub const HISTORICAL_CHARACTERS: usize = 0x10;
 /// Serialized dynamic character-pointer array.
 pub const DYNAMIC_CHARACTERS: usize = 0x28;
 /// Constructor installing the empty-index sentinel.
-pub const CONSTRUCTOR_RVA: usize = 0x006f_c660;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x006f_c660);
 /// Clear operation restoring the empty-index sentinel.
-pub const CLEAR_RVA: usize = 0x0070_16f0;
+pub const CLEAR_RVA: Rva = Rva(0x0070_16f0);
 
 use crate::{Memory, ccharacter, cgame_state, cpdx_array::Array, read, read_slice};
 
@@ -168,9 +169,7 @@ impl Roster {
             .and_then(|p| usize::try_from(p).ok())
             .filter(|&p| p != 0)
             .ok_or("character manager unreadable or null")?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(memory, manager) != Some(expected as u64) {
             return Err("character manager vtable mismatch");
         }

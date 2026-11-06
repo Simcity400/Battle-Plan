@@ -21,6 +21,7 @@
 //! [`ship_owner`] and [`side_owner`] are the one join both the collector and
 //! playback (`replay_data::naval_trees`) use, so a recorded combat finds its trees
 //! without a runtime address.
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cfex_air, cfex_member, cnaval_combat, cnaval_combatant, cpdx_array::Array,
     modifier_accumulator, modifier_definition, modifier_keys, msvc_string,
@@ -249,6 +250,10 @@ pub struct Request {
     pub scope: u8,
 }
 
+fn key(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("naval tree pointer overflow")
+}
+
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)
@@ -413,7 +418,7 @@ fn side_requests(
     emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let body = combat.native_combat;
-    if field::<u64>(memory, body, 0)? != at(base, cnaval_combat::VTABLE_RVA)? as u64
+    if field::<u64>(memory, body, 0)? != key(base, cnaval_combat::VTABLE_RVA)? as u64
         || field::<u64>(memory, body, cnaval_combat::HANDLE)? != combat.combat
     {
         return Err("naval side tree combat identity mismatch");
@@ -424,7 +429,7 @@ fn side_requests(
         .enumerate()
     {
         let side = field::<u64>(memory, body, offset)? as usize;
-        if field::<u64>(memory, side, 0)? != at(base, cnaval_combatant::VTABLE_RVA)? as u64
+        if field::<u64>(memory, side, 0)? != key(base, cnaval_combatant::VTABLE_RVA)? as u64
             || field::<u64>(memory, side, cnaval_combatant::COMBAT)? as usize != body
         {
             return Err("naval side tree side identity mismatch");
@@ -434,7 +439,7 @@ fn side_requests(
     let leader = |side: usize| -> Result<usize, &'static str> {
         let leader = field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize;
         if leader != 0
-            && field::<u64>(memory, leader, 0)? != at(base, crate::cnavy_leader::VTABLE_RVA)? as u64
+            && field::<u64>(memory, leader, 0)? != key(base, crate::cnavy_leader::VTABLE_RVA)? as u64
         {
             return Err("naval side tree commander identity mismatch");
         }

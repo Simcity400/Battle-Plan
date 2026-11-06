@@ -6,6 +6,7 @@
 //! Unsupported effect subtrees demand nothing. Game pointers never survive the
 //! capture callback.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cevent, cgame_state, cland_border_war_combat as combat,
     cland_border_war_combatant as side, cland_combat, cland_combatant, cnaval_combat,
@@ -14,52 +15,52 @@ use crate::{
 };
 
 /// Event and event-option vtables.
-const EVENT_VTABLE: usize = 0x02a1_6008;
-const OPTION_VTABLE: usize = 0x02a1_5f68;
+const EVENT_VTABLE: Rva = Rva(0x02a1_6008);
+const OPTION_VTABLE: Rva = Rva(0x02a1_5f68);
 /// Packed event reference type combined with the resolved identifier.
 const EVENT_TYPE: u32 = 0x32;
 /// Embedded option and its effect selector.
 const IMMEDIATE: usize = 0x118;
 const OPTION_EFFECT: usize = 0x120;
 /// Effect vtables and attached else-branch field.
-const EFFECT_VTABLE: usize = 0x0285_26e0;
-const IF_VTABLE: usize = 0x0285_27b0;
+const EFFECT_VTABLE: Rva = Rva(0x0285_26e0);
+const IF_VTABLE: Rva = Rva(0x0285_27b0);
 const ELSE: usize = 0xb0;
 /// Targeted-decision removal vtable and name field.
-const REMOVE_VTABLE: usize = 0x027f_1ff0;
+const REMOVE_VTABLE: Rva = Rva(0x027f_1ff0);
 const DECISION_NAME: usize = 0x58;
 
 /// Supported effect-description vtables. These authenticate objects and do
 /// not enumerate authored effect keys or content.
-const DESCRIBED: &[usize] = &[
+const DESCRIBED: &[Rva] = &[
     EFFECT_VTABLE,
     IF_VTABLE,
     REMOVE_VTABLE,
-    0x027e_5b28,
-    0x027e_d8e8,
-    0x027e_c728,
-    0x027e_c8f8,
-    0x027e_7128,
-    0x027e_6d28,
-    0x027f_3e00,
-    0x027e_cac8,
-    0x027e_a6a0,
-    0x0284_6368,
-    0x0284_faa0,
-    0x027c_f708,
-    0x027e_5750,
-    0x027e_9f80,
-    0x027f_4b88,
-    0x027f_3098,
-    0x027e_9cf8,
-    0x027e_9ea8,
-    0x027c_b558,
-    0x027e_dcb8,
-    0x02a3_1830,
-    0x027e_b218,
-    0x02a3_1d78,
-    0x02a3_1e48,
-    0x02a3_1fe8,
+    Rva(0x027e_5b28),
+    Rva(0x027e_d8e8),
+    Rva(0x027e_c728),
+    Rva(0x027e_c8f8),
+    Rva(0x027e_7128),
+    Rva(0x027e_6d28),
+    Rva(0x027f_3e00),
+    Rva(0x027e_cac8),
+    Rva(0x027e_a6a0),
+    Rva(0x0284_6368),
+    Rva(0x0284_faa0),
+    Rva(0x027c_f708),
+    Rva(0x027e_5750),
+    Rva(0x027e_9f80),
+    Rva(0x027f_4b88),
+    Rva(0x027f_3098),
+    Rva(0x027e_9cf8),
+    Rva(0x027e_9ea8),
+    Rva(0x027c_b558),
+    Rva(0x027e_dcb8),
+    Rva(0x02a3_1830),
+    Rva(0x027e_b218),
+    Rva(0x02a3_1d78),
+    Rva(0x02a3_1e48),
+    Rva(0x02a3_1fe8),
 ];
 
 /// Validated native bytes, usable only inside this quiescent callback.
@@ -251,15 +252,19 @@ fn acquire(reader: &mut Reader<'_, impl Memory>, game_state: usize) -> Result<()
     let combats = reader.array(at(game_state, cgame_state::COMBATS + 8)?)?;
     for ordinal in 0..combats.count {
         let pointer = reader.pointer(combats, ordinal)?;
-        match reader.vtable(pointer)? {
-            cland_combat::VTABLE_RVA | cnaval_combat::VTABLE_RVA => continue,
-            combat::VTABLE_RVA => {}
+        let vtable = reader.vtable(pointer)?;
+        match reader.class(
+            vtable,
+            &[cland_combat::VTABLE_RVA, cnaval_combat::VTABLE_RVA, combat::VTABLE_RVA],
+        )? {
+            Some(cland_combat::VTABLE_RVA | cnaval_combat::VTABLE_RVA) => continue,
+            Some(combat::VTABLE_RVA) => {}
             // This census needs only border-war classes. Other combat classes
             // cannot supply a border side's win/lose events.
             _ => continue,
         }
         let identity = field::<[u8; 16]>(memory, pointer, cland_combat::BODY)?;
-        if word(&identity[..8]) != at(reader.base, combat::BODY_VTABLE_RVA)? as u64
+        if word(&identity[..8]) != reader.key(combat::BODY_VTABLE_RVA)? as u64
             || word(&identity[8..]) == 0
         {
             return Err("border demand combat identity invalid");
@@ -271,7 +276,7 @@ fn acquire(reader: &mut Reader<'_, impl Memory>, game_state: usize) -> Result<()
         for (index, bytes) in sides.chunks_exact(8).enumerate() {
             let combatant =
                 usize::try_from(word(bytes)).map_err(|_| "border demand pointer overflow")?;
-            if reader.vtable(combatant)? != side::VTABLE_RVA
+            if reader.vtable(combatant)? != reader.key(side::VTABLE_RVA)?
                 || field::<u64>(memory, combatant, cland_combatant::COMBAT)? != pointer as u64
                 || field::<u8>(memory, combatant, cland_combatant::IS_ATTACKER)?
                     != (1 - index) as u8
@@ -353,8 +358,17 @@ impl<M: Memory> Reader<'_, M> {
         let vtable = read::<u64>(self.memory, pointer).ok_or("border demand vtable unreadable")?;
         usize::try_from(vtable)
             .ok()
-            .and_then(|p| p.checked_sub(self.base))
+            .filter(|&p| p >= self.base)
             .ok_or("border demand vtable invalid")
+    }
+
+    fn key(&self, key: Rva) -> Result<usize, &'static str> {
+        engine_sites::at(self.base, key).ok_or("border demand vtable withheld")
+    }
+
+    fn class(&self, vtable: usize, candidates: &[Rva]) -> Result<Option<Rva>, &'static str> {
+        engine_sites::classify(self.base, vtable, candidates)
+            .map_err(|_| "border demand vtable withheld")
     }
 
     fn event(&mut self, name: Token) -> Result<(), &'static str> {
@@ -379,7 +393,7 @@ impl<M: Memory> Reader<'_, M> {
         let Some(event) = creference_registry::resolve(self.memory, self.base, handle)? else {
             return Ok(());
         };
-        if self.vtable(event)? != EVENT_VTABLE {
+        if self.vtable(event)? != self.key(EVENT_VTABLE)? {
             return Err("border demand event class invalid");
         }
         if field::<u64>(self.memory, event, 8)? != handle {
@@ -394,13 +408,13 @@ impl<M: Memory> Reader<'_, M> {
             return Ok(());
         }
         let immediate = at(event, IMMEDIATE)?;
-        if self.vtable(immediate)? != OPTION_VTABLE {
+        if self.vtable(immediate)? != self.key(OPTION_VTABLE)? {
             return Err("border demand immediate class invalid");
         }
         self.effects(at(immediate, OPTION_EFFECT)?)?;
         if options.count == 1 {
             let option = self.pointer(options, 0)?;
-            if self.vtable(option)? != OPTION_VTABLE {
+            if self.vtable(option)? != self.key(OPTION_VTABLE)? {
                 return Err("border demand option class invalid");
             }
             self.effects(at(option, OPTION_EFFECT)?)?;
@@ -415,10 +429,9 @@ impl<M: Memory> Reader<'_, M> {
         {
             return Err("border demand effect cycle");
         }
-        let vtable = self.vtable(effect)?;
-        if !DESCRIBED.contains(&vtable) {
+        let Some(vtable) = self.class(self.vtable(effect)?, DESCRIBED)? else {
             return Ok(false);
-        }
+        };
         let required = depth.checked_add(1).ok_or("border demand depth overflow")?;
         self.result.required_stack = self.result.required_stack.max(required);
         self.stack.ensure(required)?;
@@ -556,7 +569,8 @@ fn event_id(memory: &impl Memory, base: usize, name: Token) -> Result<Option<u32
     if !prefix_ascii {
         return Err("border demand namespace comparison locale unavailable");
     }
-    let namespaces = Array::read(memory, at(base, namespace::TABLE_RVA)?, namespace::STRIDE)
+    let table = engine_sites::at(base, namespace::TABLE_RVA).ok_or("border demand address overflow")?;
+    let namespaces = Array::read(memory, table, namespace::STRIDE)
         .ok_or("border demand namespace array unreadable or invalid")?;
     for ordinal in 0..namespaces.count {
         let row = namespaces

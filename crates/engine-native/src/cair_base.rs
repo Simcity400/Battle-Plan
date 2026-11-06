@@ -9,6 +9,7 @@ use crate::{
     read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 mod carrier;
 mod carrier_capture;
@@ -74,7 +75,7 @@ pub fn carrier_host_name_demand(
 }
 
 /// Air-base vtable.
-pub const VTABLE_RVA: usize = 0x029d_50a0;
+pub const VTABLE_RVA: Rva = Rva(0x029d_50a0);
 /// Air-base allocation size.
 pub const SIZE: usize = 0x90;
 /// Reference type value checked against the low handle word.
@@ -100,11 +101,11 @@ pub const CAPACITY: usize = 0x78;
 /// Signed base kind, i32, set by construction; dispatch branches on zero, one and two.
 pub const KIND: usize = 0x7c;
 /// Container allocation and indexing path.
-pub const CREATE_COUNTRY_CONTAINER_RVA: usize = 0x00ca_8ca0;
+pub const CREATE_COUNTRY_CONTAINER_RVA: Rva = Rva(0x00ca_8ca0);
 /// Pool registration resolving the owner ordinal and appending to its container.
-pub const REGISTER_POOL_RVA: usize = 0x00ca_9250;
+pub const REGISTER_POOL_RVA: Rva = Rva(0x00ca_9250);
 /// Pool erasure scanning the country's registered vector.
-pub const ERASE_POOL_RVA: usize = 0x00cc_0700;
+pub const ERASE_POOL_RVA: Rva = Rva(0x00cc_0700);
 /// Pool batch width for the stored wing vector.
 const BATCH: usize = 64;
 /// Wing identity span.
@@ -259,8 +260,7 @@ pub fn dense_plan(
     if len != 0 && !read_slice(memory, dense.data, &mut bytes[..len * 8]) {
         return Err(Refusal::Header);
     }
-    let expected = image
-        .checked_add(ccountry_air_container::VTABLE_RVA)
+    let expected = engine_sites::at(image, ccountry_air_container::VTABLE_RVA)
         .ok_or(Refusal::Container)? as u64;
     for index in 0..len {
         let word = u64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap());
@@ -436,11 +436,8 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("air base roster unreadable or invalid")
     }
 
-    fn vtable(&self, pointer: usize, rva: usize) -> Result<(), &'static str> {
-        let expected = self
-            .base
-            .checked_add(rva)
-            .ok_or("module address overflow")?;
+    fn vtable(&self, pointer: usize, rva: Rva) -> Result<(), &'static str> {
+        let expected = engine_sites::at(self.base, rva).ok_or("module address overflow")?;
         if read::<u64>(self.memory, pointer) == Some(expected as u64) {
             Ok(())
         } else {
@@ -456,10 +453,7 @@ impl<M: Memory> Reader<'_, M> {
             [pointer, pointer.checked_add(HOST_REFERENCE).unwrap_or(0)],
             &mut [&mut identity, &mut data],
         );
-        let expected = self
-            .base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(self.base, VTABLE_RVA).ok_or("module address overflow")?;
         if complete == 0 || u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64
         {
             return Err("air base vtable mismatch or identity unreadable");
@@ -547,7 +541,8 @@ impl<M: Memory> Reader<'_, M> {
         // A base whose dense list proves its occupied slots reads none of its
         // slot vector beyond the plan's slot words: the listed containers are
         // the occupied slots, every other one is null ([`dense_plan`]).
-        let planned = slots.dense
+        let planned = slots
+            .dense
             .then(|| {
                 dense_plan(
                     self.memory,
@@ -569,17 +564,11 @@ impl<M: Memory> Reader<'_, M> {
         // and wing is still validated and staged in native pool then wing
         // order with its own copied prefix, so rows and single-fault reasons
         // keep their positions.
-        let expected_pool = self
-            .base
-            .checked_add(cair_wing_pool::VTABLE_RVA)
+        let expected_pool = engine_sites::at(self.base, cair_wing_pool::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let expected_primary = self
-            .base
-            .checked_add(cair_wing::VTABLE_RVA)
+        let expected_primary = engine_sites::at(self.base, cair_wing::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let expected_secondary = self
-            .base
-            .checked_add(cair_wing::SECONDARY_VTABLE_RVA)
+        let expected_secondary = engine_sites::at(self.base, cair_wing::SECONDARY_VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let RegistrationScratch {
             container_bytes,
@@ -1150,9 +1139,8 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
                 }
                 let identity =
                     read::<[u8; 16]>(memory, pointer).ok_or("air base identity unreadable")?;
-                let expected = base
-                    .checked_add(VTABLE_RVA)
-                    .ok_or("module address overflow")?;
+                let expected =
+                    engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
                 if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64 {
                     return Err("air base vtable mismatch");
                 }

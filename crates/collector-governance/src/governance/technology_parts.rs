@@ -232,11 +232,11 @@ mod tests {
                 let roster = country + 0x1200;
                 this.u64(countries + owner * 8, country as u64);
                 this.u32(links + owner * 4, owner as u32);
-                this.u64(country, (BASE + ccountry::VTABLE_RVA) as u64);
+                this.u64(country, (BASE + ccountry::VTABLE_RVA.0) as u64);
                 this.u32(country + ccountry::ID, owner as u32);
                 this.u32(country + ccountry::OWNED_STATE_COUNT, 1);
                 this.u64(country + ccountry::TECHNOLOGY_STATUS, status as u64);
-                this.u64(status, (BASE + ctechnology_status::VTABLE_RVA) as u64);
+                this.u64(status, (BASE + ctechnology_status::VTABLE_RVA.0) as u64);
                 this.u64(status + ctechnology_status::COUNTRY, country as u64);
                 this.array(
                     status + ctechnology_status::TECHNOLOGIES_DATA,
@@ -246,7 +246,7 @@ mod tests {
                 for index in 0..owner % 3 + 1 {
                     let technology = country + 0x1400 + index * 0x200;
                     this.u64(roster + index * 8, technology as u64);
-                    this.u64(technology, (BASE + ctechnology::VTABLE_RVA) as u64);
+                    this.u64(technology, (BASE + ctechnology::VTABLE_RVA.0) as u64);
                     this.u32(technology + ctechnology::DEFINITION_INDEX, 0x80000001);
                     this.u64(technology + ctechnology::STATUS, status as u64);
                     this.u64(

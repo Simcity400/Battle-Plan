@@ -68,8 +68,8 @@ const STATUS: usize = 0x20000000;
 const CONSUMERS: usize = 0x30000000;
 fn fixture(count: u32) -> MemoryMap {
     let mut memory = MemoryMap::default();
-    memory.span(cgame_state::SINGLETON_RVA, 8);
-    memory.put(cgame_state::SINGLETON_RVA, &(STATE as u64).to_le_bytes());
+    memory.span(cgame_state::SINGLETON_RVA.0, 8);
+    memory.put(cgame_state::SINGLETON_RVA.0, &(STATE as u64).to_le_bytes());
     memory.span(STATE, 0x800);
     memory.span(COUNTRIES, (count as usize + 1) * 8);
     memory.span(LINKS, (count as usize + 2) * 4);
@@ -87,7 +87,7 @@ fn fixture(count: u32) -> MemoryMap {
             &(country as u64).to_le_bytes(),
         );
         memory.put(LINKS + slot as usize * 4, &slot.to_le_bytes());
-        memory.put(country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(country, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(country + ccountry::ID, &slot.to_le_bytes());
         memory.put(
             country + ccountry::SURRENDER_TARGET,
@@ -97,7 +97,7 @@ fn fixture(count: u32) -> MemoryMap {
             country + ccountry::FUEL_STATUS,
             &(status as u64).to_le_bytes(),
         );
-        memory.put(status, &(fuel::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(status, &(fuel::VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(status + fuel::COUNTRY, &(country as u64).to_le_bytes());
         memory.put(status + fuel::GAIN, &(-17_i64).to_le_bytes());
         memory.put(status + fuel::GAIN_FROM_STATES, &23_i64.to_le_bytes());
@@ -279,7 +279,7 @@ fn live_census_includes_null_air_countries_and_all_name_bytes() {
     );
     memory.put(
         manager,
-        &(cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstrategic_air_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     memory.array(manager + cstrategic_air_manager::COUNTRY_AIR, airs, 4);
     for slot in 1..=3 {

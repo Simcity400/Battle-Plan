@@ -39,11 +39,11 @@ fn fixture() -> Vec<u8> {
     array(&mut bytes, STATE + cgame_state::COUNTRY_LINKS, LINKS, 2);
     put64(&mut bytes, COUNTRIES + 8, COUNTRY as u64);
     put(&mut bytes, LINKS + 4, &1_u32.to_le_bytes());
-    put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+    put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
     array(&mut bytes, STATE + cgame_state::PROVINCES, PROVINCES, 5);
     put64(&mut bytes, PROVINCES + 2 * 8, TARGET as u64);
-    put64(&mut bytes, TARGET, cprovince::VTABLE_RVA as u64);
+    put64(&mut bytes, TARGET, cprovince::VTABLE_RVA.0 as u64);
     put(&mut bytes, TARGET + cprovince::ID, &2_u32.to_le_bytes());
     put(
         &mut bytes,
@@ -63,10 +63,10 @@ fn fixture() -> Vec<u8> {
     }
     array(&mut bytes, TASK + cunit::COMBAT_REFERENCE_DATA, COMBATS, 1);
     put64(&mut bytes, COMBATS, COMBAT as u64);
-    put64(&mut bytes, COMBAT, cnaval_combat::VTABLE_RVA as u64);
+    put64(&mut bytes, COMBAT, cnaval_combat::VTABLE_RVA.0 as u64);
     put64(&mut bytes, COMBAT + cnaval_combat::ATTACKER, SIDE as u64);
     put64(&mut bytes, COMBAT + cnaval_combat::PROVINCE, TARGET as u64);
-    put64(&mut bytes, SIDE, cnaval_combatant::VTABLE_RVA as u64);
+    put64(&mut bytes, SIDE, cnaval_combatant::VTABLE_RVA.0 as u64);
     put64(&mut bytes, SIDE + cnaval_combatant::COMBAT, COMBAT as u64);
     // The naval side keeps the shared combatant country set; it holds tag 1.
     put64(
@@ -223,15 +223,15 @@ fn combat_links_fixture() -> (CombatLinksMemory, [u64; 2]) {
     put64(&mut bytes, COMBATS + 8, NAVAL as u64);
     // The suffix must stop at the first naval combat, without touching this tail.
     put64(&mut bytes, COMBATS + 16, u64::MAX);
-    put64(&mut bytes, COMBAT, cland_combat::VTABLE_RVA as u64);
+    put64(&mut bytes, COMBAT, cland_combat::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         COMBAT + 0x10,
-        cland_combat::BODY_VTABLE_RVA as u64,
+        cland_combat::BODY_VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, COMBAT + 0x18, first);
-    put64(&mut bytes, SIDE, cland_combatant::VTABLE_RVA as u64);
-    put64(&mut bytes, NAVAL, cnaval_combat::VTABLE_RVA as u64);
+    put64(&mut bytes, SIDE, cland_combatant::VTABLE_RVA.0 as u64);
+    put64(&mut bytes, NAVAL, cnaval_combat::VTABLE_RVA.0 as u64);
     put64(&mut bytes, NAVAL + 0x10, 0x02a5_6e70);
     put64(&mut bytes, NAVAL + 0x18, naval);
     let mut registry = Fixture::new(first as u32);
@@ -292,17 +292,17 @@ fn combat_links_authenticate_full_identities_and_stop_at_first_native_naval_type
     put64(
         &mut memory.bytes,
         COMBAT,
-        crate::cland_border_war_combat::VTABLE_RVA as u64,
+        crate::cland_border_war_combat::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut memory.bytes,
         COMBAT + 0x10,
-        crate::cland_border_war_combat::BODY_VTABLE_RVA as u64,
+        crate::cland_border_war_combat::BODY_VTABLE_RVA.0 as u64,
     );
     put64(
         &mut memory.bytes,
         SIDE,
-        crate::cland_border_war_combatant::VTABLE_RVA as u64,
+        crate::cland_border_war_combatant::VTABLE_RVA.0 as u64,
     );
     assert_eq!(
         collect_combat_links(&memory, false).1[0].combat_links,
@@ -454,7 +454,7 @@ fn mission_fixture() -> Vec<u8> {
     put64(
         &mut bytes,
         mission,
-        crate::cnaval_mission::VTABLE_RVA as u64,
+        crate::cnaval_mission::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut bytes,

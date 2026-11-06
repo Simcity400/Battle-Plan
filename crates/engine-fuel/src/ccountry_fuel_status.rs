@@ -13,9 +13,10 @@ use crate::{
     Memory, ccountry, cpdx_array::Array, fuel_consumer_data as consumer,
     fuel_history_entry as entry, read, read_slice, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Fuel-state primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_7068;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_7068);
 
 /// Current fuel, i64 fixed15.
 pub const CURRENT: usize = 0x08;
@@ -164,9 +165,7 @@ pub fn walk_buffer(
     let mut consumers = Sink::new(consumers);
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("fuel module address overflow")?;
+        let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("fuel module address overflow")?;
         let mut found = false;
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {

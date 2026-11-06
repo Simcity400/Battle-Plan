@@ -51,7 +51,7 @@ fn fixture() -> Fixture {
     world.array(manager + manager::OPERATIVES_DATA, vector, 4);
     for (slot, object) in [(1_usize, first), (2, second)] {
         world.u64(vector + slot * 8, object as u64);
-        world.u64(object, strategic::VTABLE_RVA as u64);
+        world.u64(object, strategic::VTABLE_RVA.0 as u64);
         world.u32(object + strategic::OWNER, slot as u32);
     }
     world.u64(first + strategic::MISSION_ACTIVITY, 123_456);

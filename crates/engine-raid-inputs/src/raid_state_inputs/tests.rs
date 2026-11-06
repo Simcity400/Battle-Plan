@@ -23,8 +23,8 @@ impl Memory for Mem {
 trait Store {
     fn put(&mut self, address: usize, bytes: &[u8]);
     fn base(&self) -> usize;
-    fn rva(&self, rva: usize) -> u64 {
-        (self.base() + rva) as u64
+    fn rva(&self, rva: engine_sites::Rva) -> u64 {
+        (self.base() + rva.0) as u64
     }
     fn u8(&mut self, address: usize, value: u8) {
         self.put(address, &[value]);
@@ -271,7 +271,10 @@ fn fixture() -> Mem {
     let mut m = Mem::default();
     // Resource database: the null object, then tokens 101 and 102.
     let database = 0x4100_0000;
-    m.u64(cstrategic_resource_database::SINGLETON_RVA, database as u64);
+    m.u64(
+        cstrategic_resource_database::SINGLETON_RVA.0,
+        database as u64,
+    );
     m.pointers(
         database + cstrategic_resource_database::ITEMS,
         0x4100_1000,
@@ -288,7 +291,7 @@ fn fixture() -> Mem {
             .enumerate()
     {
         m.u32(0x4100_1100 + index * 4, token);
-        m.u64(descriptor, cstrategic_resource::VTABLE_RVA as u64);
+        m.u64(descriptor, cstrategic_resource::VTABLE_RVA.0 as u64);
         m.u32(descriptor + cstrategic_resource::TOKEN_ID, token);
         m.u8(descriptor + cstrategic_resource::ACTIVE, 1);
         m.u32(descriptor + cstrategic_resource::INDEX, index as u32 + 1);
@@ -302,7 +305,7 @@ fn fixture() -> Mem {
     }
     // Modifier metadata: every key enabled, none clamped.
     let table = 0x4a00_0000;
-    m.u64(modifier_definition::TABLE_RVA, table as u64);
+    m.u64(modifier_definition::TABLE_RVA.0, table as u64);
     for key in [0x10_usize, 0x13, 0x223, 0x292] {
         let row = table + key * modifier_definition::STRIDE;
         m.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
@@ -313,10 +316,10 @@ fn fixture() -> Mem {
     m.array(GS + cgame_state::COUNTRY_LINKS, 0x4200_0100, 2);
     m.u32(0x4200_0100, 0);
     m.u32(0x4200_0104, 1);
-    m.u64(COUNTRY, ccountry::VTABLE_RVA as u64);
+    m.u64(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     m.u32(COUNTRY + ccountry::ID, 1);
     m.u64(COUNTRY + ccountry::RESOURCES, RESOURCES as u64);
-    m.u64(RESOURCES, ccountry_resources::VTABLE_RVA as u64);
+    m.u64(RESOURCES, ccountry_resources::VTABLE_RVA.0 as u64);
     m.u32(RESOURCES + ccountry_resources::OWNER, 1);
     m.pointers(
         RESOURCES + ccountry_resources::RESOURCE_ORIGINS,
@@ -324,7 +327,7 @@ fn fixture() -> Mem {
         &[0x4300_2000],
     );
     m.put(0x4300_2000, &[0; 0x88]);
-    m.u64(0x4300_2000, cresource_origin::VTABLE_RVA as u64);
+    m.u64(0x4300_2000, cresource_origin::VTABLE_RVA.0 as u64);
     m.u64(0x4300_2000 + cresource_origin::STATE, STATE_A as u64);
     m.array(
         RESOURCES + ccountry_resources::BUILDING_RESOURCE_OVERRIDES,
@@ -342,8 +345,8 @@ fn fixture() -> Mem {
     // Supply: provinces 7 and 9 map to nodes 0 and 1; node 1 has a route.
     let root = 0x4400_0000;
     m.u64(GS + cgame_state::SUPPLY_SYSTEM, root as u64);
-    m.u64(root, csupply_system::VTABLE_RVA as u64);
-    m.u64(root + 8, csupply_system::SECONDARY_VTABLE_RVA as u64);
+    m.u64(root, csupply_system::VTABLE_RVA.0 as u64);
+    m.u64(root + 8, csupply_system::SECONDARY_VTABLE_RVA.0 as u64);
     m.pointers(
         root + csupply_system::COUNTRY_SYSTEM_DATA,
         0x4400_1000,
@@ -355,10 +358,10 @@ fn fixture() -> Mem {
         2,
     );
     let system = 0x4400_2000;
-    m.u64(system, ccountry_supply_system::VTABLE_RVA as u64);
+    m.u64(system, ccountry_supply_system::VTABLE_RVA.0 as u64);
     m.u64(
         system + 8,
-        ccountry_supply_system::SECONDARY_VTABLE_RVA as u64,
+        ccountry_supply_system::SECONDARY_VTABLE_RVA.0 as u64,
     );
     m.u64(system + ccountry_supply_system::SUPPLY_SYSTEM, root as u64);
     m.u64(system + ccountry_supply_system::COUNTRY, COUNTRY as u64);
@@ -379,7 +382,7 @@ fn fixture() -> Mem {
     }
     m.array(COMPANION + supply_companion::NODES, 0x4400_6000, 2);
     // Infrastructure: database ordinal 0.
-    m.u64(cbuilding_database::SINGLETON_RVA, 0x4500_0000);
+    m.u64(cbuilding_database::SINGLETON_RVA.0, 0x4500_0000);
     m.u64(0x4500_0000 + INFRASTRUCTURE_TEMPLATE, 0x4500_1000);
     m.u8(
         0x4500_1000 + cbuilding_template::LOOKUP_ENABLED_CANDIDATE,
@@ -401,7 +404,7 @@ fn fixture() -> Mem {
     );
     for (pointer, id) in [(0x4700_0000, 7), (0x4700_1000, 9)] {
         m.put(pointer, &[0; 0x150]);
-        m.u64(pointer, cprovince::VTABLE_RVA as u64);
+        m.u64(pointer, cprovince::VTABLE_RVA.0 as u64);
         m.u32(pointer + cprovince::ID, id);
         m.u64(pointer + cprovince::STATE, STATE_A as u64);
         m.array(pointer + cprovince::STRATEGIC_LOCATIONS, 0, 0);
@@ -436,7 +439,7 @@ fn fixture() -> Mem {
     );
     let entry = 0x4630_4000;
     m.put(entry, &[0; dynamic_modifier_entry::STRIDE]);
-    m.u64(entry, dynamic_modifier_entry::VTABLE_RVA as u64);
+    m.u64(entry, dynamic_modifier_entry::VTABLE_RVA.0 as u64);
     m.u32(entry + dynamic_modifier_entry::SCOPE_COUNTRY, 0);
     m.u32(entry + dynamic_modifier_entry::SCOPE_STATE, 0);
     m.u32(entry + dynamic_modifier_entry::DAYS_REMAINING, u32::MAX);
@@ -444,7 +447,7 @@ fn fixture() -> Mem {
     m.u8(entry + dynamic_modifier_entry::ENABLED, 1);
     m.array(entry + dynamic_modifier_entry::VALUES, 0, 0);
     m.put(0x4900_0000, &[0; 0x48]);
-    m.u64(0x4900_0000, cdynamic_modifier::VTABLE_RVA as u64);
+    m.u64(0x4900_0000, cdynamic_modifier::VTABLE_RVA.0 as u64);
     m.put(0x4900_0000 + cdynamic_modifier::ID, b"refinery\0");
     m.u64(0x4900_0000 + cdynamic_modifier::ID + 16, 8);
     m.u64(0x4900_0000 + cdynamic_modifier::ID + 24, 15);
@@ -664,7 +667,7 @@ fn growing_resource_database_and_name_dictionary_follow_mod_demand() {
         let descriptor = 0x4b02_0000 + index * 0x200;
         memory.u64(items + (index + 1) * 8, descriptor as u64);
         memory.u32(tokens + index * 4, index as u32 + 100);
-        memory.u64(descriptor, cstrategic_resource::VTABLE_RVA as u64);
+        memory.u64(descriptor, cstrategic_resource::VTABLE_RVA.0 as u64);
         memory.u32(descriptor + cstrategic_resource::INDEX, index as u32 + 1);
         memory.u32(
             descriptor + cstrategic_resource::TOKEN_ID,
@@ -701,7 +704,7 @@ fn growing_resource_database_and_name_dictionary_follow_mod_demand() {
         let definition = 0x4c00_0000 + index * 0x100;
         let text = format!("name_{index:04}");
         memory.put(definition, &[0; 0x48]);
-        memory.u64(definition, cdynamic_modifier::VTABLE_RVA as u64);
+        memory.u64(definition, cdynamic_modifier::VTABLE_RVA.0 as u64);
         memory.put(definition + cdynamic_modifier::ID, text.as_bytes());
         memory.u64(definition + cdynamic_modifier::ID + 16, text.len() as u64);
         memory.u64(definition + cdynamic_modifier::ID + 24, 15);
@@ -990,7 +993,7 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
     // Resources: tokens 1000 + i, keys 0x100 + 4 i .. + 3.
     let database = m.alloc(0x80);
     m.u64(
-        m.base + cstrategic_resource_database::SINGLETON_RVA,
+        m.base + cstrategic_resource_database::SINGLETON_RVA.0,
         database as u64,
     );
     let items = m.alloc(8 * (RESOURCES_PER_STATE + 1));
@@ -1029,11 +1032,14 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
     }
     // Modifier metadata: every key enabled, none clamped.
     let table = m.alloc(0x300 * modifier_definition::STRIDE);
-    m.u64(m.base + modifier_definition::TABLE_RVA, table as u64);
+    m.u64(m.base + modifier_definition::TABLE_RVA.0, table as u64);
     // Infrastructure template, ordinal 0.
     let buildings = m.alloc(0x400);
     let template = m.alloc(0x300);
-    m.u64(m.base + cbuilding_database::SINGLETON_RVA, buildings as u64);
+    m.u64(
+        m.base + cbuilding_database::SINGLETON_RVA.0,
+        buildings as u64,
+    );
     m.u64(buildings + INFRASTRUCTURE_TEMPLATE, template as u64);
     m.u8(template + cbuilding_template::LOOKUP_ENABLED_CANDIDATE, 1);
     // Shared dynamic modifier definitions.

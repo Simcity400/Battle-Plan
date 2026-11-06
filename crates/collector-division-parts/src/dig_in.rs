@@ -310,7 +310,7 @@ mod tests {
             let mut bytes = vec![0; 0x9000];
             for index in 0..2 {
                 let (group, leader) = (GROUPS[index], LEADERS[index]);
-                put(&mut bytes, group, &(group::VTABLE_RVA as u64).to_le_bytes());
+                put(&mut bytes, group, &(group::VTABLE_RVA.0 as u64).to_le_bytes());
                 put(
                     &mut bytes,
                     group + group::HANDLE,
@@ -324,7 +324,7 @@ mod tests {
                 put(
                     &mut bytes,
                     leader,
-                    &(carmy_leader::VTABLE_RVA as u64).to_le_bytes(),
+                    &(carmy_leader::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -369,11 +369,11 @@ mod tests {
     impl Memory for Commanders {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.borrow_mut().push(address);
-            if address == engine_native::modifier_definition::TABLE_RVA && output.len() == 8 {
+            if address == engine_native::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&(DEFINITIONS as u64).to_le_bytes());
                 return true;
             }
-            if address == engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA {
+            if address == engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 {
                 output.fill(0);
                 return true;
             }
@@ -457,7 +457,7 @@ mod tests {
                 assert_eq!(memory.count(modifiers), block);
             }
             assert_eq!(
-                memory.count(engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA),
+                memory.count(engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
                 1
             );
         }

@@ -5,9 +5,10 @@ use crate::{
     Memory, ccountry, ccountry_resources, cpdx_array::Array, cstrategic_resource, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CResourceExchange primary vtable.
-pub const VTABLE_RVA: usize = 0x29d8e60;
+pub const VTABLE_RVA: Rva = Rva(0x29d8e60);
 /// CResourceExchange allocation size.
 pub const SIZE: usize = 0xf0;
 /// CResourceExchange assigned convoy count, i32.
@@ -38,7 +39,7 @@ pub const NO_TRADE_INFLUENCE: usize = 0xe8;
 /// CResourceExchange no-resources boolean, u8.
 pub const NO_RESOURCES: usize = 0xe9;
 /// Resource-exchange constructor.
-pub const CONSTRUCTOR_RVA: usize = 0xd05480;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0xd05480);
 
 /// Full reference-object handle containing both type and ID words.
 pub const REFERENCE: usize = 0x08;
@@ -84,11 +85,7 @@ pub fn authenticate<M: Memory>(
                 .expect("fixed field width"),
         )
     };
-    if u64_at(0)
-        != base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")? as u64
-    {
+    if u64_at(0) != engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64 {
         return Err("trade exchange vtable mismatch");
     }
     if bytes[REGISTERED] == 0 {

@@ -249,8 +249,8 @@ mod tests {
             division: 7,
             handle: Some(7),
             class: Some(0),
-            primary_vtable: Some(carmy::VTABLE_RVA as u64),
-            secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
+            primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
+            secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA.0 as u64),
             ..Default::default()
         };
         let daily = replay_data::cadence::DIVISION_STATUS_DAILY_SLOT as i32;

@@ -6,8 +6,9 @@
 //! reference subobject. Age pruning swap-erases entries, so vector position
 //! is not persistent ship identity.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_4788;
+pub const VTABLE_RVA: Rva = Rva(0x029d_4788);
 /// CSunkShipInfo allocation size 0xa8.
 pub const SIZE: usize = 0xa8;
 /// CSunkShipInfo std::string victim name.
@@ -243,19 +244,16 @@ fn read_record(
     let mut used = *bytes_len;
     let raw = read::<[u8; SIZE]>(memory, pointer).ok_or("sunk-ship history record unreadable")?;
     if u64_at(&raw, 0)
-        != base
-            .checked_add(VTABLE_RVA)
+        != engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64
     {
         return Err("sunk-ship history vtable mismatch");
     }
     if u64_at(&raw, SINK_DATE)
-        != base
-            .checked_add(cgame_date::VTABLE_RVA)
+        != engine_sites::at(base, cgame_date::VTABLE_RVA)
             .ok_or("module address overflow")? as u64
         || u64_at(&raw, SINK_DATE_PERSISTENT)
-            != base
-                .checked_add(cgame_date::PERSISTENT_VTABLE_RVA)
+            != engine_sites::at(base, cgame_date::PERSISTENT_VTABLE_RVA)
                 .ok_or("module address overflow")? as u64
     {
         return Err("sunk-ship history date vtable mismatch");
@@ -312,7 +310,7 @@ fn read_record(
             usize::try_from(province_pointer).map_err(|_| "sunk-ship province pointer overflow")?;
         if read::<u64>(memory, province_pointer)
             != Some(
-                base.checked_add(cprovince::VTABLE_RVA)
+                engine_sites::at(base, cprovince::VTABLE_RVA)
                     .ok_or("module address overflow")? as u64,
             )
         {
@@ -384,8 +382,7 @@ pub fn storage_demand(
                 return Err("sunk-ship history sizing fields unreadable");
             }
             if u64::from_le_bytes(identity)
-                != base
-                    .checked_add(VTABLE_RVA)
+                != engine_sites::at(base, VTABLE_RVA)
                     .ok_or("module address overflow")? as u64
             {
                 return Err("sunk-ship history vtable mismatch");
@@ -422,12 +419,10 @@ fn class(memory: &impl Memory, base: usize, pointer: u64) -> Result<(u32, Source
         .ok_or("sunk-ship class unreadable")?;
     let vtable = u64_at(&header, 0);
     if vtable
-        != base
-            .checked_add(csub_unit_definition::VTABLE_RVA)
+        != engine_sites::at(base, csub_unit_definition::VTABLE_RVA)
             .ok_or("module address overflow")? as u64
         && vtable
-            != base
-                .checked_add(csub_unit_definition::NULL_VTABLE_RVA)
+            != engine_sites::at(base, csub_unit_definition::NULL_VTABLE_RVA)
                 .ok_or("module address overflow")? as u64
     {
         return Err("sunk-ship class vtable mismatch");
@@ -531,7 +526,7 @@ mod tests {
         put(
             &mut bytes,
             CLASS,
-            &(csub_unit_definition::VTABLE_RVA as u64).to_le_bytes(),
+            &(csub_unit_definition::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -542,13 +537,13 @@ mod tests {
         put(
             &mut bytes,
             NULL_CLASS,
-            &(csub_unit_definition::NULL_VTABLE_RVA as u64).to_le_bytes(),
+            &(csub_unit_definition::NULL_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         short(&mut bytes, NULL_CLASS + csub_unit_definition::NAME, b"");
         put(
             &mut bytes,
             MAP_PROVINCE,
-            &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -556,7 +551,7 @@ mod tests {
             &0x8000_1234_u32.to_le_bytes(),
         );
         for (pointer, name) in [(FIRST, b"First".as_slice()), (SECOND, b"Second".as_slice())] {
-            put(&mut bytes, pointer, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, pointer, &(VTABLE_RVA.0 as u64).to_le_bytes());
             short(&mut bytes, pointer + SHIP_NAME, name);
             short(&mut bytes, pointer + ATTRIBUTION_SOURCE_NAME, b"");
             put(
@@ -567,12 +562,12 @@ mod tests {
             put(
                 &mut bytes,
                 pointer + SINK_DATE,
-                &(cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+                &(cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
                 pointer + SINK_DATE_PERSISTENT,
-                &(cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+                &(cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, pointer + SINK_HOUR, &123_i32.to_le_bytes());
             put(

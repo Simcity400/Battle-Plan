@@ -170,7 +170,7 @@ fn status_split_faults_preserve_first_reason_and_prepared_maxima() {
     for address in [
         original[64].stat_block.unwrap(),
         A1 + crate::cunit_supply_inputs::ASKED,
-        carmy::EXERCISE_MAXIMUM_LEVEL_RVA,
+        carmy::EXERCISE_MAXIMUM_LEVEL_RVA.0,
         GS + cgame_state::COUNTRIES,
     ] {
         let memory = Fault {
@@ -322,8 +322,8 @@ fn status_split_exercise_shared_memos_and_faults_match_serial() {
         Some(GS + cgame_state::AUTONOMOUS_STATUS),
         Some(0x15001),
         Some(0x15011),
-        Some(carmy::EXERCISE_MAXIMUM_LEVEL_RVA),
-        Some(carmy::EXERCISE_MINIMUM_STRENGTH_RVA),
+        Some(carmy::EXERCISE_MAXIMUM_LEVEL_RVA.0),
+        Some(carmy::EXERCISE_MINIMUM_STRENGTH_RVA.0),
         Some(A1 + carmy::DEPLOYMENT_TYPE),
     ] {
         assert_same(
@@ -355,7 +355,7 @@ fn status_split_exercise_manpower_thresholds_and_earlier_scalar_fault_match_seri
             Some(G1 + corders_group::STOP_AT_MAXIMUM),
             Some(A1 + carmy::MANPOWER_DATA),
             Some(0x16004 + 64 * 8),
-            Some(carmy::EXPERIENCE_THRESHOLDS_RVA),
+            Some(carmy::EXPERIENCE_THRESHOLDS_RVA.0),
             Some(0x15100 + 8),
         ] {
             assert_same(
@@ -384,12 +384,12 @@ fn status_split_camouflage_weather_and_shared_category_faults_match_serial() {
     let categories = pointers + 0x100;
     source.bytes.resize(categories + 10 * 0x40, 0);
     source.globals.insert(
-        category::REGISTRY_RVA,
+        category::REGISTRY_RVA.0,
         (registry as u64).to_le_bytes().to_vec(),
     );
     source
         .globals
-        .insert(data::CAMO_SHOW_AT_RVA, 50_000_i64.to_le_bytes().to_vec());
+        .insert(data::CAMO_SHOW_AT_RVA.0, 50_000_i64.to_le_bytes().to_vec());
     array(&mut source.bytes, registry, pointers, 10);
     for index in 0..10 {
         let pointer = categories + index * 0x40;
@@ -426,8 +426,8 @@ fn status_split_camouflage_weather_and_shared_category_faults_match_serial() {
     );
     for address in [
         None,
-        Some(data::CAMO_SHOW_AT_RVA),
-        Some(category::REGISTRY_RVA),
+        Some(data::CAMO_SHOW_AT_RVA.0),
+        Some(category::REGISTRY_RVA.0),
         Some(pointers + 3 * 8),
         Some(categories + category::TOKEN),
         Some(categories + data::CATEGORY_FACTOR),
@@ -482,7 +482,7 @@ fn status_split_organisation_geography_memos_and_route_faults_match_serial() {
         Some(GS + cgame_state::PROVINCES),
         Some(PROVINCES + 2 * 8),
         Some(0x18600 + crate::province_definition::ID),
-        Some(carmy::organisation_movement::LOW_ORGANISATION_FOR_ATTACK_RVA),
+        Some(carmy::organisation_movement::LOW_ORGANISATION_FOR_ATTACK_RVA.0),
     ] {
         assert_same(
             &Fault {

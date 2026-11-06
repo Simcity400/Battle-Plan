@@ -30,7 +30,7 @@ fn located_at(region: usize, id: u32) -> Traced {
     );
     put(
         region,
-        &(engine_native::cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         region + engine_native::cstrategic_region::ID,

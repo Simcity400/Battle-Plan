@@ -1557,7 +1557,7 @@ mod tests {
         }
         let mut memory = Memory(vec![0; 0x1000]);
         let status = 8;
-        memory.word(status, n::STATUS_VTABLE as u64);
+        memory.word(status, n::STATUS_VTABLE.0 as u64);
         memory.word(status + n::COUNTRY, 11);
         memory.array(status + n::FOLDERS, 0x200, 1);
         memory.array(status + n::COSTS, 0x500, 1);
@@ -1568,10 +1568,10 @@ mod tests {
             (0x820, n::GRAND_TEMPLATE_VTABLE, 92),
             (0x840, n::SUB_TEMPLATE_VTABLE, 93),
         ] {
-            memory.word(address, vtable as u64);
+            memory.word(address, vtable.0 as u64);
             memory.word(address + n::TEMPLATE_TOKEN, token);
         }
-        memory.word(0x200, n::FOLDER_VTABLE as u64);
+        memory.word(0x200, n::FOLDER_VTABLE.0 as u64);
         memory.word(0x200 + n::FOLDER_TEMPLATE, 0x800);
         memory.word(0x200 + n::GRAND_TEMPLATE, 0x820);
         memory.word(0x200 + n::FOLDER_OWNER, status as u64);
@@ -1579,7 +1579,7 @@ mod tests {
         memory.array(0x200 + n::COMPLETED, 0x780, 2);
         memory.word(0x780, 0x840);
         memory.word(0x788, 0x840);
-        memory.word(0x300, n::TRACK_VTABLE as u64);
+        memory.word(0x300, n::TRACK_VTABLE.0 as u64);
         memory.word(0x300 + n::SUB_TEMPLATE, 0x840);
         memory.word(0x300 + n::MASTERY, 125_000);
         memory.word(0x300 + n::BANK, (-1_i64) as u64);
@@ -1588,21 +1588,21 @@ mod tests {
         memory.word(0x300 + n::TRACK_OWNER, status as u64);
         memory.word(0x300 + n::TRACK_FOLDER, 0x200);
         memory.array(0x300 + n::LEADERS, 0x400, 1);
-        memory.word(0x400, n::LEADER_VTABLE as u64);
+        memory.word(0x400, n::LEADER_VTABLE.0 as u64);
         memory.word(0x408, 17 | (91_u64 << 32));
         memory.word(0x410, 5000);
-        memory.word(0x500, n::COST_VTABLE as u64);
+        memory.word(0x500, n::COST_VTABLE.0 as u64);
         memory.word(0x500 + n::COST_USES, 2);
         memory.word(0x500 + n::COST_NAME + 24, 15);
         memory.word(0x500 + n::COST_FACTOR, (-35_000_i64) as u64);
         memory.word(0x500 + n::COST_FOLDER, 0x800);
-        memory.word(0x600, n::GRANT_VTABLE as u64);
+        memory.word(0x600, n::GRANT_VTABLE.0 as u64);
         memory.word(0x600 + n::GRANT_NAME + 24, 15);
-        memory.word(0x600 + n::GRANT_FILTER, n::FILTER_VTABLE as u64);
+        memory.word(0x600 + n::GRANT_FILTER, n::FILTER_VTABLE.0 as u64);
         memory.word(0x600 + n::GRANT_FILTER + 0x28, (-1_i64) as u64);
         memory.word(0x600 + n::GRANT_DAILY, 12_500);
         memory.word(0x600 + n::GRANT_DAYS, 5);
-        memory.word(0x700, n::EQUIPMENT_VTABLE as u64);
+        memory.word(0x700, n::EQUIPMENT_VTABLE.0 as u64);
         memory.word(0x708, 71 | (3_u64 << 32));
         memory.word(0x710, 4);
         changes::enabled(true);
@@ -1694,7 +1694,7 @@ mod tests {
             unsafe { observe_cost_consumption(context, status, usize::MAX) };
         });
         memory.array(status + n::COSTS, 0x500, 2);
-        memory.word(0x540, n::COST_VTABLE as u64);
+        memory.word(0x540, n::COST_VTABLE.0 as u64);
         memory.word(0x540 + n::COST_USES, 3);
         memory.word(0x540 + n::COST_NAME, u64::from_le_bytes(*b"new\0\0\0\0\0"));
         memory.word(0x540 + n::COST_NAME + 16, 3);
@@ -1749,9 +1749,9 @@ mod tests {
         unsafe { observe(context, Domain::GrantExpiry, status) };
         memory.array(status + n::GRANTS, 0x600, 2);
         memory.word(0x600 + n::GRANT_DAYS, 3);
-        memory.word(0x670, n::GRANT_VTABLE as u64);
+        memory.word(0x670, n::GRANT_VTABLE.0 as u64);
         memory.word(0x670 + n::GRANT_NAME + 24, 15);
-        memory.word(0x670 + n::GRANT_FILTER, n::FILTER_VTABLE as u64);
+        memory.word(0x670 + n::GRANT_FILTER, n::FILTER_VTABLE.0 as u64);
         memory.word(0x670 + n::GRANT_FILTER + 0x28, (-1_i64) as u64);
         memory.word(0x670 + n::GRANT_DAILY, 25_000);
         memory.word(0x670 + n::GRANT_DAYS, 10);

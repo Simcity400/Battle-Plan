@@ -358,21 +358,11 @@ fn capture(options: Options) -> Result<(), String> {
     let tables = engine_executable::executable_tables::initialize_executable(&process.path)
         .map_err(|e| e.to_string())?;
     let exe = tables.identity().clone();
-    if let Some(warning) = tables.build_warning() {
-        return Err(format!(
-            "the ship-name witness is withheld: it reads the recognised build's memory layout. {warning}"
-        ));
-    }
     let version = tables.version.clone().map_err(|e| e.to_string())?;
-    let name = process
-        .path
-        .file_name()
-        .ok_or("game executable has no name")?;
-    let base = windows::modules(pid)?
-        .into_iter()
-        .find(|module| module.path.file_name() == Some(name))
-        .ok_or("game module not found")?
-        .base;
+    let base = crate::game_sites::module_base(&process, pid)?;
+    crate::game_sites::locate(&process.path, base)?
+        .layouts()
+        .map_err(|withheld| format!("the ship-name witness is withheld: {withheld}"))?;
     let memory = ProcessMemory(&process.handle);
     let before = clock(&memory, base)?;
     if before.tick_busy != 0

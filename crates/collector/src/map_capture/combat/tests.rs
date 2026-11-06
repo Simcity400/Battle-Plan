@@ -34,11 +34,11 @@ impl World {
         let mut units: Vec<Vec<u8>> = (0..members * 2)
             .map(|index| {
                 let mut bytes = vec![0; (carmy::ORGANISATION + 8).max(cunit::MAP_ENTITY + 8)];
-                q(&mut bytes, 0, carmy::VTABLE_RVA as u64);
+                q(&mut bytes, 0, carmy::VTABLE_RVA.0 as u64);
                 q(
                     &mut bytes,
                     carmy::SECONDARY_BASE,
-                    carmy::SECONDARY_VTABLE_RVA as u64,
+                    carmy::SECONDARY_VTABLE_RVA.0 as u64,
                 );
                 q(&mut bytes, cunit::HANDLE, (index as u64 + 1) << 32 | 7);
                 q(
@@ -56,7 +56,7 @@ impl World {
                 .collect::<Vec<_>>()
         });
         let mut province = vec![0; cprovince::ID + 4];
-        q(&mut province, 0, cprovince::VTABLE_RVA as u64);
+        q(&mut province, 0, cprovince::VTABLE_RVA.0 as u64);
         d(&mut province, cprovince::ID, 1);
         let provinces = vec![0, province.as_ptr() as usize];
         let mut battle_objects = (0..combats)
@@ -73,11 +73,11 @@ impl World {
             })
             .collect::<Vec<[Vec<u8>; 2]>>();
         for (index, (combat, sides)) in battle_objects.iter_mut().zip(&mut sides).enumerate() {
-            q(combat, 0, cland_combat::VTABLE_RVA as u64);
+            q(combat, 0, cland_combat::VTABLE_RVA.0 as u64);
             q(
                 combat,
                 cland_combat::BODY,
-                cland_combat::BODY_VTABLE_RVA as u64,
+                cland_combat::BODY_VTABLE_RVA.0 as u64,
             );
             q(
                 combat,
@@ -91,20 +91,20 @@ impl World {
                     [cland_combat::ATTACKER, cland_combat::DEFENDER][number],
                     side.as_ptr() as u64,
                 );
-                q(side, 0, side::VTABLE_RVA as u64);
+                q(side, 0, side::VTABLE_RVA.0 as u64);
                 q(side, side::COMBAT, combat.as_ptr() as u64);
                 side[side::IS_ATTACKER] = u8::from(number == 0);
                 array(side, side::UNITS, lists[number].as_ptr() as usize, members);
-                q(side, side::STATS_OBSERVER, stats::VTABLE_RVA as u64);
+                q(side, side::STATS_OBSERVER, stats::VTABLE_RVA.0 as u64);
                 q(
                     side,
                     side::STATS_OBSERVER + stats::EQUIPMENT_LOSSES,
-                    pool::VTABLE_RVA as u64,
+                    pool::VTABLE_RVA.0 as u64,
                 );
                 q(
                     side,
                     side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_SIDE,
-                    engine_land_inputs::combat_log_history::SIDE_VTABLE_RVA as u64,
+                    engine_land_inputs::combat_log_history::SIDE_VTABLE_RVA.0 as u64,
                 );
                 for offset in [
                     engine_land_inputs::combat_log_history::SIDE_CAPTURED_BY_ENEMY,
@@ -115,7 +115,7 @@ impl World {
                         side::STATS_OBSERVER
                             + engine_land_inputs::combat_log_events::OBSERVER_SIDE
                             + offset,
-                        pool::VTABLE_RVA as u64,
+                        pool::VTABLE_RVA.0 as u64,
                     );
                 }
             }
@@ -162,7 +162,7 @@ impl World {
 }
 impl Memory for World {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+        if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(self.state() as u64).to_le_bytes());
             true
         } else {

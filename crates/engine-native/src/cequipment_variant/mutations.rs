@@ -2,6 +2,7 @@
 //! in the four register argument slots and preserves its native return value.
 //! Commands name the variant through their stored reference; publication names
 //! it in the second argument; bulk flag writers name an ordered pointer array.
+use engine_sites::Rva;
 #[derive(Clone, Copy)]
 pub enum Receiver {
     Variant,
@@ -13,8 +14,7 @@ pub enum Receiver {
 }
 pub struct Mutation {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
     pub receiver: Receiver,
     pub witness: Option<usize>,
 }
@@ -29,231 +29,139 @@ pub const WRITER_AUDIT_REFUSAL: Option<&str> = None;
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: "RebuildStats",
-        rva: 0x00c35f90,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24,
-            0x20, 0x55,
-        ],
+        rva: Rva(0x00c35f90),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "RefreshDerivedState",
-        rva: 0x00c2e110,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x50, 0x48, 0x8b, 0xd9, 0xe8,
-            0x0e, 0x75,
-        ],
+        rva: Rva(0x00c2e110),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "RefreshOrganisation",
-        rva: 0x00c37c60,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-            0x18, 0x48,
-        ],
+        rva: Rva(0x00c37c60),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "RefreshOrganisationBonus",
-        rva: 0x00c29860,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-            0x18, 0x57,
-        ],
+        rva: Rva(0x00c29860),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "SetObsolete",
-        rva: 0x00c37850,
-        sentinel: [
-            0x48, 0x83, 0xec, 0x28, 0x88, 0x91, 0x24, 0x04, 0x00, 0x00, 0x48, 0x81, 0xc1, 0x88,
-            0x04, 0x00,
-        ],
+        rva: Rva(0x00c37850),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "PropagateObsolete",
-        rva: 0x00c378c0,
-        sentinel: [
-            0x48, 0x89, 0x6c, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x20, 0x0f, 0xb6, 0xea, 0x48,
-            0x8b, 0xf9,
-        ],
+        rva: Rva(0x00c378c0),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "SetHighlight",
-        rva: 0x00c37570,
-        sentinel: [
-            0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x88, 0x91, 0x26, 0x04, 0x00, 0x00, 0x48, 0x8b,
-            0xf9, 0x84,
-        ],
+        rva: Rva(0x00c37570),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "EnableUpgradeVariant",
-        rva: 0x00c383a0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x80, 0xb9, 0x28, 0x04,
-            0x00, 0x00,
-        ],
+        rva: Rva(0x00c383a0),
         receiver: Receiver::Variant,
         witness: Some(0x428),
     },
     Mutation {
         name: "RefreshNiches",
-        rva: 0x00c37dc0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xda, 0xc7,
-            0x81, 0xc4,
-        ],
+        rva: Rva(0x00c37dc0),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "MoveAssign",
-        rva: 0x00673bc0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xfa, 0x48,
-            0x8b, 0xd9,
-        ],
+        rva: Rva(0x00673bc0),
         receiver: Receiver::Variant,
         witness: None,
     },
     Mutation {
         name: "Publish",
-        rva: 0x001e0dc0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x48, 0x83, 0xec, 0x20, 0x48, 0x63, 0x81, 0x14,
-            0x07, 0x00,
-        ],
+        rva: Rva(0x001e0dc0),
         receiver: Receiver::Published,
         witness: None,
     },
     Mutation {
         name: "Destroy",
-        rva: 0x00c27030,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x56, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x0f,
-            0x72, 0xda,
-        ],
+        rva: Rva(0x00c27030),
         receiver: Receiver::Removed,
         witness: None,
     },
     Mutation {
         name: "Rename",
-        rva: 0x01a39650,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x40, 0x48, 0x8b, 0xd9, 0x48,
-            0x83, 0xc1,
-        ],
+        rva: Rva(0x01a39650),
         receiver: Receiver::Command,
         witness: None,
     },
     Mutation {
         name: "SetAutoUpgraded",
-        rva: 0x01a397e0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48,
-            0x83, 0xc1,
-        ],
+        rva: Rva(0x01a397e0),
         receiver: Receiver::Command,
         witness: None,
     },
     Mutation {
         name: "SetNamesGroup",
-        rva: 0x01a399e0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
+        rva: Rva(0x01a399e0),
         receiver: Receiver::Command,
         witness: None,
     },
     Mutation {
         name: "SetRoleIcon",
-        rva: 0x01a39b50,
-        sentinel: [
-            0x40, 0x53, 0x55, 0x56, 0x48, 0x83, 0xec, 0x40, 0x48, 0x8b, 0xd9, 0x48, 0x89, 0x7c,
-            0x24, 0x70,
-        ],
+        rva: Rva(0x01a39b50),
         receiver: Receiver::Command,
         witness: None,
     },
     Mutation {
         name: "SetModel",
-        rva: 0x01a39d90,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
+        rva: Rva(0x01a39d90),
         receiver: Receiver::Command,
         witness: None,
     },
     Mutation {
         name: "SetIcon",
-        rva: 0x01a39ee0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
+        rva: Rva(0x01a39ee0),
         receiver: Receiver::Command,
         witness: None,
     },
     Mutation {
         name: "Update",
-        rva: 0x01a3a3c0,
-        sentinel: [
-            0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
-            0x56, 0x41,
-        ],
+        rva: Rva(0x01a3a3c0),
         receiver: Receiver::Command,
         witness: None,
     },
     Mutation {
         name: "BulkUpgradeModules",
-        rva: 0x00c37ed0,
-        sentinel: [
-            0x40, 0x56, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x31, 0x4c,
-            0x8b, 0xf2,
-        ],
+        rva: Rva(0x00c37ed0),
         receiver: Receiver::Roster,
         witness: None,
     },
     Mutation {
         name: "BulkUpgradeTypes",
-        rva: 0x00c38280,
-        sentinel: [
-            0x40, 0x53, 0x55, 0x56, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0x31, 0x48, 0x8b, 0xda,
-            0x48, 0x63,
-        ],
+        rva: Rva(0x00c38280),
         receiver: Receiver::Roster,
         witness: None,
     },
     Mutation {
         name: "BulkUpgradeVariants",
-        rva: 0x00c34e60,
-        sentinel: [
-            0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x8b, 0x31, 0x4c,
-            0x8b, 0xf9,
-        ],
+        rva: Rva(0x00c34e60),
         receiver: Receiver::Roster,
         witness: None,
     },
     Mutation {
         name: "CreateCommand",
-        rva: 0x01a38540,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
+        rva: Rva(0x01a38540),
         receiver: Receiver::CreateCommand,
         witness: None,
     },
@@ -264,44 +172,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn variant_design_mutation_sites_match_supported_executable() {
-        let path = std::path::PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("design site test requires BATTLE_PLAN_GAME_DIR"),
-        )
-        .join("hoi4.exe");
-        let bytes = std::fs::read(path).unwrap();
-        let identity =
-            engine_executable::build::hash_executable(std::io::Cursor::new(&bytes)).unwrap();
-        assert!(engine_executable::build::PINNED_BUILD.matches(&identity));
-        let image = engine_executable::executable_tables::PeImage::parse(bytes).unwrap();
+    fn variant_design_mutation_sites_are_distinct() {
         let mut entries = std::collections::BTreeSet::new();
         let all = MUTATIONS
             .iter()
-            .map(|site| (site.name, site.rva, site.sentinel))
+            .map(|site| (site.name, site.rva))
             .chain(
                 crate::cequipment_variant::source_mutations::MUTATIONS
                     .iter()
-                    .map(|site| (site.name, site.rva, site.sentinel)),
+                    .map(|site| (site.name, site.rva)),
             )
             .chain(
                 crate::cequipment_variant::source_mutations::ORGANISATIONS
                     .iter()
-                    .map(|site| (site.name, site.rva, site.sentinel)),
+                    .map(|site| (site.name, site.rva)),
             );
-        for (name, rva, sentinel) in all {
+        for (name, rva) in all {
             assert!(entries.insert(rva), "duplicate design hook {}", name);
-            assert_eq!(
-                image.bytes(rva as u32, sentinel.len()).unwrap(),
-                sentinel,
-                "{}",
-                name
-            );
-            match image.function(rva as u32) {
-                Ok((start, _)) => assert_eq!(start, rva as u32, "{name} is not a function entry"),
-                // This native reset is a leaf without an exception-directory
-                // entry. Its authenticated bytes still identify its entrance.
-                Err(_) => assert_eq!(name, "ResetAppliedSource", "{name} lacks a function extent"),
-            }
         }
     }
 }

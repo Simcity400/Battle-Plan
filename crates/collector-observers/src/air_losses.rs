@@ -267,8 +267,7 @@ unsafe extern "system" fn pre(
                 // The same operands in six gathered copies and the country
                 // resolution; withheld, the serial reads below run once and
                 // refuse exactly where they always did.
-                let gathered = base
-                    .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+                let gathered = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
                     .filter(|_| gather_admitted())
                     .and_then(|singleton| {
                         native::gather(
@@ -301,8 +300,7 @@ unsafe extern "system" fn pre(
                     .ok_or("air loss region unexpectedly null")?;
                 let claimed = LEDGER.claim((receiver, region_id as usize))?;
                 token = Some(claimed);
-                let game = base
-                    .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+                let game = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
                     .and_then(|a| engine_native::read::<u64>(&memory, a))
                     .and_then(|p| usize::try_from(p).ok())
                     .filter(|p| *p != 0)
@@ -363,8 +361,7 @@ unsafe extern "system" fn post(context: *mut CallContext) {
             }
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
-            if base
-                .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+            if engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
                 .and_then(|a| engine_native::read::<u64>(&memory, a))
                 != Some(observation.game as u64)
             {
@@ -422,22 +419,24 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
-        ORIGINAL.store(base + native::WRITER_RVA, Ordering::Release);
         let install = || -> Result<Vec<Hook>, &'static str> {
+            ORIGINAL.store(
+                engine_sites::hook(base, native::WRITER_RVA)?.address,
+                Ordering::Release,
+            );
             for site in native::SITES {
-                if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
-                    return Err("air loss call sentinel differs or unreadable");
-                }
+                crate::located(base, site.rva)?;
             }
             let mut hooks = Vec::new();
             for site in native::SITES {
+                let code = engine_sites::hook(base, site.rva)?;
                 let hook = unsafe {
                     Hook::new_call(
-                        base + site.rva,
+                        code.address,
                         air_loss_dispatch as *const () as usize,
-                        site.sentinel,
+                        code.sentinel::<16>()?,
                     )
                 }
                 .map_err(|_| "air loss hook construction failed")?;

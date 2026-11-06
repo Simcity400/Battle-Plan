@@ -275,13 +275,13 @@ mod tests {
                 (2, 0x4800, 2, 2),
                 (3, COUNTRY, 1, 1),
             ] {
-                world.pointer(country, ccountry::VTABLE_RVA);
+                world.pointer(country, ccountry::VTABLE_RVA.0);
                 world.word(country + ccountry::ID, id);
                 world.word(0x3100 + slot * 4, link);
             }
             world.array(COUNTRY + ccountry::FLEETS, 0x3300, 1);
             world.pointers(0x3300, &[0xd000]);
-            world.pointer(0xd000, cfleet::VTABLE_RVA);
+            world.pointer(0xd000, cfleet::VTABLE_RVA.0);
             world.pointer(
                 0xd000 + cfleet::HANDLE,
                 (1 << 32) | cfleet::HANDLE_TYPE as usize,
@@ -290,10 +290,10 @@ mod tests {
             world.array(0xd000 + cfleet::TASK_FORCES, 0x3380, 2);
             world.pointers(0x3380, &[TASK, 0xdc00]);
             for (id, task) in [(1, TASK), (2, 0xdc00)] {
-                world.pointer(task, ctask_force::VTABLE_RVA);
+                world.pointer(task, ctask_force::VTABLE_RVA.0);
                 world.pointer(
                     task + ctask_force::SECONDARY_BASE,
-                    ctask_force::SECONDARY_VTABLE_RVA,
+                    ctask_force::SECONDARY_VTABLE_RVA.0,
                 );
                 world.pointer(
                     task + cunit::HANDLE,
@@ -306,14 +306,14 @@ mod tests {
                 world.array(task + cunit::ORDINARY_ROUTE_DATA, 0xf000, 1);
             }
             world.pointer(STATE + cgame_state::STRATEGIC_NAVY_MANAGER, 0x6000);
-            world.pointer(0x6000, cstrategic_navy_manager::VTABLE_RVA);
+            world.pointer(0x6000, cstrategic_navy_manager::VTABLE_RVA.0);
             world.array(0x6000 + cstrategic_navy_manager::NAVIES, 0x6100, 4);
             world.pointers(0x6100, &[0, NAVY, 0x7200, 0x7400]);
             for navy in [NAVY, 0x7200, 0x7400] {
-                world.pointer(navy, cstrategic_navy::VTABLE_RVA);
+                world.pointer(navy, cstrategic_navy::VTABLE_RVA.0);
                 world.pointer(
                     navy + cstrategic_navy::SECONDARY,
-                    cstrategic_navy::SECONDARY_VTABLE_RVA,
+                    cstrategic_navy::SECONDARY_VTABLE_RVA.0,
                 );
                 world.pointer(navy + native::MANAGER, 0x6000);
             }
@@ -325,11 +325,11 @@ mod tests {
                 (3, 0xa400, 0),
                 (4, 0xa600, 0xe300),
             ] {
-                world.pointer(province, cprovince::VTABLE_RVA);
+                world.pointer(province, cprovince::VTABLE_RVA.0);
                 world.word(province + cprovince::ID, id);
                 world.pointer(province + cprovince::CONTROLLER_AREA, area);
                 if area != 0 {
-                    world.pointer(area, engine_native::ccontroller_area::VTABLE_RVA);
+                    world.pointer(area, engine_native::ccontroller_area::VTABLE_RVA.0);
                 }
             }
             for (country, roster, theatre, owner, id, areas, values) in [
@@ -338,7 +338,7 @@ mod tests {
             ] {
                 world.array(country + ccountry::THEATRES, roster, 1);
                 world.pointers(roster, &[theatre]);
-                world.pointer(theatre, ctheatre::VTABLE_RVA);
+                world.pointer(theatre, ctheatre::VTABLE_RVA.0);
                 world.pointer(
                     theatre + ctheatre::HANDLE,
                     (id << 32) | ctheatre::REFERENCE_TYPE as usize,
@@ -469,7 +469,7 @@ mod tests {
             world.word(task + ctask_force::MISSION, 2);
             world.pointer(
                 task + ctask_force::NAVAL_MISSION,
-                engine_native::cnaval_mission::VTABLE_RVA,
+                engine_native::cnaval_mission::VTABLE_RVA.0,
             );
             world.pointer(task + ctask_force::NAVAL_MISSION + 8, task);
             world.word(

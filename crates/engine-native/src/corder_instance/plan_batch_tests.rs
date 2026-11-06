@@ -42,20 +42,20 @@ impl Memory for Image {
 fn fixture() -> (Image, [corders_group::Root; 1], [Visit; 4]) {
     let mut image = Image::default();
     image.u64(
-        BASE + crate::creference_registry::INVALID_REFERENCE_RVA,
+        BASE + crate::creference_registry::INVALID_REFERENCE_RVA.0,
         u64::MAX,
     );
     image.write(UNIT, &[0; 0x100]);
-    image.u64(UNIT, (BASE + crate::carmy::VTABLE_RVA) as u64);
+    image.u64(UNIT, (BASE + crate::carmy::VTABLE_RVA.0) as u64);
     image.u64(
         UNIT + crate::carmy::SECONDARY_BASE,
-        (BASE + crate::carmy::SECONDARY_VTABLE_RVA) as u64,
+        (BASE + crate::carmy::SECONDARY_VTABLE_RVA.0) as u64,
     );
     image.u64(UNIT + crate::cunit::HANDLE, 19);
     let visits = std::array::from_fn(|index| {
         let pointer = FIRST + STEP * index;
         image.write(pointer, &[0; 0x400]);
-        image.u64(pointer, (BASE + VTABLE_RVA) as u64);
+        image.u64(pointer, (BASE + VTABLE_RVA.0) as u64);
         image.u64(pointer + OWNER, GROUP as u64);
         image.write(pointer + ID, &(index as u32).to_le_bytes());
         image.write(pointer + TYPE, &TYPE_MOVE.to_le_bytes());

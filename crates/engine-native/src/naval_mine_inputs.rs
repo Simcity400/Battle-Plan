@@ -1,5 +1,6 @@
 //! Passive regional mine operands and the writers that certify their carry.
 use crate::{Memory, cgame_state, cpdx_array::Array, read, read_slice, walk::Buffer};
+use engine_sites::Rva;
 use std::ops::Range;
 
 /// Strategic navy's raw fixed5 regional mine vector, indexed by region id.
@@ -12,14 +13,14 @@ pub const DECAY_CLOCK_ORIGIN: i32 = 43_800_000;
 pub const PERSISTENT_RECEIVER: usize = 8;
 
 /// Sole point writers, native sliced decay, and complete lifecycle writers.
-pub const WRITERS: [(&str, usize, u64); 7] = [
-    ("mine region addition", 0x00f1_2dc0, 0x6e94_eeb3_2e37_fce3),
-    ("mine index addition", 0x00f1_2e00, 0xfb65_e768_acf6_996e),
-    ("mine peace decay", 0x00f1_7290, 0x4813_2621_0450_b14e),
-    ("navy construction", 0x00f1_1310, 0x60d3_e0d8_0296_fbf8),
-    ("navy regional growth", 0x00f1_b7a0, 0xb4b9_d7f9_399a_125d),
-    ("navy reset", 0x00f1_ee30, 0x60d3_efd8_0297_1575),
-    ("navy persistent load", 0x00f2_0280, 0xe688_884a_0a9a_e2ff),
+pub const WRITERS: [(&str, Rva); 7] = [
+    ("mine region addition", Rva(0x00f1_2dc0)),
+    ("mine index addition", Rva(0x00f1_2e00)),
+    ("mine peace decay", Rva(0x00f1_7290)),
+    ("navy construction", Rva(0x00f1_1310)),
+    ("navy regional growth", Rva(0x00f1_b7a0)),
+    ("navy reset", Rva(0x00f1_ee30)),
+    ("navy persistent load", Rva(0x00f2_0280)),
 ];
 
 /// The caller supplies a navy authenticated by the current physical census.
@@ -58,7 +59,7 @@ pub fn event_count(memory: &impl Memory, navy: usize) -> Option<u32> {
 pub fn event_decay_slice(memory: &impl Memory, base: usize) -> Option<usize> {
     let state = usize::try_from(read::<u64>(
         memory,
-        base.checked_add(cgame_state::SINGLETON_RVA)?,
+        engine_sites::at(base, cgame_state::SINGLETON_RVA)?,
     )?)
     .ok()?;
     let hour: i32 = read(memory, state.checked_add(cgame_state::CURRENT_HOUR)?)?;

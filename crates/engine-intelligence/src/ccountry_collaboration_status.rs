@@ -1,6 +1,7 @@
 //! Country collaboration status. Each outgoing relation requires a reciprocal
 //! incoming country link.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry,
     ccountry::{Country, Reader},
@@ -11,7 +12,7 @@ use crate::{
 };
 
 /// Collaboration-status vtable.
-pub const VTABLE_RVA: usize = 0x02a3_7748;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_7748);
 /// Outgoing CCountryCollaborationData pointer array.
 pub const RELATIONS: usize = 0x28;
 /// Outgoing array count, u32.
@@ -36,8 +37,7 @@ fn status(memory: &impl Memory, base: usize, country: Country) -> Result<Status,
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
         .ok_or("collaboration status pointer unreadable or null")?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
+    let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")?;
     let owner_address = pointer
         .checked_add(OWNER)
@@ -241,7 +241,7 @@ mod tests {
             put(
                 &mut bytes,
                 pointer as usize,
-                &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -262,7 +262,7 @@ mod tests {
             put(
                 &mut bytes,
                 status_pointer,
-                &(VTABLE_RVA as u64).to_le_bytes(),
+                &(VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -281,7 +281,7 @@ mod tests {
             put(
                 &mut bytes,
                 pointer,
-                &(ccountry_collaboration_data::VTABLE_RVA as u64).to_le_bytes(),
+                &(ccountry_collaboration_data::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

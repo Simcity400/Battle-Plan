@@ -128,9 +128,7 @@ fn first_design(
         .checked_add(ccountry::CONVOY_STATE)
         .ok_or("convoy target country address overflow")?;
     if read::<u64>(memory, convoy)
-        != base
-            .checked_add(cconvoys::VTABLE_RVA)
-            .map(|pointer| pointer as u64)
+        != engine_sites::at(base, cconvoys::VTABLE_RVA).map(|pointer| pointer as u64)
     {
         return Err("convoy target country embedded convoy identity mismatch");
     }
@@ -203,15 +201,15 @@ mod tests {
         let pool = convoy + cconvoys::EQUIPMENT_POOL;
         let entries = world.alloc(amounts.len() * equipment_entry::STRIDE);
         let variant = world.alloc(0x300);
-        world.u64(convoy, cconvoys::VTABLE_RVA as u64);
+        world.u64(convoy, cconvoys::VTABLE_RVA.0 as u64);
         world.u32(convoy + cconvoys::COUNTRY, 1);
-        world.u64(pool, cequipment_variant_pool::VTABLE_RVA as u64);
+        world.u64(pool, cequipment_variant_pool::VTABLE_RVA.0 as u64);
         world.array(
             pool + cequipment_variant_pool::ITEMS,
             entries,
             amounts.len() as u32,
         );
-        world.u64(variant, cequipment_variant::VTABLE_RVA as u64);
+        world.u64(variant, cequipment_variant::VTABLE_RVA.0 as u64);
         world.u64(
             variant + 8,
             (7_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),

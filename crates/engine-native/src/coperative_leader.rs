@@ -7,6 +7,7 @@
 //! authored effects can persist independently. The description string's length
 //! byte must not be read as detection state.
 
+use engine_sites::Rva;
 use crate::{
     Memory,
     ccharacter::Literal,
@@ -21,7 +22,7 @@ use crate::{
 };
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_28a0;
+pub const VTABLE_RVA: Rva = Rva(0x029d_28a0);
 /// COperativeLeader two-u32 identity (`IDENTITY`).
 pub const IDENTITY: usize = 0x08;
 /// Identity type dword validated against the admitted operative type.
@@ -88,7 +89,7 @@ pub const MISSION_ASSIGNMENT: u32 = 3;
 /// operation reference and restores assignment 3.
 pub const OPERATION_ASSIGNMENT: u32 = 4;
 /// Owner setter used by agency admission on accepted and pooled paths.
-pub const SET_OWNER_RVA: usize = 0x00c7_bc30;
+pub const SET_OWNER_RVA: Rva = Rva(0x00c7_bc30);
 /// Operative element serializer.
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x00c7_ebf0;
@@ -223,7 +224,7 @@ pub fn walk_buffer(
             let recruitment = at(agency, cintelligence_agency::RECRUITMENT)?;
             if read::<u64>(memory, recruitment)
                 != Some(
-                    base.checked_add(coperative_recruitment::VTABLE_RVA)
+                    engine_sites::at(base, coperative_recruitment::VTABLE_RVA)
                         .ok_or("operative recruitment vtable overflow")? as u64,
                 )
             {
@@ -250,8 +251,7 @@ pub fn walk_buffer(
                         .and_then(|p| usize::try_from(p).ok())
                         .filter(|&p| p != 0)
                         .ok_or("operative roster pointer unreadable or null")?;
-                    let expected = base
-                        .checked_add(VTABLE_RVA)
+                    let expected = engine_sites::at(base, VTABLE_RVA)
                         .ok_or("operative vtable address overflow")?;
                     if read::<u64>(memory, pointer) != Some(expected as u64) {
                         return Err("operative vtable mismatch");
@@ -411,8 +411,7 @@ fn read_row<M: Memory>(
                 ));
             };
             if field::<u64>(memory, instance, 0)?
-                != base
-                    .checked_add(coperation_instance::VTABLE_RVA)
+                != engine_sites::at(base, coperation_instance::VTABLE_RVA)
                     .ok_or("operative operation vtable overflow")? as u64
             {
                 return Err("operative operation instance vtable mismatch");
@@ -438,11 +437,9 @@ fn read_row<M: Memory>(
         None
     } else {
         let vtable = field::<u64>(memory, skill_pointer, 0)?;
-        let regular = base
-            .checked_add(cunit_leader_skill::VTABLE_RVA)
+        let regular = engine_sites::at(base, cunit_leader_skill::VTABLE_RVA)
             .ok_or("operative skill vtable overflow")? as u64;
-        let null = base
-            .checked_add(null_unit_leader_skill::VTABLE_RVA)
+        let null = engine_sites::at(base, null_unit_leader_skill::VTABLE_RVA)
             .ok_or("operative null skill vtable overflow")? as u64;
         if vtable != regular && vtable != null {
             return Err("operative skill vtable mismatch");
@@ -513,7 +510,7 @@ mod tests {
         put(
             &mut bytes,
             0x3000,
-            (ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            (ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x3008, 1_u32.to_le_bytes());
         put(
@@ -524,7 +521,7 @@ mod tests {
         put(
             &mut bytes,
             0x5000,
-            (cintelligence_agency::VTABLE_RVA as u64).to_le_bytes(),
+            (cintelligence_agency::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -534,7 +531,7 @@ mod tests {
         put(
             &mut bytes,
             0x5008,
-            (coperative_recruitment::VTABLE_RVA as u64).to_le_bytes(),
+            (coperative_recruitment::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         for (header, data) in [
             (0x5000 + cintelligence_agency::OPERATIVES, 0x6000_u64),
@@ -548,7 +545,7 @@ mod tests {
             put(&mut bytes, header + 12, 1_u32.to_le_bytes());
             put(&mut bytes, data as usize, 0x7000_u64.to_le_bytes());
         }
-        put(&mut bytes, 0x7000, (VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, 0x7000, (VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, 0x7000 + NAME + 24, 15_u64.to_le_bytes());
         put(
             &mut bytes,
@@ -786,7 +783,7 @@ mod tests {
         put(
             &mut bytes,
             0x8200,
-            (cunit_leader_skill::VTABLE_RVA as u64).to_le_bytes(),
+            (cunit_leader_skill::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x8200 + cunit_leader_skill::VALID, [1]);
         put(
@@ -850,11 +847,12 @@ mod tests {
                 .iter()
                 .max()
                 .unwrap()
+                .0
                 + 0x58,
             0,
         );
         for rva in operative_action_implementation::VTABLE_RVAS {
-            put(&mut bytes, rva + 0x50, 0x01ac_42f0u64.to_le_bytes());
+            put(&mut bytes, rva.0 + 0x50, 0x01ac_42f0u64.to_le_bytes());
         }
         put(
             &mut bytes,
@@ -879,7 +877,7 @@ mod tests {
                 0x7000 + ACTION + operative_action::VARIANT,
                 variant.to_le_bytes(),
             );
-            put(&mut bytes, 0x8500, (rva as u64).to_le_bytes());
+            put(&mut bytes, 0x8500, (rva.0 as u64).to_le_bytes());
             put(&mut bytes, 0x8510, 1_u32.to_le_bytes());
             assert_eq!(
                 walk(
@@ -937,7 +935,7 @@ mod tests {
         put(
             &mut bytes,
             0x8500,
-            (operative_action_implementation::VTABLE_RVAS[0] as u64).to_le_bytes(),
+            (operative_action_implementation::VTABLE_RVAS[0].0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x8510, 0_u32.to_le_bytes());
         assert_eq!(
@@ -977,7 +975,7 @@ mod tests {
     fn own_operation_reference_is_independent_of_reservation_and_resolved_for_assignment_four() {
         use crate::reference_bucket as bucket;
         let mut bytes = fixture();
-        bytes.resize(creference_registry::HIGH_ROOT_RVA + 8, 0);
+        bytes.resize(creference_registry::HIGH_ROOT_RVA.0 + 8, 0);
         let handle = (99_u64 << 32) | 4713;
         put(
             &mut bytes,
@@ -1023,7 +1021,7 @@ mod tests {
         );
         put(
             &mut bytes,
-            creference_registry::HIGH_ROOT_RVA,
+            creference_registry::HIGH_ROOT_RVA.0,
             0x9000_u64.to_le_bytes(),
         );
         put(
@@ -1062,7 +1060,7 @@ mod tests {
         put(
             &mut bytes,
             0xb000,
-            (coperation_instance::VTABLE_RVA as u64).to_le_bytes(),
+            (coperation_instance::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1134,7 +1132,7 @@ mod tests {
     #[test]
     fn stale_active_operation_refuses_only_its_named_membership_without_growth_demand() {
         let mut bytes = fixture();
-        bytes.resize(creference_registry::HIGH_ROOT_RVA + 8, 0);
+        bytes.resize(creference_registry::HIGH_ROOT_RVA.0 + 8, 0);
         let healthy = bytes[0x7000..0x7000 + 0x1100].to_vec();
         bytes[0xc000..0xc000 + healthy.len()].copy_from_slice(&healthy);
         put(&mut bytes, 0x6010, 0xc000_u64.to_le_bytes());

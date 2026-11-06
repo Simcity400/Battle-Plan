@@ -407,15 +407,15 @@ impl<'a> CoherentCarrierMemory<'a> {
         // space. Their selected objects and payloads use ordinary kit bytes.
         for (address, pointer) in [
             (
-                engine_native::csub_unit_definition::DATABASE_RVA,
+                engine_native::csub_unit_definition::DATABASE_RVA.0,
                 COHERENT_DATABASE,
             ),
             (
-                engine_native::csub_unit_definition::NULL_OBJECT_RVA,
+                engine_native::csub_unit_definition::NULL_OBJECT_RVA.0,
                 COHERENT_NULL,
             ),
             (
-                engine_native::creference_registry::LOW_ROOTS_RVA
+                engine_native::creference_registry::LOW_ROOTS_RVA.0
                     + engine_native::cship::HANDLE_TYPE as usize * 8,
                 COHERENT_REGISTRY,
             ),
@@ -516,7 +516,7 @@ fn coherent_carrier_fixture() -> Vec<u8> {
         (COHERENT_CONTAINER_A, 1_u32, -7_i64, 11_i64),
         (COHERENT_CONTAINER_B, 2, 23, -29),
     ] {
-        kit::put64(&mut bytes, pointer, container::VTABLE_RVA as u64);
+        kit::put64(&mut bytes, pointer, container::VTABLE_RVA.0 as u64);
         kit::put32(&mut bytes, pointer + container::COUNTRY, country);
         kit::put64(&mut bytes, pointer + container::CAPACITY_RAW, 100000);
         kit::put64(
@@ -540,7 +540,7 @@ fn coherent_carrier_fixture() -> Vec<u8> {
     );
     coherent_header(&mut bytes, COHERENT_CONTAINER_B + container::POOLS, 0, 0);
     kit::put64(&mut bytes, COHERENT_POOLS, COHERENT_POOL as u64);
-    kit::put64(&mut bytes, COHERENT_POOL, cair_wing_pool::VTABLE_RVA as u64);
+    kit::put64(&mut bytes, COHERENT_POOL, cair_wing_pool::VTABLE_RVA.0 as u64);
     kit::put64(
         &mut bytes,
         COHERENT_POOL + cair_wing_pool::AIR_BASE_REFERENCE,
@@ -560,7 +560,7 @@ fn coherent_carrier_fixture() -> Vec<u8> {
     kit::put64(
         &mut bytes,
         COHERENT_OWNER,
-        cstrategic_air::VTABLE_RVA as u64,
+        cstrategic_air::VTABLE_RVA.0 as u64,
     );
     kit::put32(&mut bytes, COHERENT_OWNER + cstrategic_air::COUNTRY, 1);
     coherent_header(
@@ -572,7 +572,7 @@ fn coherent_carrier_fixture() -> Vec<u8> {
     kit::put64(&mut bytes, COHERENT_DEFINITIONS, COHERENT_NULL as u64);
     kit::put64(&mut bytes, COHERENT_DEFINITIONS + 8, COHERENT_GLOBAL as u64);
     for pointer in [COHERENT_CLONE, COHERENT_GLOBAL] {
-        kit::put64(&mut bytes, pointer, definition::VTABLE_RVA as u64);
+        kit::put64(&mut bytes, pointer, definition::VTABLE_RVA.0 as u64);
         kit::put32(&mut bytes, pointer + definition::TOKEN, 987);
         bytes[pointer + definition::IS_REAL] = 1;
         kit::put32(&mut bytes, pointer + definition::DATABASE_INDEX, 1);
@@ -581,7 +581,7 @@ fn coherent_carrier_fixture() -> Vec<u8> {
     kit::put64(
         &mut bytes,
         COHERENT_NULL,
-        definition::NULL_VTABLE_RVA as u64,
+        definition::NULL_VTABLE_RVA.0 as u64,
     );
     kit::put32(
         &mut bytes,
@@ -609,7 +609,7 @@ fn coherent_carrier_fixture() -> Vec<u8> {
     bytes[entry + bucket::DISTANCE] = 1;
     kit::put64(&mut bytes, entry + bucket::TYPE, COHERENT_SHIP_HANDLE);
     kit::put64(&mut bytes, entry + bucket::OBJECT, COHERENT_SHIP as u64);
-    kit::put64(&mut bytes, COHERENT_SHIP, cship::VTABLE_RVA as u64);
+    kit::put64(&mut bytes, COHERENT_SHIP, cship::VTABLE_RVA.0 as u64);
     kit::put64(
         &mut bytes,
         COHERENT_SHIP + cship::HANDLE,
@@ -623,7 +623,7 @@ fn coherent_carrier_fixture() -> Vec<u8> {
     kit::put64(
         &mut bytes,
         COHERENT_NAME,
-        cname_group_member::VTABLE_RVA as u64,
+        cname_group_member::VTABLE_RVA.0 as u64,
     );
     let text = COHERENT_NAME + cname_group_member::CACHED_NAME;
     kit::put64(
@@ -710,7 +710,7 @@ fn coherent_carrier_scale_fixture(countries: usize) -> Vec<u8> {
         };
         kit::put64(&mut bytes, country_table + country * 8, object as u64);
         kit::put32(&mut bytes, links + country * 4, country as u32);
-        kit::put64(&mut bytes, object, ccountry::VTABLE_RVA as u64);
+        kit::put64(&mut bytes, object, ccountry::VTABLE_RVA.0 as u64);
         kit::put32(&mut bytes, object + ccountry::ID, country as u32);
         if country > 2 {
             coherent_header(&mut bytes, object + ccountry::ACES, 0, 0);
@@ -718,7 +718,7 @@ fn coherent_carrier_scale_fixture(countries: usize) -> Vec<u8> {
         kit::put64(&mut bytes, indexed + country * 8, pointer as u64);
         kit::put64(&mut bytes, dense + country * 8, pointer as u64);
         if country > 2 {
-            kit::put64(&mut bytes, pointer, container::VTABLE_RVA as u64);
+            kit::put64(&mut bytes, pointer, container::VTABLE_RVA.0 as u64);
             kit::put32(&mut bytes, pointer + container::COUNTRY, country as u32);
             coherent_header(&mut bytes, pointer + container::POOLS, 0, 0);
             kit::put64(&mut bytes, pointer + container::CAPACITY_RAW, 100000);
@@ -1344,7 +1344,7 @@ fn native_later_host_names_survive_an_earlier_registration_header_failure() {
         2,
     );
     kit::put64(&mut bytes, HOST_VECTOR + 8, SECOND_BASE as u64);
-    kit::put64(&mut bytes, SECOND_BASE, cair_base::VTABLE_RVA as u64);
+    kit::put64(&mut bytes, SECOND_BASE, cair_base::VTABLE_RVA.0 as u64);
     kit::put64(&mut bytes, SECOND_BASE + cair_base::HANDLE, SECOND_HANDLE);
     kit::put64(
         &mut bytes,

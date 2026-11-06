@@ -52,7 +52,7 @@ pub(super) fn copy_oob_root_serial(
                 let identity = nspan(log, memory, Some(target), 16, OOB_MASK);
                 if offset == corders_group::THEATRE
                     && identity.is_some_and(|start| {
-                        base.checked_add(ctheatre::VTABLE_RVA)
+                        engine_sites::at(base, ctheatre::VTABLE_RVA)
                             .is_some_and(|expected| npool_u64(log, start) == expected as u64)
                             && npool_u64(log, start + 8) as u32 == ctheatre::REFERENCE_TYPE
                     })
@@ -245,7 +245,7 @@ fn order_of_battle(members: usize, children: usize) -> Vec<u8> {
     p64(
         &mut bytes,
         group,
-        (kit::BASE + carmy_group::VTABLE_RVA) as u64,
+        (kit::BASE + carmy_group::VTABLE_RVA.0) as u64,
     );
     bytes[group + corders_group::IS_ARMY_GROUP] = 1;
     header(
@@ -257,11 +257,11 @@ fn order_of_battle(members: usize, children: usize) -> Vec<u8> {
     for index in 0..members {
         p64(&mut bytes, entry(index), member(index) as u64);
         let host = unit(index);
-        p64(&mut bytes, host, carmy::VTABLE_RVA as u64);
+        p64(&mut bytes, host, carmy::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             host + carmy::SECONDARY_BASE,
-            carmy::SECONDARY_VTABLE_RVA as u64,
+            carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
         p64(
             &mut bytes,
@@ -285,7 +285,7 @@ fn order_of_battle(members: usize, children: usize) -> Vec<u8> {
         p64(
             &mut bytes,
             child(index),
-            (kit::BASE + corders_group::VTABLE_RVA) as u64,
+            (kit::BASE + corders_group::VTABLE_RVA.0) as u64,
         );
         p64(
             &mut bytes,
@@ -746,7 +746,7 @@ fn a_terminal_run_behind_a_failing_host_completes_where_the_per_entry_copy_does(
     p64(
         &mut bytes,
         kit::OOB_GROUP,
-        (kit::BASE + corders_group::VTABLE_RVA) as u64,
+        (kit::BASE + corders_group::VTABLE_RVA.0) as u64,
     );
     bytes[kit::OOB_GROUP + corders_group::IS_ARMY_GROUP] = 0;
     let memory = Faults::new(

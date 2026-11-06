@@ -1,10 +1,11 @@
 //! Command-ability definition. These constants do not establish an hourly
 //! world walk or a complete availability evaluator.
 
+use engine_sites::Rva;
 /// Primary definition vtable.
-pub const VTABLE_RVA: usize = 0x02a0_13e8;
+pub const VTABLE_RVA: Rva = Rva(0x02a0_13e8);
 /// Secondary definition vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_1438;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x02a0_1438);
 /// Secondary subobject offset.
 pub const SECONDARY_BASE: usize = 0x08;
 /// Valid-definition byte tested before setting the subunit unlock marker.
@@ -27,4 +28,4 @@ pub const COOLDOWN_HOURS: usize = 0xac;
 /// Fixed-point cost scale for i64 products and divisions.
 pub const COST_SCALE: i64 = 100_000;
 /// Constructor installing both vtables and the allowed-condition trigger.
-pub const CONSTRUCTOR_RVA: usize = 0x0108_f390;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x0108_f390);

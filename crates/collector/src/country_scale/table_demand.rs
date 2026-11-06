@@ -244,7 +244,7 @@ mod tests {
                     bytes
                 };
                 let fields = [
-                    (gs::SINGLETON_RVA, header(STATE, 0)),
+                    (gs::SINGLETON_RVA.0, header(STATE, 0)),
                     (STATE + gs::COUNTRIES, header(0x800_0000, self.slots)),
                     (STATE + gs::COUNTRY_LINKS, header(0x900_0000, self.slots)),
                     (STATE + gs::COUNTRY_TAGS, header(0xa00_0000, self.slots)),
@@ -262,8 +262,8 @@ mod tests {
                     byte
                 } else if (SUPPLY..SUPPLY + 16).contains(&at) {
                     let vtables = [
-                        csupply_system::VTABLE_RVA as u64,
-                        csupply_system::SECONDARY_VTABLE_RVA as u64,
+                        csupply_system::VTABLE_RVA.0 as u64,
+                        csupply_system::SECONDARY_VTABLE_RVA.0 as u64,
                     ];
                     vtables[(at - SUPPLY) / 8].to_le_bytes()[(at - SUPPLY) % 8]
                 } else if (POINTERS..POINTERS + self.provinces as usize * 8).contains(&at) {
@@ -272,7 +272,7 @@ mod tests {
                 } else if (OBJECTS..OBJECTS + self.provinces as usize * 0x200).contains(&at) {
                     let slot = (at - OBJECTS) / 0x200;
                     match (at - OBJECTS) % 0x200 {
-                        field @ 0..8 => (cprovince::VTABLE_RVA as u64).to_le_bytes()[field],
+                        field @ 0..8 => (cprovince::VTABLE_RVA.0 as u64).to_le_bytes()[field],
                         field if (cprovince::ID..cprovince::ID + 4).contains(&field) => {
                             (slot as u32).to_le_bytes()[field - cprovince::ID]
                         }

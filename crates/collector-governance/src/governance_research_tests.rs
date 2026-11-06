@@ -255,8 +255,8 @@ impl World {
         self.heap[at - HEAP_START..at - HEAP_START + L].copy_from_slice(&bytes);
     }
 
-    fn image_put(&mut self, rva: usize, bytes: &[u8]) {
-        let at = BASE + rva - IMAGE_START;
+    fn image_put(&mut self, rva: engine_sites::Rva, bytes: &[u8]) {
+        let at = BASE + rva.0 - IMAGE_START;
         self.image[at..at + bytes.len()].copy_from_slice(bytes);
     }
 
@@ -288,14 +288,17 @@ impl World {
     fn country(&mut self, spec: &CountrySpec) {
         let o = spec.origin;
         let status = o + STATUS;
-        self.put(o, (BASE as u64 + ccountry::VTABLE_RVA as u64).to_le_bytes());
+        self.put(
+            o,
+            (BASE as u64 + ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
+        );
         self.put(o + ccountry::ID, spec.id.to_le_bytes());
         // Each country owns a state, so its research drifts daily.
         self.put(o + ccountry::OWNED_STATE_COUNT, 1_i32.to_le_bytes());
         self.pointer(o + ccountry::TECHNOLOGY_STATUS, status);
         self.put(
             status,
-            (BASE as u64 + ctechnology_status::VTABLE_RVA as u64).to_le_bytes(),
+            (BASE as u64 + ctechnology_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         self.pointer(status + ctechnology_status::COUNTRY, o);
         self.array(
@@ -308,7 +311,7 @@ impl World {
             self.pointer(o + SLOTS + i * 8, at);
             self.put(
                 at,
-                (BASE as u64 + cresearch_slot::VTABLE_RVA as u64).to_le_bytes(),
+                (BASE as u64 + cresearch_slot::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             self.pointer(at + cresearch_slot::STATUS, status);
             self.put(
@@ -333,7 +336,7 @@ impl World {
             self.pointer(at + cresearch_slot::TECHNOLOGY, technology);
             self.put(
                 technology,
-                (BASE as u64 + ctechnology::VTABLE_RVA as u64).to_le_bytes(),
+                (BASE as u64 + ctechnology::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             self.put(
                 technology + ctechnology::DEFINITION_INDEX,
@@ -396,7 +399,7 @@ impl World {
         for (j, value) in spec.bonuses.iter().enumerate() {
             let at = o + BONUS + j * 0x100;
             self.pointer(o + BONUS_ROSTER + j * 8, at);
-            self.put(at, (BASE as u64 + bonus::VTABLE_RVA as u64).to_le_bytes());
+            self.put(at, (BASE as u64 + bonus::VTABLE_RVA.0 as u64).to_le_bytes());
             self.put(at + bonus::ID, value.id.to_le_bytes());
             self.text(at + bonus::NAME, value.name);
             self.put(at + bonus::SPEED_BONUS, value.speed.to_le_bytes());
@@ -1134,10 +1137,7 @@ fn an_unmarked_slice_reads_only_the_daily_drift() {
         0,
     );
     let read = slice_capture(&world, 51, &mut fingerprints, &changes);
-    assert_eq!(
-        only(research(&read)),
-        only(research(&loaned_only(&world)))
-    );
+    assert_eq!(only(research(&read)), only(research(&loaned_only(&world))));
 }
 
 /// Country 1's roster lists its slots in native index order 2, 1, 0, and

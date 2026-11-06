@@ -116,11 +116,11 @@ pub(super) fn identity(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    vtable: usize,
+    vtable: Rva,
     offset: usize,
     displacement: usize,
 ) -> Result<u64, &'static str> {
-    if pointer == 0 || field::<u64>(memory, pointer, 0)? != at(base, vtable)? as u64 {
+    if pointer == 0 || field::<u64>(memory, pointer, 0)? != module_at(base, vtable)? as u64 {
         return Err("fuel demand object identity mismatch");
     }
     let reference = field::<u64>(memory, pointer, offset)?;
@@ -178,7 +178,7 @@ fn divisions(
                     } else {
                         corders_group::VTABLE_RVA
                     };
-                    if table != at(base, expected)? as u64 {
+                    if table != module_at(base, expected)? as u64 {
                         return Err("fuel demand orders-group vtable mismatch");
                     }
                     identity(memory, base, group, expected, corders_group::HANDLE, 0)

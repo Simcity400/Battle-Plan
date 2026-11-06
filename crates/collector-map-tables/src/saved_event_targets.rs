@@ -115,14 +115,14 @@ mod tests {
         let mut f = Fixture(BTreeMap::new());
         f.0.insert(state + native::IN_GAME, vec![1]);
         f.0.insert(state + native::REGISTRY, header(data, n));
-        f.0.insert(native::NAMES_RVA, header(names, n + 1));
+        f.0.insert(native::NAMES_RVA.0, header(names, n + 1));
         let mut registry = vec![0; n * native::STRIDE];
         let mut strings = vec![0; (n + 1) * 32];
         let mut expected_bytes = 0;
         strings[24..32].copy_from_slice(&15u64.to_le_bytes());
         for i in 0..n {
             let at = i * native::STRIDE;
-            registry[at..at + 8].copy_from_slice(&(native::VTABLE_RVA as u64).to_le_bytes());
+            registry[at..at + 8].copy_from_slice(&(native::VTABLE_RVA.0 as u64).to_le_bytes());
             registry[at + 12..at + 16].copy_from_slice(&((i + 1) as i32).to_le_bytes());
             registry[at + 0x68..at + 0x6a].copy_from_slice(&((i + 1) as u16).to_le_bytes());
             let name = format!("country_{i}");

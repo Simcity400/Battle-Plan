@@ -31,7 +31,7 @@ fn fixture() -> Vec<u8> {
         GS + cgame_state::RAID_SYSTEM,
         &(ROOT as u64).to_le_bytes(),
     );
-    put(&mut bytes, ROOT, &(VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, ROOT, &(VTABLE_RVA.0 as u64).to_le_bytes());
     header(&mut bytes, ROOT + COUNTRY_STATUSES, PARENTS, 2);
     header(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRY_ARRAY, 4);
     header(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 4);
@@ -48,7 +48,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY,
-        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, COUNTRY + ccountry::ID, &3_u32.to_le_bytes());
     put(&mut bytes, LINKS + 4, &1_u32.to_le_bytes());
@@ -58,7 +58,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             parent,
-            &(ccountry_raid_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_raid_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -84,7 +84,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         DEFINITION,
-        &(crate::raid_database::TYPE_VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::raid_database::TYPE_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, DEFINITION + 8, &0x4242_u32.to_le_bytes());
     header(
@@ -105,7 +105,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         INSTANCE,
-        &(craid_instance::VTABLE_RVA as u64).to_le_bytes(),
+        &(craid_instance::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -177,7 +177,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         PROVINCE,
-        &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, PROVINCE + cprovince::ID, &450_u32.to_le_bytes());
     bytes
@@ -477,7 +477,7 @@ fn cooldowns_keep_owner_order_and_type_and_truncate_with_demand() {
         put(
             &mut bytes,
             entry,
-            &(ccountry_raid_status::COOLDOWN_VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_raid_status::COOLDOWN_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -542,7 +542,7 @@ fn scaled(countries: usize) -> Vec<u8> {
         GS + cgame_state::RAID_SYSTEM,
         &(ROOT as u64).to_le_bytes(),
     );
-    put(&mut bytes, ROOT, &(VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, ROOT, &(VTABLE_RVA.0 as u64).to_le_bytes());
     header(&mut bytes, ROOT + COUNTRY_STATUSES, parents, slots as u32);
     header(&mut bytes, GS + cgame_state::COUNTRIES, array, slots as u32);
     header(
@@ -554,13 +554,13 @@ fn scaled(countries: usize) -> Vec<u8> {
     put(
         &mut bytes,
         DEFINITION,
-        &(crate::raid_database::TYPE_VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::raid_database::TYPE_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, DEFINITION + 8, &0x4242_u32.to_le_bytes());
     put(
         &mut bytes,
         PROVINCE,
-        &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, PROVINCE + cprovince::ID, &450_u32.to_le_bytes());
     for slot in 0..slots {
@@ -568,7 +568,7 @@ fn scaled(countries: usize) -> Vec<u8> {
         put(
             &mut bytes,
             parent,
-            &(ccountry_raid_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry_raid_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         if slot == 0 {
             put(
@@ -589,7 +589,7 @@ fn scaled(countries: usize) -> Vec<u8> {
         put(
             &mut bytes,
             country,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -631,7 +631,7 @@ fn scaled(countries: usize) -> Vec<u8> {
         put(
             &mut bytes,
             instance,
-            &(craid_instance::VTABLE_RVA as u64).to_le_bytes(),
+            &(craid_instance::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -679,7 +679,7 @@ fn scaled(countries: usize) -> Vec<u8> {
             put(
                 &mut bytes,
                 entry,
-                &(ccountry_raid_status::COOLDOWN_VTABLE_RVA as u64).to_le_bytes(),
+                &(ccountry_raid_status::COOLDOWN_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

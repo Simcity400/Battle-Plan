@@ -38,6 +38,7 @@
 //!   ids. Carrier regions have empty ordinary vectors and produce no rows.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// Both sites, whose RCX is the written country air object. Neither returns a
 /// value a caller reads; a detour forwards RCX..R9 and returns RAX unchanged.
@@ -45,20 +46,12 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // The five-byte RBX spill to R8's home slot relocates.
     MutationSite {
         name: "register_mission",
-        rva: 0xcb_a880,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24,
-            0x10, 0x57,
-        ],
+        rva: Rva(0xcb_a880),
     },
     // The five-byte RBX spill to R8's home slot relocates.
     MutationSite {
         name: "unregister_mission",
-        rva: 0xcb_aa90,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24,
-            0x10, 0x56,
-        ],
+        rva: Rva(0xcb_aa90),
     },
 ];
 
@@ -66,24 +59,8 @@ pub const MUTATIONS: [MutationSite; 2] = [
 mod tests {
     use super::*;
 
-    /// Each sentinel opens with the five-byte store the hook relocates and
-    /// the spill of the mission argument (RDX), which both sites share.
     #[test]
-    fn sentinels_open_with_the_relocated_store_and_the_mission_spill() {
-        for site in MUTATIONS {
-            assert_eq!(
-                site.sentinel[..5],
-                [0x48, 0x89, 0x5c, 0x24, 0x18],
-                "{}",
-                site.name
-            );
-            assert_eq!(
-                site.sentinel[10..15],
-                [0x48, 0x89, 0x54, 0x24, 0x10],
-                "{}",
-                site.name
-            );
-        }
+    fn the_sites_are_distinct() {
         assert_ne!(MUTATIONS[0].rva, MUTATIONS[1].rva);
     }
 }

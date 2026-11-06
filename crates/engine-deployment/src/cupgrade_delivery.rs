@@ -4,8 +4,9 @@
 //! updates and removes deliveries before capture; other allocation and command
 //! routes do not establish a consistency contract here.
 
+use engine_sites::Rva;
 /// CUpgradeDelivery primary vtable.
-pub const VTABLE_RVA: usize = 0x2a4b900;
+pub const VTABLE_RVA: Rva = Rva(0x2a4b900);
 /// CUpgradeDelivery status, u32.
 pub const STATUS: usize = 0x08;
 /// Status whose progress is read; other statuses do not reach the progress field.
@@ -57,11 +58,8 @@ pub(crate) fn authenticate(
     base: usize,
     address: usize,
 ) -> Result<Header, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
-    let expected_pool = base
-        .checked_add(cequipment_variant_pool::VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
+    let expected_pool = engine_sites::at(base, cequipment_variant_pool::VTABLE_RVA)
         .ok_or("module address overflow")?;
     let pool = address
         .checked_add(PRODUCED_EQUIPMENT_POOL)

@@ -13,10 +13,11 @@
 //! a programmatic name with a null group. [`cached_name`] independently
 //! reads retained display text without generating or refreshing it.
 
+use engine_sites::Rva;
 use crate::{Memory, msvc_string, read, read_slice};
 
 /// Division-name object vtable.
-pub const VTABLE_RVA: usize = 0x029b_3c88;
+pub const VTABLE_RVA: Rva = Rva(0x029b_3c88);
 /// Division-name type word, signed i32, initially zero and saved unconditionally; not recorded.
 pub const TYPE: usize = 0x08;
 /// Type-two name-group key hashed in the name database; not serialized.
@@ -27,7 +28,7 @@ pub const TEMPLATE_REFERENCE: usize = 0x58;
 pub const NAMING_EQUIPMENT: usize = 0x50;
 pub const TEMPLATE_NAME_GROUP: usize = 0x1d0;
 /// Name-group vtable and authored key string.
-pub const GROUP_VTABLE_RVA: usize = 0x029b_3cd8;
+pub const GROUP_VTABLE_RVA: Rva = Rva(0x029b_3cd8);
 pub const GROUP_KEY: usize = 8;
 /// Division-name signed order, initially zero. Nonpositive setter
 /// arguments store -1; save omits only zero.
@@ -44,15 +45,14 @@ pub const FLAG_A: usize = 0xa8;
 /// Programmatic-override flag byte, initially zero; save emits only when set. Recorded raw.
 pub const FLAG_B: usize = 0xa9;
 /// Division-name constructor.
-pub const CONSTRUCT_RVA: usize = 0x00a0_ac50;
+pub const CONSTRUCT_RVA: Rva = Rva(0x00a0_ac50);
 /// Operative name-database global used for type-two group lookup.
-const NAME_DATABASE_RVA: usize = 0x033d_d2d0;
+const NAME_DATABASE_RVA: Rva = Rva(0x033d_d2d0);
 
 /// Authenticate the object and return its signed order unchanged,
 /// including zero and the -1 sentinel.
 pub fn order(memory: &impl Memory, base: usize, pointer: usize) -> Result<i32, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division name module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("division name vtable mismatch");
@@ -72,8 +72,7 @@ pub fn custom(
     base: usize,
     pointer: usize,
 ) -> Result<(usize, usize, u8, u8), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division name module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("division name vtable mismatch");
@@ -261,8 +260,7 @@ pub(crate) fn cached_name_buffer(
     pointer: usize,
     names: &mut NameArena<'_>,
 ) -> Result<Option<Span>, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division cached name module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("division cached name member identity unreadable or invalid");
@@ -416,7 +414,7 @@ impl GroupKeys {
         };
         let header = read::<[u8; 40]>(memory, group).ok_or("division naming group unreadable")?;
         if Some(u64::from_le_bytes(header[..8].try_into().unwrap()))
-            != base.checked_add(GROUP_VTABLE_RVA).map(|p| p as u64)
+            != engine_sites::at(base, GROUP_VTABLE_RVA).map(|p| p as u64)
         {
             return Err("division naming group identity mismatch");
         }
@@ -720,8 +718,7 @@ pub fn cached_name_from_member_growing(
     len: &mut usize,
     required: &mut usize,
 ) -> Result<Option<Span>, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division cached name module address overflow")?;
     if u64::from_le_bytes(member[..8].try_into().unwrap()) != expected as u64 {
         return Err("division cached name member identity unreadable or invalid");
@@ -807,7 +804,7 @@ pub(crate) fn codename_inputs_buffer(
     heap: &mut [bool; 2],
 ) -> Result<Naming, &'static str> {
     // read_inputs, with the member's two string headers kept.
-    base.checked_add(VTABLE_RVA)
+    engine_sites::at(base, VTABLE_RVA)
         .ok_or("division name module address overflow")?;
     let member = member(memory, pointer)?;
     *heap = [FIRST_NAME_TEXT, OVERRIDE_NAME].map(|at| {
@@ -938,7 +935,7 @@ pub(crate) fn read_inputs(
     codename: bool,
 ) -> Result<Naming, &'static str> {
     // The module check precedes the member copy, as it always has.
-    base.checked_add(VTABLE_RVA)
+    engine_sites::at(base, VTABLE_RVA)
         .ok_or("division name module address overflow")?;
     let member = member(memory, pointer)?;
     member_inputs(memory, base, pointer, &member, groups, names, codename)
@@ -953,8 +950,7 @@ fn member_inputs(
     names: &mut NameArena<'_>,
     codename: bool,
 ) -> Result<Naming, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division name module address overflow")?;
     let word = |at: usize| u64::from_le_bytes(member[at..at + 8].try_into().unwrap());
     if word(0) != expected as u64 {
@@ -1046,7 +1042,9 @@ pub fn operative_group_is_null(
             .and_then(|value| usize::try_from(value).ok())
             .ok_or("operative name group pointer unreadable")
     };
-    let database = pointer_at(at(base, NAME_DATABASE_RVA)?)?;
+    let database = pointer_at(
+        engine_sites::at(base, NAME_DATABASE_RVA).ok_or("operative name group address overflow")?,
+    )?;
     if database == 0 {
         return Err("operative name database null");
     }
@@ -1064,7 +1062,7 @@ pub fn operative_group_is_null(
         let header =
             read::<[u8; 44]>(memory, group).ok_or("operative name group identity unreadable")?;
         if Some(u64::from_le_bytes(header[..8].try_into().unwrap()))
-            != base.checked_add(GROUP_VTABLE_RVA).map(|value| value as u64)
+            != engine_sites::at(base, GROUP_VTABLE_RVA).map(|value| value as u64)
         {
             return Err("operative name group identity mismatch");
         }
@@ -1168,7 +1166,7 @@ fn template_group(
     }
     let handle = u64::from_le_bytes(identity[8..].try_into().unwrap());
     if Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
-        != base.checked_add(reference::VTABLE_RVA).map(|p| p as u64)
+        != engine_sites::at(base, reference::VTABLE_RVA).map(|p| p as u64)
         || handle as u32 != reference::REFERENCE_TYPE
     {
         return Err("division template vtable or reference type mismatch");
@@ -1205,7 +1203,7 @@ mod tests {
     impl Memory for Guard {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.borrow_mut().push((address, output.len()));
-            if address == NAME_DATABASE_RVA && output.len() == 8 {
+            if address == NAME_DATABASE_RVA.0 && output.len() == 8 {
                 if let Some(database) = self.database {
                     output.copy_from_slice(&(database as u64).to_le_bytes());
                     return true;
@@ -1255,7 +1253,7 @@ mod tests {
     #[test]
     fn operative_group_and_override_are_independent_operands() {
         let mut bytes = [0_u8; INPUT_SPAN];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[TYPE..TYPE + 4].copy_from_slice(&2_i32.to_le_bytes());
         bytes[FIRST_NAME_TEXT..FIRST_NAME_TEXT + 5].copy_from_slice(b"GROUP");
         bytes[0x20..0x28].copy_from_slice(&5_u64.to_le_bytes());
@@ -1293,7 +1291,7 @@ mod tests {
         let put = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         };
-        put(bytes, 0, VTABLE_RVA as u64);
+        put(bytes, 0, VTABLE_RVA.0 as u64);
         bytes[TYPE..TYPE + 4].copy_from_slice(&2_i32.to_le_bytes());
         bytes[FIRST_NAME_TEXT..FIRST_NAME_TEXT + 5].copy_from_slice(b"GROUP");
         put(bytes, 0x20, 5);
@@ -1315,7 +1313,7 @@ mod tests {
         assert_eq!(run(&memory, 5).0, Ok(Naming::DoesNotFit));
         put(&mut memory.bytes, 0x200, 0x1300);
         put(&mut memory.bytes, 0x300, 0x1400);
-        put(&mut memory.bytes, 0x400, GROUP_VTABLE_RVA as u64);
+        put(&mut memory.bytes, 0x400, GROUP_VTABLE_RVA.0 as u64);
         memory.bytes[0x408..0x40d].copy_from_slice(b"group");
         put(&mut memory.bytes, 0x418, 5);
         put(&mut memory.bytes, 0x420, 15);
@@ -1340,7 +1338,7 @@ mod tests {
     #[test]
     fn a_programmatic_name_is_published_for_a_null_group() {
         let mut bytes = [0_u8; 0xb0];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[FLAG_A] = 1;
         bytes[FLAG_B] = 1;
         bytes[OVERRIDE_NAME..OVERRIDE_NAME + 4].copy_from_slice(b"1st\0");
@@ -1369,7 +1367,7 @@ mod tests {
     #[test]
     fn one_copy_covers_the_member_and_a_programmatic_override_of_another_type_is_not_published() {
         let mut bytes = [0xff; 0xb0];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[TYPE..TYPE + 4].copy_from_slice(&1_i32.to_le_bytes());
         bytes[ORDER..ORDER + 4].copy_from_slice(&(-7_i32).to_le_bytes());
         bytes[FLAG_A] = 0;
@@ -1414,7 +1412,7 @@ mod tests {
     #[test]
     fn names_of_any_length_go_to_the_arena_after_their_terminator_is_proved() {
         let mut bytes = vec![0; 0x800];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[TYPE..TYPE + 4].copy_from_slice(&3_i32.to_le_bytes());
         bytes[FLAG_A] = 1;
         // Longer than any fixed text buffer the reader used to carry.
@@ -1481,7 +1479,7 @@ mod tests {
     #[test]
     fn negative_and_zero_orders_survive_and_a_wrong_vtable_fails() {
         let mut bytes = vec![0; 0x100];
-        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[ORDER..ORDER + 4].copy_from_slice(&i32::MIN.to_le_bytes());
         let memory = SliceMemory {
             base: 0x1000,

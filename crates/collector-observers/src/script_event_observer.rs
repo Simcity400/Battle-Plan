@@ -73,10 +73,9 @@ fn decision_result(
 ) {
     feed::record_script(|world, memory, base| {
         if definition == 0
-            || engine_native::read::<u64>(memory, definition)
-                != base
-                    .checked_add(engine_decisions::cdecision::VTABLE_RVA)
-                    .map(|at| at as u64)
+            || engine_sites::at(base, engine_decisions::cdecision::VTABLE_RVA).is_none_or(
+                |vtable| engine_native::read::<u64>(memory, definition) != Some(vtable as u64),
+            )
         {
             return Err("decision occurrence definition vtable unreadable or differs");
         }
@@ -96,16 +95,14 @@ fn decision_result(
             let instance = selector
                 .checked_sub(engine_decisions::ctargeted_decision::SELECTOR_VIEW)
                 .ok_or("decision selector instance underflow")?;
-            if engine_native::read::<u64>(memory, instance)
-                != base
-                    .checked_add(engine_decisions::ctargeted_decision::VTABLE_RVA)
-                    .map(|at| at as u64)
-                || field::<u64>(
-                    memory,
-                    instance,
-                    engine_decisions::ctargeted_decision::DEFINITION,
-                )? as usize
-                    != definition
+            if engine_sites::at(base, engine_decisions::ctargeted_decision::VTABLE_RVA).is_none_or(
+                |vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64),
+            ) || field::<u64>(
+                memory,
+                instance,
+                engine_decisions::ctargeted_decision::DEFINITION,
+            )? as usize
+                != definition
             {
                 return Err("decision selector instance identity differs");
             }
@@ -209,10 +206,8 @@ fn targeted_execution(
     instance: usize,
     definition: usize,
 ) -> Result<EventFeedSource, &'static str> {
-    if engine_native::read::<u64>(memory, instance)
-        != base
-            .checked_add(engine_decisions::ctargeted_decision::VTABLE_RVA)
-            .map(|value| value as u64)
+    if engine_sites::at(base, engine_decisions::ctargeted_decision::VTABLE_RVA)
+        .is_none_or(|vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64))
         || field::<u64>(
             memory,
             instance,
@@ -286,10 +281,9 @@ fn publish_activation(
 ) -> Result<(), &'static str> {
     let base = BASE.load(Ordering::Acquire);
     if instance == 0
-        || engine_native::read::<u64>(memory, instance)
-            != base
-                .checked_add(engine_decisions::ctimed_decision::VTABLE_RVA)
-                .map(|at| at as u64)
+        || engine_sites::at(base, engine_decisions::ctimed_decision::VTABLE_RVA).is_none_or(
+            |vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64),
+        )
         || field::<u64>(
             memory,
             instance,
@@ -405,8 +399,8 @@ pub(crate) fn definition(
     &'static str,
 > {
     if event == 0
-        || engine_native::read::<u64>(memory, event)
-            != base.checked_add(cevent::VTABLE_RVA).map(|at| at as u64)
+        || engine_sites::at(base, cevent::VTABLE_RVA)
+            .is_none_or(|vtable| engine_native::read::<u64>(memory, event) != Some(vtable as u64))
     {
         return Err("script event definition vtable unreadable or differs");
     }
@@ -664,10 +658,8 @@ fn option(event: usize, scope: usize, ordinal: i32) {
         let command = scope
             .checked_sub(native::OPTION_COMMAND_SCOPE)
             .ok_or("event option command address underflow")?;
-        if engine_native::read::<u64>(memory, command)
-            != base
-                .checked_add(native::OPTION_COMMAND_VTABLE_RVA)
-                .map(|at| at as u64)
+        if engine_sites::at(base, native::OPTION_COMMAND_VTABLE_RVA)
+            .is_none_or(|vtable| engine_native::read::<u64>(memory, command) != Some(vtable as u64))
         {
             return Err("event option command vtable unreadable or differs");
         }
@@ -712,46 +704,33 @@ pub(super) fn terminal_hook_failure(
     Box::leak(format!("{label}: {stage} failed: {cause}").into_boxed_str())
 }
 
-fn verify_hook(
-    memory: &impl Memory,
+/// The site's address and the 16 bytes its patch replaces, of which the first `N` are verified
+/// and owned.
+fn verify_hook<const N: usize>(
     base: usize,
     site: native::Site,
-    len: usize,
-) -> Result<usize, &'static str> {
-    let at = base
-        .checked_add(site.rva)
-        .ok_or_else(|| hook_failure(site, "sentinel", "address overflow"))?;
-    let mut actual = [0_u8; 16];
-    if !memory.copy(at, &mut actual[..len]) {
-        return Err(hook_failure(site, "sentinel", "native bytes unreadable"));
-    }
-    if actual[..len] != site.sentinel[..len] {
-        return Err(hook_failure(
-            site,
-            "sentinel",
-            format_args!(
-                "expected {:02x?}, read {:02x?}",
-                &site.sentinel[..len],
-                &actual[..len]
-            ),
-        ));
-    }
-    Ok(at)
+) -> Result<(usize, [u8; 16]), &'static str> {
+    let withheld = |cause| hook_failure(site, "sentinel", cause);
+    let code = engine_sites::code(base, site.rva).map_err(withheld)?;
+    let owned = code.original::<N>().map_err(withheld)?;
+    let mut original = [0; 16];
+    original[..N].copy_from_slice(&owned);
+    Ok((code.address, original))
 }
 
 /// # Safety
 /// The host owns publication, restoration, native-flight and executable-range
 /// quiescence with the complete event-feed family.
 pub unsafe fn hooks(
-    memory: &impl Memory,
+    _memory: &impl Memory,
     base: usize,
 ) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
-    let verify = |site: native::Site| verify_hook(memory, base, site, site.sentinel.len());
+    let verify = |site: native::Site| verify_hook::<16>(base, site);
     let mut taps = Vec::new();
     for (index, site) in native::TAPS.into_iter().enumerate() {
-        let at = verify(site)?;
+        let (at, original) = verify(site)?;
         taps.push(
-            unsafe { Tap::new(at, tap, index, site.sentinel) }
+            unsafe { Tap::new(at, tap, index, original) }
                 .map_err(|cause| hook_failure(site, "construction", cause))?
                 .named(site.label()),
         );
@@ -784,42 +763,39 @@ pub unsafe fn hooks(
             &REGISTRY_ORIGINAL[2],
         ),
     ] {
-        let hook = unsafe { Hook::new(verify(site)?, callback, site.sentinel) }
+        let (at, original_bytes) = verify(site)?;
+        let hook = unsafe { Hook::new(at, callback, original_bytes) }
             .map_err(|cause| hook_failure(site, "construction", cause))?
             .named(site.label());
         original.store(hook.trampoline(), Ordering::Release);
         hooks.push(hook);
     }
-    for (index, ((name, rva, sentinel), callback)) in
-        engine_decisions::cdecision::EVENT_FEED_ENTRIES
-            .into_iter()
-            .zip([
-                cancel as *const () as usize,
-                remove as *const () as usize,
-                targeted_cancel as *const () as usize,
-                targeted_remove as *const () as usize,
-                targeted_execute as *const () as usize,
-            ])
-            .enumerate()
+    for (index, ((name, rva), callback)) in engine_decisions::cdecision::EVENT_FEED_ENTRIES
+        .into_iter()
+        .zip([
+            cancel as *const () as usize,
+            remove as *const () as usize,
+            targeted_cancel as *const () as usize,
+            targeted_remove as *const () as usize,
+            targeted_execute as *const () as usize,
+        ])
+        .enumerate()
     {
-        let site = native::Site {
-            name,
-            rva,
-            sentinel,
-        };
-        let hook = unsafe { Hook::new(verify(site)?, callback, sentinel) }
+        let site = native::Site { name, rva };
+        let (at, original) = verify(site)?;
+        let hook = unsafe { Hook::new(at, callback, original) }
             .map_err(|cause| hook_failure(site, "construction", cause))?
             .named(site.label());
         DECISION_ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
         hooks.push(hook);
     }
-    let (delayed_hooks, delayed_taps) = unsafe { delayed::hooks(memory, base) }?;
+    let (delayed_hooks, delayed_taps) = unsafe { delayed::hooks(base) }?;
     hooks.extend(delayed_hooks);
     taps.extend(delayed_taps);
-    let (lifecycle_hooks, lifecycle_taps) = unsafe { lifecycle::hooks(memory, base) }?;
+    let (lifecycle_hooks, lifecycle_taps) = unsafe { lifecycle::hooks(base) }?;
     hooks.extend(lifecycle_hooks);
     taps.extend(lifecycle_taps);
-    let (decision_hooks, decision_taps) = unsafe { decisions::hooks(memory, base) }?;
+    let (decision_hooks, decision_taps) = unsafe { decisions::hooks(base) }?;
     hooks.extend(decision_hooks);
     taps.extend(decision_taps);
     BASE.store(base, Ordering::Release);
@@ -834,10 +810,10 @@ pub fn delayed_pass(country: usize, run: impl FnOnce() -> usize) -> usize {
 /// The script-variable owner publishes/restores these selected cursor taps
 /// together with the pass entry and retains their ranges through quiescence.
 pub unsafe fn delayed_pass_taps(
-    memory: &impl Memory,
+    _memory: &impl Memory,
     base: usize,
 ) -> Result<Vec<Tap>, &'static str> {
-    unsafe { delayed::forwarded_taps(memory, base) }
+    unsafe { delayed::forwarded_taps(base) }
 }
 
 /// The politics family's targeted decision entry: `run` is its original
@@ -874,10 +850,10 @@ pub fn take_selection_cause() -> Option<replay_data::event_feed_rows::EventFeedC
 /// store through this tap, which only stages its witness for
 /// [`targeted_selection`].
 pub unsafe fn targeted_selection_tap(
-    memory: &impl Memory,
+    _memory: &impl Memory,
     base: usize,
 ) -> Result<Tap, &'static str> {
-    unsafe { decisions::selection_tap(memory, base) }
+    unsafe { decisions::selection_tap(base) }
 }
 
 #[cfg(test)]
@@ -885,28 +861,16 @@ mod tests {
     use super::*;
     #[test]
     fn adjacent_calls_verify_only_their_owned_prefix_and_name_failures() {
+        for len in [decisions::REACTIVATE_DAYS_LEN, decisions::REQUEST_TIMED_LEN] {
+            assert!((5..16).contains(&len));
+        }
         for site in [
             native::decisions::REACTIVATE_TARGETED_DAYS,
             native::decisions::REQUEST_TARGETED_TIMED,
         ] {
-            let len = native::decisions::call_sentinel_len(site);
-            let memory = engine_native::memory::SliceMemory {
-                base: site.rva,
-                bytes: &site.sentinel[..len],
-            };
-            assert_eq!(verify_hook(&memory, 0, site, len), Ok(site.rva));
-            let error = verify_hook(&memory, 0, site, 16).unwrap_err();
+            let error = verify_hook::<16>(0, site).unwrap_err();
             assert!(error.contains(site.name));
-            assert!(error.contains("sentinel failed: native bytes unreadable"));
-            let mut bytes = site.sentinel;
-            bytes[0] ^= 1;
-            let memory = engine_native::memory::SliceMemory {
-                base: site.rva,
-                bytes: &bytes,
-            };
-            let error = verify_hook(&memory, 0, site, len).unwrap_err();
-            assert!(error.contains("sentinel failed: expected"));
-            assert!(error.contains("read"));
+            assert!(error.contains("sentinel failed"));
             assert!(
                 hook_failure(site, "construction", "synthetic relay refusal")
                     .ends_with("construction failed: synthetic relay refusal")
@@ -921,7 +885,7 @@ mod tests {
     fn targeted_execution_classifies_the_selected_instance_result_without_enclosing_provenance() {
         let mut bytes = [0_u8; 0x38];
         bytes[..8].copy_from_slice(
-            &(engine_decisions::ctargeted_decision::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_decisions::ctargeted_decision::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         bytes[0x10..0x18].copy_from_slice(&99_u64.to_le_bytes());
         for (state, expected) in [

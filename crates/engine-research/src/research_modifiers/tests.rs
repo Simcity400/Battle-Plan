@@ -28,7 +28,7 @@ impl Fixture {
             f.put(0x2000 + id as usize * 8, (COUNTRY as u64).to_le_bytes());
             f.put(0x2100 + id as usize * 4, 1_u32.to_le_bytes());
         }
-        f.put(COUNTRY, (ccountry::VTABLE_RVA as u64).to_le_bytes());
+        f.put(COUNTRY, (ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
         f.put(COUNTRY + 8, 1_u32.to_le_bytes());
         f.put(
             COUNTRY + ccountry::TECHNOLOGY_STATUS,
@@ -36,7 +36,7 @@ impl Fixture {
         );
         f.put(
             STATUS,
-            (crate::ctechnology_status::VTABLE_RVA as u64).to_le_bytes(),
+            (crate::ctechnology_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         f.put(
             STATUS + crate::ctechnology_status::COUNTRY,
@@ -74,7 +74,7 @@ impl Fixture {
             }
             return false;
         }
-        if at == crate::modifier_definition::TABLE_RVA && out.len() == 8 {
+        if at == crate::modifier_definition::TABLE_RVA.0 && out.len() == 8 {
             out.copy_from_slice(&(METADATA as u64).to_le_bytes());
             return true;
         }
@@ -139,7 +139,7 @@ fn gap_research_grants_grant_inventory_captures_unused_kinds_restrictions_and_co
     f.array(STATUS + status::COST_REDUCTIONS, 0x8010, 1);
     f.put(0x8000, 0x9000_u64.to_le_bytes());
     f.put(0x8010, 0xa000_u64.to_le_bytes());
-    f.put(0x9000, (bonus::VTABLE_RVA as u64).to_le_bytes());
+    f.put(0x9000, (bonus::VTABLE_RVA.0 as u64).to_le_bytes());
     f.put(0x9000 + bonus::ID, (-3_i32).to_le_bytes());
     f.put(0x9000 + bonus::USES, (-2_i32).to_le_bytes());
     f.put(0x9000 + bonus::CLAIMS, 4_i32.to_le_bytes());
@@ -157,7 +157,7 @@ fn gap_research_grants_grant_inventory_captures_unused_kinds_restrictions_and_co
         0xfedc_ba98_u32.to_le_bytes(),
     );
     f.put(0xc02c, 0xdead_beef_u32.to_le_bytes());
-    f.put(0xa000, (cost::VTABLE_RVA as u64).to_le_bytes());
+    f.put(0xa000, (cost::VTABLE_RVA.0 as u64).to_le_bytes());
     f.put(0xa000 + cost::ID, 9_i32.to_le_bytes());
     f.put(0xa000 + cost::USES, 8_i32.to_le_bytes());
     f.put(0xa000 + cost::REDUCTION, (-12345_i64).to_le_bytes());
@@ -416,7 +416,7 @@ fn growing_sharing_groups_and_category_rosters_follow_native_counts() {
     let mut f = Fixture::new();
     f.bytes.resize(CATEGORIES + 5_000 * 40, 0);
     f.array(STATUS + 0x118, POINTERS, 5_000);
-    f.put(GROUP, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+    f.put(GROUP, (sharing::FACTION_VTABLE.0 as u64).to_le_bytes());
     for index in 0..5_000 {
         f.put(POINTERS + index * 8, (GROUP as u64).to_le_bytes());
     }
@@ -458,11 +458,11 @@ fn scientist_categories_batch_the_entire_mod_population() {
     f.put(COUNTRY + ccountry::PROGRAM_STATUS, 0xa000_u64.to_le_bytes());
     f.put(
         0xa000,
-        (crate::nproject_cprogram_status::VTABLE_RVA as u64).to_le_bytes(),
+        (crate::nproject_cprogram_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(
         0xa008,
-        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(0xa010, 1_u32.to_le_bytes());
     f.put(0xa088, 0xa100_u64.to_le_bytes());
@@ -547,7 +547,7 @@ fn scripted_sharing_roster_keeps_idle_countries_duplicates_and_native_extent() {
     let mut f = Fixture::new();
     f.bytes.resize(GROUP + 16, 0);
     f.array(STATUS + 0x118, POINTERS, 5_000);
-    f.put(GROUP, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+    f.put(GROUP, (sharing::FACTION_VTABLE.0 as u64).to_le_bytes());
     f.put(GROUP + 8, 19_u32.to_le_bytes());
     for index in 0..5_000 {
         f.put(POINTERS + index * 8, (GROUP as u64).to_le_bytes());
@@ -709,7 +709,7 @@ fn selected_idea_and_script_sources_retain_names_without_reading_catalogues() {
     f.put(0x8000, 0x8100_u64.to_le_bytes());
     f.put(0x8138, (-15_000_i64).to_le_bytes());
     f.put(0x8140, 0x8200_u64.to_le_bytes());
-    f.put(0x8200, (crate::cidea::VTABLE_RVA as u64).to_le_bytes());
+    f.put(0x8200, (crate::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
     f.text(0x8218, b"idea_penalty");
     f.array(TECH + 0x128, 0x8400, 1);
     f.put(0x8400, 0x8500_u64.to_le_bytes());
@@ -752,11 +752,11 @@ fn license_and_scientist_use_only_matching_equipment_and_category() {
     f.put(0xa088, 0xa100_u64.to_le_bytes());
     f.put(
         0xa000,
-        (crate::nproject_cprogram_status::VTABLE_RVA as u64).to_le_bytes(),
+        (crate::nproject_cprogram_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(
         0xa008,
-        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(0xa010, 1_u32.to_le_bytes());
     f.put(0xa104, [1]);
@@ -789,7 +789,7 @@ fn sharing_resolves_aliases_and_uses_max_level_with_predecessor_gate() {
     let mut f = Fixture::new();
     f.array(STATUS + 0x118, 0x8000, 1);
     f.put(0x8000, 0x8100_u64.to_le_bytes());
-    f.put(0x8100, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+    f.put(0x8100, (sharing::FACTION_VTABLE.0 as u64).to_le_bytes());
     f.put(0x8108, 4_u32.to_le_bytes());
     f.put(0x8110, 10_000_i64.to_le_bytes());
     f.array(0x8118, 0x8200, 1);
@@ -802,7 +802,10 @@ fn sharing_resolves_aliases_and_uses_max_level_with_predecessor_gate() {
         1,
     );
     f.put(0x8400, (TECH as u64).to_le_bytes());
-    f.put(TECH, (crate::ctechnology::VTABLE_RVA as u64).to_le_bytes());
+    f.put(
+        TECH,
+        (crate::ctechnology::VTABLE_RVA.0 as u64).to_le_bytes(),
+    );
     f.put(TECH + 8, 7_u32.to_le_bytes());
     f.put(TECH + 0x158, (STATUS as u64).to_le_bytes());
     f.put(TECH + 0x160, (TEMPLATE as u64).to_le_bytes());
@@ -855,11 +858,11 @@ fn scientist_efficiency_sources_preserve_character_identity_and_cached_total() {
     f.put(COUNTRY + ccountry::PROGRAM_STATUS, 0xa000_u64.to_le_bytes());
     f.put(
         0xa000,
-        (crate::nproject_cprogram_status::VTABLE_RVA as u64).to_le_bytes(),
+        (crate::nproject_cprogram_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(
         0xa008,
-        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(0xa010, 2_u32.to_le_bytes());
     f.put(0xa088, 0xa100_u64.to_le_bytes());
@@ -868,10 +871,16 @@ fn scientist_efficiency_sources_preserve_character_identity_and_cached_total() {
     f.put(0xa110, 8_765_i64.to_le_bytes());
     f.array(0xa118, 0xa200, 1);
     f.put(0xa200, 0xb000_u64.to_le_bytes());
-    f.put(0xb000, (crate::cscientist::VTABLE_RVA as u64).to_le_bytes());
+    f.put(
+        0xb000,
+        (crate::cscientist::VTABLE_RVA.0 as u64).to_le_bytes(),
+    );
     f.put(0xb008, 0xc000_u64.to_le_bytes());
     f.modifier(0xb058, 0xb200, 0x27a, 50_000);
-    f.put(0xc000, (crate::ccharacter::VTABLE_RVA as u64).to_le_bytes());
+    f.put(
+        0xc000,
+        (crate::ccharacter::VTABLE_RVA.0 as u64).to_le_bytes(),
+    );
     f.put(0xc008, crate::ccharacter::REFERENCE_TYPE.to_le_bytes());
     f.put(0xc00c, 91_u32.to_le_bytes());
     f.put(0xc0c0, 0xb000_u64.to_le_bytes());
@@ -912,11 +921,11 @@ fn scientist_hash_collisions_keep_each_raw_category_without_summing() {
     f.put(COUNTRY + ccountry::PROGRAM_STATUS, 0xa000_u64.to_le_bytes());
     f.put(
         0xa000,
-        (crate::nproject_cprogram_status::VTABLE_RVA as u64).to_le_bytes(),
+        (crate::nproject_cprogram_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(
         0xa008,
-        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(0xa010, 1_u32.to_le_bytes());
     f.put(0xa088, 0xa100_u64.to_le_bytes());
@@ -959,7 +968,7 @@ fn many_member_fixture() -> Fixture {
         f.put(LINKS + raw * 4, 2_u32.to_le_bytes());
     }
     f.put(0x2000 + 2 * 8, (COUNTRY2 as u64).to_le_bytes());
-    f.put(COUNTRY2, (ccountry::VTABLE_RVA as u64).to_le_bytes());
+    f.put(COUNTRY2, (ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     f.put(COUNTRY2 + 8, 2_u32.to_le_bytes());
     f.put(
         COUNTRY2 + ccountry::TECHNOLOGY_STATUS,
@@ -967,7 +976,7 @@ fn many_member_fixture() -> Fixture {
     );
     f.put(
         STATUS2,
-        (crate::ctechnology_status::VTABLE_RVA as u64).to_le_bytes(),
+        (crate::ctechnology_status::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(
         STATUS2 + crate::ctechnology_status::COUNTRY,
@@ -980,7 +989,10 @@ fn many_member_fixture() -> Fixture {
         1,
     );
     f.put(0x8400, (TECH as u64).to_le_bytes());
-    f.put(TECH, (crate::ctechnology::VTABLE_RVA as u64).to_le_bytes());
+    f.put(
+        TECH,
+        (crate::ctechnology::VTABLE_RVA.0 as u64).to_le_bytes(),
+    );
     f.put(TECH + 8, 7_u32.to_le_bytes());
     f.put(TECH + 0x158, (STATUS as u64).to_le_bytes());
     f.put(TECH + 0x160, (TEMPLATE as u64).to_le_bytes());
@@ -1010,7 +1022,7 @@ fn sharing_member_rosters_are_bounded_only_by_their_native_headers() {
     let count = OTHERS + 1;
     f.array(STATUS + 0x118, 0x8000, 1);
     f.put(0x8000, 0x8100_u64.to_le_bytes());
-    f.put(0x8100, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+    f.put(0x8100, (sharing::FACTION_VTABLE.0 as u64).to_le_bytes());
     f.put(0x8108, 4_u32.to_le_bytes());
     f.put(0x8110, 10_000_i64.to_le_bytes());
     f.array(0x8118, MEMBERS, count);
@@ -1044,7 +1056,7 @@ fn faction_member_pointer_rosters_are_bounded_only_by_their_native_headers() {
     f.put(0x8000, 0x8100_u64.to_le_bytes());
     f.put(
         0x8100,
-        (crate::ctechnology_sharing_group::VTABLE_RVA as u64).to_le_bytes(),
+        (crate::ctechnology_sharing_group::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     f.put(0x8108, 9_u32.to_le_bytes());
     f.put(0x8110, 3_000_i64.to_le_bytes());
@@ -1064,7 +1076,10 @@ fn faction_member_pointer_rosters_are_bounded_only_by_their_native_headers() {
         DIPLOMACY + crate::cdiplomacy_status::FACTION,
         (FACTION as u64).to_le_bytes(),
     );
-    f.put(FACTION, (crate::cfaction::VTABLE_RVA as u64).to_le_bytes());
+    f.put(
+        FACTION,
+        (crate::cfaction::VTABLE_RVA.0 as u64).to_le_bytes(),
+    );
     let count = OTHERS + 1;
     f.array(FACTION + crate::cfaction::MEMBERS, POINTERS, count);
     for (index, raw) in (2..OTHERS + 2).chain(std::iter::once(1)).enumerate() {
@@ -1095,7 +1110,7 @@ fn sharing_witness_memo_keeps_its_first_keys_without_changing_rows() {
         let mut f = many_member_fixture();
         f.array(STATUS + 0x118, 0x8000, 1);
         f.put(0x8000, 0x8100_u64.to_le_bytes());
-        f.put(0x8100, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+        f.put(0x8100, (sharing::FACTION_VTABLE.0 as u64).to_le_bytes());
         f.array(0x8118, MEMBERS, roster.len() as u32);
         f.array(0x8130, BONUSES, roster.len() as u32);
         for (index, raw) in roster.iter().enumerate() {
@@ -1189,7 +1204,7 @@ fn batch_source_world() -> engine_governance_tests::World {
         world.pointer(country + 0x7000 + i * 8, contribution);
         world.put(contribution + 0x38, (-7_001_i64).to_le_bytes());
         world.pointer(contribution + 0x40, idea);
-        world.put(idea, (crate::cidea::VTABLE_RVA as u64).to_le_bytes());
+        world.put(idea, (crate::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
         world.text(idea + crate::cidea::TOKEN, b"mod_idea");
         let script = country + 0x7500 + i * 40;
         let source = country + 0x7600 + i * 0x100;

@@ -25,8 +25,7 @@ impl Held {
         if before == self.token {
             return self.snapshot.clone();
         }
-        let value = base
-            .checked_add(engine_events::map_event_sites::FOG_OF_WAR_RVA)
+        let value = engine_sites::at(base, engine_events::map_event_sites::FOG_OF_WAR_RVA)
             .and_then(|address| engine_native::read::<u8>(memory, address));
         self.token = None;
         let value = value.filter(|_| changes.token(Domain::GameFog) == before)?;
@@ -71,7 +70,7 @@ mod tests {
     }
     impl Memory for MemoryByte {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            assert_eq!(address, engine_events::map_event_sites::FOG_OF_WAR_RVA);
+            assert_eq!(address, engine_events::map_event_sites::FOG_OF_WAR_RVA.0);
             assert_eq!(output.len(), 1);
             self.reads.set(self.reads.get() + 1);
             if let Some(value) = self.value.get() {

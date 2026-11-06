@@ -52,7 +52,7 @@ pub const LEADER_PROVINCE_ARM: usize = scope::FIFTH_POINTER;
 /// Army leaders hold the captor within their object. Navy leaders are too
 /// small, and base/operative layouts do not establish this field. Any other
 /// class refuses the row.
-const CAPTOR_VTABLE: usize = crate::carmy_leader::VTABLE_RVA;
+const CAPTOR_VTABLE: engine_sites::Rva = crate::carmy_leader::VTABLE_RVA;
 
 /// Leader arm is reached only when building, province and state arms are null.
 pub fn reads_leader(building: bool, province: u32, state: u32) -> bool {
@@ -67,11 +67,8 @@ pub fn leader_captor(memory: &impl Memory, base: usize, handle: u64) -> Result<O
     else {
         return Ok(None);
     };
-    let vtable = read::<u64>(memory, leader)
-        .and_then(|vtable| usize::try_from(vtable).ok())
-        .and_then(|vtable| vtable.checked_sub(base))
-        .ok_or(())?;
-    if vtable != CAPTOR_VTABLE {
+    let vtable = read::<u64>(memory, leader).ok_or(())?;
+    if engine_sites::at(base, CAPTOR_VTABLE).map(|address| address as u64) != Some(vtable) {
         return Err(());
     }
     leader
@@ -115,11 +112,11 @@ pub(crate) fn row_from_arms(
             .map_err(|_| "raid target scope arm address overflow")
     };
     // Each arm's identity and id in one guarded scattered copy.
-    let identified = |pointer: usize, vtable: usize, id: usize, what: &'static str| {
+    let identified = |pointer: usize, vtable: engine_sites::Rva, id: usize, what: &'static str| {
         if pointer == 0 {
             return Ok(0);
         }
-        let expected = base.checked_add(vtable).ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, vtable).ok_or("module address overflow")?;
         let (mut identity, mut value) = ([0_u8; 8], [0_u8; 4]);
         let at = pointer.checked_add(id).ok_or(what)?;
         if memory.copy_scattered([pointer, at], &mut [&mut identity, &mut value]) != 2 {
@@ -149,9 +146,8 @@ pub(crate) fn row_from_arms(
         {
             return Err(what);
         }
-        let expected = base
-            .checked_add(cbuilding::VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected =
+            engine_sites::at(base, cbuilding::VTABLE_RVA).ok_or("module address overflow")?;
         if u64::from_le_bytes(identity) != expected as u64 {
             return Err(what);
         }
@@ -176,8 +172,7 @@ pub(crate) fn row_from_arms(
         if copied == 0 {
             return Err("raid target building status vtable mismatch");
         }
-        let expected = base
-            .checked_add(cbuilding_status::VTABLE_RVA)
+        let expected = engine_sites::at(base, cbuilding_status::VTABLE_RVA)
             .ok_or("module address overflow")?;
         if u64::from_le_bytes(identity) != expected as u64 {
             return Err("raid target building status vtable mismatch");
@@ -262,7 +257,7 @@ mod tests {
         put(
             &mut bytes,
             BUILDING_AT,
-            &(cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+            &(cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -277,7 +272,7 @@ mod tests {
         put(
             &mut bytes,
             STATUS_AT,
-            &(cbuilding_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(cbuilding_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -292,7 +287,7 @@ mod tests {
         put(
             &mut bytes,
             PROVINCE_AT,
-            &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -302,7 +297,7 @@ mod tests {
         put(
             &mut bytes,
             STATE_AT,
-            &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+            &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, STATE_AT + cstate::ID, &64_u32.to_le_bytes());
         bytes
@@ -379,11 +374,11 @@ mod tests {
         memory.put(SCOPE + LEADER_REFERENCE, &handle.to_le_bytes());
         if province {
             memory.put(SCOPE + PROVINCE_ARM, &(PROVINCE_AT as u64).to_le_bytes());
-            memory.put(PROVINCE_AT, &(cprovince::VTABLE_RVA as u64).to_le_bytes());
+            memory.put(PROVINCE_AT, &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
             memory.put(PROVINCE_AT + cprovince::ID, &6521_u32.to_le_bytes());
         }
         memory.put(
-            registry::LOW_ROOTS_RVA + kind as usize * 8,
+            registry::LOW_ROOTS_RVA.0 + kind as usize * 8,
             &(TABLE as u64).to_le_bytes(),
         );
         memory.put(TABLE + registry::ENTRIES, &(ENTRIES as u64).to_le_bytes());
@@ -413,7 +408,7 @@ mod tests {
 
     #[test]
     fn an_army_leader_answers_only_when_every_earlier_arm_is_null() {
-        let row = read_row(&leader_scope(CAPTOR_VTABLE, false), 0, SCOPE).unwrap();
+        let row = read_row(&leader_scope(CAPTOR_VTABLE.0, false), 0, SCOPE).unwrap();
         assert_eq!((row.leader_country, row.leader_refused), (Some(12), false));
         // The navy, operative and base classes are refused, row by row.
         for vtable in [
@@ -421,7 +416,7 @@ mod tests {
             crate::coperative_leader::VTABLE_RVA,
             crate::cunit_leader::VTABLE_RVA,
         ] {
-            let row = read_row(&leader_scope(vtable, false), 0, SCOPE).unwrap();
+            let row = read_row(&leader_scope(vtable.0, false), 0, SCOPE).unwrap();
             assert_eq!((row.leader_country, row.leader_refused), (None, true));
         }
         // The province arm answers without reading the leader, so a foreign object

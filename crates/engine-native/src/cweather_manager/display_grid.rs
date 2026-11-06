@@ -9,8 +9,7 @@ use super::*;
 
 /// Positive live map dimensions quartered for the display grid.
 pub fn display_grid_size(memory: &impl Memory, base: usize) -> Result<[u32; 2], &'static str> {
-    let map = base
-        .checked_add(crate::cmap::SINGLETON_RVA)
+    let map = engine_sites::at(base, crate::cmap::SINGLETON_RVA)
         .and_then(|address| read::<u64>(memory, address))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
@@ -190,10 +189,10 @@ mod tests {
         }
         fn grid() -> Self {
             let mut source = Self::default();
-            source.put(crate::cmap::SINGLETON_RVA, &0x2800_u64.to_le_bytes());
+            source.put(crate::cmap::SINGLETON_RVA.0, &0x2800_u64.to_le_bytes());
             source.put(0x2800 + crate::cmap::WIDTH, &12_i32.to_le_bytes());
             source.put(0x2800 + crate::cmap::HEIGHT, &8_i32.to_le_bytes());
-            source.put(0x2000, &(VTABLE_RVA as u64).to_le_bytes());
+            source.put(0x2000, &(VTABLE_RVA.0 as u64).to_le_bytes());
             source.put(
                 0x2000 + DISPLAY_REFRESH_INTERVAL,
                 &(-9_007_199_254_740_993_i64).to_le_bytes(),

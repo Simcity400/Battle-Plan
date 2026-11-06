@@ -1,8 +1,9 @@
 //! Ordered doctrine folders retained by faction doctrine sharing.
 
 use crate::{Memory, allocation, cdoctrine_folder_template as folder, cpdx_array::Array, read};
+use engine_sites::Rva;
 
-pub const VTABLE_RVA: usize = 0x02a3_8780;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_8780);
 pub const FOLDERS: usize = 0x08;
 
 /// Read the companion reached through an already authenticated upgrade status.
@@ -12,8 +13,7 @@ pub fn read_into(
     status: usize,
     output: &mut Vec<u32>,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("faction doctrine status vtable address overflow")? as u64;
     if read::<u64>(memory, status) != Some(expected) {
         return Err("faction doctrine sharing status vtable mismatch");
@@ -24,8 +24,7 @@ pub fn read_into(
         .ok_or("faction doctrine sharing folders unreadable or invalid")?;
     allocation::resize_default(output, source.count as usize)
         .map_err(|_| "faction doctrine sharing allocation failed")?;
-    let expected = base
-        .checked_add(folder::VTABLE_RVA)
+    let expected = engine_sites::at(base, folder::VTABLE_RVA)
         .ok_or("faction doctrine folder vtable address overflow")? as u64;
     for (ordinal, value) in output.iter_mut().enumerate() {
         let pointer = source

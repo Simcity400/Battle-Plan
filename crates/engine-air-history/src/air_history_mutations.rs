@@ -7,10 +7,10 @@
 //! and loading rebuild record storage. Shared non-air history receivers are
 //! never registered.
 
+use engine_sites::Rva;
 pub struct MutationSite {
     pub name: &'static str,
-    pub rva: usize,
-    pub sentinel: [u8; 16],
+    pub rva: Rva,
 }
 
 /// Receivers: a country air object (with the region) for the first, a history's history's window
@@ -18,18 +18,10 @@ pub struct MutationSite {
 pub const MUTATIONS: [MutationSite; 2] = [
     MutationSite {
         name: "region_history",
-        rva: 0xcad2d0,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
+        rva: Rva(0xcad2d0),
     },
     MutationSite {
         name: "advance_window",
-        rva: 0x15b2820,
-        sentinel: [
-            0x48, 0x89, 0x6c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x51, 0x08,
-            0x33, 0xed,
-        ],
+        rva: Rva(0x15b2820),
     },
 ];

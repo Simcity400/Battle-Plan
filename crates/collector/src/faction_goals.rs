@@ -520,7 +520,7 @@ mod tests {
         for owner in 0..owners {
             let pointer = FIRST + owner * STRIDE;
             let at = pointer + native::STATUS;
-            bytes[at..at + 8].copy_from_slice(&(native::VTABLE_RVA as u64).to_le_bytes());
+            bytes[at..at + 8].copy_from_slice(&(native::VTABLE_RVA.0 as u64).to_le_bytes());
             bytes[at + native::OWNER..at + native::OWNER + 8]
                 .copy_from_slice(&(pointer as u64).to_le_bytes());
         }
@@ -657,7 +657,7 @@ mod tests {
         put(
             &mut bytes,
             definition,
-            (native::DEFINITION_VTABLE_RVA as u64).to_le_bytes(),
+            (native::DEFINITION_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -675,12 +675,12 @@ mod tests {
             put(
                 &mut bytes,
                 date,
-                (engine_native::cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+                (engine_native::cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
                 date + engine_native::cgame_date::PERSISTENT_BASE,
-                (engine_native::cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+                (engine_native::cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

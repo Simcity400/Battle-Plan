@@ -49,7 +49,7 @@ fn fixture() -> Vec<u8> {
         p32(&mut bytes, 0x3100 + index * 4, value);
     }
     for (owner, diplomacy) in DIPLOMACY.into_iter().enumerate() {
-        p64(&mut bytes, COUNTRIES[owner], ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, COUNTRIES[owner], ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, COUNTRIES[owner] + ccountry::ID, [3, 2][owner]);
         p64(
             &mut bytes,
@@ -59,7 +59,7 @@ fn fixture() -> Vec<u8> {
         p64(
             &mut bytes,
             DIPLOMACY[owner],
-            cdiplomacy_status::VTABLE_RVA as u64,
+            cdiplomacy_status::VTABLE_RVA.0 as u64,
         );
         p64(
             &mut bytes,
@@ -81,7 +81,7 @@ fn fixture() -> Vec<u8> {
         );
         for target in 0..4 {
             let entry = status(owner, target);
-            p64(&mut bytes, entry, crelation_status::VTABLE_RVA as u64);
+            p64(&mut bytes, entry, crelation_status::VTABLE_RVA.0 as u64);
             p64(
                 &mut bytes,
                 entry + crelation_status::DIPLOMACY_STATUS,
@@ -114,7 +114,7 @@ fn fixture() -> Vec<u8> {
             );
         }
     }
-    p64(&mut bytes, RELATION, VTABLE_RVA as u64);
+    p64(&mut bytes, RELATION, VTABLE_RVA.0 as u64);
     p32(&mut bytes, RELATION + TYPE_ID, TYPE_VALUE);
     p32(&mut bytes, RELATION + OVERLORD, 3);
     p32(&mut bytes, RELATION + SUBJECT, 2);
@@ -127,7 +127,7 @@ fn fixture() -> Vec<u8> {
     bytes[name..name + 4].copy_from_slice(&[b'a', 255, 0, b'z']);
     p64(&mut bytes, name + msvc_string::LENGTH, 4);
     p64(&mut bytes, name + msvc_string::CAPACITY, 15);
-    p64(&mut bytes, RETIRED_RELATION, VTABLE_RVA as u64);
+    p64(&mut bytes, RETIRED_RELATION, VTABLE_RVA.0 as u64);
     p32(&mut bytes, RETIRED_RELATION + TYPE_ID, TYPE_VALUE);
     bytes[RETIRED_RELATION + crelation::RETIRED] = 7;
     p32(&mut bytes, 0x1a000 + TYPE_ID, 0x1234);
@@ -310,7 +310,7 @@ fn matrix_batches_authenticate_empty_tail_cells_and_do_not_read_past_count() {
     assert_eq!((rows[0].overlord, rows[0].subject), (3, 2));
     // The 65th cell has no subject, but an invalid owner must still fail.
     p64(&mut bytes, 0x20000 + 64 * 8, 0x22000);
-    p64(&mut bytes, 0x22000, crelation_status::VTABLE_RVA as u64);
+    p64(&mut bytes, 0x22000, crelation_status::VTABLE_RVA.0 as u64);
     assert!(matches!(
         capture(&bytes, true, &mut rows, &mut names).outcome,
         Outcome::Unavailable {
@@ -463,7 +463,7 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
     let mut diplomacy = vec![0; countries + 1];
     for (slot, root) in diplomacy.iter_mut().enumerate().skip(1) {
         let at = country(slot);
-        p64(&mut space.bytes, at, ccountry::VTABLE_RVA as u64);
+        p64(&mut space.bytes, at, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut space.bytes, at + ccountry::ID, slot as u32);
         *root = space.alloc(cdiplomacy_status::COUNTRY + 8);
         p64(
@@ -474,7 +474,7 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
         p64(
             &mut space.bytes,
             *root,
-            cdiplomacy_status::VTABLE_RVA as u64,
+            cdiplomacy_status::VTABLE_RVA.0 as u64,
         );
         p64(
             &mut space.bytes,
@@ -489,7 +489,7 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
     p64(&mut space.bytes, name + msvc_string::CAPACITY, 15);
     let status = |space: &mut Space, owner: usize, target: usize, relation: usize, first| {
         let at = space.alloc(0x2a0);
-        p64(&mut space.bytes, at, crelation_status::VTABLE_RVA as u64);
+        p64(&mut space.bytes, at, crelation_status::VTABLE_RVA.0 as u64);
         p64(
             &mut space.bytes,
             at + crelation_status::DIPLOMACY_STATUS,
@@ -519,7 +519,7 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
     let mut rows = Vec::new();
     for subject in (2..=countries).filter(|&slot| is_subject(slot)) {
         let relation = space.alloc(0x68);
-        p64(&mut space.bytes, relation, VTABLE_RVA as u64);
+        p64(&mut space.bytes, relation, VTABLE_RVA.0 as u64);
         p32(&mut space.bytes, relation + TYPE_ID, TYPE_VALUE);
         p32(&mut space.bytes, relation + OVERLORD, 1);
         p32(&mut space.bytes, relation + SUBJECT, subject as u32);

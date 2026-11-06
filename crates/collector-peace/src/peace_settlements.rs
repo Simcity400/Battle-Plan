@@ -358,8 +358,7 @@ fn sizing_array<T: engine_native::memory::Raw>(
 /// Loader/spool only: backed native rosters and resident arrays size every arena.
 /// Population headroom covers conferences created between sizing reads.
 pub fn capacity_for_world(memory: &impl Memory, base: usize) -> Capacities {
-    let Some(state) = base
-        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+    let Some(state) = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
     else {
         return Capacities::default();
@@ -536,14 +535,12 @@ unsafe extern "system" fn observe(conference: usize) {
             if let Some(log) = unsafe { LOG.load(Ordering::Acquire).as_ref() } {
                 let memory = unsafe { engine_native::memory::LiveMemory::new() };
                 let base = BASE.load(Ordering::Relaxed);
-                let hour = engine_native::read::<u64>(
-                    &memory,
-                    base + engine_native::cgame_state::SINGLETON_RVA,
-                )
-                .and_then(|state| {
-                    (state as usize).checked_add(engine_native::cgame_state::CURRENT_HOUR)
-                })
-                .and_then(|at| engine_native::read(&memory, at));
+                let hour = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                    .and_then(|at| engine_native::read::<u64>(&memory, at))
+                    .and_then(|state| {
+                        (state as usize).checked_add(engine_native::cgame_state::CURRENT_HOUR)
+                    })
+                    .and_then(|at| engine_native::read(&memory, at));
                 unsafe { &mut *log.storage.get() }
                     .observe(&memory, base, conference, hour, sequence, true);
             } else {
@@ -606,35 +603,36 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize, capacity: Capacities) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize, capacity: Capacities) -> Self {
         presize(capacity);
         install_offered();
         let attempt: Result<Hook, String> = (|| {
-            let site =
-                engine_peace::peace_finalizer_site::verify(memory, base).map_err(|cause| {
-                    crate::hook::installation::refused(
-                        crate::hook::installation::Kind::Sentinel,
-                        Some(base + engine_peace::peace_finalizer_site::RVA),
-                        cause,
-                    );
-                    cause.to_owned()
-                })?;
+            let located = engine_sites::hook(base, engine_peace::peace_finalizer_site::RVA)
+                .and_then(|code| Ok((code, code.sentinel::<16>()?)))
+                .and_then(|located| {
+                    engine_sites::hook(base, engine_peace::peace_finalizer_site::RETURN_RVA)
+                        .map(|resume| (located, resume.address))
+                });
+            let ((site, sentinel), resume) = located.map_err(|cause| {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Sentinel,
+                    None,
+                    cause,
+                );
+                cause.to_owned()
+            })?;
             if LOG.load(Ordering::Acquire).is_null() {
                 return Err("peace finalizer allocation failed".into());
             }
             let hook = unsafe {
                 Hook::new(
-                    site,
+                    site.address,
                     peace_finalizer_entry as *const () as usize,
-                    engine_peace::peace_finalizer_site::SENTINEL,
+                    sentinel,
                 )
             }?;
             ORIGINAL.store(hook.trampoline(), Ordering::Release);
-            RETURN.store(
-                site - engine_peace::peace_finalizer_site::RVA
-                    + engine_peace::peace_finalizer_site::RETURN_RVA,
-                Ordering::Release,
-            );
+            RETURN.store(resume, Ordering::Release);
             BASE.store(base, Ordering::Relaxed);
             Ok(hook)
         })();
@@ -808,7 +806,7 @@ mod tests {
         stack.0[24] = 0x202;
         // The synthetic return is the instruction after the patched site, never the
         // site itself, whose `E9` the unwinder would take for an epilogue.
-        let site = 0x140000000 + engine_peace::peace_finalizer_site::RETURN_RVA as u64;
+        let site = 0x140000000 + engine_peace::peace_finalizer_site::RETURN_RVA.0 as u64;
         stack.0[25] = site;
         let original_rsp = stack.0.as_ptr() as u64 + 208;
         let mut context: CONTEXT = unsafe { std::mem::zeroed() };
@@ -925,7 +923,7 @@ mod tests {
             collect();
             BASE.store(base, Ordering::Relaxed);
             RETURN.store(
-                base + engine_peace::peace_finalizer_site::RETURN_RVA,
+                base + engine_peace::peace_finalizer_site::RETURN_RVA.0,
                 Ordering::Release,
             );
             ORIGINAL.store(peace_test_resume as *const () as usize, Ordering::Release);

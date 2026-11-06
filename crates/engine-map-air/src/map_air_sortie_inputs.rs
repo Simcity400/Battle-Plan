@@ -6,6 +6,7 @@
 //! only when period, capacity and combat gates pass (see `AirMissionInputRow`).
 
 use engine_native::cair_wing;
+use engine_sites::Rva;
 
 #[path = "map_air_sortie_inputs/patrol.rs"]
 pub mod patrol;
@@ -35,12 +36,12 @@ const REACHED_ENTRY: usize = 0x10;
 /// Console efficiency overrides: a PdxArray of 16-byte canonical-slot i32,
 /// padding and fixed5 i64 entries, unique by slot. A matching effective-country
 /// slot supplies the result before any other term or clamp.
-const EFFICIENCY_OVERRIDES_RVA: usize = 0x033d_da48;
+const EFFICIENCY_OVERRIDES_RVA: Rva = Rva(0x033d_da48);
 /// Console command's sole detection-vector writer and verified entry fingerprint.
-pub const DETECTION_OVERRIDE_WRITER_RVA: usize = 0x0027_ffc0;
+pub const DETECTION_OVERRIDE_WRITER_RVA: Rva = Rva(0x0027_ffc0);
 pub const DETECTION_OVERRIDE_WRITER_PREFIX_HASH: u64 = 0x18aa_1a4c_14d9_dba7;
 /// The console's country-keyed fixed5 detection vector.
-const DETECTION_OVERRIDES_RVA: usize = 0x033d_da60;
+const DETECTION_OVERRIDES_RVA: Rva = Rva(0x033d_da60);
 const OVERRIDE_ENTRY: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -148,10 +149,20 @@ fn pointer(memory: &impl Memory, object: usize, offset: usize) -> Result<usize, 
         .map_err(|_| "map sortie pointer overflow")
 }
 
-fn vtable(base: usize, rva: usize) -> Result<u64, &'static str> {
-    base.checked_add(rva)
+fn vtable(base: usize, rva: Rva) -> Result<u64, &'static str> {
+    engine_sites::at(base, rva)
         .map(|value| value as u64)
         .ok_or("map sortie module address overflow")
+}
+
+fn global<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    engine_sites::at(base, key)
+        .and_then(|at| read(memory, at))
+        .ok_or("map sortie operand unreadable")
 }
 
 /// Missions read per `copy_records` batch.
@@ -713,7 +724,8 @@ pub fn read_modifier_metadata(
     memory: &impl Memory,
     base: usize,
 ) -> Result<ModifierMetadata, &'static str> {
-    let definitions = pointer(memory, base, modifier_definition::TABLE_RVA)?;
+    let definitions = usize::try_from(global::<u64>(memory, base, modifier_definition::TABLE_RVA)?)
+        .map_err(|_| "map sortie pointer overflow")?;
     if definitions == 0 {
         return Err("modifier definitions absent");
     }
@@ -722,7 +734,7 @@ pub fn read_modifier_metadata(
     let callback_kind = if feature_selector == 0 {
         0
     } else {
-        match field::<u64>(memory, base, modifier_definition::ELIGIBILITY_CALLBACK_RVA)? {
+        match global::<u64>(memory, base, modifier_definition::ELIGIBILITY_CALLBACK_RVA)? {
             0 => 0,
             getter
                 if getter == vtable(base, modifier_definition::ELIGIBILITY_FLAGS_GETTER_RVA)? =>
@@ -757,8 +769,7 @@ pub fn efficiency_overrides_fallible(
     base: usize,
     mut visit: impl FnMut(u32, i64) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    let overrides = base
-        .checked_add(EFFICIENCY_OVERRIDES_RVA)
+    let overrides = engine_sites::at(base, EFFICIENCY_OVERRIDES_RVA)
         .and_then(|at| Array::read(memory, at, OVERRIDE_ENTRY))
         .ok_or("sortie efficiency overrides invalid")?;
     let mut entries = [0_u8; 64 * OVERRIDE_ENTRY];
@@ -789,8 +800,7 @@ pub fn detection_overrides(
     output: &mut Vec<(u32, i64)>,
 ) -> Result<(), &'static str> {
     output.clear();
-    let array = base
-        .checked_add(DETECTION_OVERRIDES_RVA)
+    let array = engine_sites::at(base, DETECTION_OVERRIDES_RVA)
         .and_then(|at| Array::read(memory, at, OVERRIDE_ENTRY))
         .ok_or("Air detection override vector header unreadable")?;
     engine_native::allocation::reserve_exact(output, array.count as usize)
@@ -900,8 +910,7 @@ pub fn storage_demand(
             },
         )
     })?;
-    let overrides = base
-        .checked_add(EFFICIENCY_OVERRIDES_RVA)
+    let overrides = engine_sites::at(base, EFFICIENCY_OVERRIDES_RVA)
         .and_then(|at| Array::read(memory, at, OVERRIDE_ENTRY))
         .ok_or("sortie sizing efficiency overrides invalid")?;
     Ok([missions, reached, hosts, overrides.count as usize])
@@ -926,7 +935,7 @@ mod tests {
         put(
             &mut bytes,
             MISSION,
-            &(air_mission::VTABLE_RVA as u64).to_le_bytes(),
+            &(air_mission::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -968,7 +977,7 @@ mod tests {
         put(
             &mut bytes,
             DEFINITION,
-            &(csub_unit_definition::VTABLE_RVA as u64).to_le_bytes(),
+            &(csub_unit_definition::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -989,7 +998,7 @@ mod tests {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
                 self.reads.borrow_mut().push((at, out.len()));
                 const FACTORS: usize = 0x8000_0000;
-                if at == patrol::SPOTTING_FACTORS_RVA {
+                if at == patrol::SPOTTING_FACTORS_RVA.0 {
                     let mut header = [0; 16];
                     header[..8].copy_from_slice(&(FACTORS as u64).to_le_bytes());
                     header[8..12].copy_from_slice(&32_u32.to_le_bytes());
@@ -1105,7 +1114,7 @@ mod tests {
         impl Memory for Gate<'_> {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
                 const FACTORS: usize = 0x8000_0000;
-                if at == patrol::SPOTTING_FACTORS_RVA {
+                if at == patrol::SPOTTING_FACTORS_RVA.0 {
                     let mut header = [0; 16];
                     header[..8].copy_from_slice(&(FACTORS as u64).to_le_bytes());
                     header[8..12].copy_from_slice(&8_u32.to_le_bytes());
@@ -1468,7 +1477,7 @@ mod tests {
         put(
             &mut bytes,
             0,
-            &((DETECTION_OVERRIDES_RVA + 32) as u64).to_le_bytes(),
+            &((DETECTION_OVERRIDES_RVA.0 + 32) as u64).to_le_bytes(),
         );
         put(&mut bytes, 8, &5_000_u32.to_le_bytes());
         put(&mut bytes, 12, &5_000_u32.to_le_bytes());
@@ -1488,7 +1497,7 @@ mod tests {
         let mut rows = Vec::new();
         detection_overrides(
             &SliceMemory {
-                base: DETECTION_OVERRIDES_RVA,
+                base: DETECTION_OVERRIDES_RVA.0,
                 bytes: &bytes,
             },
             0,
@@ -1504,7 +1513,7 @@ mod tests {
         put(&mut bytes, 40, &0_i64.to_le_bytes());
         detection_overrides(
             &SliceMemory {
-                base: DETECTION_OVERRIDES_RVA,
+                base: DETECTION_OVERRIDES_RVA.0,
                 bytes: &bytes,
             },
             0,
@@ -1518,7 +1527,7 @@ mod tests {
         assert!(
             detection_overrides(
                 &SliceMemory {
-                    base: DETECTION_OVERRIDES_RVA,
+                    base: DETECTION_OVERRIDES_RVA.0,
                     bytes: &bytes
                 },
                 0,
@@ -1530,21 +1539,21 @@ mod tests {
 
     #[test]
     fn efficiency_overrides_keep_native_order_and_values() {
-        let mut bytes = vec![0; EFFICIENCY_OVERRIDES_RVA + 0x100];
-        let entries = EFFICIENCY_OVERRIDES_RVA + 0x20;
+        let mut bytes = vec![0; EFFICIENCY_OVERRIDES_RVA.0 + 0x100];
+        let entries = EFFICIENCY_OVERRIDES_RVA.0 + 0x20;
         put(
             &mut bytes,
-            EFFICIENCY_OVERRIDES_RVA,
+            EFFICIENCY_OVERRIDES_RVA.0,
             &(entries as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            EFFICIENCY_OVERRIDES_RVA + 8,
+            EFFICIENCY_OVERRIDES_RVA.0 + 8,
             &2_u32.to_le_bytes(),
         );
         put(
             &mut bytes,
-            EFFICIENCY_OVERRIDES_RVA + 12,
+            EFFICIENCY_OVERRIDES_RVA.0 + 12,
             &2_u32.to_le_bytes(),
         );
         put(&mut bytes, entries, &9_u32.to_le_bytes());
@@ -1560,16 +1569,16 @@ mod tests {
         assert_eq!(seen, [(9, 0), (4, -5)]);
         put(
             &mut bytes,
-            EFFICIENCY_OVERRIDES_RVA + 12,
+            EFFICIENCY_OVERRIDES_RVA.0 + 12,
             &3_u32.to_le_bytes(),
         );
         put(
             &mut bytes,
-            EFFICIENCY_OVERRIDES_RVA + 8,
+            EFFICIENCY_OVERRIDES_RVA.0 + 8,
             &3_u32.to_le_bytes(),
         );
         let tail = (bytes.len() - 0x10) as u64;
-        put(&mut bytes, EFFICIENCY_OVERRIDES_RVA, &tail.to_le_bytes());
+        put(&mut bytes, EFFICIENCY_OVERRIDES_RVA.0, &tail.to_le_bytes());
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
@@ -1583,7 +1592,7 @@ mod tests {
         put(
             &mut bytes,
             DEFINITION,
-            &(csub_unit_definition::NULL_VTABLE_RVA as u64).to_le_bytes(),
+            &(csub_unit_definition::NULL_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         let memory = SliceMemory {
             base: 0,
@@ -1629,7 +1638,7 @@ mod tests {
             } else {
                 csub_unit_definition::VTABLE_RVA
             };
-            put(&mut bytes, at, &(vtable as u64).to_le_bytes());
+            put(&mut bytes, at, &(vtable.0 as u64).to_le_bytes());
             put(
                 &mut bytes,
                 at + csub_unit_definition::AIR_FLAGS,
@@ -1862,7 +1871,7 @@ mod tests {
                 put(
                     &mut bytes,
                     at,
-                    &(air_mission::VTABLE_RVA as u64).to_le_bytes(),
+                    &(air_mission::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,

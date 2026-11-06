@@ -28,7 +28,7 @@ fn fixture() -> Vec<u8> {
             SLOTS + 8 + index * 8,
             &(province as u64).to_le_bytes(),
         );
-        put(&mut bytes, province, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, province, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, province + ID, &(index as u32 + 1).to_le_bytes());
     }
     array(&mut bytes, PROVINCES[1] + COMBATS, VECTOR, 3);
@@ -43,7 +43,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             combat,
-            &(cnaval_combat::VTABLE_RVA as u64).to_le_bytes(),
+            &(cnaval_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -54,7 +54,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         LAND,
-        &(cland_combat::VTABLE_RVA as u64).to_le_bytes(),
+        &(cland_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -115,7 +115,7 @@ fn every_combat_keeps_its_vector_place_and_class() {
     put(
         &mut border,
         LAND,
-        &(crate::cland_border_war_combat::VTABLE_RVA as u64).to_le_bytes(),
+        &(crate::cland_border_war_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     assert_eq!(walk(&border, 2, 4).3[1], COMBAT_BORDER_WAR);
     // An unknown combat class refuses the table.
@@ -152,7 +152,7 @@ fn growing_province_combat_rows_and_parallel_arenas_follow_mod_demand() {
                 slots + (index + 1) * 8,
                 &(pointer as u64).to_le_bytes(),
             );
-            put(&mut bytes, pointer, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, pointer, &(VTABLE_RVA.0 as u64).to_le_bytes());
             put(&mut bytes, pointer + ID, &(index as u32 + 1).to_le_bytes());
             array(&mut bytes, pointer + COMBATS, combat_slots, entries as u32);
         }

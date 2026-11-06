@@ -4,9 +4,10 @@
 //! own a deployment. The walker authenticates its parent backlink.
 
 use crate::{Memory, cmilitary_deployment, cname_group_member, cpdx_array::Array, read};
+use engine_sites::Rva;
 
 /// CMilitaryDeploymentLine primary vtable.
-pub const VTABLE_RVA: usize = 0x29da9b0;
+pub const VTABLE_RVA: Rva = Rva(0x29da9b0);
 /// CMilitaryDeploymentLine reference kind.
 pub const REFERENCE_TYPE: u32 = 63;
 /// CMilitaryDeploymentLine reference type word, u32; the shared CReferenceObject qword.
@@ -99,9 +100,8 @@ pub(crate) fn read_row_buffer(
     custom_names: &mut crate::walk::Buffer<'_, u8>,
     custom_used: usize,
 ) -> Result<Read, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("deployment line module address overflow")?;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("deployment line module address overflow")?;
     let head = read::<[u8; 0x40]>(memory, pointer).ok_or("deployment line fields unreadable")?;
     let quad = |offset: usize| u64::from_le_bytes(head[offset..offset + 8].try_into().unwrap());
     if quad(0) != expected as u64 {

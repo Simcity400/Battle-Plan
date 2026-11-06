@@ -334,7 +334,7 @@ mod tests {
         put(
             &mut bytes,
             COUNTRY,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, COUNTRY + ccountry::ID, &7_u32.to_le_bytes());
         let tag = TAGS + 7 * msvc_string::STRIDE;
@@ -362,7 +362,7 @@ mod tests {
         put(
             &mut bytes,
             STATUS,
-            &(cpolitical_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(cpolitical_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

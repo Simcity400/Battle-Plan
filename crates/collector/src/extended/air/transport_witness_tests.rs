@@ -7,7 +7,7 @@ struct NullBases(Cell<usize>);
 impl Memory for NullBases {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.0.set(self.0.get() + 1);
-        if address == creference_registry::LOW_ROOTS_RVA + cair_base::TYPE as usize * 8
+        if address == creference_registry::LOW_ROOTS_RVA.0 + cair_base::TYPE as usize * 8
             && destination.len() == 8
         {
             destination.fill(0);

@@ -11,85 +11,11 @@
 //! condition flag. Pointers retained inside actions need independent lifetime
 //! authentication after settlement has applied them.
 
-use crate::{Memory, read};
+use engine_sites::Rva;
 
 /// First instruction after the finalized-flag write.
-pub const RVA: usize = 0x00eb_5089;
+pub const RVA: Rva = Rva(0x00eb_5089);
 /// Bridge return address at the instruction following relocation. While
 /// hooked, the site itself contains a tail-jump patch that would mislead unwinding.
 /// The two positions share stack depth and exception-handler state.
-pub const RETURN_RVA: usize = 0x00eb_5090;
-/// File-backed instruction sentinel for the interior site.
-pub const SENTINEL: [u8; 16] = [
-    0x49, 0x8b, 0x9d, 0xf8, 0x01, 0x00, 0x00, 0x4c, 0x8b, 0x43, 0x08, 0x49, 0x8d, 0x95, 0xf8, 0x01,
-];
-
-/// The loader's build gate must also admit the family. A matching sentinel
-/// alone never authorizes installation on another executable.
-pub fn verify(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
-    let site = base
-        .checked_add(RVA)
-        .ok_or("peace finalizer site address overflow")?;
-    if read::<[u8; 16]>(memory, site) != Some(SENTINEL) {
-        return Err("peace finalizer sentinel unreadable or differs");
-    }
-    Ok(site)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::memory::SliceMemory;
-
-    #[test]
-    fn exact_bytes_required_including_the_unpatched_suffix() {
-        let base = 0x140000000;
-        let mut bytes = SENTINEL;
-        assert_eq!(
-            verify(
-                &SliceMemory {
-                    base: base + RVA,
-                    bytes: &bytes
-                },
-                base
-            ),
-            Ok(base + RVA)
-        );
-        for index in 0..bytes.len() {
-            bytes[index] ^= 1;
-            assert_eq!(
-                verify(
-                    &SliceMemory {
-                        base: base + RVA,
-                        bytes: &bytes
-                    },
-                    base
-                ),
-                Err("peace finalizer sentinel unreadable or differs")
-            );
-            bytes[index] ^= 1;
-        }
-        for length in 0..bytes.len() {
-            assert!(
-                verify(
-                    &SliceMemory {
-                        base: base + RVA,
-                        bytes: &bytes[..length]
-                    },
-                    base
-                )
-                .is_err()
-            );
-        }
-        assert_eq!(
-            verify(
-                &SliceMemory {
-                    base: 0,
-                    bytes: &[]
-                },
-                usize::MAX
-            ),
-            Err("peace finalizer site address overflow")
-        );
-    }
-}
+pub const RETURN_RVA: Rva = Rva(0x00eb_5090);

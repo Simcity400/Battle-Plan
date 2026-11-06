@@ -6,6 +6,7 @@ use crate::{
     modifier_accumulator::{self, Value},
     modifier_keys, read as native_read,
 };
+use engine_sites::Rva;
 
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
@@ -22,12 +23,10 @@ fn auth(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
     if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(vtable)
-            .ok_or("targeted spotting module address overflow")? as u64
+        != engine_sites::at(base, vtable).ok_or("targeted spotting vtable withheld")? as u64
     {
         return Err("targeted spotting source identity mismatch");
     }
@@ -136,12 +135,12 @@ mod tests {
         .unwrap() as usize;
         world.u32(links + 8, if controller == 0 { 0 } else { 1 });
         world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
         world.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         world.array(diplomacy + cdiplomacy_status::RELATIONS, relations, 3);
         let selected = if controller == 0 { 0 } else { 1 };
         world.u64(relations + selected * 8, status as u64);
-        world.u64(status, crelation_status::VTABLE_RVA as u64);
+        world.u64(status, crelation_status::VTABLE_RVA.0 as u64);
         world.u64(
             status + crelation_status::DIPLOMACY_STATUS,
             diplomacy as u64,
@@ -150,7 +149,7 @@ mod tests {
         world.array(status + crelation_status::MODIFIER_ACCUMULATOR, values, 1);
         world.u32(values, modifier_keys::SPOTTING_CHANCE_AGAINST);
         world.u64(values + 8, -17001_i64 as u64);
-        world.u64(province, cprovince::VTABLE_RVA as u64);
+        world.u64(province, cprovince::VTABLE_RVA.0 as u64);
         world.u32(province + cprovince::CONTROLLER, controller);
         (
             Fixture {

@@ -50,11 +50,9 @@ pub(crate) fn cached_name_buffer(
     id: u64,
     names: &mut NameArena<'_>,
 ) -> Result<Option<Span>, &'static str> {
-    let primary = base
-        .checked_add(VTABLE_RVA)
+    let primary = engine_sites::at(base, VTABLE_RVA)
         .ok_or("task-force cached name module address overflow")?;
-    let secondary = base
-        .checked_add(SECONDARY_VTABLE_RVA)
+    let secondary = engine_sites::at(base, SECONDARY_VTABLE_RVA)
         .ok_or("task-force cached name module address overflow")?;
     let header = read::<[u8; 32]>(memory, pointer)
         .filter(|_| pointer != 0)

@@ -1,7 +1,8 @@
 //! CEquipmentModule definitions shared by air and other designs.
 
+use engine_sites::Rva;
 /// CEquipmentModule primary vtable.
-pub const VTABLE_RVA: usize = 0x029b_5dd0;
+pub const VTABLE_RVA: Rva = Rva(0x029b_5dd0);
 /// Equipment-module active byte; zero omits the definition from serialization.
 pub const ACTIVE: usize = 0x10;
 /// Registered country modifier key for this module's design XP cost.

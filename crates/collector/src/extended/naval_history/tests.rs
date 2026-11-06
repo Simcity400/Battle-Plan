@@ -510,21 +510,21 @@ fn naval_decode_grows_shared_memberships_from_the_original_census() {
     const WINGS: usize = 0x72000;
     // The fixture's original manager has country slots but no air owners.
     pointer(&mut bytes, 0x41008, OWNER);
-    pointer(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA);
+    pointer(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA.0);
     bytes[OWNER + cstrategic_air::COUNTRY..OWNER + cstrategic_air::COUNTRY + 4]
         .copy_from_slice(&1_u32.to_le_bytes());
     array(&mut bytes, OWNER + cstrategic_air::POOLS, 0x72100, 1);
     pointer(&mut bytes, 0x72100, POOL);
-    pointer(&mut bytes, POOL, cair_wing_pool::VTABLE_RVA);
+    pointer(&mut bytes, POOL, cair_wing_pool::VTABLE_RVA.0);
     pointer(&mut bytes, POOL + cair_wing_pool::OWNER, OWNER);
     array(&mut bytes, POOL + cair_wing_pool::WINGS, WINGS, 2);
     for (ordinal, wing) in [0x73000, 0x75000].into_iter().enumerate() {
         pointer(&mut bytes, WINGS + ordinal * 8, wing);
-        pointer(&mut bytes, wing, cair_wing::VTABLE_RVA);
+        pointer(&mut bytes, wing, cair_wing::VTABLE_RVA.0);
         pointer(
             &mut bytes,
             wing + cair_wing::SECONDARY,
-            cair_wing::SECONDARY_VTABLE_RVA,
+            cair_wing::SECONDARY_VTABLE_RVA.0,
         );
         pointer(
             &mut bytes,
@@ -1699,7 +1699,7 @@ fn attempted_root_census_failure_is_terminal_for_naval_copy_and_decode() {
     }
     impl Memory for NoRegistry<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            let root = engine_native::creference_registry::LOW_ROOTS_RVA
+            let root = engine_native::creference_registry::LOW_ROOTS_RVA.0
                 + corders_group::REFERENCE_TYPE as usize * 8;
             if address == root {
                 self.attempts.set(self.attempts.get() + 1);

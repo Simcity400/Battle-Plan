@@ -141,7 +141,7 @@ impl World {
     }
 
     fn put(&mut self, at: usize, value: &[u8]) {
-        let roots = BASE + registry::LOW_ROOTS_RVA;
+        let roots = BASE + registry::LOW_ROOTS_RVA.0;
         let (window, offset) = if at >= roots {
             (&mut self.roots, at - roots)
         } else {
@@ -164,9 +164,9 @@ impl World {
         self.u32(at + 12, count);
     }
 
-    fn object(&mut self, len: usize, vtable_rva: usize) -> usize {
+    fn object(&mut self, len: usize, vtable_rva: engine_sites::Rva) -> usize {
         let object = self.alloc(len);
-        self.u64(object, (BASE + vtable_rva) as u64);
+        self.u64(object, (BASE + vtable_rva.0) as u64);
         object
     }
 
@@ -212,7 +212,7 @@ impl World {
         self.u32(root + registry::MASK, mask);
         self.put(root + registry::OVERFLOW_DISTANCE, &[overflow as u8]);
         self.u64(
-            BASE + registry::LOW_ROOTS_RVA + kind as usize * 8,
+            BASE + registry::LOW_ROOTS_RVA.0 + kind as usize * 8,
             root as u64,
         );
     }
@@ -227,7 +227,7 @@ impl Memory for World {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         let len = destination.len();
         match window(&self.heap, HEAP, address, len)
-            .or_else(|| window(&self.roots, BASE + registry::LOW_ROOTS_RVA, address, len))
+            .or_else(|| window(&self.roots, BASE + registry::LOW_ROOTS_RVA.0, address, len))
         {
             Some(source) => {
                 destination.copy_from_slice(source);
@@ -514,7 +514,7 @@ impl Scale {
                     let task_force = world.object(0x1e0, ctask_force::VTABLE_RVA);
                     world.u64(
                         task_force + ctask_force::SECONDARY_BASE,
-                        (BASE + ctask_force::SECONDARY_VTABLE_RVA) as u64,
+                        (BASE + ctask_force::SECONDARY_VTABLE_RVA.0) as u64,
                     );
                     world.u32(task_force + cunit::ROSTER_OWNER, owner);
                     task_force
@@ -539,7 +539,7 @@ impl Scale {
             let navy = world.object(0xd8, cstrategic_navy::VTABLE_RVA);
             world.u64(
                 navy + cstrategic_navy::SECONDARY,
-                (BASE + cstrategic_navy::SECONDARY_VTABLE_RVA) as u64,
+                (BASE + cstrategic_navy::SECONDARY_VTABLE_RVA.0) as u64,
             );
             world.u32(navy + cstrategic_navy::OWNER, slot);
             let levels = world.alloc(REGIONS as usize * 8);
@@ -693,7 +693,7 @@ impl Memory for Counted<'_> {
         if self.world.missions.contains(&address) {
             self.regional.set(self.regional.get() + 1);
         }
-        if address == BASE + registry::LOW_ROOTS_RVA + cair_base::TYPE as usize * 8 {
+        if address == BASE + registry::LOW_ROOTS_RVA.0 + cair_base::TYPE as usize * 8 {
             self.roots.set(self.roots.get() + 1);
         }
         if address == self.world.game_state + gs::STRATEGIC_AIR_MANAGER {
@@ -848,7 +848,7 @@ fn without_the_mission_job_late_meets_shared_reads_in_their_old_order() {
         .expect("the AirBases walk");
     let witnesses = reads
         .iter()
-        .position(|&at| at == BASE + registry::LOW_ROOTS_RVA + cair_base::TYPE as usize * 8)
+        .position(|&at| at == BASE + registry::LOW_ROOTS_RVA.0 + cair_base::TYPE as usize * 8)
         .expect("the base witnesses");
     assert!(bases < witnesses, "{bases} {witnesses}");
     // The capture's first read of the manager pointer faults once.

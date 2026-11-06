@@ -5,6 +5,7 @@
 //! so daily variant tables cannot replace this current observation.
 //! No game pointer is returned in the packet and no getter is called.
 
+use engine_sites::Rva;
 use super::{ModelMemo, SelectedModelVariant};
 use crate::{
     Memory, cequipment_database, cequipment_type, cequipment_variant, cpdx_array::Array,
@@ -28,8 +29,8 @@ const DEFINITIONS: usize = 0x68;
 /// The database installs the null-definition vtable, clears ACTIVE and
 /// publishes its sole pointer. Null type construction supplies the null
 /// definition token and ordinal -1. This is not a null variant reference.
-pub(super) const NULL_DEFINITION_VTABLE_RVA: usize = 0x029b_5f70;
-pub(super) const NULL_DEFINITION_SINGLETON_RVA: usize = 0x033e_75a8;
+pub(super) const NULL_DEFINITION_VTABLE_RVA: Rva = Rva(0x029b_5f70);
+pub(super) const NULL_DEFINITION_SINGLETON_RVA: Rva = Rva(0x033e_75a8);
 pub(super) const NULL_DEFINITION_TOKEN: u32 = 0x165;
 
 /// Only the actual native singleton may widen the ordinary CType guard.
@@ -41,7 +42,7 @@ pub(super) fn native_null_definition(
     pointer: usize,
     header: [u8; 12],
 ) -> bool {
-    let Some(expected) = base.checked_add(NULL_DEFINITION_VTABLE_RVA) else {
+    let Some(expected) = engine_sites::at(base, NULL_DEFINITION_VTABLE_RVA) else {
         return false;
     };
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64
@@ -49,7 +50,7 @@ pub(super) fn native_null_definition(
     {
         return false;
     }
-    let Some(global) = base.checked_add(NULL_DEFINITION_SINGLETON_RVA) else {
+    let Some(global) = engine_sites::at(base, NULL_DEFINITION_SINGLETON_RVA) else {
         return false;
     };
     read::<u64>(memory, global) == Some(pointer as u64)
@@ -183,7 +184,7 @@ fn acquire(
     base: usize,
     source: &SelectedModelVariant,
 ) -> Option<HullVariantInputs> {
-    let expected = base.checked_add(cequipment_variant::VTABLE_RVA)?;
+    let expected = engine_sites::at(base, cequipment_variant::VTABLE_RVA)?;
     let identity = scalar::<[u8; 16]>(memory, source.pointer, 0)?;
     if cequipment_variant::identity_from_header(expected, identity).ok()? != source.handle {
         return None;
@@ -208,7 +209,7 @@ fn definition_index(
     base: usize,
     source: &SelectedModelVariant,
 ) -> Option<i32> {
-    let expected = base.checked_add(cequipment_type::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, cequipment_type::VTABLE_RVA)? as u64;
     let header = scalar::<[u8; 12]>(memory, source.definition, 0)?;
     if header[8..12] != source.token {
         return None;
@@ -226,9 +227,9 @@ fn definition_index(
     // A real positive N maps to recorded Equipment[N-1]. An ordinary-vptr
     // nonpositive index cannot claim the separately authenticated null source.
     let slot = u32::try_from(index).ok().filter(|index| *index != 0)?;
-    let global = base.checked_add(cequipment_database::SINGLETON_RVA)?;
+    let global = engine_sites::at(base, cequipment_database::SINGLETON_RVA)?;
     let database = usize::try_from(read::<u64>(memory, global)?).ok()?;
-    let expected = base.checked_add(cequipment_database::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, cequipment_database::VTABLE_RVA)? as u64;
     if scalar::<u64>(memory, database, 0)? != expected {
         return None;
     }

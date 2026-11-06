@@ -225,9 +225,8 @@ unsafe extern "system" fn before(
         });
     }
     if ENABLED.load(Ordering::SeqCst)
-        && let Some(index) = caller
-            .checked_sub(BASE.load(Ordering::Relaxed))
-            .and_then(|rva| native::CALLERS.iter().position(|(known, _)| *known == rva))
+        && let Some(index) = engine_sites::reference(BASE.load(Ordering::Relaxed), caller)
+            .and_then(|key| native::CALLERS.iter().position(|(known, _)| *known == key))
     {
         CALLER_CALLS[index].fetch_add(1, Ordering::Relaxed);
     }
@@ -245,8 +244,7 @@ unsafe extern "system" fn before(
                 token = LEDGER.claim((building, 0))?;
                 let base = BASE.load(Ordering::Relaxed);
                 let memory = unsafe { engine_native::memory::LiveMemory::new() };
-                let game = base
-                    .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+                let game = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
                     .and_then(|a| engine_native::read::<u64>(&memory, a))
                     .and_then(|p| usize::try_from(p).ok())
                     .filter(|p| *p != 0)
@@ -297,8 +295,7 @@ unsafe extern "system" fn after(token: usize, observation: *const Observation, r
             }
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
-            if base
-                .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+            if engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
                 .and_then(|a| engine_native::read::<u64>(&memory, a))
                 != Some(observation.game as u64)
             {
@@ -363,7 +360,7 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
         let mut frequency = 0;
         if unsafe {
@@ -374,18 +371,14 @@ impl Hooks {
             FREQUENCY.store(frequency as u64, Ordering::Relaxed);
         }
         let install = || -> Result<Hook, &'static str> {
-            if !crate::hook::installation::sentinel(
-                memory,
-                base + native::APPLY_DAMAGE_RVA,
-                native::APPLY_DAMAGE_SENTINEL,
-            ) {
-                return Err("building bombing sentinel differs or unreadable");
-            }
+            crate::located(base, native::APPLY_DAMAGE_RVA)?;
+            engine_sites::require(base, &native::CALLER_KEYS)?;
+            let code = engine_sites::hook(base, native::APPLY_DAMAGE_RVA)?;
             let hook = unsafe {
                 Hook::new(
-                    base + native::APPLY_DAMAGE_RVA,
+                    code.address,
                     building_damage_entry as *const () as usize,
-                    native::APPLY_DAMAGE_SENTINEL,
+                    code.sentinel::<16>()?,
                 )
             }
             .map_err(|_| "building bombing hook construction failed")?;
@@ -429,7 +422,7 @@ impl Hooks {
 }
 pub fn status() -> impl serde::Serialize {
     crate::status::status!({
-        "rva": native::APPLY_DAMAGE_RVA, "sentinel": native::APPLY_DAMAGE_SENTINEL,
+        "rva": native::APPLY_DAMAGE_RVA.0,
         "installed": INSTALLED.load(Ordering::Acquire), "enabled": ENABLED.load(Ordering::SeqCst),
         "active": active(), "stranded": LEDGER.stranded.load(Ordering::SeqCst), "unhooked": UNHOOKED.get(), "branch_unavailable": LEDGER.poisoned.load(Ordering::SeqCst),
         "calls": LEDGER.calls.load(Ordering::Relaxed), "events": LEDGER.events.load(Ordering::Relaxed),
@@ -446,7 +439,7 @@ pub fn status() -> impl serde::Serialize {
         "attribution_failures": ATTRIBUTION_FAILURES.load(Ordering::Relaxed),
         "unknown_callers": UNKNOWN_CALLERS.load(Ordering::Relaxed),
         "caller_calls": crate::status::sequence(native::CALLERS.iter().zip(&CALLER_CALLS)
-            .map(|((rva, _), count)| (*rva, count.load(Ordering::Relaxed)))),
+            .map(|((rva, _), count)| (rva.0, count.load(Ordering::Relaxed)))),
         "hourly_peak_events": LEDGER.hourly_peak_events.load(Ordering::Relaxed), "hourly_peak_capacity": LEDGER.hourly_peak_capacity.load(Ordering::Relaxed),
         "writer_ns": ns(WRITER_TICKS.load(Ordering::Relaxed)), "last_hour_writer_ns": ns(LAST_HOUR_TICKS.load(Ordering::Relaxed)),
         "max_hour_writer_ns": ns(MAX_HOUR_TICKS.load(Ordering::Relaxed)),

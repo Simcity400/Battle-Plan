@@ -43,7 +43,7 @@ use crate::{
 use engine_native::Memory;
 use replay_data::rows::OutputPurpose;
 use engine_production::{
-    line_output_sites::CREDIT, line_output_sites::DELIVERY, line_output_sites::HookSite,
+    line_output_sites::CREDIT, line_output_sites::DELIVERY,
     line_output_sites::LINE_HANDLE, line_output_sites::LINE_ORGANISATION,
     line_output_sites::LINE_VARIANT, line_output_sites::UNIT_SCALE,
     line_output_sites::VARIANT_HANDLE,
@@ -189,8 +189,32 @@ static ENABLED: &AtomicBool = &OBSERVATION.enabled;
 pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
 /// The trampolines: credit, delivery, then rocket advance.
 static ORIGINAL: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
-/// The module base the callers' RVAs are relative to.
+/// The module base the native reads are relative to.
 static BASE: AtomicUsize = AtomicUsize::new(0);
+/// Live return addresses of `CREDIT.callers`, `DELIVERY.callers` and the rocket delivery.
+static CREDIT_CALLERS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
+static DELIVERY_CALLERS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
+static ROCKET_DELIVERY: AtomicUsize = AtomicUsize::new(0);
+
+/// Callers are matched by live return address; a withheld one refuses the family.
+fn bind_callers(base: usize) -> Result<(), &'static str> {
+    let bind = |slot: &AtomicUsize, key| {
+        let address = engine_sites::resolve(base, key)
+            .map_err(|_| "production line caller withheld")?;
+        slot.store(address, Ordering::Relaxed);
+        Ok(())
+    };
+    for (slot, &key) in CREDIT_CALLERS.iter().zip(&CREDIT.callers) {
+        bind(slot, key)?;
+    }
+    for (slot, &key) in DELIVERY_CALLERS.iter().zip(&DELIVERY.callers) {
+        bind(slot, key)?;
+    }
+    bind(
+        &ROCKET_DELIVERY,
+        engine_production::line_output_sites::ROCKET_DELIVERY_RETURN,
+    )
+}
 /// The next entry the hourly drain hands over; only the callback moves it.
 static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
 /// Why the hooks are not installed, when they are not.
@@ -380,11 +404,10 @@ impl Call {
 }
 
 /// The equipment production caller index returning to `caller`, if any.
-fn producer(site: &HookSite, caller: usize) -> Option<usize> {
-    let base = BASE.load(Ordering::Relaxed);
-    site.callers
+fn producer(callers: &[AtomicUsize; 4], caller: usize) -> Option<usize> {
+    callers
         .iter()
-        .position(|&rva| base.wrapping_add(rva) == caller)
+        .position(|address| address.load(Ordering::Relaxed) == caller)
 }
 
 /// A live native value the game is using; the detour's receivers are the line
@@ -396,7 +419,7 @@ fn live_u64(address: usize) -> u64 {
 /// After the delivery site returned to `caller`: leave its amount pending when
 /// a production call called it.
 fn observe_delivery(caller: usize, variant: usize, amount: i64) {
-    let Some(index) = producer(&DELIVERY, caller) else {
+    let Some(index) = producer(&DELIVERY_CALLERS, caller) else {
         COUNTERS[2].fetch_add(1, Ordering::Relaxed);
         return;
     };
@@ -419,7 +442,7 @@ fn observe_delivery(caller: usize, variant: usize, amount: i64) {
 /// line's design, organisation or conversion control.
 fn credit_entry(line: usize, speed: i64, count: i32, caller: usize, pending: Pending) -> Option<Entry> {
     let variant = live_u64(line.wrapping_add(LINE_VARIANT)) as usize;
-    let producer = producer(&CREDIT, caller);
+    let producer = producer(&CREDIT_CALLERS, caller);
     let (units, exact) = match pending.producer {
         None => (0, producer.is_some()),
         Some(index) => {
@@ -644,11 +667,10 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize, events: usize) -> Self {
+    pub unsafe fn new(_memory: &impl Memory, base: usize, events: usize) -> Self {
         presize(events);
         install_offered();
         let domain = output_hooks::Domain {
-            sentinel_error: "production line sentinel differs",
             failure: output_hooks::Failure::Propagate,
             observation: &OBSERVATION,
             base: &BASE,
@@ -660,7 +682,6 @@ impl Hooks {
         Self {
             shared: ManuallyDrop::new(unsafe {
                 output_hooks::Hooks::new_with_safety(
-                    memory,
                     base,
                     [credit.0, delivery.0, rocket.0],
                     [credit.1, delivery.1, rocket.1],
@@ -668,7 +689,7 @@ impl Hooks {
                     if LOG.load(Ordering::SeqCst).is_null() {
                         Err("production line log allocation failed")
                     } else {
-                        Ok(())
+                        bind_callers(base)
                     },
                     [credit.2, delivery.2, rocket.2],
                 )
@@ -719,6 +740,7 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
 pub fn observe_for_test(enabled: bool) {
     crate::world_lifetime::observe_for_test(enabled);
     BASE.store(0, Ordering::Relaxed);
+    bind_callers(0).unwrap();
     ENABLED.store(enabled, Ordering::SeqCst);
     CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
     if enabled {
@@ -746,13 +768,13 @@ pub fn reset_log_for_test(capacity: usize) {
 pub fn produce_for_test(line: usize, producer: usize, count: i32, delivered: Option<i64>) {
     if let Some(amount) = delivered {
         observe_delivery(
-            DELIVERY.callers[producer],
+            DELIVERY.callers[producer].0,
             live_u64(line + LINE_VARIANT) as usize,
             amount,
         );
     }
     let pending = PENDING.replace(NOTHING_PENDING);
-    observe_credit(credit_entry(line, 0, count, CREDIT.callers[producer], pending));
+    observe_credit(credit_entry(line, 0, count, CREDIT.callers[producer].0, pending));
 }
 
 #[cfg(test)]
@@ -820,12 +842,12 @@ mod tests {
             let mut line = vec![0_u64; 0x20];
             let mut status = vec![0_u64; (engine_native::cproduction_status::COUNTRY + 8) / 8];
             let mut country = vec![0_u64; (engine_native::ccountry::PRODUCTION_STATUS + 8) / 8];
-            status[0] = engine_native::cproduction_status::VTABLE_RVA as u64;
-            country[0] = engine_native::ccountry::VTABLE_RVA as u64;
+            status[0] = engine_native::cproduction_status::VTABLE_RVA.0 as u64;
+            country[0] = engine_native::ccountry::VTABLE_RVA.0 as u64;
             country[engine_native::ccountry::ID / 8] = 5001;
             country[engine_native::ccountry::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
             status[engine_native::cproduction_status::COUNTRY / 8] = country.as_ptr() as u64;
-            line[0] = engine_native::cmilitary_production_line::VTABLE_RVA as u64;
+            line[0] = engine_native::cmilitary_production_line::VTABLE_RVA.0 as u64;
             line[engine_native::cproduction_line::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
             line[LINE_HANDLE / 8] = handle;
             line[LINE_VARIANT / 8] = owned_variant.as_ptr() as u64;
@@ -1123,25 +1145,25 @@ mod tests {
 
         // Even a zero delivery must pair: wrong producer, variant, duplicate,
         // unknown caller, or nonzero credit cannot be excused as a no-op.
-        observe_delivery(DELIVERY.callers[NAVAL], a.variant_pointer(), 0);
+        observe_delivery(DELIVERY.callers[NAVAL].0, a.variant_pointer(), 0);
         observe_credit(credit_entry(
             a.address(),
             0,
             0,
-            CREDIT.callers[MILITARY],
+            CREDIT.callers[MILITARY].0,
             PENDING.replace(NOTHING_PENDING),
         ));
-        observe_delivery(DELIVERY.callers[MILITARY], other.variant_pointer(), 0);
+        observe_delivery(DELIVERY.callers[MILITARY].0, other.variant_pointer(), 0);
         observe_credit(credit_entry(
             a.address(),
             0,
             0,
-            CREDIT.callers[MILITARY],
+            CREDIT.callers[MILITARY].0,
             PENDING.replace(NOTHING_PENDING),
         ));
-        observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), 0);
+        observe_delivery(DELIVERY.callers[MILITARY].0, a.variant_pointer(), 0);
         produce_for_test(a.address(), MILITARY, 0, Some(0));
-        observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), 0);
+        observe_delivery(DELIVERY.callers[MILITARY].0, a.variant_pointer(), 0);
         observe_credit(credit_entry(a.address(), 0, 0, 0x1234, PENDING.replace(NOTHING_PENDING)));
         produce_for_test(a.address(), MILITARY, 1, Some(0));
         produce_for_test(a.address(), MILITARY, 0, Some(UNIT_SCALE));
@@ -1224,19 +1246,19 @@ mod tests {
             purpose,
         };
         // The naval site delivered; the military site credits.
-        observe_delivery(DELIVERY.callers[NAVAL], a.variant_pointer(), UNIT_SCALE);
+        observe_delivery(DELIVERY.callers[NAVAL].0, a.variant_pointer(), UNIT_SCALE);
         let pending = PENDING.replace(NOTHING_PENDING);
-        observe_credit(credit_entry(a.address(), 0, 1, CREDIT.callers[MILITARY], pending));
+        observe_credit(credit_entry(a.address(), 0, 1, CREDIT.callers[MILITARY].0, pending));
         // Another variant was delivered.
         observe_delivery(
-            DELIVERY.callers[MILITARY],
+            DELIVERY.callers[MILITARY].0,
             other.variant_pointer(),
             UNIT_SCALE,
         );
         let pending = PENDING.replace(NOTHING_PENDING);
-        observe_credit(credit_entry(a.address(), 0, 1, CREDIT.callers[MILITARY], pending));
+        observe_credit(credit_entry(a.address(), 0, 1, CREDIT.callers[MILITARY].0, pending));
         // Two deliveries before one credit.
-        observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), UNIT_SCALE);
+        observe_delivery(DELIVERY.callers[MILITARY].0, a.variant_pointer(), UNIT_SCALE);
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
         // Part of a unit, and a negative amount.
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE / 2));
@@ -1381,24 +1403,5 @@ mod tests {
             assert_eq!(units, 500 * 501 / 2);
         }
         observe_for_test(false);
-    }
-
-    /// An unrecognised prologue installs nothing and fails nothing; drains then
-    /// report why ticks go unobserved.
-    #[test]
-    fn unrecognised_prologues_leave_the_table_unavailable() {
-        let _lock = test_lock();
-        let bytes = vec![0_u8; 0x10];
-        let memory = engine_native::memory::SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        let hooks = output_hooks::validate_sentinels(
-            &memory,
-            0,
-            &[&CREDIT, &DELIVERY].map(output_hooks::Site::from),
-            "production line sentinel differs",
-        );
-        assert_eq!(hooks.err(), Some("production line sentinel differs"));
     }
 }

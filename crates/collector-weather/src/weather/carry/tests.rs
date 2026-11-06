@@ -54,7 +54,7 @@ impl World {
         );
         world.put(
             MANAGER,
-            &(cweather_manager::VTABLE_RVA as u64).to_le_bytes(),
+            &(cweather_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         for (offset, data, count) in [
             (cweather_manager::REGIONS, REGIONS, regions),
@@ -75,7 +75,7 @@ impl World {
             let record = world.region(slot);
             world.put(
                 record,
-                &(sweather_per_region::VTABLE_RVA as u64).to_le_bytes(),
+                &(sweather_per_region::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             world.put(
                 record + sweather_per_region::ID,
@@ -105,7 +105,7 @@ impl World {
             let record = world.province(slot);
             world.put(
                 record,
-                &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes(),
+                &(sweather_per_province::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             world.put(record + sweather_per_province::ID, &slot.to_le_bytes());
             world.put(

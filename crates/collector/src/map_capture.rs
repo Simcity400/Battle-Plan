@@ -187,8 +187,7 @@ impl MapCapacities {
         memory: &impl Memory,
         base: usize,
     ) -> Result<(), &'static str> {
-        let state = base
-            .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+        let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
             .and_then(|address| engine_native::read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|pointer| *pointer != 0)
@@ -1437,7 +1436,7 @@ fn copy_player_roster(
         Some(a) => a,
         None => return,
     };
-    let Some(vtable) = base.checked_add(chuman::VTABLE_RVA) else {
+    let Some(vtable) = engine_sites::at(base, chuman::VTABLE_RVA) else {
         return;
     };
     let Ok(mut keys) = engine_allocation::vec(roster.count as usize) else {
@@ -1605,7 +1604,7 @@ mod players_split_tests {
         put(
             &mut bytes,
             COUNTRY,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
         array(&mut bytes, GS + cgame_state::HUMAN_STATUS, COUNTS, 2);
@@ -1615,7 +1614,7 @@ mod players_split_tests {
         put(
             &mut bytes,
             ROSTER,
-            &(chuman::VTABLE_RVA as u64).to_le_bytes(),
+            &(chuman::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

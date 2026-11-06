@@ -48,7 +48,7 @@ fn world(countries: usize, divisions: usize) -> (Arena, Vec<DivisionSeed>) {
             let name = arena.alloc(cname_group_member::INPUT_SPAN);
             let mut span = [0; cname_group_member::INPUT_SPAN];
             span[..8]
-                .copy_from_slice(&((base + cname_group_member::VTABLE_RVA) as u64).to_le_bytes());
+                .copy_from_slice(&((base + cname_group_member::VTABLE_RVA.0) as u64).to_le_bytes());
             let order = cname_group_member::ORDER;
             span[order..order + 4].copy_from_slice(&(index as i32).to_le_bytes());
             // A stored literal override supplies the naming operands. Cache text

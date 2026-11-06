@@ -10,13 +10,14 @@
 //! requirement records and the inline equipment pool the preparation checks
 //! fill ([`Instance::parts`]).
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccharacter::Literal, cequipment_type, cequipment_variant_pool, coperation,
     cpdx_array::Array, cprovince, csubject_relation::Name, read,
 };
 
 /// Primary vtable at subobject offset zero.
-pub const VTABLE_RVA: usize = 0x02a3_8fc0;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_8fc0);
 /// Packed full reference, u64: low word type and high word instance ID.
 pub const HANDLE: usize = 0x08;
 /// Known operation-instance reference type. Admission uses the dynamic full
@@ -301,8 +302,8 @@ fn authenticate_type(
     base: usize,
     equipment: usize,
 ) -> Result<(), &'static str> {
-    let vtable = |rva: usize| {
-        base.checked_add(rva)
+    let vtable = |key: Rva| {
+        engine_sites::at(base, key)
             .map(|address| address as u64)
             .ok_or("operation equipment type vtable overflow")
     };
@@ -341,8 +342,7 @@ pub fn instance(
             .checked_add(offset)
             .ok_or("operation address overflow")
     };
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("operation module address overflow")?;
     let identity = read::<[u8; 16]>(memory, pointer).ok_or("operation identity unreadable")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64 {
@@ -420,8 +420,7 @@ pub fn instance(
     let target_province = if province_pointer == 0 {
         None
     } else {
-        let expected = base
-            .checked_add(cprovince::VTABLE_RVA)
+        let expected = engine_sites::at(base, cprovince::VTABLE_RVA)
             .ok_or("province module address overflow")?;
         if read::<u64>(memory, province_pointer) != Some(expected as u64) {
             return Err("operation target province vtable mismatch");

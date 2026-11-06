@@ -239,7 +239,7 @@ mod tests {
         let politics = w.alloc(0x120);
         let owner = w.object(1);
         w.u64(owner + ccountry::POLITICAL_STATUS, politics as u64);
-        w.u64(politics, cpolitical_status::VTABLE_RVA as u64);
+        w.u64(politics, cpolitical_status::VTABLE_RVA.0 as u64);
         w.u64(politics + cpolitical_status::COUNTRY, owner as u64);
         let memory = w.memory();
         let reader = ccountry::Reader::new(&memory, 0, w.game_state()).unwrap();

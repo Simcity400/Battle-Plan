@@ -66,7 +66,7 @@ fn country(bytes: &mut [u8], slot: u32, id: u32, object: usize, status: usize) {
     put(
         bytes,
         object,
-        ((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(bytes, object + ccountry::ID, id.to_le_bytes());
     // Each country owns a state, so its projects advance daily.
@@ -79,12 +79,12 @@ fn country(bytes: &mut [u8], slot: u32, id: u32, object: usize, status: usize) {
     put(
         bytes,
         status,
-        ((BASE + nproject_cprogram_status::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cprogram_status::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         bytes,
         status + nproject_cprogram_status::SECONDARY_VTABLE,
-        ((BASE + nproject_cprogram_status::SECONDARY_VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cprogram_status::SECONDARY_VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         bytes,
@@ -97,12 +97,12 @@ fn empty_status(bytes: &mut [u8], status: usize, id: u32, pool: usize) {
     put(
         bytes,
         status,
-        ((BASE + nproject_cprogram_status::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cprogram_status::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         bytes,
         status + nproject_cprogram_status::SECONDARY_VTABLE,
-        ((BASE + nproject_cprogram_status::SECONDARY_VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cprogram_status::SECONDARY_VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         bytes,
@@ -113,7 +113,7 @@ fn empty_status(bytes: &mut [u8], status: usize, id: u32, pool: usize) {
     put(
         bytes,
         pool,
-        ((BASE + nproject_cproject_pool::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cproject_pool::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     array(bytes, pool + nproject_cproject_pool::PROJECTS, 0, 0);
     array(bytes, status + nproject_cprogram_status::PROGRAMS, 0, 0);
@@ -122,7 +122,7 @@ fn empty_status(bytes: &mut [u8], status: usize, id: u32, pool: usize) {
     put(
         bytes,
         tree,
-        ((BASE + nproject_cbreakthrough_progress::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cbreakthrough_progress::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     let head = tree + 0x40;
     pointer(
@@ -157,7 +157,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         POOL1,
-        ((BASE + nproject_cproject_pool::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cproject_pool::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -171,7 +171,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         PROG1,
-        ((BASE + nproject_cprogram::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cprogram::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -229,7 +229,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         PROJ1,
-        ((BASE + nproject_cproject::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cproject::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -263,7 +263,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         MACH1,
-        ((BASE + nproject_cproject_state_machine::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cproject_state_machine::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     pointer(
         &mut bytes,
@@ -288,7 +288,7 @@ pub fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             MACH1 + offset,
-            ((BASE + vtable) as u64).to_le_bytes(),
+            ((BASE + vtable.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -300,7 +300,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         HIST1,
-        ((BASE + nproject_sproject_history::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_sproject_history::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -321,7 +321,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         context,
-        ((BASE + nproject_sproject_context::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_sproject_context::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -354,7 +354,7 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         S1 + nproject_cprogram_status::BREAKTHROUGH,
-        ((BASE + nproject_cbreakthrough_progress::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + nproject_cbreakthrough_progress::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     pointer(
         &mut bytes,
@@ -398,7 +398,7 @@ pub fn add_reserved_alias(bytes: &mut [u8]) {
     put(
         bytes,
         RESERVED,
-        ((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+        ((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     put(bytes, RESERVED + ccountry::ID, 0_u32.to_le_bytes());
 }

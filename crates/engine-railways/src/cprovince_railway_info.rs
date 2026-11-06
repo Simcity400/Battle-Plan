@@ -1,8 +1,9 @@
 //! Province railway state. Persistent cooldown state uses the manager's
 //! province slot.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f400;
+pub const VTABLE_RVA: Rva = Rva(0x029e_f400);
 
 /// Object allocation size.
 pub const SIZE: usize = 0x70;
@@ -27,25 +28,13 @@ pub const PENDING_CONSTRUCTION: usize = 0x50;
 /// Railway cooldown ticks, native i32.
 pub const COOLDOWN_TICKS: usize = 0x68;
 /// Province-railway-info constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00f0_4f70;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f0_4f70);
 /// Railway-level setter updating an existing level or inserting a pair.
-pub const SET_RAILWAY_RVA: usize = 0x00f0_8540;
+pub const SET_RAILWAY_RVA: Rva = Rva(0x00f0_8540);
 /// Railway token loader rebuilding pairs.
-pub const LOAD_TOKEN_RVA: usize = 0x00f0_7ed0;
+pub const LOAD_TOKEN_RVA: Rva = Rva(0x00f0_7ed0);
 /// Destructor freeing pairs and clearing pointer/count.
-pub const DESTRUCTOR_RVA: usize = 0x00f0_5420;
-/// Railway setter entry sentinel bytes.
-pub const SET_RAILWAY_SENTINEL: [u8; 16] = [
-    0x4c, 0x8b, 0xdc, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x50, 0x80, 0x3d, 0xc0, 0x70, 0x78, 0x02,
-];
-/// Railway loader entry sentinel bytes.
-pub const LOAD_TOKEN_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-];
-/// Railway-info destructor entry sentinel bytes.
-pub const DESTRUCTOR_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48,
-];
+pub const DESTRUCTOR_RVA: Rva = Rva(0x00f0_5420);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

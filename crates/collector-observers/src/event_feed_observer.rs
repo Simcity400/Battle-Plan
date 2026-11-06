@@ -1390,12 +1390,12 @@ impl Hooks {
         let range = unsafe { &event_stub_start } as *const u8 as usize
             ..unsafe { &event_stub_end } as *const u8 as usize;
         let make = |site: native::CallSite, callback| {
-            let address = native::verify(memory, base, site)?;
+            let code = engine_sites::hook(base, site.rva)?;
             unsafe {
                 Hook::new_call_with_safety(
-                    address,
+                    code.address,
                     callback,
-                    site.sentinel,
+                    code.sentinel::<16>()?,
                     TapSafety {
                         in_flight: &FLIGHT,
                         stub: range.clone(),
@@ -1404,6 +1404,11 @@ impl Hooks {
             }
             .map_err(|_| "Event feed CALL construction failed")
         };
+        native::war_source_sites(base)?;
+        let targets = [
+            engine_sites::hook(base, native::WAR.target_rva)?.address,
+            engine_sites::hook(base, native::ANNEX.target_rva)?.address,
+        ];
         let mut hooks = vec![
             make(native::WAR, event_war_entry as *const () as usize)?,
             make(native::ANNEX, event_annex_entry as *const () as usize)?,
@@ -1417,8 +1422,8 @@ impl Hooks {
         {
             return Err("Event feed previous owner retained");
         }
-        TARGETS[0].store(base + native::WAR.target_rva, Ordering::SeqCst);
-        TARGETS[1].store(base + native::ANNEX.target_rva, Ordering::SeqCst);
+        TARGETS[0].store(targets[0], Ordering::SeqCst);
+        TARGETS[1].store(targets[1], Ordering::SeqCst);
         SHARED.store(Arc::as_ptr(&owner).cast_mut(), Ordering::SeqCst);
         Ok(Self {
             held: Some(ManuallyDrop::new(Held {
@@ -3291,7 +3296,7 @@ mod tests {
             #[repr(align(16))]
             struct Stack([u64; 40]);
             let mut stack = Stack([0; 40]);
-            let return_pc = 0x140000000 + site.return_rva as u64;
+            let return_pc = 0x140000000 + site.rva.after(5).0 as u64;
             stack.0[33] = return_pc;
             let mut context: CONTEXT = unsafe { std::mem::zeroed() };
             context.Rip = pc;

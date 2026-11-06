@@ -161,7 +161,8 @@ impl MovementPacket {
         let first_len = route.count as usize;
         let len = first_len + alternate.count as usize;
         self.raw_paths_len = start + len;
-        let bytes = self.raw_paths_len
+        let bytes = self
+            .raw_paths_len
             .checked_mul(4)
             .ok_or("movement route byte count overflow")?;
         if bytes > self.route_bytes.capacity() {
@@ -170,10 +171,8 @@ impl MovementPacket {
         self.route_bytes.resize(bytes, 0);
         if len != 0 {
             let (first, second) = self.route_bytes[start * 4..].split_at_mut(first_len * 4);
-            let copied = memory.copy_scattered_prefetched(
-                [route.data, alternate.data],
-                &mut [first, second],
-            );
+            let copied = memory
+                .copy_scattered_prefetched([route.data, alternate.data], &mut [first, second]);
             if copied != 0 {
                 self.raw_paths_prefix = start + first_len;
             }
@@ -406,9 +405,7 @@ pub fn capture_movement_inputs_with_extra(
             if let Some(pending) = seeds.get(ordinal + MOVEMENT_AHEAD) {
                 prefetch_movement_seed(memory, pending);
             }
-            let expected = base
-                .checked_add(VTABLE_RVA)
-                .ok_or("module address overflow")?;
+            let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
             if seed.primary_vtable != Some(expected as u64) {
                 return Err("movement division vtable mismatch");
             }
@@ -751,8 +748,7 @@ impl SpeedBatch {
             && self.complete[row]
         {
             let bytes = &self.bytes[row * 16..][..16];
-            let expected = base
-                .checked_add(crate::csub_unit_definition::VTABLE_RVA)
+            let expected = engine_sites::at(base, crate::csub_unit_definition::VTABLE_RVA)
                 .ok_or("module address overflow")? as u64;
             if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected {
                 return Err("division stat block identity mismatch");
@@ -781,8 +777,7 @@ fn movement_base_speed(
     let speed_at = stat
         .checked_add(crate::csub_unit_definition::MAXIMUM_SPEED)
         .ok_or("division stat block address overflow")?;
-    let expected = base
-        .checked_add(crate::csub_unit_definition::VTABLE_RVA)
+    let expected = engine_sites::at(base, crate::csub_unit_definition::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     let mut vtable = [0; 8];
     let mut speed = [0; 8];
@@ -802,7 +797,11 @@ pub fn project_movement(
     output: &mut [MovementRow],
     paths: &mut [u32],
 ) -> MovementWalk {
-    let path_len = if packet.defer_routes { packet.raw_paths_len } else { packet.paths.len() };
+    let path_len = if packet.defer_routes {
+        packet.raw_paths_len
+    } else {
+        packet.paths.len()
+    };
     if output.len() < packet.units.len() || paths.len() < path_len {
         return MovementWalk {
             outcome: Outcome::Unavailable {
@@ -816,7 +815,8 @@ pub fn project_movement(
         // A failed gathered span can contain a partial native copy. Only
         // completed spans enter the owned output, as in movement_route_prefixes.
         paths[..path_len].fill(0);
-        for (output, bytes) in paths[..packet.raw_paths_prefix].iter_mut()
+        for (output, bytes) in paths[..packet.raw_paths_prefix]
+            .iter_mut()
             .zip(packet.route_bytes.chunks_exact(4))
         {
             *output = u32::from_le_bytes(bytes.try_into().unwrap());
@@ -989,23 +989,29 @@ fn walk_movement_internal(
                     .filter(|&p| p != 0)
                     .ok_or("first combat unreadable or null")? as usize;
                 let vtable = read::<u64>(memory, p).ok_or("first combat identity unreadable")?;
-                if ![
-                    combat_layout::VTABLE_RVA,
-                    crate::cland_border_war_combat::VTABLE_RVA,
-                ]
-                .iter()
-                .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+                if engine_sites::which(
+                    base,
+                    vtable as usize,
+                    &[
+                        combat_layout::VTABLE_RVA,
+                        crate::cland_border_war_combat::VTABLE_RVA,
+                    ],
+                )
+                .is_none()
                 {
                     return Err("division first combat identity mismatch");
                 }
                 let side = presentation_field::<u64>(memory, p, combat_layout::ATTACKER)? as usize;
                 let vtable = read::<u64>(memory, side).ok_or("first combat side unreadable")?;
-                if ![
-                    side_layout::VTABLE_RVA,
-                    crate::cland_border_war_combatant::VTABLE_RVA,
-                ]
-                .iter()
-                .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+                if engine_sites::which(
+                    base,
+                    vtable as usize,
+                    &[
+                        side_layout::VTABLE_RVA,
+                        crate::cland_border_war_combatant::VTABLE_RVA,
+                    ],
+                )
+                .is_none()
                     || presentation_field::<u64>(memory, side, side_layout::COMBAT)? != p as u64
                 {
                     return Err("first combat side identity mismatch");
@@ -1148,7 +1154,9 @@ mod capacity_tests {
         impl Memory for Routes {
             fn copy(&self, at: usize, output: &mut [u8]) -> bool {
                 self.reads.borrow_mut().push((at, output.len()));
-                let Some(bytes) = self.bytes.get(at..at + output.len()) else { return false };
+                let Some(bytes) = self.bytes.get(at..at + output.len()) else {
+                    return false;
+                };
                 output.copy_from_slice(bytes);
                 // Even a failure that changed its whole destination must not
                 // turn an uncompleted span into a published path prefix.
@@ -1159,15 +1167,30 @@ mod capacity_tests {
             for fault in [None, Some(4), Some((ordinary + 1) * 4)] {
                 let len = ordinary + alternate;
                 let memory = Routes {
-                    bytes: (0..=len as u32).flat_map(|value| value.to_le_bytes()).collect(),
+                    bytes: (0..=len as u32)
+                        .flat_map(|value| value.to_le_bytes())
+                        .collect(),
                     fault,
                     reads: RefCell::default(),
                 };
-                let route = Array { data: 4, count: ordinary as u32 };
-                let other = Array { data: (ordinary + 1) * 4, count: alternate as u32 };
+                let route = Array {
+                    data: 4,
+                    count: ordinary as u32,
+                };
+                let other = Array {
+                    data: (ordinary + 1) * 4,
+                    count: alternate as u32,
+                };
                 let mut expected = vec![0; len];
                 let (first, second) = expected.split_at_mut(ordinary);
-                let serial = movement_route_prefixes(&memory, route, other, &mut vec![0; len * 4], first, second);
+                let serial = movement_route_prefixes(
+                    &memory,
+                    route,
+                    other,
+                    &mut vec![0; len * 4],
+                    first,
+                    second,
+                );
                 let reads = memory.reads.take();
                 let mut packet = MovementPacket::new(0, len);
                 packet.defer_route_decode();

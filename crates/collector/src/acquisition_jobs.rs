@@ -3864,7 +3864,7 @@ mod tests {
         };
         use engine_raid_inputs::raid_air_scores::COMBAT_DELAY_RVA;
         const MEMORY: usize = 0x1000_0000;
-        const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA;
+        const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA.0;
         const GAME: usize = MEMORY + 0x1000;
         // The combat delay define, one present region and country P in slot
         // 1. Without an air manager the walk stops at the strategic-air
@@ -3888,10 +3888,10 @@ mod tests {
             }
             put(0x3008, (MEMORY + 0x3200) as u64, 8);
             put(0x3104, 1, 4);
-            put(0x3200, (BASE + ccountry::VTABLE_RVA) as u64, 8);
+            put(0x3200, (BASE + ccountry::VTABLE_RVA.0) as u64, 8);
             put(0x3200 + ccountry::ID, u64::from(!alias), 4);
             put(0x3408, (MEMORY + 0x3600) as u64, 8);
-            put(0x3600, (BASE + cstrategic_region::VTABLE_RVA) as u64, 8);
+            put(0x3600, (BASE + cstrategic_region::VTABLE_RVA.0) as u64, 8);
             put(0x3600 + cstrategic_region::PROVINCES_COUNT, 1, 4);
             put(0x3600 + cstrategic_region::ID, 1_001, 4);
             put(0x3600 + cstrategic_region::RUNTIME_SLOT, 1, 4);
@@ -3905,14 +3905,14 @@ mod tests {
                 );
                 put(
                     0x3800,
-                    (BASE + cstrategic_air_manager::VTABLE_RVA) as u64,
+                    (BASE + cstrategic_air_manager::VTABLE_RVA.0) as u64,
                     8,
                 );
                 let roster = 0x3800 + cstrategic_air_manager::COUNTRY_AIR;
                 put(roster, (MEMORY + 0x3900) as u64, 8);
                 put(roster + 8, 2 << 32 | 2, 8);
                 put(0x3908, (MEMORY + 0x3a00) as u64, 8);
-                put(0x3a00, (BASE + cstrategic_air::VTABLE_RVA) as u64, 8);
+                put(0x3a00, (BASE + cstrategic_air::VTABLE_RVA.0) as u64, 8);
                 put(0x3a00 + cstrategic_air::COUNTRY, 1, 4);
             }
             bytes

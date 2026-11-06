@@ -12,6 +12,7 @@ use crate::{
     read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// One region-table slot pointer, gathered for a whole batch of slots.
 const SLOT_FIELD: [RecordField; 1] = [RecordField {
@@ -23,7 +24,7 @@ const SLOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SLOT_FIELD, 8).expect("valid record layout");
 
 /// CLoopHistory primary vtable.
-pub const VTABLE_RVA: usize = 0x02a4_c388;
+pub const VTABLE_RVA: Rva = Rva(0x02a4_c388);
 /// Embedded history queue, followed by its three window pointers.
 pub const QUEUE: usize = 0x08;
 /// CLoopHistory daily window pointer.
@@ -279,11 +280,9 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    rva: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(rva)
-        .ok_or("air history vtable address overflow")?;
+    let expected = engine_sites::at(base, vtable).ok_or("air history vtable address overflow")?;
     if object == 0 || read::<u64>(memory, object) != Some(expected as u64) {
         return Err("air history object vtable unreadable or mismatched");
     }
@@ -466,26 +465,26 @@ mod tests {
             for (index, target) in [0, 1, 1, 1].into_iter().enumerate() {
                 f.u32(0x12000 + index * 4, target);
             }
-            f.pointer(COUNTRY, BASE + ccountry::VTABLE_RVA);
+            f.pointer(COUNTRY, BASE + ccountry::VTABLE_RVA.0);
             f.u32(COUNTRY + ccountry::ID, 3);
             f.pointer(GAME + cgame_state::STRATEGIC_AIR_MANAGER, MANAGER);
-            f.pointer(MANAGER, BASE + cstrategic_air_manager::VTABLE_RVA);
+            f.pointer(MANAGER, BASE + cstrategic_air_manager::VTABLE_RVA.0);
             f.array(MANAGER + cstrategic_air_manager::COUNTRY_AIR, 0x31000, 3);
             f.pointer(0x31000, 0);
             f.pointer(0x31008, AIR);
             f.pointer(0x31010, 0);
-            f.pointer(AIR, BASE + cstrategic_air::VTABLE_RVA);
+            f.pointer(AIR, BASE + cstrategic_air::VTABLE_RVA.0);
             f.u32(AIR + cstrategic_air::COUNTRY, 2);
             f.array(AIR + cstrategic_air::HISTORY_TABLE, 0x41000, 24);
             for region in 0..24 {
                 f.pointer(0x41000 + region * 8, 0);
             }
             f.pointer(0x41000 + 23 * 8, HISTORY);
-            f.pointer(HISTORY, BASE + VTABLE_RVA);
+            f.pointer(HISTORY, BASE + VTABLE_RVA.0);
             f.pointer(HISTORY + SELF_REFERENCE, HISTORY);
             f.u32(HISTORY + FIELD_COUNT, air_stats::FIELD_COUNT);
             f.pointer(HISTORY + WINDOW, WINDOW_OBJECT);
-            f.pointer(WINDOW_OBJECT, BASE + loop_history_window::VTABLE_RVA);
+            f.pointer(WINDOW_OBJECT, BASE + loop_history_window::VTABLE_RVA.0);
             f.array(WINDOW_OBJECT + loop_history_window::RECORDS, 0x61000, 5);
             f.u32(WINDOW_OBJECT + loop_history_window::CAPACITY, 5);
             f.u32(WINDOW_OBJECT + loop_history_window::CURRENT_SLOT, 2);

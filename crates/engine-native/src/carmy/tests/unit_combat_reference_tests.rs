@@ -11,11 +11,11 @@ fn reference_fixture() -> (PresentationMemory, [super::super::DivisionSeed; 3]) 
     p64(
         &mut source.bytes,
         0x16000 + 0x10,
-        crate::cland_combat::BODY_VTABLE_RVA as u64,
+        crate::cland_combat::BODY_VTABLE_RVA.0 as u64,
     );
     p64(&mut source.bytes, 0x16000 + 0x18, COMBAT_REFERENCE);
     source.globals.insert(
-        registry::HIGH_ROOT_RVA,
+        registry::HIGH_ROOT_RVA.0,
         (TABLE as u64).to_le_bytes().to_vec(),
     );
     p64(&mut source.bytes, TABLE + registry::ENTRIES, BUCKETS as u64);
@@ -179,7 +179,7 @@ fn movement_optional_registry_failure_preserves_every_established_field() {
     let mut packet = super::super::MovementPacket::new(3, 0);
     packet.reserve_combat_references(6).unwrap();
     let (legacy, expected) = run(&memory, &seeds, &mut packet, None, 3);
-    memory.fault.set(Some(registry::HIGH_ROOT_RVA));
+    memory.fault.set(Some(registry::HIGH_ROOT_RVA.0));
     let (walk, rows) = run(&memory, &seeds, &mut packet, Some(9), 3);
     assert_eq!(walk, legacy);
     for (mut actual, expected) in rows.into_iter().zip(expected) {

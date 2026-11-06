@@ -1,8 +1,9 @@
 //! Strategic-air manager indexing per-country air objects, separate from
 //! air-base country containers.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_5218;
+pub const VTABLE_RVA: Rva = Rva(0x029d_5218);
 /// Country-slot strategic-air pointer-vector data.
 pub const COUNTRY_AIR: usize = 0x30;
 /// State-indexed first-province lists for ordinary, kind-1 and kind-2 bases,
@@ -19,6 +20,6 @@ pub const STATE_GUN_BASES: usize = 0xc0;
 /// Dense stateless air-base pointer vector.
 pub const STATELESS_AIR_BASES: usize = 0xd8;
 /// Carrier-air-base registration storing the ship handle.
-pub const ADD_CARRIER_AIR_BASE_RVA: usize = 0x00ca_8850;
+pub const ADD_CARRIER_AIR_BASE_RVA: Rva = Rva(0x00ca_8850);
 /// Manager constructor initializing independent vector headers.
-pub const CONSTRUCTOR_RVA: usize = 0x00ca_4960;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00ca_4960);

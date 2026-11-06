@@ -36,7 +36,7 @@ impl World {
         // The synthetic module's singleton falls at buffer offset zero. Its
         // vtable addresses are compared, never dereferenced.
         let module = origin
-            .checked_sub(ccountry_database::SINGLETON_RVA)
+            .checked_sub(ccountry_database::SINGLETON_RVA.0)
             .unwrap();
         let put = |bytes: &mut [u8], offset: usize, value: &[u8]| {
             bytes[offset..offset + value.len()].copy_from_slice(value);
@@ -75,7 +75,7 @@ impl World {
             put(
                 &mut bytes,
                 country,
-                &((module + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+                &((module + ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -90,7 +90,7 @@ impl World {
             put(
                 &mut bytes,
                 diplomacy,
-                &((module + cdiplomacy_status::VTABLE_RVA) as u64).to_le_bytes(),
+                &((module + cdiplomacy_status::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             for offset in [
                 ccountry::COSMETIC_TAG,

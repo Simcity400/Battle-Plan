@@ -11,8 +11,7 @@ pub(super) fn status() -> impl serde::Serialize {
 
 pub(super) fn presize(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
     let demand = (|| {
-        let state = base
-            .checked_add(cgame_state::SINGLETON_RVA)
+        let state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
             .and_then(|address| read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .ok_or("construction output sizing game state unreadable")?;

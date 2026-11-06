@@ -28,6 +28,7 @@ use crate::{
     modifier_keys, read,
     walk::Outcome,
 };
+use engine_sites::Rva;
 use std::{
     cell::{Cell, RefCell},
     mem::size_of,
@@ -1347,13 +1348,9 @@ fn authenticate_seed(base: usize, seed: &carmy::DivisionSeed) -> Result<(), &'st
         || seed.division == 0
         || seed.handle != Some(seed.division)
         || seed.primary_vtable
-            != base
-                .checked_add(carmy::VTABLE_RVA)
-                .map(|value| value as u64)
+            != engine_sites::at(base, carmy::VTABLE_RVA).map(|value| value as u64)
         || seed.secondary_vtable
-            != base
-                .checked_add(carmy::SECONDARY_VTABLE_RVA)
-                .map(|value| value as u64)
+            != engine_sites::at(base, carmy::SECONDARY_VTABLE_RVA).map(|value| value as u64)
     {
         return Err("execution unit identity unavailable or mismatched");
     }
@@ -1384,10 +1381,7 @@ impl<M: Memory> UnitMemory<'_, M> {
             // retains the first identity read for both leaves and aliased stat sources.
             let vtable = field::<u64>(self, pointer, 0).map_err(|_| STAT_REFUSALS[1])?;
             if Some(vtable)
-                != self
-                    .prepared
-                    .base
-                    .checked_add(csub_unit_definition::VTABLE_RVA)
+                != engine_sites::at(self.prepared.base, csub_unit_definition::VTABLE_RVA)
                     .map(|at| at as u64)
             {
                 return Err(STAT_REFUSALS[2]);
@@ -1567,9 +1561,10 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    rva: usize,
+    rva: Rva,
 ) -> Result<(), &'static str> {
-    if field::<u64>(memory, pointer, 0)? == at(base, rva)? as u64 {
+    let vtable = field::<u64>(memory, pointer, 0)?;
+    if engine_sites::at(base, rva).map(|a| a as u64) == Some(vtable) {
         Ok(())
     } else {
         Err("execution object identity mismatch")

@@ -55,7 +55,10 @@ impl StatusPart {
             self.packet.clear();
             let _ = crate::allocation::advisory(|| {
                 self.packet.select_supply(
-                    prepared.supply_requested.get(self.range.clone()).unwrap_or(&[]),
+                    prepared
+                        .supply_requested
+                        .get(self.range.clone())
+                        .unwrap_or(&[]),
                 )
             });
             for unit in units {

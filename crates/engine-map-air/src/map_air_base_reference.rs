@@ -11,6 +11,7 @@ use crate::{
     memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields, packed_stride},
     read,
 };
+use engine_sites::Rva;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BaseReference {
@@ -43,11 +44,10 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable_rva: usize,
+    vtable_rva: Rva,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(vtable_rva)
-        .ok_or("air reference module address overflow")?;
+    let expected =
+        engine_sites::at(base, vtable_rva).ok_or("air reference module address overflow")?;
     if object == 0 || read::<u64>(memory, object) != Some(expected as u64) {
         return Err("air reference object identity mismatch");
     }
@@ -137,13 +137,13 @@ impl Gather {
 
 /// One gathered identity record's ID when its vtable is `rva`'s; `None`
 /// when its copy did not complete or it is another object.
-fn identified(rows: &[u8], row: usize, gathered: usize, base: usize, rva: usize) -> Option<u32> {
+fn identified(rows: &[u8], row: usize, gathered: usize, base: usize, rva: Rva) -> Option<u32> {
     if row >= gathered {
         return None;
     }
     let record = &rows[row * IDENTITY_ROW..(row + 1) * IDENTITY_ROW];
     let vtable = u64::from_le_bytes(record[..8].try_into().unwrap());
-    (base.checked_add(rva).map(|expected| expected as u64) == Some(vtable))
+    (engine_sites::at(base, rva).map(|expected| expected as u64) == Some(vtable))
         .then(|| u32::from_le_bytes(record[8..].try_into().unwrap()))
 }
 
@@ -208,8 +208,7 @@ impl Pass {
             return Err("air base reference fields unreadable");
         }
         if u64::from_le_bytes(vtable)
-            != base
-                .checked_add(cair_base::VTABLE_RVA)
+            != engine_sites::at(base, cair_base::VTABLE_RVA)
                 .ok_or("air reference module address overflow")? as u64
             || u64::from_le_bytes(stored) != handle
         {
@@ -221,7 +220,7 @@ impl Pass {
             kind: i32::from_le_bytes(kind),
             ..Default::default()
         };
-        let identified = |pointer: [u8; 8], vtable_rva: usize, id: usize| {
+        let identified = |pointer: [u8; 8], vtable_rva: Rva, id: usize| {
             let pointer = usize::try_from(u64::from_le_bytes(pointer))
                 .map_err(|_| "air reference pointer overflow")?;
             authenticate(memory, base, pointer, vtable_rva)?;
@@ -314,9 +313,7 @@ impl Pass {
         let mut fields = [(0_u64, 0_u64, 0_u64, 0_i32); BASE_BATCH];
         let (mut state, mut province) = ([NONE; BASE_BATCH], [NONE; BASE_BATCH]);
         let (mut states, mut provinces) = (Gather::new(), Gather::new());
-        let expected = base
-            .checked_add(cair_base::VTABLE_RVA)
-            .map(|vtable| vtable as u64);
+        let expected = engine_sites::at(base, cair_base::VTABLE_RVA).map(|vtable| vtable as u64);
         for index in 0..limit {
             let row = object[index];
             if row == NONE {
@@ -559,7 +556,7 @@ mod tests {
         }
         fn unresolved(&mut self, handle: u64) {
             self.u64(
-                creference_registry::LOW_ROOTS_RVA + (handle as u32) as usize * 8,
+                creference_registry::LOW_ROOTS_RVA.0 + (handle as u32) as usize * 8,
                 0,
             );
         }
@@ -568,7 +565,10 @@ mod tests {
             let kind = handle as u32 as usize;
             let table = 0x4000 + kind * 0x100;
             let entries = 0x10_000 + kind * 0x1000;
-            self.u64(creference_registry::LOW_ROOTS_RVA + kind * 8, table as u64);
+            self.u64(
+                creference_registry::LOW_ROOTS_RVA.0 + kind * 8,
+                table as u64,
+            );
             self.u64(table + creference_registry::ENTRIES, entries as u64);
             self.u32(table + creference_registry::COUNT, 1);
             self.u32(table + creference_registry::MASK, 7);
@@ -586,7 +586,7 @@ mod tests {
         }
         fn base(&mut self, state: usize, province: usize, host: u64, kind: i32) {
             self.register(BASE_HANDLE, BASE);
-            self.u64(BASE, cair_base::VTABLE_RVA as u64);
+            self.u64(BASE, cair_base::VTABLE_RVA.0 as u64);
             self.u64(BASE + cair_base::HANDLE, BASE_HANDLE);
             self.u64(BASE + cair_base::HOST_REFERENCE, host);
             self.u64(BASE + cair_base::STATE, state as u64);
@@ -596,7 +596,7 @@ mod tests {
         /// State 7's kind-2 list holds province 23 first.
         fn manager(&mut self) {
             self.u64(GAME + cgame_state::STRATEGIC_AIR_MANAGER, MANAGER as u64);
-            self.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+            self.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA.0 as u64);
             self.array(
                 MANAGER + cstrategic_air_manager::KIND2_STATE_PROVINCE_LISTS,
                 LISTS,
@@ -640,9 +640,9 @@ mod tests {
     fn a_state_base_takes_its_cached_province_or_the_managers_first() {
         let mut memory = Fixture::default();
         memory.base(STATE, PROVINCE, 0, 2);
-        memory.u64(STATE, cstate::VTABLE_RVA as u64);
+        memory.u64(STATE, cstate::VTABLE_RVA.0 as u64);
         memory.u32(STATE + cstate::ID, 7);
-        memory.u64(PROVINCE, cprovince::VTABLE_RVA as u64);
+        memory.u64(PROVINCE, cprovince::VTABLE_RVA.0 as u64);
         memory.u32(PROVINCE + cprovince::ID, 19);
         let expected = BaseReference {
             object: BASE,
@@ -687,13 +687,13 @@ mod tests {
             }))
         );
         memory.register(SHIP_HANDLE, SHIP);
-        memory.u64(SHIP, cship::VTABLE_RVA as u64);
+        memory.u64(SHIP, cship::VTABLE_RVA.0 as u64);
         memory.u64(SHIP + cship::HANDLE, SHIP_HANDLE);
         memory.u64(SHIP + cship::TASK_FORCE, TASK_FORCE as u64);
-        memory.u64(TASK_FORCE, ctask_force::VTABLE_RVA as u64);
+        memory.u64(TASK_FORCE, ctask_force::VTABLE_RVA.0 as u64);
         memory.u64(
             TASK_FORCE + ctask_force::SECONDARY_BASE,
-            ctask_force::SECONDARY_VTABLE_RVA as u64,
+            ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
         );
         memory.u32(TASK_FORCE + cunit::ROSTER_OWNER, 42);
         assert_eq!(
@@ -727,7 +727,7 @@ mod tests {
         /// The world's first address; the module sits so its low roots fall
         /// inside the world.
         const WORLD: usize = 0x1000_0000;
-        const MODULE: usize = Self::WORLD + 0x100 - creference_registry::LOW_ROOTS_RVA;
+        const MODULE: usize = Self::WORLD + 0x100 - creference_registry::LOW_ROOTS_RVA.0;
         const TABLE: usize = 0x1000;
         const ENTRIES: usize = 0x2000;
         const EXPONENT: u32 = 14;
@@ -769,7 +769,7 @@ mod tests {
                 handles: Vec::new(),
             };
             let module = Self::MODULE;
-            let vtable = |rva: usize| ((module + rva) as u64).to_le_bytes();
+            let vtable = |rva: Rva| ((module + rva.0) as u64).to_le_bytes();
             // The registry: capacity 2^14, overflow 16, sentinel after it.
             let capacity = 1_usize << Self::EXPONENT;
             let overflow = Self::EXPONENT as usize + 2;

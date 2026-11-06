@@ -9,9 +9,10 @@
 use crate::{
     Memory, ccharacter_manager, ccharacter_template, msvc_string, read, read_slice, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Character vtable.
-pub const VTABLE_RVA: usize = 0x029f_b0d0;
+pub const VTABLE_RVA: Rva = Rva(0x029f_b0d0);
 /// Reference type value, u32.
 pub const REFERENCE_TYPE: u32 = 73;
 /// Reference-type field, u32, in the primary object header.
@@ -209,9 +210,7 @@ impl<'a, M: Memory> View<'a, M> {
                 copied[index] = read_slice(memory, addresses[index], spans[index]);
             }
         }
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64
             || u32::from_le_bytes(identity[TYPE..TYPE + 4].try_into().unwrap()) != REFERENCE_TYPE
         {
@@ -243,9 +242,7 @@ impl<'a, M: Memory> View<'a, M> {
         occurrence: Occurrence,
         fields: AcquiredFields,
     ) -> Result<Self, &'static str> {
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let mut identity = [0; 16];
         identity[..8].copy_from_slice(&(expected as u64).to_le_bytes());
         identity[TYPE..TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
@@ -651,9 +648,7 @@ pub fn identity_with_spans(
     if completed == 0 {
         return Err("character identity unreadable");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64
         || u32::from_le_bytes(identity[TYPE..ID].try_into().unwrap()) != REFERENCE_TYPE
     {
@@ -678,9 +673,7 @@ pub(crate) fn identity_header(
 
 /// [`identity_header`] over its 16 header bytes, already copied.
 pub(crate) fn identity_from_header(base: usize, header: [u8; 16]) -> Result<u32, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64
         || u32::from_le_bytes(header[TYPE..ID].try_into().unwrap()) != REFERENCE_TYPE
     {

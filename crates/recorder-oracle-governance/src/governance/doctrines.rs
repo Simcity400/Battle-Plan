@@ -351,7 +351,7 @@ mod tests {
         {
             let mastery = -(ordinal as i64 + 1);
             let mut memory = NativeLeader([0; native::LEADER_STRIDE]);
-            memory.0[..8].copy_from_slice(&(native::LEADER_VTABLE as u64).to_le_bytes());
+            memory.0[..8].copy_from_slice(&(native::LEADER_VTABLE.0 as u64).to_le_bytes());
             memory.0[8..12].copy_from_slice(&reference_type.to_le_bytes());
             memory.0[12..16].copy_from_slice(&id.to_le_bytes());
             memory.0[16..24].copy_from_slice(&mastery.to_le_bytes());

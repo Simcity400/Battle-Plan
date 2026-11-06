@@ -8,7 +8,7 @@ struct Fixture {
 
 impl crate::Memory for Fixture {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        if address == VTABLE_RVAS[0] + COUNTRY_GETTER_SLOT {
+        if address == VTABLE_RVAS[0].0 + COUNTRY_GETTER_SLOT {
             self.getter_reads.set(self.getter_reads.get() + 1);
         }
         let Some(value) = self
@@ -34,13 +34,13 @@ fn fixture() -> Fixture {
                 0x300 + crate::operative_action::IMPLEMENTATION,
                 0x400_u64.to_le_bytes().to_vec(),
             ),
-            (0x200, (VTABLE_RVAS[0] as u64).to_le_bytes().to_vec()),
-            (0x400, (VTABLE_RVAS[0] as u64).to_le_bytes().to_vec()),
+            (0x200, (VTABLE_RVAS[0].0 as u64).to_le_bytes().to_vec()),
+            (0x400, (VTABLE_RVAS[0].0 as u64).to_le_bytes().to_vec()),
             (0x200 + TARGET_COUNTRY, 7_u32.to_le_bytes().to_vec()),
             (0x400 + TARGET_COUNTRY, 8_u32.to_le_bytes().to_vec()),
             (
-                VTABLE_RVAS[0] + COUNTRY_GETTER_SLOT,
-                (COUNTRY_GETTER_RVA as u64).to_le_bytes().to_vec(),
+                VTABLE_RVAS[0].0 + COUNTRY_GETTER_SLOT,
+                (COUNTRY_GETTER_RVA.0 as u64).to_le_bytes().to_vec(),
             ),
         ]),
         getter_reads: Cell::new(0),
@@ -70,7 +70,7 @@ fn country_getter_is_authenticated_once_per_vtable_without_reusing_mutable_targe
 fn failed_country_getter_authentication_is_not_retried_or_carried_to_another_walk() {
     let mut memory = fixture();
     memory.fields.insert(
-        VTABLE_RVAS[0] + COUNTRY_GETTER_SLOT,
+        VTABLE_RVAS[0].0 + COUNTRY_GETTER_SLOT,
         0_u64.to_le_bytes().to_vec(),
     );
     let mut vtables = Vtables::new(0);
@@ -79,8 +79,8 @@ fn failed_country_getter_authentication_is_not_retried_or_carried_to_another_wal
         Err("unsupported operative mission country getter")
     );
     memory.fields.insert(
-        VTABLE_RVAS[0] + COUNTRY_GETTER_SLOT,
-        (COUNTRY_GETTER_RVA as u64).to_le_bytes().to_vec(),
+        VTABLE_RVAS[0].0 + COUNTRY_GETTER_SLOT,
+        (COUNTRY_GETTER_RVA.0 as u64).to_le_bytes().to_vec(),
     );
     assert_eq!(
         vtables.country(&memory, 0x300, 1),
@@ -125,10 +125,10 @@ fn targets_read_a_state_only_for_state_variants_and_authenticate_once() {
     // A country variant's implementation has no state field to read.
     memory
         .fields
-        .insert(0x400, (VTABLE_RVAS[2] as u64).to_le_bytes().to_vec());
+        .insert(0x400, (VTABLE_RVAS[2].0 as u64).to_le_bytes().to_vec());
     memory.fields.insert(
-        VTABLE_RVAS[2] + COUNTRY_GETTER_SLOT,
-        (COUNTRY_GETTER_RVA as u64).to_le_bytes().to_vec(),
+        VTABLE_RVAS[2].0 + COUNTRY_GETTER_SLOT,
+        (COUNTRY_GETTER_RVA.0 as u64).to_le_bytes().to_vec(),
     );
     assert_eq!(
         vtables.targets(

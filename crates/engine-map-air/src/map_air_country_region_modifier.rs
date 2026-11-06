@@ -6,6 +6,7 @@
 //! sortie calculation belong to the viewer.
 
 use crate::{Memory, ccountry, cstrategic_region, modifier_accumulator, read};
+use engine_sites::Rva;
 
 /// Country region-map header.
 const COUNTRY_REGION_MAP: usize = 0x4d8;
@@ -26,16 +27,14 @@ const NODE_VALUE: usize = 0x18;
 /// Per-region object's modifier accumulator.
 const REGION_ACCUMULATOR: usize = 0x50;
 /// Per-region object primary vtable.
-const REGION_OBJECT_VTABLE_RVA: usize = 0x0286_44f0;
+const REGION_OBJECT_VTABLE_RVA: Rva = Rva(0x0286_44f0);
 /// Modifier key used for country/region sortie efficiency.
 pub const SORTIE_EFFICIENCY_KEY: u32 = 0x11;
 
-/// Regional Ground Crews writers and the supported entry fingerprints.
-pub const GROUND_CREWS_ENABLE_RVA: usize = 0x0073_13f0;
-pub const GROUND_CREWS_DISABLE_RVA: usize = 0x0073_0e80;
-pub const GROUND_CREWS_CONSTRUCTOR_RVA: usize = 0x0071_3070;
-pub const GROUND_CREWS_COMMAND_PREFIX_HASH: u64 = 0x68a8_be43_5f6a_b8f5;
-pub const GROUND_CREWS_CONSTRUCTOR_PREFIX_HASH: u64 = 0x12f8_397e_4ae0_8b63;
+/// Regional Ground Crews writers.
+pub const GROUND_CREWS_ENABLE_RVA: Rva = Rva(0x0073_13f0);
+pub const GROUND_CREWS_DISABLE_RVA: Rva = Rva(0x0073_0e80);
+pub const GROUND_CREWS_CONSTRUCTOR_RVA: Rva = Rva(0x0071_3070);
 const GROUND_CREWS_ENABLED: usize = 0x38;
 
 /// An authenticated regional object. Its pointer is acquisition context;
@@ -201,7 +200,7 @@ impl CountryMap {
             .checked_add(cstrategic_region::SECONDARY)
             .ok_or("air modifier region address overflow")?;
         let [mut primary, mut second] = [[0_u8; 8]; 2];
-        let vtable = |rva: usize| base.checked_add(rva).map(|value| value as u64);
+        let vtable = |rva: Rva| engine_sites::at(base, rva).map(|value| value as u64);
         if region == 0
             || memory.copy_scattered([region, secondary], &mut [&mut primary, &mut second]) != 2
             || Some(u64::from_le_bytes(primary)) != vtable(cstrategic_region::VTABLE_RVA)
@@ -290,12 +289,14 @@ fn authenticate(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    vtable_rva: usize,
+    vtable_rva: Rva,
     reason: &'static str,
 ) -> Result<(), &'static str> {
-    if pointer == 0
-        || read::<u64>(memory, pointer) != base.checked_add(vtable_rva).map(|v| v as u64)
-    {
+    if pointer == 0 {
+        return Err(reason);
+    }
+    let expected = engine_sites::at(base, vtable_rva).ok_or(reason)?;
+    if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err(reason);
     }
     Ok(())
@@ -351,12 +352,12 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x8000];
-        put(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
-        put(&mut bytes, REGION, cstrategic_region::VTABLE_RVA as u64);
+        put(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
+        put(&mut bytes, REGION, cstrategic_region::VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             REGION + cstrategic_region::SECONDARY,
-            cstrategic_region::SECONDARY_VTABLE_RVA as u64,
+            cstrategic_region::SECONDARY_VTABLE_RVA.0 as u64,
         );
         put(&mut bytes, SENTINEL, SENTINEL as u64);
         put(&mut bytes, SENTINEL + 8, SENTINEL as u64);
@@ -372,7 +373,7 @@ mod tests {
         put(bytes, NODE_A + 8, SENTINEL as u64);
         put(bytes, NODE_A + 0x10, region as u64);
         put(bytes, NODE_A + NODE_VALUE, VALUE as u64);
-        put(bytes, VALUE, REGION_OBJECT_VTABLE_RVA as u64);
+        put(bytes, VALUE, REGION_OBJECT_VTABLE_RVA.0 as u64);
         put(bytes, VALUE + REGION_ACCUMULATOR, ENTRIES as u64);
         bytes[VALUE + REGION_ACCUMULATOR + 8..VALUE + REGION_ACCUMULATOR + 12]
             .copy_from_slice(&1_u32.to_le_bytes());
@@ -463,11 +464,11 @@ mod tests {
             .step_by(8)
             .find(|&candidate| hash(candidate as u64) & 7 == hash(REGION as u64) & 7)
             .unwrap();
-        put(&mut bytes, other, cstrategic_region::VTABLE_RVA as u64);
+        put(&mut bytes, other, cstrategic_region::VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             other + cstrategic_region::SECONDARY,
-            cstrategic_region::SECONDARY_VTABLE_RVA as u64,
+            cstrategic_region::SECONDARY_VTABLE_RVA.0 as u64,
         );
         assert_eq!(
             read_fixture(&bytes, other),
@@ -509,7 +510,7 @@ mod tests {
             read_fixture(&bytes, REGION),
             Err("air modifier region identity invalid")
         );
-        put(&mut bytes, REGION, cstrategic_region::VTABLE_RVA as u64);
+        put(&mut bytes, REGION, cstrategic_region::VTABLE_RVA.0 as u64);
         put(&mut bytes, COUNTRY + COUNTRY_REGION_MAP + MAP_MASK, 3);
         assert_eq!(
             read_fixture(&bytes, REGION),
@@ -528,7 +529,7 @@ mod tests {
             read_fixture(&bytes, REGION),
             Err("air modifier region object identity invalid")
         );
-        put(&mut bytes, VALUE, REGION_OBJECT_VTABLE_RVA as u64);
+        put(&mut bytes, VALUE, REGION_OBJECT_VTABLE_RVA.0 as u64);
         bytes[VALUE + REGION_ACCUMULATOR + 12..VALUE + REGION_ACCUMULATOR + 16]
             .copy_from_slice(&2_u32.to_le_bytes());
         assert_eq!(

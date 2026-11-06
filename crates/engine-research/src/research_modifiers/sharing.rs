@@ -1,8 +1,9 @@
 //! Stored research-sharing operands.
 use super::*;
+use engine_sites::Rva;
 
-const GROUP_VTABLE: usize = crate::ctechnology_sharing_group::VTABLE_RVA;
-pub(super) const FACTION_VTABLE: usize = 0x02ac_66b8;
+const GROUP_VTABLE: Rva = crate::ctechnology_sharing_group::VTABLE_RVA;
+pub(super) const FACTION_VTABLE: Rva = Rva(0x02ac_66b8);
 #[derive(Clone)]
 struct Group {
     id: u32,
@@ -66,10 +67,13 @@ impl Country {
         pointer_pages(memory, roster, |p| {
             let bytes = read::<[u8; 72]>(memory, p).ok_or("research sharing group unreadable")?;
             let vtable = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-            let is_group = vtable == at(base, GROUP_VTABLE)? as u64;
-            if !is_group && vtable != at(base, FACTION_VTABLE)? as u64 {
-                return Err("research sharing vtable unsupported");
-            }
+            let is_group = match usize::try_from(vtable).ok().and_then(|vtable| {
+                engine_sites::which(base, vtable, &[GROUP_VTABLE, FACTION_VTABLE])
+            }) {
+                Some(GROUP_VTABLE) => true,
+                Some(_) => false,
+                None => return Err("research sharing vtable unsupported"),
+            };
             let members = array(&bytes[24..40], 4)?;
             let bonuses = array(&bytes[48..64], 8)?;
             // Scan the sharing list to its live count and index the parallel bonuses by the same
@@ -103,7 +107,7 @@ impl Country {
             )?;
             if is_group {
                 let template = pointer(memory, at(p, 0x48)?)?;
-                if read::<u64>(memory, template) != Some(at(base, 0x029c_11e0)? as u64) {
+                if read::<u64>(memory, template) != Some(site(base, Rva(0x029c_11e0))? as u64) {
                     return Err("research sharing template identity mismatch");
                 }
                 let faction = read::<u8>(memory, at(template, 0x78)?)
@@ -122,7 +126,7 @@ impl Country {
                         let faction = usize::try_from(faction)
                             .map_err(|_| "research faction address overflow")?;
                         if read::<u64>(memory, faction)
-                            != Some(at(base, crate::cfaction::VTABLE_RVA)? as u64)
+                            != Some(site(base, crate::cfaction::VTABLE_RVA)? as u64)
                         {
                             return Err("research sharing faction identity mismatch");
                         }
@@ -213,7 +217,11 @@ pub(super) fn record_roster<M: Memory>(
         let bytes = read::<[u8; 12]>(memory, pointer)
             .ok_or("scripted sharing group identity unreadable")?;
         let vtable = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-        if vtable != at(base, GROUP_VTABLE)? as u64 && vtable != at(base, FACTION_VTABLE)? as u64 {
+        if usize::try_from(vtable)
+            .ok()
+            .and_then(|vtable| engine_sites::which(base, vtable, &[GROUP_VTABLE, FACTION_VTABLE]))
+            .is_none()
+        {
             return Err("scripted sharing group identity unsupported");
         }
         out.value(

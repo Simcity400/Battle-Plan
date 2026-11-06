@@ -22,11 +22,11 @@ impl Memory for Fixture {
         }) {
             return false;
         }
-        if address == self.world.module + DATABASE_RVA {
+        if address == self.world.module + DATABASE_RVA.0 {
             destination.copy_from_slice(&(self.database as u64).to_le_bytes());
             return true;
         }
-        if let Some(offset) = address.checked_sub(self.world.module + cpdx_lexer::INITIALIZED_RVA)
+        if let Some(offset) = address.checked_sub(self.world.module + cpdx_lexer::INITIALIZED_RVA.0)
             && offset + destination.len() <= self.lexer.len()
         {
             destination.copy_from_slice(&self.lexer[offset..offset + destination.len()]);
@@ -63,36 +63,36 @@ impl Fixture {
         let mut lexer = [0; 64];
         lexer[0] = 1;
         let mut put = |rva, bytes: &[u8]| {
-            lexer
-                [rva - cpdx_lexer::INITIALIZED_RVA..rva - cpdx_lexer::INITIALIZED_RVA + bytes.len()]
+            lexer[rva - cpdx_lexer::INITIALIZED_RVA.0
+                ..rva - cpdx_lexer::INITIALIZED_RVA.0 + bytes.len()]
                 .copy_from_slice(bytes)
         };
-        put(cpdx_lexer::MAX_TOKEN_ID_RVA, &63_i32.to_le_bytes());
-        put(cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, &1_i32.to_le_bytes());
-        put(cpdx_lexer::DYNAMIC_TOKENS_RVA, &0x2000_u64.to_le_bytes());
-        put(cpdx_lexer::DYNAMIC_CAPACITY_RVA, &62_i32.to_le_bytes());
-        put(cpdx_lexer::DYNAMIC_COUNT_RVA, &62_i32.to_le_bytes());
+        put(cpdx_lexer::MAX_TOKEN_ID_RVA.0, &63_i32.to_le_bytes());
+        put(cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA.0, &1_i32.to_le_bytes());
+        put(cpdx_lexer::DYNAMIC_TOKENS_RVA.0, &0x2000_u64.to_le_bytes());
+        put(cpdx_lexer::DYNAMIC_CAPACITY_RVA.0, &62_i32.to_le_bytes());
+        put(cpdx_lexer::DYNAMIC_COUNT_RVA.0, &62_i32.to_le_bytes());
         put(
-            cpdx_lexer::TOKEN_NAMES_RVA,
+            cpdx_lexer::TOKEN_NAMES_RVA.0,
             &(dictionary as u64).to_le_bytes(),
         );
-        put(cpdx_lexer::TOKEN_ALLOCATION_RVA, &64_i32.to_le_bytes());
-        put(cpdx_lexer::TOKEN_CAPACITY_RVA, &64_i32.to_le_bytes());
+        put(cpdx_lexer::TOKEN_ALLOCATION_RVA.0, &64_i32.to_le_bytes());
+        put(cpdx_lexer::TOKEN_CAPACITY_RVA.0, &64_i32.to_le_bytes());
         let database = world.alloc(0x100);
-        world.u64(database, (module + DATABASE_VTABLE_RVA) as u64);
+        world.u64(database, (module + DATABASE_VTABLE_RVA.0) as u64);
         let branches = [world.alloc(0x60), world.alloc(0x60)];
         let branch_vector = world.alloc(3 * 8);
         world.array(database + DATABASE_BRANCHES, branch_vector, 3);
         for (index, branch) in branches.iter().copied().enumerate() {
             world.u64(branch_vector + (index + 1) * 8, branch as u64);
-            world.u64(branch, (module + BRANCH_VTABLE_RVA) as u64);
+            world.u64(branch, (module + BRANCH_VTABLE_RVA.0) as u64);
             // Native valid checks accept nonzero, rather than normalising it.
             world.put(branch + VALID, &[0x7f]);
             world.u32(branch + TOKEN, 11 + index as u32);
         }
         let definitions = [world.alloc(0x270), world.alloc(0x270), world.alloc(0x270)];
         for (index, definition) in definitions.iter().copied().enumerate() {
-            world.u64(definition, (module + DEFINITION_VTABLE_RVA) as u64);
+            world.u64(definition, (module + DEFINITION_VTABLE_RVA.0) as u64);
             world.put(definition + VALID, &[0x7f]);
             world.u32(definition + TOKEN, if index == 1 { 8 } else { 7 });
             world.u64(
@@ -132,7 +132,7 @@ impl Fixture {
                 world.object(country) + ccountry::INTELLIGENCE_AGENCY,
                 agency as u64,
             );
-            world.u64(agency, (module + cintelligence_agency::VTABLE_RVA) as u64);
+            world.u64(agency, (module + cintelligence_agency::VTABLE_RVA.0) as u64);
             world.u64(
                 agency + cintelligence_agency::OWNER_COUNTRY,
                 world.object(country) as u64,
@@ -219,7 +219,7 @@ fn worker_grows_first_capture_and_later_catalog_at_unchanged_countries() {
         let definition = fixture.world.alloc(0x270);
         fixture.world.u64(
             definition,
-            (fixture.world.module + DEFINITION_VTABLE_RVA) as u64,
+            (fixture.world.module + DEFINITION_VTABLE_RVA.0) as u64,
         );
         fixture.world.put(definition + VALID, &[1]);
         fixture.world.u32(definition + TOKEN, 7);
@@ -476,7 +476,7 @@ fn agency_upgrade_levels_reset_empty_created_and_uncreated_skip_the_database_and
     for agency in &fixture.agencies {
         fixture.world.array(*agency + ACQUIRED, fixture.entries, 0);
     }
-    fixture.denied = Some((fixture.world.module + DATABASE_RVA, 8));
+    fixture.denied = Some((fixture.world.module + DATABASE_RVA.0, 8));
     assert_eq!(
         native_demand(&fixture, fixture.world.module, fixture.world.game_state()).unwrap(),
         Demand::default()
@@ -557,7 +557,9 @@ fn agency_upgrade_levels_database_forms_and_duplicate_memberships_have_named_cou
     ] {
         let mut fixture = Fixture::new(1);
         match status {
-            DATABASE_UNAVAILABLE => fixture.denied = Some((fixture.world.module + DATABASE_RVA, 8)),
+            DATABASE_UNAVAILABLE => {
+                fixture.denied = Some((fixture.world.module + DATABASE_RVA.0, 8))
+            }
             DATABASE_UNSUPPORTED => fixture.world.u64(fixture.database, 0xdead_beef),
             BRANCH_UNAVAILABLE => fixture.world.u64(fixture.branches[0], 0xdead_beef),
             DUPLICATE_MEMBERSHIP => {

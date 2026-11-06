@@ -17,6 +17,7 @@ engine-dlc.workspace = true
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
 engine-native.workspace = true
+engine-sites.workspace = true
 engine-resources.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true

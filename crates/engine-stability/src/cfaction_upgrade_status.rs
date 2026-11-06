@@ -7,16 +7,17 @@ use engine_native::{
     Memory, cadvisor, ccharacter, cdoctrine_sharing_status, cfaction_member_status, cgame_date,
     cpdx_array::Array, creference_registry, ctechnology_sharing_faction, read,
 };
+use engine_sites::Rva;
 
 pub const STATUS: usize = 0x838;
-pub const VTABLE_RVA: usize = 0x02a3_87d0;
+pub const VTABLE_RVA: Rva = Rva(0x02a3_87d0);
 pub const MEMBER_UPGRADES: usize = 0x08;
 pub const RESEARCH_SHARING: usize = 0x28;
 pub const DOCTRINE_SHARING: usize = 0x78;
 pub const SLOTS: usize = 0x98;
 pub const OWNER: usize = 0xb0;
 /// Loaded null change-date scalar used by the slot serializer.
-pub const UNSET_CHANGE_HOUR_RVA: usize = 0x30feb68;
+pub const UNSET_CHANGE_HOUR_RVA: Rva = Rva(0x30feb68);
 pub const SLOT_STRIDE: usize = 0x1a8;
 pub const SLOT_ADVISOR: usize = 0;
 pub const SLOT_COUNTRY: usize = 0x08;
@@ -38,6 +39,9 @@ fn at(address: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("faction upgrade address overflow")
 }
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("faction upgrade address overflow")
+}
 
 fn advisor(memory: &impl Memory, base: usize, slot: usize) -> Result<Option<u64>, &'static str> {
     let pointer = read::<u64>(memory, at(slot, SLOT_ADVISOR)?)
@@ -46,14 +50,14 @@ fn advisor(memory: &impl Memory, base: usize, slot: usize) -> Result<Option<u64>
     if pointer == 0 {
         return Ok(None);
     }
-    if read::<u64>(memory, pointer) != Some(at(base, cadvisor::VTABLE_RVA)? as u64) {
+    if read::<u64>(memory, pointer) != Some(site(base, cadvisor::VTABLE_RVA)? as u64) {
         return Err("faction upgrade advisor vtable mismatch");
     }
     let character = read::<u64>(memory, at(pointer, cadvisor::CHARACTER)?)
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| *value != 0)
         .ok_or("faction upgrade advisor character unreadable or null")?;
-    if read::<u64>(memory, character) != Some(at(base, ccharacter::VTABLE_RVA)? as u64) {
+    if read::<u64>(memory, character) != Some(site(base, ccharacter::VTABLE_RVA)? as u64) {
         return Err("faction upgrade advisor character vtable mismatch");
     }
     let handle = read::<u64>(memory, at(character, ccharacter::TYPE)?)
@@ -81,7 +85,7 @@ pub fn authenticate(
     faction: usize,
 ) -> Result<Status, &'static str> {
     let status = at(faction, STATUS)?;
-    if read::<u64>(memory, status) != Some(at(base, VTABLE_RVA)? as u64) {
+    if read::<u64>(memory, status) != Some(site(base, VTABLE_RVA)? as u64) {
         return Err("faction upgrade status vtable mismatch");
     }
     if read::<u64>(memory, at(status, OWNER)?) != Some(faction as u64) {

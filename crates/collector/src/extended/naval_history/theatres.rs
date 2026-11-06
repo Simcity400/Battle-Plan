@@ -638,7 +638,7 @@ fn copy_naval_theatres_with_root(
     if countries_array.count < 2 || links_array.count == 0 {
         return;
     }
-    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
+    let country_vtable = match engine_sites::at(base, ccountry::VTABLE_RVA) {
         Some(v) => v as u64,
         None => return,
     };
@@ -1078,7 +1078,7 @@ fn copy_oob_root(
                 let identity = nspan(log, memory, Some(target), 16, OOB_MASK);
                 if offset == corders_group::THEATRE
                     && identity.is_some_and(|start| {
-                        base.checked_add(ctheatre::VTABLE_RVA)
+                        engine_sites::at(base, ctheatre::VTABLE_RVA)
                             .is_some_and(|expected| npool_u64(log, start) == expected as u64)
                             && npool_u64(log, start + 8) as u32 == ctheatre::REFERENCE_TYPE
                     })
@@ -1336,7 +1336,7 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine_native::Memory, ba
     let table = match nspan(
         log,
         memory,
-        base.checked_add(registry::LOW_ROOTS_RVA)
+        engine_sites::at(base, registry::LOW_ROOTS_RVA)
             .and_then(|p| p.checked_add(corders_group::REFERENCE_TYPE as usize * 8)),
         8,
         OOB_MASK,
@@ -1382,11 +1382,11 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine_native::Memory, ba
         .checked_add(terminal * bucket::STRIDE)
         .and_then(|p| p.checked_add(bucket::DISTANCE));
     let _ = nspan(log, memory, terminal_addr, 1, OOB_MASK);
-    let group_vtable = match base.checked_add(corders_group::VTABLE_RVA) {
+    let group_vtable = match engine_sites::at(base, corders_group::VTABLE_RVA) {
         Some(v) => v as u64,
         None => return false,
     };
-    let army_group_vtable = match base.checked_add(engine_native::carmy_group::VTABLE_RVA) {
+    let army_group_vtable = match engine_sites::at(base, engine_native::carmy_group::VTABLE_RVA) {
         Some(v) => v as u64,
         None => return false,
     };
@@ -1632,8 +1632,7 @@ fn copy_reserved_land_headers(job: &mut NavalJob, memory: &impl Memory, base: us
         if job.log.overflowed {
             return Err("reserved land raw capacity insufficient");
         }
-        let expected = base
-            .checked_add(ctheatre::VTABLE_RVA)
+        let expected = engine_sites::at(base, ctheatre::VTABLE_RVA)
             .ok_or("reserved land module address overflow")? as u64;
         for ordinal in 0..theatres.count {
             let entry = nspan(&mut job.log, memory, theatres.element(ordinal, 8), 8, 0)

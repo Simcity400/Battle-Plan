@@ -81,7 +81,7 @@ fn world() -> TestMemory {
         word(&mut bytes, 0x3100 + slot * 4, canonical);
     }
     for (country, id) in [(ZERO, 0), (OWNER, 1)] {
-        pointer(&mut bytes, country, ccountry::VTABLE_RVA);
+        pointer(&mut bytes, country, ccountry::VTABLE_RVA.0);
         word(&mut bytes, country + ccountry::ID, id);
     }
     pointer(
@@ -89,7 +89,7 @@ fn world() -> TestMemory {
         STATE + cgame_state::STRATEGIC_NAVY_MANAGER,
         MANAGER,
     );
-    pointer(&mut bytes, MANAGER, cstrategic_navy_manager::VTABLE_RVA);
+    pointer(&mut bytes, MANAGER, cstrategic_navy_manager::VTABLE_RVA.0);
     header(
         &mut bytes,
         MANAGER + cstrategic_navy_manager::NAVIES,
@@ -99,11 +99,11 @@ fn world() -> TestMemory {
     pointer(&mut bytes, 0xa108, NAVY);
     pointer(&mut bytes, 0xa118, FOREIGN_NAVY);
     for navy in [NAVY, FOREIGN_NAVY] {
-        pointer(&mut bytes, navy, cstrategic_navy::VTABLE_RVA);
+        pointer(&mut bytes, navy, cstrategic_navy::VTABLE_RVA.0);
         pointer(
             &mut bytes,
             navy + cstrategic_navy::SECONDARY,
-            cstrategic_navy::SECONDARY_VTABLE_RVA,
+            cstrategic_navy::SECONDARY_VTABLE_RVA.0,
         );
         pointer(&mut bytes, navy + native::MANAGER, MANAGER);
     }
@@ -121,7 +121,7 @@ fn world() -> TestMemory {
     pointer(&mut bytes, 0xc218, 0xd100);
     pointer(&mut bytes, 0xc300, 0xd100);
     for (base, id) in [(0xd000, 0), (0xd100, 3)] {
-        pointer(&mut bytes, base, cnaval_base::VTABLE_RVA);
+        pointer(&mut bytes, base, cnaval_base::VTABLE_RVA.0);
         word(&mut bytes, base + cnaval_base::PROVINCE_ID, id);
     }
     header(&mut bytes, STATE + cgame_state::PROVINCES, 0x3200, 4);
@@ -131,7 +131,7 @@ fn world() -> TestMemory {
         (3, PROVINCES[2], 0x19100),
     ] {
         pointer(&mut bytes, 0x3200 + id * 8, province);
-        pointer(&mut bytes, province, cprovince::VTABLE_RVA);
+        pointer(&mut bytes, province, cprovince::VTABLE_RVA.0);
         word(&mut bytes, province + cprovince::ID, id as u32);
         pointer(&mut bytes, province + cprovince::CONTROLLER_AREA, area);
         word(&mut bytes, province + cprovince::CONTROLLER, 1);

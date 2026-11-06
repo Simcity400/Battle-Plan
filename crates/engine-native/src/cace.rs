@@ -4,9 +4,10 @@
 //! remain raw references for resolution through the recorded wing table.
 
 use crate::{Memory, ccountry, cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome};
+use engine_sites::Rva;
 
 /// Primary ace vtable.
-pub const VTABLE_RVA: usize = 0x0285_be00;
+pub const VTABLE_RVA: Rva = Rva(0x0285_be00);
 /// Full reference containing u32 type and id; construction initializes both words.
 pub const REFERENCE: usize = 0x08;
 /// Instance id, u32.
@@ -355,16 +356,14 @@ pub fn portrait_sources(
 ) -> Result<[Option<msvc_string::Descriptor>; 3], &'static str> {
     let gui = read::<u64>(
         memory,
-        base.checked_add(crate::cgui::SINGLETON_RVA)
+        engine_sites::at(base, crate::cgui::SINGLETON_RVA)
             .ok_or("ace GUI singleton address overflow")?,
     )
     .and_then(|p| usize::try_from(p).ok())
     .filter(|p| *p != 0)
     .ok_or("ace GUI not available")?;
     if read::<u64>(memory, gui)
-        != base
-            .checked_add(crate::cgame_gui::VTABLE_RVA)
-            .map(|p| p as u64)
+        != engine_sites::at(base, crate::cgame_gui::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("ace GUI identity mismatch");
     }
@@ -451,9 +450,7 @@ fn read_row(
     );
     if copied == 0
         || le64(&identity, 0)
-            != base
-                .checked_add(VTABLE_RVA)
-                .ok_or("module address overflow")? as u64
+            != engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64
     {
         return Err("ace vtable unreadable or mismatch");
     }
@@ -597,12 +594,12 @@ mod tests {
         memory.u64(COUNTRIES + 16, COUNTRY as u64);
         memory.u32(LINKS + 4, 1);
         memory.u32(LINKS + 8, 1);
-        memory.u64(COUNTRY, ccountry::VTABLE_RVA as u64);
+        memory.u64(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         memory.u32(COUNTRY + ccountry::ID, 2);
         memory.array(COUNTRY + ccountry::ACES, ROSTER, 2);
         for (index, pointer) in ACE.into_iter().enumerate() {
             memory.u64(ROSTER + index * 8, pointer as u64);
-            memory.u64(pointer, VTABLE_RVA as u64);
+            memory.u64(pointer, VTABLE_RVA.0 as u64);
             memory.u64(pointer + REFERENCE, IDS[index]);
             memory.u32(pointer + AIRCRAFT_TYPE_MASK, 0xf123_4567);
             memory.u64(pointer + OWNER_COUNTRY, COUNTRY as u64);
@@ -762,8 +759,8 @@ mod tests {
         memory.bytes(ACE[0] + PORTRAIT_GENDER, &[7, 0, 0, 0, 3, 0, 0, 0]);
         memory.u64(ACE[0] + TYPE_DEFINITION, DEFINITION as u64);
         memory.inline(DEFINITION + TYPE_NAME, b"custommod_type");
-        memory.u64(crate::cgui::SINGLETON_RVA, GUI as u64);
-        memory.u64(GUI, crate::cgame_gui::VTABLE_RVA as u64);
+        memory.u64(crate::cgui::SINGLETON_RVA.0, GUI as u64);
+        memory.u64(GUI, crate::cgame_gui::VTABLE_RVA.0 as u64);
         memory.array(GUI + 0xcb0, POOLS, 2);
         memory.array(POOLS + crate::cpdx_array::STRIDE, STRINGS, 2);
         memory.inline(STRINGS, b"GFX_other_ace");

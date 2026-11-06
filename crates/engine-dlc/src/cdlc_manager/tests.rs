@@ -48,7 +48,7 @@ struct SearchPathMemory<'a> {
 
 impl Memory for SearchPathMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == SEARCH_PATH_RVA && output.len() == 8 {
+        if address == SEARCH_PATH_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(self.root as u64).to_le_bytes());
             true
         } else {
@@ -176,7 +176,7 @@ fn partial_requests_cannot_claim_an_empty_active_mod_roster() {
     struct RootMemory<'a>(&'a [u8]);
     impl Memory for RootMemory<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == SINGLETON_RVA && output.len() == 8 {
+            if address == SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x100_u64.to_le_bytes());
                 true
             } else {
@@ -246,8 +246,8 @@ fn counts_read_headers_and_the_mount_terminator_only() {
     impl Memory for Rooted<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let root = match address {
-                SINGLETON_RVA => 0x100_u64,
-                SEARCH_PATH_RVA => 0x1000,
+                a if a == SINGLETON_RVA.0 => 0x100_u64,
+                a if a == SEARCH_PATH_RVA.0 => 0x1000,
                 _ => {
                     return SliceMemory {
                         base: 0,
@@ -431,7 +431,7 @@ fn search_path_rejects_overflow_and_reads_until_native_terminator_or_fault() {
     struct Unterminated;
     impl Memory for Unterminated {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address != SEARCH_PATH_RVA && address >= 0x100 + 5_001 * 8 {
+            if address != SEARCH_PATH_RVA.0 && address >= 0x100 + 5_001 * 8 {
                 return false;
             }
             assert_eq!(output.len(), 8);

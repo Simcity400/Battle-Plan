@@ -48,250 +48,76 @@
 //!   building. Load changes the epoch.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
-const SET_NAME_RVA: usize = 0xc7_cc10;
+const SET_NAME_RVA: Rva = Rva(0xc7_cc10);
 
 /// The writers, in callback order. Each takes its leader in RCX, except the
 /// two exile sites, which name none. A detour forwards RCX..R9 and returns
 /// RAX unchanged.
-const EXPERIENCE_ADD_UNCHECKED_RVA: usize = 0xc64da0;
-const DAILY_PROGRESS_RVA: usize = 0xc75a30;
-const TRAIT_PROGRESS_ADD_RVA: usize = 0xc6a800;
-const TRAIT_PROGRESS_REMOVE_RVA: usize = 0xc6aae0;
-const TRAIT_PROGRESS_PRUNE_RVA: usize = 0xc786e0;
-const TRAIT_FACTOR_SET_RVA: usize = 0xc647e0;
-const TRAIT_FACTOR_REMOVE_RVA: usize = 0xc790e0;
-const TRAIT_PROGRESS_COMPLETE_RVA: usize = 0xc743b0;
+const EXPERIENCE_ADD_UNCHECKED_RVA: Rva = Rva(0xc64da0);
+const DAILY_PROGRESS_RVA: Rva = Rva(0xc75a30);
+const TRAIT_PROGRESS_ADD_RVA: Rva = Rva(0xc6a800);
+const TRAIT_PROGRESS_REMOVE_RVA: Rva = Rva(0xc6aae0);
+const TRAIT_PROGRESS_PRUNE_RVA: Rva = Rva(0xc786e0);
+const TRAIT_FACTOR_SET_RVA: Rva = Rva(0xc647e0);
+const TRAIT_FACTOR_REMOVE_RVA: Rva = Rva(0xc790e0);
+const TRAIT_PROGRESS_COMPLETE_RVA: Rva = Rva(0xc743b0);
 
 pub const MUTATIONS: [MutationSite; 32] = [
     // The five-byte RBX spill to RDX's home slot relocates.
-    site(
-        "formation",
-        0xc7_cea0,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
-    ),
-    site(
-        "skill",
-        0xc7_d870,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
-    ),
-    site(
-        "category",
-        0xc7_62e0,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x81, 0xec, 0x90, 0x01, 0x00, 0x00, 0x41,
-            0x8b, 0xf8,
-        ],
-    ),
-    site("army_attack", 0xc7_ae90, SETTER),
-    site("army_defense", 0xc7_bcd0, SETTER),
-    site("army_planning", 0xc7_d310, SETTER),
-    site("army_logistics", 0xc7_c7d0, SETTER),
-    site("navy_attack", 0xc7_afc0, SETTER),
-    site("navy_defense", 0xc7_be00, SETTER),
-    site("navy_maneuvering", 0xc7_c900, SETTER),
-    site("navy_coordination", 0xc7_bb00, SETTER),
-    site(
-        "capture",
-        0xc6_7900,
-        [
-            0x4c, 0x89, 0x4c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x53, 0x57, 0x41,
-            0x57, 0x48,
-        ],
-    ),
-    site(
-        "release",
-        0xc7_8f60,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec,
-            0x30, 0x8b,
-        ],
-    ),
+    site("formation", Rva(0xc7_cea0)),
+    site("skill", Rva(0xc7_d870)),
+    site("category", Rva(0xc7_62e0)),
+    site("army_attack", Rva(0xc7_ae90)),
+    site("army_defense", Rva(0xc7_bcd0)),
+    site("army_planning", Rva(0xc7_d310)),
+    site("army_logistics", Rva(0xc7_c7d0)),
+    site("navy_attack", Rva(0xc7_afc0)),
+    site("navy_defense", Rva(0xc7_be00)),
+    site("navy_maneuvering", Rva(0xc7_c900)),
+    site("navy_coordination", Rva(0xc7_bb00)),
+    site("capture", Rva(0xc6_7900)),
+    site("release", Rva(0xc7_8f60)),
     // Reading the tag through RDX into EAX and storing it in the receiver's owner
     // (`cunit_leader::OWNER`) occupy eight relocated bytes before the return and
     // padding.
-    site(
-        "owner",
-        0xc7_bcc0,
-        [
-            0x8b, 0x02, 0x89, 0x81, 0x20, 0x01, 0x00, 0x00, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
-            0xcc, 0xcc,
-        ],
-    ),
-    site(
-        "operative_owner",
-        0xc7_bc30,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x02, 0x48, 0x8b,
-            0xd9, 0x89,
-        ],
-    ),
-    site(
-        "exile_generation",
-        0x72_dfa0,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x56, 0x57, 0x41, 0x54,
-            0x41, 0x56,
-        ],
-    ),
+    site("owner", Rva(0xc7_bcc0)),
+    site("operative_owner", Rva(0xc7_bc30)),
+    site("exile_generation", Rva(0x72_dfa0)),
     // Reserving 0x28 stack bytes and copying RDX to RCX occupy seven relocated bytes.
-    site(
-        "exile_removal",
-        0x30_05e0,
-        [
-            0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0xca, 0xe8, 0xe4, 0xc5, 0x27, 0x00, 0x48, 0x85,
-            0xc0, 0x74,
-        ],
-    ),
-    site(
-        "set_name",
-        SET_NAME_RVA,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24,
-            0x10, 0x57,
-        ],
-    ),
+    site("exile_removal", Rva(0x30_05e0)),
+    site("set_name", SET_NAME_RVA),
     // Saving RBX and reserving 0x40 stack bytes occupy six relocated bytes.
-    site(
-        "rebuild_derived",
-        0xc7_1100,
-        [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x40, 0x48, 0x83, 0x79, 0x38, 0x0f, 0x48, 0x8d, 0x51,
-            0x20, 0x48,
-        ],
-    ),
+    site("rebuild_derived", Rva(0xc7_1100)),
     // Saving RBX and reserving 0x20 stack bytes occupy six relocated bytes
     // before the derived-state rebuild call.
-    site(
-        "operative_rebuild",
-        0xc7_0fe0,
-        [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8, 0x12, 0x01, 0x00, 0x00,
-            0x48, 0x83,
-        ],
-    ),
-    site(
-        "link_character",
-        0xc7_b3c0,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0x05, 0xcf,
-            0xfe, 0x76,
-        ],
-    ),
-    site(
-        "operative_codename",
-        0xc7_b4a0,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
-    ),
+    site("operative_rebuild", Rva(0xc7_0fe0)),
+    site("link_character", Rva(0xc7_b3c0)),
+    site("operative_codename", Rva(0xc7_b4a0)),
     // Reserving 0x28 stack bytes and testing a receiver qword against zero
     // occupy twelve relocated bytes.
-    site(
-        "operative_admission",
-        0xc6_9030,
-        [
-            0x48, 0x83, 0xec, 0x28, 0x48, 0x83, 0xb9, 0x40, 0x10, 0x00, 0x00, 0x00, 0x0f, 0x85,
-            0xed, 0x00,
-        ],
-    ),
+    site("operative_admission", Rva(0xc6_9030)),
     site(
         "experience_add",
         engine_native::cunit_leader::ADD_EXPERIENCE_RVA,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x01, 0x91, 0x68,
-            0x0e, 0x00,
-        ],
     ),
-    site(
-        "experience_add_unchecked",
-        EXPERIENCE_ADD_UNCHECKED_RVA,
-        [
-            0x48, 0x01, 0x91, 0x68, 0x0e, 0x00, 0x00, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
-            0xcc, 0xcc,
-        ],
-    ),
-    site(
-        "daily_progress",
-        DAILY_PROGRESS_RVA,
-        [
-            0x40, 0x53, 0x55, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x38,
-            0x48, 0x8b,
-        ],
-    ),
-    site(
-        "trait_progress_add",
-        TRAIT_PROGRESS_ADD_RVA,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x44, 0x89, 0x4c, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24,
-            0x10, 0x55,
-        ],
-    ),
-    site(
-        "trait_progress_remove",
-        TRAIT_PROGRESS_REMOVE_RVA,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-            0x18, 0x57,
-        ],
-    ),
-    site(
-        "trait_progress_prune",
-        TRAIT_PROGRESS_PRUNE_RVA,
-        [
-            0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
-            0x8d, 0xac,
-        ],
-    ),
-    site(
-        "trait_progress_complete",
-        TRAIT_PROGRESS_COMPLETE_RVA,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x48, 0x83, 0xec,
-            0x20, 0x8b,
-        ],
-    ),
-    site(
-        "trait_factor_set",
-        TRAIT_FACTOR_SET_RVA,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57,
-        ],
-    ),
-    site(
-        "trait_factor_remove",
-        TRAIT_FACTOR_REMOVE_RVA,
-        [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec,
-            0x90, 0x01,
-        ],
-    ),
+    site("experience_add_unchecked", EXPERIENCE_ADD_UNCHECKED_RVA),
+    site("daily_progress", DAILY_PROGRESS_RVA),
+    site("trait_progress_add", TRAIT_PROGRESS_ADD_RVA),
+    site("trait_progress_remove", TRAIT_PROGRESS_REMOVE_RVA),
+    site("trait_progress_prune", TRAIT_PROGRESS_PRUNE_RVA),
+    site("trait_progress_complete", TRAIT_PROGRESS_COMPLETE_RVA),
+    site("trait_factor_set", TRAIT_FACTOR_SET_RVA),
+    site("trait_factor_remove", TRAIT_FACTOR_REMOVE_RVA),
 ];
 
 /// Index of each site in [`MUTATIONS`] that names no leader.
 pub const EXILE_GENERATION: usize = 15;
 pub const EXILE_REMOVAL: usize = 16;
 
-/// The eight component setters share a five-byte relocated RBX spill to RCX's
-/// home slot.
-const SETTER: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
-];
-
-const fn site(name: &'static str, rva: usize, sentinel: [u8; 16]) -> MutationSite {
-    MutationSite {
-        name,
-        rva,
-        sentinel,
-    }
+const fn site(name: &'static str, rva: Rva) -> MutationSite {
+    MutationSite { name, rva }
 }
 
 #[cfg(test)]

@@ -3,9 +3,10 @@
 
 use crate::memory::{RecordField, RecordLayout, RecordSources};
 use crate::{Memory, allocation, read};
+use engine_sites::Rva;
 
 pub const DIRECTIONAL_LEDGERS: [usize; 2] = [0x70, 0xe0];
-pub const LEDGER_VTABLE_RVA: usize = 0x029d_caa8;
+pub const LEDGER_VTABLE_RVA: Rva = Rva(0x029d_caa8);
 pub const FIRST: usize = 8;
 pub const SECOND: usize = 12;
 pub const EQUIPMENT_DAMAGE: usize = 0x10;
@@ -130,9 +131,7 @@ pub fn read_scores(
         read::<[u8; SCORE_BYTES]>(memory, ledger).ok_or("war participation ledger unreadable")?;
     let word = |at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
     if word(0) as usize
-        != base
-            .checked_add(LEDGER_VTABLE_RVA)
-            .ok_or("war participation vtable address overflow")?
+        != engine_sites::at(base, LEDGER_VTABLE_RVA).ok_or("war participation vtable withheld")?
     {
         return Err("war participation ledger vtable mismatch");
     }
@@ -344,9 +343,8 @@ pub fn walk_delivery_histories(
         .checked_add(crate::cdiplomacy_status::RELATIONS)
         .and_then(|p| crate::cpdx_array::Array::read(memory, p, 8))
         .ok_or("war lend-lease relation matrix unreadable")?;
-    let expected_vtable = base
-        .checked_add(crate::crelation_status::VTABLE_RVA)
-        .ok_or("war lend-lease vtable address overflow")? as u64;
+    let expected_vtable = engine_sites::at(base, crate::crelation_status::VTABLE_RVA)
+        .ok_or("war lend-lease vtable withheld")? as u64;
     let fields = [
         RecordField {
             source_offset: 0,
@@ -455,7 +453,7 @@ mod tests {
         );
         for (slot, status, target) in [(2, 0x1000, 22), (3, 0x2000, 33), (5, 0x3000, 55)] {
             word(MATRIX + slot * 8, status as u64);
-            word(status, crate::crelation_status::VTABLE_RVA as u64);
+            word(status, crate::crelation_status::VTABLE_RVA.0 as u64);
             word(status + crate::crelation_status::TARGET_COUNTRY, target);
             word(
                 status + crate::crelation_status::DIPLOMACY_STATUS,
@@ -572,7 +570,7 @@ mod tests {
         let mut bytes = vec![0; NODES + count * NODE_BYTES];
         let mut word =
             |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-        word(LEDGER, LEDGER_VTABLE_RVA as u64);
+        word(LEDGER, LEDGER_VTABLE_RVA.0 as u64);
         word(LEDGER + FIRST, 5000 | (1500_u64 << 32));
         for (index, value) in [i64::MAX, -1, 4, -5, 6, 7, 8, 9, 10, i64::MIN]
             .into_iter()

@@ -293,7 +293,7 @@ fn copy_production_manager(
     let pointer = usize::try_from(p_pool_u64(log, ptr_start))
         .ok()
         .filter(|&p| p != 0)?;
-    let expected = base.checked_add(cproduction_status::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, cproduction_status::VTABLE_RVA)? as u64;
     let vtable_start = pspan(log, memory, Some(pointer), 8, M_P_PROD_MGR)?;
     let owner_start = pspan(
         log,
@@ -328,7 +328,7 @@ fn copy_deployment_manager(
     let pointer = usize::try_from(p_pool_u64(log, ptr_start))
         .ok()
         .filter(|&p| p != 0)?;
-    let expected = base.checked_add(cdeployment_status::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, cdeployment_status::VTABLE_RVA)? as u64;
     let vtable_start = pspan(log, memory, Some(pointer), 8, M_P_DEPLOY)?;
     let owner_start = pspan(
         log,
@@ -442,8 +442,7 @@ fn copy_production_lines(
             if let [Some(identity), Some(active), .., Some(header)] = starts {
                 let kind = usize::try_from(p_pool_u64(log, identity))
                     .ok()
-                    .and_then(|vtable| vtable.checked_sub(base))
-                    .and_then(line_kind);
+                    .and_then(|vtable| line_kind(base, vtable));
                 let active = i32::from_le_bytes(log.bytes[active..active + 4].try_into().unwrap());
                 let header = log.bytes[header..header + 16].try_into().unwrap();
                 if let Some(kind) = kind {
@@ -458,8 +457,14 @@ fn copy_production_lines(
 }
 
 /// `read_row`'s line kind by exact primary vtable.
-fn line_kind(rva: usize) -> Option<u8> {
-    Some(match rva {
+fn line_kind(base: usize, vtable: usize) -> Option<u8> {
+    let kinds = [
+        engine_native::cmilitary_production_line::VTABLE_RVA,
+        engine_native::cnaval_production_line::VTABLE_RVA,
+        engine_native::cship_refit_production_line::VTABLE_RVA,
+        engine_native::crailway_gun_production_line::VTABLE_RVA,
+    ];
+    Some(match engine_sites::which(base, vtable, &kinds)? {
         engine_native::cmilitary_production_line::VTABLE_RVA => {
             cequipment_production_line::KIND_MILITARY
         }
@@ -539,7 +544,7 @@ fn copy_max_factories(
         8,
         M_P_LINES,
     )?;
-    let expected = base.checked_add(cequipment_type::VTABLE_RVA)? as u64;
+    let expected = engine_sites::at(base, cequipment_type::VTABLE_RVA)? as u64;
     let mut equipment = usize::try_from(p_pool_u64(log, definition)).ok()?;
     for archetype in [false, true] {
         if equipment == 0 {
@@ -607,7 +612,7 @@ fn copy_factory_define(
             .iter_mut()
             .zip(cequipment_production_line::MAX_FACTORY_DEFINE_RVAS)
         {
-            let start = pspan(log, memory, base.checked_add(rva), 4, M_P_LINES)?;
+            let start = pspan(log, memory, engine_sites::at(base, rva), 4, M_P_LINES)?;
             *value = i32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
         }
         *defines = Some(values);

@@ -152,7 +152,7 @@ pub fn walk_country_with_applied_certified<M: Memory>(
                     )
                 } else {
                     if read::<u64>(memory, pointer)
-                        != Some(at(
+                        != Some(site(
                             base,
                             if is_cost {
                                 cost::VTABLE_RVA

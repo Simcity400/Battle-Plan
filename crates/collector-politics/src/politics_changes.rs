@@ -1,6 +1,7 @@
 //! Native power mutations and government commits. Writer/caller descriptors
 //! live in engine_events::politics_sites. No balance fall is turned into a spend.
 //! Hooks never select countries by player/human/AI status.
+use engine_sites::Rva;
 use crate::{
     hook::{Hook, Registers, Tap},
     shared_lane::SharedLane,
@@ -24,6 +25,43 @@ use std::{
 };
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
+/// The election update's on_action call returns here.
+const ELECTION_ON_ACTION_RETURN: Rva = Rva(0xbfb8ce);
+/// The daily relation and party boost cost calls return here with RDX the cost output.
+const DAILY_RELATION_COST_RETURN: Rva = Rva(0xbfcf03);
+const MIO_RESEARCH_COST_RETURN: Rva = Rva(0xed4fb9);
+const MIO_PRODUCTION_COST_RETURN: Rva = Rva(0xed4fd2);
+/// The ability activation's cost getter call returns here.
+const ABILITY_ACTIVATION_COST_RETURN: Rva = Rva(0x7320f8);
+/// The nested ability allocator and release refund calls.
+const NESTED_ABILITY_RETURNS: [Rva; 4] =
+    [Rva(0x71b405), Rva(0x71b9a9), Rva(0x732467), Rva(0x732c4f)];
+/// The leader's embedded allocator call that takes the deployment charge.
+const LEADER_DEPLOYMENT_RETURN: Rva = Rva(0xc71212);
+/// The daily update's political cost getter call, the getter's one income caller.
+const DAILY_COST_RETURN: Rva = Rva(0xbfb952);
+/// The scripted diplomacy action's handler, compared with the action's vtable slot.
+const SCRIPTED_DIPLOMACY_HANDLER: Rva = Rva(0xb03bc0);
+/// Every key callers and handlers are classified by: each must be located, so an address that
+/// maps to no key is truly another one.
+const CLASSIFIED: [Rva; 16] = [
+    native::DAILY_PP_CALLER,
+    native::DAILY_CP_CALLER,
+    native::TIMED_PP_CALLER,
+    engine_decisions::cdecision::MISSION_COMPLETION_RETURN_RVA,
+    ELECTION_ON_ACTION_RETURN,
+    DAILY_RELATION_COST_RETURN,
+    MIO_RESEARCH_COST_RETURN,
+    MIO_PRODUCTION_COST_RETURN,
+    ABILITY_ACTIVATION_COST_RETURN,
+    NESTED_ABILITY_RETURNS[0],
+    NESTED_ABILITY_RETURNS[1],
+    NESTED_ABILITY_RETURNS[2],
+    NESTED_ABILITY_RETURNS[3],
+    LEADER_DEPLOYMENT_RETURN,
+    DAILY_COST_RETURN,
+    SCRIPTED_DIPLOMACY_HANDLER,
+];
 static RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -550,6 +588,11 @@ fn memory() -> engine_native::memory::LiveMemory {
 fn base() -> usize {
     BASE.load(Ordering::Relaxed)
 }
+
+/// Whether a getter's return address is the daily update's cost call.
+fn daily_cost_caller(caller: Option<u64>) -> bool {
+    caller.is_some_and(|caller| engine_sites::at(base(), DAILY_COST_RETURN) == Some(caller as usize))
+}
 fn read<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
     engine_native::read::<T>(&memory(), address)
 }
@@ -563,12 +606,12 @@ fn operand<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
 }
 fn operand_hour() -> Option<i32> {
     let state =
-        operand::<u64>(base().checked_add(engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
+        operand::<u64>(engine_sites::at(base(), engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
     operand::<i32>(state.checked_add(engine_native::cgame_state::CURRENT_HOUR)?)
 }
 fn event_hour() -> Option<i32> {
     let state =
-        read::<u64>(base().checked_add(engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
+        read::<u64>(engine_sites::at(base(), engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
     read::<i32>(state.checked_add(engine_native::cgame_state::CURRENT_HOUR)?)
 }
 fn log() -> Option<&'static Log> {
@@ -1461,16 +1504,19 @@ fn resume_pending(owner: native::Owner, currency: PowerCurrency, after: i64) {
         PENDING.set(Some(pending));
     }
 }
-fn caller_cause(caller: usize) -> PowerCause {
-    if caller == native::DAILY_PP_CALLER || caller == native::DAILY_CP_CALLER {
+fn caller_cause(caller: Option<Rva>) -> PowerCause {
+    if caller == Some(native::DAILY_PP_CALLER) || caller == Some(native::DAILY_CP_CALLER) {
         return PowerCause::DailyGain;
     }
-    if caller == native::TIMED_PP_CALLER {
+    if caller == Some(native::TIMED_PP_CALLER) {
         return PowerCause::TimedActivity;
     }
-    let name = native::CHARGING_CALLERS
-        .binary_search_by_key(&caller, |(address, _)| *address)
-        .ok()
+    let name = caller
+        .and_then(|caller| {
+            native::CHARGING_CALLERS
+                .binary_search_by_key(&caller, |(key, _)| *key)
+                .ok()
+        })
         .map(|index| native::CHARGING_CALLERS[index].1);
     match name {
         Some("DailyGain") => PowerCause::DailyGain,
@@ -1993,7 +2039,10 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 || read::<u64>(a)
                     .and_then(|vtable| at(vtable as usize, 0x150))
                     .and_then(item_read::<u64>)
-                    == Some((base() + 0xb03bc0) as u64);
+                    .is_some_and(|handler| {
+                        engine_sites::at(base(), SCRIPTED_DIPLOMACY_HANDLER)
+                            == Some(handler as usize)
+                    });
             if scripted && let Some(template) = at(a, 0x78).and_then(item_read::<u64>) {
                 identity.keys[0] = key(template as usize, 0x10);
             }
@@ -2049,7 +2098,7 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
     context.identity = identity;
     context
 }
-fn government_context(scope: Scope, caller: usize, mut context: Context) -> Context {
+fn government_context(scope: Scope, caller: Option<Rva>, mut context: Context) -> Context {
     let cause = match scope {
         Scope::CoupCompletion => GovernmentCause::CoupCompletion,
         Scope::CivilWar => GovernmentCause::CivilWar,
@@ -2060,7 +2109,7 @@ fn government_context(scope: Scope, caller: usize, mut context: Context) -> Cont
         // The election update invokes on_election synchronously. Other notifications
         // are new scopes and inherit no election/coup provenance.
         Scope::OnAction => {
-            context.government = if caller == 0xbfb8ce {
+            context.government = if caller == Some(ELECTION_ON_ACTION_RETURN) {
                 GovernmentCause::ElectionOnAction
             } else {
                 GovernmentCause::NotIdentified
@@ -2259,7 +2308,7 @@ unsafe fn entry_forward(
     if !ENABLED.load(Ordering::Acquire) {
         return timing.original(|| unsafe { original(a, b, c, d, fifth) });
     }
-    let caller = caller.wrapping_sub(base());
+    let caller = engine_sites::reference(base(), caller);
     let mut restore = ScopeRestore::new();
     if index < 10 {
         let context = restore.context;
@@ -2288,7 +2337,9 @@ unsafe fn entry_forward(
     // These native entries already own their patches. Forward their actual
     // executions independently of whether any currency payment is emitted.
     match scope {
-        Scope::Decision if caller != engine_decisions::cdecision::MISSION_COMPLETION_RETURN_RVA => {
+        Scope::Decision
+            if caller != Some(engine_decisions::cdecision::MISSION_COMPLETION_RETURN_RVA) =>
+        {
             crate::script_event_observer::decision(
                 replay_data::event_feed_rows::EventFeedSource::DecisionSelected,
                 a,
@@ -2309,7 +2360,9 @@ unsafe fn entry_forward(
         // Only these exact native returns guarantee RDX is the live cost output.
         // Other nested commands in the daily scope have unrelated second arguments.
         match scope {
-            Scope::ImproveRelationDaily | Scope::BoostPartyDaily if caller == 0xbfcf03 => {
+            Scope::ImproveRelationDaily | Scope::BoostPartyDaily
+                if caller == Some(DAILY_RELATION_COST_RETURN) =>
+            {
                 if let Some(cost) = operand::<i64>(b) {
                     let identity = relation_identity(a);
                     component(owner, PowerDailyCostKind::Relation, cost, identity);
@@ -2317,10 +2370,10 @@ unsafe fn entry_forward(
                     failed("politics daily relation cost output unreadable");
                 }
             }
-            Scope::MioResearchDaily if caller == 0xed4fb9 => {
+            Scope::MioResearchDaily if caller == Some(MIO_RESEARCH_COST_RETURN) => {
                 mio_component(owner, a, operand::<i64>(b), PowerDailyCostKind::MioResearch)
             }
-            Scope::MioProductionDaily if caller == 0xed4fd2 => mio_component(
+            Scope::MioProductionDaily if caller == Some(MIO_PRODUCTION_COST_RETURN) => mio_component(
                 owner,
                 a,
                 operand::<i64>(b),
@@ -2332,7 +2385,7 @@ unsafe fn entry_forward(
     // The ability activation caller supplies the activation charge.
     // Availability, AI and UI callers of the same getter are unrelated.
     if scope == Scope::AbilityCost
-        && caller == 0x7320f8
+        && caller == Some(ABILITY_ACTIVATION_COST_RETURN)
         && let Some(mut pending) = PENDING.get()
         && pending.site == PowerSite::ActivateAbility
         && let Some(cost) = read::<i64>(b)
@@ -2468,13 +2521,14 @@ unsafe fn writer(
     original: NativeFunction,
     args: [usize; 5],
     index: usize,
-    caller: usize,
+    caller: Option<Rva>,
     context: Context,
 ) -> usize {
     let [a, b, c, d, fifth] = args;
     flush(false);
     let mut previous = PENDING.get();
-    let native_daily = caller == native::DAILY_PP_CALLER || caller == native::DAILY_CP_CALLER;
+    let native_daily =
+        caller == Some(native::DAILY_PP_CALLER) || caller == Some(native::DAILY_CP_CALLER);
     let (owner, currency, site) = match index {
         0..=2 => (
             if native_daily {
@@ -2524,7 +2578,7 @@ unsafe fn writer(
     let mut identity = context.identity;
     // The nested ability allocator and release refund
     // belong to their observed parent, not an outer command.
-    if matches!(caller, 0x71b405 | 0x71b9a9 | 0x732467 | 0x732c4f)
+    if caller.is_some_and(|caller| NESTED_ABILITY_RETURNS.contains(&caller))
         && let Some(parent) =
             previous.filter(|parent| owner.is_some_and(|owner| parent.owner.same_owner(owner)))
     {
@@ -2553,7 +2607,7 @@ unsafe fn writer(
         _ => None,
     };
     // The leader's embedded allocator receives the deployment charge.
-    if caller == 0xc71212
+    if caller == Some(LEADER_DEPLOYMENT_RETURN)
         && let Some(leader) = b.checked_sub(0x1078)
     {
         identity.set_reference(reference(
@@ -2782,10 +2836,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
         6 => {
             // Restrict this on-demand getter observation to its daily
             // caller. Tooltip/trigger evaluations are not income applications.
-            let caller = at(registers.rbp, 0x358)
-                .and_then(operand::<u64>)
-                .map(|r| (r as usize).wrapping_sub(base()));
-            if caller != Some(0xbfb952) {
+            if !daily_cost_caller(at(registers.rbp, 0x358).and_then(operand::<u64>)) {
                 return;
             }
             DAILY.set(None);
@@ -2797,8 +2848,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             let cost = registers.rbp.checked_sub(0x38).and_then(operand::<i64>);
             if let (Some(owner), Some(cost)) = (owner, cost) {
                 daily(owner, registers.rdi as i64, cost, registers.rax as i64);
-                if let Some(define) = base()
-                    .checked_add(native::BLOCKADE_COST_DEFINE_RVA)
+                if let Some(define) = engine_sites::at(base(), native::BLOCKADE_COST_DEFINE_RVA)
                     .and_then(operand::<i64>)
                 {
                     component(
@@ -2816,8 +2866,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
         }
         7 => {
             // Only the daily caller supplies an applied income observation.
-            if at(registers.rbp, 0x358).and_then(operand::<u64>) != Some((base() + 0xbfb952) as u64)
-            {
+            if !daily_cost_caller(at(registers.rbp, 0x358).and_then(operand::<u64>)) {
                 return;
             }
             DAILY.set(None);
@@ -2982,22 +3031,44 @@ impl Hooks {
     }
     unsafe fn install(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let sites = entry_sites();
-        for site in sites.iter().chain(TAPS.iter()) {
-            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
+        let located = sites
+            .iter()
+            .chain(TAPS.iter())
+            .map(|site| {
+                engine_sites::code(base, site.rva)
+                    .and_then(|code| Ok((code.address, code.original::<16>()?)))
+                    .map_err(|withheld| {
+                        COUNTERS[2].fetch_add(1, Ordering::Relaxed);
+                        let cause = format!("politics {}: {withheld}", site.name);
+                        crate::hook::installation::refused(
+                            crate::hook::installation::Kind::Sentinel,
+                            None,
+                            &cause,
+                        );
+                        cause
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let charging = native::CHARGING_CALLERS.iter().map(|&(key, _)| key);
+        for key in CLASSIFIED.into_iter().chain(charging) {
+            engine_sites::resolve(base, key).map_err(|withheld| {
                 COUNTERS[2].fetch_add(1, Ordering::Relaxed);
-                return Err(format!("politics {} sentinel differs", site.name));
-            }
+                format!("politics caller {withheld}")
+            })?;
         }
+        let (entry_sites, tap_sites) = located.split_at(sites.len());
         BASE.store(base, Ordering::Relaxed);
         let mut entries = Vec::new();
-        for (index, (site, callback)) in sites.into_iter().zip(callbacks()).enumerate() {
-            let hook = unsafe { Hook::new(base + site.rva, callback, site.sentinel) }?;
+        for (index, (&(address, original), callback)) in
+            entry_sites.iter().zip(callbacks()).enumerate()
+        {
+            let hook = unsafe { Hook::new(address, callback, original) }?;
             ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
             entries.push(hook);
         }
         let mut taps = Vec::new();
-        for (index, site) in TAPS.into_iter().enumerate() {
-            taps.push(unsafe { Tap::new(base + site.rva, tap, index, site.sentinel) }?);
+        for (index, &(address, original)) in tap_sites.iter().enumerate() {
+            taps.push(unsafe { Tap::new(address, tap, index, original) }?);
         }
         taps.push(
             unsafe { crate::script_event_observer::targeted_selection_tap(memory, base) }
@@ -3348,7 +3419,7 @@ pub fn bench_midnight_parts(receivers: &[usize]) {
         .collect();
     let log = log().unwrap();
     let index = lane_index(log).unwrap();
-    let stack = [black_box(base() + native::DAILY_PP_CALLER); 128];
+    let stack = [black_box(base() + native::DAILY_PP_CALLER.0); 128];
     for mode in [
         "owner_status",
         "owner_country",
@@ -4436,10 +4507,6 @@ mod tests {
             native::SET_POLITICAL_POWER_EFFECT.name
         );
         assert_eq!(
-            sites[SET_POWER_ENTRY].rva,
-            native::SET_POLITICAL_POWER.function_rva
-        );
-        assert_eq!(
             SCOPE_ORDER[TARGETED_DECISION_ENTRY - 10],
             Scope::TargetedDecision
         );
@@ -4473,18 +4540,19 @@ mod tests {
 
     #[test]
     fn caller_classification_is_exact_and_does_not_use_time_or_country_control() {
-        assert_eq!(caller_cause(0x76fe2e), PowerCause::Decision);
-        assert_eq!(caller_cause(0x7631ef), PowerCause::NotIdentified);
-        assert_eq!(caller_cause(native::DAILY_CP_CALLER), PowerCause::DailyGain);
-        let console = government_context(Scope::ConsoleSubject, 0, Context::default());
+        let key = |address| engine_sites::reference(0, address);
+        assert_eq!(caller_cause(key(0x76fe2e)), PowerCause::Decision);
+        assert_eq!(caller_cause(key(0x7631ef)), PowerCause::NotIdentified);
+        assert_eq!(caller_cause(Some(native::DAILY_CP_CALLER)), PowerCause::DailyGain);
+        let console = government_context(Scope::ConsoleSubject, None, Context::default());
         assert_eq!(
-            government_context(Scope::SubjectGovernment, 0, console).government,
+            government_context(Scope::SubjectGovernment, None, console).government,
             GovernmentCause::Console
         );
-        let context = government_context(Scope::OnAction, 0xbfb8ce, Context::default());
+        let context = government_context(Scope::OnAction, key(0xbfb8ce), Context::default());
         assert_eq!(context.government, GovernmentCause::ElectionOnAction);
         assert_eq!(
-            government_context(Scope::OnAction, 0xbfb8cf, context).government,
+            government_context(Scope::OnAction, key(0xbfb8cf), context).government,
             GovernmentCause::NotIdentified
         );
     }

@@ -3,8 +3,9 @@
 //! order is first-seen order. Transient route/combat attribution requires a
 //! separate event observation and cannot be recovered from aggregates.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_0218;
+pub const VTABLE_RVA: Rva = Rva(0x029f_0218);
 /// CSunkConvoyInfo complete read extent.
 pub const READ_EXTENT: usize = 0x18;
 /// CSunkConvoyInfo native i32 month bucket.
@@ -83,8 +84,7 @@ fn walk_inner(
         .checked_add(cgame_state::SUNK_CONVOY_HISTORY)
         .and_then(|address| Array::read(memory, address, 8))
         .ok_or("sunk convoy history vector unreadable or invalid")?;
-    let vtable = base
-        .checked_add(VTABLE_RVA)
+    let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     output.ensure(array.count as usize)?;
     let len = output.len().min(array.count as usize);
@@ -148,7 +148,7 @@ mod tests {
             (0x620, i32::MIN, 0_u32, u32::MAX, i32::MAX),
             (0x640, i32::MAX, u32::MAX, 1, -1),
         ] {
-            bytes[offset..offset + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+            bytes[offset..offset + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
             bytes[offset + MONTH..offset + CONVOYS].copy_from_slice(&month.to_le_bytes());
             bytes[offset + CONVOYS..offset + KILLER_COUNTRY].copy_from_slice(&count.to_le_bytes());
             bytes[offset + KILLER_COUNTRY..offset + OWNER_COUNTRY]

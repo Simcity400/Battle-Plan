@@ -1,15 +1,16 @@
 //! Country-owned retained naval accidents, in their stored vector order.
 //! Reports preserve their raw references after the live ship disappears.
+use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, cstrategic_region, read, walk::Buffer};
 
 /// Primary report identity.
-pub const VTABLE_RVA: usize = 0x029d_a718;
+pub const VTABLE_RVA: Rva = Rva(0x029d_a718);
 /// Strategic navy's report-pointer vector.
 pub const REPORTS: usize = 0xe0;
 /// Strategic navy's mine-report pointer vector.
 pub const MINE_REPORTS: usize = 0xf8;
 /// Mine report primary identity.
-pub const MINE_VTABLE_RVA: usize = 0x029d_a768;
+pub const MINE_VTABLE_RVA: Rva = Rva(0x029d_a768);
 /// Raw country reference responsible for the mine.
 pub const MINE_OWNER: usize = 0x48;
 /// Report's strategic-region pointer.
@@ -27,19 +28,19 @@ pub const OWNER: usize = 0x2c;
 /// Native expiry date's raw hour.
 pub const EXPIRE_HOUR: usize = 0x38;
 /// Report creation/update, regional clear and daily expiry writer sites.
-pub const RECORD_ACCIDENT_RVA: usize = 0x00f1_e5f0;
+pub const RECORD_ACCIDENT_RVA: Rva = Rva(0x00f1_e5f0);
 /// Regional accident-clear writer.
-pub const CLEAR_ACCIDENTS_RVA: usize = 0x00f1_60a0;
+pub const CLEAR_ACCIDENTS_RVA: Rva = Rva(0x00f1_60a0);
 /// Daily expiry writer shared by both report families.
-pub const EXPIRE_REPORTS_RVA: usize = 0x00f1_7510;
+pub const EXPIRE_REPORTS_RVA: Rva = Rva(0x00f1_7510);
 /// Mine incident creation and damage accumulation writer.
-pub const RECORD_MINE_INCIDENT_RVA: usize = 0x00f1_e6e0;
-/// Verified entry fingerprints for the complete report writer family.
-pub const WRITERS: [(usize, u64); 4] = [
-    (RECORD_ACCIDENT_RVA, 0x670a_924e_c0d9_c20a),
-    (CLEAR_ACCIDENTS_RVA, 0xfe6c_f199_3e3e_5e06),
-    (EXPIRE_REPORTS_RVA, 0x58e9_3214_3975_b350),
-    (RECORD_MINE_INCIDENT_RVA, 0xcf0f_977d_6d16_ed55),
+pub const RECORD_MINE_INCIDENT_RVA: Rva = Rva(0x00f1_e6e0);
+/// The complete report writer family.
+pub const WRITERS: [Rva; 4] = [
+    RECORD_ACCIDENT_RVA,
+    CLEAR_ACCIDENTS_RVA,
+    EXPIRE_REPORTS_RVA,
+    RECORD_MINE_INCIDENT_RVA,
 ];
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -76,8 +77,7 @@ pub fn capture(
             .checked_add(reports.count as usize)
             .ok_or("naval accident count overflow")?;
         Buffer::Growing(output).ensure(demand)?;
-        let expected = base
-            .checked_add(vtable)
+        let expected = engine_sites::at(base, vtable)
             .ok_or("naval accident identity overflow")? as u64;
         for ordinal in 0..reports.count {
             let at = reports
@@ -145,7 +145,7 @@ mod tests {
         put(&mut b, NAVY + REPORTS + 12, 2_u32.to_le_bytes());
         put(&mut b, VECTOR, (REPORT as u64).to_le_bytes());
         put(&mut b, VECTOR + 8, (REPORT as u64).to_le_bytes());
-        put(&mut b, REPORT, (VTABLE_RVA as u64).to_le_bytes());
+        put(&mut b, REPORT, (VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut b, REPORT + REGION, (AREA as u64).to_le_bytes());
         put(
             &mut b,
@@ -164,7 +164,7 @@ mod tests {
         put(
             &mut b,
             AREA,
-            (cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+            (cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut b, AREA + cstrategic_region::ID, 5001_u32.to_le_bytes());
         b
@@ -209,7 +209,7 @@ mod tests {
         put(&mut b, VECTOR + 16, (mine as u64).to_le_bytes());
         let prototype = b[REPORT..REPORT + EXPIRE_HOUR + 4].to_vec();
         b[mine..mine + prototype.len()].copy_from_slice(&prototype);
-        put(&mut b, mine, (MINE_VTABLE_RVA as u64).to_le_bytes());
+        put(&mut b, mine, (MINE_VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut b, mine + MINE_OWNER, 0x1234_5678_u32.to_le_bytes());
         let mut out = Vec::new();
         assert_eq!(

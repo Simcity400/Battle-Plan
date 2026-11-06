@@ -540,9 +540,9 @@ impl Hooks {
         let mut gain_taps = Vec::new();
         let mut world_hooks = 0;
         if cfg!(feature = "world_input_changes")
-            && MUTATIONS.iter().all(|(site, _)| {
-                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
-            })
+            && MUTATIONS
+                .iter()
+                .all(|(site, _)| crate::located(base, site.rva).is_ok())
         {
             let callbacks: [usize; SITES] = [
                 rename_province as *const () as usize,
@@ -574,8 +574,10 @@ impl Hooks {
                 fog_toggle as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| HOOK_ERRORS[index])?;
+                let code = engine_sites::hook(base, site.rva)?;
+                let hook =
+                    unsafe { Hook::new(code.address, callbacks[index], code.sentinel::<16>()?) }
+                        .map_err(|_| HOOK_ERRORS[index])?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -1123,12 +1125,9 @@ mod tests {
         let domain = Domain::ProvinceNames;
         let mut held = Held::new(Vec::<u32>::new());
         let read = |held: &mut Held<Vec<u32>>, plan: Plan, rows: &[u32]| {
-            held.settle(
-                domain,
-                plan.read(domain, &changes),
-                true,
-                |held| assign(held, rows),
-            )
+            held.settle(domain, plan.read(domain, &changes), true, |held| {
+                assign(held, rows)
+            })
         };
         let plan = held.plan(domain, &changes, false);
         assert!(!plan.carry, "nothing is held yet");

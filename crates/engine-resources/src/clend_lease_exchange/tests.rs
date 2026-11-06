@@ -10,14 +10,14 @@ const VARIANTS: usize = 0x60000;
 
 fn variant(f: &mut Fixture, id: u32) -> usize {
     let at = VARIANTS + id as usize * 0x20;
-    f.u64(at, cequipment_variant::VTABLE_RVA as u64);
+    f.u64(at, cequipment_variant::VTABLE_RVA.0 as u64);
     f.u32(at + 8, cequipment_variant::REFERENCE_TYPE);
     f.u32(at + 12, id);
     at
 }
 
 fn pool_at(f: &mut Fixture, pool_address: usize, data: usize, entries: &[(u32, i64)]) {
-    f.u64(pool_address, pool::VTABLE_RVA as u64);
+    f.u64(pool_address, pool::VTABLE_RVA.0 as u64);
     f.array(pool_address + pool::ITEMS, data, entries.len() as u32);
     for (index, &(id, amount)) in entries.iter().enumerate() {
         let pointer = variant(f, id);
@@ -44,7 +44,7 @@ fn fixture() -> Fixture {
     {
         let exchange = EXCHANGES + index * 0x400;
         f.put(exchange, &[0; SIZE]);
-        f.u64(exchange, VTABLE_RVA as u64);
+        f.u64(exchange, VTABLE_RVA.0 as u64);
         f.u64(exchange + HANDLE, u64::from(id) << 32 | 4713);
         f.u32(exchange + RECEIVER, receiver);
         let data = POOLS + index * 0x200;
@@ -53,29 +53,6 @@ fn fixture() -> Fixture {
         f.u64(LIST + index * 8, exchange as u64);
     }
     f
-}
-
-#[test]
-fn lend_lease_delivery_call_sites_both_forward_the_pool_addition_primitive() {
-    for (call, returned, sentinel) in [
-        (
-            DELIVERED_POOL_CALL_RVA,
-            DELIVERED_POOL_RETURN_RVA,
-            DELIVERED_POOL_CALL_SENTINEL,
-        ),
-        (
-            SUNK_POOL_CALL_RVA,
-            SUNK_POOL_RETURN_RVA,
-            SUNK_POOL_CALL_SENTINEL,
-        ),
-    ] {
-        assert_eq!(sentinel[0], 0xe8);
-        let target =
-            (call as i64 + 5 + i64::from(i32::from_le_bytes(sentinel[1..5].try_into().unwrap())))
-                as usize;
-        assert_eq!(target, POOL_ADDITION_RVA);
-        assert_eq!(returned, call + 5);
-    }
 }
 
 #[test]

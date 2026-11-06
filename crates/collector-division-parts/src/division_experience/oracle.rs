@@ -84,11 +84,8 @@ impl<T: Clone> Store<T> {
         if seed.division == 0
             || seed.handle != Some(seed.division)
             || seed.class != Some(0)
-            || base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64) != seed.primary_vtable
-            || base
-                .checked_add(carmy::SECONDARY_VTABLE_RVA)
-                .map(|v| v as u64)
-                != seed.secondary_vtable
+            || !super::is_vtable(base, carmy::VTABLE_RVA, seed.primary_vtable)
+            || !super::is_vtable(base, carmy::SECONDARY_VTABLE_RVA, seed.secondary_vtable)
         {
             return None;
         }
@@ -136,8 +133,10 @@ fn shifted_scalar_ranges_match_the_original_lookup_and_faults() {
                                         pointer: at * 0x1000,
                                         handle: Some(at as u64 + 1),
                                         class: Some(0),
-                                        primary_vtable: Some(carmy::VTABLE_RVA as u64),
-                                        secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
+                                        primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
+                                        secondary_vtable: Some(
+                                            carmy::SECONDARY_VTABLE_RVA.0 as u64,
+                                        ),
                                         ..Default::default()
                                     };
                                     let old_reads = Cell::new(0);

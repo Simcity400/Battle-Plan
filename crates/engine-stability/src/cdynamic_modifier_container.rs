@@ -8,9 +8,10 @@ use crate::{
     Memory, ccountry, cdynamic_modifier, cpdx_array::Array, dynamic_modifier_entry, read,
     read_slice, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CDynamicModifierContainer vtable.
-pub const VTABLE_RVA: usize = 0x0285_3f18;
+pub const VTABLE_RVA: Rva = Rva(0x0285_3f18);
 /// CDynamicModifierContainer owner CCountry pointer.
 pub const COUNTRY: usize = 0x08;
 /// CDynamicModifierContainer owner state id i32.
@@ -25,9 +26,9 @@ pub const ENTRIES_CAPACITY: usize = 0x30;
 pub const ENTRIES_COUNT: usize = 0x34;
 
 /// Timed-modifier add/value/duration entry.
-pub const ADD_RVA: usize = 0x0059_e540;
+pub const ADD_RVA: Rva = Rva(0x0059_e540);
 /// Timed-modifier daily decrement and zero-removal entry.
-pub const DAILY_UPDATE_RVA: usize = 0x0059_f8a0;
+pub const DAILY_UPDATE_RVA: Rva = Rva(0x0059_f8a0);
 /// Exact timed-modifier daily-update entry bytes.
 pub const DAILY_UPDATE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
@@ -159,9 +160,7 @@ fn walk_into(
         let container = country
             .checked_add(ccountry::DYNAMIC_MODIFIERS)
             .ok_or("dynamic modifier container address overflow")?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let identity = read::<[u8; 16]>(memory, container)
             .ok_or("dynamic modifier container identity unreadable")?;
         if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64
@@ -293,7 +292,7 @@ mod tests {
         put(
             &mut bytes,
             container,
-            ((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+            ((BASE + VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -313,7 +312,7 @@ mod tests {
             put(
                 &mut bytes,
                 entry,
-                ((BASE + dynamic_modifier_entry::VTABLE_RVA) as u64).to_le_bytes(),
+                ((BASE + dynamic_modifier_entry::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
@@ -358,7 +357,7 @@ mod tests {
             put(
                 &mut bytes,
                 definition,
-                ((BASE + cdynamic_modifier::VTABLE_RVA) as u64).to_le_bytes(),
+                ((BASE + cdynamic_modifier::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

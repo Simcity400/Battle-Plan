@@ -295,8 +295,7 @@ fn capture_state_bodies(
     scratch: &[Occurrence],
     output: &mut [u32],
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(cstate::VTABLE_RVA)
+    let expected = engine_sites::at(base, cstate::VTABLE_RVA)
         .ok_or("reserved launch module address overflow")? as u64;
     let mut next = 0;
     while next < scratch.len() {
@@ -405,8 +404,7 @@ pub fn capture_naval_buffer(
             .and_then(|address| read::<u32>(memory, address))
             .ok_or("reserved launch naval holder country unreadable")?;
         copy_roster(memory, source, &mut scratch[..required])?;
-        let expected = base
-            .checked_add(cnaval_base::VTABLE_RVA)
+        let expected = engine_sites::at(base, cnaval_base::VTABLE_RVA)
             .ok_or("reserved launch module address overflow")? as u64;
         let mut next = 0;
         while next < required {

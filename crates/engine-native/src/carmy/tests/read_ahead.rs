@@ -88,7 +88,7 @@ fn status_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>) 
             seed.division = handle(9, index as u32 + 1);
             seed.handle = Some(seed.division);
             let mut object = seed.acclimatization.unwrap();
-            object[..8].copy_from_slice(&(data::VTABLE_RVA as u64).to_le_bytes());
+            object[..8].copy_from_slice(&(data::VTABLE_RVA.0 as u64).to_le_bytes());
             object[data::DATA..data::DATA + 8]
                 .copy_from_slice(&((0x20000 + index * 0x300) as u64).to_le_bytes());
             object[data::CAPACITY..data::CAPACITY + 4].copy_from_slice(&33_u32.to_le_bytes());
@@ -244,7 +244,7 @@ fn distinct_status_world(
         .map(|(index, seed)| {
             let pointer = start + index * 0x600;
             seed.stat_block = Some(pointer);
-            p64(&mut source.bytes, pointer, stats::VTABLE_RVA as u64);
+            p64(&mut source.bytes, pointer, stats::VTABLE_RVA.0 as u64);
             p64(
                 &mut source.bytes,
                 pointer + stats::MAXIMUM_ORGANISATION,
@@ -668,7 +668,7 @@ fn movement_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>
             p64(
                 &mut source.bytes,
                 stat,
-                crate::csub_unit_definition::VTABLE_RVA as u64,
+                crate::csub_unit_definition::VTABLE_RVA.0 as u64,
             );
             p64(
                 &mut source.bytes,
@@ -677,7 +677,7 @@ fn movement_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>
             );
             for (offset, id) in [(0x800, 2 + index * 2), (0x900, 3 + index * 2)] {
                 let pointer = at + offset;
-                p64(&mut source.bytes, pointer, cprovince::VTABLE_RVA as u64);
+                p64(&mut source.bytes, pointer, cprovince::VTABLE_RVA.0 as u64);
                 p32(&mut source.bytes, pointer + cprovince::ID, id as u32);
                 p64(&mut source.bytes, PROVINCES + id * 8, pointer as u64);
             }
@@ -814,7 +814,7 @@ fn batched_movement_world(countries: usize) -> (PresentationMemory, Vec<carmy::D
         seed.roster_owner = Some(index as u32 + 1);
         let country = source.bytes.len();
         source.bytes.resize(country + 0x1000, 0);
-        p64(&mut source.bytes, country, ccountry::VTABLE_RVA as u64);
+        p64(&mut source.bytes, country, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut source.bytes, country + ccountry::ID, index as u32 + 1);
         p64(&mut countries_bytes, (index + 1) * 8, country as u64);
         p32(&mut links_bytes, (index + 1) * 4, index as u32 + 1);

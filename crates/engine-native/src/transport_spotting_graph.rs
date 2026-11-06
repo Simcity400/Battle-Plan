@@ -97,9 +97,7 @@ impl AirMissionWords {
             .filter(|&pointer| pointer != 0)
             .ok_or("transport original air wing pointer invalid")?;
         if read::<u64>(memory, mission)
-            != base
-                .checked_add(crate::air_mission::VTABLE_RVA)
-                .map(|at| at as u64)
+            != engine_sites::at(base, crate::air_mission::VTABLE_RVA).map(|at| at as u64)
             || mission
                 .checked_add(crate::air_mission::WING)
                 .and_then(|at| read::<u64>(memory, at))

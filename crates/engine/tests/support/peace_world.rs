@@ -13,34 +13,34 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) fn rebase_image(&mut self, hour: i32) -> (usize, usize) {
         self.bytes
-            .resize(engine_native::cgame_state::SINGLETON_RVA + 8, 0);
+            .resize(engine_native::cgame_state::SINGLETON_RVA.0 + 8, 0);
         let pointer = self.rebase();
         let base = self.bytes.as_ptr() as usize;
-        self.u64(0x100, (base + c::VTABLE_RVA) as u64);
+        self.u64(0x100, (base + c::VTABLE_RVA.0) as u64);
         self.u64(
             0x900,
-            (base + engine_peace::peace_bidding_turn::VTABLE_RVA) as u64,
+            (base + engine_peace::peace_bidding_turn::VTABLE_RVA.0) as u64,
         );
         for i in 0..self.actions {
             self.u64(
                 0x20000 + i * 0x70,
-                (base + engine_peace::ctake_state_action::VTABLE_RVA) as u64,
+                (base + engine_peace::ctake_state_action::VTABLE_RVA.0) as u64,
             );
         }
         if self.transfers != 0 {
             self.u64(
                 0xb00,
-                (base + engine_peace::conference_winner_participant::VTABLE_RVA) as u64,
+                (base + engine_peace::conference_winner_participant::VTABLE_RVA.0) as u64,
             );
             for i in 0..self.transfers {
                 self.u64(
                     self.transfer_data + self.transfers * 8 + i * 0x60,
-                    (base + engine_native::cstate::VTABLE_RVA) as u64,
+                    (base + engine_native::cstate::VTABLE_RVA.0) as u64,
                 );
             }
         }
         self.u64(
-            engine_native::cgame_state::SINGLETON_RVA,
+            engine_native::cgame_state::SINGLETON_RVA.0,
             (base + 0x10000) as u64,
         );
         self.u32(
@@ -90,7 +90,7 @@ impl Fixture {
             transfers: 0,
             transfer_data: 0,
         };
-        f.u64(0x100, c::VTABLE_RVA as u64);
+        f.u64(0x100, c::VTABLE_RVA.0 as u64);
         f.u64(0x108, 0x123456789);
         f.bytes[0x100 + c::FINALIZED] = 1;
         f.array(0x100 + c::WINNERS, 0x20000 + actions * 0x70, countries, 4);
@@ -110,13 +110,13 @@ impl Fixture {
         f.u32(0x620, 0xa0000000);
         f.array(0x628, 0x800, 1, 8);
         f.u64(0x800, 0x900);
-        f.u64(0x900, engine_peace::peace_bidding_turn::VTABLE_RVA as u64);
+        f.u64(0x900, engine_peace::peace_bidding_turn::VTABLE_RVA.0 as u64);
         f.u32(0x908, 0xa0000000);
         f.array(0x910, action_data, actions, 8);
         for i in 0..actions {
             let at = 0x20000 + i * 0x70;
             f.u64(action_data + i * 8, at as u64);
-            f.u64(at, engine_peace::ctake_state_action::VTABLE_RVA as u64);
+            f.u64(at, engine_peace::ctake_state_action::VTABLE_RVA.0 as u64);
             f.u32(at + peace_action::TOKEN, 0x90000000 + i as u32);
             f.u64(
                 at + peace_action::CACHED_NAME + engine_native::msvc_string::CAPACITY,
@@ -145,7 +145,7 @@ impl Fixture {
         struct Memory<'a>(&'a [u8]);
         impl engine_native::Memory for Memory<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+                if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&0x10000_u64.to_le_bytes());
                     true
                 } else {
@@ -171,7 +171,7 @@ impl Fixture {
         self.u64(0xa00, 0xb00);
         self.u64(
             0xb00,
-            engine_peace::conference_winner_participant::VTABLE_RVA as u64,
+            engine_peace::conference_winner_participant::VTABLE_RVA.0 as u64,
         );
         self.u32(0xb08, 0xa0000000);
         self.array(
@@ -183,7 +183,7 @@ impl Fixture {
         for i in 0..count {
             let state = self.transfer_data + count * 8 + i * 0x60;
             self.u64(self.transfer_data + i * 8, state as u64);
-            self.u64(state, engine_native::cstate::VTABLE_RVA as u64);
+            self.u64(state, engine_native::cstate::VTABLE_RVA.0 as u64);
             self.u32(state + engine_native::cstate::ID, i as u32);
         }
     }

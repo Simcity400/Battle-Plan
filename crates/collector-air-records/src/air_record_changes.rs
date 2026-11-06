@@ -657,22 +657,23 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "air_record_changes") {
-            let site = &MUTATIONS[0];
-            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
-                return Err("air record hook sentinel differs");
-            }
+            let code = engine_sites::hook(base, MUTATIONS[0].rva)
+                .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                .inspect_err(|cause| {
+                    crate::hook::installation::refused(
+                        crate::hook::installation::Kind::Sentinel,
+                        None,
+                        cause,
+                    )
+                })?;
             let set = Set::new(0).ok_or("air record touched-holder allocation failed")?;
             // SAFETY: no hook is installed yet, so nothing holds the previous set.
             unsafe { TOUCHED.replace(Some(set)) };
             let hook = unsafe {
-                Hook::new(
-                    base + site.rva,
-                    update_record as *const () as usize,
-                    site.sentinel,
-                )
+                Hook::new(code.0, update_record as *const () as usize, code.1)
             }
             .map_err(|_| "native hook construction failed")?;
             ORIGINAL.store(hook.trampoline(), Ordering::Release);

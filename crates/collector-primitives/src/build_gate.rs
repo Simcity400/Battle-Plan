@@ -3,7 +3,6 @@
 
 use engine_executable::{
     availability::{Verified, Withheld},
-    build::PINNED_BUILD,
     executable_tables,
 };
 use serde::{Serialize, Serializer, ser::SerializeMap, ser::SerializeSeq};
@@ -28,30 +27,30 @@ pub fn record(recognised: bool, warning: Option<String>) {
     });
 }
 
-/// A build-specific piece, and what it relies on that its own checks do not cover.
+/// A build-specific piece: its game sites verify themselves where it hooks or reads them, and
+/// its struct layouts through the located executable.
 #[derive(Clone, Copy, Debug)]
 pub struct Piece {
     pub name: &'static str,
-    pub relies_on: &'static str,
 }
 
 impl Piece {
-    pub const fn new(name: &'static str, relies_on: &'static str) -> Self {
-        Self { name, relies_on }
+    pub const fn new(name: &'static str) -> Self {
+        Self { name }
     }
 
     /// Whether this piece may touch the game on the running build: one load once recorded.
     pub fn verified(self) -> Verified<()> {
         match BUILD.get() {
             Some(build) if build.recognised => Ok(()),
-            // Per-site checks feed in here; until then only the identity proves what a piece relies on.
-            Some(_) => Err(Withheld::new(
-                self.name,
-                format_args!(
-                    "the game build is unrecognised, and this relies on the {} of the recognised build (game {})",
-                    self.relies_on, PINNED_BUILD.version
-                ),
-            )),
+            // On any other build the located image must witness every struct layout.
+            Some(_) => match engine_sites::located() {
+                Some(located) => located.layouts().map_err(|withheld| withheld.requires(self.name)),
+                None => Err(Withheld::new(
+                    self.name,
+                    "the game executable has not been located",
+                )),
+            },
             None => Err(Withheld::new(
                 self.name,
                 "the running game build has not been identified",
@@ -71,7 +70,8 @@ pub fn report(withheld: &Withheld) -> io::Result<()> {
     Ok(())
 }
 
-/// `{"recognised", "warning", "withheld": [{"part", "reason"}]}`: executable tables, then pieces.
+/// `{"recognised", "warning", "withheld": [{"part", "reason"}]}`: executable tables, game sites,
+/// then pieces.
 pub fn status() -> impl Serialize {
     struct Status;
     struct Withholding;
@@ -90,6 +90,11 @@ pub fn status() -> impl Serialize {
             if let Some(tables) = executable_tables::current() {
                 for withheld in tables.withheld() {
                     sequence.serialize_element(&Entry(withheld))?;
+                }
+            }
+            if let Some(located) = engine_sites::located() {
+                for (_, withheld) in located.withheld() {
+                    sequence.serialize_element(&Entry(&withheld))?;
                 }
             }
             for withheld in WITHHELD

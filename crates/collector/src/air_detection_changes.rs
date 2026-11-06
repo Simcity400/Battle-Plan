@@ -124,38 +124,29 @@ pub(crate) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub(crate) unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "mission_changes") {
-            let rva = native::DETECTION_OVERRIDE_WRITER_RVA;
-            let prefix = engine_native::read::<[u8; 16]>(memory, base + rva).ok_or_else(|| {
-                crate::mission_changes::hook_failure(
-                    "air_detection_overrides",
-                    "verification failed",
-                    "console vector writer",
-                    "entry unreadable",
-                )
-            })?;
-            let hash = prefix.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-                (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
-            });
-            if hash != native::DETECTION_OVERRIDE_WRITER_PREFIX_HASH {
-                return Err(crate::mission_changes::hook_failure(
-                    "air_detection_overrides",
-                    "verification failed",
-                    "console vector writer",
-                    "entry fingerprint mismatch",
-                ));
-            }
-            let hook = unsafe { Hook::new(base + rva, writer as *const () as usize, prefix) }
-                .map_err(|error| {
+            let (at, prefix) = engine_sites::hook(base, native::DETECTION_OVERRIDE_WRITER_RVA)
+                .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                .map_err(|reason| {
+                    crate::mission_changes::hook_failure(
+                        "air_detection_overrides",
+                        "verification failed",
+                        "console vector writer",
+                        reason,
+                    )
+                })?;
+            let hook = unsafe { Hook::new(at, writer as *const () as usize, prefix) }.map_err(
+                |error| {
                     crate::mission_changes::hook_failure(
                         "air_detection_overrides",
                         "construction failed",
                         "console vector writer",
                         error,
                     )
-                })?;
+                },
+            )?;
             ORIGINAL.store(hook.trampoline(), Ordering::Release);
             hooks.push(hook);
         }

@@ -41,6 +41,7 @@
 //!   state, game and character managers) with a 0x30 stride.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// How a site's first argument (RCX) names the manager.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,12 +62,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "set_flag",
-            rva: 0xd1fd20,
-            // The RBX spill to RCX's home slot occupies exactly the five patched bytes.
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x41, 0x0f, 0xb7, 0xf9,
-                0x41, 0x8b,
-            ],
+            rva: Rva(0xd1fd20),
         },
         Receiver::Manager,
     ),
@@ -74,11 +70,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "set_playthrough_flag",
-            rva: 0xd1fd50,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x41, 0x0f, 0xb7, 0xf9,
-                0x41, 0x0f,
-            ],
+            rva: Rva(0xd1fd50),
         },
         Receiver::Manager,
     ),
@@ -86,11 +78,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "read_flags",
-            rva: 0xd1fa00,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24,
-                0x20, 0x55,
-            ],
+            rva: Rva(0xd1fa00),
         },
         Receiver::Manager,
     ),
@@ -98,11 +86,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "daily_flags",
-            rva: 0xd1f910,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xe9, 0x4c,
-                0x8d, 0x05,
-            ],
+            rva: Rva(0xd1f910),
         },
         Receiver::Manager,
     ),
@@ -112,11 +96,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "clear_flag",
-            rva: 0xd1fce0,
-            sentinel: [
-                0x48, 0x63, 0x41, 0x14, 0x45, 0x33, 0xc0, 0x85, 0xc0, 0x7e, 0x34, 0x4c, 0x8d, 0x51,
-                0x08, 0x4c,
-            ],
+            rva: Rva(0xd1fce0),
         },
         Receiver::Manager,
     ),
@@ -124,11 +104,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "clear_flags",
-            rva: 0xd1f4f0,
-            sentinel: [
-                0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x63, 0x71, 0x14,
-                0x48, 0x8b,
-            ],
+            rva: Rva(0xd1f4f0),
         },
         Receiver::Manager,
     ),
@@ -136,11 +112,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "assign_flags",
-            rva: 0x1e2b90,
-            sentinel: [
-                0x44, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x56, 0x57, 0x48, 0x83,
-                0xec, 0x48,
-            ],
+            rva: Rva(0x1e2b90),
         },
         Receiver::Rows,
     ),
@@ -149,11 +121,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "construct_flags",
-            rva: 0xd1f320,
-            sentinel: [
-                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x15, 0x6c, 0x47, 0x97, 0x02, 0x48, 0x8d,
-                0x05, 0x65,
-            ],
+            rva: Rva(0xd1f320),
         },
         Receiver::Manager,
     ),
@@ -161,11 +129,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "release_flags",
-            rva: 0xd1f3b0,
-            sentinel: [
-                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0xdb, 0xa9, 0xcb, 0x01, 0x48,
-                0x8d, 0x59,
-            ],
+            rva: Rva(0xd1f3b0),
         },
         Receiver::Manager,
     ),
@@ -173,11 +137,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "destroy_flags",
-            rva: 0xd1f410,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-                0x20, 0x48,
-            ],
+            rva: Rva(0xd1f410),
         },
         Receiver::Manager,
     ),

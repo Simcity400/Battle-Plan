@@ -155,9 +155,8 @@ pub fn walk_buffer(
         mut archetype_tokens,
         mut archetype_amounts,
     } = arenas;
-    let archetype_vtable = base
-        .checked_add(cequipment_type::VTABLE_RVA)
-        .map(|address| address as u64);
+    let archetype_vtable =
+        engine_sites::at(base, cequipment_type::VTABLE_RVA).map(|address| address as u64);
     let (mut len, mut unread) = (0_usize, 0_u32);
     let result = raid_speed_inputs::each_raid(memory, base, game_state, |hour, raid| {
         if !recorded(&raid, hour) {

@@ -2000,7 +2000,7 @@ mod tests {
         qword(
             &mut image,
             MANAGER,
-            (BASE + engine_native::cstrategic_air_manager::VTABLE_RVA) as u64,
+            (BASE + engine_native::cstrategic_air_manager::VTABLE_RVA.0) as u64,
         );
         vector(
             &mut image,
@@ -2080,7 +2080,7 @@ mod tests {
         qword(
             &mut image,
             HISTORY,
-            (BASE + engine_air_history::cloop_history::VTABLE_RVA) as u64,
+            (BASE + engine_air_history::cloop_history::VTABLE_RVA.0) as u64,
         );
         dword(
             &mut image,
@@ -2095,7 +2095,7 @@ mod tests {
         qword(
             &mut image,
             WINDOW,
-            (BASE + engine_air_history::loop_history_window::VTABLE_RVA) as u64,
+            (BASE + engine_air_history::loop_history_window::VTABLE_RVA.0) as u64,
         );
         vector(
             &mut image,

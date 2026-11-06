@@ -66,8 +66,7 @@ pub fn rows(outcome: Outcome) -> Result<usize, &'static str> {
 
 /// An absent or empty world is pending, not a failed census or a zero hint.
 pub fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usize>, &'static str> {
-    let game_state = base
-        .checked_add(cgame_state::SINGLETON_RVA)
+    let game_state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
         .ok_or("input demand game state unreadable or address overflow")?;
     let state =

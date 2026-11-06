@@ -8,6 +8,7 @@ use crate::{
     cradars_pool, cstate, read,
     walk::{Buffer, Outcome},
 };
+use engine_sites::Rva;
 
 /// Province-ID array pointer.
 pub const PROVINCES: usize = 0;
@@ -27,9 +28,7 @@ pub const PARENT: usize = 0x60;
 /// Radar-group allocation size.
 pub const SIZE: usize = 0x70;
 /// Coverage update using game-state province indices.
-pub const UPDATE_RVA: usize = 0x0112_b630;
-/// Supported executable's update-entry fingerprint, using FNV-1a over 16 bytes.
-pub const UPDATE_PREFIX_HASH: u64 = 0x348d_1fd7_4174_e813;
+pub const UPDATE_RVA: Rva = Rva(0x0112_b630);
 
 /// One country's radar group in vector order. Its ordinal is a position,
 /// not an identity: swap-removal can move coverage between hours. Host state
@@ -174,8 +173,7 @@ fn walk_buffers(
                 .pointer
                 .checked_add(ccountry::RADARS_POOL)
                 .ok_or("radar pool address overflow")?;
-            let expected = base
-                .checked_add(cradars_pool::VTABLE_RVA)
+            let expected = engine_sites::at(base, cradars_pool::VTABLE_RVA)
                 .ok_or("module address overflow")?;
             let mut primary = [0; 8];
             let mut owner = [0; 4];
@@ -242,8 +240,7 @@ fn walk_buffers(
                 let state = if state == 0 {
                     None
                 } else {
-                    let expected = base
-                        .checked_add(cstate::VTABLE_RVA)
+                    let expected = engine_sites::at(base, cstate::VTABLE_RVA)
                         .ok_or("module address overflow")?;
                     if read::<u64>(memory, state) != Some(expected as u64) {
                         return Err("radar group state vtable mismatch");
@@ -361,7 +358,7 @@ mod tests {
         put(
             &mut bytes,
             OTHER_COUNTRY,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -376,14 +373,14 @@ mod tests {
         put(
             &mut bytes,
             COUNTRY,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
         for country in [COUNTRY, OTHER_COUNTRY] {
             put(
                 &mut bytes,
                 country + ccountry::RADARS_POOL,
-                &(cradars_pool::VTABLE_RVA as u64).to_le_bytes(),
+                &(cradars_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
         }
         put(
@@ -419,7 +416,7 @@ mod tests {
         put(
             &mut bytes,
             STATE_A,
-            &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+            &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, STATE_A + cstate::ID, &77_u32.to_le_bytes());
         for (index, id) in [u32::MAX, 1, 13_413_u32].into_iter().enumerate() {

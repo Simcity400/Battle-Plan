@@ -61,7 +61,7 @@ fn advisor_modifier_sizing_survives_an_unreadable_political_census() {
     struct World<'a>(&'a [u8]);
     impl Memory for World<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == IMAGE + engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == IMAGE + engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&(ADDRESS as u64).to_le_bytes());
                 return true;
             }
@@ -963,7 +963,7 @@ fn many_advisors(count: usize) -> ManyAdvisors {
         put(
             &mut bytes,
             character,
-            ((IMAGE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -996,7 +996,7 @@ fn many_advisors(count: usize) -> ManyAdvisors {
         put(
             &mut bytes,
             role,
-            ((IMAGE + cadvisor::VTABLE_RVA) as u64).to_le_bytes(),
+            ((IMAGE + cadvisor::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         pointer(&mut bytes, role + cadvisor::CHARACTER, character);
         literal(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea");

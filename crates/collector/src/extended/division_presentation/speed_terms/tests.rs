@@ -34,7 +34,7 @@ impl World {
             let country = COUNTRY + owner * BLOCK;
             world.u64(COUNTRIES + owner * 8, country as u64);
             world.u32(LINKS + owner * 4, owner as u32);
-            world.u64(country, ccountry::VTABLE_RVA as u64);
+            world.u64(country, ccountry::VTABLE_RVA.0 as u64);
             world.u32(country + ccountry::ID, owner as u32);
             world.header(country + ccountry::MODIFIER_ACCUMULATOR, country + 0x700, 1);
             world.u32(country + 0x700, SPEED_KEY);
@@ -315,10 +315,10 @@ fn combat_movement_uses_the_first_attacking_combat_and_shares_its_read() {
     const ATTACKERS: usize = 0x22900;
     const DIVISION: usize = 0x22a00;
     let mut world = World::new(8);
-    world.u64(COMBAT, combat::VTABLE_RVA as u64);
+    world.u64(COMBAT, combat::VTABLE_RVA.0 as u64);
     world.u64(COMBAT + combat::MOVEMENT_MODIFIER, (-13_000_i64) as u64);
     world.u64(COMBAT + combat::ATTACKER, SIDE as u64);
-    world.u64(SIDE, side::VTABLE_RVA as u64);
+    world.u64(SIDE, side::VTABLE_RVA.0 as u64);
     world.u64(SIDE + side::COMBAT, COMBAT as u64);
     world.header(SIDE + side::UNITS, ATTACKERS, 1);
     world.u64(ATTACKERS, DIVISION as u64);
@@ -556,10 +556,10 @@ fn attacking_mover(world: &mut World) -> DivisionSeed {
     const LIST: usize = 0x22800;
     const ATTACKERS: usize = 0x22900;
     const DIVISION: usize = 0x22a00;
-    world.u64(COMBAT, combat::VTABLE_RVA as u64);
+    world.u64(COMBAT, combat::VTABLE_RVA.0 as u64);
     world.u64(COMBAT + combat::MOVEMENT_MODIFIER, 20_000);
     world.u64(COMBAT + combat::ATTACKER, SIDE as u64);
-    world.u64(SIDE, side::VTABLE_RVA as u64);
+    world.u64(SIDE, side::VTABLE_RVA.0 as u64);
     world.u64(SIDE + side::COMBAT, COMBAT as u64);
     world.header(SIDE + side::UNITS, ATTACKERS, 1);
     world.u64(ATTACKERS, DIVISION as u64);
@@ -1281,7 +1281,7 @@ fn hostility_world() -> World {
         let province = HOSTILITY_PROVINCE + id as usize * 0x400;
         let definition = province + 0x200;
         world.u64(HOSTILITY_ARRAY + id as usize * 8, province as u64);
-        world.u64(province, cprovince::VTABLE_RVA as u64);
+        world.u64(province, cprovince::VTABLE_RVA.0 as u64);
         world.u32(province + cprovince::ID, if id == 5 { 9 } else { id });
         world.u64(province + cprovince::DEFINITION, definition as u64);
         world.u32(definition + province_definition::ID, id);
@@ -1307,17 +1307,17 @@ fn hostility_world() -> World {
         let relations = diplomacy + 0x800;
         let tuple = 0x54000 + index * 0x400;
         world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
         world.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         world.header(diplomacy + cdiplomacy_status::RELATIONS, relations, 4);
         world.u64(relations + target * 8, tuple as u64);
-        world.u64(tuple, crelation_status::VTABLE_RVA as u64);
+        world.u64(tuple, crelation_status::VTABLE_RVA.0 as u64);
         world.u64(tuple + crelation_status::DIPLOMACY_STATUS, diplomacy as u64);
         world.u32(tuple + crelation_status::TARGET_COUNTRY, target as u32);
         if war {
             let relation = 0x58000 + index * 0x100;
             world.u64(tuple + crelation_status::WAR_RELATION, relation as u64);
-            world.u64(relation, cwar_relation::VTABLE_RVA as u64);
+            world.u64(relation, cwar_relation::VTABLE_RVA.0 as u64);
             world.u32(relation + crelation::TYPE_ID, cwar_relation::TYPE);
         }
     }

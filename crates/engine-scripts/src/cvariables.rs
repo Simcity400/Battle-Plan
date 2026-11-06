@@ -4,9 +4,10 @@ use crate::{
     Memory, ccharacter, ccharacter_manager, ccountry, cgame_state, cpdx_array::Array, cstate, read,
     read_slice, variable_hash_node, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CVariables vtable.
-pub const VTABLE_RVA: usize = 0x0285_3318;
+pub const VTABLE_RVA: Rva = Rva(0x0285_3318);
 /// CVariables primary vtable pointer.
 pub const VTABLE: usize = 0;
 /// Raw u32 scoped-variable seed; initialized to one and hashed as context changes.
@@ -20,7 +21,7 @@ pub const BUCKET_MASK: usize = 0x24;
 /// Maximum probe distance; logarithmic bucket sizing includes this many overflow slots.
 pub const PROBE_TAIL: usize = 0x28;
 /// Empty shared storage.
-pub const EMPTY_STORAGE_RVA: usize = 0x030f_d1a0;
+pub const EMPTY_STORAGE_RVA: Rva = Rva(0x030f_d1a0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -271,9 +272,8 @@ pub fn walk_scopes_carried(
         if states.count < 2 {
             return Err("state table has no state slots");
         }
-        let expected = base
-            .checked_add(cstate::VTABLE_RVA)
-            .ok_or("state vtable overflow")? as u64;
+        let expected =
+            engine_sites::at(base, cstate::VTABLE_RVA).ok_or("state vtable overflow")? as u64;
         let mut found_state = false;
         let mut first = 1;
         let mut pointers = [0_u8; 64 * 8];
@@ -516,7 +516,7 @@ impl Head {
     /// The store a carry may certify: its vtable is the CVariables vtable and
     /// its header was copied, as [`walk_head_buffer`] first requires.
     fn store(&self, base: usize, scope: Scope, container: usize) -> Option<Store> {
-        let expected = base.checked_add(VTABLE_RVA)?;
+        let expected = engine_sites::at(base, VTABLE_RVA)?;
         (self.copied >= 2 && !self.overflow && u64::from_le_bytes(self.vtable) == expected as u64)
             .then_some(Store {
                 scope,
@@ -553,9 +553,7 @@ fn walk_head_buffer(
     mut names: crate::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let result = (|| {
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
+        let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         if head.copied == 0 || u64::from_le_bytes(head.vtable) != expected as u64 {
             return Err("variables vtable mismatch");
         }
@@ -571,9 +569,7 @@ fn walk_head_buffer(
         let count = u32::from_le_bytes(header[8..12].try_into().unwrap());
         let mask = u32::from_le_bytes(header[12..16].try_into().unwrap());
         let tail = header[16];
-        let empty = base
-            .checked_add(EMPTY_STORAGE_RVA)
-            .ok_or("module address overflow")?;
+        let empty = engine_sites::at(base, EMPTY_STORAGE_RVA).ok_or("module address overflow")?;
         if storage == empty {
             if count != 0 || mask != 0 || tail != 0 {
                 return Err("variables empty sentinel header invalid");

@@ -6,6 +6,7 @@
 use crate::{
     Memory, allocation, ccountry, cpdx_array::Array, cpolitical_status, cwar_goal_type, read,
 };
+use engine_sites::Rva;
 
 pub const SERIALIZABLE_GOALS: usize = 0x80;
 pub const HANDLE: usize = 8;
@@ -15,7 +16,7 @@ pub const ACTOR: usize = 0x38;
 pub const LIBERATE: usize = 0x60;
 pub const PUPPETS: usize = 0x78;
 pub const ACTIVITIES: usize = 8;
-pub const JUSTIFICATION_VTABLE_RVA: usize = 0x029c_1d40;
+pub const JUSTIFICATION_VTABLE_RVA: Rva = Rva(0x029c_1d40);
 pub const ACTIVITY_SOURCE: usize = 0x10;
 pub const ACTIVITY_TARGET: usize = 0x14;
 pub const TOTAL_COST: usize = 0x18;
@@ -138,10 +139,8 @@ impl Inputs {
                 let p = pointer(m, goals, ordinal)?;
                 if p == 0
                     || field::<u64>(m, p, 0)?
-                        != base
-                            .checked_add(super::VTABLE_RVA)
-                            .ok_or("war-goal vtable address overflow")?
-                            as u64
+                        != engine_sites::at(base, super::VTABLE_RVA)
+                            .ok_or("war-goal vtable withheld")? as u64
                 {
                     return Err("war-goal inventory goal vtable mismatch");
                 }
@@ -166,10 +165,8 @@ impl Inputs {
                 let p = pointer(m, unused, ordinal)?;
                 if p != 0
                     && field::<u64>(m, p, 0)?
-                        != base
-                            .checked_add(super::VTABLE_RVA)
-                            .ok_or("war-goal vtable address overflow")?
-                            as u64
+                        != engine_sites::at(base, super::VTABLE_RVA)
+                            .ok_or("war-goal vtable withheld")? as u64
                 {
                     return Err("unused war-goal vtable mismatch");
                 }
@@ -185,10 +182,8 @@ impl Inputs {
             let politics = field::<u64>(m, country.pointer, ccountry::POLITICAL_STATUS)? as usize;
             if politics == 0
                 || field::<u64>(m, politics, 0)?
-                    != base
-                        .checked_add(cpolitical_status::VTABLE_RVA)
-                        .ok_or("political-status vtable address overflow")?
-                        as u64
+                    != engine_sites::at(base, cpolitical_status::VTABLE_RVA)
+                        .ok_or("political-status vtable withheld")? as u64
                 || field::<u64>(m, politics, cpolitical_status::COUNTRY)? != country.pointer as u64
             {
                 return Err("war-goal justification political-status identity mismatch");
@@ -201,10 +196,8 @@ impl Inputs {
                 }
                 // Other activity types have no justification payload and are never followed.
                 if field::<u64>(m, p, 0)?
-                    != base
-                        .checked_add(JUSTIFICATION_VTABLE_RVA)
-                        .ok_or("justification vtable address overflow")?
-                        as u64
+                    != engine_sites::at(base, JUSTIFICATION_VTABLE_RVA)
+                        .ok_or("justification vtable withheld")? as u64
                 {
                     continue;
                 }
@@ -255,10 +248,8 @@ impl Inputs {
                     0
                 } else {
                     if field::<u64>(m, p, 0)?
-                        != base
-                            .checked_add(crate::cstate::VTABLE_RVA)
-                            .ok_or("state vtable address overflow")?
-                            as u64
+                        != engine_sites::at(base, crate::cstate::VTABLE_RVA)
+                            .ok_or("state vtable withheld")? as u64
                     {
                         return Err("war-goal target state vtable mismatch");
                     }
@@ -293,15 +284,15 @@ mod tests {
         let diplomacy = w.alloc(0x300);
         let politics = w.alloc(0x120);
         w.u64(country + ccountry::POLITICAL_STATUS, politics as u64);
-        w.u64(politics, cpolitical_status::VTABLE_RVA as u64);
+        w.u64(politics, cpolitical_status::VTABLE_RVA.0 as u64);
         w.u64(politics + cpolitical_status::COUNTRY, country as u64);
         let goal = w.alloc(0x90);
         let used = w.alloc(0x90);
         let definition = w.alloc(0x10);
-        w.u64(definition, cwar_goal_type::VTABLE_RVA as u64);
+        w.u64(definition, cwar_goal_type::VTABLE_RVA.0 as u64);
         w.u32(definition + cwar_goal_type::TOKEN, 9123);
         for (p, handle) in [(goal, 41u64 << 32 | 123), (used, 42u64 << 32 | 123)] {
-            w.u64(p, super::super::VTABLE_RVA as u64);
+            w.u64(p, super::super::VTABLE_RVA.0 as u64);
             w.u64(p + HANDLE, handle);
             w.u32(p + ACTOR, 1);
             w.u32(p + super::super::RECIPIENT, 2);
@@ -315,7 +306,7 @@ mod tests {
         w.array(diplomacy + SERIALIZABLE_GOALS, list, 2);
         w.array(diplomacy + cdiplomacy_status::OWNED_WARGOALS, list, 1);
         let state = w.alloc(0x100);
-        w.u64(state, cstate::VTABLE_RVA as u64);
+        w.u64(state, cstate::VTABLE_RVA.0 as u64);
         w.u32(state + cstate::ID, 5001);
         let states = w.alloc(24);
         w.u64(states, state as u64);
@@ -329,7 +320,7 @@ mod tests {
         w.array(goal + LIBERATE, tags, 3);
         w.array(goal + PUPPETS, tags, 2);
         let activity = w.alloc(0x90);
-        w.u64(activity, JUSTIFICATION_VTABLE_RVA as u64);
+        w.u64(activity, JUSTIFICATION_VTABLE_RVA.0 as u64);
         w.u32(activity + ACTIVITY_SOURCE, 1);
         w.u32(activity + ACTIVITY_TARGET, 2);
         w.u64(activity + ACTIVITY_TYPE, definition as u64);

@@ -3,6 +3,7 @@
 //! Country roots reuse only the current quiescent callback's certified census.
 
 use crate::{Memory, memory::Raw, read};
+use engine_sites::Rva;
 
 mod air;
 mod capture;
@@ -152,6 +153,12 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
 }
 fn field<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Result<T, &'static str> {
     read(memory, at(pointer, offset)?).ok_or("fuel demand operand unreadable")
+}
+fn module_at(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("fuel demand address overflow")
+}
+fn global<T: Raw>(memory: &impl Memory, base: usize, key: Rva) -> Result<T, &'static str> {
+    read(memory, module_at(base, key)?).ok_or("fuel demand operand unreadable")
 }
 
 /// Three capacity-gate outcomes; preserve each fixed5 factor.

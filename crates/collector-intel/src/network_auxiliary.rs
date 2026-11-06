@@ -545,7 +545,7 @@ impl Hooks {
     /// # Safety
     /// Host authenticates the executable and restores/quiesces before unload.
     pub unsafe fn new(
-        memory: &impl Memory,
+        _memory: &impl Memory,
         base: usize,
         capture: bool,
     ) -> Result<Self, &'static str> {
@@ -567,17 +567,10 @@ impl Hooks {
         ];
         let mut hooks = Vec::new();
         for (index, site) in native::SITES.iter().enumerate() {
-            hook_errors::verify(
-                memory,
-                base,
-                site.rva,
-                site.sentinel,
-                "network auxiliary",
-                site.name,
-                index,
-            )?;
-            let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                .map_err(|cause| {
+            let (address, original) =
+                hook_errors::locate(base, site.rva, "network auxiliary", site.name, index)?;
+            let hook =
+                unsafe { Hook::new(address, callbacks[index], original) }.map_err(|cause| {
                     hook_errors::site(
                         "network auxiliary",
                         site.name,

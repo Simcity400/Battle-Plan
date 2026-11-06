@@ -70,7 +70,7 @@ impl Fixture {
         f.array(GS + cgame_state::COUNTRIES, COUNTRIES, countries + 1);
         f.array(GS + cgame_state::COUNTRY_LINKS, LINKS, countries + 1);
         for (definition, key) in [(NEEDED, b"needed".as_slice()), (OTHER, b"other".as_slice())] {
-            f.word(definition, IMAGE + cdecision::VTABLE_RVA);
+            f.word(definition, IMAGE + cdecision::VTABLE_RVA.0);
             f.text(definition + cdecision::TOKEN, key);
         }
         for index in 0..countries {
@@ -78,21 +78,21 @@ impl Fixture {
             let status = country + 0x1400;
             f.word(COUNTRIES + (index + 1) * 8, country);
             f.integer(LINKS + (index + 1) * 4, index as i32 + 1);
-            f.word(country, IMAGE + ccountry::VTABLE_RVA);
+            f.word(country, IMAGE + ccountry::VTABLE_RVA.0);
             f.integer(country + ccountry::ID, index as i32 + 1);
             f.word(country + ccountry::DECISION_STATUS, status);
-            f.word(status, IMAGE + cdecision_status::VTABLE_RVA);
+            f.word(status, IMAGE + cdecision_status::VTABLE_RVA.0);
             f.word(status + cdecision_status::COUNTRY, country);
             f.array(status + cdecision_status::TARGETED, status + 0x240, 2);
             f.array(status + cdecision_status::RANDOM_ITEMS, status + 0x400, 2);
             for (ordinal, definition) in [NEEDED, OTHER].into_iter().enumerate() {
                 let instance = status + 0x300 + ordinal * 0x40;
                 f.word(status + 0x240 + ordinal * 8, instance);
-                f.word(instance, IMAGE + targeted::VTABLE_RVA);
+                f.word(instance, IMAGE + targeted::VTABLE_RVA.0);
                 f.word(instance + targeted::DEFINITION, definition);
                 f.integer(instance + targeted::NUMERIC_TARGET, 7);
                 let random = status + 0x400 + ordinal * cdecision_status::RANDOM_ITEM_STRIDE;
-                f.word(random, IMAGE + cdecision_status::RANDOM_ITEM_VTABLE_RVA);
+                f.word(random, IMAGE + cdecision_status::RANDOM_ITEM_VTABLE_RVA.0);
                 f.word(
                     random + cdecision_status::RANDOM_ITEM_DEFINITION,
                     definition,
@@ -113,22 +113,22 @@ impl Fixture {
 
     fn border_event(&mut self) {
         self.word(0x15800, COMBAT);
-        self.word(COMBAT, IMAGE + combat::VTABLE_RVA);
-        self.word(COMBAT + cland_combat::BODY, IMAGE + combat::BODY_VTABLE_RVA);
+        self.word(COMBAT, IMAGE + combat::VTABLE_RVA.0);
+        self.word(COMBAT + cland_combat::BODY, IMAGE + combat::BODY_VTABLE_RVA.0);
         self.word(
             COMBAT + cland_combat::HANDLE,
             ((42_u64 << 32) | 4714) as usize,
         );
         for (index, pointer) in [0x17000, 0x17800].into_iter().enumerate() {
             self.word(COMBAT + cland_combat::ATTACKER + index * 8, pointer);
-            self.word(pointer, IMAGE + side::VTABLE_RVA);
+            self.word(pointer, IMAGE + side::VTABLE_RVA.0);
             self.word(pointer + cland_combatant::COMBAT, COMBAT);
             self.put(pointer + cland_combatant::IS_ATTACKER, &[(1 - index) as u8]);
             self.text(pointer + side::WIN_EVENT, b"");
             self.text(pointer + side::LOSE_EVENT, b"");
         }
         self.text(0x17000 + side::WIN_EVENT, b"test.7");
-        self.array(IMAGE + event_namespace::TABLE_RVA, 0x15500, 1);
+        self.array(IMAGE + event_namespace::TABLE_RVA.0, 0x15500, 1);
         self.text(0x15500, b"test");
         let hash = b"test".iter().fold(0x811c_9dc5_u32, |hash, byte| {
             (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
@@ -136,7 +136,7 @@ impl Fixture {
         self.integer(0x15500 + event_namespace::NAME_HASH, hash as i32);
         // The event reference resolves test.7 in the synthetic namespace.
         let handle = (1_000_007_u64 << 32) | 0x32;
-        self.word(IMAGE + registry::LOW_ROOTS_RVA + 0x32 * 8, 0x19000);
+        self.word(IMAGE + registry::LOW_ROOTS_RVA.0 + 0x32 * 8, 0x19000);
         self.word(0x19000 + registry::ENTRIES, 0x19100);
         self.integer(0x19000 + registry::COUNT, 1);
         self.integer(0x19000 + registry::MASK, 7);

@@ -1,7 +1,8 @@
 //! CLoopHistoryContainer, the circular window reached through CLoopHistory's third window.
 
+use engine_sites::Rva;
 /// History-window primary vtable.
-pub const VTABLE_RVA: usize = 0x02a4_c2e8;
+pub const VTABLE_RVA: Rva = Rva(0x02a4_c2e8);
 /// History-window record-pointer CPdxArray.
 pub const RECORDS: usize = 8;
 

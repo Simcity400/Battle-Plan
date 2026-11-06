@@ -48,13 +48,13 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY,
-        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, COUNTRY + ccountry::ID, &2_u32.to_le_bytes());
     put(
         &mut bytes,
         COUNTRY + ccountry::RADARS_POOL,
-        &(engine_native::cradars_pool::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cradars_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -84,7 +84,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         STATE_OBJECT,
-        &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+        &(cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, STATE_OBJECT + cstate::ID, &33_u32.to_le_bytes());
     array(&mut bytes, COUNTRY + ccountry::VOLUNTEER_HOSTS, HOSTS, 1);
@@ -108,7 +108,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         THEATRE,
-        &(ctheatre::VTABLE_RVA as u64).to_le_bytes(),
+        &(ctheatre::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -130,7 +130,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         AREA,
-        &(ccontroller_area::VTABLE_RVA as u64).to_le_bytes(),
+        &(ccontroller_area::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -149,7 +149,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             province,
-            &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, province + cprovince::ID, &id.to_le_bytes());
     }
@@ -165,7 +165,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         DIVISION,
-        &(carmy::VTABLE_RVA as u64).to_le_bytes(),
+        &(carmy::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -190,14 +190,14 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         FLEET,
-        &(cfleet::VTABLE_RVA as u64).to_le_bytes(),
+        &(cfleet::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(&mut bytes, FLEET + cfleet::TASK_FORCES, 0x11500, 1);
     put(&mut bytes, 0x11500, &(TASK_FORCE as u64).to_le_bytes());
     put(
         &mut bytes,
         TASK_FORCE,
-        &(ctask_force::VTABLE_RVA as u64).to_le_bytes(),
+        &(ctask_force::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -212,7 +212,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         MANAGER,
-        &(engine_native::cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cstrategic_air_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -224,7 +224,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         AIR_BASE,
-        &(cair_base::VTABLE_RVA as u64).to_le_bytes(),
+        &(cair_base::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -241,7 +241,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         CONTAINER,
-        &(engine_native::ccountry_air_container::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::ccountry_air_container::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -263,7 +263,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         POOL,
-        &(engine_native::cair_wing_pool::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cair_wing_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -275,12 +275,12 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         WING,
-        &(engine_native::cair_wing::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cair_wing::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
         WING + engine_native::cair_wing::SECONDARY,
-        &(engine_native::cair_wing::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cair_wing::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,

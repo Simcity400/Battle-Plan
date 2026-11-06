@@ -2,6 +2,7 @@
 //! Runtime CState resource effects are separate and are not represented here.
 
 use crate::{Memory, cgame_state, cpdx_array::Array, cstate, cstate_template, read, walk::Outcome};
+use engine_sites::Rva;
 
 /// Resource-entry stride.
 pub const STRIDE: usize = 0x10;
@@ -13,7 +14,7 @@ pub const NO_RESOURCE_ID: u32 = u32::MAX;
 /// Amount scale for signed source integers.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 /// Entry constructor storing the full qword amount and definition u32 ID.
-pub const CONSTRUCTOR_RVA: usize = 0x00c2_0880;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c2_0880);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -59,11 +60,9 @@ pub fn walk_buffer(
         if states.count < 2 {
             return Err("resource state array has no state slots");
         }
-        let state_vtable = base
-            .checked_add(cstate::VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
-        let template_vtable = base
-            .checked_add(cstate_template::VTABLE_RVA)
+        let state_vtable =
+            engine_sites::at(base, cstate::VTABLE_RVA).ok_or("module address overflow")? as u64;
+        let template_vtable = engine_sites::at(base, cstate_template::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
@@ -170,7 +169,7 @@ mod tests {
         put(
             &mut bytes,
             0x400,
-            (0x1000 + cstate::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x400 + cstate::ID, 1_u32.to_le_bytes());
         put(
@@ -181,7 +180,7 @@ mod tests {
         put(
             &mut bytes,
             0x800,
-            (0x1000 + cstate_template::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cstate_template::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x800 + cstate_template::ID, 1_u32.to_le_bytes());
         put(

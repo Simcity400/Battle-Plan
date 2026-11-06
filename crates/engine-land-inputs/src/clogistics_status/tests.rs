@@ -68,7 +68,7 @@ impl Fixture {
         f.array(GAME + cgame_state::COUNTRY_LINKS, LINKS, 5);
         for (slot, (country, id, _)) in [HUMAN, AI, MANUAL].into_iter().enumerate() {
             f.pointer(COUNTRIES + (slot + 1) * 8, country);
-            f.pointer(country, BASE + ccountry::VTABLE_RVA);
+            f.pointer(country, BASE + ccountry::VTABLE_RVA.0);
             f.u32(country + ccountry::ID, id);
         }
         f.pointer(COUNTRIES, 0);
@@ -81,13 +81,13 @@ impl Fixture {
         f.bytes(COUNTS, &[0, 1, 0, 0]);
         f.array(GAME + cgame_state::AUTONOMOUS_STATUS, FLAGS, 4);
         f.bytes(FLAGS, &[1, 1, 1, 0]);
-        f.pointer(BASE + database::SINGLETON_RVA, DATABASE);
-        f.pointer(DATABASE, BASE + database::VTABLE_RVA);
+        f.pointer(BASE + database::SINGLETON_RVA.0, DATABASE);
+        f.pointer(DATABASE, BASE + database::VTABLE_RVA.0);
         f.array(DATABASE + database::ARCHETYPES, LIST, archetypes);
         for index in 0..archetypes {
             let archetype = TYPES + index as usize * TYPE_STRIDE;
             f.pointer(LIST + index as usize * 8, archetype);
-            f.pointer(archetype, BASE + cequipment_type::VTABLE_RVA);
+            f.pointer(archetype, BASE + cequipment_type::VTABLE_RVA.0);
             f.u32(archetype + cequipment_type::TOKEN, token(index));
             f.u32(archetype + cequipment_type::STOCKPILE_INDEX, index);
             f.bytes(archetype + cequipment_type::IS_ARCHETYPE, &[1]);
@@ -102,7 +102,7 @@ impl Fixture {
         let status = region;
         let series = region + 0x100;
         self.pointer(country + ccountry::LOGISTICS_STATUS, status);
-        self.pointer(status, BASE + VTABLE_RVA);
+        self.pointer(status, BASE + VTABLE_RVA.0);
         self.array(status + SERIES, series, SERIES_COUNT);
         // The copies are contiguous: the words between the fields read (the
         // allocators, the queue and the other windows) exist in every object.
@@ -122,7 +122,7 @@ impl Fixture {
             let record = history + 0x400;
             let values = history + 0x800;
             self.pointer(series + series_index as usize * 8, history);
-            self.pointer(history, BASE + cloop_history::VTABLE_RVA);
+            self.pointer(history, BASE + cloop_history::VTABLE_RVA.0);
             self.pointer(history + cloop_history::QUEUE, 0x9_0e0e);
             self.pointer(history + cloop_history::DAILY_WINDOW + 8, 0x12);
             self.pointer(history + cloop_history::WINDOW, 0x7);
@@ -130,7 +130,7 @@ impl Fixture {
             self.pointer(history + cloop_history::SELF_REFERENCE, history);
             self.bytes(history + cloop_history::ROLL_UP, &roll_up.to_le_bytes());
             self.u32(history + cloop_history::FIELD_COUNT, archetypes);
-            self.pointer(daily, BASE + window::VTABLE_RVA);
+            self.pointer(daily, BASE + window::VTABLE_RVA.0);
             self.array(daily + window::RECORDS, records, 30);
             self.pointer(daily + window::RECORDS + 16, 0xa110c);
             self.u32(daily + window::CAPACITY, 30);
@@ -202,7 +202,7 @@ fn worker_sizes_the_roster_without_reading_native_excluded_countries() {
         };
         fixture.pointer(COUNTRY_POINTERS + slot as usize * 8, pointer);
         fixture.u32(COUNTRY_LINKS + slot as usize * 4, slot);
-        fixture.pointer(pointer, BASE + ccountry::VTABLE_RVA);
+        fixture.pointer(pointer, BASE + ccountry::VTABLE_RVA.0);
         fixture.u32(pointer + ccountry::ID, slot);
     }
     assert_eq!(row_demand(&fixture, BASE, GAME), Ok(24));
@@ -224,7 +224,7 @@ fn worker_grows_from_mod_archetype_headers_on_first_and_later_samples() {
         for index in 0..count {
             let pointer = TYPES + index as usize * TYPE_STRIDE;
             fixture.pointer(LIST + index as usize * 8, pointer);
-            fixture.pointer(pointer, BASE + cequipment_type::VTABLE_RVA);
+            fixture.pointer(pointer, BASE + cequipment_type::VTABLE_RVA.0);
             fixture.u32(pointer + cequipment_type::TOKEN, token(index));
             fixture.u32(pointer + cequipment_type::STOCKPILE_INDEX, index);
             fixture.bytes(pointer + cequipment_type::IS_ARCHETYPE, &[1]);
@@ -302,7 +302,7 @@ fn reads_the_current_daily_record_of_countries_the_game_computes_it_for() {
     // database is not needed.
     f.bytes(COUNTS, &[0, 0, 0, 0]);
     f.bytes(FLAGS, &[1, 1, 1, 1]);
-    f.forget(BASE + database::SINGLETON_RVA, 8);
+    f.forget(BASE + database::SINGLETON_RVA.0, 8);
     assert_eq!(capture(&f, 8).0, Outcome::Rows { len: 0 });
 }
 
@@ -448,7 +448,7 @@ fn a_failed_read_is_unavailable_never_a_short_or_zero_row() {
             "logistics current record unreadable",
         ),
         (
-            BASE + database::SINGLETON_RVA,
+            BASE + database::SINGLETON_RVA.0,
             8,
             "equipment database pointer unreadable or null",
         ),
@@ -561,7 +561,7 @@ fn a_slot_past_the_controller_counts_follows_the_live_players() {
     // player names them.
     f.array(GAME + cgame_state::HUMAN_STATUS, COUNTS, 2);
     f.array(GAME + cgame_state::PLAYER_RECORDS, 0x13000, 1);
-    f.pointer(0x13000, BASE + chuman::VTABLE_RVA);
+    f.pointer(0x13000, BASE + chuman::VTABLE_RVA.0);
     f.u32(0x13000 + chuman::COUNTRY_TAG, MANUAL.1);
     let (outcome, rows) = capture(&f, 8);
     assert_eq!(outcome, Outcome::Rows { len: 6 });
@@ -579,7 +579,7 @@ fn actual_balance_write_reads_only_the_native_available_slot_and_exact_store() {
     let history = Fixture::history(HUMAN.2, BALANCE_SERIES);
     let record = history + 0x400;
     let stack = 0xa000_0000;
-    for (_, _, offset) in BALANCE_CALLS {
+    for (_, offset) in BALANCE_CALLS {
         f.i64(stack + offset, 7_000_001);
         let observed = balance_write(
             &f,

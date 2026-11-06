@@ -935,7 +935,7 @@ fn production_rest_split_copy_skips_reserved_aliases_and_copies_each_country_onc
     for slot in [0, 3] {
         put(0x2000 + slot * 8, &(RESERVED as u64).to_le_bytes());
     }
-    put(RESERVED, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    put(RESERVED, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
@@ -958,7 +958,7 @@ impl Memory for DefinedMemory<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         if let Some(index) = cequipment_production_line::MAX_FACTORY_DEFINE_RVAS
             .iter()
-            .position(|&rva| rva == address)
+            .position(|&rva| rva.0 == address)
         {
             destination.copy_from_slice(&(index as i32 + 3).to_le_bytes());
             return true;
@@ -999,8 +999,9 @@ fn production_rest_split_copy_stages_line_maximums_defines_and_efficiencies() {
     assert_eq!(line.efficiency_raw, (40 + 41 + 42) * 32_768 / 3);
     // A naval line with the capital-ship bit takes that define (index 4).
     let vtable = at(kit::PLINE);
-    bytes[vtable..vtable + 8]
-        .copy_from_slice(&(engine_native::cnaval_production_line::VTABLE_RVA as u64).to_le_bytes());
+    bytes[vtable..vtable + 8].copy_from_slice(
+        &(engine_native::cnaval_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
+    );
     let flags = at(kit::VARIANT + cequipment_variant::CLASSIFIER_FLAGS);
     bytes[flags..flags + 8]
         .copy_from_slice(&cequipment_variant::CAPITAL_SHIP_CLASSIFIER_MASK.to_le_bytes());

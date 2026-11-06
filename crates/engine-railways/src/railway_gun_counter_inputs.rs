@@ -293,6 +293,10 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("railway gun address overflow")
 }
 
+fn key(base: usize, key: engine_sites::Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("railway gun address overflow")
+}
+
 fn pointer_at(memory: &impl Memory, address: usize) -> Option<usize> {
     read::<u64>(memory, address).and_then(|p| usize::try_from(p).ok())
 }
@@ -307,8 +311,7 @@ fn gun_identity(
         return Err("railway gun roster has a null counted slot");
     }
     let (handle, class) = cunit::counter_identity(memory, base, gun, registry)?;
-    let secondary = base
-        .checked_add(crailway_gun::SECONDARY_VTABLE_RVA)
+    let secondary = engine_sites::at(base, crailway_gun::SECONDARY_VTABLE_RVA)
         .ok_or("railway gun module overflow")? as u64;
     if class != 13 || read::<u64>(memory, at(gun, 0x10)?) != Some(secondary) {
         return Err("railway gun class or secondary identity mismatch");
@@ -327,8 +330,7 @@ fn rail_slots(
     let manager = pointer_at(memory, at(game_state, cgame_state::RAIL_MANAGER)?)
         .filter(|p| *p != 0)
         .ok_or("railway gun rail manager unreadable or null")?;
-    let expected = base
-        .checked_add(crailway_manager::VTABLE_RVA)
+    let expected = engine_sites::at(base, crailway_manager::VTABLE_RVA)
         .ok_or("railway gun rail manager module overflow")? as u64;
     if read::<u64>(memory, manager) != Some(expected) {
         return Err("railway gun rail manager vtable mismatch");
@@ -359,8 +361,7 @@ fn railway_building_level(
     if info == 0 {
         return Ok(None);
     }
-    let expected = base
-        .checked_add(rail_info::VTABLE_RVA)
+    let expected = engine_sites::at(base, rail_info::VTABLE_RVA)
         .ok_or("railway gun rail-info module overflow")? as u64;
     if read::<u64>(memory, info) != Some(expected) {
         return Err("railway gun rail-info vtable mismatch");
@@ -380,8 +381,7 @@ fn railway_building_level(
     if building == 0 {
         return Ok(None);
     }
-    let expected = base
-        .checked_add(cbuilding::VTABLE_RVA)
+    let expected = engine_sites::at(base, cbuilding::VTABLE_RVA)
         .ok_or("railway gun rail building module overflow")? as u64;
     if read::<u64>(memory, building) != Some(expected)
         || read::<u64>(memory, at(building, cbuilding::BUILDING_STATUS)?) != Some(status as u64)
@@ -407,8 +407,7 @@ fn assignee_group(
     let group = pointer
         .checked_sub(crailway_gun::ASSIGNEE_BASE)
         .ok_or("railway gun assignee address underflow")?;
-    let expected_secondary = base
-        .checked_add(crailway_gun::ORDERS_GROUP_ASSIGNEE_VTABLE_RVA)
+    let expected_secondary = engine_sites::at(base, crailway_gun::ORDERS_GROUP_ASSIGNEE_VTABLE_RVA)
         .ok_or("railway gun assignee module overflow")? as u64;
     if read::<u64>(memory, pointer) != Some(expected_secondary) {
         return Err("railway gun assignee secondary vtable mismatch");
@@ -428,8 +427,7 @@ fn subunit_stats(
     let pointer = pointer_at(memory, at(gun, cunit::STAT_BLOCK)?)
         .filter(|pointer| *pointer != 0)
         .ok_or("railway gun stat block pointer unreadable or null")?;
-    let expected = base
-        .checked_add(csub_unit_definition::VTABLE_RVA)
+    let expected = engine_sites::at(base, csub_unit_definition::VTABLE_RVA)
         .ok_or("railway gun stat block module overflow")? as u64;
     if read::<u64>(memory, pointer) != Some(expected) {
         return Err("railway gun stat block vtable mismatch");

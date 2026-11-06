@@ -1,12 +1,13 @@
 //! CTerrainDatabase graphics lookup used by the city predicate.
 //! Graphics records and simulation terrain types occupy different arrays.
 
+use engine_sites::Rva;
 /// CTerrainDatabase singleton pointer.
-pub const SINGLETON_RVA: usize = 0x033d_d4f0;
+pub const SINGLETON_RVA: Rva = Rva(0x033d_d4f0);
 /// CTerrainDatabase CTerrainGraphics pointer array.
 pub const GRAPHICS: usize = 0x70;
 /// Terrain database constructor; initializes separate graphics and simulation null records.
-pub const CONSTRUCT_RVA: usize = 0x00b2_8610;
+pub const CONSTRUCT_RVA: Rva = Rva(0x00b2_8610);
 /// Terrain database pointer array, its null object first: terrain-or-ocean lookup and the terrain
 /// predicate pass `TYPES` with name lookup to hashed-name lookup, which returns `array[index + 1]`.
 pub const TYPES: usize = 0x40;
@@ -23,8 +24,7 @@ pub fn terrain_attacks(
     output: &mut Vec<(i32, i64)>,
 ) -> Result<(), &'static str> {
     output.clear();
-    let database = base
-        .checked_add(SINGLETON_RVA)
+    let database = engine_sites::at(base, SINGLETON_RVA)
         .and_then(|address| crate::read::<u64>(memory, address))
         .and_then(|database| usize::try_from(database).ok())
         .filter(|&database| database != 0)
@@ -33,12 +33,11 @@ pub fn terrain_attacks(
         .checked_add(TYPES)
         .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))
         .ok_or("terrain database types unreadable")?;
-    let terrain_vtable = base
-        .checked_add(crate::cterrain_type::VTABLE_RVA)
+    let terrain_vtable = engine_sites::at(base, crate::cterrain_type::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
-    let adjuster_vtable = base
-        .checked_add(crate::csub_unit_definition::UNIT_ADJUSTER_VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let adjuster_vtable =
+        engine_sites::at(base, crate::csub_unit_definition::UNIT_ADJUSTER_VTABLE_RVA)
+            .ok_or("module address overflow")? as u64;
     crate::allocation::reserve_exact(output, types.count as usize)
         .map_err(|_| "terrain database allocation failed")?;
     for slot in 1..types.count {

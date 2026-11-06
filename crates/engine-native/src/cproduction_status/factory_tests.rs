@@ -99,7 +99,7 @@ fn write_status(bytes: &mut [u8], status: usize, country: usize, row: FactoryRow
     bytes[status + MILITARY_FACTORIES - MEMORY_BASE
         ..status + MILITARY_FACTORIES + FACTORY_SPAN - MEMORY_BASE]
         .fill(0xa5);
-    put(bytes, status, &(VTABLE_RVA as u64).to_le_bytes());
+    put(bytes, status, &(VTABLE_RVA.0 as u64).to_le_bytes());
     put(bytes, status + COUNTRY, &(country as u64).to_le_bytes());
     for (at, group) in GROUPS
         .into_iter()
@@ -125,7 +125,7 @@ fn write_status(bytes: &mut [u8], status: usize, country: usize, row: FactoryRow
         row.trade_imports,
         row.contract_payments,
     ]) {
-        put(bytes, status + offset, &(vtable as u64).to_le_bytes());
+        put(bytes, status + offset, &(vtable.0 as u64).to_le_bytes());
         put(
             bytes,
             status + offset + civ_factory_consumer::ALLOCATED,
@@ -159,7 +159,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             country,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, country + ccountry::ID, &id.to_le_bytes());
         put(
@@ -280,7 +280,7 @@ fn a_short_factory_span_is_a_failure_not_zero_counts() {
     let mut bytes = fixture();
     // The vtable and owner are mapped, the factory span runs past the end.
     let status = MEMORY_END - MILITARY_FACTORIES - FACTORY_SPAN + 8;
-    put(&mut bytes, status, &(VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, status, &(VTABLE_RVA.0 as u64).to_le_bytes());
     put(&mut bytes, status + COUNTRY, &0x5000_u64.to_le_bytes());
     put(
         &mut bytes,
@@ -346,7 +346,7 @@ fn population(count: usize) -> Vec<u8> {
         put(
             &mut bytes,
             country,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -402,7 +402,7 @@ fn serial(memory: &impl Memory, count: usize) -> Outcome {
             .iter_mut()
             .zip(std::iter::once(VTABLE_RVA).chain(CONSUMERS.iter().map(|&(_, rva)| rva)))
         {
-            *vtable = rva;
+            *vtable = rva.0;
         }
         let mut len = 0;
         for slot in 1..countries.count() {

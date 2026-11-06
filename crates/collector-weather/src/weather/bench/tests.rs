@@ -112,7 +112,7 @@ impl World {
         );
         put(
             MANAGER,
-            &(cweather_manager::VTABLE_RVA as u64).to_le_bytes(),
+            &(cweather_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         for (offset, data, count) in [
             (cweather_manager::REGIONS, REGION, 1),
@@ -127,13 +127,13 @@ impl World {
         }
         put(
             REGION,
-            &(sweather_per_region::VTABLE_RVA as u64).to_le_bytes(),
+            &(sweather_per_region::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         for slot in 0..provinces {
             let row = PROVINCE_DATA + slot * sweather_per_province::STRIDE;
             put(
                 row,
-                &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes(),
+                &(sweather_per_province::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 row + sweather_per_province::ID,

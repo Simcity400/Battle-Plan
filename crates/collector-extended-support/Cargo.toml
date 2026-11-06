@@ -16,6 +16,7 @@ test-support = ["collector-memory/test-support"]
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
 engine-native.workspace = true
+engine-sites.workspace = true
 replay-data.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-memory.workspace = true

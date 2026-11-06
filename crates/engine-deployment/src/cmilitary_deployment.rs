@@ -16,11 +16,12 @@ use crate::{
     Memory, carmy_manpower_values, cequipment_variant_pool, cpdx_array::Array, equipment_entry,
     manpower_value_entry, read,
 };
+use engine_sites::Rva;
 
 /// CMilitaryDeployment primary vtable.
-pub const VTABLE_RVA: usize = 0x29da928;
+pub const VTABLE_RVA: Rva = Rva(0x29da928);
 /// CMilitaryDeployment secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x29da960;
+pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x29da960);
 /// CMilitaryDeployment secondary vptr offset.
 pub const SECONDARY_VTABLE: usize = 0x18;
 /// Distributable priority, signed i32, initially one; save omits one.
@@ -47,7 +48,7 @@ pub const HALTING_REASON_PRESENT: usize = 0xc4;
 /// CMilitaryDeployment native training denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 /// Deployment constructor.
-pub const CONSTRUCT_RVA: usize = 0x00d4_6d40;
+pub const CONSTRUCT_RVA: Rva = Rva(0x00d4_6d40);
 
 /// The manpower container's stored side. `Have` is the first container, `Need` the second.
 pub const SIDE_HAVE: u8 = 0;
@@ -85,8 +86,8 @@ pub(crate) fn read_fields(
     pointer: usize,
     line: usize,
 ) -> Result<Fields, &'static str> {
-    let module = |rva: usize| {
-        base.checked_add(rva)
+    let module = |key: Rva| {
+        engine_sites::at(base, key)
             .map(|address| address as u64)
             .ok_or("military deployment module address overflow")
     };
@@ -142,8 +143,7 @@ fn manpower_array(
     base: usize,
     container: usize,
 ) -> Result<Array, &'static str> {
-    let expected = base
-        .checked_add(carmy_manpower_values::VTABLE_RVA)
+    let expected = engine_sites::at(base, carmy_manpower_values::VTABLE_RVA)
         .ok_or("military deployment module address overflow")?;
     if read::<u64>(memory, container) != Some(expected as u64) {
         return Err("military deployment manpower container vtable mismatch");

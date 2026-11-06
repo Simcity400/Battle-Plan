@@ -4,13 +4,14 @@ use crate::{
     Memory, cbuilding, cbuilding_status, ccountry, cgeneral_production_line, cpdx_array::Array,
     cproduction_line, cproduction_status, crailway_production_line, read, walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// Building-production-line primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_8268;
+pub const VTABLE_RVA: Rva = Rva(0x029f_8268);
 
 /// Railway-gun repair-line vtable. It has no construction table, so skip
 /// it while retaining the surrounding queue ordinals.
-pub const RAILWAY_GUN_REPAIR_VTABLE_RVA: usize = 0x029f_8938;
+pub const RAILWAY_GUN_REPAIR_VTABLE_RVA: Rva = Rva(0x029f_8938);
 
 /// Reference-object type value.
 pub const REFERENCE_TYPE_ID: u32 = 59;
@@ -150,14 +151,11 @@ pub fn walk_buffer(
         // Map roots are required by building targets only. A broken map root
         // does not invalidate the independently readable railway queue.
         let locations = cbuilding_status::Locations::new(memory, game_state);
-        let building_vtable = base
-            .checked_add(VTABLE_RVA)
+        let building_vtable =
+            engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
+        let railway_vtable = engine_sites::at(base, crailway_production_line::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let railway_vtable = base
-            .checked_add(crailway_production_line::VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
-        let repair_vtable = base
-            .checked_add(RAILWAY_GUN_REPAIR_VTABLE_RVA)
+        let repair_vtable = engine_sites::at(base, RAILWAY_GUN_REPAIR_VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
@@ -328,9 +326,7 @@ pub(crate) fn owning_country(
 ) -> Result<u32, &'static str> {
     let pointer = usize::try_from(status).map_err(|_| "construction production status overflow")?;
     let country = cproduction_status::country_pointer(memory, base, pointer)?;
-    let vtable = base
-        .checked_add(ccountry::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let vtable = engine_sites::at(base, ccountry::VTABLE_RVA).ok_or("module address overflow")?;
     let id = ccountry::identity(memory, country, vtable)?;
     if id == 0 {
         return Err("production country id is zero");
@@ -444,9 +440,8 @@ pub(crate) fn target_fields(
         .ok()
         .filter(|&p| p != 0)
         .ok_or("construction building target unreadable or null")?;
-    let expected = base
-        .checked_add(cbuilding::VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
+    let expected =
+        engine_sites::at(base, cbuilding::VTABLE_RVA).ok_or("module address overflow")? as u64;
     if read::<u64>(memory, target) != Some(expected) {
         return Err("construction building target vtable mismatch");
     }
@@ -494,7 +489,7 @@ mod tests {
         put(
             &mut bytes,
             0x1000,
-            (0x1000 + ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x1000 + ccountry::ID, 1_u32.to_le_bytes());
         put(
@@ -523,7 +518,11 @@ mod tests {
                 0xffff_ffff_0000_0001,
             ),
         ] {
-            put(&mut bytes, pointer, (0x1000 + vtable as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                pointer,
+                (0x1000 + vtable.0 as u64).to_le_bytes(),
+            );
             put(
                 &mut bytes,
                 pointer + cproduction_line::REFERENCE_TYPE,
@@ -613,14 +612,14 @@ mod tests {
         put(
             &mut bytes,
             0x3400,
-            (0x1000 + cstate::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cstate::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x3400 + cstate::ID, 1_u32.to_le_bytes());
         let status = 0x3400 + cstate::BUILDING_STATUS;
         put(
             &mut bytes,
             status,
-            (0x1000 + cbuilding_status::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cbuilding_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -640,7 +639,7 @@ mod tests {
         put(
             &mut bytes,
             0x3900,
-            (0x1000 + cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -721,7 +720,7 @@ mod tests {
         put(
             &mut bytes,
             0x2c00,
-            (0x1000 + RAILWAY_GUN_REPAIR_VTABLE_RVA as u64).to_le_bytes(),
+            (0x1000 + RAILWAY_GUN_REPAIR_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         let mut buildings = [Row::default(); 2];
         let mut railways = [crailway_production_line::Row::default(); 2];

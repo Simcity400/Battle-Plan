@@ -5,6 +5,7 @@ use crate::{
     Memory, cequipment_type, cequipment_variant, cequipment_variant_pool, cname_group_member,
     ctask_force, cunit, msvc_string::Descriptor, read, recent::Recent,
 };
+use engine_sites::Rva;
 
 mod air_capacity;
 mod naming;
@@ -21,7 +22,7 @@ pub use hull_variant::{HullVariantInputs, read_hull_variant};
 pub use naval_power::{NavalPowerCache, read_naval_power};
 
 /// CShip primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_4888;
+pub const VTABLE_RVA: Rva = Rva(0x029d_4888);
 /// CShip reference handle {u32 type, u32 id}.
 pub const HANDLE: usize = 0x08;
 /// CShip reference type 51.
@@ -80,10 +81,10 @@ pub const TASK_FORCE: usize = 0x728;
 /// CShip allocation size.
 pub const SIZE: usize = 0x938;
 /// Ship constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00c8_65b0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c8_65b0);
 /// Shared type-0x33 unit-ID high-water counter, signed i32, serialized as
 /// `unit` and restored on load. Divisions share this type with ships.
-pub const NEXT_ID_RVA: usize = 0x030f_f228;
+pub const NEXT_ID_RVA: Rva = Rva(0x030f_f228);
 /// Scalar fixed5 scale for signed i64 serialization.
 pub const FIXED_SCALE: i64 = 100_000;
 
@@ -96,9 +97,8 @@ fn name_member(
     if handle == 0 || handle as u32 != HANDLE_TYPE {
         return Err("ship cached name reference invalid");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("ship cached name module address overflow")?;
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("ship cached name module address overflow")?;
     let identity =
         read::<[u8; 16]>(memory, pointer).ok_or("ship cached name identity unreadable")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64
@@ -396,9 +396,7 @@ fn read_model_observed_inner(
     if completed != 4 {
         return Err("ship model fields unreadable");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("ship model module overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("ship model module overflow")?;
     let ship = u64::from_le_bytes(identity[8..16].try_into().unwrap());
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64
         || ship != source.id
@@ -425,9 +423,8 @@ fn read_model_observed_inner(
         return Err("ship model task force identity unreadable");
     }
     if u64::from_le_bytes(parent_vtable)
-        != base
-            .checked_add(ctask_force::VTABLE_RVA)
-            .ok_or("ship model module overflow")? as u64
+        != engine_sites::at(base, ctask_force::VTABLE_RVA).ok_or("ship model module overflow")?
+            as u64
         || u64::from_le_bytes(parent_handle) != source.task_force
         || source.task_force == 0
     {
@@ -473,7 +470,7 @@ fn read_model_observed_inner(
             return Err("ship model variant fields unreadable");
         }
         row.variant = cequipment_variant::identity_from_header(
-            base.checked_add(cequipment_variant::VTABLE_RVA)
+            engine_sites::at(base, cequipment_variant::VTABLE_RVA)
                 .ok_or("ship model module overflow")?,
             identity,
         )?;
@@ -494,8 +491,7 @@ fn read_model_observed_inner(
             let definition_identity = read::<[u8; 12]>(memory, definition)
                 .ok_or("ship model equipment definition identity unreadable")?;
             let ordinary = u64::from_le_bytes(definition_identity[..8].try_into().unwrap())
-                == base
-                    .checked_add(cequipment_type::VTABLE_RVA)
+                == engine_sites::at(base, cequipment_type::VTABLE_RVA)
                     .ok_or("ship model module overflow")? as u64;
             if definition_identity[8..12] != token
                 || (!ordinary
@@ -551,8 +547,7 @@ pub fn read_model_subunit_index(
         .filter(|_| pointer != 0)
         .ok_or("ship subunit address overflow")?;
     let header = read::<[u8; 12]>(memory, definition).ok_or("ship subunit identity unreadable")?;
-    let expected = base
-        .checked_add(crate::csub_unit_definition::VTABLE_RVA)
+    let expected = engine_sites::at(base, crate::csub_unit_definition::VTABLE_RVA)
         .ok_or("ship subunit module overflow")? as u64;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected
         || u32::from_le_bytes(header[8..].try_into().unwrap()) != source.class_id as u32
@@ -667,9 +662,7 @@ fn transport_carrier_base(
     }
     let air = usize::try_from(raw).map_err(|_| "ship carrier air base pointer overflow")?;
     if read::<u64>(memory, air)
-        != base
-            .checked_add(crate::cair_base::VTABLE_RVA)
-            .map(|n| n as u64)
+        != engine_sites::at(base, crate::cair_base::VTABLE_RVA).map(|n| n as u64)
     {
         return Err("ship carrier air base identity invalid");
     }
@@ -798,9 +791,7 @@ pub(crate) fn read_row(
     task_force_pointer: usize,
     task_force: u64,
 ) -> Result<Row, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     let addresses = [
         0,
         HANDLE,
@@ -1208,7 +1199,8 @@ fn read_organisation_weather_with(
     };
     let values = |address| organisation_modifier_values(memory, base, address, definitions);
     let weather = field::<u64>(memory, game, crate::cgame_state::WEATHER_MANAGER)? as usize;
-    if field::<u64>(memory, weather, 0)? as usize != add(base, crate::cweather_manager::VTABLE_RVA)?
+    if field::<u64>(memory, weather, 0)? as usize
+        != organisation_global(base, crate::cweather_manager::VTABLE_RVA)?
     {
         return Err("ship organisation source identity mismatch");
     }
@@ -1258,6 +1250,13 @@ fn read_organisation_weather_with(
 /// Two unconditional native fields with the original scalar observation order.
 /// Invalid geometry falls back before any copy, retaining an earlier source
 /// failure rather than replacing it with a later null/overflow diagnostic.
+/// A located global or vtable, refused as a null module would be.
+fn organisation_global(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key)
+        .filter(|_| base != 0)
+        .ok_or("ship organisation pointer overflow")
+}
+
 fn organisation_pair<const A: usize, const B: usize>(
     memory: &impl Memory,
     first: (usize, usize),
@@ -1419,7 +1418,7 @@ pub fn read_task_terms(
     let ptr = |p, o| field::<u64>(memory, p, o).map(|n| n as usize);
     let values = |address| organisation_modifier_values(memory, base, address, definitions);
     let auth = |p, rva| -> Result<(), &'static str> {
-        if ptr(p, 0)? != add(base, rva)? {
+        if ptr(p, 0)? != organisation_global(base, rva)? {
             Err("ship organisation source identity mismatch")
         } else {
             Ok(())
@@ -1429,7 +1428,10 @@ pub fn read_task_terms(
     auth(task_at, ctask_force::VTABLE_RVA)?;
     let (game, country_id) = organisation_pair::<8, 4>(
         memory,
-        (base, crate::cgame_state::SINGLETON_RVA),
+        (
+            organisation_global(base, crate::cgame_state::SINGLETON_RVA)?,
+            0,
+        ),
         (task_at, cunit::ROSTER_OWNER),
     )?;
     let game = u64::from_le_bytes(game) as usize;
@@ -1556,7 +1558,7 @@ fn influence_terms(
     };
     let ptr = |p, o| field::<u64>(memory, p, o).map(|n| n as usize);
     let auth = |p, rva| -> Result<(), &'static str> {
-        if ptr(p, 0)? != add(base, rva)? {
+        if ptr(p, 0)? != organisation_global(base, rva)? {
             Err("ship organisation source identity mismatch")
         } else {
             Ok(())
@@ -1627,7 +1629,7 @@ fn read_organisation_observation(
             .ok_or("ship organisation array invalid or bound exceeded")
     };
     let auth = |p, rva| -> Result<(), &'static str> {
-        if ptr(p, 0)? != add(base, rva)? {
+        if ptr(p, 0)? != organisation_global(base, rva)? {
             Err("ship organisation source identity mismatch")
         } else {
             Ok(())
@@ -1638,7 +1640,10 @@ fn read_organisation_observation(
     auth(task, ctask_force::VTABLE_RVA)?;
     let (game, country_id) = organisation_pair::<8, 4>(
         memory,
-        (base, crate::cgame_state::SINGLETON_RVA),
+        (
+            organisation_global(base, crate::cgame_state::SINGLETON_RVA)?,
+            0,
+        ),
         (task, cunit::ROSTER_OWNER),
     )?;
     let game = u64::from_le_bytes(game) as usize;
@@ -1672,7 +1677,7 @@ fn read_organisation_observation(
         }
     };
     let pride_values = if pride == handle {
-        let root = ptr(base, 0x033d_e590)?;
+        let root = ptr(organisation_global(base, Rva(0x033d_e590))?, 0)?;
         values(add(ptr(root, 0xb0)?, 0x10)?)?
     } else {
         [0; 4]
@@ -1903,7 +1908,7 @@ pub fn read_maximum_organisation_from_terms(
     };
     let values = |address| organisation_modifier_values(memory, base, address, definitions);
     let pride = if operands.handle == terms.pride {
-        let root = field::<u64>(memory, base, 0x033d_e590)? as usize;
+        let root = field::<u64>(memory, organisation_global(base, Rva(0x033d_e590))?, 0)? as usize;
         let source = field::<u64>(memory, root, 0xb0)? as usize;
         values(add(source, 0x10)?)?
     } else {
@@ -2215,10 +2220,10 @@ mod cached_name_tests {
 
     fn fixture(text: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0; HEAP + text.len() + 1];
-        word(&mut bytes, SHIP, VTABLE_RVA as u64);
+        word(&mut bytes, SHIP, VTABLE_RVA.0 as u64);
         word(&mut bytes, SHIP + HANDLE, FULL_HANDLE);
         word(&mut bytes, SHIP + NAME_MEMBER, MEMBER as u64);
-        word(&mut bytes, MEMBER, cname_group_member::VTABLE_RVA as u64);
+        word(&mut bytes, MEMBER, cname_group_member::VTABLE_RVA.0 as u64);
         // Generator/runtime naming types are outside the retained getter.
         bytes[MEMBER + cname_group_member::TYPE..MEMBER + cname_group_member::TYPE + 4]
             .copy_from_slice(&i32::MIN.to_le_bytes());

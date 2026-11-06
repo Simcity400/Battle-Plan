@@ -20,7 +20,7 @@ fn run(countries: usize) {
         let at = pointer - world.base;
         let bytes = &mut world.bytes[at..at + 0x800];
         bytes[carmy::MANPOWER_VALUES..carmy::MANPOWER_VALUES + 8].copy_from_slice(
-            &((world.base + carmy_manpower_values::VTABLE_RVA) as u64).to_le_bytes(),
+            &((world.base + carmy_manpower_values::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         bytes[carmy::MANPOWER_VALUES + 8..carmy::MANPOWER_VALUES + 16]
             .copy_from_slice(&((pointer + 0x780) as u64).to_le_bytes());

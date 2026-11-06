@@ -2,8 +2,9 @@
 //! upgrade is calculated from programme state, rather than held here.
 
 use crate::{Memory, allocation, cpdx_array::Array, read};
+use engine_sites::Rva;
 
-pub const VTABLE_RVA: usize = 0x02ac_66b8;
+pub const VTABLE_RVA: Rva = Rva(0x02ac_66b8);
 /// Retained sharing base set by faction scientist refresh. It is independent
 /// of the current scientist roster and the per-country bonus array.
 pub const BASE: usize = 0x10;
@@ -27,8 +28,7 @@ pub fn read_into(
     status: usize,
     output: &mut Snapshot,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("faction research sharing vtable address overflow")? as u64;
     if read::<u64>(memory, status) != Some(expected) {
         return Err("faction research sharing status vtable mismatch");

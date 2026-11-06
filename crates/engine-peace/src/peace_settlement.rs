@@ -196,7 +196,7 @@ fn copy_internal(
     let attempt = (|| {
         let identity =
             read::<[u8; 16]>(memory, pointer).ok_or("peace settlement identity unreadable")?;
-        if base.checked_add(conference::VTABLE_RVA).map(|at| at as u64)
+        if engine_sites::at(base, conference::VTABLE_RVA).map(|at| at as u64)
             != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
         {
             return Err("peace settlement vtable mismatch");
@@ -247,10 +247,10 @@ fn copy_internal(
         let head = u64::from_le_bytes(tree[..8].try_into().unwrap()) as usize;
         let expected = u64::from_le_bytes(tree[8..].try_into().unwrap());
         if measuring {
-            let state =
-                base.checked_add(crate::cgame_state::SINGLETON_RVA)
-                    .and_then(|at| read::<u64>(memory, at))
-                    .ok_or("peace demand country registry unreadable")? as usize;
+            let state = engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)
+                .and_then(|at| read::<u64>(memory, at))
+                .ok_or("peace demand country registry unreadable")?
+                as usize;
             let countries = array(memory, state, crate::cgame_state::COUNTRIES, 8)?;
             validate_last::<u64>(memory, countries)?;
             // History keys select countries through the live game-state country roster.
@@ -454,8 +454,9 @@ fn copy_internal(
                     return Ok(());
                 }
                 let participant = element::<u64>(memory, participants, index)? as usize;
-                if read::<u64>(memory, participant) != base.checked_add(vtable).map(|at| at as u64)
-                {
+                let expected =
+                    engine_sites::at(base, vtable).ok_or("peace beneficiary vtable mismatch")?;
+                if read::<u64>(memory, participant) != Some(expected as u64) {
                     return Err("peace beneficiary vtable mismatch");
                 }
                 let (mut taker, states) =
@@ -503,11 +504,9 @@ fn copy_internal(
                         return Ok(());
                     }
                     let state = element::<u64>(memory, states, state_index)? as usize;
-                    if read::<u64>(memory, state)
-                        != base
-                            .checked_add(crate::cstate::VTABLE_RVA)
-                            .map(|at| at as u64)
-                    {
+                    let vtable = engine_sites::at(base, crate::cstate::VTABLE_RVA)
+                        .ok_or("peace transfer state vtable mismatch")?;
+                    if read::<u64>(memory, state) != Some(vtable as u64) {
                         return Err("peace transfer state vtable mismatch");
                     }
                     let id = state

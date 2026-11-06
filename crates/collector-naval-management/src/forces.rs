@@ -2,6 +2,7 @@
 //! the existing census supplies them once, and native writer marks supply later changes.
 use crate::{Snapshot, changes};
 use engine_native::{Memory, ccountry, naval_management as native, read};
+use engine_sites::Rva;
 use replay_data::rows::*;
 use std::{
     collections::HashMap,
@@ -125,7 +126,7 @@ fn identity(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
     handle_offset: usize,
     handle: u64,
     authenticated: bool,
@@ -134,9 +135,7 @@ fn identity(
         return Ok(());
     }
     if field::<u64>(memory, object, 0)?
-        != base
-            .checked_add(vtable)
-            .ok_or("naval management vtable address overflow")? as u64
+        != engine_sites::at(base, vtable).ok_or("naval management vtable address overflow")? as u64
         || field::<u64>(memory, object, handle_offset)? != handle
     {
         return Err("naval management held object identity changed");
@@ -411,8 +410,9 @@ impl<'a, M: Memory> Session<'a, M> {
                 production,
                 navy,
             } => {
-                if field::<u64>(self.memory, production, 0)?
-                    != (self.base + engine_native::cproduction_status::VTABLE_RVA) as u64
+                if Some(field::<u64>(self.memory, production, 0)?)
+                    != engine_sites::at(self.base, engine_native::cproduction_status::VTABLE_RVA)
+                        .map(|vtable| vtable as u64)
                     || field::<u64>(
                         self.memory,
                         production,
@@ -752,7 +752,10 @@ impl<'a, M: Memory> Session<'a, M> {
 
     /// Receiver registration, admission and parent verdict are already final.
     /// The next acquisition waits for this owned store, not for native writers.
-    pub fn finish_owned(mut self, parent: engine_native::cfleet::Capture) -> (Captured, Option<Owned>) {
+    pub fn finish_owned(
+        mut self,
+        parent: engine_native::cfleet::Capture,
+    ) -> (Captured, Option<Owned>) {
         if let Some(reason) = self.failure(parent) {
             return (
                 Captured {
@@ -803,11 +806,12 @@ impl Store {
                 if let Some(reason) = self.failures[$index] {
                     self.snapshots.tables[$index] = Err(reason);
                 } else if self.changed[$index] {
-                    let rows = engine_allocation::collect_vec(self.$map.values().copied())
-                        .map(|mut rows| {
+                    let rows = engine_allocation::collect_vec(self.$map.values().copied()).map(
+                        |mut rows| {
                             rows.sort_unstable_by_key(RowCodec::key);
                             rows
-                        });
+                        },
+                    );
                     self.snapshots.tables[$index] = rows
                         .map(|rows| Arc::new(TableRows::$table(rows)))
                         .map_err(|_| "naval management snapshot allocation failed");
@@ -856,7 +860,7 @@ mod tests {
         fn fleet(&mut self, pointer: usize, handle: u64, automation: u8) {
             self.put(
                 pointer,
-                &(engine_native::cfleet::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_native::cfleet::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             self.put(
                 pointer + engine_native::cfleet::HANDLE,
@@ -867,7 +871,7 @@ mod tests {
         fn task(&mut self, pointer: usize, handle: u64, rejoin: u64) {
             self.put(
                 pointer,
-                &(engine_native::ctask_force::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_native::ctask_force::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             self.put(
                 pointer + engine_native::cunit::HANDLE,
@@ -892,7 +896,7 @@ mod tests {
             for offset in [native::REQUIREMENTS, native::FULFILLMENT] {
                 self.put(
                     pointer + offset,
-                    &(native::ENTRIES_VTABLE_RVA as u64).to_le_bytes(),
+                    &(native::ENTRIES_VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 self.put(pointer + offset + native::COMPOSITION_ENTRIES, &[0; 16]);
             }
@@ -900,7 +904,7 @@ mod tests {
         fn ship(&mut self, pointer: usize, handle: u64, line: u64) {
             self.put(
                 pointer,
-                &(engine_native::cship::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_native::cship::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             self.put(
                 pointer + engine_native::cship::HANDLE,
@@ -913,7 +917,7 @@ mod tests {
             const TABLE: usize = 0x40000;
             const BUCKETS: usize = 0x41000;
             self.put(
-                registry::LOW_ROOTS_RVA + handle as u32 as usize * 8,
+                registry::LOW_ROOTS_RVA.0 + handle as u32 as usize * 8,
                 &(TABLE as u64).to_le_bytes(),
             );
             self.put(TABLE + registry::ENTRIES, &(BUCKETS as u64).to_le_bytes());
@@ -932,7 +936,7 @@ mod tests {
             self.put(cell + bucket::OBJECT, &(pointer as u64).to_le_bytes());
             self.put(
                 pointer,
-                &(engine_native::cship_refit_production_line::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_native::cship_refit_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             self.put(
                 pointer + engine_native::cproduction_line::REFERENCE_TYPE,
@@ -1054,12 +1058,12 @@ mod tests {
         const LINE: usize = 0x30000;
         let line =
             u64::from(engine_native::cship_refit_production_line::REFERENCE_TYPE) | (7_u64 << 32);
-        let root = engine_native::creference_registry::LOW_ROOTS_RVA + line as u32 as usize * 8;
+        let root = engine_native::creference_registry::LOW_ROOTS_RVA.0 + line as u32 as usize * 8;
         for cancel_clears_ship in [true, false] {
             changes::fixture::prepare();
             let mut memory = MemoryFixture::default();
             memory.put(
-                engine_native::creference_registry::INVALID_REFERENCE_RVA,
+                engine_native::creference_registry::INVALID_REFERENCE_RVA.0,
                 &0_u64.to_le_bytes(),
             );
             memory.refit(LINE, line);
@@ -1137,7 +1141,7 @@ mod tests {
         changes::fixture::prepare();
         let mut memory = MemoryFixture::default();
         memory.put(
-            engine_native::creference_registry::INVALID_REFERENCE_RVA,
+            engine_native::creference_registry::INVALID_REFERENCE_RVA.0,
             &0_u64.to_le_bytes(),
         );
         let line =
@@ -1318,7 +1322,7 @@ mod tests {
         const BASE: usize = 0x9000;
         memory.put(
             BASE,
-            &(engine_native::cnaval_base::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::cnaval_base::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         memory.put(
             BASE + engine_native::cnaval_base::PROVINCE_ID,

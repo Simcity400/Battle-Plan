@@ -92,7 +92,7 @@ fn fixture() -> Vec<u8> {
     array(&mut bytes, STATE + cgame_state::COUNTRY_LINKS, LINKS, 2);
     put64(&mut bytes, COUNTRIES + 8, COUNTRY as u64);
     put(&mut bytes, LINKS + 4, &1_u32.to_le_bytes());
-    put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+    put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
     array(&mut bytes, COUNTRY + ccountry::RAILWAY_UNITS, ROSTER, 1);
     put64(&mut bytes, ROSTER, GUN as u64);
@@ -100,7 +100,7 @@ fn fixture() -> Vec<u8> {
     array(&mut bytes, STATE + cgame_state::PROVINCES, PROVINCES, 3);
     for (id, pointer) in [(1_u32, FROM), (2, TO)] {
         put64(&mut bytes, PROVINCES + id as usize * 8, pointer as u64);
-        put64(&mut bytes, pointer, cprovince::VTABLE_RVA as u64);
+        put64(&mut bytes, pointer, cprovince::VTABLE_RVA.0 as u64);
         put(&mut bytes, pointer + cprovince::ID, &id.to_le_bytes());
     }
     put64(
@@ -111,7 +111,7 @@ fn fixture() -> Vec<u8> {
     put64(
         &mut bytes,
         RAIL_MANAGER,
-        crailway_manager::VTABLE_RVA as u64,
+        crailway_manager::VTABLE_RVA.0 as u64,
     );
     array(
         &mut bytes,
@@ -126,7 +126,7 @@ fn fixture() -> Vec<u8> {
         DEFINITION + province_definition::ID,
         &1_u32.to_le_bytes(),
     );
-    put64(&mut bytes, RAIL_INFO, rail_info::VTABLE_RVA as u64);
+    put64(&mut bytes, RAIL_INFO, rail_info::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         RAIL_INFO + rail_info::PROVINCE_RECORD,
@@ -142,7 +142,7 @@ fn fixture() -> Vec<u8> {
         RAIL_INFO + rail_info::BUILDING,
         RAIL_BUILDING as u64,
     );
-    put64(&mut bytes, RAIL_BUILDING, cbuilding::VTABLE_RVA as u64);
+    put64(&mut bytes, RAIL_BUILDING, cbuilding::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         RAIL_BUILDING + cbuilding::BUILDING_STATUS,
@@ -154,11 +154,11 @@ fn fixture() -> Vec<u8> {
         &(-3_i16).to_le_bytes(),
     );
 
-    put64(&mut bytes, GUN, crailway_gun::VTABLE_RVA as u64);
+    put64(&mut bytes, GUN, crailway_gun::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         GUN + 0x10,
-        crailway_gun::SECONDARY_VTABLE_RVA as u64,
+        crailway_gun::SECONDARY_VTABLE_RVA.0 as u64,
     );
     put(&mut bytes, GUN + cunit::CLASS, &13_u32.to_le_bytes());
     put64(&mut bytes, GUN + cunit::HANDLE, GUN_HANDLE);
@@ -198,7 +198,7 @@ fn fixture() -> Vec<u8> {
         GUN + cunit::RECEIVED_SUPPLY_RATIO,
         &80_000_i64.to_le_bytes(),
     );
-    put64(&mut bytes, SUBUNIT, csub_unit_definition::VTABLE_RVA as u64);
+    put64(&mut bytes, SUBUNIT, csub_unit_definition::VTABLE_RVA.0 as u64);
     put(
         &mut bytes,
         SUBUNIT + csub_unit_definition::TOKEN,
@@ -212,7 +212,7 @@ fn fixture() -> Vec<u8> {
     put64(
         &mut bytes,
         TRANSFER,
-        cnaval_unit_transfer::VTABLE_RVA as u64,
+        cnaval_unit_transfer::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut bytes,
@@ -236,10 +236,10 @@ fn fixture() -> Vec<u8> {
     // The gun attacks in its first combat, so the native walk stops there; a garbage
     // second reference is never touched.
     put64(&mut bytes, COMBATS + 8, u64::MAX);
-    put64(&mut bytes, COMBAT, cland_combat::VTABLE_RVA as u64);
+    put64(&mut bytes, COMBAT, cland_combat::VTABLE_RVA.0 as u64);
     put64(&mut bytes, COMBAT + cland_combat::ATTACKER, SIDE as u64);
     put64(&mut bytes, COMBAT + cland_combat::PROVINCE, TO as u64);
-    put64(&mut bytes, SIDE, cland_combatant::VTABLE_RVA as u64);
+    put64(&mut bytes, SIDE, cland_combatant::VTABLE_RVA.0 as u64);
     put64(&mut bytes, SIDE + cland_combatant::COMBAT, COMBAT as u64);
     put64(
         &mut bytes,
@@ -255,12 +255,12 @@ fn fixture() -> Vec<u8> {
         BUCKETS,
         &[(GUN_HANDLE, GUN + 0x10), (TRANSFER_HANDLE, TRANSFER)],
     );
-    put64(&mut bytes, GROUP, corders_group::VTABLE_RVA as u64);
+    put64(&mut bytes, GROUP, corders_group::VTABLE_RVA.0 as u64);
     put64(&mut bytes, GROUP + corders_group::HANDLE, GROUP_HANDLE);
     put64(
         &mut bytes,
         GROUP + crailway_gun::ASSIGNEE_BASE,
-        crailway_gun::ORDERS_GROUP_ASSIGNEE_VTABLE_RVA as u64,
+        crailway_gun::ORDERS_GROUP_ASSIGNEE_VTABLE_RVA.0 as u64,
     );
     registry(
         &mut bytes,
@@ -304,12 +304,12 @@ impl Memory for MemoryFixture {
         if self.fault == Some(address) {
             return false;
         }
-        if address == creference_registry::HIGH_ROOT_RVA && output.len() == 8 {
+        if address == creference_registry::HIGH_ROOT_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(TABLE as u64).to_le_bytes());
             return true;
         }
         if address
-            == creference_registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8
+            == creference_registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8
             && output.len() == 8
         {
             output.copy_from_slice(&(GROUP_TABLE as u64).to_le_bytes());
@@ -364,7 +364,7 @@ impl Memory for EtaFixture {
         if self.memory.fault == Some(address) {
             return false;
         }
-        if address == creference_registry::LOW_ROOTS_RVA + 70 * 8 && output.len() == 8 {
+        if address == creference_registry::LOW_ROOTS_RVA.0 + 70 * 8 && output.len() == 8 {
             output.copy_from_slice(&0x11000_u64.to_le_bytes());
             return true;
         }
@@ -807,7 +807,7 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
     }
     assert_eq!(name_demand(&image, 0, STATE).unwrap().supply_origins, 3);
     put64(&mut image.memory.bytes, GUN + 0x338, (8 << 32) | 70);
-    image.memory.fault = Some(creference_registry::LOW_ROOTS_RVA + 70 * 8);
+    image.memory.fault = Some(creference_registry::LOW_ROOTS_RVA.0 + 70 * 8);
     assert_eq!(
         name_demand(&image, 0, STATE).unwrap(),
         NameDemand {
@@ -967,7 +967,7 @@ fn initial_eta_named_bonus_sizing_uses_live_headers_without_reading_bonus_payloa
     put64(
         &mut image.memory.bytes,
         VARIANT,
-        crate::cequipment_variant::VTABLE_RVA as u64,
+        crate::cequipment_variant::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut image.memory.bytes,
@@ -1463,14 +1463,14 @@ fn first_combat_side_follows_attacker_membership_and_needs_both_identities() {
         &2_u32.to_le_bytes(),
     );
     put64(&mut bytes, COMBATS + 8, COMBAT_TWO as u64);
-    put64(&mut bytes, COMBAT_TWO, cland_combat::VTABLE_RVA as u64);
+    put64(&mut bytes, COMBAT_TWO, cland_combat::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         COMBAT_TWO + cland_combat::ATTACKER,
         SIDE_TWO as u64,
     );
     put64(&mut bytes, COMBAT_TWO + cland_combat::PROVINCE, FROM as u64);
-    put64(&mut bytes, SIDE_TWO, cland_combatant::VTABLE_RVA as u64);
+    put64(&mut bytes, SIDE_TWO, cland_combatant::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
         SIDE_TWO + cland_combatant::COMBAT,

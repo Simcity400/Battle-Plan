@@ -627,11 +627,10 @@ impl LexicalJob {
     fn observations(&self, mut visit: impl FnMut(usize, usize, Observation, bool)) {
         let witness =
             |packet: WitnessPacket, visit: &mut dyn FnMut(usize, usize, Observation, bool)| {
-                if let Some(writer) = self.base.checked_add(cpdx_lexer::WRITER_FLAG_RVA) {
+                if let Ok(block) = cpdx_lexer::witness_address(self.base) {
+                    let writer = block + cpdx_lexer::witness_offset(cpdx_lexer::WRITER_FLAG_RVA);
                     visit(writer, 4, packet.flag, false);
-                    if let Some(header) = self.base.checked_add(cpdx_lexer::INITIALIZED_RVA) {
-                        visit(header, 64, packet.header, false);
-                    }
+                    visit(block, 64, packet.header, false);
                     visit(writer, 4, packet.again, false);
                 }
             };
@@ -746,8 +745,8 @@ impl LexicalJob {
         let table_end = before
             .table()
             .checked_add(total.checked_mul(TOKEN_NAME_STRIDE)?)?;
-        let writer = self.base.checked_add(cpdx_lexer::WRITER_FLAG_RVA)?;
-        let witness = self.base.checked_add(cpdx_lexer::INITIALIZED_RVA)?;
+        let witness = cpdx_lexer::witness_address(self.base).ok()?;
+        let writer = witness + cpdx_lexer::witness_offset(cpdx_lexer::WRITER_FLAG_RVA);
         let overlaps = |start: usize, end: usize, other: usize, other_end: usize| {
             start < other_end && other < end
         };
@@ -888,13 +887,13 @@ fn copy_witness(
 ) -> (WitnessPacket, Option<cpdx_lexer::PreparedWitness>) {
     let mut packet = WitnessPacket::default();
     let result = (|| {
-        let writer = base.checked_add(cpdx_lexer::WRITER_FLAG_RVA)?;
+        let header_address = cpdx_lexer::witness_address(base).ok()?;
+        let writer = header_address + cpdx_lexer::witness_offset(cpdx_lexer::WRITER_FLAG_RVA);
         packet.flag = job.take(memory, writer, 4);
         let flag = packet.flag.start()?;
         if job.bytes[flag..flag + 4] != [0; 4] {
             return None;
         }
-        let header_address = base.checked_add(cpdx_lexer::INITIALIZED_RVA)?;
         packet.header = job.take(memory, header_address, 64);
         packet.header.start()?;
         packet.again = job.take(memory, writer, 4);
@@ -1088,6 +1087,7 @@ pub mod lexical_test_kit {
         cpdx_lexer::DYNAMIC_TOKENS_RVA, cpdx_lexer::INITIALIZED_RVA, cpdx_lexer::MAX_TOKEN_ID_RVA,
         cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, cpdx_lexer::TOKEN_ALLOCATION_RVA,
         cpdx_lexer::TOKEN_CAPACITY_RVA, cpdx_lexer::TOKEN_NAMES_RVA, cpdx_lexer::WRITER_FLAG_RVA,
+        cpdx_lexer::witness_offset,
     };
 
     pub const BASE: usize = 0x140000000;
@@ -1106,26 +1106,26 @@ pub mod lexical_test_kit {
         pub fn header(maximum: u32, table: usize, length: u32) -> [u8; 64] {
             let mut header = [0u8; 64];
             header[0] = 1;
-            header[WRITER_FLAG_RVA - INITIALIZED_RVA..WRITER_FLAG_RVA - INITIALIZED_RVA + 4]
+            header[witness_offset(WRITER_FLAG_RVA)..witness_offset(WRITER_FLAG_RVA) + 4]
                 .copy_from_slice(&0_u32.to_le_bytes());
-            header[MAX_TOKEN_ID_RVA - INITIALIZED_RVA..MAX_TOKEN_ID_RVA - INITIALIZED_RVA + 4]
+            header[witness_offset(MAX_TOKEN_ID_RVA)..witness_offset(MAX_TOKEN_ID_RVA) + 4]
                 .copy_from_slice(&maximum.to_le_bytes());
-            header[STATIC_MAX_TOKEN_ID_RVA - INITIALIZED_RVA
-                ..STATIC_MAX_TOKEN_ID_RVA - INITIALIZED_RVA + 4]
+            header[witness_offset(STATIC_MAX_TOKEN_ID_RVA)
+                ..witness_offset(STATIC_MAX_TOKEN_ID_RVA) + 4]
                 .copy_from_slice(&maximum.to_le_bytes());
-            header[TOKEN_NAMES_RVA - INITIALIZED_RVA..TOKEN_NAMES_RVA - INITIALIZED_RVA + 8]
+            header[witness_offset(TOKEN_NAMES_RVA)..witness_offset(TOKEN_NAMES_RVA) + 8]
                 .copy_from_slice(&(table as u64).to_le_bytes());
-            header[TOKEN_ALLOCATION_RVA - INITIALIZED_RVA
-                ..TOKEN_ALLOCATION_RVA - INITIALIZED_RVA + 4]
+            header[witness_offset(TOKEN_ALLOCATION_RVA)
+                ..witness_offset(TOKEN_ALLOCATION_RVA) + 4]
                 .copy_from_slice(&length.to_le_bytes());
-            header[TOKEN_CAPACITY_RVA - INITIALIZED_RVA..TOKEN_CAPACITY_RVA - INITIALIZED_RVA + 4]
+            header[witness_offset(TOKEN_CAPACITY_RVA)..witness_offset(TOKEN_CAPACITY_RVA) + 4]
                 .copy_from_slice(&length.to_le_bytes());
-            header[DYNAMIC_CAPACITY_RVA - INITIALIZED_RVA
-                ..DYNAMIC_CAPACITY_RVA - INITIALIZED_RVA + 4]
+            header[witness_offset(DYNAMIC_CAPACITY_RVA)
+                ..witness_offset(DYNAMIC_CAPACITY_RVA) + 4]
                 .copy_from_slice(&0_u32.to_le_bytes());
-            header[DYNAMIC_COUNT_RVA - INITIALIZED_RVA..DYNAMIC_COUNT_RVA - INITIALIZED_RVA + 4]
+            header[witness_offset(DYNAMIC_COUNT_RVA)..witness_offset(DYNAMIC_COUNT_RVA) + 4]
                 .copy_from_slice(&0_u32.to_le_bytes());
-            header[DYNAMIC_TOKENS_RVA - INITIALIZED_RVA..DYNAMIC_TOKENS_RVA - INITIALIZED_RVA + 8]
+            header[witness_offset(DYNAMIC_TOKENS_RVA)..witness_offset(DYNAMIC_TOKENS_RVA) + 8]
                 .copy_from_slice(&0_u64.to_le_bytes());
             header
         }
@@ -1179,11 +1179,11 @@ pub mod lexical_test_kit {
             if destination.is_empty() {
                 return true;
             }
-            if address == BASE + WRITER_FLAG_RVA && destination.len() == 4 {
+            if address == BASE + WRITER_FLAG_RVA.0 && destination.len() == 4 {
                 destination.copy_from_slice(&self.writer_before.to_le_bytes());
                 return true;
             }
-            if address == BASE + INITIALIZED_RVA && destination.len() == 64 {
+            if address == BASE + INITIALIZED_RVA.0 && destination.len() == 64 {
                 destination.copy_from_slice(&self.header_before);
                 return true;
             }
@@ -1446,7 +1446,7 @@ mod tests {
             assert!(matches!(walked.outcome, Outcome::Unavailable { .. }));
         }
         let mut changed = KitMemory::fixture().header_before;
-        let offset = TOKEN_NAMES_RVA - INITIALIZED_RVA;
+        let offset = witness_offset(TOKEN_NAMES_RVA);
         changed[offset..offset + 8].copy_from_slice(&0x20010000_u64.to_le_bytes());
         let job = assert_packet_trace(KitMemory::fixture(), &[], &[(9, changed.to_vec())], 32, 512);
         assert!(job.complete_output_sizes().is_none());
@@ -1549,7 +1549,7 @@ mod tests {
             job.fast_decode(&mut [cpdx_lexer::Row::default(); 3], &mut [0; 128])
                 .is_none()
         );
-        for (source, len) in [(BASE + WRITER_FLAG_RVA, 4), (BASE + INITIALIZED_RVA, 64)] {
+        for (source, len) in [(BASE + WRITER_FLAG_RVA.0, 4), (BASE + INITIALIZED_RVA.0, 64)] {
             let mut memory = KitMemory::fixture();
             heap_source(&mut memory, 0, source, len);
             // The terminator is an independent exact source, potentially
@@ -1642,7 +1642,7 @@ mod tests {
         heap_source(&mut memory, 0, 0x30000000, 8192);
         // This separate heap token aliases the initial header at the same
         // exact width, forcing owned reconstruction rather than fast decode.
-        heap_source(&mut memory, 1, BASE + INITIALIZED_RVA, 64);
+        heap_source(&mut memory, 1, BASE + INITIALIZED_RVA.0, 64);
         let memory = TracedMemory {
             inner: memory,
             calls: Default::default(),
@@ -1812,7 +1812,7 @@ mod tests {
         assert_eq!(LOCAL.snapshot(), charged);
         let memory = lexical_test_kit::KitMemory::fixture();
         for _ in 0..=job.span_limit {
-            job.take(&memory, lexical_test_kit::BASE + WRITER_FLAG_RVA, 4);
+            job.take(&memory, lexical_test_kit::BASE + WRITER_FLAG_RVA.0, 4);
         }
         assert!(job.grow_for_next());
         assert_eq!(
@@ -1877,14 +1877,14 @@ mod tests {
         /// from.
         fn copy_witness(log: &mut RawLog<1>, memory: &impl Memory, base: usize) -> Option<Witness> {
             use engine_native::cpdx_lexer::*;
-            let writer = base.checked_add(WRITER_FLAG_RVA)?;
+            let writer = base.checked_add(WRITER_FLAG_RVA.0)?;
             let mut flag = [0u8; 4];
             let start = log.take(memory, writer, 4, 0x01)?;
             flag.copy_from_slice(&log.bytes[start..start + 4]);
             if u32::from_le_bytes(flag) != 0 {
                 return None;
             }
-            let header_addr = base.checked_add(INITIALIZED_RVA)?;
+            let header_addr = base.checked_add(INITIALIZED_RVA.0)?;
             let header_start = log.take(memory, header_addr, 64, 0x01)?;
             let mut header = [0u8; 64];
             header.copy_from_slice(&log.bytes[header_start..header_start + 64]);
@@ -1909,22 +1909,22 @@ mod tests {
             let pointer = |offset: usize| -> usize {
                 u64::from_le_bytes(header[offset..offset + 8].try_into().unwrap()) as usize
             };
-            if signed(WRITER_FLAG_RVA - INITIALIZED_RVA)? != 0 {
+            if signed(witness_offset(WRITER_FLAG_RVA))? != 0 {
                 return None;
             }
-            let maximum = signed(MAX_TOKEN_ID_RVA - INITIALIZED_RVA)?;
-            let static_maximum = signed(STATIC_MAX_TOKEN_ID_RVA - INITIALIZED_RVA)?;
+            let maximum = signed(witness_offset(MAX_TOKEN_ID_RVA))?;
+            let static_maximum = signed(witness_offset(STATIC_MAX_TOKEN_ID_RVA))?;
             let dynamic_pointer = u64::from_le_bytes(
-                header[DYNAMIC_TOKENS_RVA - INITIALIZED_RVA
-                    ..DYNAMIC_TOKENS_RVA - INITIALIZED_RVA + 8]
+                header[witness_offset(DYNAMIC_TOKENS_RVA)
+                    ..witness_offset(DYNAMIC_TOKENS_RVA) + 8]
                     .try_into()
                     .unwrap(),
             );
-            let dynamic_capacity = signed(DYNAMIC_CAPACITY_RVA - INITIALIZED_RVA)?;
-            let dynamic_count = signed(DYNAMIC_COUNT_RVA - INITIALIZED_RVA)?;
-            let table = pointer(TOKEN_NAMES_RVA - INITIALIZED_RVA);
-            let allocation = signed(TOKEN_ALLOCATION_RVA - INITIALIZED_RVA)?;
-            let length = signed(TOKEN_CAPACITY_RVA - INITIALIZED_RVA)?;
+            let dynamic_capacity = signed(witness_offset(DYNAMIC_CAPACITY_RVA))?;
+            let dynamic_count = signed(witness_offset(DYNAMIC_COUNT_RVA))?;
+            let table = pointer(witness_offset(TOKEN_NAMES_RVA));
+            let allocation = signed(witness_offset(TOKEN_ALLOCATION_RVA))?;
+            let length = signed(witness_offset(TOKEN_CAPACITY_RVA))?;
             if static_maximum.checked_add(dynamic_count)? != maximum
                 || dynamic_count > dynamic_capacity
                 || (dynamic_count != 0 && dynamic_pointer == 0)
@@ -2098,11 +2098,11 @@ mod tests {
 
     impl Memory for MemoryFixture {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == WRITER_FLAG_RVA {
+            if address == WRITER_FLAG_RVA.0 {
                 destination.fill(0);
                 return true;
             }
-            if address == INITIALIZED_RVA {
+            if address == INITIALIZED_RVA.0 {
                 destination.copy_from_slice(&self.header);
                 return true;
             }

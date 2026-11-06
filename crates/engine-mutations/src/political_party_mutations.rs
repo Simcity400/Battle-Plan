@@ -34,6 +34,7 @@
 //! hourly instead of hooking them.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// Every site; RCX is the written political party and each returns RAX
 /// unchanged from its original, so a detour returns the original's value.
@@ -42,20 +43,12 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // home slot occupies the five patched bytes.
     MutationSite {
         name: "party_names",
-        rva: 0x123_2e70,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x48,
-        ],
+        rva: Rva(0x123_2e70),
     },
     // Party construction (party, country link, ideology): RBX spill to
     // RDX's home slot occupies the five patched bytes.
     MutationSite {
         name: "construct_party",
-        rva: 0x123_0300,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24,
-            0x08, 0x57,
-        ],
+        rva: Rva(0x123_0300),
     },
 ];

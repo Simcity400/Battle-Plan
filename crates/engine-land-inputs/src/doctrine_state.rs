@@ -3,19 +3,20 @@
 //! Authored identities use the recorded lexer dictionary, rather than copying
 //! template strings for every country's selection.
 use crate::{Memory, cpdx_array::Array, memory::Raw, msvc_string, read};
+use engine_sites::Rva;
 
-pub const STATUS_VTABLE: usize = 0x29e1d48;
-pub const FOLDER_VTABLE: usize = 0x29e1cf8;
-pub const TRACK_VTABLE: usize = 0x29e1ca8;
-pub const COST_VTABLE: usize = 0x29e1c08;
-pub const GRANT_VTABLE: usize = 0x284f288;
-pub const FILTER_VTABLE: usize = 0x284f238;
-pub const LEADER_VTABLE: usize = 0x29e1c58;
-pub const EQUIPMENT_VTABLE: usize = 0x29e1b60;
-pub const FOLDER_TEMPLATE_VTABLE: usize = 0x2796f30;
-pub const GRAND_TEMPLATE_VTABLE: usize = 0x27970f0;
-pub const SUB_TEMPLATE_VTABLE: usize = 0x27972a0;
-pub const TRACK_TEMPLATE_VTABLE: usize = 0x27973b0;
+pub const STATUS_VTABLE: Rva = Rva(0x29e1d48);
+pub const FOLDER_VTABLE: Rva = Rva(0x29e1cf8);
+pub const TRACK_VTABLE: Rva = Rva(0x29e1ca8);
+pub const COST_VTABLE: Rva = Rva(0x29e1c08);
+pub const GRANT_VTABLE: Rva = Rva(0x284f288);
+pub const FILTER_VTABLE: Rva = Rva(0x284f238);
+pub const LEADER_VTABLE: Rva = Rva(0x29e1c58);
+pub const EQUIPMENT_VTABLE: Rva = Rva(0x29e1b60);
+pub const FOLDER_TEMPLATE_VTABLE: Rva = Rva(0x2796f30);
+pub const GRAND_TEMPLATE_VTABLE: Rva = Rva(0x27970f0);
+pub const SUB_TEMPLATE_VTABLE: Rva = Rva(0x27972a0);
+pub const TRACK_TEMPLATE_VTABLE: Rva = Rva(0x27973b0);
 pub const TEMPLATE_TOKEN: usize = 8;
 pub const FILTER_TRACK: usize = 8;
 pub const FILTER_FOLDER: usize = 0x10;
@@ -74,9 +75,12 @@ pub fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    if object == 0 || field::<u64>(memory, object, 0)? != at(base, vtable)? as u64 {
+    if object == 0
+        || field::<u64>(memory, object, 0)?
+            != engine_sites::at(base, vtable).ok_or("doctrine address overflow")? as u64
+    {
         return Err("doctrine object identity invalid");
     }
     Ok(())
@@ -93,7 +97,7 @@ pub fn token(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<u32, &'static str> {
     authenticate(memory, base, object, vtable)?;
     field(memory, object, TEMPLATE_TOKEN)
@@ -103,7 +107,7 @@ fn optional_token(
     base: usize,
     object: usize,
     offset: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<Option<u32>, &'static str> {
     let pointer = field::<u64>(memory, object, offset)? as usize;
     (pointer != 0)
@@ -322,11 +326,11 @@ mod tests {
             let first = 0x1000;
             let selected = first + count * TRACK_STRIDE;
             let mut memory = Fixture::new(selected + 16);
-            memory.word(selected, SUB_TEMPLATE_VTABLE as u64);
+            memory.word(selected, SUB_TEMPLATE_VTABLE.0 as u64);
             memory.word(selected + TEMPLATE_TOKEN, 91_234);
             for index in 0..count {
                 let pointer = first + index * TRACK_STRIDE;
-                memory.word(pointer, TRACK_VTABLE as u64);
+                memory.word(pointer, TRACK_VTABLE.0 as u64);
                 memory.word(pointer + SUB_TEMPLATE, selected as u64);
                 memory.word(pointer + REWARDS, 7);
                 memory.word(pointer + MASTERY, (index as i64 * 100_000) as u64);
@@ -363,12 +367,12 @@ mod tests {
     #[test]
     fn doctrine_filter_preserves_zero_index_and_absent_selectors() {
         let mut memory = Fixture::new(128);
-        memory.word(8, FILTER_VTABLE as u64);
+        memory.word(8, FILTER_VTABLE.0 as u64);
         memory.word(8 + FILTER_TRACK_INDEX, (-1_i64) as u64);
         assert_eq!(filter(&memory, 0, 8).unwrap(), Filter::default());
         memory.word(8 + FILTER_TRACK_INDEX, 0);
         assert_eq!(filter(&memory, 0, 8).unwrap().track_index, Some(0));
-        memory.word(64, TRACK_TEMPLATE_VTABLE as u64);
+        memory.word(64, TRACK_TEMPLATE_VTABLE.0 as u64);
         memory.word(64 + TEMPLATE_TOKEN, 91);
         memory.word(8 + FILTER_TRACK, 64);
         let selected = filter(&memory, 0, 8).unwrap();

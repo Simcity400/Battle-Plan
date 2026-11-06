@@ -7,9 +7,10 @@ use crate::{
     memory::{RecordField, RecordLayout, RecordSources},
     read,
 };
+use engine_sites::Rva;
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_50f8;
+pub const VTABLE_RVA: Rva = Rva(0x029d_50f8);
 /// Per-country object allocation size.
 pub const SIZE: usize = 0x1d8;
 /// First air-site pointer vector visited by fuel aggregation.
@@ -36,7 +37,7 @@ pub const HISTORY_TABLE: usize = 0x158;
 /// Region-indexed air-region-combat-data pointer table.
 pub const REGION_COMBAT: usize = 0x170;
 /// Per-country strategic-air constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00ca_4660;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00ca_4660);
 
 /// An authenticated manager slot; the address is transient read context only.
 #[derive(Debug, Clone, Copy)]
@@ -81,8 +82,7 @@ pub fn visit_with_slots(
         .and_then(|at| read::<u64>(memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .ok_or("strategic air manager pointer unreadable or address overflow")?;
-    let expected = base
-        .checked_add(cstrategic_air_manager::VTABLE_RVA)
+    let expected = engine_sites::at(base, cstrategic_air_manager::VTABLE_RVA)
         .ok_or("strategic air manager vtable address overflow")?;
     if manager == 0 || read::<u64>(memory, manager) != Some(expected as u64) {
         return Err("strategic air manager vtable unreadable or mismatched");
@@ -95,8 +95,7 @@ pub fn visit_with_slots(
         return Err("strategic air manager has no country slots");
     }
     observer(SlotObservation::Domain(slots.count));
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("strategic air country vtable address overflow")?;
     // Slot pointers and the identity of every live object in a batch are
     // gathered in two guarded rounds instead of three per country slot. Each

@@ -152,7 +152,7 @@ impl World {
             }
             window.put(
                 MANAGER,
-                &((MODULE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes(),
+                &((MODULE + ccharacter_manager::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             let historical = self.historical.min(self.slots());
             window.array(
@@ -219,7 +219,7 @@ impl World {
             LEADER_ROLE if Self::leader(index) => {
                 window.put(
                     object,
-                    &((MODULE + ccountry_leader::VTABLE_RVA) as u64).to_le_bytes(),
+                    &((MODULE + ccountry_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 window.pointer(object + ccountry_leader::CHARACTER, Self::character(index));
             }
@@ -246,7 +246,7 @@ impl World {
             ADVISOR_ROLE if self.advisor(index) => {
                 window.put(
                     object,
-                    &((MODULE + cadvisor::VTABLE_RVA) as u64).to_le_bytes(),
+                    &((MODULE + cadvisor::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 window.pointer(object + cadvisor::CHARACTER, Self::character(index));
                 window.literal(object + cadvisor::IDEA_TOKEN, b"idea");
@@ -277,7 +277,7 @@ impl World {
             DEFINITION if index < self.definitions => {
                 window.put(
                     object,
-                    &((MODULE + cunit_leader_trait::VTABLE_RVA) as u64).to_le_bytes(),
+                    &((MODULE + cunit_leader_trait::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 window.put(
                     object + cunit_leader_trait::TOKEN_ID,
@@ -301,7 +301,7 @@ impl World {
     fn render_character(&self, window: &mut Window<'_>, index: usize, object: usize) {
         window.put(
             object,
-            &((MODULE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+            &((MODULE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         window.put(
             object + ccharacter::TYPE,
@@ -348,7 +348,7 @@ impl World {
             carmy_leader::VTABLE_RVA,
             cnavy_leader::VTABLE_RVA,
         ][(index / 4) % 3];
-        window.put(object, &((MODULE + vtable) as u64).to_le_bytes());
+        window.put(object, &((MODULE + vtable.0) as u64).to_le_bytes());
         window.put(
             object + cunit_leader::TYPE,
             &cunit_leader::REFERENCE_TYPE.to_le_bytes(),

@@ -277,7 +277,7 @@ impl World {
         for (index, (entries, display)) in children.iter().enumerate() {
             let child = CHILD + index * 0x100;
             self.u64(CHILDREN + index * 8, child as u64);
-            self.vtable(child, cmodifier::VTABLE_RVA);
+            self.vtable(child, cmodifier::VTABLE_RVA.0);
             self.modifier(child, entries, display);
         }
     }
@@ -313,10 +313,10 @@ fn world() -> World {
     for (slot, country, diplomacy) in [(1, C1, D1), (2, C2, D2)] {
         w.u64(COUNTRIES + slot * 8, country as u64);
         w.u32(LINKS + slot * 4, slot as u32);
-        w.vtable(country, ccountry::VTABLE_RVA);
+        w.vtable(country, ccountry::VTABLE_RVA.0);
         w.u32(country + ccountry::ID, slot as u32);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA);
+        w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
         w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
         w.i64(
@@ -328,7 +328,7 @@ fn world() -> World {
     w.u32(D2 + DIPLOMACY_HOSTING, 0);
     w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
     w.u64(RELATIONS, R1 as u64);
-    w.vtable(R1, cwar_relation::VTABLE_RVA);
+    w.vtable(R1, cwar_relation::VTABLE_RVA.0);
     w.u32(R1 + crelation::TYPE_ID, cwar_relation::TYPE);
     w.u32(R1 + 0xc, 0);
     w.u32(R1 + crelation::FIRST_COUNTRY, 1);
@@ -368,7 +368,7 @@ fn world() -> World {
     w.array(C1 + ccountry::MODIFIER_ACCUMULATOR, data, 3);
     // Politics: two ideas, the ruling party, its leader and ideology group.
     w.u64(C1 + ccountry::POLITICAL_STATUS, STATUS as u64);
-    w.vtable(STATUS, cpolitical_status::VTABLE_RVA);
+    w.vtable(STATUS, cpolitical_status::VTABLE_RVA.0);
     w.u64(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
     w.array(STATUS + cpolitical_status::IDEAS, IDEAS, 2);
     for (index, (idea, token, entries)) in [
@@ -379,33 +379,33 @@ fn world() -> World {
     .enumerate()
     {
         w.u64(IDEAS + index * 8, idea as u64);
-        w.vtable(idea, cidea::VTABLE_RVA);
+        w.vtable(idea, cidea::VTABLE_RVA.0);
         w.string(idea + cidea::TOKEN, token);
         w.modifier(idea + IDEA_MODIFIER, &entries, b"built label");
     }
-    w.vtable(PARTY, cpolitical_party::VTABLE_RVA);
+    w.vtable(PARTY, cpolitical_party::VTABLE_RVA.0);
     w.i64(PARTY + cpolitical_party::POPULARITY, 4_500_000);
     w.u64(PARTY + cpolitical_party::IDEOLOGY_GROUP, GROUP as u64);
     w.array(PARTY + cpolitical_party::COUNTRY_LEADERS, LEADER - 0x100, 1);
     w.u64(LEADER - 0x100, LEADER as u64);
-    w.vtable(LEADER, ccountry_leader::VTABLE_RVA);
+    w.vtable(LEADER, ccountry_leader::VTABLE_RVA.0);
     w.u64(LEADER + ccountry_leader::CHARACTER, CHARACTER_77 as u64);
     w.modifier(
         LEADER + LEADER_MODIFIER,
         &[(WAR_SUPPORT_KEY, 2_000)],
         b"Leader Name",
     );
-    w.vtable(GROUP, cideology_group::VTABLE_RVA);
+    w.vtable(GROUP, cideology_group::VTABLE_RVA.0);
     w.string(GROUP + cideology_group::TOKEN, b"fascism");
     w.modifier(GROUP + IDEOLOGY_GROUP_MODIFIER, &[], b"Fascism");
     for (character, id) in [(CHARACTER_77, 77), (CHARACTER_88, 88)] {
-        w.vtable(character, ccharacter::VTABLE_RVA);
+        w.vtable(character, ccharacter::VTABLE_RVA.0);
         w.u32(character + ccharacter::TYPE, ccharacter::REFERENCE_TYPE);
         w.u32(character + ccharacter::ID, id);
     }
     // One appointed advisor.
     w.u64(C1 + ccountry::CHARACTERS, CHARACTERS as u64);
-    w.vtable(CHARACTERS, ccountry_characters::VTABLE_RVA);
+    w.vtable(CHARACTERS, ccountry_characters::VTABLE_RVA.0);
     w.u64(CHARACTERS + ccountry_characters::OWNER, C1 as u64);
     w.array(
         CHARACTERS + ccountry_characters::APPOINTED_ADVISORS,
@@ -414,7 +414,7 @@ fn world() -> World {
     );
     w.u64(ADVISORS, ADVISOR as u64);
     w.put(ADVISOR, &[0; 0x20]);
-    w.vtable(ADVISOR, cadvisor::VTABLE_RVA);
+    w.vtable(ADVISOR, cadvisor::VTABLE_RVA.0);
     w.u64(ADVISOR + cadvisor::CHARACTER, CHARACTER_88 as u64);
     w.string(ADVISOR + cadvisor::IDEA_TOKEN, b"adv_idea");
     w.modifier(
@@ -426,7 +426,7 @@ fn world() -> World {
     let container = C1 + ccountry::DYNAMIC_MODIFIERS;
     w.array(container + cdynamic_modifier_container::ENTRIES, ENTRY, 1);
     w.put(ENTRY, &[0; dynamic_modifier_entry::STRIDE]);
-    w.vtable(ENTRY, dynamic_modifier_entry::VTABLE_RVA);
+    w.vtable(ENTRY, dynamic_modifier_entry::VTABLE_RVA.0);
     w.u32(ENTRY + dynamic_modifier_entry::SCOPE_COUNTRY, 1);
     w.u32(ENTRY + dynamic_modifier_entry::DAYS_REMAINING, u32::MAX);
     w.u64(
@@ -436,36 +436,36 @@ fn world() -> World {
     w.put(ENTRY + dynamic_modifier_entry::ENABLED, &[1]);
     w.array(ENTRY + dynamic_modifier_entry::VALUES, VALUES, 1);
     w.i64(VALUES, 0);
-    w.vtable(DEFINITION, cdynamic_modifier::VTABLE_RVA);
+    w.vtable(DEFINITION, cdynamic_modifier::VTABLE_RVA.0);
     w.string(DEFINITION + cdynamic_modifier::ID, b"dyn_mod");
     w.modifier(DEFINITION + DYNAMIC_CONSTANT, &[(COMMAND_KEY, 100)], b"Dyn");
     w.u32(DEFINITION + cdynamic_modifier::VALUE_COUNT, 1);
     w.u64(DEFINITION + DYNAMIC_VALUE_ROWS, VALUE_ROWS as u64);
     w.u32(VALUE_ROWS, STABILITY_KEY);
     // Statics: only the at-war slot is bound.
-    w.u64(BASE + STATIC_DATABASE_RVA, DATABASE as u64);
+    w.u64(BASE + STATIC_DATABASE_RVA.0, DATABASE as u64);
     for slot in STATIC_SLOTS {
         w.u64(DATABASE + slot.offset, 0);
     }
     w.u64(DATABASE + 0x398, AT_WAR as u64);
-    w.vtable(AT_WAR, cstatic_modifier::VTABLE_RVA);
+    w.vtable(AT_WAR, cstatic_modifier::VTABLE_RVA.0);
     w.modifier(AT_WAR, &[(STABILITY_KEY, 5_000)], b"At war");
     w.string(AT_WAR + STATIC_NAME, b"country_is_at_war");
     // Globals: defines, world tension, language, modifier metadata.
     for (index, rva) in DEFINE_RVAS.into_iter().enumerate() {
-        w.i64(BASE + rva, 1_000 + index as i64);
+        w.i64(BASE + rva.0, 1_000 + index as i64);
     }
     w.u64(GS + cgame_state::WORLD_THREAT, WORLD as u64);
     w.put(WORLD, &[0; 0x40]);
-    w.vtable(WORLD, cworld_threat::VTABLE_RVA);
+    w.vtable(WORLD, cworld_threat::VTABLE_RVA.0);
     w.i64(WORLD + cworld_threat::TOTAL, 12_345);
     w.u64(
-        BASE + localization_root_layout::SINGLETON_RVA,
+        BASE + localization_root_layout::SINGLETON_RVA.0,
         LANGUAGE_ROOT as u64,
     );
     w.u64(LANGUAGE_ROOT, LANGUAGE as u64);
     w.string(LANGUAGE, b"l_english");
-    w.u64(BASE + modifier_definition::TABLE_RVA, TABLE as u64);
+    w.u64(BASE + modifier_definition::TABLE_RVA.0, TABLE as u64);
     for key in [STABILITY_KEY, WAR_SUPPORT_KEY, COMMAND_KEY] {
         let row = TABLE + key as usize * modifier_definition::STRIDE;
         w.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
@@ -535,14 +535,14 @@ fn context_reads_defines_tension_language_and_statics() {
     assert_eq!(context.language.as_slice(), b"l_english");
     // A null language root is the getter's null result, not a failure.
     let mut w = world();
-    w.u64(BASE + localization_root_layout::SINGLETON_RVA, 0);
+    w.u64(BASE + localization_root_layout::SINGLETON_RVA.0, 0);
     assert_eq!(
         Context::read(&w, BASE, GS, keys()).unwrap().language.len(),
         0
     );
     // A bound static with another vtable is refused.
     let mut w = world();
-    w.vtable(AT_WAR, cmodifier::VTABLE_RVA);
+    w.vtable(AT_WAR, cmodifier::VTABLE_RVA.0);
     assert!(Context::read(&w, BASE, GS, keys()).is_err());
 }
 
@@ -980,7 +980,7 @@ fn scaled_static_pairing_has_no_nonzero_key_population_cap() {
     let child: Vec<_> = (1..=128).map(|key| (key, 7_i64)).collect();
     w.entries = 0x6200_0000 - ENTRIES;
     w.u64(DATABASE + 0x78, SCALED as u64);
-    w.vtable(SCALED, cstatic_modifier::VTABLE_RVA);
+    w.vtable(SCALED, cstatic_modifier::VTABLE_RVA.0);
     w.modifier(SCALED, &source, b"Scaled static");
     w.string(SCALED + STATIC_NAME, b"scaled_static");
     w.children(&[(&child, b"Scaled static")]);
@@ -1073,7 +1073,7 @@ fn scaled_world() -> World {
     let mut w = world();
     const SCALED: usize = 0x6100_0000;
     w.u64(DATABASE + 0x78, SCALED as u64);
-    w.vtable(SCALED, cstatic_modifier::VTABLE_RVA);
+    w.vtable(SCALED, cstatic_modifier::VTABLE_RVA.0);
     w.modifier(SCALED, &[(STABILITY_KEY, 1)], b"Scaled static");
     w.string(SCALED + STATIC_NAME, b"scaled_static");
     w.i64(VALUES, 250);
@@ -1097,7 +1097,7 @@ fn secondary_idea_world() -> World {
     let mut w = world();
     let idea = IDEA_A + cidea::SECONDARY_BASE;
     w.u64(IDEAS, idea as u64);
-    w.vtable(idea, cidea::SECONDARY_VTABLE_RVA);
+    w.vtable(idea, cidea::SECONDARY_VTABLE_RVA.0);
     w.modifier(
         idea + IDEA_MODIFIER,
         &[(STABILITY_KEY, 10_000)],
@@ -1146,7 +1146,7 @@ fn paged_sources_world() -> World {
         let idea = OBJECTS + index * 0x1000;
         let advisor_object = idea + 0x400;
         w.u64(IDEA_POINTERS + index * 8, idea as u64);
-        w.vtable(idea, cidea::VTABLE_RVA);
+        w.vtable(idea, cidea::VTABLE_RVA.0);
         w.string(idea + cidea::TOKEN, b"paged_idea");
         w.modifier(idea + IDEA_MODIFIER, &[(STABILITY_KEY, 10_000)], b"label");
         w.u64(ADVISOR_POINTERS + index * 8, advisor_object as u64);
@@ -1168,7 +1168,7 @@ fn paged_sources_world() -> World {
     for (index, slot) in STATIC_SLOTS.iter().enumerate() {
         let modifier = OBJECTS + COUNT as usize * 0x1000 + index * 0x400;
         w.u64(DATABASE + slot.offset, modifier as u64);
-        w.vtable(modifier, cstatic_modifier::VTABLE_RVA);
+        w.vtable(modifier, cstatic_modifier::VTABLE_RVA.0);
         w.modifier(
             modifier,
             &[(STABILITY_KEY, 1)],
@@ -1646,12 +1646,12 @@ fn scaled_countries(count: u32) -> World {
         w.u32(COUNTRY_LINKS + id as usize * 4, id);
         w.u32(country + ccountry::ID, id);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA);
+        w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
         w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
         w.u32(diplomacy + crate::ccountry_manpower::HOST, 0);
         w.u64(country + ccountry::CHARACTERS, characters as u64);
-        w.vtable(characters, ccountry_characters::VTABLE_RVA);
+        w.vtable(characters, ccountry_characters::VTABLE_RVA.0);
         w.u64(characters + ccountry_characters::OWNER, country as u64);
         w.array(
             characters + ccountry_characters::APPOINTED_ADVISORS,

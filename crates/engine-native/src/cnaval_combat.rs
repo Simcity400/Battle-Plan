@@ -1,5 +1,6 @@
 //! CNavalCombat layout, with one acquisition per scheduled table.
 
+use engine_sites::Rva;
 use crate::{
     Memory, cfex_group, cfex_member, cgame_state, cland_border_war_combat, cland_combat,
     cnaval_combatant,
@@ -14,7 +15,7 @@ type GroupOrdinals = HashMap<usize, Option<u32>>;
 type GroupSet = HashSet<usize>;
 
 /// CNavalCombat vtable.
-pub const VTABLE_RVA: usize = 0x02a5_6d98;
+pub const VTABLE_RVA: Rva = Rva(0x02a5_6d98);
 /// Observed combat reference type comes from the runtime registry; it is not an admission filter.
 #[cfg(any(test, feature = "test-support"))]
 pub const OBSERVED_REFERENCE_TYPE: u32 = 4713;
@@ -117,8 +118,7 @@ pub fn walk_details_timed(
             let body = pointer(memory, registry, index)?;
             let vtable = field::<u64>(memory, body, 0)?;
             if vtable
-                != base
-                    .checked_add(VTABLE_RVA)
+                != engine_sites::at(base, VTABLE_RVA)
                     .ok_or("naval details module overflow")? as u64
             {
                 if [
@@ -126,7 +126,7 @@ pub fn walk_details_timed(
                     cland_border_war_combat::VTABLE_RVA,
                 ]
                 .into_iter()
-                .any(|rva| base.checked_add(rva).is_some_and(|p| p as u64 == vtable))
+                .any(|key| engine_sites::at(base, key).is_some_and(|p| p as u64 == vtable))
                 {
                     continue;
                 }
@@ -154,8 +154,7 @@ pub fn walk_details_timed(
                     let row = (|| {
                         let province = field::<u64>(memory, body, PROVINCE)? as usize;
                         if field::<u64>(memory, province, 0)?
-                            != base
-                                .checked_add(cprovince::VTABLE_RVA)
+                            != engine_sites::at(base, cprovince::VTABLE_RVA)
                                 .ok_or("naval details province overflow")?
                                 as u64
                         {
@@ -264,8 +263,7 @@ pub fn walk_details_timed(
                                     continue;
                                 }
                                 if field::<u64>(memory, group, 0)?
-                                    != base
-                                        .checked_add(cfex_group::VTABLE_RVA)
+                                    != engine_sites::at(base, cfex_group::VTABLE_RVA)
                                         .ok_or("naval details group module overflow")?
                                         as u64
                                 {
@@ -380,8 +378,7 @@ fn custom_sea(
         .ok_or("naval strategic region absent")?;
     let template = field::<u64>(memory, region, crate::cstrategic_region::TEMPLATE)? as usize;
     if field::<u64>(memory, template, 0)?
-        != base
-            .checked_add(crate::cstrategic_region::TEMPLATE_VTABLE_RVA)
+        != engine_sites::at(base, crate::cstrategic_region::TEMPLATE_VTABLE_RVA)
             .ok_or("naval strategic template module overflow")? as u64
     {
         return Err("naval strategic template identity mismatch");
@@ -488,8 +485,7 @@ fn read_planes(
                     continue;
                 }
                 if field::<u64>(memory, group, 0)?
-                    != base
-                        .checked_add(cfex_group::VTABLE_RVA)
+                    != engine_sites::at(base, cfex_group::VTABLE_RVA)
                         .ok_or("naval plane group module overflow")? as u64
                 {
                     return Err("naval plane group identity mismatch");
@@ -753,13 +749,12 @@ fn walk_timed_buffer(
             .ok_or("naval combat registry unreadable or invalid")?;
         // The original mixed registry bounds every admitted naval row.
         combats.ensure(registry.count as usize)?;
-        let body_vtable = base
-            .checked_add(VTABLE_RVA)
+        let body_vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("naval combat vtable overflow")?;
         let land_vtables = [
-            base.checked_add(cland_combat::VTABLE_RVA)
+            engine_sites::at(base, cland_combat::VTABLE_RVA)
                 .ok_or("land combat vtable overflow")? as u64,
-            base.checked_add(cland_border_war_combat::VTABLE_RVA)
+            engine_sites::at(base, cland_border_war_combat::VTABLE_RVA)
                 .ok_or("border combat vtable overflow")? as u64,
         ];
         let mut combat_len = 0;
@@ -814,8 +809,7 @@ fn walk_timed_buffer(
                     let province_pointer = usize::try_from(field::<u64>(memory, body, PROVINCE)?)
                         .map_err(|_| "naval province pointer overflow")?;
                     if field::<u64>(memory, province_pointer, 0)?
-                        != base
-                            .checked_add(cprovince::VTABLE_RVA)
+                        != engine_sites::at(base, cprovince::VTABLE_RVA)
                             .ok_or("naval province vtable overflow")?
                             as u64
                     {
@@ -920,8 +914,7 @@ fn members(
     groups: &mut crate::walk::Buffer<'_, usize>,
     required_group_capacity: &mut usize,
 ) -> Result<(), &'static str> {
-    let group_vtable = base
-        .checked_add(cfex_group::VTABLE_RVA)
+    let group_vtable = engine_sites::at(base, cfex_group::VTABLE_RVA)
         .ok_or("naval group vtable overflow")?;
     let mut group_len = 0_usize;
     let mut seen = GroupSet::default();

@@ -4,6 +4,7 @@
 //! published campaign census comes from the game's dense saved equipment array.
 //! A truncated census is not a complete source for its dependent leaf tables.
 
+use engine_sites::Rva;
 mod design;
 pub mod mutations;
 pub mod source_mutations;
@@ -18,7 +19,7 @@ use crate::{
 };
 
 /// CEquipmentVariant vtable.
-pub const VTABLE_RVA: usize = 0x029c_e250;
+pub const VTABLE_RVA: Rva = Rva(0x029c_e250);
 /// CEquipmentVariant reference type.
 pub const REFERENCE_TYPE: u32 = 70;
 /// CEquipmentVariant u32 type word.
@@ -113,12 +114,11 @@ pub const ICON_OVERRIDE_TOKEN: usize = 0x458;
 /// within each pool, retaining the pool's content eligibility rules.
 pub const ICON_ENTRY_RECORDED: usize = 0x28;
 /// Equipment-variant constructor initializes the vtable and mission storage.
-pub const CONSTRUCTOR_RVA: usize = 0x00c2_6060;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c2_6060);
 
 /// Authenticates the variant and preserves its native low-type/high-id reference.
 pub fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("variant module address overflow")?;
     let bytes = read::<[u8; 16]>(memory, pointer).ok_or("variant identity unreadable")?;
     identity_header(expected, bytes)
@@ -178,16 +178,14 @@ pub fn walk_registry(
     output: &mut Vec<RegistryRow>,
 ) -> Outcome {
     let result = (|| {
-        let singleton = base
-            .checked_add(cgame_state::SINGLETON_RVA)
+        let singleton = engine_sites::at(base, cgame_state::SINGLETON_RVA)
             .ok_or("variant registry module address overflow")?;
         if game_state == 0 || read::<u64>(memory, singleton) != Some(game_state as u64) {
             return Err("variant registry game state unreadable or changed");
         }
         let array = Array::read(memory, at(game_state, cgame_state::EQUIPMENT_VARIANTS)?, 8)
             .ok_or("variant registry array unreadable or invalid")?;
-        let expected = base
-            .checked_add(VTABLE_RVA)
+        let expected = engine_sites::at(base, VTABLE_RVA)
             .ok_or("variant module address overflow")?;
         const BATCH: usize = 64;
         let mut pointer_bytes = [0_u8; BATCH * 8];
@@ -448,11 +446,9 @@ pub fn walk_definitions_carried<D: Default>(
             RecordLayout::new(&EQUIPMENT_FIELDS, 20).expect("valid record layout");
         const ARCHETYPE_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&ARCHETYPE_FIELDS, 12).expect("valid record layout");
-        let expected = base
-            .checked_add(cequipment_type::VTABLE_RVA)
+        let expected = engine_sites::at(base, cequipment_type::VTABLE_RVA)
             .ok_or("equipment module address overflow")?;
-        let null_expected = base
-            .checked_add(cequipment_type::NULL_VTABLE_RVA)
+        let null_expected = engine_sites::at(base, cequipment_type::NULL_VTABLE_RVA)
             .ok_or("equipment module address overflow")?;
         let equipment_class = |header: &[u8]| {
             let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());

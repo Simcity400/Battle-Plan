@@ -69,7 +69,7 @@ fn build(shape: &Shape) -> Vec<u8> {
     world.header(GAME_STATE + cgame_state::COUNTRY_LINKS, links, slots);
     for slot in 1..slots {
         let country = world.alloc(ccountry::ACES + 16);
-        world.put64(country, ccountry::VTABLE_RVA as u64);
+        world.put64(country, ccountry::VTABLE_RVA.0 as u64);
         world.put32(country + ccountry::ID, slot);
         world.put64(table + slot as usize * 8, country as u64);
         world.put32(links + slot as usize * 4, slot);
@@ -78,7 +78,7 @@ fn build(shape: &Shape) -> Vec<u8> {
         GAME_STATE + cgame_state::STRATEGIC_AIR_MANAGER,
         MANAGER as u64,
     );
-    world.put64(MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+    world.put64(MANAGER, cstrategic_air_manager::VTABLE_RVA.0 as u64);
     let roster = world.alloc((shape.bases + 1) * 8);
     world.header(
         MANAGER + cstrategic_air_manager::STATE_AIR_BASES,
@@ -93,14 +93,14 @@ fn build(shape: &Shape) -> Vec<u8> {
         let state = world.alloc(cstate::ID + 8);
         let province = world.alloc(cprovince::STATE + 8);
         world.put64(roster + id as usize * 8, base as u64);
-        world.put64(base, cair_base::VTABLE_RVA as u64);
+        world.put64(base, cair_base::VTABLE_RVA.0 as u64);
         world.put64(base + cair_base::HANDLE, handle);
         world.put64(base + cair_base::STATE, state as u64);
         world.put64(base + cair_base::PROVINCE, province as u64);
         world.put32(base + cair_base::CAPACITY, 100);
-        world.put64(state, cstate::VTABLE_RVA as u64);
+        world.put64(state, cstate::VTABLE_RVA.0 as u64);
         world.put32(state + cstate::ID, id);
-        world.put64(province, cprovince::VTABLE_RVA as u64);
+        world.put64(province, cprovince::VTABLE_RVA.0 as u64);
         world.put32(province + cprovince::ID, id);
         world.put64(province + cprovince::STATE, state as u64);
         let vector = world.alloc(slots as usize * 8);
@@ -116,7 +116,7 @@ fn build(shape: &Shape) -> Vec<u8> {
             let container = world.alloc(0xf8);
             world.put64(vector + country as usize * 8, container as u64);
             world.put64(dense + entry * 8, container as u64);
-            world.put64(container, ccountry_air_container::VTABLE_RVA as u64);
+            world.put64(container, ccountry_air_container::VTABLE_RVA.0 as u64);
             world.put32(container + ccountry_air_container::COUNTRY, country);
             world.put64(container + ccountry_air_container::CAPACITY_RAW, 4);
             let pools = world.alloc(shape.pools * 8);
@@ -128,17 +128,17 @@ fn build(shape: &Shape) -> Vec<u8> {
             for pool_index in 0..shape.pools {
                 let pool = world.alloc(0x40);
                 world.put64(pools + pool_index * 8, pool as u64);
-                world.put64(pool, cair_wing_pool::VTABLE_RVA as u64);
+                world.put64(pool, cair_wing_pool::VTABLE_RVA.0 as u64);
                 world.put64(pool + cair_wing_pool::AIR_BASE_REFERENCE, handle);
                 let wings = world.alloc(shape.wings * 8);
                 world.header(pool + cair_wing_pool::WINGS, wings, shape.wings as u32);
                 for wing_index in 0..shape.wings {
                     let wing = world.alloc(0x40);
                     world.put64(wings + wing_index * 8, wing as u64);
-                    world.put64(wing, cair_wing::VTABLE_RVA as u64);
+                    world.put64(wing, cair_wing::VTABLE_RVA.0 as u64);
                     world.put64(
                         wing + cair_wing::SECONDARY,
-                        cair_wing::SECONDARY_VTABLE_RVA as u64,
+                        cair_wing::SECONDARY_VTABLE_RVA.0 as u64,
                     );
                     world.put64(
                         wing + cair_wing::REFERENCE_TYPE,

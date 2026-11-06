@@ -297,7 +297,7 @@ mod tests {
         put(
             &mut bytes,
             PROVINCE,
-            &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, PROVINCE + cprovince::ID, &1_u32.to_le_bytes());
         bytes

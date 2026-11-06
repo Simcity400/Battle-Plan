@@ -24,8 +24,8 @@ impl Fixture {
         self.put(at + 12, &count.to_le_bytes());
     }
     fn entry(&mut self, at: usize, kind: u32, id: u32, number: i32) {
-        self.word(at, VTABLE_RVA as u64);
-        self.word(at + PAYLOAD, PAYLOAD_VTABLE_RVA as u64);
+        self.word(at, VTABLE_RVA.0 as u64);
+        self.word(at + PAYLOAD, PAYLOAD_VTABLE_RVA.0 as u64);
         self.put(at + SOURCE_KIND, &kind.to_le_bytes());
         self.put(at + SOURCE_ID, &id.to_le_bytes());
         self.put(at + SOURCE_NUMBER, &number.to_le_bytes());
@@ -47,7 +47,7 @@ impl Fixture {
         self.word(string + msvc_string::CAPACITY, capacity);
     }
     fn definition(&mut self, at: usize, token: u32, width: i64, stats: &[(usize, i64)]) {
-        self.word(at, csub_unit_definition::VTABLE_RVA as u64);
+        self.word(at, csub_unit_definition::VTABLE_RVA.0 as u64);
         self.put(at + csub_unit_definition::TOKEN, &token.to_le_bytes());
         self.put(
             at + csub_unit_definition::COMBAT_WIDTH,
@@ -80,10 +80,10 @@ fn fixture() -> Fixture {
     memory.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0x2100, 2);
     memory.word(0x2008, COUNTRY as u64);
     memory.put(0x2104, &1_u32.to_le_bytes());
-    memory.word(COUNTRY, ccountry::VTABLE_RVA as u64);
+    memory.word(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     memory.put(COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
     memory.word(COUNTRY + ccountry::DEPLOYMENT_MANAGER, DEPLOYMENT as u64);
-    memory.word(DEPLOYMENT, cdeployment_status::VTABLE_RVA as u64);
+    memory.word(DEPLOYMENT, cdeployment_status::VTABLE_RVA.0 as u64);
     memory.word(DEPLOYMENT + cdeployment_status::OWNER, COUNTRY as u64);
     memory.array(DEPLOYMENT + cdeployment_status::UNIT_BONUSES, FIRST, 2);
     memory.entry(FIRST, 2, 0x11, -3);

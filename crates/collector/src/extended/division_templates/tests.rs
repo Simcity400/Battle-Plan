@@ -10,7 +10,7 @@ struct Fixture {
 }
 impl Memory for Fixture {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == subunit::DATABASE_RVA && output.len() == 8 {
+        if address == subunit::DATABASE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x8800_u64.to_le_bytes());
             return true;
         }
@@ -39,17 +39,17 @@ fn fixture() -> Fixture {
     array(&mut bytes, 0x1000 + cgame_state::COUNTRY_LINKS, 0x2100, 2);
     word(&mut bytes, 0x2008, 0x3000);
     bytes[0x2104..0x2108].copy_from_slice(&1_u32.to_le_bytes());
-    word(&mut bytes, 0x3000, ccountry::VTABLE_RVA as u64);
+    word(&mut bytes, 0x3000, ccountry::VTABLE_RVA.0 as u64);
     word(&mut bytes, 0x3008, 1);
     array(&mut bytes, 0x3000 + ccountry::DIVISION_TEMPLATES, 0x4000, 1);
     word(&mut bytes, 0x4000, 0x5000);
-    word(&mut bytes, 0x5000, native::VTABLE_RVA as u64);
+    word(&mut bytes, 0x5000, native::VTABLE_RVA.0 as u64);
     word(&mut bytes, 0x5008, 0xffff_ffff_0000_0034);
     word(&mut bytes, 0x3000 + ccountry::DEPLOYMENT_MANAGER, 0x8400);
     word(
         &mut bytes,
         0x8400,
-        engine_deployment::cdeployment_status::VTABLE_RVA as u64,
+        engine_deployment::cdeployment_status::VTABLE_RVA.0 as u64,
     );
     word(
         &mut bytes,
@@ -63,7 +63,7 @@ fn fixture() -> Fixture {
     word(&mut bytes, 0x6000, 0x7000);
     word(&mut bytes, 0x6008, 3);
     word(&mut bytes, 0x5000 + native::PRIORITY_UNIT, 0x7000);
-    word(&mut bytes, 0x7000, subunit::VTABLE_RVA as u64);
+    word(&mut bytes, 0x7000, subunit::VTABLE_RVA.0 as u64);
     word(&mut bytes, 0x7000 + subunit::TOKEN, 777);
     bytes[0x7000 + subunit::IS_REAL] = 1;
     text(&mut bytes, 0x7000 + subunit::NAME, b"infantry");
@@ -166,10 +166,10 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
         (0x6100, 0x7000),
         (0x8400 + deployment::SELECTED_STAFF_TEMPLATE, staff),
         (0x3000 + ccountry::OCCUPATION_STATUS, 0x8000),
-        (0x8000, occupation::VTABLE_RVA as u64),
+        (0x8000, occupation::VTABLE_RVA.0 as u64),
         (
             0x8000 + occupation::SECONDARY_BASE,
-            occupation::SECONDARY_VTABLE_RVA as u64,
+            occupation::SECONDARY_VTABLE_RVA.0 as u64,
         ),
     ] {
         source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -279,8 +279,8 @@ fn failed_template_observer_preserves_fresh_template_and_country_values() {
         (0x5000 + native::REGIMENT_DATA + 8, (2_u64 << 32) | 2),
         (0x6100, 0x7000),
         (0x3000 + ccountry::OCCUPATION_STATUS, 0x8000),
-        (0x8000, occupation::VTABLE_RVA as u64),
-        (0x8000 + occupation::SECONDARY_BASE, occupation::SECONDARY_VTABLE_RVA as u64),
+        (0x8000, occupation::VTABLE_RVA.0 as u64),
+        (0x8000 + occupation::SECONDARY_BASE, occupation::SECONDARY_VTABLE_RVA.0 as u64),
     ] {
         source.bytes[at..][..8].copy_from_slice(&value.to_le_bytes());
     }
@@ -441,10 +441,10 @@ fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals(
                 use engine_occupation::ccountry_occupation_status as occupation;
                 for (at, value) in [
                     (0x3000 + ccountry::OCCUPATION_STATUS, 0x8000_u64),
-                    (0x8000, occupation::VTABLE_RVA as u64),
+                    (0x8000, occupation::VTABLE_RVA.0 as u64),
                     (
                         0x8000 + occupation::SECONDARY_BASE,
-                        occupation::SECONDARY_VTABLE_RVA as u64,
+                        occupation::SECONDARY_VTABLE_RVA.0 as u64,
                     ),
                 ] {
                     source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -563,10 +563,10 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
     let mut put =
         |at: usize, value: u64| source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     put(0x3000 + ccountry::OCCUPATION_STATUS, 0x8000);
-    put(0x8000, occupation::VTABLE_RVA as u64);
+    put(0x8000, occupation::VTABLE_RVA.0 as u64);
     put(
         0x8000 + occupation::SECONDARY_BASE,
-        occupation::SECONDARY_VTABLE_RVA as u64,
+        occupation::SECONDARY_VTABLE_RVA.0 as u64,
     );
     let country = ccountry::Country {
         pointer: 0x3000,
@@ -1185,7 +1185,7 @@ fn large_content(countries: usize, per_country: usize) -> Fixture {
         word(&mut source.bytes, registry + id * 8, owner as u64);
         source.bytes[links + id * 4..links + id * 4 + 4]
             .copy_from_slice(&(id as u32).to_le_bytes());
-        word(&mut source.bytes, owner, ccountry::VTABLE_RVA as u64);
+        word(&mut source.bytes, owner, ccountry::VTABLE_RVA.0 as u64);
         word(&mut source.bytes, owner + ccountry::ID, id as u64);
         let roster = rosters + country * per_country * 8;
         array(
@@ -1593,10 +1593,10 @@ fn country_refusal_recovery_and_loss_renew_the_template_witness() {
             let pointer = if hour == 2 { 0x8000_u64 } else { 0 };
             for (at, value) in [
                 (0x3000 + ccountry::OCCUPATION_STATUS, pointer),
-                (0x8000, occupation::VTABLE_RVA as u64),
+                (0x8000, occupation::VTABLE_RVA.0 as u64),
                 (
                     0x8000 + occupation::SECONDARY_BASE,
-                    occupation::SECONDARY_VTABLE_RVA as u64,
+                    occupation::SECONDARY_VTABLE_RVA.0 as u64,
                 ),
             ] {
                 source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -1665,7 +1665,7 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
     let pointers = [0x7500_usize, 0x7700, 0x7900];
     let handles = [21_u64, 22, 23].map(|id| (id << 32) | u64::from(variant::REFERENCE_TYPE));
     for (&pointer, handle) in pointers.iter().zip(handles) {
-        source.bytes[pointer..][..8].copy_from_slice(&(variant::VTABLE_RVA as u64).to_le_bytes());
+        source.bytes[pointer..][..8].copy_from_slice(&(variant::VTABLE_RVA.0 as u64).to_le_bytes());
         source.bytes[pointer + 8..][..8].copy_from_slice(&handle.to_le_bytes());
     }
     let header = 0x5000 + native::EXCLUDED_VARIANT_DATA;

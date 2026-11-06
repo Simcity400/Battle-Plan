@@ -39,6 +39,7 @@
 //! Every site takes at most four integer or pointer arguments and returns
 //! RAX unchanged from its original.
 
+use engine_sites::Rva;
 // MIO configuration, trait ownership and queue writers certify rare state.
 // Construction and load are observed through the full census and world epoch.
 // Policy reload is forwarded by country inputs; the policy score callback also
@@ -70,20 +71,12 @@ pub const DOMAINS: usize = 8;
 /// Offset of a dynamic modifier container's owning country, null for a state's.
 pub const CONTAINER_COUNTRY: usize = crate::cdynamic_modifier_container::COUNTRY;
 
-const CONTAINER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
-];
-
 pub const MUTATIONS: [(MutationSite, Domain); 27] = [
     // Province rename effect (effect): save RDI and reserve 0x30 stack bytes.
     (
         MutationSite {
             name: "rename_province",
-            rva: 0x37_7d50,
-            sentinel: [
-                0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xb4, 0x78, 0x31, 0x03, 0x00, 0x48,
-                0x8b, 0xf9,
-            ],
+            rva: Rva(0x37_7d50),
         },
         Domain::ProvinceNames,
     ),
@@ -91,11 +84,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
     (
         MutationSite {
             name: "reset_province_name",
-            rva: 0x37_7fa0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0x37_7fa0),
         },
         Domain::ProvinceNames,
     ),
@@ -104,11 +93,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
     (
         MutationSite {
             name: "set_region_access_modes",
-            rva: 0xf2_3440,
-            sentinel: [
-                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x45, 0x32, 0xdb, 0x45, 0x33, 0xc0, 0x4c, 0x8b,
-                0xd2, 0x48,
-            ],
+            rva: Rva(0xf2_3440),
         },
         Domain::RegionAccess,
     ),
@@ -116,11 +101,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
     (
         MutationSite {
             name: "reset_navy",
-            rva: 0xf1_ee30,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0xf1_ee30),
         },
         Domain::RegionAccess,
     ),
@@ -129,10 +110,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         MutationSite {
             name: "update_threat_total",
             rva: crate::cworld_threat::UPDATE_TOTAL_RVA,
-            sentinel: [
-                0x40, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x28, 0x8b, 0x51, 0x1c, 0x45, 0x33, 0xff,
-                0x48, 0x89,
-            ],
         },
         Domain::Tension,
     ),
@@ -141,7 +118,6 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         MutationSite {
             name: "add_dynamic_modifier",
             rva: crate::cdynamic_modifier_container::ADD_RVA,
-            sentinel: CONTAINER_SENTINEL,
         },
         Domain::DynamicModifiers,
     ),
@@ -150,11 +126,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
     (
         MutationSite {
             name: "renew_dynamic_modifier",
-            rva: 0x65_93d0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x48,
-            ],
+            rva: Rva(0x65_93d0),
         },
         Domain::DynamicModifiers,
     ),
@@ -162,8 +134,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
     (
         MutationSite {
             name: "remove_dynamic_modifier",
-            rva: 0x65_8650,
-            sentinel: CONTAINER_SENTINEL,
+            rva: Rva(0x65_8650),
         },
         Domain::DynamicModifiers,
     ),
@@ -172,205 +143,132 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
         MutationSite {
             name: "dynamic_modifier_daily_update",
             rva: crate::cdynamic_modifier_container::DAILY_UPDATE_RVA,
-            sentinel: CONTAINER_SENTINEL,
         },
         Domain::DynamicModifiers,
     ),
     (
         MutationSite {
             name: "mio_queue_append",
-            rva: 0xe22680,
-            sentinel: [
-                0x40, 0x53, 0x55, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x38, 0x48, 0x8d, 0xb9, 0x50,
-                0x01, 0x00,
-            ],
+            rva: Rva(0xe22680),
         },
         Domain::IndustrialOrganisationRosters,
     ),
     (
         MutationSite {
             name: "mio_state_copy",
-            rva: 0xe22a60,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24,
-                0x18, 0x4c,
-            ],
+            rva: Rva(0xe22a60),
         },
         Domain::IndustrialOrganisationRosters,
     ),
     (
         MutationSite {
             name: "mio_allowed_policies",
-            rva: 0xe24fd0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x57,
-            ],
+            rva: Rva(0xe24fd0),
         },
         Domain::IndustrialOrganisationRosters,
     ),
     (
         MutationSite {
             name: "mio_queue_move",
-            rva: 0xe28ba0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0xe28ba0),
         },
         Domain::IndustrialOrganisationRosters,
     ),
     (
         MutationSite {
             name: "mio_read_state",
-            rva: 0xe28ce0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-                0x41, 0x57,
-            ],
+            rva: Rva(0xe28ce0),
         },
         Domain::IndustrialOrganisationRosters,
     ),
     (
         MutationSite {
             name: "mio_queue_remove",
-            rva: 0xe29230,
-            sentinel: [
-                0x40, 0x57, 0x48, 0x83, 0xec, 0x40, 0x48, 0x89, 0x5c, 0x24, 0x50, 0x48, 0x8b, 0xf9,
-                0x48, 0x89,
-            ],
+            rva: Rva(0xe29230),
         },
         Domain::IndustrialOrganisationRosters,
     ),
     (
         MutationSite {
             name: "mio_queue_replace",
-            rva: 0xe293b0,
-            sentinel: [
-                0x40, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x38, 0x48, 0x8d, 0xb9, 0x50, 0x01, 0x00,
-                0x00, 0x4c,
-            ],
+            rva: Rva(0xe293b0),
         },
         Domain::IndustrialOrganisationRosters,
     ),
     (
         MutationSite {
             name: "mio_unlock_trait",
-            rva: 0xe2a1f0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x50, 0x48, 0x8d, 0x05, 0xdf,
-                0x8f, 0x99,
-            ],
+            rva: Rva(0xe2a1f0),
         },
         Domain::IndustrialOrganisationRosters,
     ),
     (
         MutationSite {
             name: "design_mio_bonuses",
-            rva: 0xc29860,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0xc29860),
         },
         Domain::DesignIndustrialOrganisation,
     ),
     (
         MutationSite {
             name: "design_mio_link",
-            rva: 0xc37c60,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x48,
-            ],
+            rva: Rva(0xc37c60),
         },
         Domain::DesignIndustrialOrganisation,
     ),
     (
         MutationSite {
             name: "design_mio_move",
-            rva: 0x673bc0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xfa, 0x48,
-                0x8b, 0xd9,
-            ],
+            rva: Rva(0x673bc0),
         },
         Domain::DesignIndustrialOrganisation,
     ),
     (
         MutationSite {
             name: "design_mio_clone",
-            rva: 0xc2d4e0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-                0x20, 0x48,
-            ],
+            rva: Rva(0xc2d4e0),
         },
         Domain::DesignIndustrialOrganisation,
     ),
     (
         MutationSite {
             name: "design_mio_read",
-            rva: 0xc341e0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-                0x41, 0x57,
-            ],
+            rva: Rva(0xc341e0),
         },
         Domain::DesignIndustrialOrganisation,
     ),
     (
         MutationSite {
             name: "mio_policy_score_refresh",
-            rva: 0xa9a610,
-            sentinel: [
-                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x19, 0x48, 0x8d, 0x54, 0x24, 0x30,
-                0x48, 0x8b,
-            ],
+            rva: Rva(0xa9a610),
         },
         Domain::IndustrialOrganisationPolicies,
     ),
     (
         MutationSite {
             name: "fog_enter_game",
-            rva: 0x00e300e0,
-            sentinel: [
-                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78,
-                0x20, 0x48,
-            ],
+            rva: Rva(0x00e300e0),
         },
         Domain::GameFog,
     ),
     (
         MutationSite {
             name: "fog_enter_frontend",
-            rva: 0x00b8d1f0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24,
-                0x08, 0x55,
-            ],
+            rva: Rva(0x00b8d1f0),
         },
         Domain::GameFog,
     ),
     (
         MutationSite {
             name: "fog_leave_nudge",
-            rva: 0x013647d0,
-            sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-                0x18, 0x57,
-            ],
+            rva: Rva(0x013647d0),
         },
         Domain::GameFog,
     ),
     (
         MutationSite {
             name: "fog_toggle",
-            rva: 0x0026ff10,
-            sentinel: [
-                0x48, 0x89, 0x4c, 0x24, 0x08, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xd9, 0x33,
-                0xc0, 0x89,
-            ],
+            rva: Rva(0x0026ff10),
         },
         Domain::GameFog,
     ),
@@ -402,10 +300,5 @@ mod tests {
             assert!(MUTATIONS.iter().any(|(_, of)| *of == domain));
             assert!((domain as usize) < DOMAINS);
         }
-        // The daily update's sentinel matches its supported entry sequence.
-        assert_eq!(
-            crate::cdynamic_modifier_container::DAILY_UPDATE_SENTINEL,
-            CONTAINER_SENTINEL
-        );
     }
 }

@@ -22,8 +22,7 @@ pub fn walk_buffer(
         .filter(|&value| value != 0);
     let result = match root {
         Some(root)
-            if base
-                .checked_add(VTABLE_RVA)
+            if engine_sites::at(base, VTABLE_RVA)
                 .is_some_and(|expected| read::<u64>(memory, root) == Some(expected as u64)) =>
         {
             let outcome = summary(memory, country, country_id, root, &mut rows, &mut arena)

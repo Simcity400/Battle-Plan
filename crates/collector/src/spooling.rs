@@ -3476,6 +3476,7 @@ impl Processor {
                 backlogged: self.backlogged,
             });
         crate::hook_failures::apply(&mut source)?;
+        crate::site_withholding::apply(&mut source)?;
         crate::spool_compare::compare_frame(
             &campaign.encoder,
             crate::spool_compare::Target {

@@ -746,7 +746,7 @@ impl DensePayload {
     }
     fn decode<R>(
         &self,
-        vtable: usize,
+        vtable: Option<usize>,
         fields: usize,
         record_bytes: usize,
         output: &mut [R],
@@ -756,6 +756,11 @@ impl DensePayload {
         let Some(array) = self.array else {
             return Outcome::Unavailable {
                 reason: invalid_array,
+            };
+        };
+        let Some(vtable) = vtable else {
+            return Outcome::Unavailable {
+                reason: "weather record vtable withheld",
             };
         };
         let count = (array.count as usize).min(output.len());
@@ -877,7 +882,7 @@ fn prepare_weather_pass(
     let vtable_start = log.take(memory, pointer, 8, M_W_ALL)?;
     job.manager = pointer;
     job.manager_authenticated =
-        base.checked_add(cweather_manager::VTABLE_RVA)
+        engine_sites::at(base, cweather_manager::VTABLE_RVA)
             .is_some_and(|vtable| {
                 u64::from_le_bytes(
                     log.bytes[vtable_start..vtable_start + 8]
@@ -906,7 +911,7 @@ fn prepare_weather_pass(
                 engine_native::air_fuel_defines::CONTEXT_SUBTRACT_RVA,
                 engine_native::air_fuel_defines::CONTEXT_SCALE_RVA,
             ] {
-                if let Some(address) = base.checked_add(offset) {
+                if let Some(address) = engine_sites::at(base, offset) {
                     let _ = log.take(memory, address, 8, 0);
                 }
             }
@@ -1204,7 +1209,7 @@ impl Captured {
         self.regions.outcome = match reader.max_snow() {
             Ok(max_snow) => {
                 let outcome = job.regions.decode(
-                    base.wrapping_add(sweather_per_region::VTABLE_RVA),
+                    engine_sites::resolve(base, sweather_per_region::VTABLE_RVA).ok(),
                     sweather_per_region::FIELDS.len(),
                     sweather_per_region::RECORD_BYTES,
                     &mut self.regions.rows,
@@ -1235,7 +1240,7 @@ impl Captured {
         decode_ticks[0] += elapsed(started);
         let started = qpc();
         let outcome = job.provinces.decode(
-            base.wrapping_add(sweather_per_province::VTABLE_RVA),
+            engine_sites::resolve(base, sweather_per_province::VTABLE_RVA).ok(),
             sweather_per_province::FIELDS.len(),
             sweather_per_province::RECORD_BYTES,
             &mut self.provinces.rows,

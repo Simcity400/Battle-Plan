@@ -1,6 +1,7 @@
 //! Retained event registry operands. Callers use these once for an observed
 //! world's baseline, then acquire only the entry reached by a native writer.
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read};
+use engine_sites::Rva;
 
 pub const PENDING_STRIDE: usize = 0x38;
 pub const PENDING_INSTANCE: usize = 0;
@@ -14,7 +15,7 @@ const SET_BUCKET_COUNT: usize = 4;
 const SET_BUCKETS: usize = 8;
 const NODE_DEFINITION: usize = 0;
 const NODE_NEXT: usize = 8;
-pub const DELAYED_VTABLE_RVA: usize = 0x0286_4858;
+pub const DELAYED_VTABLE_RVA: Rva = Rva(0x0286_4858);
 pub const DELAYED_DEFINITION: usize = 8;
 pub const DELAYED_SCOPE: usize = 0x10;
 pub const DELAYED_ORIGINATOR: usize = 0xc0;
@@ -45,7 +46,10 @@ pub fn delayed_at(
             .ok_or("delayed-event ordinal outside native array")?,
         0,
     )? as usize;
-    if word::<u64>(memory, pointer, 0)? != at(base, DELAYED_VTABLE_RVA)? as u64 {
+    if word::<u64>(memory, pointer, 0)?
+        != engine_sites::at(base, DELAYED_VTABLE_RVA).ok_or("script registry address overflow")?
+            as u64
+    {
         return Err("delayed-event vtable differs");
     }
     Ok(Delayed {

@@ -178,7 +178,7 @@ pub(super) fn read_cost(
         .iter()
         .map(|level| (level.variant, level.level))
         .collect();
-    let factor: i64 = scalar(memory, base, market::MARKET_PRICE_FACTOR_RVA)?;
+    let factor: i64 = global(memory, base, market::MARKET_PRICE_FACTOR_RVA)?;
     let items = engine_native::cequipment_variant_pool::entries(
         memory,
         base,
@@ -212,9 +212,9 @@ pub(super) fn read_cost(
             scalar(memory, item.variant_pointer, market::VARIANT_MARKET_PRICE)?
         };
         let level = match levels.get(&item.variant_handle).copied().unwrap_or(1) {
-            0 => scalar(memory, base, market::LOW_PRICE_FACTOR_RVA)?,
+            0 => global(memory, base, market::LOW_PRICE_FACTOR_RVA)?,
             1 => 100_000_i64,
-            2 => scalar(memory, base, market::HIGH_PRICE_FACTOR_RVA)?,
+            2 => global(memory, base, market::HIGH_PRICE_FACTOR_RVA)?,
             _ => return Err("market cost price level unsupported"),
         };
         let price = (quote.wrapping_mul(level) / 100_000).wrapping_mul(factor) / 100_000;
@@ -556,8 +556,8 @@ pub(super) fn acquire_marked(
                 memory,
                 pointer + engine_production::cpurchase_contract::ID_TYPE,
             ) != Some(held.row.id)
-                || read::<u64>(memory, pointer)
-                    != Some((base + engine_production::cpurchase_contract::VTABLE_RVA) as u64)
+                || engine_sites::at(base, engine_production::cpurchase_contract::VTABLE_RVA)
+                    .is_none_or(|vtable| read::<u64>(memory, pointer) != Some(vtable as u64))
             {
                 return Err("market marked contract identity changed");
             }
@@ -601,7 +601,7 @@ mod tests {
         let id = (17_u64 << 32) | u64::from(engine_production::cpurchase_contract::TYPE);
         let mut bytes = vec![0; 0x600];
         bytes[POINTER..POINTER + 8].copy_from_slice(
-            &(engine_production::cpurchase_contract::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_production::cpurchase_contract::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         bytes[POINTER + engine_production::cpurchase_contract::ID_TYPE
             ..POINTER + engine_production::cpurchase_contract::ID_TYPE + 8]
@@ -800,14 +800,14 @@ mod tests {
         let pointer = world.alloc(0x400);
         let definition = pointer + market::DRAFT;
         let model = world.alloc(0x400);
-        world.u64(model, variant::VTABLE_RVA as u64);
+        world.u64(model, variant::VTABLE_RVA.0 as u64);
         let reference = (31_u64 << 32) | variant::REFERENCE_TYPE as u64;
         world.u64(model + 8, reference);
         world.u64(model + market::VARIANT_MARKET_PRICE, 200_000);
-        world.u64(definition, native_pool::VTABLE_RVA as u64);
+        world.u64(definition, native_pool::VTABLE_RVA.0 as u64);
         world.u64(
             definition + market::DRAFT_EQUIPMENT,
-            native_pool::VTABLE_RVA as u64,
+            native_pool::VTABLE_RVA.0 as u64,
         );
         let items = world.alloc(16);
         world.u64(items, model as u64);
@@ -820,10 +820,10 @@ mod tests {
         struct Native<'a>(&'a World);
         impl Memory for Native<'_> {
             fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-                if at == market::LOW_PRICE_FACTOR_RVA {
+                if at == market::LOW_PRICE_FACTOR_RVA.0 {
                     output.copy_from_slice(&50_000_i64.to_le_bytes());
                     true
-                } else if at == market::MARKET_PRICE_FACTOR_RVA {
+                } else if at == market::MARKET_PRICE_FACTOR_RVA.0 {
                     output.copy_from_slice(&150_000_i64.to_le_bytes());
                     true
                 } else {
@@ -939,7 +939,7 @@ mod tests {
         let resources = world.alloc(0x30);
         world.u64(
             resources,
-            engine_resources::ccountry_resources::VTABLE_RVA as u64,
+            engine_resources::ccountry_resources::VTABLE_RVA.0 as u64,
         );
         world.u32(
             resources + engine_resources::ccountry_resources::OWNER,
@@ -947,15 +947,15 @@ mod tests {
         );
         let pointer = world.alloc(lease::SIZE);
         let id = (17_u64 << 32) | 9001;
-        world.u64(pointer, lease::VTABLE_RVA as u64);
+        world.u64(pointer, lease::VTABLE_RVA.0 as u64);
         world.u64(pointer + lease::HANDLE, id);
         world.u64(pointer + lease::GIVER_RESOURCES, resources as u64);
         world.u32(pointer + lease::RECEIVER, 4999);
-        world.u64(pointer + lease::DELIVERED, native_pool::VTABLE_RVA as u64);
+        world.u64(pointer + lease::DELIVERED, native_pool::VTABLE_RVA.0 as u64);
         let entries = world.alloc(5000 * 16);
         for index in 0..5000 {
             let model = world.alloc(16);
-            world.u64(model, variant::VTABLE_RVA as u64);
+            world.u64(model, variant::VTABLE_RVA.0 as u64);
             world.u64(
                 model + 8,
                 ((index as u64 + 1) << 32) | variant::REFERENCE_TYPE as u64,

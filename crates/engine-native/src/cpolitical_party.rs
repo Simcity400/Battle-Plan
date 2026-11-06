@@ -2,9 +2,10 @@
 //! projection is used.
 
 use crate::{Memory, cideology_group, read};
+use engine_sites::Rva;
 
 /// Political-party primary vtable.
-pub const VTABLE_RVA: usize = 0x02a1_a6e0;
+pub const VTABLE_RVA: Rva = Rva(0x02a1_a6e0);
 /// Ideology-group ID, u32, copied from the group identity.
 pub const ID: usize = 0x08;
 /// CPoliticalParty CIdeologyGroup pointer.
@@ -98,9 +99,7 @@ pub fn identity(
     base: usize,
     pointer: usize,
 ) -> Result<(u32, usize), &'static str> {
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     let header = read::<[u8; 12]>(memory, pointer).ok_or("political party identity unreadable")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64 {
         return Err("political party vtable mismatch");
@@ -115,9 +114,8 @@ pub fn identity(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("political party ideology pointer unreadable or null")?;
-    let expected = base
-        .checked_add(cideology_group::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected =
+        engine_sites::at(base, cideology_group::VTABLE_RVA).ok_or("module address overflow")?;
     let header = read::<[u8; 12]>(memory, ideology).ok_or("ideology identity unreadable")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64 {
         return Err("political party ideology vtable mismatch");

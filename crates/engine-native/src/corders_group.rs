@@ -1,5 +1,6 @@
 //! Type-53 army/order container.
 
+use engine_sites::Rva;
 use crate::{
     Memory, carmy, carmy_group, corders_group_member,
     cpdx_array::Array,
@@ -13,7 +14,7 @@ use crate::{
 };
 
 /// COrdersGroup vtable.
-pub const VTABLE_RVA: usize = 0x029c_edc0;
+pub const VTABLE_RVA: Rva = Rva(0x029c_edc0);
 /// COrdersGroup reference type.
 pub const REFERENCE_TYPE: u32 = 53;
 /// COrdersGroup packed type/id u64 handle.
@@ -77,7 +78,7 @@ pub const THEATRE: usize = 0x40;
 /// COrdersGroup allocation size.
 pub const SIZE: usize = 0x230;
 /// Group constructor initializing the non-group discriminator.
-pub const CONSTRUCTOR_RVA: usize = 0x00c3_f480;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c3_f480);
 
 mod counter_tooltips;
 
@@ -136,7 +137,7 @@ fn gathered_pointer_handle(
         .ok_or("plan group identity unreadable")?;
     if ![VTABLE_RVA, carmy_group::VTABLE_RVA]
         .into_iter()
-        .any(|rva| base.checked_add(rva).map(|v| v as u64) == Some(vtable))
+        .any(|key| engine_sites::at(base, key).map(|v| v as u64) == Some(vtable))
     {
         return Err("plan group vtable mismatch");
     }
@@ -666,8 +667,7 @@ pub fn walk_roots_buffer(
     mut output: crate::walk::Buffer<'_, Root>,
 ) -> Outcome {
     let result = (|| {
-        let table = base
-            .checked_add(registry::LOW_ROOTS_RVA)
+        let table = engine_sites::at(base, registry::LOW_ROOTS_RVA)
             .and_then(|p| p.checked_add(REFERENCE_TYPE as usize * 8))
             .and_then(|p| read::<u64>(memory, p))
             .and_then(|p| usize::try_from(p).ok())
@@ -691,8 +691,7 @@ pub fn walk_roots_buffer(
         {
             return Err("orders registry header invalid");
         }
-        let static_empty = base
-            .checked_add(registry::STATIC_EMPTY_RVA)
+        let static_empty = engine_sites::at(base, registry::STATIC_EMPTY_RVA)
             .ok_or("module address overflow")?;
         // Construction uses the static-empty header. Growth uses 2^exponent buckets
         // and exponent+2 overflow cells.
@@ -718,11 +717,9 @@ pub fn walk_roots_buffer(
             return Err("orders registry terminal sentinel invalid");
         }
         output.ensure(count as usize)?;
-        let normal_vtable = base
-            .checked_add(VTABLE_RVA)
+        let normal_vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let group_vtable = base
-            .checked_add(crate::carmy_group::VTABLE_RVA)
+        let group_vtable = engine_sites::at(base, crate::carmy_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let mut copied = 0_usize;
         let mut occupied = 0_u32;
@@ -1537,13 +1534,9 @@ impl<M: Memory> Reader<'_, M> {
         let identity =
             read::<[u8; 16]>(self.memory, pointer).ok_or("orders group identity unreadable")?;
         let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
-        let normal = self
-            .base
-            .checked_add(VTABLE_RVA)
+        let normal = engine_sites::at(self.base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let group = self
-            .base
-            .checked_add(carmy_group::VTABLE_RVA)
+        let group = engine_sites::at(self.base, carmy_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if vtable != normal && vtable != group {
             return Err("orders group vtable mismatch");
@@ -1558,7 +1551,7 @@ impl<M: Memory> Reader<'_, M> {
     fn reference(
         &self,
         pointer: usize,
-        vtable: usize,
+        vtable: Rva,
         reference_type: u32,
     ) -> Result<u64, &'static str> {
         if pointer == 0 {
@@ -1566,10 +1559,8 @@ impl<M: Memory> Reader<'_, M> {
         }
         let identity = read::<[u8; 16]>(self.memory, pointer)
             .ok_or("orders group referenced identity unreadable")?;
-        let expected = self
-            .base
-            .checked_add(vtable)
-            .ok_or("module address overflow")? as u64;
+        let expected =
+            engine_sites::at(self.base, vtable).ok_or("module address overflow")? as u64;
         if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected {
             return Err("orders group referenced object vtable mismatch");
         }
@@ -1591,13 +1582,9 @@ impl<M: Memory> Reader<'_, M> {
         // Vtable, class word, secondary vtable and handle are one exact span.
         let header = read::<[u8; 32]>(self.memory, unit)
             .ok_or("orders group member host identity unreadable")?;
-        let primary = self
-            .base
-            .checked_add(carmy::VTABLE_RVA)
+        let primary = engine_sites::at(self.base, carmy::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let secondary = self
-            .base
-            .checked_add(carmy::SECONDARY_VTABLE_RVA)
+        let secondary = engine_sites::at(self.base, carmy::SECONDARY_VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if u64::from_le_bytes(header[..8].try_into().unwrap()) != primary {
             return Err("orders group member host primary vtable mismatch");

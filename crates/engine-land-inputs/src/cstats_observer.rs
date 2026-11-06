@@ -3,8 +3,9 @@
 //! omit zero entries unless explicitly allowed. Terminal acquisition follows
 //! original finalization, which flushes pending losses before side deletion.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_a0d0;
+pub const VTABLE_RVA: Rva = Rva(0x029d_a0d0);
 /// CStatsObserver cached leader-tally array.
 pub const LEADERS: usize = 0x20;
 /// CStatsObserver leader-tally u32 count.
@@ -95,15 +96,13 @@ impl LossPlan {
 
     fn from_header(base: usize, header: [u8; 36]) -> Result<Self, &'static str> {
         if u64::from_le_bytes(header[..8].try_into().unwrap())
-            != base
-                .checked_add(VTABLE_RVA)
+            != engine_sites::at(base, VTABLE_RVA)
                 .ok_or("land loss observer vtable address overflow")? as u64
         {
             return Err("land loss observer vtable mismatch");
         }
         if u64::from_le_bytes(header[12..20].try_into().unwrap())
-            != base
-                .checked_add(cequipment_variant_pool::VTABLE_RVA)
+            != engine_sites::at(base, cequipment_variant_pool::VTABLE_RVA)
                 .ok_or("land loss pool vtable address overflow")? as u64
         {
             return Err("land loss pool vtable mismatch");
@@ -247,8 +246,7 @@ fn authenticate(
     {
         return Err("land loss variant identities unreadable");
     }
-    let expected = base
-        .checked_add(cequipment_variant::VTABLE_RVA)
+    let expected = engine_sites::at(base, cequipment_variant::VTABLE_RVA)
         .ok_or("land loss variant vtable address overflow")?;
     for (entry, identity) in entries.iter_mut().zip(&identities[..count]) {
         entry.variant = cequipment_variant::identity_from_header(expected, *identity)?;
@@ -269,10 +267,14 @@ mod tests {
         let observer = SIDE + crate::cland_combatant::STATS_OBSERVER;
         let pool = observer + EQUIPMENT_LOSSES;
         let mut bytes = vec![0; 0x1000];
-        put(&mut bytes, observer, VTABLE_RVA as u64);
+        put(&mut bytes, observer, VTABLE_RVA.0 as u64);
         bytes[observer + MANPOWER_LOSS..observer + MANPOWER_LOSS + 4]
             .copy_from_slice(&i32::MIN.to_le_bytes());
-        put(&mut bytes, pool, cequipment_variant_pool::VTABLE_RVA as u64);
+        put(
+            &mut bytes,
+            pool,
+            cequipment_variant_pool::VTABLE_RVA.0 as u64,
+        );
         put(&mut bytes, pool + cequipment_variant_pool::ITEMS, 0x800);
         put(
             &mut bytes,
@@ -285,7 +287,7 @@ mod tests {
             put(
                 &mut bytes,
                 0x900 + n * 16,
-                cequipment_variant::VTABLE_RVA as u64,
+                cequipment_variant::VTABLE_RVA.0 as u64,
             );
             put(&mut bytes, 0x908 + n * 16, (n as u64 + 1) << 32 | 70);
         }

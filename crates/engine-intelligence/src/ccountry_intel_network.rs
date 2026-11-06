@@ -3,6 +3,7 @@
 //! them, while console growth changes state strengths without rebuilding the
 //! national caches. Loading establishes independent saved cache values.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state, clocal_intel_network, cpdx_array::Array, cstrategic_operative,
     cstrategic_operative_manager, csub_intel_network, intel_network_graph, intel_network_graph_row,
@@ -10,11 +11,11 @@ use crate::{
 };
 
 /// Intel-network vtable.
-pub const VTABLE_RVA: usize = 0x2a1_dcd8;
+pub const VTABLE_RVA: Rva = Rva(0x2a1_dcd8);
 /// Target country id, read as i32.
 pub const TARGET: usize = 0x08;
 /// Constructor initializing the vtable and embedded objects.
-pub const CONSTRUCTOR_RVA: usize = 0x125_ccf0;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x125_ccf0);
 /// Embedded local network.
 pub const LOCAL_NETWORK: usize = 0x10;
 /// Subnetwork array data.
@@ -536,7 +537,7 @@ fn walk_inner(
                         return Err("intel quiet list unreadable");
                     }
                     let expected_vtable =
-                        base.checked_add(csub_intel_network::VTABLE_RVA)
+                        engine_sites::at(base, csub_intel_network::VTABLE_RVA)
                             .ok_or("intel module address overflow")? as u64;
                     for index in 0..count {
                         let row = &selectors[index];
@@ -659,11 +660,9 @@ fn vtable(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    rva: usize,
+    key: Rva,
 ) -> Result<(), &'static str> {
-    let expected = base
-        .checked_add(rva)
-        .ok_or("intel module address overflow")?;
+    let expected = engine_sites::at(base, key).ok_or("intel module address overflow")?;
     if read::<u64>(memory, object) == Some(expected as u64) {
         Ok(())
     } else {
@@ -920,7 +919,7 @@ mod tests {
         for slot in 1..=COUNT as usize {
             let operative = operative_objects + slot * 0x20;
             world.u64(operatives + slot * 8, operative as u64);
-            world.u64(operative, cstrategic_operative::VTABLE_RVA as u64);
+            world.u64(operative, cstrategic_operative::VTABLE_RVA.0 as u64);
             world.u32(operative + cstrategic_operative::OWNER, slot as u32);
         }
         // Country 1 runs a network against every other country; the shared
@@ -934,11 +933,11 @@ mod tests {
         for index in 0..COUNT as usize - 1 {
             let network = networks + index * 0x100;
             world.u64(pointers + index * 8, network as u64);
-            world.u64(network, VTABLE_RVA as u64);
+            world.u64(network, VTABLE_RVA.0 as u64);
             world.u32(network + TARGET, index as u32 + 2);
             world.u64(
                 network + LOCAL_NETWORK,
-                clocal_intel_network::VTABLE_RVA as u64,
+                clocal_intel_network::VTABLE_RVA.0 as u64,
             );
             world.u64(
                 network + LOCAL_NETWORK + clocal_intel_network::GRAPH,
@@ -994,7 +993,7 @@ mod tests {
         for slot in 1..=COUNT as usize {
             let operative = operative_objects + slot * 0x20;
             world.u64(operatives + slot * 8, operative as u64);
-            world.u64(operative, cstrategic_operative::VTABLE_RVA as u64);
+            world.u64(operative, cstrategic_operative::VTABLE_RVA.0 as u64);
             world.u32(operative + cstrategic_operative::OWNER, slot as u32);
         }
         let owner = operative_objects + 0x20;
@@ -1006,11 +1005,11 @@ mod tests {
         for index in 0..COUNT as usize - 1 {
             let network = networks + index * 0x100;
             world.u64(pointers + index * 8, network as u64);
-            world.u64(network, VTABLE_RVA as u64);
+            world.u64(network, VTABLE_RVA.0 as u64);
             world.u32(network + TARGET, index as u32 + 2);
             world.u64(
                 network + LOCAL_NETWORK,
-                clocal_intel_network::VTABLE_RVA as u64,
+                clocal_intel_network::VTABLE_RVA.0 as u64,
             );
             world.u64(
                 network + LOCAL_NETWORK + clocal_intel_network::GRAPH,
@@ -1071,7 +1070,7 @@ mod tests {
             p32(&mut bytes, 0x3100 + index * 4, link);
         }
         for (country, id) in [(0x4000, 3), (0x6000, 2)] {
-            p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            p64(&mut bytes, country, ccountry::VTABLE_RVA.0 as u64);
             p32(&mut bytes, country + ccountry::ID, id);
         }
         p64(
@@ -1090,10 +1089,10 @@ mod tests {
         p64(
             &mut bytes,
             STRATEGIC,
-            cstrategic_operative::VTABLE_RVA as u64,
+            cstrategic_operative::VTABLE_RVA.0 as u64,
         );
         p32(&mut bytes, STRATEGIC + cstrategic_operative::OWNER, 3);
-        p64(&mut bytes, 0xa400, cstrategic_operative::VTABLE_RVA as u64);
+        p64(&mut bytes, 0xa400, cstrategic_operative::VTABLE_RVA.0 as u64);
         p32(&mut bytes, 0xa400 + cstrategic_operative::OWNER, 2);
         header(
             &mut bytes,
@@ -1102,12 +1101,12 @@ mod tests {
             1,
         );
         p64(&mut bytes, 0xa800, NETWORK as u64);
-        p64(&mut bytes, NETWORK, VTABLE_RVA as u64);
+        p64(&mut bytes, NETWORK, VTABLE_RVA.0 as u64);
         p32(&mut bytes, NETWORK + TARGET, 2);
         p64(
             &mut bytes,
             NETWORK + LOCAL_NETWORK,
-            clocal_intel_network::VTABLE_RVA as u64,
+            clocal_intel_network::VTABLE_RVA.0 as u64,
         );
         p64(
             &mut bytes,
@@ -1179,7 +1178,7 @@ mod tests {
             p64(
                 &mut bytes,
                 subnetwork,
-                csub_intel_network::VTABLE_RVA as u64,
+                csub_intel_network::VTABLE_RVA.0 as u64,
             );
             p64(
                 &mut bytes,

@@ -9,7 +9,7 @@ const SLOTS: usize = 8 + TAIL;
 
 fn fixture(count: u32) -> Vec<u8> {
     let mut bytes = vec![0; 0x1000];
-    put64(&mut bytes, 0x100, (BASE + VTABLE_RVA) as u64);
+    put64(&mut bytes, 0x100, (BASE + VTABLE_RVA.0) as u64);
     put64(&mut bytes, 0x118, STORAGE_ADDRESS as u64);
     put32(&mut bytes, 0x120, count);
     put32(&mut bytes, 0x124, 7);
@@ -260,7 +260,7 @@ fn declared_count_probe_law_and_end_sentinel_are_all_checked() {
 #[test]
 fn empty_shared_storage_needs_no_node_memory() {
     let mut bytes = fixture(0);
-    put64(&mut bytes, 0x118, (BASE + EMPTY_STORAGE_RVA) as u64);
+    put64(&mut bytes, 0x118, (BASE + EMPTY_STORAGE_RVA.0) as u64);
     put32(&mut bytes, 0x124, 0);
     bytes[0x128] = 0;
     assert_eq!(
@@ -435,10 +435,10 @@ fn scope_fixture() -> Vec<u8> {
         put64(&mut bytes, 0x2000 + slot * 8, (BASE + 0x4000) as u64);
         put32(&mut bytes, 0x2100 + slot * 4, 1);
     }
-    put64(&mut bytes, 0x4000, (BASE + ccountry::VTABLE_RVA) as u64);
+    put64(&mut bytes, 0x4000, (BASE + ccountry::VTABLE_RVA.0) as u64);
     put32(&mut bytes, 0x4000 + ccountry::ID, 2);
     put64(&mut bytes, 0x2208, (BASE + 0x7000) as u64);
-    put64(&mut bytes, 0x7000, (BASE + cstate::VTABLE_RVA) as u64);
+    put64(&mut bytes, 0x7000, (BASE + cstate::VTABLE_RVA.0) as u64);
     put32(&mut bytes, 0x7000 + cstate::ID, 1);
     for (root, offset, container, count) in [
         (0x1000, cgame_state::GLOBAL_VARIABLES, 0xa000, 1),
@@ -478,11 +478,11 @@ fn scope_fixture() -> Vec<u8> {
         (BASE + container + 0x100) as u64,
     );
     let empty = 0x9000 + ccharacter::VARIABLES;
-    put64(&mut bytes, empty, (BASE + VTABLE_RVA) as u64);
+    put64(&mut bytes, empty, (BASE + VTABLE_RVA.0) as u64);
     put64(
         &mut bytes,
         empty + STORAGE,
-        (BASE + EMPTY_STORAGE_RVA) as u64,
+        (BASE + EMPTY_STORAGE_RVA.0) as u64,
     );
     put64(
         &mut bytes,
@@ -492,7 +492,7 @@ fn scope_fixture() -> Vec<u8> {
     put64(
         &mut bytes,
         0x5000,
-        (BASE + ccharacter_manager::VTABLE_RVA) as u64,
+        (BASE + ccharacter_manager::VTABLE_RVA.0) as u64,
     );
     let historical = 0x5000 + ccharacter_manager::HISTORICAL_CHARACTERS;
     put64(&mut bytes, historical, (BASE + 0x5100) as u64);
@@ -506,7 +506,7 @@ fn scope_fixture() -> Vec<u8> {
         put64(
             &mut bytes,
             character,
-            (BASE + ccharacter::VTABLE_RVA) as u64,
+            (BASE + ccharacter::VTABLE_RVA.0) as u64,
         );
         put32(
             &mut bytes,
@@ -583,10 +583,10 @@ fn bench_script_variable_scopes() {
     const STATES: u32 = 1_000;
     // One store of `count` short keys, two buckets per key.
     fn store(world: &mut World, container: usize, count: u32, seed: u32) {
-        world.u64(container, (MODULE + VTABLE_RVA) as u64);
+        world.u64(container, (MODULE + VTABLE_RVA.0) as u64);
         world.u32(container + SEED, seed);
         if count == 0 {
-            world.u64(container + STORAGE, (MODULE + EMPTY_STORAGE_RVA) as u64);
+            world.u64(container + STORAGE, (MODULE + EMPTY_STORAGE_RVA.0) as u64);
             return;
         }
         let buckets = (count * 2).next_power_of_two();
@@ -629,7 +629,7 @@ fn bench_script_variable_scopes() {
         world.array(game + cgame_state::STATES, states, STATES + 1);
         for id in 1..=STATES {
             let state = world.alloc(cstate::VARIABLES + 8);
-            world.u64(state, (MODULE + cstate::VTABLE_RVA) as u64);
+            world.u64(state, (MODULE + cstate::VTABLE_RVA.0) as u64);
             world.u32(state + cstate::ID, id);
             let container = world.alloc(0x40);
             store(&mut world, container, 2, id);
@@ -639,7 +639,7 @@ fn bench_script_variable_scopes() {
         let characters = countries * per_country;
         let manager = world.alloc(0x80);
         world.u64(game + cgame_state::CHARACTER_MANAGER, manager as u64);
-        world.u64(manager, (MODULE + ccharacter_manager::VTABLE_RVA) as u64);
+        world.u64(manager, (MODULE + ccharacter_manager::VTABLE_RVA.0) as u64);
         let pointers = world.alloc(characters as usize * 8);
         world.array(
             manager + ccharacter_manager::HISTORICAL_CHARACTERS,
@@ -648,7 +648,7 @@ fn bench_script_variable_scopes() {
         );
         for index in 0..characters {
             let character = world.alloc(ccharacter::VARIABLES + 0x40);
-            world.u64(character, (MODULE + ccharacter::VTABLE_RVA) as u64);
+            world.u64(character, (MODULE + ccharacter::VTABLE_RVA.0) as u64);
             world.u32(character + ccharacter::TYPE, ccharacter::REFERENCE_TYPE);
             world.u32(character + ccharacter::ID, index + 1);
             let held = u32::from(index % 10 == 0);

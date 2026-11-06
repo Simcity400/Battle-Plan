@@ -211,7 +211,7 @@ fn entry_shims_unwind_to_the_native_return_with_the_original_stack() {
         #[repr(align(16))]
         struct Stack([u64; 16]);
         let mut stack = Stack([0; 16]);
-        let return_pc = 0x1_4000_0000 + native::JOIN_WAR.callers[0].return_rva as u64;
+        let return_pc = 0x1_4000_0000 + native::JOIN_WAR.callers[0].return_rva.0 as u64;
         stack.0[11] = return_pc;
         let mut context: CONTEXT = unsafe { std::mem::zeroed() };
         context.Rip = pc;

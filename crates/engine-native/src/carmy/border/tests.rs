@@ -52,7 +52,8 @@ fn packet() -> StatusPacket {
 #[test]
 fn scoped_border_stats_read_only_selected_cache_and_memo_shared_pointer() {
     let mut bytes = vec![0; 0x2000];
-    bytes[0x1000..0x1008].copy_from_slice(&(csub_unit_definition::VTABLE_RVA as u64).to_le_bytes());
+    bytes[0x1000..0x1008]
+        .copy_from_slice(&(csub_unit_definition::VTABLE_RVA.0 as u64).to_le_bytes());
     for (offset, value) in [(0xa8, i64::MIN), (0xc0, -100_001), (0xc8, i64::MAX)] {
         bytes[0x1000 + offset..0x1008 + offset].copy_from_slice(&value.to_le_bytes());
     }

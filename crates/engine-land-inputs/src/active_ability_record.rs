@@ -199,8 +199,7 @@ pub fn demand(
 ) -> Result<(usize, usize), &'static str> {
     let array = Array::read(memory, array_address, STRIDE)
         .ok_or("active ability array unreadable or invalid")?;
-    let expected = base
-        .checked_add(cability::VTABLE_RVA)
+    let expected = engine_sites::at(base, cability::VTABLE_RVA)
         .ok_or("active ability module address overflow")? as u64;
     let mut bytes = 0_usize;
     for ordinal in 0..array.count {
@@ -235,7 +234,7 @@ fn count_tokens(
     first: u32,
     mut required: usize,
 ) -> usize {
-    let Some(expected) = base.checked_add(cability::VTABLE_RVA) else {
+    let Some(expected) = engine_sites::at(base, cability::VTABLE_RVA) else {
         return required;
     };
     let mut last: Option<(usize, usize)> = None;
@@ -365,8 +364,7 @@ fn definition(
     base: usize,
     pointer: usize,
 ) -> Result<Definition, &'static str> {
-    let expected = base
-        .checked_add(cability::VTABLE_RVA)
+    let expected = engine_sites::at(base, cability::VTABLE_RVA)
         .ok_or("active ability module address overflow")? as u64;
     if read::<u64>(memory, pointer) != Some(expected) {
         return Err("active ability definition vtable mismatch");
@@ -446,10 +444,7 @@ fn caster(memory: &impl Memory, base: usize, pointer: usize) -> Result<Option<u6
         cnavy_leader::VTABLE_RVA,
         coperative_leader::VTABLE_RVA,
     ];
-    if !known
-        .into_iter()
-        .any(|rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
-    {
+    if engine_sites::which(base, vtable as usize, &known).is_none() {
         return Err("active ability caster vtable mismatch");
     }
     let handle = u64::from_le_bytes(identity[cunit_leader::TYPE..].try_into().unwrap());
@@ -469,11 +464,9 @@ fn strategic_region(
     }
     let identity = read::<[u8; 16]>(memory, pointer)
         .ok_or("active ability strategic region identity unreadable")?;
-    let primary = base
-        .checked_add(cstrategic_region::VTABLE_RVA)
+    let primary = engine_sites::at(base, cstrategic_region::VTABLE_RVA)
         .ok_or("active ability module address overflow")? as u64;
-    let secondary = base
-        .checked_add(cstrategic_region::SECONDARY_VTABLE_RVA)
+    let secondary = engine_sites::at(base, cstrategic_region::SECONDARY_VTABLE_RVA)
         .ok_or("active ability module address overflow")? as u64;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != primary
         || u64::from_le_bytes(identity[8..].try_into().unwrap()) != secondary
@@ -534,7 +527,7 @@ mod tests {
             put(
                 &mut bytes,
                 definition,
-                &(cability::VTABLE_RVA as u64).to_le_bytes(),
+                &(cability::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(&mut bytes, definition + cability::TOKEN, b"ability");
             put(
@@ -577,7 +570,7 @@ mod tests {
         put(
             &mut bytes,
             LEADER,
-            &(carmy_leader::VTABLE_RVA as u64).to_le_bytes(),
+            &(carmy_leader::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -587,12 +580,12 @@ mod tests {
         put(
             &mut bytes,
             REGION,
-            &(cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+            &(cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             REGION + cstrategic_region::SECONDARY,
-            &(cstrategic_region::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            &(cstrategic_region::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

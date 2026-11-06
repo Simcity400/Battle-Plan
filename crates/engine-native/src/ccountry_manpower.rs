@@ -1,6 +1,7 @@
 //! Country-embedded manpower operands. Mobilization is independent of the free
 //! manpower pool; these layouts do not supply a new manpower walker.
 
+use engine_sites::Rva;
 /// Residual, i32, added to the controlled-state pool sum.
 pub const RESIDUAL: usize = 0xc;
 /// Country-tag handle, u32.
@@ -8,7 +9,7 @@ pub const COUNTRY: usize = 8;
 /// Signed i64 mobilization ratio.
 pub const MOBILIZATION: usize = 0x10;
 /// Daily mobilization and exile growth using the embedded object.
-pub const DAILY_UPDATE_RVA: usize = 0x00d5_d890;
+pub const DAILY_UPDATE_RVA: Rva = Rva(0x00d5_d890);
 
 use crate::{Memory, ccountry, read};
 

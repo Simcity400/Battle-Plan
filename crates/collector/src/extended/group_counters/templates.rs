@@ -266,7 +266,7 @@ mod tests {
     struct Fixture(Vec<u8>);
     impl Memory for Fixture {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-            if at == registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8
+            if at == registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8
                 && out.len() == 8
             {
                 out.copy_from_slice(&0x3000_u64.to_le_bytes());
@@ -285,7 +285,7 @@ mod tests {
     fn fixture() -> (Fixture, Root, u64) {
         let mut memory = Fixture(vec![0; 0x5000]);
         let handle = (7_u64 << 32) | 53;
-        put(&mut memory.0, 0x1000, corders_group::VTABLE_RVA as u64);
+        put(&mut memory.0, 0x1000, corders_group::VTABLE_RVA.0 as u64);
         put(&mut memory.0, 0x1008, handle);
         put(&mut memory.0, 0x1000 + corders_group::COUNTRY, 7);
         put(&mut memory.0, 0x3008, 0x4000);

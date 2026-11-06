@@ -1,5 +1,6 @@
 //! Unnamed damage-attribution entry in the member's damage array (`cfex_member::DAMAGE_ENTRIES`).
 
+use engine_sites::Rva;
 /// CFEXMember damage-entry stride.
 pub const STRIDE: usize = 0x20;
 /// CFEXMember damage-entry source reference (two u32 words).
@@ -10,7 +11,7 @@ pub const COUNTRY: usize = 0x10;
 pub const DAMAGE: usize = 0x18;
 
 /// Received-damage entry primary vtable.
-pub const VTABLE_RVA: usize = 0x02a9_a208;
+pub const VTABLE_RVA: Rva = Rva(0x02a9_a208);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -26,8 +27,7 @@ pub(crate) fn read(
 ) -> Result<Row, &'static str> {
     use crate::cnaval_combatant::field;
     if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(VTABLE_RVA)
+        != engine_sites::at(base, VTABLE_RVA)
             .ok_or("naval damage module overflow")? as u64
     {
         return Err("naval damage entry vtable mismatch");

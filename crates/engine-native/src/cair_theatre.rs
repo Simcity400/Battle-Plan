@@ -1,5 +1,6 @@
 //! CAirTheatre layout; hourly consistency is unproven.
 
+use engine_sites::Rva;
 /// Persistent theatre identity and literal name, without selector presentation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -12,7 +13,7 @@ pub struct Row {
 }
 
 /// Air-theatre primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_4790;
+pub const VTABLE_RVA: Rva = Rva(0x0286_4790);
 /// Reference type checked against the handle.
 pub const TYPE: u32 = 77;
 /// Full handle containing u32 type and id.

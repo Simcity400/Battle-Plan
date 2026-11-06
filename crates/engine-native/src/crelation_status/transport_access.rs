@@ -79,8 +79,7 @@ pub(super) fn candidate(
             .checked_add(offset)
             .ok_or("transport subject status address overflow")
     };
-    let expected = base
-        .checked_add(VTABLE_RVA)
+    let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("transport subject status vtable address overflow")? as u64;
     if read::<u64>(memory, status) != Some(expected) {
         return Err("transport subject status identity unsupported");
@@ -141,8 +140,7 @@ pub(super) fn capture_with(
             parties: None,
         });
     }
-    let expected = base
-        .checked_add(csubject_relation::VTABLE_RVA)
+    let expected = engine_sites::at(base, csubject_relation::VTABLE_RVA)
         .ok_or("transport subject vtable address overflow")? as u64;
     if read::<u64>(memory, pointer) != Some(expected) {
         return Err("transport subject identity unsupported");
@@ -172,7 +170,8 @@ mod tests {
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x400];
         bytes[SUBJECT_RELATION..SUBJECT_RELATION + 8].copy_from_slice(&0x300_u64.to_le_bytes());
-        bytes[0x300..0x308].copy_from_slice(&(csubject_relation::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x300..0x308]
+            .copy_from_slice(&(csubject_relation::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x308..0x30c].copy_from_slice(&csubject_relation::TYPE_VALUE.to_le_bytes());
         bytes
     }

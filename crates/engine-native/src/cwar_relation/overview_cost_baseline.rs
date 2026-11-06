@@ -160,9 +160,10 @@ fn factories(
         memory: &impl crate::Memory,
         base: usize,
         pointer: usize,
-        rva: usize,
+        rva: engine_sites::Rva,
     ) -> Result<(), &'static str> {
-        if pointer == 0 || read::<u64>(memory, pointer) != base.checked_add(rva).map(|p| p as u64) {
+        let expected = engine_sites::at(base, rva).map(|p| p as u64);
+        if pointer == 0 || expected.is_none() || read::<u64>(memory, pointer) != expected {
             Err("war factory vtable mismatch")
         } else {
             Ok(())

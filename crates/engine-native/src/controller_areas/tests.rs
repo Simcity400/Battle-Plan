@@ -50,7 +50,7 @@ impl World {
     /// `contacts` (other areas' numbers) in list order.
     fn area(&mut self, n: usize, members: &[u32], representative: u32, contacts: &[usize]) {
         let at = area(n);
-        self.u64(at, ccontroller_area::VTABLE_RVA);
+        self.u64(at, ccontroller_area::VTABLE_RVA.0);
         self.u64(at + 0x28, province(representative));
         let data = BASE + 0x8000 + n * 0x100;
         self.u64(at + 0x30, data);

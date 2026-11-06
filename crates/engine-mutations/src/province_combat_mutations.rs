@@ -15,6 +15,7 @@
 //!   teardown invalidate the hour and revoke every mark's epoch.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// The writers, in callback order: `add_combat` and `remove_combat`. Each
 /// takes the province in RCX; a detour forwards RCX..R9 and returns RAX
@@ -24,19 +25,11 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // follow.
     MutationSite {
         name: "add_combat",
-        rva: 0xee_aeb0,
-        sentinel: [
-            0x48, 0x89, 0x6c, 0x24, 0x20, 0x41, 0x56, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xe9,
-            0x4c, 0x8b,
-        ],
+        rva: Rva(0xee_aeb0),
     },
     // Pushing RBX, the frame and the vector's data load through RCX.
     MutationSite {
         name: "remove_combat",
-        rva: 0xef_1040,
-        sentinel: [
-            0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x81, 0x70, 0x01, 0x00, 0x00, 0x48,
-            0x8b, 0xd9,
-        ],
+        rva: Rva(0xef_1040),
     },
 ];

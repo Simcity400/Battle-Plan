@@ -677,8 +677,9 @@ fn organisation_owner_at(
     if handle as u32 != organisation::REFERENCE_TYPE_ID {
         return Err("design organisation owner has wrong reference kind");
     }
-    if engine_native::read::<u64>(memory, pointer)
-        != base.checked_add(organisation::VTABLE_RVA).map(|p| p as u64)
+    let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
+        .ok_or("design organisation owner identity mismatch")?;
+    if engine_native::read::<u64>(memory, pointer) != Some(vtable as u64)
         || engine_native::read::<u64>(
             memory,
             pointer
@@ -702,8 +703,7 @@ fn country_reader<'a, M: Memory>(
     memory: &'a M,
     base: usize,
 ) -> Result<ccountry::Reader<'a, M>, &'static str> {
-    let state = base
-        .checked_add(cgame_state::SINGLETON_RVA)
+    let state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
         .and_then(|p| engine_native::read::<u64>(memory, p))
         .ok_or("design context game state unreadable")? as usize;
     ccountry::Reader::new(memory, base, state)
@@ -1237,10 +1237,11 @@ mod tests {
     impl Memory for World {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
-            if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x1000_u64.to_le_bytes());
                 true
-            } else if address == engine_native::modifier_definition::TABLE_RVA && output.len() == 8
+            } else if address == engine_native::modifier_definition::TABLE_RVA.0
+                && output.len() == 8
             {
                 output.copy_from_slice(&0x14000_u64.to_le_bytes());
                 true
@@ -1259,7 +1260,7 @@ mod tests {
         use engine_production::nindustrial_organisation_corganisation as organisation;
         let mut bytes = vec![0; 0x1000];
         let handle = (123_u64 << 32) | u64::from(organisation::REFERENCE_TYPE_ID);
-        bytes[..8].copy_from_slice(&(organisation::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(organisation::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[organisation::REFERENCE..organisation::REFERENCE + 8]
             .copy_from_slice(&handle.to_le_bytes());
         bytes[organisation::OWNER..organisation::OWNER + 4]
@@ -1317,7 +1318,7 @@ mod tests {
         use engine_production::nindustrial_organisation_corganisation as organisation;
         let handle = (123u64 << 32) | u64::from(organisation::REFERENCE_TYPE_ID);
         let mut bytes = vec![0; (organisation::OWNER + 4).max(organisation::REFERENCE + 8)];
-        bytes[..8].copy_from_slice(&(organisation::VTABLE_RVA as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(organisation::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[organisation::REFERENCE..organisation::REFERENCE + 8]
             .copy_from_slice(&handle.to_le_bytes());
         bytes[organisation::OWNER..organisation::OWNER + 4]
@@ -1357,7 +1358,7 @@ mod tests {
             fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
                 assert_eq!(
                     address,
-                    engine_native::creference_registry::LOW_ROOTS_RVA
+                    engine_native::creference_registry::LOW_ROOTS_RVA.0
                         + organisation::REFERENCE_TYPE_ID as usize * 8
                 );
                 assert_eq!(bytes.len(), 8);
@@ -2301,10 +2302,11 @@ mod partition_tests {
     impl Memory for World {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.fetch_add(1, Ordering::Relaxed);
-            if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x1000_u64.to_le_bytes());
                 true
-            } else if address == engine_native::modifier_definition::TABLE_RVA && output.len() == 8
+            } else if address == engine_native::modifier_definition::TABLE_RVA.0
+                && output.len() == 8
             {
                 output.copy_from_slice(&0x14000_u64.to_le_bytes());
                 true

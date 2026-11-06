@@ -4,6 +4,7 @@
 //! per-country saved roster. A perspective change may leave its previous contents intact.
 //! Keep that snapshot, including empty lists and unresolved references; never rebuild it.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state, coperation_instance,
     cpdx_array::Array,
@@ -15,7 +16,7 @@ use engine_native::{
 };
 
 /// Inline agency UI operation buffer in the authenticated executable image.
-pub const BUFFER_RVA: usize = 0x033e_b190;
+pub const BUFFER_RVA: Rva = Rva(0x033e_b190);
 /// Completed, running, ready preparation, unready preparation, offers: native visit order.
 pub const BUCKET_OFFSETS: [usize; 5] = [0x00, 0x48, 0x18, 0x30, 0x60];
 /// UI buffer publication counter; used only to reject a changing observation.
@@ -98,13 +99,25 @@ fn word<T: engine_native::memory::Raw>(
         .ok_or("agency operation buffer field unreadable")
 }
 
+fn global<T: engine_native::memory::Raw>(
+    memory: &impl Memory,
+    base: usize,
+    key: Rva,
+) -> Result<T, &'static str> {
+    engine_sites::at(base, key)
+        .and_then(|at| read(memory, at))
+        .ok_or("agency operation buffer field unreadable")
+}
+
 fn authenticate(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    vtable: usize,
+    vtable: Rva,
 ) -> Result<(), &'static str> {
-    if base.checked_add(vtable).map(|v| v as u64) != read::<u64>(memory, object) {
+    let vtable = engine_sites::at(base, vtable)
+        .ok_or("agency operation buffer object vtable mismatch")?;
+    if read::<u64>(memory, object) != Some(vtable as u64) {
         return Err("agency operation buffer object vtable mismatch");
     }
     Ok(())
@@ -183,8 +196,8 @@ const OPERATION_DAYS: usize = 0x148;
 const TIME_MULTIPLIER: usize = 0x500;
 const HAS_TIME_MULTIPLIER: usize = 0x508;
 const SCALE_WITH_ALL_TARGETS: usize = 0x7c9;
-const DEFAULT_TIME_MULTIPLIER_RVA: usize = 0x033e_04f0;
-const DEFENSE_COST_FACTOR_RVA: usize = 0x033e_0120;
+const DEFAULT_TIME_MULTIPLIER_RVA: Rva = Rva(0x033e_04f0);
+const DEFENSE_COST_FACTOR_RVA: Rva = Rva(0x033e_0120);
 const COMPLETION_COUNTS: usize = 0x28;
 const COMPLETION_MAP_DATA: usize = 0x10;
 const COMPLETION_MAP_MASK: usize = 0x1c;
@@ -271,7 +284,7 @@ fn offer_duration<M: Memory>(memory: &M, base: usize, countries: &ccountry::Read
     let multiplier = if word::<u8>(memory, definition, HAS_TIME_MULTIPLIER)? != 0 {
         word::<i64>(memory, definition, TIME_MULTIPLIER)?
     } else {
-        word::<i64>(memory, base, DEFAULT_TIME_MULTIPLIER_RVA)?
+        global::<i64>(memory, base, DEFAULT_TIME_MULTIPLIER_RVA)?
     };
     let repeated = if multiplier == 0 { 0 } else {
         let manager = word::<u64>(memory, owner.pointer, ccountry::OPERATION_MANAGER)? as usize;
@@ -281,7 +294,7 @@ fn offer_duration<M: Memory>(memory: &M, base: usize, countries: &ccountry::Read
     let target = countries.resolve(target)?;
     let agency = cintelligence_agency::root(memory, base, target)?.ok_or("operation target agency unavailable")?;
     let defense = word::<i64>(memory, agency, cintelligence_agency::DEFENSE)?;
-    let defense = defense.wrapping_mul(word::<i64>(memory, base, DEFENSE_COST_FACTOR_RVA)?) / 100_000;
+    let defense = defense.wrapping_mul(global::<i64>(memory, base, DEFENSE_COST_FACTOR_RVA)?) / 100_000;
     let factor = defense.wrapping_add(100_000).wrapping_mul(repeated.wrapping_add(100_000)) / 100_000;
     let factor = factor.wrapping_mul(100_000i64.wrapping_sub(speed)) / 100_000;
     Ok((factor.wrapping_mul(i64::from(word::<i32>(memory, definition, OPERATION_DAYS)?)) / 100_000) as i32)
@@ -306,8 +319,7 @@ fn walk_buffer(
         if viewing_country != 0 {
             countries.resolve(viewing_country)?;
         }
-        let buffer = base
-            .checked_add(BUFFER_RVA)
+        let buffer = engine_sites::at(base, BUFFER_RVA)
             .ok_or("agency operation buffer root overflow")?;
         let revision = word::<u32>(memory, buffer, REVISION)?;
         let mut lists = [Array::default(); 5];
@@ -424,23 +436,23 @@ mod tests {
         let state = world.game_state();
         world.u32(state + cgame_state::LOCAL_PLAYER_COUNTRY, 1);
         let mut memory = Fixture::new(coperation_instance::REFERENCE_TYPE);
-        memory.put(BUFFER_RVA + BUCKET_OFFSETS[4], &[0; 16]);
+        memory.put(BUFFER_RVA.0 + BUCKET_OFFSETS[4], &[0; 16]);
         for (offset, entries) in BUCKET_OFFSETS.into_iter().zip(buckets) {
             let data = world.alloc(entries.len() * 8);
             for (i, handle) in entries.iter().enumerate() {
                 world.u64(data + i * 8, *handle);
             }
-            memory.put(BUFFER_RVA + offset, &(data as u64).to_le_bytes());
+            memory.put(BUFFER_RVA.0 + offset, &(data as u64).to_le_bytes());
             memory.put(
-                BUFFER_RVA + offset + 8,
+                BUFFER_RVA.0 + offset + 8,
                 &(entries.len() as u32).to_le_bytes(),
             );
             memory.put(
-                BUFFER_RVA + offset + 12,
+                BUFFER_RVA.0 + offset + 12,
                 &(entries.len() as u32).to_le_bytes(),
             );
         }
-        memory.put(BUFFER_RVA + REVISION, &3_u32.to_le_bytes());
+        memory.put(BUFFER_RVA.0 + REVISION, &3_u32.to_le_bytes());
         (world, memory)
     }
 
@@ -495,11 +507,11 @@ mod tests {
         let handle = (9_u64 << 32) | u64::from(coperation_instance::REFERENCE_TYPE);
         let (mut world, mut memory) = fixture([&[handle], &[], &[], &[]]);
         let operation = world.alloc(coperation_instance::TARGET_PROVINCE + 8);
-        world.u64(operation, coperation_instance::VTABLE_RVA as u64);
+        world.u64(operation, coperation_instance::VTABLE_RVA.0 as u64);
         world.u64(operation + coperation_instance::HANDLE, handle);
         world.u32(operation + coperation_instance::TARGET_COUNTRY_ID, 1);
         let capital = world.alloc(cstate::ID + 4);
-        world.u64(capital, cstate::VTABLE_RVA as u64);
+        world.u64(capital, cstate::VTABLE_RVA.0 as u64);
         world.u32(capital + cstate::ID, 1);
         let states = world.alloc(16);
         world.u64(states + 8, capital as u64);
@@ -530,7 +542,7 @@ mod tests {
             capture(&world, &mut memory).0.outcome,
             Outcome::Unavailable { .. }
         ));
-        memory.put(BUFFER_RVA + 12, &2_u32.to_le_bytes());
+        memory.put(BUFFER_RVA.0 + 12, &2_u32.to_le_bytes());
         assert_eq!(
             capture(&world, &mut memory).0.outcome,
             Outcome::Unavailable {

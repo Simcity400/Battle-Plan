@@ -350,7 +350,7 @@ mod tests {
         array(&mut bytes, GAME + cgame_state::COUNTRY_LINKS, 0x7100, 2);
         u64_at(&mut bytes, 0x7008, COUNTRY as u64);
         u32_at(&mut bytes, 0x7104, 1);
-        u64_at(&mut bytes, COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+        u64_at(&mut bytes, COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
         u32_at(&mut bytes, COUNTRY + ccountry::ID, 1);
         u64_at(
             &mut bytes,
@@ -363,7 +363,7 @@ mod tests {
         u64_at(
             &mut bytes,
             INSTANCE,
-            (BASE + coperation_instance::VTABLE_RVA) as u64,
+            (BASE + coperation_instance::VTABLE_RVA.0) as u64,
         );
         u64_at(&mut bytes, INSTANCE + coperation_instance::HANDLE, ID);
         u64_at(
@@ -425,7 +425,7 @@ mod tests {
         u64_at(
             &mut bytes,
             INSTANCE + coperation_instance::EQUIPMENT_POOL,
-            (BASE + cequipment_variant_pool::VTABLE_RVA) as u64,
+            (BASE + cequipment_variant_pool::VTABLE_RVA.0) as u64,
         );
         array(
             &mut bytes,
@@ -446,7 +446,7 @@ mod tests {
         u64_at(
             &mut bytes,
             DEFINITION,
-            (BASE + coperation::VTABLE_RVA) as u64,
+            (BASE + coperation::VTABLE_RVA.0) as u64,
         );
         u32_at(&mut bytes, DEFINITION + coperation::TOKEN_ID, 0xfabc_1234);
         // The native timing object is deliberately not a string header.
@@ -879,7 +879,7 @@ mod tests {
     /// a pool holding two variant entries and one archetype total.
     fn prepared() -> Vec<u8> {
         let mut bytes = fixture();
-        let type_vtable = (BASE + cequipment_type::VTABLE_RVA) as u64;
+        let type_vtable = (BASE + cequipment_type::VTABLE_RVA.0) as u64;
         u64_at(&mut bytes, EQUIPMENT_TYPE, type_vtable);
         u64_at(
             &mut bytes,
@@ -891,7 +891,7 @@ mod tests {
         u64_at(
             &mut bytes,
             VARIANT,
-            (BASE + cequipment_variant::VTABLE_RVA) as u64,
+            (BASE + cequipment_variant::VTABLE_RVA.0) as u64,
         );
         u64_at(&mut bytes, VARIANT + 8, VARIANT_HANDLE);
         u64_at(
@@ -1088,7 +1088,7 @@ mod tests {
         u64_at(
             &mut bytes,
             EQUIPMENT_TYPE,
-            (BASE + cequipment_type::NULL_VTABLE_RVA) as u64,
+            (BASE + cequipment_type::NULL_VTABLE_RVA.0) as u64,
         );
         assert_eq!(
             walk_parts(&bytes, &mut parts()).0.outcome,

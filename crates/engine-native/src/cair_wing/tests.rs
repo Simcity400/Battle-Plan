@@ -34,29 +34,29 @@ fn fixture() -> Vec<u8> {
     p64(&mut bytes, COUNTRIES + 24, COUNTRY as u64);
     p32(&mut bytes, LINKS + 4, 1);
     p32(&mut bytes, LINKS + 12, 1);
-    p64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+    p64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     p32(&mut bytes, COUNTRY + 8, 3);
     p64(&mut bytes, GS + 0x690, MANAGER as u64);
     p64(
         &mut bytes,
         MANAGER,
-        cstrategic_air_manager::VTABLE_RVA as u64,
+        cstrategic_air_manager::VTABLE_RVA.0 as u64,
     );
     array(&mut bytes, MANAGER + 0x30, OWNERS, 4);
     p64(&mut bytes, OWNERS + 8, OWNER as u64);
-    p64(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA as u64);
+    p64(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA.0 as u64);
     p32(&mut bytes, OWNER + 0x90, 3);
     array(&mut bytes, OWNER + 0x58, POOLS, 1);
     p64(&mut bytes, POOLS, POOL_OBJECT as u64);
-    p64(&mut bytes, POOL_OBJECT, cair_wing_pool::VTABLE_RVA as u64);
+    p64(&mut bytes, POOL_OBJECT, cair_wing_pool::VTABLE_RVA.0 as u64);
     p64(&mut bytes, POOL_OBJECT + 0x18, 0xfeed_beef_0000_0041);
     p64(&mut bytes, POOL_OBJECT + 0x40, OWNER as u64);
     array(&mut bytes, POOL_OBJECT + 0x28, WINGS, 2);
     p64(&mut bytes, WINGS, WING_A as u64);
     p64(&mut bytes, WINGS + 8, WING_B as u64);
     for (wing, id) in [(WING_A, u64::MAX), (WING_B, 69)] {
-        p64(&mut bytes, wing, VTABLE_RVA as u64);
-        p64(&mut bytes, wing + 0x10, SECONDARY_VTABLE_RVA as u64);
+        p64(&mut bytes, wing, VTABLE_RVA.0 as u64);
+        p64(&mut bytes, wing + 0x10, SECONDARY_VTABLE_RVA.0 as u64);
         p64(&mut bytes, wing + 0x18, id);
         p64(&mut bytes, wing + 0x38, POOL_OBJECT as u64);
         p32(&mut bytes, wing + 0x7c, i32::MIN as u32);
@@ -65,11 +65,11 @@ fn fixture() -> Vec<u8> {
     }
     p64(&mut bytes, WING_A + 0x48, 0xffff_ffff_0000_0041);
     p64(&mut bytes, WING_A + 0xc0, REGION as u64);
-    p64(&mut bytes, REGION, cstrategic_region::VTABLE_RVA as u64);
+    p64(&mut bytes, REGION, cstrategic_region::VTABLE_RVA.0 as u64);
     p64(
         &mut bytes,
         REGION + 8,
-        cstrategic_region::SECONDARY_VTABLE_RVA as u64,
+        cstrategic_region::SECONDARY_VTABLE_RVA.0 as u64,
     );
     p32(&mut bytes, REGION + 0x58, u32::MAX);
     bytes
@@ -1380,13 +1380,13 @@ fn pool_ordinals_follow_pools_then_wings() {
     array(&mut bytes, OWNER + cstrategic_air::POOLS, POOLS, 2);
     p64(&mut bytes, POOLS, POOL_B as u64);
     p64(&mut bytes, POOLS + 8, POOL_OBJECT as u64);
-    p64(&mut bytes, POOL_B, cair_wing_pool::VTABLE_RVA as u64);
+    p64(&mut bytes, POOL_B, cair_wing_pool::VTABLE_RVA.0 as u64);
     p64(&mut bytes, POOL_B + 0x18, 0xfeed_beef_0000_0042);
     p64(&mut bytes, POOL_B + 0x40, OWNER as u64);
     array(&mut bytes, POOL_B + 0x28, WINGS_B, 1);
     p64(&mut bytes, WINGS_B, WING_C as u64);
-    p64(&mut bytes, WING_C, VTABLE_RVA as u64);
-    p64(&mut bytes, WING_C + 0x10, SECONDARY_VTABLE_RVA as u64);
+    p64(&mut bytes, WING_C, VTABLE_RVA.0 as u64);
+    p64(&mut bytes, WING_C + 0x10, SECONDARY_VTABLE_RVA.0 as u64);
     p64(&mut bytes, WING_C + 0x18, 5);
     p64(&mut bytes, WING_C + 0x38, POOL_B as u64);
     let mut rows = [Row::default(); 3];
@@ -1555,7 +1555,7 @@ fn strategic_air_manager_absence_and_foreign_identity_refuse() {
     p64(
         &mut bytes,
         MANAGER,
-        (cstrategic_air_manager::VTABLE_RVA + 0x20) as u64,
+        (cstrategic_air_manager::VTABLE_RVA.0 + 0x20) as u64,
     );
     assert_eq!(
         capture(&bytes, &mut [Row::default(); 2]),
@@ -1691,13 +1691,13 @@ fn equipment_extension_preserves_duplicate_variants_zero_and_signed_amounts() {
     p64(
         &mut bytes,
         WING_A + EQUIPMENT_POOL,
-        crate::cequipment_variant_pool::VTABLE_RVA as u64,
+        crate::cequipment_variant_pool::VTABLE_RVA.0 as u64,
     );
     array(&mut bytes, WING_A + EQUIPMENT_BANK, ENTRIES, 3);
     p64(
         &mut bytes,
         VARIANT,
-        crate::cequipment_variant::VTABLE_RVA as u64,
+        crate::cequipment_variant::VTABLE_RVA.0 as u64,
     );
     p64(&mut bytes, VARIANT + 8, variant);
     for (index, amount) in [0_i64, i64::MIN, i64::MAX].into_iter().enumerate() {
@@ -1949,11 +1949,11 @@ impl Scale {
             countries: Vec::new(),
         };
         let bytes = &mut scale.bytes;
-        p64(bytes, region, cstrategic_region::VTABLE_RVA as u64);
+        p64(bytes, region, cstrategic_region::VTABLE_RVA.0 as u64);
         p64(
             bytes,
             region + cstrategic_region::SECONDARY,
-            cstrategic_region::SECONDARY_VTABLE_RVA as u64,
+            cstrategic_region::SECONDARY_VTABLE_RVA.0 as u64,
         );
         p32(bytes, region + cstrategic_region::ID, 77);
         array(
@@ -1973,7 +1973,7 @@ impl Scale {
             GS + cgame_state::STRATEGIC_AIR_MANAGER,
             MANAGER as u64,
         );
-        p64(bytes, MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+        p64(bytes, MANAGER, cstrategic_air_manager::VTABLE_RVA.0 as u64);
         array(
             bytes,
             MANAGER + cstrategic_air_manager::COUNTRY_AIR,
@@ -1986,7 +1986,7 @@ impl Scale {
             let object = objects_at + country * 16;
             p64(bytes, countries_at + country * 8, object as u64);
             p32(bytes, links_at + country * 4, country as u32);
-            p64(bytes, object, ccountry::VTABLE_RVA as u64);
+            p64(bytes, object, ccountry::VTABLE_RVA.0 as u64);
             p32(bytes, object + ccountry::ID, country as u32);
             scale.catalogue.push(countries_at + country * 8);
             scale.links.push(links_at + country * 4);
@@ -1994,11 +1994,11 @@ impl Scale {
             let owner = owner_objects + country * 0xa0;
             let pool = pool_objects + country * 0x50;
             p64(bytes, owners_at + country * 8, owner as u64);
-            p64(bytes, owner, cstrategic_air::VTABLE_RVA as u64);
+            p64(bytes, owner, cstrategic_air::VTABLE_RVA.0 as u64);
             p32(bytes, owner + cstrategic_air::COUNTRY, country as u32);
             array(bytes, owner + cstrategic_air::POOLS, pool + 0x48, 1);
             p64(bytes, pool + 0x48, pool as u64);
-            p64(bytes, pool, cair_wing_pool::VTABLE_RVA as u64);
+            p64(bytes, pool, cair_wing_pool::VTABLE_RVA.0 as u64);
             p64(bytes, pool + cair_wing_pool::OWNER, owner as u64);
             p64(
                 bytes,
@@ -2019,8 +2019,8 @@ impl Scale {
                 p64(bytes, pointer_at, wing_at as u64);
                 scale.slots.push(pointer_at);
                 pointer_at += 8;
-                p64(bytes, wing_at, VTABLE_RVA as u64);
-                p64(bytes, wing_at + SECONDARY, SECONDARY_VTABLE_RVA as u64);
+                p64(bytes, wing_at, VTABLE_RVA.0 as u64);
+                p64(bytes, wing_at + SECONDARY, SECONDARY_VTABLE_RVA.0 as u64);
                 p64(bytes, wing_at + SECONDARY + 8, ordinal as u64 + 1);
                 p64(bytes, wing_at + POOL, pool as u64);
                 p32(bytes, wing_at + PLANE_COUNT, ordinal as u32);

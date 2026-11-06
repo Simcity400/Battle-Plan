@@ -1,6 +1,7 @@
 //! Raw convoy-ship bar operands, separate from transport-order objects.
 use crate::{Memory, cnaval_combatant::field};
-pub const VTABLE_RVA: usize = 0x02ab_2d48;
+use engine_sites::Rva;
+pub const VTABLE_RVA: Rva = Rva(0x02ab_2d48);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     /// Stored variant speed.
@@ -20,17 +21,14 @@ pub(crate) fn read(
     wants_speed: bool,
 ) -> Result<Row, &'static str> {
     if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(VTABLE_RVA)
-            .ok_or("convoy ship module overflow")? as u64
+        != engine_sites::at(base, VTABLE_RVA).ok_or("convoy ship module overflow")? as u64
         || field::<u64>(memory, pointer, 8)? != handle
     {
         return Err("convoy ship identity mismatch");
     }
     let variant = field::<u64>(memory, pointer, 0x18)? as usize;
     if field::<u64>(memory, variant, 0)?
-        != base
-            .checked_add(crate::cequipment_variant::VTABLE_RVA)
+        != engine_sites::at(base, crate::cequipment_variant::VTABLE_RVA)
             .ok_or("convoy variant module overflow")? as u64
     {
         return Err("convoy ship variant identity mismatch");
@@ -60,13 +58,13 @@ mod tests {
         let put = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         };
-        put(&mut bytes, 0x80, VTABLE_RVA as u64);
+        put(&mut bytes, 0x80, VTABLE_RVA.0 as u64);
         put(&mut bytes, 0x88, 0x9876);
         put(&mut bytes, 0x98, 0x200);
         put(
             &mut bytes,
             0x200,
-            crate::cequipment_variant::VTABLE_RVA as u64,
+            crate::cequipment_variant::VTABLE_RVA.0 as u64,
         );
         put(&mut bytes, 0x408, 321_000);
         let memory = SliceMemory {

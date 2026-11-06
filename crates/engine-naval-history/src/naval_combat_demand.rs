@@ -3,9 +3,14 @@
 //! sides, groups, members and their arenas, planes, wings and dense bases.
 //! A torn hint is dropped; hints never supply recorded values.
 
+use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, read};
 use std::cell::RefCell;
 use std::collections::HashSet;
+
+fn key(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("naval demand pointer overflow")
+}
 
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
@@ -141,7 +146,7 @@ fn demand_advisory(
     let mut doctrine_keys = crate::naval_ship_modifier_inputs::DoctrineKeys::default();
     for index in 0..roster.count {
         let combat = element(memory, roster, index)?;
-        if field::<u64>(memory, combat, 0)? != at(base, cnaval_combat::VTABLE_RVA)? as u64 {
+        if field::<u64>(memory, combat, 0)? != key(base, cnaval_combat::VTABLE_RVA)? as u64 {
             continue;
         }
         let sides = [
@@ -206,7 +211,7 @@ fn demand_advisory(
                 let group = element(memory, forward, index)?;
                 let opponent = pointer(memory, group, cfex_group::OPPONENT_GROUP)?;
                 for group in [group, opponent].into_iter().filter(|&group| group != 0) {
-                    if field::<u64>(memory, group, 0)? != at(base, cfex_group::VTABLE_RVA)? as u64
+                    if field::<u64>(memory, group, 0)? != key(base, cfex_group::VTABLE_RVA)? as u64
                         || !sides.contains(&pointer(memory, group, cfex_group::SIDE)?)
                     {
                         return Err("naval demand group identity mismatch");
@@ -349,7 +354,7 @@ fn count_base(
     let Some(pointer) = crate::creference_registry::resolve(memory, base, handle)? else {
         return Ok(());
     };
-    if field::<u64>(memory, pointer, 0)? != at(base, crate::cair_base::VTABLE_RVA)? as u64
+    if field::<u64>(memory, pointer, 0)? != key(base, crate::cair_base::VTABLE_RVA)? as u64
         || field::<u64>(memory, pointer, crate::cair_base::HANDLE)? != handle
     {
         return Err("naval demand dense base identity mismatch");
@@ -386,7 +391,7 @@ mod tests {
     impl Memory for Leaves {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let mut bytes = [0_u8; 32];
-            if address == modifier_definition::TABLE_RVA && output.len() == 8 {
+            if address == modifier_definition::TABLE_RVA.0 && output.len() == 8 {
                 bytes[..8].copy_from_slice(&0x3000_0000_u64.to_le_bytes());
             } else if (0x3000_0000..0x3004_0000).contains(&address) {
                 // All requested metadata enables the raw value unchanged.
@@ -481,7 +486,7 @@ mod tests {
                         bytes[..8].copy_from_slice(&pointer.to_le_bytes());
                     }
                     0x100_0000 => {
-                        let vtable = (IMAGE + cnaval_combat::VTABLE_RVA) as u64;
+                        let vtable = (IMAGE + cnaval_combat::VTABLE_RVA.0) as u64;
                         bytes[..8].copy_from_slice(&vtable.to_le_bytes());
                     }
                     0x100_0018 => bytes[..8].copy_from_slice(&0x1_0000_1269_u64.to_le_bytes()),
@@ -491,11 +496,11 @@ mod tests {
                         bytes[..8].copy_from_slice(&0x600_0000_u64.to_le_bytes());
                     }
                     0x200_0000 | 0x300_0000 => {
-                        let vtable = (IMAGE + cnaval_combatant::VTABLE_RVA) as u64;
+                        let vtable = (IMAGE + cnaval_combatant::VTABLE_RVA.0) as u64;
                         bytes[..8].copy_from_slice(&vtable.to_le_bytes());
                     }
                     0x400_0000 => {
-                        let vtable = (IMAGE + crate::cland_combat::VTABLE_RVA) as u64;
+                        let vtable = (IMAGE + crate::cland_combat::VTABLE_RVA.0) as u64;
                         bytes[..8].copy_from_slice(&vtable.to_le_bytes());
                     }
                     0x200_0018 | 0x300_0018 => {

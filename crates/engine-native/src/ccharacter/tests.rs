@@ -49,7 +49,7 @@ fn fixture() -> Vec<u8> {
         GS + cgame_state::CHARACTER_MANAGER,
         MANAGER as u64,
     );
-    u64_at(&mut bytes, MANAGER, ccharacter_manager::VTABLE_RVA as u64);
+    u64_at(&mut bytes, MANAGER, ccharacter_manager::VTABLE_RVA.0 as u64);
     array(
         &mut bytes,
         MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
@@ -68,7 +68,7 @@ fn fixture() -> Vec<u8> {
         (FIRST, 900_u32, 0_u32, &b"same name"[..], &b""[..]),
         (SECOND, 22, 7, &b"same name"[..], &b"dynamic_token"[..]),
     ] {
-        u64_at(&mut bytes, pointer, VTABLE_RVA as u64);
+        u64_at(&mut bytes, pointer, VTABLE_RVA.0 as u64);
         u32_at(&mut bytes, pointer + TYPE, REFERENCE_TYPE);
         u32_at(&mut bytes, pointer + ID, id);
         u32_at(&mut bytes, pointer + NAME_TOKEN_ID, (-1_i32) as u32);
@@ -257,7 +257,7 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
     }
     u64_at(&mut bytes, role_node + node::ADVISOR, role as u64);
     u32_at(&mut bytes, role_node + node::KEY_HASH, 17);
-    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA as u64);
+    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA.0 as u64);
     u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
     for (header, payload) in [
         (role_node + node::KEY, 0x1a00),
@@ -337,7 +337,7 @@ fn advisor_cache_fit_and_shortfall_keep_the_existing_role() {
     }
     u64_at(&mut bytes, role_node + node::ADVISOR, role as u64);
     u32_at(&mut bytes, role_node + node::KEY_HASH, 17);
-    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA as u64);
+    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA.0 as u64);
     u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
     string(&mut bytes, role_node + node::KEY, b"key");
     string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea");
@@ -457,7 +457,7 @@ fn advisor_native_hash_order_can_reverse_literal_order() {
         string(&mut bytes, node + advisor_node::KEY, key);
         u32_at(&mut bytes, node + advisor_node::KEY_HASH, hash);
         u64_at(&mut bytes, node + advisor_node::ADVISOR, role as u64);
-        u64_at(&mut bytes, role, cadvisor::VTABLE_RVA as u64);
+        u64_at(&mut bytes, role, cadvisor::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
         string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea");
         string(&mut bytes, role + cadvisor::SLOT, key);
@@ -596,7 +596,7 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
     let mut bytes = fixture();
     bytes.resize(0x3000, 0);
     u64_at(&mut bytes, SECOND + TEMPLATE, AT as u64);
-    u64_at(&mut bytes, AT, template::VTABLE_RVA as u64);
+    u64_at(&mut bytes, AT, template::VTABLE_RVA.0 as u64);
     u32_at(&mut bytes, AT + template::TAG, 0x4242);
     u64_at(&mut bytes, AT + template::SOURCE_FILE, FILE as u64);
     u64_at(
@@ -729,7 +729,7 @@ fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
         u64_at(&mut bytes, node + 16, head as u64);
         u32_at(&mut bytes, node + 0x20, ideology as u32);
         u64_at(&mut bytes, node + 0x28, role as u64);
-        u64_at(&mut bytes, role, ccountry_leader::VTABLE_RVA as u64);
+        u64_at(&mut bytes, role, ccountry_leader::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, role + ccountry_leader::CHARACTER, FIRST as u64);
     }
     let mut leaders = [ccountry_leader::Row::default(); 2];
@@ -750,7 +750,7 @@ fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
     }
     string(&mut bytes, node + 0x20, b"role_key");
     u64_at(&mut bytes, node + 0x48, role as u64);
-    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA as u64);
+    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA.0 as u64);
     u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
     string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea_token");
     string(&mut bytes, role + cadvisor::SLOT, b"army_chief");

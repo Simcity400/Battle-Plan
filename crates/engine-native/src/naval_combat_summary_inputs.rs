@@ -5,6 +5,7 @@ use crate::{
     modifier_definition as metadata,
 };
 use cnaval_combatant::field;
+use engine_sites::Rva;
 
 /// Ordered country linked list, appending a node only when no equivalent tag
 /// is present. It has at most one entry per country object. The live country
@@ -53,6 +54,10 @@ pub struct Row {
     pub feature_flags: u32,
     pub eligibility_callback: u8,
 }
+fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
+    engine_sites::at(base, key).ok_or("naval summary site withheld")
+}
+
 fn add(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)
@@ -183,7 +188,7 @@ pub fn read(
     let slots = reader.as_ref().map_or(0, |reader| reader.count());
     row.countries = countries(memory, side, slots, arena, len)?;
     row.secondary_countries = list(memory, side, SECONDARY_COUNTRIES, slots, arena, len)?;
-    let table = field::<u64>(memory, base, metadata::TABLE_RVA)? as usize;
+    let table = field::<u64>(memory, site(base, metadata::TABLE_RVA)?, 0)? as usize;
     for (out, key) in row.modifier_metadata.iter_mut().zip(MODIFIER_KEYS) {
         let record = add(table, key as usize * metadata::STRIDE)?;
         *out = [
@@ -191,21 +196,21 @@ pub fn read(
             field(memory, record, metadata::FEATURE_SELECTOR)?,
         ];
     }
-    let callback = field::<u64>(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?;
+    let callback = field::<u64>(memory, site(base, metadata::ELIGIBILITY_CALLBACK_RVA)?, 0)?;
     row.eligibility_callback = if callback == 0 {
         0
-    } else if callback == add(base, metadata::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
+    } else if callback == site(base, metadata::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
         1
     } else {
         return Err("naval summary modifier callback unsupported");
     };
-    row.feature_flags = field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?;
+    row.feature_flags = field(memory, site(base, metadata::TRADE_FEATURE_FLAGS_RVA)?, 0)?;
     let own = field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize;
     let enemy = field::<u64>(memory, opponent, cnaval_combatant::COMMANDER)? as usize;
     for (scope, leader) in [(3, own), (4, enemy)] {
         if leader != 0 {
             if field::<u64>(memory, leader, 0)?
-                != add(base, crate::cnavy_leader::VTABLE_RVA)? as u64
+                != site(base, crate::cnavy_leader::VTABLE_RVA)? as u64
             {
                 return Err("naval summary commander identity mismatch");
             }

@@ -9,7 +9,7 @@ const SECOND: usize = 0x400;
 fn image(pairs: usize) -> Vec<u8> {
     let mut bytes = vec![0_u8; PAIRS_AT + pairs * 16];
     for (at, id) in [(FIRST, 4_u32), (SECOND, 8)] {
-        bytes[at..at + 8].copy_from_slice(&(cprovince::VTABLE_RVA as u64).to_le_bytes());
+        bytes[at..at + 8].copy_from_slice(&(cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[at + cprovince::ID..at + cprovince::ID + 4].copy_from_slice(&id.to_le_bytes());
     }
     for pair in 0..pairs {
@@ -46,7 +46,7 @@ fn per_pair(
             let pointer = u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
             if pointer == 0
                 || read::<u64>(memory, pointer)
-                    != base.checked_add(cprovince::VTABLE_RVA).map(|v| v as u64)
+                    != base.checked_add(cprovince::VTABLE_RVA.0).map(|v| v as u64)
             {
                 return Err("front province identity mismatch");
             }
@@ -108,7 +108,7 @@ fn every_fault_keeps_the_per_pair_ids_prefix_and_first_failure() {
     // record cannot complete, and its own id read fails.
     let mut bytes = image(count);
     let province = bytes.len();
-    bytes.extend_from_slice(&(cprovince::VTABLE_RVA as u64).to_le_bytes());
+    bytes.extend_from_slice(&(cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
     set_pair(&mut bytes, 7, FIRST as u64, province as u64);
     cases.push(bytes);
     for bytes in &cases {

@@ -71,7 +71,7 @@ fn production_verdict_indirect_foreign_unwind() {
     test_support::reset();
     let probe = probe::Probe::load();
     let site = tests::land_leader_tap_test_site as *const () as usize;
-    let base = site + 6 - native::DISPATCH_LEADER_RETURNS[0];
+    let base = site + 6 - native::DISPATCH_LEADER_RETURNS[0].0;
     let previous_base = BASE.swap(base, Ordering::SeqCst);
     let previous_dispatch = DISPATCH.get();
     let storage = LOG.load(Ordering::SeqCst);
@@ -93,7 +93,7 @@ fn production_verdict_indirect_foreign_unwind() {
     }
     .unwrap();
     let mut leader = vec![0u64; (engine_native::cunit_leader::TYPE + 8).div_ceil(8)];
-    leader[0] = (base + engine_native::carmy_leader::VTABLE_RVA) as u64;
+    leader[0] = (base + engine_native::carmy_leader::VTABLE_RVA.0) as u64;
     let reference = (0x7a11_u64 << 32) | u64::from(engine_native::cunit_leader::REFERENCE_TYPE);
     leader[engine_native::cunit_leader::TYPE / 8] = reference;
     println!(

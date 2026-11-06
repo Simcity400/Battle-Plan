@@ -28,12 +28,12 @@ impl Fixture {
         self.d(at + 12, count);
     }
     fn new(countries: usize, variants: usize) -> Self {
-        let bytes = vec![0; cgame_state::SINGLETON_RVA + 8];
+        let bytes = vec![0; cgame_state::SINGLETON_RVA.0 + 8];
         let base = bytes.as_ptr() as usize;
         let loss_variants = (0..variants)
             .map(|n| {
                 [
-                    (base + variant::VTABLE_RVA) as u64,
+                    (base + variant::VTABLE_RVA.0) as u64,
                     (n as u64 + 1) << 32 | 70,
                 ]
             })
@@ -54,7 +54,7 @@ impl Fixture {
             loss_entries,
             loss_variants,
         };
-        f.pointer(cgame_state::SINGLETON_RVA, 0x1000);
+        f.pointer(cgame_state::SINGLETON_RVA.0, 0x1000);
         f.d(0x1000 + cgame_state::CURRENT_HOUR, 80);
         f.array(
             0x1000 + cgame_state::COUNTRIES,
@@ -76,9 +76,9 @@ impl Fixture {
         f.q(0x40020 + 24, 15);
         f.pointer(0x10008, 0x30000);
         f.d(0x20004, 1);
-        f.pointer(0x30000, ccountry::VTABLE_RVA);
+        f.pointer(0x30000, ccountry::VTABLE_RVA.0);
         f.d(0x30000 + ccountry::ID, 1);
-        f.pointer(0x2000, carmy::VTABLE_RVA);
+        f.pointer(0x2000, carmy::VTABLE_RVA.0);
         f.q(0x2000 + cunit::HANDLE, 0x8000_0001_0000_1269);
         f.d(0x2000 + cunit::ROSTER_OWNER, 1);
         f.d(0x2000 + cunit::LOGICAL_OWNER, 1);
@@ -86,11 +86,11 @@ impl Fixture {
         f.array(0x2000 + cunit::COMBAT_REFERENCE_DATA, 0x6000, 1);
         f.pointer(0x6000, 0x7000);
         for (p, id) in [(0x4000, 17), (0x5000, 18)] {
-            f.pointer(p, cprovince::VTABLE_RVA);
+            f.pointer(p, cprovince::VTABLE_RVA.0);
             f.d(p + cprovince::ID, id);
             f.d(p + cprovince::CONTROLLER, 1);
         }
-        f.pointer(0x7000, combat::VTABLE_RVA);
+        f.pointer(0x7000, combat::VTABLE_RVA.0);
         f.q(0x7000 + combat::HANDLE, 0x8000_0002_0000_003e);
         f.pointer(0x7000 + combat::PROVINCE, 0x4000);
         f.d(0x7000 + combat::DAY, 9);
@@ -101,7 +101,7 @@ impl Fixture {
             .into_iter()
             .enumerate()
         {
-            f.pointer(p, side::VTABLE_RVA);
+            f.pointer(p, side::VTABLE_RVA.0);
             f.pointer(p + side::COMBAT, 0x7000);
             f.array(p + side::UNITS, list, 1);
             f.pointer(list, 0x2000);
@@ -113,10 +113,10 @@ impl Fixture {
             f.q(p + side::PROGRESS, 17);
             f.bytes[p + side::OUTCOME_FLAGS] = 2;
             let observer = p + side::STATS_OBSERVER;
-            f.pointer(observer, stats::VTABLE_RVA);
+            f.pointer(observer, stats::VTABLE_RVA.0);
             f.d(observer + stats::MANPOWER_LOSS, 73);
             let losses = observer + stats::EQUIPMENT_LOSSES;
-            f.pointer(losses, pool::VTABLE_RVA);
+            f.pointer(losses, pool::VTABLE_RVA.0);
             f.q(losses + pool::ITEMS, f.loss_entries[n].as_ptr() as u64);
             f.d(losses + pool::CAPACITY, variants as u32);
             f.d(losses + pool::COUNT, variants as u32);

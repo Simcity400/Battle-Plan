@@ -6,11 +6,11 @@ static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 
 pub(super) fn owner(status: usize) -> Result<usize, &'static str> {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    if engine_native::read::<u64>(&memory, status)
-        != BASE
-            .load(Ordering::Acquire)
-            .checked_add(engine_decisions::cdecision_status::VTABLE_RVA)
-            .map(|at| at as u64)
+    if engine_sites::at(
+        BASE.load(Ordering::Acquire),
+        engine_decisions::cdecision_status::VTABLE_RVA,
+    )
+    .is_none_or(|vtable| engine_native::read::<u64>(&memory, status) != Some(vtable as u64))
     {
         return Err("decision lifecycle status identity differs");
     }
@@ -153,11 +153,9 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             let instance = registers.rbx;
             feed::decisions::cut(instance);
             let base = BASE.load(Ordering::Acquire);
-            if engine_native::read::<u64>(&memory, instance)
-                != base
-                    .checked_add(engine_decisions::ctimed_decision::VTABLE_RVA)
-                    .map(|at| at as u64)
-            {
+            if engine_sites::at(base, engine_decisions::ctimed_decision::VTABLE_RVA).is_none_or(
+                |vtable| engine_native::read::<u64>(&memory, instance) != Some(vtable as u64),
+            ) {
                 Err("mission terminal instance identity differs")
             } else {
                 field::<u64>(
@@ -208,10 +206,8 @@ fn cooldown_result(
     base: usize,
     instance: usize,
 ) -> Result<(usize, i32), &'static str> {
-    if engine_native::read::<u64>(memory, instance)
-        != base
-            .checked_add(engine_decisions::cdecision_cooldown::VTABLE_RVA)
-            .map(|at| at as u64)
+    if engine_sites::at(base, engine_decisions::cdecision_cooldown::VTABLE_RVA)
+        .is_none_or(|vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64))
     {
         return Err("decision cooldown instance identity differs");
     }
@@ -241,7 +237,8 @@ pub(super) fn selected(
             engine_decisions::ctimed_decision::DEFINITION,
         )
     };
-    if engine_native::read::<u64>(memory, instance) != base.checked_add(vtable).map(|at| at as u64)
+    if engine_sites::at(base, vtable)
+        .is_none_or(|vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64))
     {
         return Err("decision terminal writer instance identity differs");
     }
@@ -394,16 +391,14 @@ fn removal_edges(before: [u32; 3], after: [u32; 3]) -> Result<(u32, u32), &'stat
 unsafe extern "system-unwind" fn clear_cooldown(status: usize, definition: usize) -> usize {
     unsafe { remove(status, definition, 0, 2) }
 }
-pub(super) unsafe fn hooks(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
-    let verify = |site: native::Site| verify_hook(memory, base, site, site.sentinel.len());
+pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
+    let verify = |site: native::Site| verify_hook::<16>(base, site);
     let mut hooks = Vec::new();
     let mut taps = Vec::new();
     for (index, site) in native::LIFECYCLE_TAPS.into_iter().enumerate() {
+        let (at, original) = verify(site)?;
         taps.push(
-            unsafe { Tap::new(verify(site)?, tap, index, site.sentinel) }
+            unsafe { Tap::new(at, tap, index, original) }
                 .map_err(|cause| hook_failure(site, "construction", cause))?
                 .named(site.label()),
         );
@@ -420,7 +415,8 @@ pub(super) unsafe fn hooks(
         ])
         .enumerate()
     {
-        let hook = unsafe { Hook::new(verify(site)?, callback, site.sentinel) }
+        let (at, original) = verify(site)?;
+        let hook = unsafe { Hook::new(at, callback, original) }
             .map_err(|cause| hook_failure(site, "construction", cause))?
             .named(site.label());
         ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
@@ -466,7 +462,7 @@ mod tests {
     fn both_ordinary_cooldown_writers_retain_the_selected_one_day_expiry() {
         let mut bytes = [0_u8; 0x18];
         bytes[..8].copy_from_slice(
-            &(engine_decisions::cdecision_cooldown::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_decisions::cdecision_cooldown::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         bytes[8..16].copy_from_slice(&99_u64.to_le_bytes());
         let memory = engine_native::memory::SliceMemory {

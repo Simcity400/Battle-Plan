@@ -42,7 +42,7 @@ fn accumulator(bytes: &mut [u8], header: usize, data: usize, entries: &[(u32, i6
 }
 
 fn region(bytes: &mut [u8], at: usize, id: u32, slot: u32) {
-    put_ptr(bytes, at, cstrategic_region::VTABLE_RVA);
+    put_ptr(bytes, at, cstrategic_region::VTABLE_RVA.0);
     put_u32(bytes, at + cstrategic_region::ID, id);
     put_u32(bytes, at + cstrategic_region::RUNTIME_SLOT, slot);
 }
@@ -51,15 +51,15 @@ fn task_force() -> Vec<u8> {
     let mut bytes = vec![0; 0x4000];
     let mission = TASK + MISSION;
     for (at, pointer) in [
-        (mission, cnaval_mission::VTABLE_RVA),
+        (mission, cnaval_mission::VTABLE_RVA.0),
         (mission + 8, TASK),
         (TASK + cunit::STAT_BLOCK, STATS),
         (TASK + cunit::LOCATION, PROVINCE),
-        (PROVINCE, cprovince::VTABLE_RVA),
+        (PROVINCE, cprovince::VTABLE_RVA.0),
         (PROVINCE + cprovince::STRATEGIC_REGION, REGION),
         (TASK + ctask_force::FLEET, FLEET_AT),
-        (FLEET_AT, cfleet::VTABLE_RVA),
-        (RANGE_FLEET, cfleet::VTABLE_RVA),
+        (FLEET_AT, cfleet::VTABLE_RVA.0),
+        (RANGE_FLEET, cfleet::VTABLE_RVA.0),
         (ATTACHED, ENTRY),
         (ATTACHED + 8, ENTRY + 0x80),
         (ENTRY + HEADQUARTERS_COMMANDER, COMMANDER),
@@ -201,17 +201,17 @@ fn walk_visits_every_authenticated_task_force() {
     world.array(country + ccountry::FLEETS, fleets, 1);
     world.array(world.object(2) + ccountry::FLEETS, 0, 0);
     world.u64(fleets, fleet as u64);
-    world.u64(fleet, (MODULE + cfleet::VTABLE_RVA) as u64);
+    world.u64(fleet, (MODULE + cfleet::VTABLE_RVA.0) as u64);
     world.u64(fleet + cfleet::HANDLE, (3 << 32) | 61);
     world.u64(fleet + cfleet::OWNER, country as u64);
     world.array(fleet + cfleet::TASK_FORCES, tasks, 3);
     for (index, kind) in [4_u32, 0, 3].into_iter().enumerate() {
         let task = task[index];
         world.u64(tasks + index * 8, task as u64);
-        world.u64(task, (MODULE + ctask_force::VTABLE_RVA) as u64);
+        world.u64(task, (MODULE + ctask_force::VTABLE_RVA.0) as u64);
         world.u64(
             task + ctask_force::SECONDARY_BASE,
-            (MODULE + ctask_force::SECONDARY_VTABLE_RVA) as u64,
+            (MODULE + ctask_force::SECONDARY_VTABLE_RVA.0) as u64,
         );
         world.u64(task + cunit::HANDLE, ((index as u64 + 10) << 32) | 61);
         world.u64(task + ctask_force::FLEET, fleet as u64);
@@ -386,7 +386,7 @@ fn headquarters_sum_only_a_kind_two_unit_leaders_four_sources() {
     const CHARACTER: usize = 0x100;
     const LEADER: usize = 0x400;
     let mut bytes = vec![0; 0x4000];
-    put_ptr(&mut bytes, CHARACTER, ccharacter::VTABLE_RVA);
+    put_ptr(&mut bytes, CHARACTER, ccharacter::VTABLE_RVA.0);
     put_u64(
         &mut bytes,
         CHARACTER + CHARACTER_UNIT_LEADER_REFERENCE,
@@ -440,7 +440,7 @@ fn headquarters_sum_only_a_kind_two_unit_leaders_four_sources() {
 fn leader_modifiers_need_a_navy_leader() {
     const LEADER: usize = 0x100;
     let mut bytes = vec![0; 0x1000];
-    put_ptr(&mut bytes, LEADER, cnavy_leader::VTABLE_RVA);
+    put_ptr(&mut bytes, LEADER, cnavy_leader::VTABLE_RVA.0);
     accumulator(
         &mut bytes,
         LEADER + LEADER_MODIFIERS,
@@ -596,10 +596,10 @@ fn region_weather_reads_the_indexed_record_or_nothing_outside_the_array() {
     const RECORDS: usize = 0x1000;
     let mut bytes = vec![0; 0x2000];
     put_ptr(&mut bytes, STATE + cgame_state::WEATHER_MANAGER, MANAGER);
-    put_ptr(&mut bytes, MANAGER, cweather_manager::VTABLE_RVA);
+    put_ptr(&mut bytes, MANAGER, cweather_manager::VTABLE_RVA.0);
     array(&mut bytes, MANAGER + cweather_manager::REGIONS, RECORDS, 2);
     let record = RECORDS + sweather_per_region::STRIDE;
-    put_ptr(&mut bytes, record, sweather_per_region::VTABLE_RVA);
+    put_ptr(&mut bytes, record, sweather_per_region::VTABLE_RVA.0);
     put_u32(&mut bytes, record + sweather_per_region::ID, 1_i32 as u32);
     accumulator(
         &mut bytes,

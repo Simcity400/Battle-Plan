@@ -5,8 +5,9 @@
 //! empty logs or logs whose group no longer resolves. Every array below is a
 //! pointer CPdxArray with data, capacity, count and allocator fields.
 
+use engine_sites::Rva;
 /// Group-log primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_a210;
+pub const VTABLE_RVA: Rva = Rva(0x029d_a210);
 /// Enemy equipment destroyed by this group, recorded by retained-history events.
 pub const ENEMY_LOSSES: usize = 0x08;
 /// Recovered equipment after combat, grouped by month with reason zero.

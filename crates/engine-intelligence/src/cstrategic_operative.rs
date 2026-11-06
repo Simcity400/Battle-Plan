@@ -1,12 +1,13 @@
 //! Country strategic-operative object owning intel networks. Its owner
 //! field is a raw country reference.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x2a1_e598;
+pub const VTABLE_RVA: Rva = Rva(0x2a1_e598);
 /// Strategic-operative allocation size.
 pub const SIZE: usize = 0x1c8;
 /// Constructor initializing vtable and owner.
-pub const CONSTRUCTOR_RVA: usize = 0x127_f010;
+pub const CONSTRUCTOR_RVA: Rva = Rva(0x127_f010);
 /// Raw owner country reference, u32.
 pub const OWNER: usize = 0x08;
 /// Intel-network pointer-vector data.

@@ -64,7 +64,9 @@ pub fn demand(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("raid system unreadable or null")?;
-    if base.checked_add(craid_system::VTABLE_RVA).map(|p| p as u64) != read::<u64>(memory, system) {
+    let expected =
+        engine_sites::at(base, craid_system::VTABLE_RVA).ok_or("raid system vtable mismatch")?;
+    if read::<u64>(memory, system) != Some(expected as u64) {
         return Err("raid system vtable mismatch");
     }
     let targets = system
@@ -227,8 +229,8 @@ fn walk_buffer(
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|&pointer| pointer != 0)
             .ok_or("raid system unreadable or null")?;
-        let vtable = |rva: usize| {
-            base.checked_add(rva)
+        let vtable = |rva| {
+            engine_sites::at(base, rva)
                 .map(|address| address as u64)
                 .ok_or("module address overflow")
         };
@@ -287,7 +289,7 @@ fn walk_buffer(
             let mut arm = |offset: usize,
                            layout: &RecordLayout<'_>,
                            stride: usize,
-                           rva: usize,
+                           rva: engine_sites::Rva,
                            what: &'static str,
                            apply: &mut dyn FnMut(&mut Row, &[u8])|
              -> Result<(), &'static str> {
@@ -468,7 +470,7 @@ mod tests {
         put(
             &mut bytes,
             SYSTEM,
-            &(craid_system::VTABLE_RVA as u64).to_le_bytes(),
+            &(craid_system::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         header(&mut bytes, SYSTEM + TARGETS, POINTERS, 2);
         for ordinal in 0..2 {
@@ -487,7 +489,7 @@ mod tests {
         put(
             &mut bytes,
             PROVINCE_AT,
-            &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+            &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -506,7 +508,7 @@ mod tests {
         put(
             &mut bytes,
             BUILDING_AT,
-            &(cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+            &(cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -521,7 +523,7 @@ mod tests {
         put(
             &mut bytes,
             STATUS_AT,
-            &(cbuilding_status::VTABLE_RVA as u64).to_le_bytes(),
+            &(cbuilding_status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -608,7 +610,7 @@ mod tests {
         put(
             &mut bytes,
             SYSTEM,
-            &(craid_system::VTABLE_RVA as u64).to_le_bytes(),
+            &(craid_system::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         header(&mut bytes, SYSTEM + TARGETS, pointers, targets as u32);
         let mut next_bits = bits;
@@ -630,7 +632,7 @@ mod tests {
                 put(
                     &mut bytes,
                     object,
-                    &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+                    &(cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -647,7 +649,7 @@ mod tests {
                 put(
                     &mut bytes,
                     object,
-                    &(cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+                    &(cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -662,7 +664,7 @@ mod tests {
                 put(
                     &mut bytes,
                     status,
-                    &(cbuilding_status::VTABLE_RVA as u64).to_le_bytes(),
+                    &(cbuilding_status::VTABLE_RVA.0 as u64).to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -702,5 +704,4 @@ mod tests {
             );
         }
     }
-
 }

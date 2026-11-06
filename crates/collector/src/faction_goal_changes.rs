@@ -96,21 +96,14 @@ pub struct Hooks {
 impl Hooks {
     /// # Safety
     /// Attach owns the verified image and native patch publication lifetime.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "faction_changes") {
-            for (site, _, _) in &MUTATIONS {
-                if base
-                    .checked_add(site.rva)
-                    .and_then(|at| engine_native::read::<[u8; 16]>(memory, at))
-                    != Some(site.sentinel)
-                {
-                    return Err(site_error(
-                        site.name,
-                        "sentinel verification",
-                        "unreadable or differs from verified bytes",
-                    ));
-                }
+            let mut located = [(0, [0; 16]); SITES];
+            for ((site, _, _), slot) in MUTATIONS.iter().zip(&mut located) {
+                *slot = engine_sites::hook(base, site.rva)
+                    .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+                    .map_err(|cause| site_error(site.name, "sentinel verification", cause))?;
             }
             let callbacks = [
                 construct as *const () as usize,
@@ -135,18 +128,18 @@ impl Hooks {
             ];
             engine_allocation::reserve(&mut hooks, SITES)
                 .map_err(|cause| site_error("all sites", "hook allocation", cause))?;
-            for (index, (site, _, patch)) in MUTATIONS.iter().enumerate() {
-                let at = base + site.rva;
+            for (index, ((site, _, patch), &(at, original))) in
+                MUTATIONS.iter().zip(&located).enumerate()
+            {
                 let hook = match patch {
                     Patch::Entry => {
-                        let hook = unsafe { Hook::new(at, callbacks[index], site.sentinel) }
+                        let hook = unsafe { Hook::new(at, callbacks[index], original) }
                             .map_err(|cause| site_error(site.name, "construction", cause))?;
                         ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                         OwnedHook::Entry(hook)
                     }
                     Patch::Call => {
-                        let displacement =
-                            i32::from_le_bytes(site.sentinel[1..5].try_into().unwrap());
+                        let displacement = i32::from_le_bytes(original[1..5].try_into().unwrap());
                         let target = at
                             .checked_add(5)
                             .and_then(|return_pc| {
@@ -155,13 +148,13 @@ impl Hooks {
                             .ok_or_else(|| {
                                 site_error(site.name, "call target", "address overflow")
                             })?;
-                        let hook = unsafe { Hook::new_call(at, callbacks[index], site.sentinel) }
+                        let hook = unsafe { Hook::new_call(at, callbacks[index], original) }
                             .map_err(|cause| site_error(site.name, "construction", cause))?;
                         ORIGINAL[index].store(target, Ordering::Release);
                         OwnedHook::Entry(hook)
                     }
                     Patch::Tap => OwnedHook::Store(
-                        unsafe { Tap::new(at, pending, index, site.sentinel) }
+                        unsafe { Tap::new(at, pending, index, original) }
                             .map_err(|cause| site_error(site.name, "construction", cause))?,
                     ),
                 };

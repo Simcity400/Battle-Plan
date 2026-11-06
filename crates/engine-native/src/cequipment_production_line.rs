@@ -6,6 +6,7 @@ use crate::{
     cpdx_array::Array, cproduction_line, crailway_gun_production_line, cship_refit_production_line,
     read_slice,
 };
+use engine_sites::Rva;
 
 /// CEquipmentProductionLine CEquipmentVariant pointer.
 pub const EQUIPMENT_VARIANT: usize = 0x88;
@@ -32,19 +33,19 @@ pub const FACTORY_EFFICIENCIES: usize = 0xc0;
 /// define selected by classifier bits. Railway-gun lines use their define alone.
 pub const MAX_FACTORIES_VIRTUAL_SLOT: usize = 0x58;
 /// Loaded military maximum factories per line, signed i32.
-pub const MAX_MIL_FACTORIES_PER_LINE_RVA: usize = 0x033e_06cc;
+pub const MAX_MIL_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_06cc);
 /// Loaded convoy maximum naval factories per line, signed i32; classifier bit 0.
-pub const CONVOY_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x033e_04c8;
+pub const CONVOY_MAX_NAV_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_04c8);
 /// Loaded floating-harbour maximum naval factories per line, signed i32; classifier bit 9.
-pub const FLOATING_HARBOR_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x033e_0558;
+pub const FLOATING_HARBOR_MAX_NAV_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_0558);
 /// Loaded default maximum naval factories per line, signed i32.
-pub const DEFAULT_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x033e_0430;
+pub const DEFAULT_MAX_NAV_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_0430);
 /// Loaded capital-ship maximum naval factories per line, signed i32; classifier bit 6.
-pub const CAPITAL_SHIP_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x033e_060c;
+pub const CAPITAL_SHIP_MAX_NAV_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_060c);
 /// Loaded railway-gun maximum factories per line, signed i32.
-pub const RAILWAY_GUN_MAX_MIL_FACTORIES_PER_LINE_RVA: usize = 0x033e_081c;
+pub const RAILWAY_GUN_MAX_MIL_FACTORIES_PER_LINE_RVA: Rva = Rva(0x033e_081c);
 /// The six defines above, read together once per walk, in this order.
-pub const MAX_FACTORY_DEFINE_RVAS: [usize; 6] = [
+pub const MAX_FACTORY_DEFINE_RVAS: [Rva; 6] = [
     MAX_MIL_FACTORIES_PER_LINE_RVA,
     CONVOY_MAX_NAV_FACTORIES_PER_LINE_RVA,
     FLOATING_HARBOR_MAX_NAV_FACTORIES_PER_LINE_RVA,
@@ -117,7 +118,7 @@ impl Defines {
             return Ok(values[index]);
         }
         let mut bytes = [[0_u8; 4]; 6];
-        let addresses = MAX_FACTORY_DEFINE_RVAS.map(|rva| base.checked_add(rva).unwrap_or(0));
+        let addresses = MAX_FACTORY_DEFINE_RVAS.map(|rva| engine_sites::at(base, rva).unwrap_or(0));
         if memory.copy_scattered(addresses, &mut bytes.each_mut().map(|value| &mut value[..])) != 6
         {
             return Err("production line factory defines unreadable");
@@ -143,8 +144,7 @@ fn max_factories(
         KIND_MILITARY => cequipment_type::MAX_MIL_FACTORIES,
         _ => cequipment_type::MAX_NAV_FACTORIES,
     } - cequipment_type::MAX_MIL_FACTORIES;
-    let expected = base
-        .checked_add(cequipment_type::VTABLE_RVA)
+    let expected = engine_sites::at(base, cequipment_type::VTABLE_RVA)
         .ok_or("production line equipment type module overflow")? as u64;
     let at = |pointer: usize, offset| pointer.checked_add(offset).unwrap_or(0);
     let mut definition = [0; 8];
@@ -290,15 +290,21 @@ pub(crate) fn read_row(
         return Err("production line identity unreadable");
     }
     let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
-    let rva = usize::try_from(vtable)
-        .ok()
-        .and_then(|address| address.checked_sub(base))
-        .ok_or("production line vtable mismatch")?;
-    let kind = match rva {
-        cmilitary_production_line::VTABLE_RVA => KIND_MILITARY,
-        cnaval_production_line::VTABLE_RVA => KIND_NAVAL,
-        cship_refit_production_line::VTABLE_RVA => KIND_SHIP_REFIT,
-        crailway_gun_production_line::VTABLE_RVA => KIND_RAILWAY_GUN,
+    let address = usize::try_from(vtable).map_err(|_| "production line vtable mismatch")?;
+    let kind = match engine_sites::which(
+        base,
+        address,
+        &[
+            cmilitary_production_line::VTABLE_RVA,
+            cnaval_production_line::VTABLE_RVA,
+            cship_refit_production_line::VTABLE_RVA,
+            crailway_gun_production_line::VTABLE_RVA,
+        ],
+    ) {
+        Some(cmilitary_production_line::VTABLE_RVA) => KIND_MILITARY,
+        Some(cnaval_production_line::VTABLE_RVA) => KIND_NAVAL,
+        Some(cship_refit_production_line::VTABLE_RVA) => KIND_SHIP_REFIT,
+        Some(crailway_gun_production_line::VTABLE_RVA) => KIND_RAILWAY_GUN,
         _ => return Err("production line vtable mismatch"),
     };
     let handle = u64::from_le_bytes(identity[8..].try_into().unwrap());

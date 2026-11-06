@@ -39,14 +39,14 @@ impl World {
                 &(pointer as u64).to_le_bytes(),
             );
             world.put(links + slot as usize * 4, &slot.to_le_bytes());
-            world.put(pointer, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+            world.put(pointer, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
             world.put(pointer + ccountry::ID, &slot.to_le_bytes());
             world.put(counts + slot as usize, &[slot as u8]);
         }
         for index in 0..player_count {
             let address = ROSTER + index as usize * chuman::STRIDE;
             let text = heap + index as usize * (user_len + 20);
-            world.put(address, &(chuman::VTABLE_RVA as u64).to_le_bytes());
+            world.put(address, &(chuman::VTABLE_RVA.0 as u64).to_le_bytes());
             world.put(address + chuman::PLAYER_KEY, &(index as i32).to_le_bytes());
             world.put(
                 address + chuman::COUNTRY_TAG,
@@ -203,7 +203,7 @@ fn both_player_terminators_precede_payload_and_semantic_gates_stop_later_players
     assert!(user_terminator < name_terminator && name_terminator < user_payload);
     drop(reads);
     drop(memory);
-    for invalid in [0_u64, chuman::VTABLE_RVA as u64] {
+    for invalid in [0_u64, chuman::VTABLE_RVA.0 as u64] {
         world.put(ROSTER, &invalid.to_le_bytes());
         world.put(ROSTER + chuman::PLAYER_KEY, &(-1_i32).to_le_bytes());
         let memory = TraceMemory {
@@ -289,7 +289,7 @@ fn raw_controllers_preserve_reserved_physical_aliases() {
     let reserved = (first_pointer + 7) & !7;
     world.put(world.countries, &(reserved as u64).to_le_bytes());
     world.put(world.countries + 8, &(reserved as u64).to_le_bytes());
-    world.put(reserved, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    world.put(reserved, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     world.put(reserved + ccountry::ID, &0_u32.to_le_bytes());
     let mut job = PlayersJob::new();
     let mut captured = MapCaptured::with_capacities(&MapCapacities::default());

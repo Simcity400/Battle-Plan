@@ -575,8 +575,8 @@ impl Captured {
         };
         let seeds = census.seeds();
         let (Some(primary), Some(secondary)) = (
-            base.checked_add(carmy::VTABLE_RVA),
-            base.checked_add(carmy::SECONDARY_VTABLE_RVA),
+            engine_sites::at(base, carmy::VTABLE_RVA),
+            engine_sites::at(base, carmy::SECONDARY_VTABLE_RVA),
         ) else {
             return;
         };
@@ -727,8 +727,8 @@ pub(crate) mod owned_tests {
         let division = |pointer: usize, id: u64| DivisionSeed {
             pointer,
             division: handle(id),
-            primary_vtable: Some((BASE + carmy::VTABLE_RVA) as u64),
-            secondary_vtable: Some((BASE + carmy::SECONDARY_VTABLE_RVA) as u64),
+            primary_vtable: Some((BASE + carmy::VTABLE_RVA.0) as u64),
+            secondary_vtable: Some((BASE + carmy::SECONDARY_VTABLE_RVA.0) as u64),
             handle: Some(handle(id)),
             class: Some(0),
             location: Some(0x9000),
@@ -822,7 +822,7 @@ pub(crate) mod owned_tests {
             world.header(STATE + engine_native::cgame_state::PROVINCES, SLOTS, 4);
             for id in 1..=3 {
                 world.word(SLOTS + 8 * id as usize, province(id) as u64);
-                world.word(province(id), cprovince::VTABLE_RVA as u64);
+                world.word(province(id), cprovince::VTABLE_RVA.0 as u64);
                 world.bytes[province(id) + cprovince::ID..][..4].copy_from_slice(&id.to_le_bytes());
             }
             world.occupy(1, &[0, 1]);
@@ -861,8 +861,8 @@ pub(crate) mod owned_tests {
                 .map(|index| engine_native::carmy::DivisionSeed {
                     pointer: unit(index),
                     division: handle(index),
-                    primary_vtable: Some(carmy::VTABLE_RVA as u64),
-                    secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
+                    primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
+                    secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA.0 as u64),
                     handle: Some(handle(index)),
                     class: Some(0),
                     location: Some((1..=3).find(|&id| listed(id, index)).map_or(0, province)),
@@ -1001,7 +1001,7 @@ pub(crate) mod owned_tests {
         assert_eq!(reads(&world), [false; 3]);
         // The same id at another address, with no occupants.
         let replacement = 0x4000;
-        world.word(replacement, cprovince::VTABLE_RVA as u64);
+        world.word(replacement, cprovince::VTABLE_RVA.0 as u64);
         world.bytes[replacement + cprovince::ID..][..4].copy_from_slice(&3_u32.to_le_bytes());
         world.word(SLOTS + 8 * 3, replacement as u64);
         assert_eq!(hour(&mut captured, &world, &mut store)[2], (3, vec![]));
@@ -1094,7 +1094,7 @@ pub(crate) mod owned_tests {
             put(
                 &mut heap,
                 record,
-                &((base + cprovince::VTABLE_RVA) as u64).to_le_bytes(),
+                &((base + cprovince::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut heap,
@@ -1114,8 +1114,8 @@ pub(crate) mod owned_tests {
                 seeds.push(engine_native::carmy::DivisionSeed {
                     pointer: unit,
                     division: handle,
-                    primary_vtable: Some((base + carmy::VTABLE_RVA) as u64),
-                    secondary_vtable: Some((base + carmy::SECONDARY_VTABLE_RVA) as u64),
+                    primary_vtable: Some((base + carmy::VTABLE_RVA.0) as u64),
+                    secondary_vtable: Some((base + carmy::SECONDARY_VTABLE_RVA.0) as u64),
                     handle: Some(handle),
                     class: Some(0),
                     location: Some(base + record),

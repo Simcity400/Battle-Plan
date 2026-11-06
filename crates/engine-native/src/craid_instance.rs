@@ -2,8 +2,9 @@
 //! and source use guarded readers; layout alone establishes neither hourly
 //! consistency nor a new observation boundary.
 
+use engine_sites::Rva;
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_ff58;
+pub const VTABLE_RVA: Rva = Rva(0x029f_ff58);
 /// CRaidInstance u32 reference type.
 pub const REFERENCE_TYPE: usize = 0x08;
 /// Raid-instance reference type identifier.
@@ -184,9 +185,7 @@ pub(crate) fn read_row(
     {
         return Err("raid instance unreadable");
     }
-    let expected = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64 {
         return Err("raid instance vtable mismatch");
     }

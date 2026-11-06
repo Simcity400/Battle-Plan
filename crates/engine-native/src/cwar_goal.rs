@@ -3,12 +3,13 @@
 //! Creation, script removal, consumption, reset and daily expiry mutate the
 //! roster. Loading restores it. This reader computes no expiry.
 
+use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cdiplomacy_status, cpdx_array, cpdx_array::Array, cstate, read, walk::Outcome,
 };
 
 /// CWarGoal primary vtable.
-pub const VTABLE_RVA: usize = 0x02a5_9250;
+pub const VTABLE_RVA: Rva = Rva(0x02a5_9250);
 /// Recipient raw country reference and type pointer in the embedded goal data.
 pub const RECIPIENT: usize = 0x3c;
 pub const GOAL_TYPE: usize = 0x40;
@@ -113,7 +114,7 @@ fn walk_buffer(
             if diplomacy == 0 {
                 return Err("owned wargoal diplomacy root is null");
             }
-            if base.checked_add(cdiplomacy_status::VTABLE_RVA)
+            if engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
                 != Some(field::<u64>(memory, diplomacy, 0)? as usize)
                 || field::<u64>(memory, diplomacy, cdiplomacy_status::COUNTRY)?
                     != country.pointer as u64
@@ -137,7 +138,7 @@ fn walk_buffer(
                     if goal == 0 {
                         return Err("owned wargoal pointer is null");
                     }
-                    if base.checked_add(VTABLE_RVA) != Some(field::<u64>(memory, goal, 0)? as usize)
+                    if engine_sites::at(base, VTABLE_RVA) != Some(field::<u64>(memory, goal, 0)? as usize)
                     {
                         return Err("owned wargoal vtable mismatch");
                     }

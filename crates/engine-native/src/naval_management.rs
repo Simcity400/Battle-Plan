@@ -2,6 +2,7 @@
 //! authenticated by their existing census; these readers never enumerate the world or call a
 //! game getter. Ordered variable data grows only when that object's writer invalidates its hold.
 use crate::{Memory, cpdx_array::Array, read};
+use engine_sites::Rva;
 
 /// Existing core naval census observations; no observer owns these process pointers beyond the
 /// capture unless its writer/lifetime domain certifies their continued identity.
@@ -25,7 +26,7 @@ pub const FULFILLMENT: usize = COMPOSITION + 0x70;
 pub const COMPOSITION_TOKEN: usize = COMPOSITION + 0xd8;
 /// The native empty AI-composition selection, omitted by the serializer.
 pub const NO_AI_COMPOSITION_TOKEN: u32 = 0x4c17;
-pub const ENTRIES_VTABLE_RVA: usize = 0x029f_b6a8;
+pub const ENTRIES_VTABLE_RVA: Rva = Rva(0x029f_b6a8);
 pub const COMPOSITION_ENTRIES: usize = 8;
 pub const COMPOSITION_ENTRY_BYTES: usize = 16;
 pub const AUTOMATED_HOMEBASE: usize = 0x104;
@@ -75,9 +76,8 @@ fn variant(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'s
         return Ok(0);
     }
     if field::<u64>(memory, pointer, 0)?
-        != base
-            .checked_add(crate::cequipment_variant::VTABLE_RVA)
-            .ok_or("naval refit variant vtable overflow")? as u64
+        != engine_sites::at(base, crate::cequipment_variant::VTABLE_RVA)
+            .ok_or("naval refit variant vtable withheld")? as u64
     {
         return Err("naval refit variant identity mismatch");
     }
@@ -133,9 +133,8 @@ pub fn composition(
     entries: &mut Vec<CompositionEntry>,
 ) -> Result<(), &'static str> {
     if field::<u64>(memory, object, 0)?
-        != base
-            .checked_add(ENTRIES_VTABLE_RVA)
-            .ok_or("naval composition vtable overflow")? as u64
+        != engine_sites::at(base, ENTRIES_VTABLE_RVA).ok_or("naval composition vtable withheld")?
+            as u64
     {
         return Err("naval composition identity mismatch");
     }
@@ -175,9 +174,8 @@ pub fn base_settings(
     queue: &mut Vec<u64>,
 ) -> Result<BaseSettings, &'static str> {
     if field::<u64>(memory, object, 0)?
-        != base
-            .checked_add(crate::cnaval_base::VTABLE_RVA)
-            .ok_or("naval repair base vtable overflow")? as u64
+        != engine_sites::at(base, crate::cnaval_base::VTABLE_RVA)
+            .ok_or("naval repair base vtable withheld")? as u64
     {
         return Err("naval repair base identity mismatch");
     }
@@ -239,8 +237,7 @@ pub fn ship_refit_line(
     ship: usize,
 ) -> Result<u64, &'static str> {
     let handle = field(memory, ship, SHIP_REFIT_LINE)?;
-    let invalid = base
-        .checked_add(crate::creference_registry::INVALID_REFERENCE_RVA)
+    let invalid = engine_sites::at(base, crate::creference_registry::INVALID_REFERENCE_RVA)
         .and_then(|at| read::<u64>(memory, at))
         .ok_or("naval refit invalid reference unreadable")?;
     Ok(if handle == invalid { 0 } else { handle })

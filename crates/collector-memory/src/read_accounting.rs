@@ -14,7 +14,13 @@
 use engine_native::memory::ReadCounts;
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
-use std::{cell::RefCell, marker::PhantomData, mem::MaybeUninit, rc::Rc};
+use std::{
+    cell::RefCell,
+    marker::PhantomData,
+    mem::MaybeUninit,
+    rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 pub type TableCounts = [ReadCounts; TABLE_COUNT];
 #[allow(
@@ -38,6 +44,28 @@ impl State {
 
     fn flush(&mut self) {
         self.tables[self.current] += ReadCounts::take_current();
+        if let Some(key) = engine_sites::take_taint() {
+            withhold(self.current, key);
+        }
+    }
+}
+
+/// Per table, one more than the first site key a read under its scope found withheld; zero while
+/// none was. Sticky for the session: the table stays withheld by that site's name.
+static WITHHELD: [AtomicUsize; TABLE_COUNT] = [const { AtomicUsize::new(0) }; TABLE_COUNT];
+
+fn withhold(table: usize, key: engine_sites::Rva) {
+    // Reads outside any table scope stay charged to Clock; their sites are refused where resolved.
+    if table != TableId::Clock.index() {
+        let _ = WITHHELD[table].compare_exchange(0, key.0 + 1, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
+/// The site that withheld this table, if any read under its scope found one withheld.
+pub fn withheld(table: TableId) -> Option<engine_sites::Rva> {
+    match WITHHELD[table.index()].load(Ordering::Acquire) {
+        0 => None,
+        key => Some(engine_sites::Rva(key - 1)),
     }
 }
 

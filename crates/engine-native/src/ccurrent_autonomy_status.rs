@@ -7,9 +7,10 @@ use crate::{
     read_slice,
     walk::Outcome,
 };
+use engine_sites::Rva;
 
 /// CCurrentAutonomyStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_1030;
+pub const VTABLE_RVA: Rva = Rva(0x0286_1030);
 /// CCurrentAutonomyStatus current score raw i64.
 pub const SCORE: usize = 0x08;
 /// CCurrentAutonomyStatus current autonomy-state definition pointer.
@@ -208,14 +209,18 @@ mod tests {
         p32(&mut bytes, GS + cgame_state::COUNTRY_LINKS + 12, 3);
         p32(&mut bytes, 0x3104, 1);
         p32(&mut bytes, 0x3108, 1);
-        p64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        p64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut bytes, COUNTRY + ccountry::ID, 2);
         p64(
             &mut bytes,
             COUNTRY + ccountry::DIPLOMACY_STATUS,
             DIPLOMACY as u64,
         );
-        p64(&mut bytes, DIPLOMACY, cdiplomacy_status::VTABLE_RVA as u64);
+        p64(
+            &mut bytes,
+            DIPLOMACY,
+            cdiplomacy_status::VTABLE_RVA.0 as u64,
+        );
         p64(
             &mut bytes,
             DIPLOMACY + cdiplomacy_status::COUNTRY,
@@ -226,7 +231,7 @@ mod tests {
             DIPLOMACY + cdiplomacy_status::CURRENT_AUTONOMY_STATUS,
             STATUS as u64,
         );
-        p64(&mut bytes, STATUS, VTABLE_RVA as u64);
+        p64(&mut bytes, STATUS, VTABLE_RVA.0 as u64);
         p64(&mut bytes, STATUS + SUBJECT_COUNTRY, COUNTRY as u64);
         p64(&mut bytes, STATUS + SCORE, i64::MIN as u64);
         p64(&mut bytes, STATUS + LOWER_SCORE, i64::MAX as u64);

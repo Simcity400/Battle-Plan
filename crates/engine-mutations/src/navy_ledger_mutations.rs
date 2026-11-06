@@ -21,6 +21,7 @@
 //!   update rewrites them, so they stay hourly reads.
 
 pub use crate::advisor_mutations::MutationSite;
+use engine_sites::Rva;
 
 /// The writers, in callback order. Each takes its navy in RCX; a detour
 /// forwards RCX..R9 and returns RAX unchanged.
@@ -29,21 +30,13 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // saving RDI and reserving 0x20 stack bytes follow.
     MutationSite {
         name: "register_mission",
-        rva: 0xf1_e560,
-        sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x49,
-        ],
+        rva: Rva(0xf1_e560),
     },
     // The five-byte RSI spill to R8's home slot relocates; spilling RDX,
     // saving RDI and reserving 0x20 stack bytes follow.
     MutationSite {
         name: "unregister_mission",
-        rva: 0xf2_24a0,
-        sentinel: [
-            0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
-            0x20, 0x4c,
-        ],
+        rva: Rva(0xf2_24a0),
     },
 ];
 
@@ -52,12 +45,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sites_are_distinct_and_open_with_relocatable_spills() {
+    fn the_sites_are_distinct_and_the_reset_belongs_to_world_input() {
         assert_ne!(MUTATIONS[0].rva, MUTATIONS[1].rva);
+        let (reset, _) = crate::world_input_mutations::MUTATIONS
+            .iter()
+            .find(|(site, _)| site.name == "reset_navy")
+            .unwrap();
         for site in MUTATIONS {
-            assert_eq!(site.sentinel[..2], [0x48, 0x89], "{}", site.name);
-            // The reset belongs to the world-input family.
-            assert_ne!(site.rva, 0xf1_ee30, "{}", site.name);
+            assert_ne!(site.rva, reset.rva, "{}", site.name);
         }
     }
 }

@@ -339,9 +339,8 @@ pub fn each_raid(
     if root == 0 {
         return Err("raid system unreadable or null");
     }
-    let expected = base
-        .checked_add(craid_system::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let expected =
+        engine_sites::at(base, craid_system::VTABLE_RVA).ok_or("raid system vtable withheld")?;
     if read::<u64>(memory, root) != Some(expected as u64) {
         return Err("raid system vtable mismatch");
     }
@@ -349,9 +348,8 @@ pub fn each_raid(
         .checked_add(craid_system::COUNTRY_STATUSES)
         .and_then(|at| Array::read(memory, at, ccountry_raid_status::STRIDE))
         .ok_or("raid parent array unreadable or invalid")?;
-    let instance_vtable = base
-        .checked_add(craid_instance::VTABLE_RVA)
-        .ok_or("module address overflow")?;
+    let instance_vtable = engine_sites::at(base, craid_instance::VTABLE_RVA)
+        .ok_or("raid instance vtable withheld")?;
     const BATCH: usize = 64;
     let mut records = [0_u8; BATCH * ccountry_raid_status::PARENT_BYTES];
     for first in (0..roster.count).step_by(BATCH) {
@@ -548,11 +546,11 @@ mod tests {
         fn register(&mut self, table: usize, handle: u64, object: usize) {
             let kind = handle as u32;
             let root = if kind < registry::LOW_ROOT_COUNT {
-                registry::LOW_ROOTS_RVA + kind as usize * 8
+                registry::LOW_ROOTS_RVA.0 + kind as usize * 8
             } else if kind < registry::MID_TYPE_LIMIT {
-                registry::MID_ROOT_RVA
+                registry::MID_ROOT_RVA.0
             } else {
-                registry::HIGH_ROOT_RVA
+                registry::HIGH_ROOT_RVA.0
             };
             let entries = table + 0x100;
             self.u64(root, table as u64);
@@ -601,13 +599,13 @@ mod tests {
         let mut m = Image::default();
         m.u32(GS + cgame_state::CURRENT_HOUR, 100);
         m.u64(GS + cgame_state::RAID_SYSTEM, ROOT as u64);
-        m.u64(ROOT, craid_system::VTABLE_RVA as u64);
+        m.u64(ROOT, craid_system::VTABLE_RVA.0 as u64);
         m.array(ROOT + craid_system::COUNTRY_STATUSES, PARENTS, 1);
         m.put(PARENTS, &[0; ccountry_raid_status::STRIDE]);
         m.array(PARENTS + ccountry_raid_status::INSTANCES, INSTANCES, 1);
         m.u64(INSTANCES, RAID as u64);
         m.put(RAID, &[0; 0x200]);
-        m.u64(RAID, craid_instance::VTABLE_RVA as u64);
+        m.u64(RAID, craid_instance::VTABLE_RVA.0 as u64);
         m.u32(RAID + craid_instance::REFERENCE_TYPE, 84);
         m.u32(RAID + craid_instance::ID, 9);
         m.u32(RAID + craid_instance::PHASE, 4);
@@ -638,12 +636,12 @@ mod tests {
         m.u32(LINKS + 4, 1);
         m.u32(LINKS + 8, 1);
         m.u32(LINKS + 12, 3);
-        m.u64(COUNTRY, ccountry::VTABLE_RVA as u64);
+        m.u64(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         m.u32(COUNTRY + ccountry::ID, 2);
-        m.u64(OWNER, ccountry::VTABLE_RVA as u64);
+        m.u64(OWNER, ccountry::VTABLE_RVA.0 as u64);
         m.u32(OWNER + ccountry::ID, 3);
         // Modifier metadata: the speed key enabled, unclamped.
-        m.u64(modifier_definition::TABLE_RVA, DEFINITIONS as u64);
+        m.u64(modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
         let row = DEFINITIONS + 2 * modifier_definition::STRIDE;
         m.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
         m.u32(row + modifier_definition::FLAGS, 0);
@@ -790,7 +788,7 @@ mod tests {
         const SATURATED: i64 = 0x53e2_d620_fb40;
         let mut memory = fixture();
         for (variant, id) in [(TRANSPORT, 41_u64), (RIFLE, 42)] {
-            memory.u64(variant, cequipment_variant::VTABLE_RVA as u64);
+            memory.u64(variant, cequipment_variant::VTABLE_RVA.0 as u64);
             memory.u64(
                 variant + 8,
                 (id << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
@@ -810,7 +808,7 @@ mod tests {
             memory.put(entry, &[0; allocation::STRIDE]);
             memory.u64(entry + allocation::ARCHETYPE, archetype as u64);
             memory.u64(entry + allocation::AMOUNT, total as u64);
-            memory.u64(archetype, cequipment_type::VTABLE_RVA as u64);
+            memory.u64(archetype, cequipment_type::VTABLE_RVA.0 as u64);
             memory.u32(archetype + cequipment_type::TOKEN, token);
         }
         struct Run {
@@ -888,7 +886,7 @@ mod tests {
             run(&memory, 2, 2).outcome,
             Outcome::Unavailable { .. }
         ));
-        memory.u64(ARCHETYPES[1], cequipment_type::VTABLE_RVA as u64);
+        memory.u64(ARCHETYPES[1], cequipment_type::VTABLE_RVA.0 as u64);
         // Prepared raids are recorded; cancelled ended ones are not.
         memory.u32(RAID + craid_instance::PHASE, 3);
         assert_eq!(run(&memory, 2, 2).outcome, Outcome::Rows { len: 1 });
