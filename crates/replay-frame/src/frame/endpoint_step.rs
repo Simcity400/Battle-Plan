@@ -206,29 +206,14 @@ impl EndpointStep {
     pub(super) fn prepare_change_facts(
         &self,
         previous: Option<&DecodedFrame>,
-        budget: &allocation::credit::MemoryBudget,
-        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<(
         [Option<Arc<ChangeFacts>>; TABLE_COUNT],
         [Option<Arc<FieldStamp>>; TABLE_COUNT],
     )> {
-        use super::decoder::{change_bytes, field_stamp, stamp_bytes};
+        use super::decoder::field_stamp;
         if self.from != previous.map(Point::of) {
             return Err(invalid("endpoint baseline differs"));
         }
-        let mut required = 0;
-        for section in &self.sections {
-            let bytes = match &section.operation {
-                Operation::Complete(_) => stamp_bytes(),
-                Operation::Patch { rows, deleted } => {
-                    allocation::add(stamp_bytes(), change_bytes(rows.len(), deleted.len())?)?
-                }
-                Operation::Carry if !section.boundaries.is_empty() => stamp_bytes(),
-                _ => 0,
-            };
-            required = allocation::add(required, bytes)?;
-        }
-        let mut credit = super::decoder::change_credit(budget, required, Some(cancelled))?;
         let mut changes = std::array::from_fn(|_| None);
         let mut stamps = std::array::from_fn(|_| None);
         for section in &self.sections {
@@ -240,24 +225,13 @@ impl EndpointStep {
                 .any(|boundary| !matches!(boundary.kind, BoundaryKind::Delta));
             match &section.operation {
                 Operation::Complete(_) => {
-                    stamps[index] = Some(field_stamp(
-                        None,
-                        None,
-                        self.to.hour,
-                        credit.split_off(stamp_bytes()),
-                    )?);
+                    stamps[index] = Some(field_stamp(None, None, self.to.hour));
                 }
                 Operation::Carry if !section.boundaries.is_empty() => {
-                    stamps[index] = Some(field_stamp(
-                        None,
-                        None,
-                        self.to.hour,
-                        credit.split_off(stamp_bytes()),
-                    )?);
+                    stamps[index] = Some(field_stamp(None, None, self.to.hour));
                 }
                 Operation::Patch { rows, deleted } => {
                     let before = before.ok_or_else(|| invalid("endpoint patch has no baseline"))?;
-                    let facts_credit = credit.split_off(change_bytes(rows.len(), deleted.len())?);
                     let mut facts = ChangeFacts {
                         previous: before.identity(),
                         changed: allocation::vec(rows.len())?,
@@ -267,7 +241,6 @@ impl EndpointStep {
                             || section.boundaries.iter().any(|boundary| {
                                 !boundary.inserted.is_empty() || !boundary.deleted.is_empty()
                             }),
-                        _credit: facts_credit,
                     };
                     for (key, fields, inserted) in rows.edits() {
                         facts.fields |= fields;
@@ -282,8 +255,7 @@ impl EndpointStep {
                         (!reset).then_some(before.3.as_deref()).flatten(),
                         Some(&facts),
                         self.to.hour,
-                        credit.split_off(stamp_bytes()),
-                    )?);
+                    ));
                     if !reset {
                         changes[index] = Some(Arc::new(facts));
                     }

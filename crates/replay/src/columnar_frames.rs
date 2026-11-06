@@ -20,12 +20,11 @@ use crate::{
     format::FormatVersion,
     frame::{
         DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, RowChange, SharedView, Stamp,
-        TableUpdate, TableView, change_credit, not_selected,
+        TableUpdate, TableView, not_selected,
     },
     rows::{DeltaRow, Field, List, Opaque, RowChanges, TABLE_COUNT, TableId, TableRows, full_mask},
     scope::CaptureMode,
 };
-use engine_allocation::credit::{Credit, MemoryBudget};
 #[cfg(any(test, feature = "test-support"))]
 use replay_columnar::{
     envelope::{self, Extent, IndexPage, Kind, Root, RunDirectory},
@@ -542,7 +541,7 @@ pub struct Views {
     /// The hour the views were built for last.
     built: Option<i32>,
     /// The owner the views' change facts and field stamps are charged to, when they carry them.
-    changes: Option<MemoryBudget>,
+    changes: bool,
     /// The last build's times, when builds are timed.
     timed: bool,
     times: BuildTimes,
@@ -600,7 +599,7 @@ impl Views {
             record: false,
             facts: Vec::new(),
             built: None,
-            changes: None,
+            changes: false,
             timed: false,
             times: BuildTimes::default(),
             by_slot: false,
@@ -616,9 +615,9 @@ impl Views {
     }
 
     /// Complete views carrying change facts and field stamps, as a decoder with change facts
-    /// makes them, charged to `budget`.
-    pub fn with_change_facts(mut self, budget: MemoryBudget) -> Self {
-        self.changes = Some(budget);
+    /// makes them.
+    pub fn with_change_facts(mut self) -> Self {
+        self.changes = true;
         self
     }
 
@@ -937,8 +936,7 @@ impl Views {
     /// that stayed complete gets the noted sections' edits, its inserted rows built from their
     /// columns, its deleted keys removed and each written row given the columns written since;
     /// any other gets a view built anew from the rows the walker holds, complete ones on
-    /// `parallel`'s workers when given. Views carrying change facts are admitted their credit
-    /// before any view changes: a refusal leaves the views and the hours noted as they were.
+    /// `parallel`'s workers when given.
     pub fn update(
         &mut self,
         state: &State,
@@ -959,7 +957,7 @@ impl Views {
         tables: &[TableId],
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<()> {
-        if self.record || self.changes.is_some() {
+        if self.record || self.changes {
             return Err(invalid("Views with change facts build every table at once"));
         }
         let mut at = engine_allocation::vec(tables.len())?;
@@ -984,7 +982,6 @@ impl Views {
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<()> {
         let mut plans = engine_allocation::vec(positions.len())?;
-        let mut required = 0_usize;
         let by_slot = self.by_slot;
         for &at in positions {
             let pending = &mut self.pending[at];
@@ -1032,32 +1029,18 @@ impl Views {
                 (Status::Complete, _) => Plan::Anew,
                 _ => Plan::Status,
             };
-            if self.changes.is_some() {
-                required = engine_allocation::add(
-                    required,
-                    match plan {
-                        Plan::Anew => Stamp::BYTES,
-                        Plan::Patch { changed, deleted } => Stamp::edit_bytes(changed, deleted)?,
-                        Plan::Carry | Plan::Status => 0,
-                    },
-                )?;
-            }
             plans.push(plan);
         }
-        let mut credit = match &self.changes {
-            Some(budget) => {
-                // Facts a replaced view no longer needs go back before more are asked for.
-                for (plan, &at) in plans.iter().zip(positions) {
-                    if !matches!(plan, Plan::Carry)
-                        && let Some(view) = self.views[self.selected[at].index()].as_mut()
-                    {
-                        view.reclaim_changes();
-                    }
+        if self.changes {
+            // Facts a replaced view no longer needs go before the new ones are made.
+            for (plan, &at) in plans.iter().zip(positions) {
+                if !matches!(plan, Plan::Carry)
+                    && let Some(view) = self.views[self.selected[at].index()].as_mut()
+                {
+                    view.reclaim_changes();
                 }
-                Some(change_credit(budget, required, None)?)
             }
-            None => None,
-        };
+        }
         let anew = engine_allocation::collect_vec(
             plans
                 .iter()
@@ -1095,7 +1078,6 @@ impl Views {
                 previous,
                 &mut anew,
                 (baseline, hour),
-                credit.as_mut(),
             );
             pending.edits.clear();
             self.pending[at] = Pending {
@@ -1201,7 +1183,6 @@ impl Views {
         previous: Option<SharedView>,
         anew: &mut impl Iterator<Item = TableRows>,
         (baseline, hour): (i32, i32),
-        credit: Option<&mut Credit>,
     ) -> io::Result<SharedView> {
         let index = id.index();
         let status = state
@@ -1224,11 +1205,10 @@ impl Views {
                     .ok_or_else(|| invalid("A table built anew has no rows"))?;
                 self.fact(|| Ok(TableUpdate::Snapshot(rows.try_clone_validated()?)))?;
                 let view = SharedView::from(TableView::Complete(rows)).with_sampled_at(sampled);
-                Ok(match credit {
-                    Some(credit) => {
-                        view.with_stamp(Stamp::new(hour, credit.split_off(Stamp::BYTES))?)
-                    }
-                    None => view,
+                Ok(if self.changes {
+                    view.with_stamp(Stamp::new(hour))
+                } else {
+                    view
                 })
             }
             Plan::Status => {
@@ -1343,34 +1323,31 @@ impl Views {
                 {
                     return Err(invalid("A table's edits differ from their plan"));
                 }
-                let stamp = match credit {
-                    Some(credit) => {
-                        let recorded = id.last_change().fields(id, self.format);
-                        let mut rows_changed = engine_allocation::vec(changed)?;
-                        for &key in &self.keys {
-                            rows_changed.push(RowChange {
-                                key,
-                                fields: change_fields(id, full_mask(recorded), recorded),
-                                inserted: !rows.contains_key(key),
-                            });
-                        }
-                        for &(key, _, mask) in &self.patches {
-                            rows_changed.push(RowChange {
-                                key,
-                                fields: change_fields(id, mask, recorded),
-                                inserted: false,
-                            });
-                        }
-                        rows_changed.sort_unstable_by_key(|row| row.key);
-                        let bytes = Stamp::edit_bytes(changed, deleted)?;
-                        Some(previous.edited(
-                            rows_changed,
-                            engine_allocation::copy_vec(&self.deleted)?,
-                            hour,
-                            credit.split_off(bytes),
-                        )?)
+                let stamp = if self.changes {
+                    let recorded = id.last_change().fields(id, self.format);
+                    let mut rows_changed = engine_allocation::vec(changed)?;
+                    for &key in &self.keys {
+                        rows_changed.push(RowChange {
+                            key,
+                            fields: change_fields(id, full_mask(recorded), recorded),
+                            inserted: !rows.contains_key(key),
+                        });
                     }
-                    None => None,
+                    for &(key, _, mask) in &self.patches {
+                        rows_changed.push(RowChange {
+                            key,
+                            fields: change_fields(id, mask, recorded),
+                            inserted: false,
+                        });
+                    }
+                    rows_changed.sort_unstable_by_key(|row| row.key);
+                    Some(previous.edited(
+                        rows_changed,
+                        engine_allocation::copy_vec(&self.deleted)?,
+                        hour,
+                    ))
+                } else {
+                    None
                 };
                 if self.record {
                     let delta = self.delta(id, baseline)?;

@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback } from 'react';
 import { errorMessage } from '../shell/api';
 import type { MapBounds } from '../shell/api';
 import type { MapOptions } from '../shell/api';
@@ -7,10 +7,13 @@ import { PickerOptions } from './mapPicker';
 import { perfLog } from '../shell/perf';
 import type { MapExpectation } from '../shell/perf';
 export { CAMPAIGN_MAP_VIEW, campaignToggled, toggleMapSetting } from './mapPicker';
+import { useTransitionValue } from './playback';
 import type { PlaybackController, PlaybackSnapshot } from './playback';
 
 export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible'>;
-interface Surface { element: HTMLElement; target: (clock: PlaybackSnapshot) => MapTarget | null }
+/** Where a surface was last measured; `onScreen` when both its body and visible part have area. */
+interface Layout { bounds: MapBounds; clip: MapBounds; onScreen: boolean }
+interface Surface { element: HTMLElement; target: (clock: PlaybackSnapshot) => MapTarget | null; layout: Layout | null; present: boolean }
 interface Rect { left: number; top: number; right: number; bottom: number }
 
 export function intersectRects(...rects: Rect[]): Rect {
@@ -23,7 +26,10 @@ export function physicalRect(rect: Rect, dpr: number): MapBounds {
   return { x, y, width: Math.max(0, Math.round(rect.right * dpr) - x), height: Math.max(0, Math.round(rect.bottom * dpr) - y) };
 }
 
-/** One batched native geometry/target channel, independently acknowledged per map. */
+/** One batched native geometry/target channel, independently acknowledged per map. Layout is
+ * measured only when it can have changed (`schedule`); clock anchors, a target appearing or going,
+ * picker options, hiding and map errors recompose views from the measured layout (`retarget`).
+ * Between anchors each native map runs its own clock, so forward playback sends nothing. */
 export class MapViewsStore {
   private surfaces = new Map<string, Surface>();
   private states = new Map<string, DashboardMapState>();
@@ -32,6 +38,7 @@ export class MapViewsStore {
   private viewport: HTMLElement | null = null;
   private observer: ResizeObserver | null = null;
   private frame = 0;
+  private layoutDirty = true;
   private pending: DashboardMapView[] | null = null;
   private busy = false;
   private applied = '';
@@ -69,7 +76,8 @@ export class MapViewsStore {
     this.observer = new ResizeObserver(this.schedule);
     this.observer.observe(viewport);
     for (const surface of this.surfaces.values()) this.observer.observe(surface.element);
-    const stopClock = this.clock.subscribe(this.schedule);
+    const stopClock = this.clock.subscribe(this.retarget);
+    const stopFrame = this.clock.subscribeFrame(this.checkPresence);
     let stopStates: (() => void) | undefined;
     let stopOptions: (() => void) | undefined;
     let stopToggles: (() => void) | undefined;
@@ -77,7 +85,7 @@ export class MapViewsStore {
     void this.client.onMapOptions?.((event) => {
       if (!alive()) return;
       this.pickerChanged(event);
-      this.schedule();
+      this.retarget();
     }).then((stop) => { if (!alive()) stop(); else stopOptions = stop; });
     void this.client.onMapToggle?.((event) => {
       if (alive()) this.pickerToggled(event.viewId, event.toggle);
@@ -98,14 +106,17 @@ export class MapViewsStore {
     if (this.client.available) void this.client.onMapStates((states) => {
       if (!this.active || this.generation !== generation) return;
       perfLog?.mapStates(states, this.expectation);
+      let errorChanged = false;
       for (const state of states) {
         const old = this.states.get(state.id);
         if (old && (state.requestedSequence ?? state.sequence) < (old.requestedSequence ?? old.sequence)
           && old.sourceId === state.sourceId && old.revision === state.revision) continue;
+        // A view's visibility depends only on whether its map failed.
+        errorChanged ||= !old?.error !== !state.error;
         this.states.set(state.id, state);
         this.notify(state.id);
       }
-      this.schedule();
+      if (errorChanged) this.retarget();
     }).then((stop) => {
       if (!this.active || this.generation !== generation) stop(); else stopStates = stop;
     }).catch((cause) => { if (this.active && this.generation === generation) this.fail(errorMessage(cause)); });
@@ -114,6 +125,7 @@ export class MapViewsStore {
       this.active = false;
       this.states.clear();
       stopClock();
+      stopFrame();
       stopStates?.();
       stopOptions?.();
       stopToggles?.();
@@ -134,7 +146,7 @@ export class MapViewsStore {
   }
 
   register(id: string, element: HTMLElement, target: Surface['target']): () => void {
-    const surface = { element, target };
+    const surface: Surface = { element, target, layout: null, present: false };
     this.surfaces.set(id, surface);
     this.observer?.observe(element);
     this.schedule();
@@ -145,13 +157,15 @@ export class MapViewsStore {
     };
   }
 
-  setHidden(hidden: boolean): void { if (hidden !== this.hidden) { this.hidden = hidden; this.schedule(); } }
+  setHidden(hidden: boolean): void { if (hidden !== this.hidden) { this.hidden = hidden; this.retarget(); } }
   retry(id: string): void {
     this.states.delete(id);
     this.applied = '';
     this.notify(id);
-    this.schedule();
+    this.retarget();
   }
+  /** Sends the views again, unchanged or not: a restarted viewer is restored with the last anchor it was sent. */
+  resend(): void { this.applied = ''; this.retarget(); }
   getState = (id: string): DashboardMapState | null => this.states.get(id) ?? null;
   subscribe = (id: string, listener: () => void): (() => void) => {
     let listeners = this.listeners.get(id);
@@ -159,9 +173,19 @@ export class MapViewsStore {
     listeners.add(listener);
     return () => { listeners.delete(listener); if (!listeners.size) this.listeners.delete(id); };
   };
-  schedule = (): void => {
+  /** Layout may have changed: measure again before the next views go out. */
+  schedule = (): void => { this.layoutDirty = true; this.retarget(); };
+  /** Views may have changed but layout has not. */
+  retarget = (): void => {
     if (!this.active || this.frame) return;
-    this.frame = requestAnimationFrame(() => { this.frame = 0; this.measure(); });
+    this.frame = requestAnimationFrame(() => { this.frame = 0; this.compose(); });
+  };
+  /** A followed target appears or goes as the clock crosses its recording's ends. */
+  private checkPresence = (): void => {
+    const clock = this.clock.getSnapshot();
+    for (const surface of this.surfaces.values()) {
+      if ((surface.target(clock) != null) !== surface.present) { this.retarget(); return; }
+    }
   };
 
   /** Where a map should be now in its own recording's hours: a followed map moves with the clock, a pinned one stays. */
@@ -183,25 +207,32 @@ export class MapViewsStore {
         fraction: null, sequence: 0, requestedSequence: 0, loading: false, error });
       this.notify(id);
     }
-    if (changed) this.schedule();
+    if (changed) this.retarget();
   }
 
-  private measure(): void {
-    if (!this.viewport || !this.active) return;
-    const clipRect = this.viewport.getBoundingClientRect();
-    const viewport = { left: 0, top: 0, right: document.documentElement.clientWidth, bottom: document.documentElement.clientHeight };
+  private measure(viewport: HTMLElement): void {
+    const clipRect = viewport.getBoundingClientRect();
+    const page = { left: 0, top: 0, right: document.documentElement.clientWidth, bottom: document.documentElement.clientHeight };
     const dpr = window.devicePixelRatio || 1;
+    for (const surface of this.surfaces.values()) {
+      const rect = surface.element.getBoundingClientRect();
+      const bounds = physicalRect(rect, dpr);
+      const clip = physicalRect(intersectRects(rect, clipRect, page), dpr);
+      surface.layout = { bounds, clip, onScreen: bounds.width > 0 && bounds.height > 0 && clip.width > 0 && clip.height > 0 };
+    }
+  }
+
+  private compose(): void {
+    if (!this.viewport || !this.active) return;
+    if (this.layoutDirty) { this.layoutDirty = false; this.measure(this.viewport); }
     const clock = this.clock.getSnapshot();
     const views: DashboardMapView[] = [];
     for (const [id, surface] of this.surfaces) {
       const target = surface.target(clock);
-      if (!target) continue;
-      const rect = surface.element.getBoundingClientRect();
-      const intersection = intersectRects(rect, clipRect, viewport);
-      const bounds = physicalRect(rect, dpr);
-      const clip = physicalRect(intersection, dpr);
-      const visible = !this.hidden && !document.hidden && !this.states.get(id)?.error
-        && bounds.width > 0 && bounds.height > 0 && clip.width > 0 && clip.height > 0;
+      surface.present = target != null;
+      if (!target || !surface.layout) continue;
+      const { bounds, clip, onScreen } = surface.layout;
+      const visible = onScreen && !this.hidden && !document.hidden && !this.states.get(id)?.error;
       const view = { id, ...target, options: this.viewOptions(id, target.options), bounds, clip, visible };
       views.push(view);
       this.lastViews.set(id, view);
@@ -227,8 +258,10 @@ export class MapViewsStore {
   }
 }
 
+/** A map's acknowledged state, which changes with every frame it draws while playing: it renders as
+ * a transition, so it never interrupts the widgets' own. */
 export function useMapState(store: MapViewsStore, id: string): DashboardMapState | null {
   const subscribe = useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]);
   const snapshot = useCallback(() => store.getState(id), [store, id]);
-  return useSyncExternalStore(subscribe, snapshot, snapshot);
+  return useTransitionValue(subscribe, snapshot);
 }

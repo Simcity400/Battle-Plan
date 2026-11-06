@@ -39,7 +39,7 @@ fn full_pool_does_not_prevent_older_completion_or_retarget() {
     admit_all(&mut ledger, 1);
     plan(&mut ledger, 2, 0, 11, &[1]);
     assert!(ledger.decoded(2, 0));
-    // A byte-credit retry of1 must not wait behind workers occupied by2.
+    // Unfinished 1 keeps its dependent 2 off the workers.
     assert_eq!(ledger.next_admission(), None);
     finish_all(&mut ledger, 1);
     assert_eq!(ledger.next_admission(), Some((2, 0)));

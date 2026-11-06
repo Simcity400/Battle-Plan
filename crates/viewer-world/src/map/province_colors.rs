@@ -1,9 +1,6 @@
 //! Incremental province colour pixels, using the political pass's immutable ID image.
 use super::*;
-use map_display_data::{
-    credit::{Credit, display_products},
-    value_index::ValueIndex,
-};
+use map_display_data::value_index::ValueIndex;
 use std::collections::BTreeMap;
 use viewer_foundation::map::textures::Bound;
 
@@ -21,7 +18,6 @@ pub(crate) struct ProvinceColors {
     dirty: Vec<bool>,
     last: ValueIndex<u32, u32>,
     dirty_tiles: Vec<[u32; 2]>,
-    _credit: Credit,
 }
 
 impl ProvinceColors {
@@ -31,18 +27,6 @@ impl ProvinceColors {
         let tile_count = (p.columns as usize)
             .checked_mul(p.rows as usize)
             .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let bytes = source
-            .provinces
-            .len()
-            .checked_mul(size_of::<u32>())
-            .and_then(|n| {
-                tile_count
-                    .checked_mul(size_of::<bool>() + size_of::<[u32; 2]>())
-                    .and_then(|tiles| n.checked_add(tiles))
-            })
-            .and_then(|n| n.checked_add(size_of::<Self>()))
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let credit = display_products().admit_item(bytes)?;
         let colors = vec![0_u32; source.provinces.len()];
         let palette = buffer(
             device,
@@ -149,7 +133,6 @@ impl ProvinceColors {
             dirty: vec![false; tile_count],
             last: ValueIndex::default(),
             dirty_tiles: Vec::with_capacity(tile_count),
-            _credit: credit,
         })
     }
 

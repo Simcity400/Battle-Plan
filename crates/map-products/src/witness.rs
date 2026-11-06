@@ -3,7 +3,6 @@ use installed_content_core::{
     ResolvedLayers,
     content::{ContentRead, ReadOutcome},
 };
-use map_display_data::credit::MemoryBudget;
 use sha2::{Digest, Sha256};
 use std::{io, sync::Arc};
 
@@ -74,13 +73,11 @@ impl ContentReads {
     pub fn operand_bytes(&self, name: &[u8], bytes: &[u8]) {
         self.operand_digest(name, bytes.len() as u64, Sha256::digest(bytes).into());
     }
-    pub(crate) fn operand_write(
+    pub fn operand_stream(
         &self,
         name: &[u8],
-        budget: &MemoryBudget,
         write: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
     ) -> io::Result<()> {
-        let _credit = budget.admit(OPERAND_BUFFER_BYTES)?;
         let mut buffer = Vec::new();
         buffer
             .try_reserve_exact(OPERAND_BUFFER_BYTES)
@@ -94,17 +91,6 @@ impl ContentReads {
         io::Write::flush(&mut output)?;
         self.operand_digest(name, output.length, output.hash.finalize().into());
         Ok(())
-    }
-    pub fn operand_stream(
-        &self,
-        name: &[u8],
-        write: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.operand_write(
-            name,
-            &map_display_data::credit::display_products().clone(),
-            write,
-        )
     }
     fn operand_digest(&self, name: &[u8], length: u64, digest: [u8; 32]) {
         self.recorder.record_read(ContentRead {
@@ -179,29 +165,15 @@ impl<T> Ord for Operand<T> {
 }
 
 #[derive(Clone)]
-pub(crate) struct KeyText(Arc<ChargedText>);
-struct ChargedText {
-    value: String,
-    _credit: map_display_data::credit::Credit,
-}
+pub(crate) struct KeyText(Arc<str>);
 impl KeyText {
-    pub fn new(value: &str) -> io::Result<Self> {
-        let bytes = value
-            .len()
-            .checked_add(
-                size_of::<ChargedText>() + 2 * size_of::<usize>() + align_of::<ChargedText>(),
-            )
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let credit = map_display_data::credit::display_products().admit(bytes)?;
-        Ok(Self(Arc::new(ChargedText {
-            value: value.to_owned(),
-            _credit: credit,
-        })))
+    pub fn new(value: &str) -> Self {
+        Self(Arc::from(value))
     }
 }
 impl PartialEq for KeyText {
     fn eq(&self, other: &Self) -> bool {
-        self.0.value == other.0.value
+        self.0 == other.0
     }
 }
 impl Eq for KeyText {}
@@ -212,7 +184,7 @@ impl PartialOrd for KeyText {
 }
 impl Ord for KeyText {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.value.cmp(&other.0.value)
+        self.0.cmp(&other.0)
     }
 }
 

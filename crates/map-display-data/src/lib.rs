@@ -1,5 +1,3 @@
-pub use product_codec::credit;
-pub mod admission;
 pub mod buildings;
 pub mod copy_index;
 pub mod dirty;
@@ -169,31 +167,6 @@ pub struct SnowMud {
     pub refresh: Option<Refresh>,
 }
 
-impl SnowMud {
-    pub fn decode_storage_bytes(texels: usize, provinces: usize) -> io::Result<usize> {
-        let provinces = Paged::<Option<i64>>::decode_storage_bytes(provinces)?;
-        Paged::<u8>::decode_storage_bytes(texels)?
-            .checked_add(Paged::<u8>::decode_storage_bytes(texels / 4)?)
-            .and_then(|bytes| bytes.checked_add(provinces))
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "snow decode storage size overflow",
-                )
-            })
-    }
-    pub fn owned_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.texels.owned_bytes()
-            + self.unknown.owned_bytes()
-            + self.province_snow.owned_bytes()
-            + self
-                .post_factors
-                .as_ref()
-                .map_or(0, |values| values.owned_bytes())
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refresh {
     pub interval: i64,
@@ -308,11 +281,7 @@ pub mod winter {
             len: usize,
             values: impl IntoIterator<Item = Option<f32>>,
         ) -> io::Result<Self> {
-            Ok(Self(Paged::try_from_iter_in(
-                credit::display_products(),
-                len,
-                values,
-            )?))
+            Ok(Self(Paged::try_from_iter(len, values)?))
         }
         pub fn try_edited(
             &self,
@@ -376,18 +345,15 @@ mod snow_wire_oracle {
     use super::*;
     #[test]
     fn factor_edits_copy_only_dirty_pages_and_preserve_bits_and_rollback() {
-        let owner = credit::MemoryBudget::new(1 << 20);
         let base = winter::SnowFactors(
-            Paged::try_from_iter_in(
-                &owner,
+            Paged::try_from_iter(
                 PAGE_ITEMS * 3,
                 std::iter::repeat_n(Some(0.0), PAGE_ITEMS * 3),
             )
             .unwrap(),
         );
-        let before = owner.used();
         let changed = base.try_edited([Ok((PAGE_ITEMS * 2, Some(-0.0)))]).unwrap();
-        assert!(owner.used() - before < PAGE_ITEMS * size_of::<Option<f32>>() * 2);
+        assert_eq!(changed.changed_pages(&base), [2]);
         assert_ne!(base, changed);
         assert_eq!(base[PAGE_ITEMS * 2].unwrap().to_bits(), 0.0f32.to_bits());
         assert_eq!(
@@ -398,7 +364,6 @@ mod snow_wire_oracle {
             .try_edited([Ok((PAGE_ITEMS * 2, Some(-0.0)))])
             .unwrap();
         assert!(same.ptr_eq(&changed));
-        let before = owner.used();
         let error = changed
             .try_edited([
                 Ok((0, None)),
@@ -406,7 +371,6 @@ mod snow_wire_oracle {
             ])
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-        assert_eq!(owner.used(), before);
         assert_eq!(changed[0], Some(0.0));
         let nan = f32::from_bits(0x7fc0_1234);
         let with_nan = changed.try_edited([Ok((0, Some(nan)))]).unwrap();

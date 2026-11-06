@@ -74,14 +74,6 @@ impl ProductContent {
     }
 
     pub fn from_inputs(reads: ContentReads, inputs: ProductInputs) -> Self {
-        Self::from_inputs_with_memory(reads, inputs, Default::default())
-    }
-
-    pub fn from_inputs_with_memory(
-        reads: ContentReads,
-        inputs: ProductInputs,
-        memory: viewer_foundation::map::perspective::incremental::Memory,
-    ) -> Self {
         let intel_cells = textures::IntelCellsCache::prewarm(Arc::clone(&inputs.map));
         let display_binding = reads
             .witness()
@@ -92,7 +84,7 @@ impl ProductContent {
             display_binding,
             inputs,
             intel_cells,
-            visions: visions::Visions::with_budget(memory),
+            visions: Default::default(),
             weather: Default::default(),
             snow: OnceLock::new(),
             snow_building: Default::default(),
@@ -374,7 +366,7 @@ impl<'a> ProductHour<'a> {
                 .content
                 .intel_cells
                 .get_or_init()?
-                .intel_values(visibility, self.content.visions.budget()),
+                .intel_values(visibility),
             None => textures::clear_intel_map(&self.content.map),
         }
     }
@@ -501,22 +493,21 @@ impl<'a> ProductHour<'a> {
                     _ => {}
                 }
             }
-            let next =
-                match (&*state, visibility) {
-                    (Some((Some(old), intel)), Some(next)) => self
+            let next = match (&*state, visibility) {
+                (Some((Some(old), intel)), Some(next)) => self
+                    .content
+                    .intel_cells
+                    .get_or_init()?
+                    .patch_values(intel, old, next)?,
+                _ => match visibility {
+                    Some(visibility) => self
                         .content
                         .intel_cells
                         .get_or_init()?
-                        .patch_values(intel, old, next, self.content.visions.budget())?,
-                    _ => match visibility {
-                        Some(visibility) => self
-                            .content
-                            .intel_cells
-                            .get_or_init()?
-                            .intel_values(visibility, self.content.visions.budget())?,
-                        None => textures::clear_intel_map(&self.content.map)?,
-                    },
-                };
+                        .intel_values(visibility)?,
+                    None => textures::clear_intel_map(&self.content.map)?,
+                },
+            };
             let intel = if let Some((_, previous)) = &*state {
                 if previous.fog == next.fog
                     && previous.fogged_texels == next.fogged_texels

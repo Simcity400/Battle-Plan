@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
-import type { ComponentProps, CSSProperties, PointerEvent } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { ComponentProps, PointerEvent } from 'react';
 import DateTimePicker from '../components/DateTimePicker';
 import PlaybackSpeed from '../components/PlaybackSpeed';
 import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
+import { usePlaybackHour } from './playback';
 import type { PlaybackController } from './playback';
 import type { DashboardClient } from './client';
 import { newId } from '../shell/ids';
@@ -49,11 +50,14 @@ function MapMuteButton() {
 export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client }: {
   client: DashboardClient; clock: PlaybackController; tracks: BoundTrack[]; alignment: DashboardTemplate['alignment']; defaultRoleId: string | null;
 }) {
+  // React renders the strip on anchors only; the playhead, the date and the hour-bound controls are
+  // painted from the clock's frames (`paint` below), and the calendar takes the paced hour.
   const controlsKey = useCallback(() => {
     const snapshot = clock.getSnapshot();
-    return `${snapshot.hour}:${snapshot.playing}:${snapshot.hoursPerSecond}:${snapshot.bounds?.firstHour}:${snapshot.bounds?.lastHour}`;
+    return `${snapshot.playing}:${snapshot.hoursPerSecond}:${snapshot.bounds?.firstHour}:${snapshot.bounds?.lastHour}`;
   }, [clock]);
   useSyncExternalStore(clock.subscribe, controlsKey, controlsKey);
+  const pacedHour = usePlaybackHour(clock);
   const snapshot = clock.getSnapshot();
   const [dateDraft, setDateDraft] = useState<{ reference: string; hour: number | null } | null>(null);
   const [hover, setHover] = useState<{ left: number; hour: number } | null>(null);
@@ -86,14 +90,42 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
   const coverage = prepared && prepared.owner === referenceKey ? prepared.coverage : null;
   const draft = dateDraft && dateDraft.reference === referenceKey ? dateDraft.hour : null;
   const setDraft = (hour: number | null) => setDateDraft({ reference: referenceKey, hour });
-  const rawHour = reference ? snapshot.hour + reference.axisOffset : null;
+  const rawHour = reference ? pacedHour + reference.axisOffset : null;
   const bounds = snapshot.bounds;
   const span = bounds ? bounds.lastHour - bounds.firstHour : 0;
-  const progress = bounds && span > 0 ? 100 * (snapshot.hour - bounds.firstHour) / span : 0;
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
   const exact = useMemo(() => reference && bounds ? timelinePrepared(coverage, reference.branch.gaps ?? [], reference.axisOffset,
     bounds.firstHour, bounds.lastHour) : [], [reference, bounds, coverage]);
-  const currentGap = reference?.branch.gaps?.find(gap => rawHour != null && gap.firstHour <= rawHour && gap.lastHour >= rawHour);
+  // The date follows the clock's frames until a draft replaces it.
+  const axisOffset = reference?.axisOffset;
+  const liveDate = useMemo(() => axisOffset == null ? undefined
+    : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame }, [clock, axisOffset]);
+  const timeline = useRef<HTMLInputElement>(null);
+  const previous = useRef<HTMLButtonElement>(null);
+  const play = useRef<HTMLButtonElement>(null);
+  const next = useRef<HTMLButtonElement>(null);
+  const painted = useRef('');
+  const paint = useRef(() => {});
+  paint.current = () => {
+    const { hour, bounds } = clock.getSnapshot();
+    const key = `${hour}:${bounds?.firstHour}:${bounds?.lastHour}:${referenceKey}`;
+    if (key === painted.current) return;
+    painted.current = key;
+    const span = bounds ? bounds.lastHour - bounds.firstHour : 0;
+    if (previous.current) previous.current.disabled = !bounds || hour <= bounds.firstHour;
+    if (play.current) play.current.disabled = !bounds || hour >= bounds.lastHour;
+    if (next.current) next.current.disabled = !bounds || hour >= bounds.lastHour;
+    const input = timeline.current;
+    if (!input) return;
+    input.value = String(hour);
+    input.style.setProperty('--scrub-progress', `${bounds && span > 0 ? 100 * (hour - bounds.firstHour) / span : 0}%`);
+    const raw = reference ? hour + reference.axisOffset : null;
+    const gap = raw == null ? undefined : reference?.branch.gaps?.find(item => item.firstHour <= raw && item.lastHour >= raw);
+    input.setAttribute('aria-valuetext', raw == null ? 'No recording selected' : `${formatDateTime(raw)}${gap ? `; reported recording gap: ${gap.reason}` : ''}`);
+  };
+  // After every render, since React leaves these to the painter, and on every clock frame.
+  useLayoutEffect(() => { painted.current = ''; paint.current(); });
+  useLayoutEffect(() => clock.subscribeFrame(() => paint.current()), [clock]);
   const trackHover = (event: PointerEvent<HTMLInputElement>) => {
     if (!bounds || span <= 0 || !reference) return;
     // The range maps values across the track minus the thumb.
@@ -104,26 +136,24 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
   return <>
     <section className="header-playback" aria-label="Playback">
       <div className={`header-date${draft != null ? ' has-date-draft' : ''}`}>
-        <DateTimePicker key={referenceKey} label="Date" hideLabel value={draft ?? rawHour} disabled={!reference}
+        <DateTimePicker key={referenceKey} label="Date" hideLabel value={draft ?? rawHour} live={draft == null ? liveDate : undefined} disabled={!reference}
           otherValue={null} min={reference?.branch.firstHour ?? 0} max={reference?.branch.lastHour ?? 0} describedBy={helpId} onChange={setDraft} />
         {draft != null && reference && <button type="button" className="button primary small" onClick={() => { clock.seek(draft - reference.axisOffset); setDraft(null); }}>Go</button>}
       </div>
       <div className="header-transport" aria-label="Playback controls">
-        <button type="button" className="icon-button" disabled={!bounds || snapshot.hour <= bounds.firstHour} onClick={() => { setDraft(null); clock.step(-1); }} aria-label="Previous hour" data-tooltip="Previous hour"><Icon name="chevrons-left" /></button>
-        <button type="button" className={`header-play${snapshot.playing ? ' is-playing' : ''}`} disabled={!bounds || snapshot.hour >= bounds.lastHour} onClick={() => { setDraft(null); clock.setPlaying(!snapshot.playing); }} aria-label={snapshot.playing ? 'Pause playback' : 'Play recording'} data-tooltip={snapshot.playing ? 'Pause' : 'Play'}>
+        <button type="button" ref={previous} className="icon-button" onClick={() => { setDraft(null); clock.step(-1); }} aria-label="Previous hour" data-tooltip="Previous hour"><Icon name="chevrons-left" /></button>
+        <button type="button" ref={play} className={`header-play${snapshot.playing ? ' is-playing' : ''}`} onClick={() => { setDraft(null); clock.setPlaying(!clock.getSnapshot().playing); }} aria-label={snapshot.playing ? 'Pause playback' : 'Play recording'} data-tooltip={snapshot.playing ? 'Pause' : 'Play'}>
           <Icon name={snapshot.playing ? 'pause' : 'play'} />
         </button>
-        <button type="button" className="icon-button" disabled={!bounds || snapshot.hour >= bounds.lastHour} onClick={() => { setDraft(null); clock.step(1); }} aria-label="Next hour" data-tooltip="Next hour"><Icon name="chevrons-right" /></button>
+        <button type="button" ref={next} className="icon-button" onClick={() => { setDraft(null); clock.step(1); }} aria-label="Next hour" data-tooltip="Next hour"><Icon name="chevrons-right" /></button>
       </div>
       <PlaybackSpeed value={snapshot.hoursPerSecond} onChange={(speed) => clock.setSpeed(speed)} />
       <MapMuteButton />
     </section>
     <div className="header-timeline-wrap" data-empty={!bounds || span <= 0 || undefined}>
       <div className="timeline-track">
-        <input className="header-timeline" type="range" aria-label="Campaign timeline" disabled={!bounds || span <= 0}
-          min={bounds?.firstHour ?? 0} max={bounds?.lastHour ?? 1} step={1} value={snapshot.hour}
-          aria-valuetext={rawHour == null ? 'No recording selected' : `${formatDateTime(rawHour)}${currentGap ? `; reported recording gap: ${currentGap.reason}` : ''}`}
-          style={{ '--scrub-progress': `${progress}%` } as CSSProperties}
+        <input ref={timeline} className="header-timeline" type="range" aria-label="Campaign timeline" disabled={!bounds || span <= 0}
+          min={bounds?.firstHour ?? 0} max={bounds?.lastHour ?? 1} step={1}
           onPointerMove={trackHover} onPointerLeave={() => setHover(null)}
           onChange={(event) => { setDraft(null); clock.seek(Number(event.currentTarget.value)); }} />
         <div className="timeline-prepared-markers" aria-label="Exact prepared hours">{exact.map((span, index) =>

@@ -3,20 +3,11 @@
 //! stream met them, and a [`ViewIdentity`] names what it named before.
 
 use super::{ChangeFacts, FieldStamp, SharedView, TableView, ViewIdentity};
-use engine_allocation::credit::{Credit, MemoryBudget};
 use replay_spool::{Placeholder, Reader, Spooled, Writer};
 use std::{
     io,
-    sync::{Arc, OnceLock, Weak},
+    sync::{Arc, Weak},
 };
-
-/// What credits read-back change facts and stamps hold: the bytes their writers' held, counted
-/// apart from every budget that admits new ones.
-fn credit(bytes: usize) -> io::Result<Credit> {
-    static READ: OnceLock<MemoryBudget> = OnceLock::new();
-    READ.get_or_init(|| MemoryBudget::new(usize::MAX))
-        .admit(bytes)
-}
 
 impl Spooled for TableView {
     // A view's identity names it after it is gone.
@@ -110,8 +101,7 @@ impl Spooled for ChangeFacts {
         self.changed.spool(out)?;
         self.deleted.spool(out)?;
         self.fields.spool(out)?;
-        self.membership.spool(out)?;
-        self._credit.bytes().spool(out)
+        self.membership.spool(out)
     }
 
     fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
@@ -121,7 +111,6 @@ impl Spooled for ChangeFacts {
             deleted: Spooled::unspool(input)?,
             fields: Spooled::unspool(input)?,
             membership: Spooled::unspool(input)?,
-            _credit: credit(Spooled::unspool(input)?)?,
         })
     }
 }
@@ -130,8 +119,7 @@ impl Spooled for FieldStamp {
     fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
         self.epoch.spool(out)?;
         self.fields.spool(out)?;
-        self.membership.spool(out)?;
-        self._credit.bytes().spool(out)
+        self.membership.spool(out)
     }
 
     fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
@@ -139,7 +127,6 @@ impl Spooled for FieldStamp {
             epoch: Spooled::unspool(input)?,
             fields: Spooled::unspool(input)?,
             membership: Spooled::unspool(input)?,
-            _credit: credit(Spooled::unspool(input)?)?,
         })
     }
 }

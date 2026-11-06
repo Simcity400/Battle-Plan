@@ -1759,14 +1759,6 @@ impl Scene {
             self.fog = fog;
             return Ok(());
         }
-        let _credit = map_display_data::credit::display_products().clone().admit(
-            texels
-                .pages()
-                .len()
-                .checked_mul(2 * size_of::<usize>())
-                .and_then(|bytes| bytes.checked_add(map_display_data::PAGE_ITEMS * 8))
-                .ok_or_else(|| invalid("fog upload byte count overflow"))?,
-        )?;
         let pages = self.intel_installed.as_ref().map_or_else(
             || (0..texels.pages().len()).collect(),
             |old| texels.changed_pages(old),

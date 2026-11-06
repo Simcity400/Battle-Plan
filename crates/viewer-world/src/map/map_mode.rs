@@ -520,7 +520,6 @@ pub fn pack(color: [f32; 4]) -> [u8; 4] {
 
 /// Immutable inputs of every mode for one content stack.
 pub struct Content {
-    _credit: map_display_data::credit::Credit,
     id: u64,
     memberships: std::sync::Mutex<membership::Memberships>,
     styles: std::sync::Mutex<style_fold::Styles>,
@@ -541,21 +540,6 @@ pub struct Content {
 }
 
 impl Content {
-    pub fn evict_memberships(&self) {
-        self.strategic.evict();
-        *self
-            .scripts
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Default::default();
-        *self
-            .styles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Default::default();
-        *self
-            .memberships
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Default::default();
-    }
     pub fn bind_membership_map(&self, map: &Arc<MapData>) {
         self.strategic.bind(map);
         self.scripts
@@ -586,8 +570,6 @@ impl Content {
         infrastructure: infrastructure::Content,
         strategic: strategic::Content,
     ) -> io::Result<Self> {
-        let credit = map_display_data::credit::display_products()
-            .admit_item(size_of::<Self>() + 2 * size_of::<usize>() + align_of::<Self>())?;
         let defines = ModeDefines::load(defines)?;
         let terrain = match terrain {
             Ok(sources) => Ok(terrain::build(&sources, &defines.terrain)?),
@@ -599,7 +581,6 @@ impl Content {
             .map(|name| (name.to_ascii_lowercase(), categories.color(name)))
             .collect();
         Ok(Self {
-            _credit: credit,
             id: super::next_projection_id(),
             memberships: Default::default(),
             styles: Default::default(),

@@ -132,7 +132,7 @@ fn query(
             branch,
             &focus.completions,
         )?;
-        let ideas = idea_history::row_feed(&source.replay(), branch, cancelled)?;
+        let ideas = Arc::new(idea_history::row_feed(&source.replay(), branch, cancelled)?);
         let projects = match PROJECTS.with_borrow(Clone::clone) {
             Some(projects) => projects,
             None => Arc::new(special_projects::row::feed(
@@ -524,6 +524,7 @@ fn pages(
         let page = query(
             source,
             query::Params {
+                after: None,
                 branch_id: "1".into(),
                 first_hour: None,
                 last_hour: live,
@@ -662,6 +663,7 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
     let error = query(
         &source,
         query::Params {
+            after: None,
             branch_id: "1".into(),
             first_hour: None,
             last_hour: 720,
@@ -889,6 +891,7 @@ fn prepared_feed_obsolete_project_pages_advance_to_live_rows_after_resume_and_ap
     let first = query(
         &source,
         query::Params {
+            after: None,
             branch_id: "1".into(),
             first_hour: None,
             last_hour: 130,
@@ -1139,6 +1142,7 @@ fn prepared_feed_strike_only_campaign_keeps_recorded_types_and_stockpile_refusal
     let page = query(
         &source,
         query::Params {
+            after: None,
             branch_id: "1".into(),
             first_hour: None,
             last_hour: 101,
@@ -1194,6 +1198,7 @@ fn prepared_feed_ordinary_project_after_many_late_rows_reads_only_its_raw_page()
     let page = with_projects(projects, || query(
         &source,
         query::Params {
+            after: None,
             branch_id: "1".into(),
             first_hour: None,
             last_hour: 8_000,
@@ -1963,6 +1968,7 @@ fn feed_and_occurrence_pages_outside_their_branch_answer_empty_over_the_hours_th
     state.publish(&mut fixture, &source, false, &flag);
     let context = LoadContext { content: None };
     let feed = |first: Option<i32>, last: i32, cursor: Option<&str>| query::Params {
+        after: None,
         branch_id: "1".into(),
         first_hour: first,
         last_hour: last,

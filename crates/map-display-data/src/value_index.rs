@@ -1,7 +1,6 @@
-use crate::credit::{Credit, display_products};
 use std::{cmp::Ordering, io, sync::Arc};
 
-// Owned values share immutable AVL paths; nodes reserve before allocation.
+// Owned values share immutable AVL paths.
 pub struct ValueIndex<K, V>(Option<Arc<Node<K, V>>>);
 struct Node<K, V> {
     key: K,
@@ -10,7 +9,6 @@ struct Node<K, V> {
     right: ValueIndex<K, V>,
     height: u8,
     len: usize,
-    _credit: Credit,
 }
 impl<K, V> Clone for ValueIndex<K, V> {
     fn clone(&self) -> Self {
@@ -177,9 +175,6 @@ impl<K: Ord + Clone, V: Clone + PartialEq> ValueIndex<K, V> {
         None
     }
     fn node(key: K, value: V, left: Self, right: Self) -> io::Result<Self> {
-        let credit = display_products().admit_item(
-            size_of::<Node<K, V>>() + 2 * size_of::<usize>() + align_of::<Node<K, V>>(),
-        )?;
         let height = 1 + left.height().max(right.height());
         let len = 1 + left.len() + right.len();
         Ok(Self(Some(Arc::new(Node {
@@ -189,7 +184,6 @@ impl<K: Ord + Clone, V: Clone + PartialEq> ValueIndex<K, V> {
             right,
             height,
             len,
-            _credit: credit,
         }))))
     }
     fn balanced(key: K, value: V, mut left: Self, mut right: Self) -> io::Result<Self> {

@@ -283,8 +283,16 @@ impl NativeHost {
             });
         });
         let diagnostics = self.clone();
+        let diagnostics_app = window.app_handle().clone();
         thread::spawn(move || {
             read_lines(errors, |line| {
+                // Map acknowledgements arrive here, apart from the data replies on the output pipe.
+                if let Some(json) = line.strip_prefix(EVENT_PREFIX) {
+                    if let Ok(event) = serde_json::from_str::<NativeEvent>(json) {
+                        diagnostics.receive(event, generation, &diagnostics_app);
+                    }
+                    return;
+                }
                 let mut inner = diagnostics
                     .shared
                     .0

@@ -102,7 +102,7 @@ impl Fold {
                 || bank.is_none_or(|bank| !bank.ptr_eq(&active.bank))
         }) {
             self.active = Some(Active {
-                mode: Retained::build(mode.len(), || mode.to_owned())?,
+                mode: Retained::new(mode.to_owned()),
                 viewer,
                 branch: inputs.frame.branch,
                 campaign: inputs.frame.tables[TableId::Campaign.index()].identity(),
@@ -176,11 +176,7 @@ impl State {
                     .collect())
             } else {
                 match chosen {
-                    Ok(chosen) => Ok(chosen
-                        .map(|chosen| {
-                            Retained::build(chosen.capacity() * size_of::<u32>(), || chosen)
-                        })
-                        .transpose()?),
+                    Ok(chosen) => Ok(chosen.map(Retained::new)),
                     Err(why) => Err(vec![format!("{what}'s targets are refused: {why}")]),
                 }
             });
@@ -332,11 +328,9 @@ impl State {
                     self.counts = counts(&self.counts, &old.refusals, false)?;
                 }
                 self.counts = counts(&self.counts, &refusals, true)?;
-                let bytes = refusals.capacity() * size_of::<String>()
-                    + refusals.iter().map(String::capacity).sum::<usize>();
                 let result = Callback {
                     operation,
-                    refusals: Retained::build(bytes, || refusals)?,
+                    refusals: Retained::new(refusals),
                 };
                 self.callbacks = self.callbacks.inserted(id, result)?;
                 self.routes.replace(Some(id), &reads, inputs.frame)?;
@@ -347,11 +341,11 @@ impl State {
                 .expect("selected script target callback")
                 .operation
                 .clone();
-            let target = Retained::build(0, || TargetOp {
+            let target = Retained::new(TargetOp {
                 id,
                 provinces: members.clone(),
                 operation,
-            })?;
+            });
             output = output.inserted(id, target)?;
         }
         self.pending = ValueIndex::default();
@@ -377,7 +371,7 @@ fn counts(
 ) -> io::Result<ValueIndex<Retained<String>, usize>> {
     let mut next = old.clone();
     for reason in reasons {
-        let key = Retained::build(reason.len(), || reason.clone())?;
+        let key = Retained::new(reason.clone());
         let count = next.get(&key).copied().unwrap_or(0);
         next = if add {
             next.inserted(key, count + 1)?
@@ -400,12 +394,6 @@ fn evaluate(
         TargetId::State(state) => (EventObject::State(state), None),
         TargetId::Portion { state, controller } => (EventObject::State(state), Some(controller)),
     };
-    let _scope_credit = map_display_data::credit::display_products().admit_item(
-        (if controller.is_some() { 3 } else { 2 }) * size_of::<EventScope>()
-            + size_of::<RefCell<EventScopes>>()
-            + 2 * size_of::<usize>()
-            + align_of::<RefCell<EventScopes>>(),
-    )?;
     let mut scopes = Vec::with_capacity(if controller.is_some() { 3 } else { 2 });
     scopes.extend([
         EventScope {
@@ -517,8 +505,7 @@ mod tests {
         let dlcs = BTreeSet::new();
         let aliases = Arc::default();
         let mut encoder = FrameEncoder::new();
-        let mut decoder = FrameDecoder::new()
-            .with_change_facts(map_display_data::credit::display_products().clone());
+        let mut decoder = FrameDecoder::new().with_change_facts();
         let mut previous: Option<LayerProgram> = None;
         for step in 0..6 {
             input.hour += 1;
@@ -623,8 +610,7 @@ mod tests {
         let dlcs = BTreeSet::new();
         let aliases = Arc::default();
         let mut encoder = FrameEncoder::new();
-        let mut decoder = FrameDecoder::new()
-            .with_change_facts(map_display_data::credit::display_products().clone());
+        let mut decoder = FrameDecoder::new().with_change_facts();
         for step in 0..8 {
             input.hour += 1;
             let TableView::Complete(TableRows::Provinces(provinces)) =

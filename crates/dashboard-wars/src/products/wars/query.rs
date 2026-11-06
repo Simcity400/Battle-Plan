@@ -815,31 +815,140 @@ fn casualties_at<P: PageRead>(
     Ok(casualties)
 }
 
+/// A war's casualty runs put in hour order, adjacent equal runs merged.
+fn merged(mut runs: Vec<WarCasualtyRun>) -> Vec<WarCasualtyRun> {
+    runs.sort_by_key(|run| run.0);
+    let mut held: Vec<WarCasualtyRun> = Vec::with_capacity(runs.len());
+    for run in runs {
+        if let Some(last) = held.last_mut()
+            && i64::from(run.0) <= i64::from(last.1) + 1
+            && (&run.2, &run.3, &run.4, &run.5) == (&last.2, &last.3, &last.4, &last.5)
+        {
+            last.1 = last.1.max(run.1);
+        } else {
+            held.push(run);
+        }
+    }
+    held
+}
+
 /// Each war's casualty runs put in hour order, adjacent equal runs merged.
+#[cfg(test)]
 fn place_casualties(reply: &mut WarsReply, mut casualties: HashMap<usize, Vec<WarCasualtyRun>>) {
     for (index, war) in reply.wars.iter_mut().enumerate() {
-        war.casualties.clear();
-        let mut runs = casualties.remove(&index).unwrap_or_default();
-        runs.sort_by_key(|run| run.0);
-        for run in runs {
-            if let Some(last) = war.casualties.last_mut()
-                && i64::from(run.0) <= i64::from(last.1) + 1
-                && (&run.2, &run.3, &run.4, &run.5) == (&last.2, &last.3, &last.4, &last.5)
-            {
-                last.1 = last.1.max(run.1);
-            } else {
-                war.casualties.push(run);
-            }
-        }
+        war.casualties = merged(casualties.remove(&index).unwrap_or_default());
     }
 }
 
-/// The whole-branch projection `walked` reads from `opened`, with each war's casualties at
-/// `hours`; an empty set returns structure. None before the family publishes the branch.
+/// What a viewpoint's walk reads beside its viewpoint: equal publications, equal walks.
+#[derive(Clone)]
+struct WalkPublication {
+    store: store::SourceKey,
+    stamp: ([u64; 3], u64),
+    through: Option<i32>,
+    bounds: (i32, i32),
+    cat: Option<Arc<Catalogue>>,
+}
+
+impl PartialEq for WalkPublication {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.store, self.stamp, self.through, self.bounds)
+            == (&other.store, other.stamp, other.through, other.bounds)
+            && match (&self.cat, &other.cat) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+/// A viewpoint's walk of one publication, with what naming its wars noted.
+struct HeldWalk {
+    publication: WalkPublication,
+    reply: Arc<WarsReply>,
+    noted: dashboard_text::catalogue::OwnRefusals,
+}
+
+/// Each branch and viewpoint's walk of the branch's current publication, kept in a slot of its
+/// own rather than the observation cache, whose least recently used entries other products'
+/// reads displace: every hour read of the viewpoint is answered from it.
+#[derive(Default)]
+struct Walks(HashMap<(u64, Option<String>), Arc<std::sync::Mutex<Option<HeldWalk>>>>);
+
+/// The whole-branch walk `walked` reads from `opened`, read once per publication, and what
+/// naming its wars noted, for a reply showing them to credit.
+fn kept_walk(
+    source: &Source,
+    store: &store::SourceKey,
+    opened: &Opened,
+    walked: &Walked<'_>,
+) -> io::Result<(Arc<WarsReply>, dashboard_text::catalogue::OwnRefusals)> {
+    use std::sync::{PoisonError, TryLockError};
+    let publication = WalkPublication {
+        store: store.clone(),
+        stamp: opened.stamp(),
+        through: opened.through(),
+        bounds: walked.bounds,
+        cat: walked.cat.cloned(),
+    };
+    let state = source.state::<Walks>();
+    let slot = Arc::clone(
+        state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .entry((walked.branch, walked.view.map(str::to_owned)))
+            .or_default(),
+    );
+    // Held while it is walked, so the widgets asking at once walk it once.
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(held) = held.as_ref()
+        && held.publication == publication
+    {
+        return Ok((Arc::clone(&held.reply), held.noted.clone()));
+    }
+    *held = None;
+    let (reply, noted) = dashboard_text::catalogue::capture_isolated(|| {
+        let cpu = replay_frame::cpu::scope_phase("wars:query_walk");
+        let reply = opened.read(walked.cancelled, |snapshot, directory| {
+            walk(snapshot, directory, Keys::of(directory)?, walked)
+        });
+        drop(cpu);
+        reply
+    });
+    let reply = Arc::new(reply?);
+    // A cancelled walk may have stopped short of a whole one.
+    dashboard_text::metadata::check_cancel(walked.cancelled)?;
+    *held = Some(HeldWalk {
+        publication: publication.clone(),
+        reply: Arc::clone(&reply),
+        noted: noted.clone(),
+    });
+    drop(held);
+    // The branch's walks of an earlier publication are never read again.
+    state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .0
+        .retain(|(branch, _), other| {
+            *branch != walked.branch
+                || Arc::ptr_eq(other, &slot)
+                || match other.try_lock() {
+                    Ok(other) => other
+                        .as_ref()
+                        .is_some_and(|other| other.publication == publication),
+                    Err(TryLockError::WouldBlock) => true,
+                    Err(TryLockError::Poisoned(_)) => false,
+                }
+        });
+    Ok((reply, noted))
+}
+
+/// The whole-branch structure `walked` reads from `opened`, without casualties. None before
+/// the family publishes the branch.
 pub(crate) fn projection(
     walked: &Walked<'_>,
     opened: Option<&Opened>,
-    hours: &BTreeSet<i32>,
 ) -> io::Result<Option<WarsReply>> {
     let Some(opened) = opened else {
         return Ok(None);
@@ -847,15 +956,34 @@ pub(crate) fn projection(
     opened.read(walked.cancelled, |snapshot, directory| {
         let keys = Keys::of(directory)?;
         let cpu = replay_frame::cpu::scope_phase("wars:query_walk");
-        let mut reply = walk(snapshot, directory, keys, walked)?;
+        let reply = walk(snapshot, directory, keys, walked)?;
         drop(cpu);
-        if !hours.is_empty() {
-            let casualties = casualties_at(snapshot, directory, keys, &reply.wars, hours)?;
-            place_casualties(&mut reply, casualties);
-        }
         check_reply(&reply)?;
         Ok(Some(reply))
     })
+}
+
+/// The casualty runs of each of `wars` observed at one of `hours`, in the order of the wars.
+fn hourly_casualties(
+    opened: &Opened,
+    wars: &[WarTimeline],
+    hours: &BTreeSet<i32>,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<WarCasualties>> {
+    let mut casualties = opened.read(cancelled, |snapshot, directory| {
+        casualties_at(snapshot, directory, Keys::of(directory)?, wars, hours)
+    })?;
+    Ok(wars
+        .iter()
+        .enumerate()
+        .filter_map(|(index, war)| {
+            let runs = casualties.remove(&index)?;
+            Some(WarCasualties {
+                id: war.id.clone(),
+                runs: merged(runs),
+            })
+        })
+        .collect())
 }
 
 /// The participation tables at `hour`: the last whole parts, then each hour's diff since.
@@ -1062,13 +1190,14 @@ fn bounds(source: &Source, params: &WarsParams) -> io::Result<(u64, (i32, i32))>
 }
 
 /// The wars reply to `value` from `opened`, the family's publication on its branch (none before
-/// its first): the viewpoint's wars, their casualties at the `reads` hours and, when asked, the
-/// groups at the `current` hours.
+/// its first). Without hours, the viewpoint's wars ([`WarsReply`]), walked once per
+/// publication; with them, only what they read ([`WarsHourly`]): the casualties of the walk's
+/// wars at the `reads` hours and the groups at the `current` hours.
 pub fn query(
     source: &Source,
     value: &Value,
     opened: Option<&Opened>,
-    _store: &store::SourceKey,
+    store: &store::SourceKey,
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
@@ -1092,30 +1221,42 @@ pub fn query(
         cat: cat.as_ref(),
         cancelled,
     };
-    let reply = projection(&walked, opened, &reads)?.unwrap_or_else(|| WarsReply {
+    if reads.is_empty() && asked.is_empty() {
+        let Some(opened) = opened else {
+            return Ok(serde_json::to_value(WarsReply {
+                branch_id: params.branch_id.clone(),
+                available: false,
+                viewpoints: Vec::new(),
+                country_names: Vec::new(),
+                wars: Vec::new(),
+                unobserved: Vec::new(),
+                capitulations_unobserved: Vec::new(),
+                warnings: Vec::new(),
+            })?);
+        };
+        let (reply, noted) = kept_walk(source, store, opened, &walked)?;
+        // The reply shows the names the walk noted, whichever request walked it.
+        dashboard_text::catalogue::credit(&noted);
+        check_reply(&reply)?;
+        return Ok(serde_json::to_value(&*reply)?);
+    }
+    let mut hourly = WarsHourly {
         branch_id: params.branch_id.clone(),
-        available: false,
-        viewpoints: Vec::new(),
-        country_names: Vec::new(),
-        wars: Vec::new(),
-        unobserved: Vec::new(),
-        capitulations_unobserved: Vec::new(),
-        warnings: Vec::new(),
-    });
-    let mut data = serde_json::to_value(reply)?;
-    if let Some(opened) = opened
-        && !asked.is_empty()
-    {
-        let current = opened.read(cancelled, |snapshot, directory| {
-            current(snapshot, directory, &walked, &asked)
-        })?;
-        if !current.is_empty()
-            && let Some(reply) = data.as_object_mut()
-        {
-            reply.insert("current".into(), serde_json::to_value(current)?);
+        casualties: Vec::new(),
+        current: Vec::new(),
+    };
+    if let Some(opened) = opened {
+        if !reads.is_empty() {
+            let (reply, _) = kept_walk(source, store, opened, &walked)?;
+            hourly.casualties = hourly_casualties(opened, &reply.wars, &reads, cancelled)?;
+        }
+        if !asked.is_empty() {
+            hourly.current = opened.read(cancelled, |snapshot, directory| {
+                current(snapshot, directory, &walked, &asked)
+            })?;
         }
     }
-    Ok(data)
+    Ok(serde_json::to_value(hourly)?)
 }
 
 /// The structure the casualty breakdown reads: the wars of the native holder among `selected`,
@@ -1140,7 +1281,6 @@ pub fn selected_structure(
             cancelled,
         },
         opened,
-        &BTreeSet::new(),
     )
 }
 

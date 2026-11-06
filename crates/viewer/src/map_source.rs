@@ -8,7 +8,7 @@ use replay::{
     container::{Parallel, Replay},
 };
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
-use replay_frame::frame::{DecodedFrame, FrameDecoder, TableView};
+use replay_frame::frame::{DecodedFrame, TableView};
 use std::{io, sync::Arc};
 
 /// A change-run index of a replay's native columnar recordings, holding exactly the hours the
@@ -27,14 +27,9 @@ impl Columnar {
             .then(|| Arc::new(Self { file }))
     }
 
-    /// A playback's source of `replay`'s map, its views' change facts charged to `changes`,
-    /// moving and building views on `workers` threads.
-    pub fn open(
-        &self,
-        replay: Arc<Replay>,
-        changes: MemoryBudget,
-        workers: usize,
-    ) -> io::Result<MapSource> {
+    /// A playback's source of `replay`'s map, its views carrying change facts, moving and
+    /// building views on `workers` threads.
+    pub fn open(&self, replay: Arc<Replay>, workers: usize) -> io::Result<MapSource> {
         let snapshots = Snapshots::new(
             Arc::clone(&self.file),
             dashboard_base::map_tables::selected_tables(),
@@ -43,7 +38,7 @@ impl Columnar {
             workers,
             tables_memory().clone(),
         )?
-        .with_change_facts(changes);
+        .with_change_facts();
         Ok(MapSource {
             pending: self.file.pending(&replay),
             snapshots,
@@ -93,8 +88,8 @@ impl MapSource {
     /// as hours of their own, after it, and the cursor moves on from whichever it read last.
     /// An hour no run holds is the replay's gap there. A move short of the memory the map's
     /// tables share waits for it until `cancelled`; one needing more than they may ever hold is
-    /// refused, never a gap. Resource pressure and cancellation leave the source to be asked
-    /// again; damage is the hour's gap.
+    /// refused, never a gap. Cancellation leaves the source to be asked again; damage is the
+    /// hour's gap.
     pub fn read(
         &mut self,
         branch: BranchId,
@@ -161,14 +156,7 @@ impl MapSource {
                 hour,
                 reason: error.to_string(),
             }),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) || FrameDecoder::change_fact_admission_refused(&error) =>
-            {
-                Err(error)
-            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
             Err(error) => Ok(gap(format!("unreadable change-run hour: {error}"))),
         }
     }

@@ -1,7 +1,7 @@
 //! Viewer-local native snow/mud graphics refresh, independent of replay hours.
 
 use super::{Refresh, SnowMud};
-use map_display_data::{Paged, admission::Accounting, credit::display_products};
+use map_display_data::Paged;
 use std::{io, ops::Range, sync::Arc};
 use viewer_foundation::map::presentation::Continuity;
 
@@ -21,7 +21,6 @@ pub struct Presentation {
     target: Paged<u8>,
     mismatched: Vec<usize>,
     uploads: Vec<Range<usize>>,
-    allocation: Option<Accounting>,
     dirty: bool,
     refresh: Option<Refresh>,
     last_time: Option<f32>,
@@ -39,44 +38,34 @@ fn dirty_pages(
         .count()
         .checked_add(mismatched.len())
         .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-    map_display_data::retained::Retained::try_build_in(
-        display_products(),
-        count
-            .checked_mul(size_of::<usize>())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        || {
-            let mut dirty = Vec::new();
-            dirty
-                .try_reserve_exact(count)
-                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            dirty.extend(pending.changed_page_indices(target));
-            dirty.extend_from_slice(mismatched);
-            dirty.sort_unstable();
-            dirty.dedup();
-            Ok(dirty)
-        },
-    )
+    let mut dirty = Vec::new();
+    dirty
+        .try_reserve_exact(count)
+        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+    dirty.extend(pending.changed_page_indices(target));
+    dirty.extend_from_slice(mismatched);
+    dirty.sort_unstable();
+    dirty.dedup();
+    Ok(map_display_data::retained::Retained::new(dirty))
+}
+
+fn reserve<T>(values: &mut Vec<T>, additional: usize) -> io::Result<()> {
+    values
+        .try_reserve(additional)
+        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))
 }
 
 impl Presentation {
     fn reserve(&mut self, snow: &SnowMud) -> io::Result<()> {
-        if self.allocation.is_none() {
-            self.allocation = Some(Accounting::new(
-                display_products(),
-                size_of::<Accounting>(),
-            )?);
-        }
-        let allocation = self.allocation.as_mut().unwrap();
-        let additional = snow.texels.len().saturating_sub(self.texels.len());
-        allocation.reserve(&mut self.texels, additional)?;
-        let additional = (snow.texels.len() / 4).saturating_sub(self.unknown.len());
-        allocation.reserve(&mut self.unknown, additional)?;
+        let texels = snow.texels.len().saturating_sub(self.texels.len());
+        reserve(&mut self.texels, texels)?;
+        let unknown = (snow.texels.len() / 4).saturating_sub(self.unknown.len());
+        reserve(&mut self.unknown, unknown)?;
         let pages = snow.texels.pages().len();
-        let additional = pages.saturating_sub(self.mismatched.len());
-        allocation.reserve(&mut self.mismatched, additional)?;
-        let additional = pages.max(1).saturating_sub(self.uploads.len());
-        allocation.reserve(&mut self.uploads, additional)?;
-        Ok(())
+        let mismatched = pages.saturating_sub(self.mismatched.len());
+        reserve(&mut self.mismatched, mismatched)?;
+        let uploads = pages.max(1).saturating_sub(self.uploads.len());
+        reserve(&mut self.uploads, uploads)
     }
 
     fn upload(&mut self, mut range: Range<usize>) {

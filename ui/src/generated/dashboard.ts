@@ -579,18 +579,25 @@ export type FocusArtworkParams = { branchId: string, hour: number, tag: string,
 database: FocusDatabase, tokens: Array<string>, textOnly?: boolean, includeDescriptions?: boolean, iconsOnly?: boolean, };
 export type DatedFocusArtwork = { artwork: Artwork, reason: string | null, };
 export type FocusArtworkReply = { branchId: string, hour: number, tag: string, database: FocusDatabase, items: Array<DatedFocusArtwork>, warnings: Array<string>, };
-export type FocusArtParams = { branchId: string, tag: string, hour: number,
+export type FocusArtGroup = { hour: number,
 /**
  * The database every token is looked up in.
  */
 database: FocusDatabase,
 /**
- * Distinct tokens in ascending order, at most one page.
+ * Distinct tokens in ascending order.
  */
-tokens: Array<string>, mode: FocusArtMode, };
+tokens: Array<string>, };
+export type FocusArtParams = { branchId: string, tag: string,
+/**
+ * Ascending by hour, then database, each pair once; at most a page of
+ * tokens and the active focus over all of them.
+ */
+groups: Array<FocusArtGroup>, mode: FocusArtMode, };
 export type FocusArtMode = "display" | "text";
 export type FocusArtFailure = { reason: string, tokens: number, };
-export type FocusArtReply = { art: Array<PreparedFocusArt>, warnings: Array<string>, failures: Array<FocusArtFailure>, };
+export type FocusArtGroupReply = { art: Array<PreparedFocusArt>, failures: Array<FocusArtFailure>, error: QueryError | null, };
+export type FocusArtReply = { groups: Array<FocusArtGroupReply>, warnings: Array<string>, };
 export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, definitions?: Array<ResearchDefinitionText>, };
 export type TechnologyArtworkParams = { tokens: Array<string>,
 /**
@@ -1575,6 +1582,20 @@ export type WarsAtHour = { hour: number, contributions: Array<WarContributionGro
  * at an unrecorded hour.
  */
 available: boolean, wars: Array<WarTimeline>, warnings: Array<string>, };
+export type WarCasualties = {
+/**
+ * The war's id in the reply without hours of the same publication.
+ */
+id: string, runs: Array<WarCasualtyRun>, };
+export type WarsHourly = { branchId: string,
+/**
+ * Each war observed at a `reads` hour, in the order of the wars, with its runs there.
+ */
+casualties: Array<WarCasualties>,
+/**
+ * The groups and contributions at each `current` hour the publication accepted.
+ */
+current: Array<WarsAtHour>, };
 export type WarContributionGroup = { viewpointSide: Array<string>, opposingSide: Array<string>, participants: Array<WarContributionCountry>, reason: string | null, };
 export type WarContributionCountry = { tag: string, side: WarSide,
 /**
@@ -3821,6 +3842,30 @@ firstHour: number, lastHour: number,
  * Every line with a read in the window, in the order first seen.
  */
 lines: Array<LineDetail>, };
+export type ProductionHourParams = { branchId: string, tag: string, hour: number, since?: number,
+/**
+ * The `basis` of the reply `since` was read from: lines are read against it only when
+ * the view still answers from that basis.
+ */
+basis?: string, };
+export type ProductionLineHourReply = { warnings: Array<string>, branchId: string, tag: string, decimals: number, hour: number,
+/**
+ * The hour asked before that the lines are read against; none for every line.
+ */
+since: number | null,
+/**
+ * The kept view it was read from, which a later hour names to be read against it; none
+ * when no view was kept.
+ */
+basis: string | null,
+/**
+ * The reads holding `hour`, whole, of each line they differ for, in the order first seen.
+ */
+lines: Array<LineDetail>,
+/**
+ * The lines with reads holding `since` and none holding `hour`.
+ */
+ended: Array<string>, };
 export type ProductionModifierPart = { id: string, label: string | null, raw: string, unknown: string | null, };
 export type ProductionModifierGroup = { id: string, label: string,
 /**

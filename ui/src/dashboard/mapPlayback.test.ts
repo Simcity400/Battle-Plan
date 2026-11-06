@@ -8,7 +8,7 @@ const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 function clock() {
   let snapshot = { hour: 0, fraction: 0, hoursPerSecond: 24, playing: false, seekSequence: 0 };
   const listeners = new Set<() => void>();
-  return { getSnapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+  return { getSnapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, subscribeFrame: () => () => {},
     seek: (hour: number) => { snapshot = { ...snapshot, hour, playing: false, seekSequence: snapshot.seekSequence + 1 }; for (const listener of listeners) listener(); },
     play: (hour: number, playing = true) => { snapshot = { ...snapshot, hour, playing }; for (const listener of listeners) listener(); }, update: (next: Partial<typeof snapshot>) => { snapshot = { ...snapshot, ...next }; for (const listener of listeners) listener(); }, listeners };
 }

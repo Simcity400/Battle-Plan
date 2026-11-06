@@ -109,12 +109,7 @@ impl IntelCells {
             .checked_mul(grid_height)
             .and_then(|count| count.checked_add(1))
             .ok_or_else(|| invalid("the intel grid's cell count exceeds addressable storage"))?;
-        let mut allocations = map_display_data::admission::Accounting::new(
-            map_display_data::credit::display_products(),
-            map_display_data::retained::Retained::<IntelComposition>::overhead(),
-        )?;
         let mut offsets = Vec::new();
-        allocations.reserve(&mut offsets, count)?;
         offsets
             .try_reserve_exact(count)
             .map_err(|_| engine_native::allocation::oom())?;
@@ -125,16 +120,9 @@ impl IntelCells {
             .filter(|definition| definition.kind == ProvinceKind::Land)
             .count();
         let mut land_provinces = Vec::new();
-        allocations.reserve(&mut land_provinces, land_count)?;
         land_provinces
             .try_reserve_exact(land_count)
             .map_err(|_| engine_native::allocation::oom())?;
-        let _lookup_credit = map_display_data::credit::display_products().admit_item(
-            land_count
-                .checked_mul(32)
-                .and_then(|n| n.checked_add(128))
-                .ok_or_else(engine_native::allocation::oom)?,
-        )?;
         let mut land_indices = HashMap::new();
         land_indices
             .try_reserve(land_count)
@@ -164,7 +152,6 @@ impl IntelCells {
                     }
                 }
                 cell[..used].sort_unstable();
-                allocations.reserve(&mut entries, used)?;
                 entries
                     .try_reserve(used)
                     .map_err(|_| engine_native::allocation::oom())?;
@@ -180,19 +167,20 @@ impl IntelCells {
         let mut province_cells: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
         for cell in 0..offsets.len() - 1 {
             for entry in &entries[offsets[cell]..offsets[cell + 1]] {
-                allocations.push_index(
-                    &mut province_cells,
-                    land_provinces[entry.land_index as usize],
-                    cell,
-                )?;
+                province_cells
+                    .entry(land_provinces[entry.land_index as usize])
+                    .or_default()
+                    .push(cell);
             }
         }
-        Ok(Self(allocations.finish(IntelComposition {
-            province_cells,
-            offsets,
-            entries,
-            land_provinces,
-        })))
+        Ok(Self(map_display_data::retained::Retained::new(
+            IntelComposition {
+                province_cells,
+                offsets,
+                entries,
+                land_provinces,
+            },
+        )))
     }
 
     pub fn patch_values(
@@ -200,22 +188,13 @@ impl IntelCells {
         previous: &IntelMap,
         old: &crate::map::perspective::values::Values<u32, u8>,
         visibility: &crate::map::perspective::values::Values<u32, u8>,
-        budget: &map_display_data::credit::MemoryBudget,
     ) -> io::Result<IntelMap> {
-        let mut dirty = map_display_data::dirty::Dirty::<64>::new(budget)?;
-        let mut failed = None;
+        let mut dirty = map_display_data::dirty::Dirty::<64>::default();
         visibility.changed(old, |province| {
             for &cell in self.province_cells.get(&province).into_iter().flatten() {
-                if failed.is_none() {
-                    if let Err(error) = dirty.insert(cell) {
-                        failed = Some(error);
-                    }
-                }
+                dirty.insert(cell);
             }
         });
-        if let Some(error) = failed {
-            return Err(error);
-        }
         let mut fogged = previous.fogged_texels;
         let edits = dirty.iter().map(|cell| {
             let mut sum = CELL_PIXELS as u32 * u32::from(u8::MAX);
@@ -239,11 +218,9 @@ impl IntelCells {
     pub fn intel_values(
         &self,
         visibility: &crate::map::perspective::values::Values<u32, u8>,
-        budget: &map_display_data::credit::MemoryBudget,
     ) -> io::Result<IntelMap> {
         let mut fogged = 0;
-        let texels = map_display_data::Paged::try_from_iter_in(
-            budget,
+        let texels = map_display_data::Paged::try_from_iter(
             self.offsets.len() - 1,
             (0..self.offsets.len() - 1).map(|cell| {
                 let mut sum = CELL_PIXELS as u32 * u32::from(u8::MAX);
@@ -313,8 +290,7 @@ impl IntelCells {
     /// rereading static pixels. Missing visibility is not a recorded zero.
     pub fn try_intel_map(&self, visibility: Option<&BTreeMap<u32, u8>>) -> io::Result<IntelMap> {
         let mut fogged_texels = 0;
-        let texels = map_display_data::Paged::try_from_iter_in(
-            map_display_data::credit::display_products(),
+        let texels = map_display_data::Paged::try_from_iter(
             self.offsets.len() - 1,
             (0..self.offsets.len() - 1).map(|cell| {
                 let Some(visibility) = visibility else {

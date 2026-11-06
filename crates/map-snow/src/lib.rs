@@ -107,38 +107,12 @@ fn grid_with(
     let provinces = largest
         .checked_add(1)
         .ok_or_else(|| invalid("province count overflow"))?;
-    let owner = map_display_data::credit::display_products();
     let cells = (dimensions[0] as usize)
         .checked_mul(dimensions[1] as usize)
         .ok_or_else(|| invalid("snow raster byte count overflow"))?;
     let texel_len = cells
         .checked_mul(4)
         .ok_or_else(|| invalid("snow raster byte count overflow"))?;
-    let scratch_bytes = cells
-        .checked_mul(7)
-        .and_then(|n| n.checked_add(provinces.checked_mul(size_of::<Option<i64>>() + 3)?))
-        .and_then(|n| n.checked_add(512))
-        .ok_or_else(|| invalid("snow raster byte count overflow"))?;
-    let total = scratch_bytes
-        .checked_add(map_display_data::Paged::<u8>::decode_storage_bytes(
-            texel_len,
-        )?)
-        .and_then(|n| {
-            n.checked_add(map_display_data::Paged::<u8>::decode_storage_bytes(cells).ok()?)
-        })
-        .and_then(|n| {
-            n.checked_add(
-                map_display_data::Paged::<Option<i64>>::decode_storage_bytes(provinces).ok()?,
-            )
-        })
-        .ok_or_else(|| invalid("snow raster byte count overflow"))?;
-    if total > owner.limit() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::OutOfMemory,
-            "snow raster working set exceeds its owner; common paging is required",
-        ));
-    }
-    let _scratch = owner.admit_item(scratch_bytes)?;
     let mut bytes = vec![[0_u8; 2]; provinces];
     // A whole table observes every province, those it holds no row for included.
     let mut known = vec![complete; provinces];
@@ -215,9 +189,9 @@ fn grid_with(
     Ok(SnowMud {
         width,
         height,
-        texels: map_display_data::Paged::try_from_vec_in(owner, texels)?,
-        unknown: map_display_data::Paged::try_from_vec_in(owner, unknown)?,
-        province_snow: map_display_data::Paged::try_from_vec_in(owner, province_snow)?,
+        texels: map_display_data::Paged::try_from_vec(texels)?,
+        unknown: map_display_data::Paged::try_from_vec(unknown)?,
+        province_snow: map_display_data::Paged::try_from_vec(province_snow)?,
         post_factors: None,
         build: start.elapsed(),
         summary,
@@ -286,18 +260,9 @@ impl SnowCells {
         let count = (width as usize)
             .checked_mul(height as usize)
             .ok_or_else(|| invalid("snow grid count overflow"))?;
-        count
-            .checked_mul(16)
-            .ok_or_else(|| invalid("snow composition count overflow"))?;
-        let mut allocations = map_display_data::admission::Accounting::new(
-            map_display_data::credit::display_products(),
-            map_display_data::retained::Retained::<SnowComposition>::overhead(),
-        )?;
-        let mut offsets = Vec::new();
-        allocations.reserve(&mut offsets, count + 1)?;
+        let mut offsets = Vec::with_capacity(count + 1);
         let mut entries: Vec<(u32, u8, u8)> = Vec::new();
-        let mut perm = Vec::new();
-        allocations.reserve(&mut perm, count)?;
+        let mut perm = Vec::with_capacity(count);
         offsets.push(0);
         for cell_z in 0..height {
             for cell_x in 0..width {
@@ -320,10 +285,7 @@ impl SnowCells {
                                 entry.1 += snow;
                                 entry.2 += 1;
                             }
-                            None => {
-                                allocations.reserve(&mut entries, 1)?;
-                                entries.push((province, snow, 1));
-                            }
+                            None => entries.push((province, snow, 1)),
                         }
                     }
                 }
@@ -334,18 +296,20 @@ impl SnowCells {
         let mut province_cells: std::collections::BTreeMap<u32, Vec<usize>> = Default::default();
         for cell in 0..count {
             for &(province, _, _) in &entries[offsets[cell]..offsets[cell + 1]] {
-                allocations.push_index(&mut province_cells, province, cell)?;
+                province_cells.entry(province).or_default().push(cell);
             }
         }
-        Ok(Self(allocations.finish(SnowComposition {
-            province_cells,
-            largest: largest_province(map),
-            width,
-            height,
-            offsets,
-            entries,
-            perm,
-        })))
+        Ok(Self(map_display_data::retained::Retained::new(
+            SnowComposition {
+                province_cells,
+                largest: largest_province(map),
+                width,
+                height,
+                offsets,
+                entries,
+                perm,
+            },
+        )))
     }
 
     /// Each cell's unknown flag: 1 where a province `known` does not hold reaches it. Every pixel

@@ -153,7 +153,6 @@ impl Viewer {
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
         laps: &mut Laps,
-        context: &eframe::egui::Context,
     ) -> Result<(), std::io::Error> {
         laps.lap("before_hour");
         // The hour builders lay counters and icons out with the map mode's visibility.
@@ -233,16 +232,16 @@ impl Viewer {
                 ui_scale: 1.0,
             }
         });
-        // Playing, request one pool of consecutive hours from the playhead;
-        // paused, a step either way is already built. Do not turn cold-start
-        // latency into a recording-wide read-ahead window.
-        let (ahead, behind) = if self.dashboard_map {
-            (0, 0)
-        } else if self.playing {
+        // Playing, request one pool of hours from the playhead; paused, a step
+        // either way is already built, except on a dashboard map, which only
+        // seeks. Do not turn cold-start latency into a recording-wide window.
+        let (ahead, behind) = if self.playing {
             (
                 self.hours.as_ref().expect("started above").playback_ahead(),
                 0,
             )
+        } else if self.dashboard_map {
+            (0, 0)
         } else {
             (2, 2)
         };
@@ -268,8 +267,12 @@ impl Viewer {
             self.speed,
         );
         let count = u32::try_from(ahead.saturating_add(1)).unwrap_or(0);
+        let lead = build_lead(self.speed, self.build_latency_ms);
         let ahead = match activation {
-            Ok(stride) => i32::try_from(u64::from(stride) * u64::from(count)).unwrap_or(i32::MAX),
+            Ok(stride) => {
+                i32::try_from(u64::from(lead) + u64::from(stride) * u64::from(count))
+                    .unwrap_or(i32::MAX)
+            }
             Err(_) => ahead,
         };
         let shown = shown_held(
@@ -292,6 +295,7 @@ impl Viewer {
                     stride,
                     count,
                     anchor: None,
+                    lead,
                 },
                 installed,
                 usable,
@@ -316,12 +320,15 @@ impl Viewer {
         // Everything this frame lets go of, freed off the frame path at its end.
         let mut retired = Retired::default();
         let pipeline = self.hours.as_mut().expect("started above");
-        pipeline.bind_presentation(context);
         pipeline.note_grid(activation, playhead.hour);
         let epoch = pipeline.want(want)?;
-        if epoch != self.epoch {
+        let new_epoch = epoch != self.epoch;
+        if new_epoch {
             self.epoch = epoch;
             retired.push(std::mem::take(&mut self.ready));
+        }
+        if new_epoch || !self.playing {
+            self.held_back = None;
         }
         if self.dropper.is_none() {
             self.dropper = Some(Arc::new(Dropper::new()?));
@@ -374,6 +381,7 @@ impl Viewer {
             laps: built_laps,
             child_laps,
             wall,
+            waits: _,
             trace: _,
         } = built;
         if let Some(opened) = self.opened.take()
@@ -898,7 +906,6 @@ type HourKey = (replay_data::BranchId, replay_data::Hour);
 
 trait HourPresentation {
     fn completed(&self) -> &hours::Completions;
-    fn target(&self) -> (u64, HourKey);
     fn install(&mut self, arrivals: Vec<hours::Built>) -> std::io::Result<()>;
     fn retire(&mut self, result: std::io::Result<()>) -> std::io::Result<()>;
 }
@@ -906,9 +913,7 @@ trait HourPresentation {
 fn poll_presentation(presentation: &mut impl HourPresentation) -> std::io::Result<()> {
     let arrivals = presentation.completed().take();
     let installed = arrivals.and_then(|arrivals| presentation.install(arrivals));
-    presentation.retire(installed)?;
-    let (epoch, target) = presentation.target();
-    presentation.completed().pressure_for(epoch, target)
+    presentation.retire(installed)
 }
 
 fn retain_ready<T>(
@@ -973,9 +978,6 @@ impl HourPresentation for NativePresentation<'_> {
             .expect("started above")
             .completed()
     }
-    fn target(&self) -> (u64, HourKey) {
-        (self.epoch, self.target)
-    }
     fn install(&mut self, arrivals: Vec<hours::Built>) -> std::io::Result<()> {
         let viewer = &mut *self.viewer;
         let document = &mut *self.document;
@@ -985,9 +987,35 @@ impl HourPresentation for NativePresentation<'_> {
         let passed = &mut self.passed;
         let (epoch, target, behind, ahead, wait) =
             (self.epoch, self.target, self.behind, self.ahead, self.wait);
+        let shown_hour = viewer
+            .shown
+            .as_ref()
+            .filter(|shown| shown.epoch == epoch && shown.branch == target.0)
+            .map(|shown| shown.hour);
         for built in arrivals {
             feed_raids(&viewer.raid_lane, &built);
+            crate::perf_log::map_hour(viewer.perf_view.as_deref(), &built, target.1);
             if built.epoch == epoch {
+                match &built.layers {
+                    Ok(_) => {
+                        viewer.build_latency_ms = next_latency(viewer.build_latency_ms, built.wall)
+                    }
+                    // A newer hour the clock passed that cannot be shown holds the map back.
+                    Err(error)
+                        if viewer.playing
+                            && built.branch == target.0
+                            && built.hour <= target.1
+                            && shown_hour.is_none_or(|shown| shown < built.hour)
+                            && viewer
+                                .held_back
+                                .as_ref()
+                                .is_none_or(|(hour, _)| *hour <= built.hour) =>
+                    {
+                        viewer.held_back =
+                            Some((built.hour, format!("hour {} failed: {error}", built.hour)));
+                    }
+                    Err(_) => {}
+                }
                 if let Some(old) = viewer.ready.insert((built.branch, built.hour), built) {
                     retired.push(old);
                 }
@@ -1020,7 +1048,7 @@ impl HourPresentation for NativePresentation<'_> {
             next = Some(wait_for_hour(
                 &viewer.raid_lane,
                 (target, epoch),
-                || completed.wait(epoch, target),
+                || completed.wait(),
                 &mut viewer.ready,
                 |built| retired.push(built),
             )?);
@@ -1062,7 +1090,28 @@ impl HourPresentation for NativePresentation<'_> {
                         }))
                     },
                 );
-                viewer.apply_hour(state, document, built, skipped, retired, laps)
+                let (shown_epoch, hour, usable) =
+                    (built.epoch, built.hour, built.layers.is_ok());
+                let started = std::time::Instant::now();
+                let applied = viewer.apply_hour(state, document, built, skipped, retired, laps);
+                crate::perf_log::map_upload(
+                    viewer.perf_view.as_deref(),
+                    shown_epoch,
+                    hour,
+                    target.1,
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    usable && applied.is_ok(),
+                );
+                if usable
+                    && applied.is_ok()
+                    && viewer
+                        .held_back
+                        .as_ref()
+                        .is_some_and(|(failed, _)| *failed <= hour)
+                {
+                    viewer.held_back = None;
+                }
+                applied
             }
             None => Ok(()),
         }
@@ -1156,14 +1205,11 @@ pub(crate) fn grid_activation(
     wall_sweep: bool,
     speed: f64,
 ) -> Result<u32, &'static str> {
-    if !switch {
+    if !switch && !dashboard_map {
         return Err("switch-off");
     }
     if !playing {
         return Err("paused");
-    }
-    if dashboard_map {
-        return Err("dashboard-map");
     }
     if scripted {
         return Err("scripted-map-mode");
@@ -1172,6 +1218,26 @@ pub(crate) fn grid_activation(
         return Err("capture");
     }
     hours::grid_stride(speed).ok_or("below-finest-stride")
+}
+
+/// Hours the clock passes while a target is built, from the measured build
+/// latency; nothing is assumed before the first hour is measured.
+pub(crate) fn build_lead(speed: f64, latency_ms: Option<f64>) -> u32 {
+    let hours = speed * latency_ms.unwrap_or(0.0) / 1000.0;
+    if hours.is_finite() && hours > 0.0 {
+        hours.ceil().min(f64::from(u32::MAX)) as u32
+    } else {
+        0
+    }
+}
+
+/// The build latency estimate after one more measured hour.
+pub(crate) fn next_latency(estimate: Option<f64>, wall_ms: f64) -> Option<f64> {
+    if !wall_ms.is_finite() || wall_ms <= 0.0 {
+        return estimate;
+    }
+    // A quarter weight follows a change in load within a few hours.
+    Some(estimate.map_or(wall_ms, |old| old + (wall_ms - old) * 0.25))
 }
 
 fn grid_feedback<T>(
@@ -1488,9 +1554,6 @@ mod tests {
         fn completed(&self) -> &hours::Completions {
             &self.completed
         }
-        fn target(&self) -> (u64, HourKey) {
-            (0, self.target)
-        }
         fn install(&mut self, arrivals: Vec<hours::Built>) -> std::io::Result<()> {
             assert!(arrivals.is_empty(), "the usable hour was already in ready");
             let fallback = latest_built_key(&self.ready, self.target, |frame| {
@@ -1530,15 +1593,10 @@ mod tests {
     }
 
     #[test]
-    fn ahead_pressure_runs_the_production_take_install_retire_sequence() {
+    fn a_ready_hour_runs_the_production_take_install_retire_sequence() {
         use crate::playback::{Current, Playback};
         for target in [101, 102] {
-            let status = Arc::new(hours::SourceStatus::default());
-            status.set(7, 0, (1, 102), "display credit remains pinned".into());
-            assert!(status.for_target(1, (1, 102)).is_ok());
-            assert!(status.for_target(0, (2, 102)).is_ok());
-            let (send, receive) = std::sync::mpsc::sync_channel(1);
-            send.send(hours::Output::Pressure).ok().unwrap();
+            let (_send, receive) = std::sync::mpsc::sync_channel(1);
             let playback = Playback::new(crate::playback::tests::fixture()).unwrap();
             let replay::container::SeekResult::Frame(next) =
                 playback.replay().seek(1, 101).unwrap()
@@ -1550,7 +1608,7 @@ mod tests {
                 ((1, 101), Current::Frame(Arc::from(next))),
             ]);
             let mut presentation = TestPresentation {
-                completed: hours::Completions::for_test(receive, status),
+                completed: hours::Completions::for_test(receive),
                 target: (1, target),
                 playback,
                 ready,
@@ -1560,7 +1618,7 @@ mod tests {
                 installed: Vec::new(),
                 retired_poll: false,
             };
-            let result = poll_presentation(&mut presentation);
+            poll_presentation(&mut presentation).unwrap();
             assert_eq!(presentation.installed, [101]);
             assert_eq!(
                 (presentation.playback.branch(), presentation.playback.hour()),
@@ -1578,13 +1636,6 @@ mod tests {
                     .hour,
                 101
             );
-            if target == 101 {
-                result.unwrap();
-            } else {
-                let error = result.unwrap_err();
-                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
-                assert_eq!(error.to_string(), "display credit remains pinned");
-            }
         }
     }
 
@@ -1664,7 +1715,20 @@ mod tests {
     }
 
     #[test]
-    fn the_page_grid_is_off_with_its_switch_and_outside_fast_unscripted_campaign_play() {
+    fn the_lead_is_where_the_clock_will_be_when_a_measured_build_lands() {
+        assert_eq!(build_lead(1_440.0, None), 0);
+        assert_eq!(build_lead(1_440.0, Some(100.0)), 144);
+        assert_eq!(build_lead(1_440.0, Some(100.1)), 145);
+        assert_eq!(build_lead(0.0, Some(100.0)), 0);
+        assert_eq!(build_lead(f64::NAN, Some(100.0)), 0);
+        assert_eq!(next_latency(None, 0.0), None);
+        assert_eq!(next_latency(None, 80.0), Some(80.0));
+        assert_eq!(next_latency(Some(80.0), 160.0), Some(100.0));
+        assert_eq!(next_latency(Some(80.0), f64::NAN), Some(80.0));
+    }
+
+    #[test]
+    fn the_page_grid_is_off_with_its_switch_and_outside_fast_unscripted_play() {
         for playing in [false, true] {
             for capture in [false, true] {
                 for speed in [24.0, 720.0, 1_440.0] {
@@ -1690,9 +1754,14 @@ mod tests {
             on(false, false, false, false, false, 1_440.0),
             Err("paused")
         );
+        assert_eq!(on(true, true, false, false, false, 1_440.0), Ok(40));
         assert_eq!(
-            on(true, true, false, false, false, 1_440.0),
-            Err("dashboard-map")
+            grid_activation(false, true, true, false, false, false, false, 1_440.0),
+            Ok(40)
+        );
+        assert_eq!(
+            grid_activation(false, false, true, false, false, false, false, 1_440.0),
+            Err("paused")
         );
         assert_eq!(
             on(true, false, true, false, false, 1_440.0),

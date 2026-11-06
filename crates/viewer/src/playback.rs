@@ -46,8 +46,8 @@ struct CachedBlock {
 }
 
 impl CachedBlock {
-    fn reset(&mut self, budget: &engine_allocation::credit::MemoryBudget) {
-        self.decoder = display_decoder(budget);
+    fn reset(&mut self) {
+        self.decoder = display_decoder();
         self.next = 0;
         self.applied_hour = None;
         self.failure = None;
@@ -62,7 +62,6 @@ pub struct Playback {
     current: Current,
     materialized: bool,
     cache: Option<CachedBlock>,
-    change_budget: engine_allocation::credit::MemoryBudget,
     /// Reads blocks ahead of this playback and frees passed ones elsewhere;
     /// without one, blocks are read and freed on the calling thread.
     reader: Option<Arc<BlockReader>>,
@@ -108,7 +107,6 @@ impl Playback {
             current: gap(branch, hour, "hour has not been decoded".into()),
             materialized: false,
             cache: None,
-            change_budget: engine_allocation::credit::display_products().clone(),
             reader: None,
             map_binding: None,
             map: None,
@@ -123,24 +121,10 @@ impl Playback {
     }
 
     pub fn with_display_changes(mut self) -> Self {
-        let budget = &self.change_budget;
         if let Some(cache) = &mut self.cache {
-            cache.decoder = std::mem::take(&mut cache.decoder).with_change_facts(budget.clone());
+            cache.decoder = std::mem::take(&mut cache.decoder).with_change_facts();
         }
         self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_change_budget(
-        mut self,
-        budget: engine_allocation::credit::MemoryBudget,
-    ) -> Self {
-        self.change_budget = budget;
-        self.with_display_changes()
-    }
-
-    pub(crate) fn change_memory_owner(&self) -> &engine_allocation::credit::MemoryBudget {
-        &self.change_budget
     }
 
     pub fn replay(&self) -> &Replay {
@@ -180,8 +164,8 @@ impl Playback {
         self.map_binding.clone()
     }
 
-    /// Opens the binding's change-run index once it serves the replay; resource pressure leaves
-    /// it to be opened again.
+    /// Opens the binding's change-run index once it serves the replay; cancellation leaves it to
+    /// be opened again.
     fn refresh_map(&mut self) -> io::Result<()> {
         if self.map.is_some() || self.map_failure.is_some() {
             return Ok(());
@@ -191,18 +175,12 @@ impl Playback {
         };
         let opened = binding.columnar().and_then(|columnar| {
             columnar
-                .map(|columnar| {
-                    columnar.open(
-                        Arc::clone(&self.replay),
-                        self.change_budget.clone(),
-                        self.map_workers,
-                    )
-                })
+                .map(|columnar| columnar.open(Arc::clone(&self.replay), self.map_workers))
                 .transpose()
         });
         match opened {
             Ok(map) => self.map = map,
-            Err(error) if resource_pending(&error) => return Err(error),
+            Err(error) if interrupted(&error) => return Err(error),
             Err(error) => {
                 self.map_failure = Some(format!(
                     "the change-run index serving this recording cannot be read: {error}"
@@ -518,7 +496,7 @@ impl Playback {
             let passed = self.cache.replace(CachedBlock {
                 index,
                 frames,
-                decoder: display_decoder(&self.change_budget),
+                decoder: display_decoder(),
                 next: 0,
                 applied_hour: None,
                 failure: None,
@@ -539,7 +517,7 @@ impl Playback {
                 .as_ref()
                 .is_some_and(|(failed, _)| hour < *failed)
         {
-            cache.reset(&self.change_budget);
+            cache.reset();
         }
         let frames = match &cache.frames {
             Ok(frames) => frames,
@@ -567,7 +545,7 @@ impl Playback {
         while let Some(frame) = frames.get(cache.next).filter(|frame| frame.hour <= hour) {
             let decoded = match cache.decoder.advance_cancellable(frame, cancelled) {
                 Ok(decoded) => decoded,
-                Err(error) if resource_pending(&error) => return Err(error),
+                Err(error) if interrupted(&error) => return Err(error),
                 Err(error) => {
                     let reason = format!("invalid frame baseline at hour {}: {error}", frame.hour);
                     cache.failure = Some((frame.hour, reason.clone()));
@@ -1075,118 +1053,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn native_seek_retained_visitors_refuse_credit_and_retry_without_a_cached_failure() {
-        let mut records = vec![
-            Record::SessionStart(session(1)),
-            Record::BranchStart(BranchStart {
-                id: 1,
-                session: 1,
-                loaded_hour: Some(-1),
-                first_hour: 0,
-                parent: Parentage::Unknown,
-                reason: BranchReason::SessionStart,
-            }),
-        ];
-        let mut encoder = FrameEncoder::new();
-        for hour in 0..=3 {
-            let mut frame = source(1, hour);
-            frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-                (1..=40)
-                    .map(|id| CountryRow {
-                        id,
-                        canonical_slot: id,
-                        tag: format!("{id:03}").into_bytes(),
-                        command_power_raw: if hour == 2 && id != 1 {
-                            1
-                        } else {
-                            i64::from(hour)
-                        },
-                        ..Default::default()
-                    })
-                    .collect(),
-            ))
-            .into();
-            records.push(Record::Frame(encoder.encode(frame, hour == 0).unwrap()));
-        }
-        let replay = Replay::from_records(b"campaign".to_vec(), &[records]).unwrap();
-        let mut playback = Playback::new(replay).unwrap();
-        let budget = engine_allocation::credit::MemoryBudget::new(4608);
-        let cache = playback.cache.as_mut().unwrap();
-        cache.decoder = FrameDecoder::resume_for_tables_with_change_facts(
-            &[TableId::Countries],
-            cache.decoder.current().unwrap().clone(),
-            budget.clone(),
-        )
-        .unwrap();
-        let initial =
-            cache.decoder.current().unwrap().tables[TableId::Countries.index()].identity();
-        let mut passed = Vec::new();
-        let checks = std::cell::Cell::new(0);
-        let error = playback
-            .seek_shared_cancellable(1, 3, |frame| passed.push(Arc::clone(frame)), &|| {
-                checks.set(checks.get() + 1);
-                assert!(
-                    checks.get() <= 7,
-                    "admission must not wait on retained seek visitors"
-                );
-                false
-            })
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-        assert!(FrameDecoder::change_fact_admission_refused(&error));
-        assert_eq!(
-            error.to_string(),
-            "display change-fact working set remains pinned; common paging is required"
-        );
-        assert_eq!(checks.get(), 7);
-        assert_eq!(
-            passed.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
-            [1, 2]
-        );
-        assert_eq!(
-            passed[0].tables[TableId::Countries.index()]
-                .changes_since(&initial)
-                .unwrap()
-                .changed()
-                .len(),
-            40
-        );
-        assert_eq!(
-            passed[1].tables[TableId::Countries.index()]
-                .changes_since(&passed[0].tables[TableId::Countries.index()].identity())
-                .unwrap()
-                .changed()
-                .len(),
-            1
-        );
-        let cache = playback.cache.as_ref().unwrap();
-        assert_eq!(cache.decoder.current().unwrap().hour, 2);
-        assert_eq!(cache.applied_hour, Some(2));
-        assert_eq!(cache.next, 3);
-        assert!(cache.failure.is_none());
-        drop(passed);
-        drop(initial);
-        let mut visited = Vec::new();
-        playback
-            .seek_shared_cancellable(1, 3, |frame| visited.push(frame.hour), &|| false)
-            .unwrap();
-        assert!(visited.is_empty());
-        let frame = playback.frame().unwrap();
-        assert_eq!(frame.hour, 3);
-        let rows = frame.complete::<tables::Countries>().unwrap();
-        assert_eq!(rows.len(), 40);
-        assert_eq!((rows[0].id, rows[39].id), (1, 40));
-        assert!(rows.iter().all(|row| row.command_power_raw == 3));
-        assert_eq!(playback.block_loads, 1);
-        let cache = playback.cache.as_ref().unwrap();
-        assert_eq!(cache.next, 4);
-        assert!(cache.failure.is_none());
-        assert!(budget.peak() <= 4608);
-        drop(playback);
-        assert_eq!(budget.used(), 0);
-    }
-
-    #[test]
     fn seeks_share_one_block_and_match_the_shared_reader_through_holes() {
         let mut playback = Playback::new(fixture()).unwrap();
         assert_eq!(playback.block_loads, 1);
@@ -1580,12 +1446,9 @@ mod damaged_recording_tests {
     }
 }
 
-fn display_decoder(budget: &engine_allocation::credit::MemoryBudget) -> FrameDecoder {
-    FrameDecoder::new().with_change_facts(budget.clone())
+fn display_decoder() -> FrameDecoder {
+    FrameDecoder::new().with_change_facts()
 }
-fn resource_pending(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-    ) || FrameDecoder::change_fact_admission_refused(error)
+fn interrupted(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Interrupted
 }

@@ -49,42 +49,12 @@ impl FrameDecoder {
     pub fn resume_for_tables_with_change_facts(
         tables: &[TableId],
         frame: DecodedFrame,
-        budget: allocation::credit::MemoryBudget,
     ) -> io::Result<Self> {
-        Self::resume_with_credit(tables, frame, budget, None)
-    }
-
-    pub fn resume_for_tables_with_change_facts_cancellable(
-        tables: &[TableId],
-        frame: DecodedFrame,
-        budget: allocation::credit::MemoryBudget,
-        cancelled: &dyn Fn() -> bool,
-    ) -> io::Result<Self> {
-        Self::resume_with_credit(tables, frame, budget, Some(cancelled))
-    }
-
-    fn resume_with_credit(
-        tables: &[TableId],
-        frame: DecodedFrame,
-        budget: allocation::credit::MemoryBudget,
-        cancelled: Option<&dyn Fn() -> bool>,
-    ) -> io::Result<Self> {
-        let bytes = allocation::mul(tables.len(), super::stamp_bytes())?;
-        if cancelled.is_some_and(|cancelled| cancelled()) {
-            return Err(io::Error::from(io::ErrorKind::Interrupted));
-        }
-        let mut decoder = Self::resume_for_tables(tables, frame)?.with_change_facts(budget.clone());
-        let mut credit = super::change_credit(&budget, bytes, None)?;
+        let mut decoder = Self::resume_for_tables(tables, frame)?.with_change_facts();
         let frame = Arc::get_mut(decoder.current.as_mut().expect("resumed snapshot"))
             .expect("unpublished resumed snapshot");
         for table in tables {
-            let view = &mut frame.tables[table.index()];
-            view.3 = Some(super::field_stamp(
-                None,
-                None,
-                frame.hour,
-                credit.split_off(super::stamp_bytes()),
-            )?);
+            frame.tables[table.index()].3 = Some(super::field_stamp(None, None, frame.hour));
         }
         Ok(decoder)
     }
@@ -102,7 +72,7 @@ impl FrameDecoder {
         self.advance_endpoint_parallel_cancellable(step, workers, on_worker, &|| false)
     }
 
-    /// Credit refusal and cancellation happen before consuming the endpoint baseline.
+    /// Cancellation happens before consuming the endpoint baseline.
     pub fn advance_endpoint_parallel_cancellable(
         &mut self,
         step: EndpointStep,
@@ -130,9 +100,9 @@ impl FrameDecoder {
         {
             return Err(invalid("endpoint baseline differs"));
         }
-        let prepared = if let Some(budget) = &self.change_budget {
+        let prepared = if self.change_facts {
             super::reclaim_changes(&mut self.current, &step.replaced_change_tables());
-            Some(step.prepare_change_facts(self.current.as_deref(), budget, cancelled)?)
+            Some(step.prepare_change_facts(self.current.as_deref())?)
         } else {
             None
         };

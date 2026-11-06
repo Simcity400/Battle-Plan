@@ -330,10 +330,8 @@ impl crate::ProductContent {
         self
     }
     fn record_snow_content(&self, snow: &SnowContent) -> io::Result<()> {
-        self.reads.operand_write(
-            b"snow-cells-and-winter/v1",
-            self.visions.budget(),
-            |mut bytes| {
+        self.reads
+            .operand_stream(b"snow-cells-and-winter/v1", |mut bytes| {
                 snow.cells.write_identity(&mut bytes)?;
                 for value in snow
                     .winter
@@ -353,8 +351,7 @@ impl crate::ProductContent {
                     }
                 }
                 Ok(())
-            },
-        )
+            })
     }
     pub fn snow_content(&self) -> io::Result<&SnowContent> {
         if self.snow.get().is_none() {

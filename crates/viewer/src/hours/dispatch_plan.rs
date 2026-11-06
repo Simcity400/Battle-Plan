@@ -24,7 +24,6 @@ pub(super) struct HeldJob {
 pub(super) enum PreparedTarget {
     Parts(Box<Pending>, VecDeque<HeldJob>),
     Ready(Box<Built>),
-    Pressure(Box<DispatchPlan>, Current),
 }
 
 pub(super) type Colour = Option<Arc<viewer_world::map::map_mode::ColourState>>;
@@ -34,7 +33,7 @@ pub(super) struct ColourFolded {
     pub timing: Option<PartTiming>,
 }
 
-/// One accepted fold owns one source frame and the target's existing credit.
+/// One accepted fold owns one source frame.
 /// Dependency waits and authored evaluation execute only on a pool worker.
 impl DispatchPlan {
     pub fn colour_work(
@@ -110,30 +109,6 @@ where
             carry_colour(colour, [current.clone()], &mut fill)
         }))
         .unwrap_or_else(|_| Err(io::Error::other("political: the hour builder panicked")));
-        if let Err(error) = &result
-            && error.kind() == io::ErrorKind::WouldBlock
-        {
-            let reason = error.to_string();
-            drop(result);
-            let generation = map_display_data::credit::display_products().generation();
-            let work = colour_job(
-                ticket,
-                key,
-                current,
-                events.clone(),
-                None,
-                Some(initial),
-                fill,
-            );
-            let _ = events.send(Event::RetryColour {
-                ticket,
-                key,
-                generation,
-                reason,
-                work,
-            });
-            return;
-        }
         // The driver treats the reply as the frame's release.
         drop(current);
         let timing = started.map(|started| PartTiming {
@@ -169,7 +144,12 @@ impl CoordinatorState {
             self.profile_want,
             self.profile_received,
         );
-        let nearby = neighbour_slots(&self.slots, branch, hour);
+        // Strided targets build side by side; consecutive hours share their predecessor's parts.
+        let nearby = if want.grid.is_some() {
+            settled_slots(&self.slots, branch, hour)
+        } else {
+            neighbour_slots(&self.slots, branch, hour)
+        };
         let previous = nearby
             .iter()
             .find(|(key, _)| key.1 < hour)
@@ -238,6 +218,7 @@ impl CoordinatorState {
             current,
             viewing,
             wall: started.elapsed().as_secs_f64() * 1000.0,
+            waits: Waits::default(),
             laps,
             child_laps,
             layers,

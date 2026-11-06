@@ -9,7 +9,7 @@ import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { MenuItem } from '../../components/ContextMenu';
 import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
 import { gbNumber } from '../../charts/numberFormat.ts';
-import type { LineDetail, LineHistory, LineRun, LineStep, OrganisationName, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionLineBreakdownReply, ProductionModifierRun,
+import type { LineDetail, LineHistory, LineRun, LineStep, OrganisationName, OutputRun, ProductionLineDetailReply, ProductionLineHourReply, ProductionLinesReply, ProductionLineBreakdownReply, ProductionModifierRun,
   VariantName, OrganisationState } from '../../generated/dashboard';
 
 /** A country's production lines, from the recorded `ProductionLines`,
@@ -124,6 +124,11 @@ export function validateProductionReply(data: unknown): ProductionLinesReply {
   return reply;
 }
 
+const isLineDetail = (line: LineDetail) => typeof line.key === 'string'
+  && Array.isArray(line.organisations) && line.organisations.every(item => RAW.test(item.id) && HOUR(item.firstHour) && isOrganisationState(item.state))
+  && Array.isArray(line.runs) && ordered(line.runs) && line.runs.every(isRun)
+  && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput);
+
 /** Checks a window's shape: each line's runs and output in hour order without
  * overlaps. Modifier factors come from the breakdown, never a window. */
 export function validateDetailReply(data: unknown): ProductionLineDetailReply {
@@ -131,13 +136,36 @@ export function validateDetailReply(data: unknown): ProductionLineDetailReply {
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
     && Number.isInteger(reply.decimals) && HOUR(reply.window) && HOUR(reply.firstHour) && HOUR(reply.lastHour) && reply.firstHour <= reply.lastHour
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
-    && Array.isArray(reply.lines) && reply.lines.every(line => typeof line.key === 'string'
-      && Array.isArray(line.organisations) && line.organisations.every(item => RAW.test(item.id) && HOUR(item.firstHour) && isOrganisationState(item.state))
-      && Array.isArray(line.runs) && ordered(line.runs) && line.runs.every(isRun)
-      && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput))
+    && Array.isArray(reply.lines) && reply.lines.every(isLineDetail)
     && new Set(reply.lines.map(line => line.key)).size === reply.lines.length;
   if (!ok) throw new Error('The production lines reply is malformed.');
   return reply;
+}
+
+/** Checks an hour's shape: each line's reads holding the hour, and the lines read against an
+ * earlier hour that hold none there. */
+export function validateHourReply(data: unknown): ProductionLineHourReply {
+  const reply = data as ProductionLineHourReply;
+  const holds = (run: { firstHour: number; lastHour: number }) => run.firstHour <= reply.hour && reply.hour <= run.lastHour;
+  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
+    && Number.isInteger(reply.decimals) && HOUR(reply.hour) && (reply.since === null || HOUR(reply.since) && reply.since < reply.hour)
+    && (reply.basis === null || typeof reply.basis === 'string' && reply.basis.length > 0)
+    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
+    && Array.isArray(reply.lines) && reply.lines.every(line => isLineDetail(line) && line.runs.every(holds) && line.output.every(holds))
+    && Array.isArray(reply.ended) && reply.ended.every(key => typeof key === 'string')
+    && new Set([...reply.lines.map(line => line.key), ...reply.ended]).size === reply.lines.length + reply.ended.length;
+  if (!ok) throw new Error('The production lines reply is malformed.');
+  return reply;
+}
+
+/** The live table's reads at an hour: `reply`'s lines joined to `held`, the reads at the hour it
+ * was read against, as one window of that hour alone. */
+export function joinHour(held: ProductionLineDetailReply | null, reply: ProductionLineHourReply, detailHours: number): ProductionLineDetailReply {
+  const lines = new Map(held && reply.since !== null ? held.lines.map(line => [line.key, line]) : []);
+  for (const key of reply.ended) lines.delete(key);
+  for (const line of reply.lines) lines.set(line.key, line);
+  return { warnings: reply.warnings, branchId: reply.branchId, tag: reply.tag, decimals: reply.decimals,
+    window: Math.floor(reply.hour / detailHours), firstHour: reply.hour, lastHour: reply.hour, lines: [...lines.values()] };
 }
 
 /** The detail window holding an hour. */

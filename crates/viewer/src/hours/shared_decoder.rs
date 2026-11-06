@@ -9,15 +9,28 @@ pub(super) struct DecoderState {
     pub(super) playback: Playback,
     // Weak entries share frames already held by maps; no second payload cache.
     frames: BTreeMap<(BranchId, Hour), Weak<replay_frame::frame::DecodedFrame>>,
+    workers: usize,
+    dropper: Option<Arc<Dropper>>,
 }
 impl DecoderState {
+    /// The campaign lane's read setup: its change-run workers and block read-ahead.
+    fn reading(playback: Playback, workers: usize, dropper: Option<&Arc<Dropper>>) -> Playback {
+        let playback = playback.with_map_workers(workers).with_display_changes();
+        match dropper {
+            Some(dropper) => {
+                let reader = BlockReader::new(playback.replay_handle(), Arc::clone(dropper));
+                playback.with_reader(reader)
+            }
+            None => playback,
+        }
+    }
     fn seed(&mut self, playback: Playback) {
         self.frames.clear();
         if let Current::Frame(frame) = playback.current() {
             self.frames
                 .insert((frame.branch, frame.hour), Arc::downgrade(frame));
         }
-        self.playback = playback.with_display_changes();
+        self.playback = Self::reading(playback, self.workers, self.dropper.as_ref());
     }
     #[cfg(test)]
     fn frame(&mut self, branch: BranchId, hour: Hour) -> io::Result<Current> {
@@ -46,10 +59,20 @@ impl DecoderState {
     }
 }
 impl SharedDecoder {
+    #[cfg(test)]
     pub(super) fn new(replay: Arc<Replay>) -> io::Result<Self> {
+        Self::serving(replay, 1, None)
+    }
+    pub(super) fn serving(
+        replay: Arc<Replay>,
+        workers: usize,
+        dropper: Option<Arc<Dropper>>,
+    ) -> io::Result<Self> {
         let state = Arc::new(Mutex::new(DecoderState {
-            playback: Playback::unloaded(replay)?.with_display_changes(),
+            playback: DecoderState::reading(Playback::unloaded(replay)?, workers, dropper.as_ref()),
             frames: BTreeMap::new(),
+            workers,
+            dropper,
         }));
         let actor = Actor::start(state)?;
         Ok(Self { actor })
@@ -189,14 +212,6 @@ impl Actor {
                             let clock = trace::DecodeClock::start(
                                 viewer_foundation::profile_writer::profiling(),
                             );
-                            let owner = state
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .playback
-                                .change_memory_owner()
-                                .clone();
-                            let releases = owner.track_releases();
-                            let attempt = owner.release_token();
                             let result =
                                 state.lock().map_err(|_| stopped()).and_then(|mut state| {
                                     state.frame_cancellable(branch, hour, &|| {
@@ -209,22 +224,6 @@ impl Actor {
                                 .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted)
                             {
                                 drop(read);
-                                continue;
-                            }
-                            if let Err(error) = &result
-                                && source_pressure(error)
-                            {
-                                let state = state.lock().unwrap_or_else(|p| p.into_inner());
-                                let pressure = DecodePressure::from_error(
-                                    error,
-                                    state.playback.walk_start(branch, hour),
-                                    state.playback.change_memory_owner(),
-                                    attempt,
-                                )
-                                .expect("resource pressure");
-                                drop(state);
-                                drop(releases);
-                                read.pressure(pressure);
                                 continue;
                             }
                             read.ready(

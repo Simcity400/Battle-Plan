@@ -46,7 +46,9 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
       </div>
     </div>
     {runtime.client.nativeMaps !== false && state?.hour != null && <div className="dash-map-status">
-      <span><Icon name="clock" />{formatDateTime(state.hour)}</span>{matched ? <span className="pill positive">{widget.time.mode === 'follow' ? 'Live' : widget.time.mode === 'pin' ? 'Pinned' : 'Campaign end'}</span> : <span className="pill warning">Updating…</span>}
+      <span><Icon name="clock" />{formatDateTime(state.hour)}</span>{matched && state.behindReason
+        ? <span className="pill warning" title={state.behindReason}>Behind</span>
+        : matched ? <span className="pill positive">{widget.time.mode === 'follow' ? 'Live' : widget.time.mode === 'pin' ? 'Pinned' : 'Campaign end'}</span> : <span className="pill warning">Updating…</span>}
     </div>}
   </div>;
 }

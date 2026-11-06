@@ -405,11 +405,11 @@ impl Product for TargetPrograms {
             }
             let provinces = ProvinceIds::decode(input)?;
             let operation = ColourOp::decode(input)?;
-            let target = crate::retained::Retained::build(0, || TargetOp {
+            let target = crate::retained::Retained::new(TargetOp {
                 id,
                 provinces,
                 operation,
-            })?;
+            });
             values = values.inserted(id, target)?;
         }
         Ok(Self(values))
@@ -692,7 +692,7 @@ mod tests {
             targets: TargetPrograms(
                 crate::value_index::ValueIndex::try_from_iter([(
                     id,
-                    crate::retained::Retained::build(0, || TargetOp {
+                    crate::retained::Retained::new(TargetOp {
                         id,
                         provinces: ProvinceIds(
                             crate::value_index::ValueIndex::try_from_iter(
@@ -701,8 +701,7 @@ mod tests {
                             .unwrap(),
                         ),
                         operation,
-                    })
-                    .unwrap(),
+                    }),
                 )])
                 .unwrap(),
             ),
@@ -739,12 +738,11 @@ mod tests {
         let provinces = ProvinceIds(
             crate::value_index::ValueIndex::try_from_iter([(7, ()), (99, ())]).unwrap(),
         );
-        let target = crate::retained::Retained::build(0, || TargetOp {
+        let target = crate::retained::Retained::new(TargetOp {
             id,
             provinces,
             operation: ColourOp::Keep {},
-        })
-        .unwrap();
+        });
         let targets =
             TargetPrograms(crate::value_index::ValueIndex::try_from_iter([(id, target)]).unwrap());
         let mut expected = Vec::new();
@@ -987,11 +985,7 @@ mod country_fact_tests {
                 continuity: "observation only".into(),
             };
             values = values
-                .inserted(
-                    slot,
-                    crate::retained::Retained::build(country.continuity.len(), || country.clone())
-                        .unwrap(),
-                )
+                .inserted(slot, crate::retained::Retained::new(country.clone()))
                 .unwrap();
             oracle.insert(
                 slot,

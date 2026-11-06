@@ -268,6 +268,7 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "market-ledger" => "queries:market-ledger",
         "lend-lease-balance" => "queries:lend-lease-balance",
         "production-catalogue" => "queries:production-catalogue",
+        "production-line-detail" => "queries:production-line-detail",
         "convoy-health" => "queries:convoy-health",
         _ => return None,
     })
@@ -1005,8 +1006,10 @@ fn territory_series(
         return unpublished();
     };
     let (store, key) = super::files(source, content)?;
-    // The identities prepared through the accepted coverage, never read from the recording.
-    let history = dashboard_base::products::country_history::read_prepared_histories(
+    // The identities prepared through the accepted coverage, never read from the recording,
+    // read once per publication.
+    let history = dashboard_base::products::country_history::kept_prepared_histories(
+        source,
         &store,
         &key,
         branch,
@@ -1986,15 +1989,9 @@ impl Hours {
                 index("window").map_or(Self::Branch, Self::Block)
             }
             "espionage-log" => index("window").map_or(Self::Branch, Self::Day),
-            "production-line-detail" => params
-                .get("window")
-                .and_then(Value::as_i64)
-                .and_then(|window| window.checked_add(1))
-                .and_then(|window| {
-                    window.checked_mul(i64::from(crate::products::production_lines::DETAIL_HOURS))
-                })
-                .and_then(|hour| i32::try_from(hour - 1).ok())
-                .map_or(Self::Branch, Self::At),
+            "production-line-detail" => {
+                crate::products::production_lines::detail_reach(params).map_or(Self::Branch, Self::At)
+            }
             // Histories, manifests, catalogues and views of the whole branch; views whose
             // readers read history past the hour they name (careers and choices, special
             // projects' episodes, ledger navigation); and products whose readers bound their own
@@ -2599,8 +2596,9 @@ fn query_data(
     Ok(match request.product.as_str() {
         "production-lines" | "production-line-detail" | "production-line-breakdown" => {
             use crate::products::production_lines::{
-                ProductionBreakdownParams, ProductionDetailParams, ProductionLineBreakdown,
-                ProductionLineDetail, ProductionLines, ProductionLinesParams,
+                ProductionBreakdownParams, ProductionDetailParams, ProductionHourParams,
+                ProductionLineBreakdown, ProductionLineDetail, ProductionLines,
+                ProductionLinesParams,
             };
             let context = crate::products::LoadContext {
                 content: content.cloned(),
@@ -2612,16 +2610,7 @@ fn query_data(
                 .ok_or_else(|| crate::invalid("Invalid production branch"))?;
             let branch = self::branch(source, branch)?;
             let through = if request.product == "production-line-detail" {
-                request
-                    .params
-                    .get("window")
-                    .and_then(Value::as_i64)
-                    .and_then(|window| window.checked_add(1))
-                    .and_then(|window| {
-                        window
-                            .checked_mul(i64::from(crate::products::production_lines::DETAIL_HOURS))
-                    })
-                    .and_then(|hour| i32::try_from(hour - 1).ok())
+                crate::products::production_lines::detail_reach(&request.params)
             } else {
                 None
             };
@@ -2659,6 +2648,14 @@ fn query_data(
                         serde_json::from_value(request.params.clone())?;
                     ProductionLines::validate(&params).map_err(crate::invalid)?;
                     serde_json::to_value(ProductionLines::load(
+                        source, &params, &context, cancelled,
+                    )?)?
+                }
+                // Playback reads an hour's rows; pinned and scrubbed views read a window.
+                "production-line-detail" if request.params.get("hour").is_some() => {
+                    let params: ProductionHourParams =
+                        serde_json::from_value(request.params.clone())?;
+                    serde_json::to_value(ProductionLineDetail::hour(
                         source, &params, &context, cancelled,
                     )?)?
                 }

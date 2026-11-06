@@ -7,7 +7,7 @@ import { entryAt } from '../../dashboard/reads.ts';
 import { Lineage, joinTagChanges } from '../../dashboard/identity.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { HourSpan, WarCasualtyRun, WarContributionGroup, WarObservation, WarParticipantRun, WarSide, WarTimeline, WarsAtHour, WarsReply } from '../../generated/dashboard';
+import type { HourSpan, WarCasualtyRun, WarContributionGroup, WarObservation, WarParticipantRun, WarSide, WarTimeline, WarsAtHour, WarsHourly, WarsReply } from '../../generated/dashboard';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { dayLabel } from '../../charts/draw.ts';
 
@@ -75,24 +75,45 @@ export function isWarsReply(value: unknown): value is WarsReply {
 
 export function validateWarsReply(value: unknown): WarsReply {
   if (!isWarsReply(value)) throw new Error('The wars reply is malformed.');
-  const current = (value as { current?: unknown }).current;
-  // Requested-hour groups and contributions are independent of preparation;
-  // each snapshot keeps a reply's war contract.
-  if (current !== undefined && !list(current, entry => object(entry) && hour(entry.hour) && typeof entry.available === 'boolean'
-    && list(entry.contributions, group => object(group) && list(group.viewpointSide, text) && list(group.opposingSide, text)
-      && (group.reason === null || text(group.reason)) && list(group.participants, row => object(row) && text(row.tag) && side(row.side)
-        && ['equipmentDamage', 'occupation', 'airDamage', 'strategicBombing', 'shipDamage', 'convoyDamage', 'casualties',
-          'unknownCasualties', 'lendLeaseSent', 'lendLeaseReceived', 'score', 'participation'].every(key => raw(row[key]))))
-    && list(entry.warnings, text) && isWarsReply({ branchId: value.branchId, available: entry.available, viewpoints: [], countryNames: [],
-      unobserved: [], capitulationsUnobserved: [], warnings: entry.warnings, wars: entry.wars }))) throw new Error('The wars reply is malformed.');
   return value;
+}
+
+// Requested-hour groups and contributions are independent of preparation;
+// each snapshot keeps a reply's war contract.
+const isCurrent = (branchId: string) => (entry: unknown) => object(entry) && hour(entry.hour) && typeof entry.available === 'boolean'
+  && list(entry.contributions, group => object(group) && list(group.viewpointSide, text) && list(group.opposingSide, text)
+    && (group.reason === null || text(group.reason)) && list(group.participants, row => object(row) && text(row.tag) && side(row.side)
+      && ['equipmentDamage', 'occupation', 'airDamage', 'strategicBombing', 'shipDamage', 'convoyDamage', 'casualties',
+        'unknownCasualties', 'lendLeaseSent', 'lendLeaseReceived', 'score', 'participation'].every(key => raw(row[key]))))
+  && list(entry.warnings, text) && isWarsReply({ branchId, available: entry.available, viewpoints: [], countryNames: [],
+    unobserved: [], capitulationsUnobserved: [], warnings: entry.warnings, wars: entry.wars });
+const isCasualtyRun = (run: unknown) => Array.isArray(run) && run.length === 6 && hour(run[0]) && hour(run[1]) && run[0] <= run[1]
+  && run.slice(2).every(raw);
+
+/** A read at hours: each war's casualty runs there, by the id the reply without hours gives it,
+ * and the groups at each `current` hour. */
+export function validateWarsHourly(value: unknown): WarsHourly {
+  const ids = new Set<string>();
+  if (!object(value) || !text(value.branchId) || !list(value.current, isCurrent(value.branchId))
+    || !list(value.casualties, entry => object(entry) && text(entry.id) && !ids.has(entry.id) && !!ids.add(entry.id)
+      && list(entry.runs, isCasualtyRun) && (entry.runs as WarCasualtyRun[]).every((run, index, runs) => !index || runs[index - 1][1] < run[0])))
+    throw new Error('The wars reply is malformed.');
+  return value as unknown as WarsHourly;
+}
+
+/** Each war's casualty runs a read at hours answers, by war id. */
+const hourlyIndexes = new WeakMap<WarsHourly, Map<string, readonly WarCasualtyRun[]>>();
+export function hourlyCasualties(reply: WarsHourly | undefined): ReadonlyMap<string, readonly WarCasualtyRun[]> {
+  if (!reply) return new Map();
+  let byId = hourlyIndexes.get(reply);
+  if (!byId) hourlyIndexes.set(reply, byId = new Map(reply.casualties.map(entry => [entry.id, entry.runs])));
+  return byId;
 }
 
 /** Requested native groups and contributions at `at`, from that hour's frame
  * alone, independently of preparation; null when the reply lists no read. */
-export function currentWarsAt(reply: WarsReply | undefined, at: number): WarsAtHour | null {
-  const current = (reply as { current?: readonly WarsAtHour[] } | undefined)?.current;
-  return current?.find(entry => entry.hour === at) ?? null;
+export function currentWarsAt(reply: WarsHourly | undefined, at: number): WarsAtHour | null {
+  return reply?.current.find(entry => entry.hour === at) ?? null;
 }
 
 /** The game's contributions for the war at an hour: its native group, or, while the
@@ -137,7 +158,7 @@ export function warsReplyState(reply: Pick<WarsReply, 'available'> | null | unde
   return error ? 'error' : !reply ? 'loading' : reply.available ? 'ready' : 'unavailable';
 }
 
-const casualtyIndexes = new WeakMap<WarTimeline, { firstHour: number; lastHour: number; run: WarCasualtyRun }[]>();
+const casualtyIndexes = new WeakMap<readonly WarCasualtyRun[], { firstHour: number; lastHour: number; run: WarCasualtyRun }[]>();
 
 /** Exact, separate dated casualty series; there is no interpolation or cross-war sum. */
 /** A war's start, telling apart wars the game names alike. */
@@ -152,13 +173,18 @@ export function warNamesAt(wars: readonly WarTimeline[], at: number): Map<WarTim
   return names;
 }
 
-export function casualtiesAt(war: WarTimeline, at: number): WarCasualtyRun | null {
-  let indexed = casualtyIndexes.get(war);
+/** The casualty run holding `at` among a war's runs. */
+export function casualtyRunAt(runs: readonly WarCasualtyRun[], at: number): WarCasualtyRun | null {
+  let indexed = casualtyIndexes.get(runs);
   if (!indexed) {
-    indexed = war.casualties.map(run => ({ firstHour: run[0], lastHour: run[1], run }));
-    casualtyIndexes.set(war, indexed);
+    indexed = runs.map(run => ({ firstHour: run[0], lastHour: run[1], run }));
+    casualtyIndexes.set(runs, indexed);
   }
   return runAt(indexed, Math.floor(at))?.run ?? null;
+}
+
+export function casualtiesAt(war: WarTimeline, at: number): WarCasualtyRun | null {
+  return casualtyRunAt(war.casualties, at);
 }
 
 export interface PreparedParticipant {

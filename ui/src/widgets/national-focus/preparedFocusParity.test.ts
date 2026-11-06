@@ -25,8 +25,8 @@ function fixture(size: number, fail = false) {
     throw new Error(product);
   }, product: async (request: any) => {
     counted(request.product);
-    return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], failures: [],
-      art: request.params.tokens.map((token: string) => ({ artwork: { token, name: 'Observed', description: null, baseDurationDays: null, icon: null }, reason: null })) } };
+    return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], groups: request.params.groups.map((group: any) => ({
+      failures: [], error: null, art: group.tokens.map((token: string) => ({ artwork: { token, name: 'Observed', description: null, baseDurationDays: null, icon: null }, reason: null })) })) } };
   } } as unknown as FocusPreparedClient;
   return { client, calls };
 }
@@ -80,8 +80,8 @@ for (const size of [0, 47]) for (const moment of [false, true]) for (const opene
     },
     product: async (request: any) => {
       calls.push({ product: request.product, params: request.params });
-      return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], failures: [],
-        art: request.params.tokens.map((name: string) => ({ artwork: art(name, request.params.mode === 'text' ? 'Scoped details' : null), reason: null })) } };
+      return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], groups: request.params.groups.map((group: any) => ({
+        failures: [], error: null, art: group.tokens.map((name: string) => ({ artwork: art(name, request.params.mode === 'text' ? 'Scoped details' : null), reason: null })) })) } };
     },
   } as unknown as FocusPreparedClient;
     calls.length = 0; statuses = 0;
@@ -92,9 +92,9 @@ for (const size of [0, 47]) for (const moment of [false, true]) for (const opene
     const model = await gatherPreparedFocusParity(client, source, 'branch', 'opaque', hour, moment, signal, openedOrdinal === undefined ? [] : [openedOrdinal], visible);
     const counts = Object.fromEntries([...new Set(calls.map(call => call.product))].sort().map(product => [product, calls.filter(call => call.product === product).length]));
     // One numeric point; art at the completions' confirming hour and the
-    // active focus's hour, and the opened row's description.
+    // active focus's hour in one request, and the opened row's description.
     const expected = size ? { 'focus-hour': 1, 'focus-order-page': 1, 'focus-static-text': 1,
-      'focus-art': openedOrdinal === undefined ? 2 : 3 } : { 'focus-hour': 1 };
+      'focus-art': openedOrdinal === undefined ? 1 : 2 } : { 'focus-hour': 1 };
     console.log(JSON.stringify({ completions: size, moment, openedOrdinal: openedOrdinal ?? null, counts, statuses }));
     assert.deepEqual(counts, expected, 'parity reuses the settled numeric, presentation and opened-description reads');
     assert.equal(statuses, 0, 'accepted points do not start readiness polling');

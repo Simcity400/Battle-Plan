@@ -1,9 +1,6 @@
 //! Patch changed building slots and share every untouched chunk.
 use super::*;
-use map_display_data::{
-    copy_index::CopyIndex,
-    credit::{Credit, MemoryBudget, display_products},
-};
+use map_display_data::copy_index::CopyIndex;
 use replay_data::rows::RowCodec;
 use replay_frame::frame::ViewIdentity;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,29 +13,18 @@ pub(super) const CHUNK_SIZE: usize = 1usize << CHUNK_SHIFT;
 use map_display_data::{retained::Retained, value_index::ValueIndex};
 
 pub(super) struct ChunkBuilder<T: PartialEq> {
-    owner: MemoryBudget,
     directory: ValueIndex<usize, Retained<Arc<[T]>>>,
     pending: Vec<T>,
     len: usize,
-    _scratch: Credit,
 }
 
 impl<T: PartialEq> ChunkBuilder<T> {
-    pub(super) fn new() -> io::Result<Self> {
-        Self::new_in(display_products())
-    }
-
-    fn new_in(owner: &MemoryBudget) -> io::Result<Self> {
-        let bytes = CHUNK_SIZE
-            .checked_mul(size_of::<T>())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        Ok(Self {
-            owner: owner.clone(),
+    pub(super) fn new() -> Self {
+        Self {
             directory: ValueIndex::default(),
             pending: Vec::new(),
             len: 0,
-            _scratch: owner.admit_item(bytes)?,
-        })
+        }
     }
 
     pub(super) fn len(&self) -> usize {
@@ -63,14 +49,8 @@ impl<T: PartialEq> ChunkBuilder<T> {
         if self.pending.is_empty() {
             return Ok(());
         }
-        let bytes = self
-            .pending
-            .len()
-            .checked_mul(size_of::<T>())
-            .and_then(|bytes| bytes.checked_add(4 * size_of::<usize>()))
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
         let pending = std::mem::take(&mut self.pending);
-        let chunk = Retained::build_in(&self.owner, bytes, || Arc::<[T]>::from(pending))?;
+        let chunk = Retained::new(Arc::<[T]>::from(pending));
         self.directory = self.directory.inserted(self.directory.len(), chunk)?;
         Ok(())
     }
@@ -89,7 +69,6 @@ pub(super) struct Chunked<T: PartialEq> {
 #[derive(Clone, Debug)]
 pub(super) struct ChunkDirectory<T> {
     values: ValueIndex<usize, Retained<Arc<[T]>>>,
-    _credit: Arc<Credit>,
     #[cfg(test)]
     dense: Option<Vec<Arc<[T]>>>,
 }
@@ -99,15 +78,12 @@ impl<T: PartialEq> PartialEq for ChunkDirectory<T> {
     }
 }
 impl<T: PartialEq> ChunkDirectory<T> {
-    fn new(values: ValueIndex<usize, Retained<Arc<[T]>>>) -> io::Result<Self> {
-        let credit = display_products()
-            .admit(size_of::<Self>() + 2 * size_of::<usize>() + align_of::<Self>())?;
-        Ok(Self {
+    fn new(values: ValueIndex<usize, Retained<Arc<[T]>>>) -> Self {
+        Self {
             values,
-            _credit: Arc::new(credit),
             #[cfg(test)]
             dense: None,
-        })
+        }
     }
     pub(super) fn len(&self) -> usize {
         #[cfg(test)]
@@ -179,7 +155,7 @@ impl<T: PartialEq> Chunked<T> {
     ) -> io::Result<Self> {
         Ok(Self {
             shift: CHUNK_SHIFT,
-            chunks: Arc::new(ChunkDirectory::new(values)?),
+            chunks: Arc::new(ChunkDirectory::new(values)),
         })
     }
     pub(super) fn directory(&self) -> ValueIndex<usize, Retained<Arc<[T]>>> {
@@ -192,18 +168,13 @@ impl<T: PartialEq> Chunked<T> {
         let mut index = 0;
         while !values.as_slice().is_empty() {
             let count = values.as_slice().len().min(CHUNK_SIZE);
-            let bytes = count
-                .checked_mul(2 * size_of::<T>())
-                .and_then(|n| n.checked_add(4 * size_of::<usize>()))
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            let chunk =
-                Retained::build(bytes, || values.by_ref().take(count).collect::<Arc<[T]>>())?;
+            let chunk = Retained::new(values.by_ref().take(count).collect::<Arc<[T]>>());
             directory = directory.inserted(index, chunk)?;
             index += 1;
         }
         Ok(Self {
             shift: CHUNK_SHIFT,
-            chunks: Arc::new(ChunkDirectory::new(directory)?),
+            chunks: Arc::new(ChunkDirectory::new(directory)),
         })
     }
     pub(super) fn get(&self, id: usize) -> Option<&T> {
@@ -262,32 +233,14 @@ impl<T: Clone + PartialEq> Chunked<T> {
         if let Some(dense) = &self.chunks.dense {
             values = ValueIndex::default();
             for (index, chunk) in dense.iter().enumerate() {
-                let bytes = chunk
-                    .len()
-                    .checked_mul(size_of::<T>())
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                values = values.inserted(index, Retained::build(bytes, || chunk.clone())?)?;
+                values = values.inserted(index, Retained::new(chunk.clone()))?;
             }
         }
-        let _edits_credit = display_products().admit_item(
-            touched
-                .len()
-                .checked_mul(size_of::<(usize, Option<Retained<Arc<[T]>>>)>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
         let mut edits = Vec::with_capacity(touched.len());
         for (&index, _) in touched.iter() {
             let base = self.chunks.get(index).expect("checked chunk index");
             let start = index << self.shift;
-            let payload = base
-                .len()
-                .checked_mul(size_of::<T>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            let scratch = display_products().admit_item(payload)?;
-            let bytes = payload
-                .checked_add(4 * size_of::<usize>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            let chunk = Retained::build(bytes, || {
+            let chunk = Retained::new(
                 base.iter()
                     .enumerate()
                     .map(|(offset, old)| {
@@ -301,15 +254,14 @@ impl<T: Clone + PartialEq> Chunked<T> {
                                 .map_or_else(|| old.clone(), |at| changed[at].1.clone())
                         }
                     })
-                    .collect::<Arc<[T]>>()
-            })?;
-            drop(scratch);
+                    .collect::<Arc<[T]>>(),
+            );
             edits.push((index, Some(chunk)));
         }
         values = values.patched(&edits)?;
         Ok(Some(Self {
             shift: self.shift,
-            chunks: Arc::new(ChunkDirectory::new(values)?),
+            chunks: Arc::new(ChunkDirectory::new(values)),
         }))
     }
 }
@@ -949,7 +901,6 @@ struct ScalarFold<V> {
     table: ViewIdentity,
     values: CopyIndex<u32, V>,
     changes: Vec<u32>,
-    _credit: Credit,
 }
 fn fields(table: TableId, names: &[&str]) -> u64 {
     names.iter().fold(0, |mask, name| {
@@ -979,7 +930,6 @@ impl<V: Copy + PartialEq> ScalarFold<V> {
                 table: view.identity(),
                 values: old.values.clone(),
                 changes: Vec::new(),
-                _credit: display_products().admit(0)?,
             });
         }
         let facts = match changes {
@@ -996,11 +946,6 @@ impl<V: Copy + PartialEq> ScalarFold<V> {
                 |facts| facts.changed().len().checked_add(facts.deleted().len()),
             )
             .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let credit = display_products().admit(
-            count
-                .checked_mul(size_of::<u32>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
         let mut changes = Vec::with_capacity(count);
         let mut values = previous.map_or_else(CopyIndex::default, |old| old.values.clone());
         if let Some(facts) = facts {
@@ -1062,7 +1007,6 @@ impl<V: Copy + PartialEq> ScalarFold<V> {
             table: view.identity(),
             values,
             changes,
-            _credit: credit,
         })
     }
 }
@@ -1071,7 +1015,6 @@ struct TargetFold {
     by_scope_ordinal: CopyIndex<(Scope, u32), bool>,
     winners: CopyIndex<Scope, bool>,
     changes: Vec<Scope>,
-    _credit: Credit,
 }
 impl TargetFold {
     fn read(frame: &DecodedFrame, ours: u32, previous: Option<&Self>) -> io::Result<Option<Self>> {
@@ -1115,11 +1058,6 @@ impl TargetFold {
             .len()
             .checked_mul(2)
             .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let credit = display_products().admit(
-            count
-                .checked_mul(2 * size_of::<Scope>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
         let mut by_scope_ordinal =
             previous.map_or_else(CopyIndex::default, |old| old.by_scope_ordinal.clone());
         let mut winners = previous.map_or_else(CopyIndex::default, |old| old.winners.clone());
@@ -1160,7 +1098,6 @@ impl TargetFold {
             by_scope_ordinal,
             winners,
             changes,
-            _credit: credit,
         }))
     }
 }
@@ -1286,7 +1223,6 @@ pub(super) struct Observation {
     building_tables: [ViewIdentity; 2],
     building_tokens: [CopyIndex<(u32, u32), ()>; 2],
     building_changes: [Vec<(u32, u32)>; 2],
-    _changes_credit: Credit,
     targets: Option<TargetFold>,
     ordered: bool,
 }
@@ -1332,49 +1268,7 @@ impl Observation {
                 previous.map(|old| &old.province_buildings),
             ),
         ];
-        let mut required = 0usize;
-        for (at, (table, rows, old)) in operands.iter().enumerate() {
-            let view = &frame.tables[table.index()];
-            let before = previous.map(|old| &old.building_tables[at]);
-            let count = if before
-                .is_some_and(|before| before.fields_unchanged(view, slot_fields(*table)))
-            {
-                0
-            } else if let Some(facts) =
-                match input.changes().since(*table, before, slot_fields(*table)) {
-                    replay_frame::frame::TableChanges::Rows(facts) => Some(facts),
-                    _ => None,
-                }
-            {
-                facts
-                    .changed()
-                    .len()
-                    .checked_add(facts.deleted().len())
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?
-            } else {
-                rows.len()
-                    .checked_add(old.map_or(0, |old| old.len()))
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?
-            };
-            required = required
-                .checked_add(
-                    count
-                        .checked_mul(size_of::<(u32, u32)>())
-                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                )
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        }
         let links = core::<tables::CountryLinks>(frame)?;
-        let metadata = size_of::<Self>() + COMPLETENESS.len() * 256;
-        required = required
-            .checked_add(metadata)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        for (table, _) in COMPLETENESS {
-            required = required
-                .checked_add(completeness(frame, table).2.len())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        }
-        let changes_credit = display_products().admit(required)?;
         let mut built = [None, None];
         let mut building_tokens: [CopyIndex<(u32, u32), ()>; 2] =
             previous.map_or_else(Default::default, |old| old.building_tokens.clone());
@@ -1540,7 +1434,6 @@ impl Observation {
                 .map(|table| frame.tables[table.index()].identity()),
             building_changes: [state_changes, province_changes],
             building_tokens,
-            _changes_credit: changes_credit,
             ordered,
             targets: TargetFold::read(frame, ours, previous.and_then(|old| old.targets.as_ref()))?,
         })
@@ -1574,12 +1467,6 @@ pub(super) struct Inputs<'a> {
 }
 
 impl MapBuildingAssets {
-    pub fn evict_tokens(&self) {
-        self.tokens
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take();
-    }
     pub(super) fn sites(&self) -> &Sites {
         self.sites.get_or_init(|| Sites::read(self))
     }
@@ -1631,13 +1518,9 @@ impl MapBuildingAssets {
                     let names =
                         TokenNames::from_rows(&table.rows()[at..at + 1], table.is_complete());
                     if let Some((_, spelling)) = names.iter().next() {
-                        if let Some(value) = named_type(
-                            spelling,
-                            &self.facts.keys,
-                            &self.facts.index,
-                            self.token_key_bytes
-                                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                        )? {
+                        if let Some(value) =
+                            named_type(spelling, &self.facts.keys, &self.facts.index)?
+                        {
                             next.0 = next.0.inserted(token, value)?;
                         }
                     }
@@ -1649,19 +1532,19 @@ impl MapBuildingAssets {
         } else {
             token_types(frame, &self.facts.keys, &self.facts.index)?
         };
-        let types = Retained::build(0, || types)?;
+        let types = Retained::new(types);
         *kept = Some((view.identity(), types.clone()));
         Ok(types)
     }
 
-    pub(super) fn city_bits(&self, city: &CityTerrain<'_>) -> io::Result<Retained<Vec<bool>>> {
-        Retained::build(self.sites().hub_points.len(), || {
+    pub(super) fn city_bits(&self, city: &CityTerrain<'_>) -> Retained<Vec<bool>> {
+        Retained::new(
             self.sites()
                 .hub_points
                 .iter()
                 .map(|&(x, z)| city.at(x, z))
-                .collect()
-        })
+                .collect(),
+        )
     }
     pub(super) fn ordinary_slot_count(&self) -> usize {
         self.sites().slots.len()
@@ -1835,13 +1718,7 @@ impl MapBuildingAssets {
                     .filter(|&slot| read_by(base, Tally::READ_DETECTION, slot)),
             )?;
         }
-        let slots = Retained::build(
-            affected
-                .len()
-                .checked_mul(size_of::<u32>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-            || affected.iter().map(|(key, _)| *key).collect(),
-        )?;
+        let slots = Retained::new(affected.iter().map(|(key, _)| *key).collect());
         Ok(Ok(Affected { slots }))
     }
 
@@ -1893,12 +1770,7 @@ impl PreparedBuildings {
     }
 }
 
-pub(super) type Patch = (
-    Vec<(u32, PreparedSlot)>,
-    Vec<(u32, Tally)>,
-    SlotSummary,
-    Credit,
-);
+pub(super) type Patch = (Vec<(u32, PreparedSlot)>, Vec<(u32, Tally)>, SlotSummary);
 
 pub(super) fn patch(
     base: &BuildingsBase,
@@ -1906,12 +1778,6 @@ pub(super) fn patch(
     types: &[BuildingType],
     mut evaluate: impl FnMut(u32) -> io::Result<(PreparedSlot, Tally)>,
 ) -> io::Result<Patch> {
-    let credit = display_products().admit_item(
-        affected
-            .len()
-            .checked_mul(size_of::<(u32, PreparedSlot)>() + size_of::<(u32, Tally)>())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-    )?;
     let mut totals = base.totals.clone();
     let mut slots = Vec::with_capacity(affected.len());
     let mut tallies = Vec::with_capacity(affected.len());
@@ -1924,7 +1790,7 @@ pub(super) fn patch(
         slots.push((id, slot));
         tallies.push((id, tally));
     }
-    Ok((slots, tallies, totals, credit))
+    Ok((slots, tallies, totals))
 }
 
 pub(super) enum Ordinary<'a> {
@@ -1935,7 +1801,6 @@ pub(super) enum Ordinary<'a> {
         reason: &'static str,
     },
     Patched {
-        _credit: Credit,
         base: &'a BuildingsBase,
         slots: Vec<(u32, PreparedSlot)>,
         tallies: Vec<(u32, Tally)>,
@@ -1976,18 +1841,12 @@ impl Ordinary<'_> {
                 slots,
                 tallies,
                 totals,
-                _credit,
             } => {
                 let evaluated = slots.len();
                 let count = slots
                     .len()
                     .checked_add(harbors.changes.len())
                     .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                let _merge = display_products().admit_item(
-                    count
-                        .checked_mul(size_of::<(u32, PreparedSlot)>())
-                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                )?;
                 let mut combined = Vec::with_capacity(count);
                 combined.extend(slots);
                 combined.extend(harbors.changes.iter().cloned());

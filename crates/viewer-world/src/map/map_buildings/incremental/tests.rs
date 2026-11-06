@@ -9,10 +9,9 @@ use replay_frame::frame::{Metrics, SharedView, TableView};
 use viewer_foundation::map::perspective::{Choice, Country};
 
 #[test]
-fn streamed_slot_chunks_preserve_order_with_less_than_two_copies() {
+fn streamed_slot_chunks_preserve_order() {
     let count = CHUNK_SIZE * 20 + 7;
-    let owner = MemoryBudget::new(count * size_of::<[u64; 32]>() * 3 / 2);
-    let mut builder = ChunkBuilder::new_in(&owner).unwrap();
+    let mut builder = ChunkBuilder::new();
     for value in 0..count {
         builder.push([value as u64; 32]).unwrap();
     }
@@ -21,9 +20,6 @@ fn streamed_slot_chunks_preserve_order_with_less_than_two_copies() {
     for value in 0..count {
         assert_eq!(chunks.get(value), Some(&[value as u64; 32]));
     }
-    assert!(owner.used() < owner.limit());
-    drop(chunks);
-    assert_eq!(owner.used(), 0);
 }
 
 #[test]
@@ -539,7 +535,7 @@ fn step(
                 .map(|(id, _)| *id)
                 .collect();
             assert_eq!(emitted, repainted, "hour {}", hour.hour);
-            let next = patched.base(assets, &vision, assets.city_bits(&city).unwrap());
+            let next = patched.base(assets, &vision, assets.city_bits(&city));
             let links = hour.links.iter().copied().collect();
             let reread = GateInputs::reread(&frame, &links, vision.ours()).unwrap();
             assert_eq!(*next.gates, reread, "hour {}", hour.hour);
@@ -807,12 +803,9 @@ fn cached_plan_inputs_match_expected_sites_and_changes() {
         height: 4,
         spawn_city: &COLUMN,
     };
-    assert_eq!(*assets.city_bits(&city).unwrap(), vec![true, false]);
-    assert_eq!(
-        *assets.city_bits(&terrain(false)).unwrap(),
-        vec![false, false]
-    );
-    assert_eq!(*assets.city_bits(&terrain(true)).unwrap(), vec![true, true]);
+    assert_eq!(*assets.city_bits(&city), vec![true, false]);
+    assert_eq!(*assets.city_bits(&terrain(false)), vec![false, false]);
+    assert_eq!(*assets.city_bits(&terrain(true)), vec![true, true]);
     assert_eq!(assets.sites().slots.len(), WIDE as usize + 6);
     assert_eq!(assets.slot_count(), WIDE as usize + 7);
 }
@@ -977,7 +970,7 @@ fn a_building_base_keeps_closed_operands_without_source_pins() {
         )
         .unwrap();
     let holders = Arc::strong_count(&vision);
-    let base = built.base(&assets, &vision, assets.city_bits(&terrain(false)).unwrap());
+    let base = built.base(&assets, &vision, assets.city_bits(&terrain(false)));
     assert_eq!(Arc::strong_count(&vision), holders);
     assert_eq!(
         (base.observation.branch, base.observation.hour),
@@ -1050,7 +1043,7 @@ fn compact_building_observations_patch_changed_keys_and_share_unrelated_paths() 
     };
     let mut hour = Hour::first();
     let mut encoder = FrameEncoder::new();
-    let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     let raw = encoder.encode(hour.frame(), true).unwrap();
     let frame = decoder.advance(&raw).unwrap();
     let first = Observation::read(frame, &defines, 0, None).unwrap();
@@ -1097,7 +1090,7 @@ fn changed_detection_rows_preserve_last_ordinal_scope_winners_and_ignore_other_f
     duplicate.ordinal = 9;
     hour.raids = vec![raid(1), duplicate];
     let mut encoder = FrameEncoder::new();
-    let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     let raw = encoder.encode(hour.frame(), true).unwrap();
     let frame = decoder.advance(&raw).unwrap();
     let mut previous = Observation::read(frame, &defines, 0, None).unwrap();
@@ -1185,8 +1178,7 @@ fn persistent_slot_chunks_do_not_coalesce_signed_zero_or_nan_payloads() {
                     ..Default::default()
                 },
             }
-            .retain()
-            .unwrap(),
+            .retain(),
         ),
     };
     let original = Chunked::from_values(vec![make(0.0)]).unwrap();
@@ -1275,7 +1267,7 @@ fn floating_source_folds_preserve_first_ordinal_completeness_and_unrelated_paths
     use replay_frame::frame::{FrameDecoder, FrameEncoder};
     let mut hour = Hour::first();
     let mut encoder = FrameEncoder::new();
-    let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     let mut supply = ProvinceSupplyRow {
         province: SEA,
         controller_index: 2,
@@ -1423,8 +1415,7 @@ fn reference_floating(
                         ..ModelInstance::default()
                     },
                 }
-                .retain()
-                .unwrap(),
+                .retain(),
             )
         })();
         harbors.push(PreparedSlot {
@@ -1444,7 +1435,7 @@ fn floating_output_delta_and_tail_patch_match_the_frozen_scalar_reference() {
     let assets = assets();
     let mut hour = Hour::first();
     let mut encoder = FrameEncoder::new();
-    let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     let mut base: Option<BuildingsBase> = None;
     for step in 0..10 {
         hour.hour += 1;
@@ -1526,9 +1517,7 @@ fn fog_changes_preserve_unknowns_and_only_dirty_native_visibility_boundaries() {
     base.vision.provinces = Some(Arc::new(
         viewer_foundation::map::perspective::values::Values::from_iter(
             previous.iter().map(|(&key, &value)| (key, value)),
-            map_display_data::credit::display_products(),
-        )
-        .unwrap(),
+        ),
     ));
     let mut next = (*vision).clone();
     previous.remove(&7);

@@ -50,6 +50,7 @@ test('registered production pins publish local body dates and native aliases, re
         export const useProductionLines = (widget, runtime) => ({ track: runtime.tracks[0], tag: widget.countries.tags[0],
           data: globalThis.__productionPin.overview ? { branchId: 'b', tag: 'X', lines: [], reads: [100], approximate: [], detailHours: 720, warnings: [] } : undefined });
         export const useLineDetail = () => ({ data: new Map(), errors: new Map(), retry() {} });
+        export const useLineHour = () => ({ detail: undefined, hour: undefined, error: undefined, retry() {} });
         export const useProductionCountry = (selection, _runtime, track) => ({ spans: selection ? datedCountrySpans([
           { tag: 'X', identities: [{ firstHour: 100, lastHour: 109, slot: 1, countryId: 10 }, { firstHour: 110, lastHour: 120, slot: 2, countryId: 20 }] },
           { tag: 'Y', identities: [{ firstHour: 110, lastHour: 114, slot: 1, countryId: 10 }, { firstHour: 117, lastHour: 120, slot: 3, countryId: 30 }] }
@@ -66,7 +67,7 @@ test('registered production pins publish local body dates and native aliases, re
       if (path.endsWith('/production-lines/ProductionDrill.tsx')) return 'export default props => { globalThis.__productionPin.drill = props; return String(props.hour); };';
       if (path.endsWith('/dashboard/countryFlagsAt.ts')) return `export const useCountryLabelsAt = () => ({ labelAt: hour => tag => ({
         name: tag + ' at ' + hour, flag: 'data:flag-' + tag + '@' + hour, known: true }) });`;
-      if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => globalThis.__productionPin.hour;';
+      if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => globalThis.__productionPin.hour; export const usePlaybackMotion = () => undefined;';
       if (path.endsWith('/charts/useChartTokens.ts')) return 'export const useChartTokens = () => ({}); export const useViewportHeight = () => 1000;';
       if (path.endsWith('/components/ContextMenu.tsx')) return 'export const useContextMenu = () => ({ menu: null, open() {} });';
       if (path.endsWith('/production-lines/ProductionLinesWidget.tsx')) return source

@@ -96,6 +96,10 @@ export interface DashboardMapState {
   sequence: number;
   requestedSequence: number;
   loading: boolean;
+  /** Playing, how many hours the rendered frame trails the map's clock. */
+  behind?: number | null;
+  /** Playing, why a newer hour the clock passed is not shown: it failed or waits for memory. */
+  behindReason?: string | null;
   error: string | null;
   /** Why the hour shows no map yet, which is no failure: its session is still being recorded. */
   pending?: string | null;

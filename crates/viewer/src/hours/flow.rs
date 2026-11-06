@@ -168,7 +168,7 @@ impl<K: Eq> Ledger<K> {
     }
 
     /// FIFO across held jobs, including retired targets. A later dependent
-    /// cannot occupy a worker while a predecessor may need a byte-credit retry.
+    /// cannot occupy a worker while its predecessor's parts are still unfinished.
     pub fn dependencies_complete(&self, ticket: Ticket) -> bool {
         self.flights.get(&ticket).is_some_and(|flight| {
             flight.dependencies.iter().all(|dependency| {
@@ -246,6 +246,7 @@ impl<K: Eq> Ledger<K> {
     /// Retarget metadata only. Cancel an obsolete tail in reverse dispatch
     /// order, never an accepted job or a predecessor a retained target needs.
     /// The adapter drops only the returned payloads/held closures.
+    #[cfg(test)]
     pub fn retarget(&mut self, mut keep: impl FnMut(u64, &K) -> bool) -> Vec<Ticket> {
         self.retarget_flights(|_, flight| keep(flight.epoch, &flight.key))
     }

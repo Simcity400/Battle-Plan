@@ -26,12 +26,18 @@ pub(crate) struct Params {
     pub cursor: Option<String>,
     pub page_size: u32,
     pub categories: BTreeSet<EventFeedCategory>,
+    /// Only the rows read after this hour, which a feed answered through it prepends: every one
+    /// dated after it, at most `page_size`; else the page is answered whole.
+    pub after: Option<i32>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Page {
     pub reply: EventFeedReply,
     pub next_cursor: Option<String>,
+    /// The hour the rows were read after, where the page holds only those ([`Params::after`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<i32>,
 }
 
 // The ordering operands include the original native ID and a source ordinal for
@@ -111,7 +117,7 @@ pub(crate) struct Families<'a> {
     pub focus: &'a FocusFeed,
     /// Where the art of the focus completions a page shows is read.
     pub focus_art: &'a dyn CompletionArts,
-    pub ideas: &'a Ideas,
+    pub ideas: &'a Arc<Ideas>,
     pub projects: &'a Projects,
 }
 
@@ -120,15 +126,6 @@ trait Dated {
     fn read_hour(&self) -> i32;
     /// The event as the feed reads it.
     fn source_row(&self) -> SourceRow;
-}
-
-impl<T: Dated> Dated for &T {
-    fn read_hour(&self) -> i32 {
-        (**self).read_hour()
-    }
-    fn source_row(&self) -> SourceRow {
-        (**self).source_row()
-    }
 }
 
 impl Dated for Increase {
@@ -235,18 +232,6 @@ impl Keyed for Projects {
     }
 }
 
-impl<'a> Keyed for Classified<'a> {
-    type Event = &'a Addition;
-    fn given(&self, key: u64) -> &[&'a Addition] {
-        match usize::try_from(key)
-            .ok()
-            .and_then(|key| self.listed.get(key))
-        {
-            Some(listed) => listed.as_slice(),
-            None => &[],
-        }
-    }
-}
 
 /// A source's events the feed is given whole, read as its pages would be.
 trait Held {
@@ -277,21 +262,21 @@ impl<K: Keyed> Held for K {
     }
 }
 
-/// The idea additions the feed lists, by key ([`LAW_KEY`], [`ADVISOR_KEY`]), and each idea the
-/// recorded content cannot classify, with its additions. An addition of an idea content proves
-/// no law is no change the feed lists.
-struct Classified<'a> {
-    listed: [Vec<&'a Addition>; 2],
+/// The idea additions the feed lists, by key ([`LAW_KEY`], [`ADVISOR_KEY`]), as their places in
+/// the ideas' additions, and each idea the recorded content cannot classify, with its additions.
+/// An addition of an idea content proves no law is no change the feed lists.
+struct Classified {
+    listed: [Vec<usize>; 2],
     unclassified: BTreeMap<String, u32>,
 }
 
-fn classified<'a>(
-    ideas: &'a Ideas,
+fn classified(
+    ideas: &Ideas,
     politics: Option<&politics_content::PoliticsContent>,
-) -> io::Result<Classified<'a>> {
-    let mut listed: [Vec<&Addition>; 2] = [Vec::new(), Vec::new()];
+) -> io::Result<Classified> {
+    let mut listed: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
     let mut unclassified = BTreeMap::<String, u32>::new();
-    for addition in &ideas.additions {
+    for (at, addition) in ideas.additions.iter().enumerate() {
         let key = if addition.span.character.is_some() {
             ADVISOR_KEY
         } else {
@@ -314,12 +299,88 @@ fn classified<'a>(
                 }
             }
         };
-        listed[key as usize].push(addition);
+        listed[key as usize].push(at);
     }
     Ok(Classified {
         listed,
         unclassified,
     })
+}
+
+/// Each branch's [`classified`] additions of one publication of the ideas family under one
+/// politics content, both held so they are told apart from their successors.
+#[derive(Default)]
+struct KeptClassified(
+    BTreeMap<
+        u64,
+        (
+            Arc<Ideas>,
+            Option<Arc<politics_content::PoliticsContent>>,
+            Arc<Classified>,
+        ),
+    >,
+);
+
+/// [`classified`], once per publication of the ideas and politics content of `branch`.
+fn kept_classified(
+    source: &Source,
+    branch: u64,
+    ideas: &Arc<Ideas>,
+    politics: Option<&Arc<politics_content::PoliticsContent>>,
+) -> io::Result<Arc<Classified>> {
+    let state = source.state::<KeptClassified>();
+    let mut kept = state.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some((held_ideas, held_politics, held)) = kept.0.get(&branch)
+        && Arc::ptr_eq(held_ideas, ideas)
+        && match (held_politics, politics) {
+            (Some(held), Some(politics)) => Arc::ptr_eq(held, politics),
+            (None, None) => true,
+            _ => false,
+        }
+    {
+        return Ok(Arc::clone(held));
+    }
+    let held = Arc::new(classified(ideas, politics.map(|politics| &**politics))?);
+    kept.0.insert(
+        branch,
+        (Arc::clone(ideas), politics.cloned(), Arc::clone(&held)),
+    );
+    Ok(held)
+}
+
+/// The additions [`Classified`] lists, read from the ideas it indexes.
+struct ClassifiedIdeas<'a> {
+    ideas: &'a Ideas,
+    classified: &'a Classified,
+}
+
+impl ClassifiedIdeas<'_> {
+    fn listed(&self, key: u64) -> &[usize] {
+        usize::try_from(key)
+            .ok()
+            .and_then(|key| self.classified.listed.get(key))
+            .map_or(&[], Vec::as_slice)
+    }
+    fn addition(&self, key: u64, ordinal: usize) -> Option<&Addition> {
+        self.ideas.additions.get(*self.listed(key).get(ordinal)?)
+    }
+}
+
+impl Held for ClassifiedIdeas<'_> {
+    fn through(&self, key: u64, hour: i32) -> usize {
+        self.listed(key)
+            .partition_point(|&at| self.ideas.additions[at].read_hour() <= hour)
+    }
+    fn at(&self, key: u64, ordinal: usize) -> Option<(i32, SourceRow)> {
+        self.addition(key, ordinal)
+            .map(|addition| (addition.read_hour(), addition.source_row()))
+    }
+    fn hour(&self, key: u64, ordinal: usize) -> Option<i32> {
+        self.addition(key, ordinal).map(Dated::read_hour)
+    }
+    fn late(&self) -> Option<&LateIndex> {
+        None
+    }
 }
 
 /// A source's event as the feed reads it: its key, the hour that read it, its ordinal and the
@@ -827,6 +888,120 @@ fn candidates(
     Ok((held, peace, has_older))
 }
 
+/// Rows a delta page reads at a time from one source key.
+const DELTA_ROWS: u32 = 256;
+
+/// The rows read after `after` through `live` (`bounds.1`), which a page answered through
+/// `after` holds none of, for it to prepend, and whether they are more than `limit`: then the
+/// newest `limit` of them are the whole first page, as each dates after every row read by
+/// `after`. None where they cannot be prepended: one of them, or a war end naming a peace the
+/// page holds, dates by `after`, or a project's change revises one read by then.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn delta(
+    readers: &mut [Events<'_>],
+    native_ends: &mut Reader<'_>,
+    metadata: &Metadata,
+    projects: &Projects,
+    bounds: (i32, i32),
+    after: i32,
+    categories: &BTreeSet<EventFeedCategory>,
+    limit: usize,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<(BTreeMap<Position, SourceRow>, BTreeMap<i32, WarEnds>, bool)>> {
+    let (first, live) = bounds;
+    let mut held: BTreeMap<Position, SourceRow> = BTreeMap::new();
+    let mut peace = BTreeMap::new();
+    if after >= live {
+        return Ok(Some((held, peace, false)));
+    }
+    let mut taken = 0_usize;
+    // A peace held keeps the war ends read by then; one read later dated by then revises it.
+    let ended = EventFeedKind::WarEnded as u64;
+    if metadata
+        .facts
+        .2
+        .between(i32::MIN, after, live)
+        .any(|&(_, read, key, _)| read > after && key & !(1 << 63) == ended)
+    {
+        return Ok(None);
+    }
+    // Whether the page can take the row: None where it cannot be prepended.
+    let mut admit = |peace: &mut BTreeMap<i32, WarEnds>,
+                     source: usize,
+                     row: Read|
+     -> io::Result<Option<()>> {
+        let (mut position, row) = decode(source, row)?;
+        // A change to an episode read by then can revise a row held, wherever it now falls.
+        if let SourceRow::Project(change) = &row
+            && position.read <= live
+            && projects.read_by(change.id, after)
+        {
+            return Ok(None);
+        }
+        if position.native < first || position.native > live || position.read > live {
+            return Ok(Some(()));
+        }
+        if position.native <= after {
+            return Ok(None);
+        }
+        if position.kind == EventFeedKind::Peace {
+            if let std::collections::btree_map::Entry::Vacant(entry) = peace.entry(position.native)
+            {
+                entry.insert(war_ends(native_ends, metadata, position.native, live)?);
+            }
+            position.tags =
+                peace_fallback(&peace[&position.native], position.native, position.tags);
+            if position.tags.len() < 2 {
+                return Ok(Some(()));
+            }
+        }
+        held.insert(position, row);
+        taken += 1;
+        if held.len() > limit + 1 {
+            held.pop_first();
+        }
+        Ok(Some(()))
+    };
+    for (source, reader) in readers.iter_mut().enumerate() {
+        let late = reader.late().or_else(|| metadata.late(source));
+        let ordinary = keys(source, categories);
+        // Each key's events in the order of the hours that read them, its late ones among them.
+        for &key in &ordinary {
+            check_cancel(cancelled)?;
+            let end = reader.event_count_through(key, live)?;
+            let mut cursor = reader.event_count_through(key, after)?;
+            while cursor < end {
+                let page = reader.events(&[key], after + 1, live, cursor, DELTA_ROWS)?;
+                if page.is_empty() {
+                    return Err(crate::invalid("Prepared feed source page made no progress"));
+                }
+                cursor += page.len() as u64;
+                for row in page {
+                    if admit(&mut peace, source, row)?.is_none() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        // Facts read after their date are kept under keys of their own, reached through the index.
+        if let Some(late) = late {
+            for &(_, read, key, ordinal) in late.between(first, live, live) {
+                if read <= after || key & (1 << 63) == 0 || !ordinary.contains(&(key & !(1 << 63)))
+                {
+                    continue;
+                }
+                check_cancel(cancelled)?;
+                let row = reader.event(key, ordinal)?;
+                if admit(&mut peace, source, row)?.is_none() {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    drop(admit);
+    Ok(Some((held, peace, taken > limit)))
+}
+
 fn war_ends(
     reader: &mut Reader<'_>,
     metadata: &Metadata,
@@ -1038,6 +1213,7 @@ fn blank(params: &Params, first: i32, last: i32) -> Page {
             warnings: Vec::new(),
         },
         next_cursor: None,
+        after: None,
     }
 }
 
@@ -1097,6 +1273,11 @@ pub(crate) fn query(
         .as_deref()
         .map(serde_json::from_str)
         .transpose()?;
+    if params.after.is_some() && cursor.is_some() {
+        return Err(crate::invalid(
+            "A prepared feed page read after an hour has no cursor",
+        ));
+    }
     if cursor.as_ref().is_some_and(|cursor| {
         cursor.live != live
             || cursor.first != first
@@ -1119,7 +1300,11 @@ pub(crate) fn query(
         .and_then(|content| politics_content::politics_content(source, content));
     drop(phase);
     let phase = replay_frame::cpu::scope_phase("ef-q:classify");
-    let ideas = classified(families.ideas, politics.as_deref().ok())?;
+    let classified = kept_classified(source, branch, families.ideas, politics.as_ref().ok())?;
+    let ideas = ClassifiedIdeas {
+        ideas: families.ideas,
+        classified: &classified,
+    };
     drop(phase);
     let phase = replay_frame::cpu::scope_phase("ef-q:candidates");
     let given: [Option<&dyn Held>; 7] = [
@@ -1143,40 +1328,73 @@ pub(crate) fn query(
         })
         .collect::<io::Result<_>>()?;
     let mut native_ends = Reader::new(store, key, format!("event-feed-facts-{branch}"), cancelled)?;
-    let (mut rows, peace, has_older) = candidates(
-        &mut readers,
-        &mut native_ends,
-        &metadata,
-        (first, live),
-        cursor.as_ref().map(|cursor| &cursor.before),
-        &params.categories,
-        params.page_size as usize + 1,
-        cancelled,
-    )?;
-    drop(phase);
-    let more = has_older || rows.len() > params.page_size as usize;
-    if rows.len() > params.page_size as usize {
-        rows.pop_first();
-    }
-    let next_cursor = if more {
-        let oldest = rows.first_key_value().unwrap().0;
-        if cursor
-            .as_ref()
-            .is_some_and(|cursor| oldest >= &cursor.before)
-        {
-            return Err(crate::invalid(
-                "Prepared feed continuation made no progress",
-            ));
-        }
-        Some(serde_json::to_string(&Cursor {
-            live,
-            first,
-            categories: params.categories.clone(),
-            before: rows.first_key_value().unwrap().0.clone(),
-        })?)
-    } else {
-        None
+    // A page read after an hour at or past the live one is answered whole.
+    let since = match params.after.filter(|&after| after <= live) {
+        Some(after) => delta(
+            &mut readers,
+            &mut native_ends,
+            &metadata,
+            families.projects,
+            (first, live),
+            after,
+            &params.categories,
+            params.page_size as usize,
+            cancelled,
+        )?
+        .map(|rows| (rows, after)),
+        None => None,
     };
+    let (mut rows, peace, next_cursor, after) = match since {
+        Some(((rows, peace, false), after)) => (rows, peace, None, Some(after)),
+        Some(((mut rows, peace, true), _)) => {
+            rows.pop_first();
+            let before = rows.first_key_value().unwrap().0.clone();
+            let next_cursor = serde_json::to_string(&Cursor {
+                live,
+                first,
+                categories: params.categories.clone(),
+                before,
+            })?;
+            (rows, peace, Some(next_cursor), None)
+        }
+        None => {
+            let (mut rows, peace, has_older) = candidates(
+                &mut readers,
+                &mut native_ends,
+                &metadata,
+                (first, live),
+                cursor.as_ref().map(|cursor| &cursor.before),
+                &params.categories,
+                params.page_size as usize + 1,
+                cancelled,
+            )?;
+            let more = has_older || rows.len() > params.page_size as usize;
+            if rows.len() > params.page_size as usize {
+                rows.pop_first();
+            }
+            let next_cursor = if more {
+                let oldest = rows.first_key_value().unwrap().0;
+                if cursor
+                    .as_ref()
+                    .is_some_and(|cursor| oldest >= &cursor.before)
+                {
+                    return Err(crate::invalid(
+                        "Prepared feed continuation made no progress",
+                    ));
+                }
+                Some(serde_json::to_string(&Cursor {
+                    live,
+                    first,
+                    categories: params.categories.clone(),
+                    before: rows.first_key_value().unwrap().0.clone(),
+                })?)
+            } else {
+                None
+            };
+            (rows, peace, next_cursor, None)
+        }
+    };
+    drop(phase);
     // Revisions remain raw paging operands even when they no longer project a
     // row at Live: only an episode's change current at Live is listed.
     rows.retain(|position, row| match row {
@@ -1190,7 +1408,13 @@ pub(crate) fn query(
     });
     let phase = replay_frame::cpu::scope_phase("ef-q:diagnostics");
     let mut builder = Builder::new(first, live);
-    diagnostics(&mut builder, &metadata, &families, &ideas.unclassified, live)?;
+    diagnostics(
+        &mut builder,
+        &metadata,
+        &families,
+        &classified.unclassified,
+        live,
+    )?;
     let nuke_types = families.nukes.types();
     let mut project_refusals = catalogue::Refusals::default();
     for row in rows.values() {
@@ -1379,7 +1603,11 @@ pub(crate) fn query(
     let mut reply = reply(&builder.feed, &params.branch_id, first, live, true);
     reply.unavailable = builder.feed.unavailable;
     reply.warnings = builder.feed.warnings;
-    let page = Page { reply, next_cursor };
+    let page = Page {
+        reply,
+        next_cursor,
+        after,
+    };
     if let Err(error) = crate::products::check_reply_budget(&page) {
         if params.page_size == 1 {
             return Err(error);

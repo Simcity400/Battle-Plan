@@ -1240,11 +1240,10 @@ fn endpoint_transient_membership_keeps_boundaries_without_deleting_an_absent_bas
 #[test]
 fn endpoint_changed_facts_are_predecessor_bound_and_cancel_before_consuming_baselines() {
     let selected = &[TableId::Countries];
-    let budget = allocation::credit::MemoryBudget::new(1 << 20);
     let mut encoder = FrameEncoder::new();
     let mut source_decoder = FrameDecoder::for_tables(selected);
     let mut writer = EndpointWriter::for_tables(selected);
-    let mut target = FrameDecoder::for_tables(selected).with_change_facts(budget.clone());
+    let mut target = FrameDecoder::for_tables(selected).with_change_facts();
     let raw = encoder.encode(source(0), true).unwrap();
     let first = source_decoder.advance(&raw).unwrap();
     writer.observe(&raw, first).unwrap();
@@ -1259,7 +1258,6 @@ fn endpoint_changed_facts_are_predecessor_bound_and_cancel_before_consuming_base
     writer.observe(&raw, next).unwrap();
     bytes.clear();
     writer.finish(next, &mut bytes).unwrap();
-    let held = budget.admit(budget.limit() - budget.used()).unwrap();
     assert_eq!(
         target
             .advance_endpoint_parallel_cancellable(
@@ -1273,7 +1271,6 @@ fn endpoint_changed_facts_are_predecessor_bound_and_cancel_before_consuming_base
         io::ErrorKind::Interrupted
     );
     assert_eq!(target.current().unwrap().hour, first_hour());
-    drop(held);
     let current = target
         .advance_endpoint(EndpointStep::decode(&bytes).unwrap())
         .unwrap();
@@ -1291,9 +1288,6 @@ fn endpoint_changed_facts_are_predecessor_bound_and_cancel_before_consuming_base
         [1]
     );
     assert!(facts.row(1).unwrap().fields != 0);
-    drop(target);
-    drop(previous);
-    assert_eq!(budget.used(), 0);
     fn first_hour() -> i32 {
         300
     }

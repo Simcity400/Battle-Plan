@@ -466,18 +466,31 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
     }
 }
 
-/// `focus-art` asks for distinct tokens in order, at most a page.
+/// `focus-art` asks for distinct tokens in order at each hour, hours in
+/// order with each database once, at most a page and the active focus in all.
 #[test]
-fn focus_art_params_are_one_ordered_page_of_distinct_tokens() {
-    let params = |tokens: Vec<&str>| FocusArtParams {
+fn focus_art_params_are_ordered_groups_of_distinct_tokens_within_a_page() {
+    use crate::FocusDatabase::{Continuous, National};
+    let group = |hour: i32, database, tokens: Vec<&str>| FocusArtGroup {
+        hour,
+        database,
+        tokens: tokens.into_iter().map(str::to_owned).collect(),
+    };
+    let params = |groups: Vec<FocusArtGroup>| FocusArtParams {
         branch_id: "1".into(),
         tag: "GER".into(),
-        hour: 100,
-        database: crate::FocusDatabase::National,
-        tokens: tokens.into_iter().map(str::to_owned).collect(),
+        groups,
         mode: FocusArtMode::Display,
     };
-    assert!(FocusArt::validate(&params(vec!["a", "b"])).is_ok());
+    assert!(FocusArt::validate(&params(vec![group(100, National, vec!["a", "b"])])).is_ok());
+    assert!(
+        FocusArt::validate(&params(vec![
+            group(100, National, vec!["a"]),
+            group(100, Continuous, vec!["a"]),
+            group(101, National, vec!["a"]),
+        ]))
+        .is_ok()
+    );
     for tokens in [
         vec![],
         vec!["b", "a"],
@@ -485,14 +498,24 @@ fn focus_art_params_are_one_ordered_page_of_distinct_tokens() {
         vec![""],
         vec!["a\0"],
     ] {
-        assert!(FocusArt::validate(&params(tokens)).is_err());
+        assert!(FocusArt::validate(&params(vec![group(100, National, tokens)])).is_err());
     }
-    let page: Vec<String> = (0..=PAGE_ROWS)
-        .map(|index| format!("t{index:04}"))
-        .collect();
-    let mut over = params(Vec::new());
-    over.tokens = page;
-    assert!(FocusArt::validate(&over).is_err());
+    assert!(FocusArt::validate(&params(Vec::new())).is_err());
+    for groups in [
+        vec![group(101, National, vec!["a"]), group(100, National, vec!["a"])],
+        vec![group(100, National, vec!["a"]), group(100, National, vec!["b"])],
+        vec![group(100, Continuous, vec!["a"]), group(100, National, vec!["b"])],
+    ] {
+        assert!(FocusArt::validate(&params(groups)).is_err());
+    }
+    let tokens = |count: usize| -> Vec<String> {
+        (0..count).map(|index| format!("t{index:04}")).collect()
+    };
+    let mut full = params(vec![group(100, National, Vec::new()), group(101, National, vec!["a"])]);
+    full.groups[0].tokens = tokens(PAGE_ROWS);
+    assert!(FocusArt::validate(&full).is_ok());
+    full.groups[1].tokens.push("b".into());
+    assert!(FocusArt::validate(&full).is_err());
 }
 
 /// `focus-art` and `focus-static-text` look every token up in the database
@@ -562,17 +585,23 @@ fn focus_art_and_static_text_keep_each_database_apart() {
                 &FocusArtParams {
                     branch_id: "1".into(),
                     tag: "GER".into(),
-                    hour: 100,
-                    database,
-                    tokens: vec!["shared".into()],
+                    groups: vec![FocusArtGroup {
+                        hour: 100,
+                        database,
+                        tokens: vec!["shared".into()],
+                    }],
                     mode: FocusArtMode::Text,
                 },
                 &context,
                 &cancelled,
             )
             .unwrap();
-            assert!(reply.failures.is_empty(), "{:?}", reply.failures);
-            reply.art.into_iter().next().unwrap()
+            let [group] = &reply.groups[..] else {
+                panic!("{:?}", reply.groups);
+            };
+            assert!(group.error.is_none(), "{:?}", group.error);
+            assert!(group.failures.is_empty(), "{:?}", group.failures);
+            group.art[0].clone()
         };
         // The national art is kept first, where a key without its database would answer again.
         for _ in 0..2 {

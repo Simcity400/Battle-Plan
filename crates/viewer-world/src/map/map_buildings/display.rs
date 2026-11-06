@@ -60,37 +60,9 @@ impl PreparedBuildings {
                 |pages, index| pages.inserted(index, ()),
             )?,
         };
-        let _edits_credit = map_display_data::credit::display_products().admit_item(
-            changed
-                .len()
-                .checked_mul(size_of::<(
-                    usize,
-                    Option<map_display_data::retained::Retained<Vec<data::Slot>>>,
-                )>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
         let mut edits = Vec::with_capacity(changed.len());
         for (&index, _) in changed.iter() {
             let chunk = self.slots.chunks.get(index).expect("authored slot chunk");
-            let bytes = chunk
-                .iter()
-                .fold(
-                    chunk.len().checked_mul(size_of::<data::Slot>()),
-                    |bytes, slot| {
-                        bytes.and_then(|bytes| {
-                            bytes.checked_add(
-                                slot.source.map_or(0, |(index, _)| types[index].name.len()),
-                            )
-                        })
-                    },
-                )
-                .and_then(|bytes| {
-                    bytes.checked_add(
-                        map_display_data::retained::Retained::<Vec<data::Slot>>::overhead(),
-                    )
-                })
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            let credit = map_display_data::credit::display_products().admit_item(bytes)?;
             let mut values = Vec::with_capacity(chunk.len());
             for slot in chunk.iter() {
                 values.push(data::Slot {
@@ -117,10 +89,7 @@ impl PreparedBuildings {
             }
             edits.push((
                 index,
-                Some(map_display_data::retained::Retained::with_credit(
-                    credit,
-                    || values,
-                )),
+                Some(map_display_data::retained::Retained::new(values)),
             ));
         }
         slots = slots.patched(&edits)?;
@@ -212,15 +181,6 @@ impl PreparedBuildings {
                         changed = changed.inserted(index, ())?;
                     }
                 }
-                let _edits_credit = map_display_data::credit::display_products().admit_item(
-                    changed
-                        .len()
-                        .checked_mul(size_of::<(
-                            usize,
-                            Option<map_display_data::retained::Retained<Arc<[PreparedSlot]>>>,
-                        )>())
-                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                )?;
                 let mut edits = Vec::with_capacity(changed.len());
                 for (&index, _) in changed.iter() {
                     let chunk = value
@@ -233,16 +193,6 @@ impl PreparedBuildings {
                     {
                         return Err(invalid("building projection has an invalid slot chunk"));
                     }
-                    let payload = chunk
-                        .len()
-                        .checked_mul(size_of::<PreparedSlot>())
-                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                    let scratch =
-                        map_display_data::credit::display_products().admit_item(payload)?;
-                    let bytes = payload
-                        .checked_add(2 * size_of::<usize>() + map_display_data::retained::Retained::<Arc<[PreparedSlot]>>::overhead())
-                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                    let credit = map_display_data::credit::display_products().admit_item(bytes)?;
                     let mut slots = Vec::with_capacity(chunk.len());
                     let start = index
                         .checked_mul(incremental::CHUNK_SIZE)
@@ -259,24 +209,25 @@ impl PreparedBuildings {
                                 .entity
                                 .as_ref()
                                 .map(|entity| {
-                                    PreparedEntity {
-                                        healthy: select(&entity.healthy)?,
-                                        ruined: select(&entity.ruined)?,
-                                        destroyed: entity.destroyed,
-                                        uncertain: entity.uncertain,
-                                        damaged: entity.damaged,
-                                        disable_grow_animation: entity.disable_grow_animation,
-                                        instance: entity.instance.into(),
-                                    }
-                                    .retain()
+                                    Ok::<_, io::Error>(
+                                        PreparedEntity {
+                                            healthy: select(&entity.healthy)?,
+                                            ruined: select(&entity.ruined)?,
+                                            destroyed: entity.destroyed,
+                                            uncertain: entity.uncertain,
+                                            damaged: entity.damaged,
+                                            disable_grow_animation: entity.disable_grow_animation,
+                                            instance: entity.instance.into(),
+                                        }
+                                        .retain(),
+                                    )
                                 })
                                 .transpose()?,
                         });
                     }
-                    let chunk = map_display_data::retained::Retained::with_credit(credit, || {
-                        Arc::<[PreparedSlot]>::from(slots)
-                    });
-                    drop(scratch);
+                    let chunk = map_display_data::retained::Retained::new(
+                        Arc::<[PreparedSlot]>::from(slots),
+                    );
                     edits.push((index, Some(chunk)));
                 }
                 directory = directory.patched(&edits)?;

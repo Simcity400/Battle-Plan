@@ -37,13 +37,7 @@ fn gap<T: replay_data::rows::TableSchema>(
     table: &Available<'_, T>,
     name: &str,
 ) -> io::Result<Retained<Option<String>>> {
-    let bytes = match table {
-        Available::Complete(_) => 0,
-        Available::Truncated { .. } => name.len() + 64,
-        Available::Unavailable { reason } => name.len() + reason.len() + 32,
-        Available::NotRecorded { mode } => name.len() + mode.name().len() + 32,
-    };
-    Retained::build(bytes, || match table {
+    Ok(Retained::new(match table {
         Available::Complete(_) => None,
         Available::Truncated { missing, .. } => {
             Some(format!("{name} is truncated ({missing} missing rows)"))
@@ -52,7 +46,7 @@ fn gap<T: replay_data::rows::TableSchema>(
         Available::NotRecorded { mode } => {
             Some(format!("{name} is not recorded in a {mode} recording"))
         }
-    })
+    }))
 }
 /// The warning for an incomplete `Autonomy` table, which leaves a country without a recorded
 /// current autonomy with an unknown colour source.
@@ -69,9 +63,9 @@ pub(crate) fn undecided_warning(slot: u32, why: &str) -> String {
 }
 
 fn missing_link(reference: u32, role: &str) -> io::Result<Retained<String>> {
-    Retained::build(96 + role.len(), || {
-        format!("political fill references missing country link {reference} for {role}")
-    })
+    Ok(Retained::new(format!(
+        "political fill references missing country link {reference} for {role}"
+    )))
 }
 fn active(row: &Subject, hour: i32) -> bool {
     row.4 == 0 && (row.3 <= row.2 || hour < row.3)
@@ -90,7 +84,7 @@ impl Relations {
             autonomy_rows.rows(),
             fields(TableId::Autonomy, &["state"]),
             previous.map(|old| &old.autonomy),
-            |row| Retained::build(row.state.len(), || row.state.clone()),
+            |row| Ok(Retained::new(row.state.clone())),
         )?;
         let subject_rows = rows::<tables::Subjects>(frame)?;
         let subjects = RowFold::read(
@@ -138,7 +132,7 @@ impl Relations {
                 autonomy_gap: autonomy_gap.clone(),
                 subject_gap: subject_gap.clone(),
                 changed: Default::default(),
-                warnings: Retained::build(0, Vec::new)?,
+                warnings: Retained::new(Vec::new()),
             },
         };
         let mut dirty_subjects = ValueIndex::default();
@@ -317,12 +311,7 @@ impl Relations {
             if let Some(state) = next.states.get(&slot).filter(|state| !state.is_empty()) {
                 match map.country_colors.use_overlord_color.get(state.as_slice()) {
                     None => {
-                        let bytes = state
-                            .len()
-                            .checked_mul(3)
-                            .and_then(|n| n.checked_add(200))
-                            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                        next.undecided = next.undecided.inserted(slot, Retained::build(bytes, || format!("its current autonomy definition {} is not an autonomy state the content defines, so its use_overlord_color flag is unknown", String::from_utf8_lossy(state)))?)?;
+                        next.undecided = next.undecided.inserted(slot, Retained::new(format!("its current autonomy definition {} is not an autonomy state the content defines, so its use_overlord_color flag is unknown", String::from_utf8_lossy(state))))?;
                     }
                     Some(false) => {}
                     Some(true) if next.conflicting.get(&slot).is_some() => {
@@ -333,11 +322,10 @@ impl Relations {
                             next.inherited = next.inherited.inserted(slot, overlord)?;
                         }
                         None => {
-                            let bytes = subject_gap.as_ref().map_or(160, |gap| 40 + gap.len());
-                            next.undecided = next.undecided.inserted(slot, Retained::build(bytes, || match subject_gap.as_ref() {
+                            next.undecided = next.undecided.inserted(slot, Retained::new(match subject_gap.as_ref() {
                                 Some(gap) => format!("its current autonomy inherits, and {gap}"),
                                 None => "its current autonomy inherits, but no active Subjects row names its overlord".to_owned(),
-                            })?)?;
+                            }))?;
                         }
                     },
                 }
@@ -365,22 +353,7 @@ impl Relations {
                 .len()
                 .checked_add(usize::from(gap.is_some()))
                 .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            let bytes = next
-                .undecided
-                .values()
-                .map(|why| why.len())
-                .chain(gap.map(String::len))
-                .try_fold(
-                    count
-                        .checked_mul(size_of::<String>() + 160)
-                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                    |bytes, length| {
-                        bytes
-                            .checked_add(length)
-                            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))
-                    },
-                )?;
-            next.warnings = Retained::build(bytes, || {
+            next.warnings = Retained::new({
                 let mut warnings = Vec::with_capacity(count);
                 warnings.extend(gap.map(|gap| autonomy_gap_warning(gap)));
                 warnings.extend(
@@ -389,7 +362,7 @@ impl Relations {
                         .map(|(slot, why)| undecided_warning(*slot, why)),
                 );
                 warnings
-            })?;
+            });
         }
         next.autonomy_gap = autonomy_gap;
         next.subject_gap = subject_gap;

@@ -1,7 +1,4 @@
-use crate::{
-    credit::{Credit, MemoryBudget, display_products},
-    retained::Retained,
-};
+use crate::retained::Retained;
 use product_codec::{Decoder, Product, Schema};
 use std::{
     io,
@@ -17,8 +14,6 @@ struct Root<T> {
     pages: Vec<Retained<Vec<T>>>,
     flat: OnceLock<Retained<Vec<T>>>,
     flattening: Mutex<()>,
-    owner: MemoryBudget,
-    _credit: Credit,
 }
 #[derive(Debug)]
 pub struct Paged<T>(Option<Arc<Root<T>>>);
@@ -42,45 +37,15 @@ impl<T> Paged<T> {
     fn root(&self) -> &Root<T> {
         self.0.as_deref().expect("nonempty paged root")
     }
-    fn directory(owner: &MemoryBudget, len: usize) -> io::Result<Credit> {
-        let bytes = Self::decode_storage_bytes(len)?;
-        if bytes > owner.limit() {
-            return Err(io::Error::new(
-                io::ErrorKind::OutOfMemory,
-                "paged display item exceeds its owner; common paging is required",
-            ));
-        }
-        owner.admit_item(
-            size_of::<Root<T>>()
-                + 4 * size_of::<usize>()
-                + align_of::<Root<T>>()
-                + align_of::<Retained<Vec<T>>>()
-                + len
-                    .div_ceil(PAGE_ITEMS)
-                    .checked_mul(size_of::<Retained<Vec<T>>>())
-                    .ok_or_else(overflow)?,
-        )
-    }
-    fn install(
-        owner: &MemoryBudget,
-        len: usize,
-        pages: Vec<Retained<Vec<T>>>,
-        credit: Credit,
-    ) -> Self {
+    fn install(len: usize, pages: Vec<Retained<Vec<T>>>) -> Self {
         Self(Some(Arc::new(Root {
             len,
             pages,
             flat: OnceLock::new(),
             flattening: Mutex::new(()),
-            owner: owner.clone(),
-            _credit: credit,
         })))
     }
-    pub fn try_from_iter_in(
-        owner: &MemoryBudget,
-        len: usize,
-        values: impl IntoIterator<Item = T>,
-    ) -> io::Result<Self> {
+    pub fn try_from_iter(len: usize, values: impl IntoIterator<Item = T>) -> io::Result<Self> {
         let mut values = values.into_iter();
         if len == 0 {
             if values.next().is_some() {
@@ -91,7 +56,6 @@ impl<T> Paged<T> {
             }
             return Ok(Self::default());
         }
-        let credit = Self::directory(owner, len)?;
         let mut pages = Vec::new();
         pages
             .try_reserve_exact(len.div_ceil(PAGE_ITEMS))
@@ -99,22 +63,16 @@ impl<T> Paged<T> {
         let mut left = len;
         while left != 0 {
             let count = left.min(PAGE_ITEMS);
-            pages.push(Retained::try_build_in(
-                owner,
-                count.checked_mul(size_of::<T>()).ok_or_else(overflow)?,
-                || {
-                    let mut page = Vec::new();
-                    page.try_reserve_exact(count).map_err(|_| overflow())?;
-                    page.extend(values.by_ref().take(count));
-                    if page.len() != count {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "paged display iterator length mismatch",
-                        ));
-                    }
-                    Ok(page)
-                },
-            )?);
+            let mut page = Vec::new();
+            page.try_reserve_exact(count).map_err(|_| overflow())?;
+            page.extend(values.by_ref().take(count));
+            if page.len() != count {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "paged display iterator length mismatch",
+                ));
+            }
+            pages.push(Retained::new(page));
             left -= count;
         }
         if values.next().is_some() {
@@ -123,29 +81,10 @@ impl<T> Paged<T> {
                 "paged display iterator length mismatch",
             ));
         }
-        Ok(Self::install(owner, len, pages, credit))
+        Ok(Self::install(len, pages))
     }
-    pub fn try_from_vec_in(owner: &MemoryBudget, values: Vec<T>) -> io::Result<Self> {
-        Self::try_from_iter_in(owner, values.len(), values)
-    }
-    pub fn decode_storage_bytes(len: usize) -> io::Result<usize> {
-        len.checked_mul(size_of::<T>())
-            .and_then(|n| {
-                n.checked_add(
-                    len.div_ceil(PAGE_ITEMS).checked_mul(
-                        size_of::<Retained<Vec<T>>>() + Retained::<Vec<T>>::overhead(),
-                    )?,
-                )
-            })
-            .and_then(|n| {
-                n.checked_add(
-                    size_of::<Root<T>>()
-                        + 4 * size_of::<usize>()
-                        + align_of::<Root<T>>()
-                        + align_of::<Retained<Vec<T>>>(),
-                )
-            })
-            .ok_or_else(overflow)
+    pub fn try_from_vec(values: Vec<T>) -> io::Result<Self> {
+        Self::try_from_iter(values.len(), values)
     }
     pub fn len(&self) -> usize {
         self.0.as_ref().map_or(0, |root| root.len)
@@ -190,21 +129,6 @@ impl<T> Paged<T> {
                     .zip(other.0.iter().flat_map(|root| &root.pages))
                     .all(|(a, b)| a.ptr_eq(b) || a.iter().zip(b.iter()).all(|(a, b)| same(a, b))))
     }
-    pub fn owned_bytes(&self) -> usize {
-        self.0.as_ref().map_or(0, |root| {
-            size_of::<Root<T>>()
-                + 2 * size_of::<usize>()
-                + root.pages.capacity() * size_of::<Retained<Vec<T>>>()
-                + root
-                    .pages
-                    .iter()
-                    .map(|p| Retained::<Vec<T>>::overhead() + p.capacity() * size_of::<T>())
-                    .sum::<usize>()
-                + root.flat.get().map_or(0, |flat| {
-                    Retained::<Vec<T>>::overhead() + flat.capacity() * size_of::<T>()
-                })
-        })
-    }
 }
 impl<T: Clone> Paged<T> {
     pub fn try_as_slice(&self) -> io::Result<&[T]> {
@@ -214,24 +138,16 @@ impl<T: Clone> Paged<T> {
         if root.flat.get().is_none() {
             let _lock = root.flattening.lock().unwrap_or_else(|e| e.into_inner());
             if root.flat.get().is_none() {
-                let flat = Retained::try_build_in(
-                    &root.owner,
-                    root.len.checked_mul(size_of::<T>()).ok_or_else(overflow)?,
-                    || {
-                        let mut values = Vec::new();
-                        values.try_reserve_exact(root.len).map_err(|_| overflow())?;
-                        values.extend(self.iter().cloned());
-                        Ok(values)
-                    },
-                )?;
-                let _ = root.flat.set(flat);
+                let mut values = Vec::new();
+                values.try_reserve_exact(root.len).map_err(|_| overflow())?;
+                values.extend(self.iter().cloned());
+                let _ = root.flat.set(Retained::new(values));
             }
         }
         Ok(root.flat.get().unwrap())
     }
     pub fn as_slice(&self) -> &[T] {
-        self.try_as_slice()
-            .expect("paged diagnostic flatten admission")
+        self.try_as_slice().expect("paged flatten allocation")
     }
     pub fn to_vec(&self) -> Vec<T> {
         self.iter().cloned().collect()
@@ -257,43 +173,33 @@ impl<T: Clone + PartialEq> Paged<T> {
             assert!(index < self.len());
             let current = directory.as_ref().map_or_else(
                 || self.get(index).unwrap(),
-                |(pages, _): &(Vec<Retained<Vec<T>>>, Credit)| {
-                    &pages[index / PAGE_ITEMS][index % PAGE_ITEMS]
-                },
+                |pages: &Vec<Retained<Vec<T>>>| &pages[index / PAGE_ITEMS][index % PAGE_ITEMS],
             );
             if same(current, &value) {
                 continue;
             }
             if directory.is_none() {
-                let credit = Self::directory(&self.root().owner, self.len())?;
                 let mut pages = Vec::new();
                 pages
                     .try_reserve_exact(self.root().pages.len())
                     .map_err(|_| overflow())?;
                 pages.extend(self.root().pages.iter().cloned());
-                directory = Some((pages, credit));
+                directory = Some(pages);
             }
-            let (pages, _) = directory.as_mut().unwrap();
+            let pages = directory.as_mut().unwrap();
             let page = &mut pages[index / PAGE_ITEMS];
             if page.get_mut().is_none() {
-                *page = Retained::build_in(
-                    &self.root().owner,
-                    page.len()
-                        .checked_mul(size_of::<T>())
-                        .ok_or_else(overflow)?,
-                    || page.to_vec(),
-                )?;
+                *page = Retained::new(page.to_vec());
             }
             page.get_mut().unwrap()[index % PAGE_ITEMS] = value;
         }
         Ok(match directory {
             None => self.clone(),
-            Some((pages, credit)) => Self::install(&self.root().owner, self.len(), pages, credit),
+            Some(pages) => Self::install(self.len(), pages),
         })
     }
     pub fn edited(&self, edits: impl IntoIterator<Item = (usize, T)>) -> Self {
-        self.try_edited(edits)
-            .expect("paged diagnostic edit admission")
+        self.try_edited(edits).expect("paged edit allocation")
     }
     pub fn changed_pages(&self, previous: &Self) -> Vec<usize> {
         self.changed_page_indices(previous).collect()
@@ -322,8 +228,7 @@ impl<T: Clone + PartialEq> Paged<T> {
 }
 impl<T> From<Vec<T>> for Paged<T> {
     fn from(values: Vec<T>) -> Self {
-        Self::try_from_vec_in(display_products(), values)
-            .expect("paged fixture allocation admission")
+        Self::try_from_vec(values).expect("paged allocation")
     }
 }
 impl<T: Clone> FromIterator<T> for Paged<T> {
@@ -341,16 +246,13 @@ impl<T: Clone> IndexMut<usize> for Paged<T> {
     fn index_mut(&mut self, index: usize) -> &mut T {
         if Arc::get_mut(self.0.as_mut().expect("paged index")).is_none() {
             let root = self.root();
-            let credit = Self::directory(&root.owner, root.len)
-                .expect("paged diagnostic directory admission");
-            *self = Self::install(&root.owner, root.len, root.pages.clone(), credit);
+            *self = Self::install(root.len, root.pages.clone());
         }
         let root = Arc::get_mut(self.0.as_mut().unwrap()).unwrap();
         root.flat.take();
         let page = &mut root.pages[index / PAGE_ITEMS];
         if page.get_mut().is_none() {
-            *page = Retained::build_in(&root.owner, page.len() * size_of::<T>(), || page.to_vec())
-                .expect("paged diagnostic page admission");
+            *page = Retained::new(page.to_vec());
         }
         &mut page.get_mut().unwrap()[index % PAGE_ITEMS]
     }
@@ -398,8 +300,6 @@ impl<T: Product + Clone> Product for Paged<T> {
         if len == 0 {
             return Ok(Self::default());
         }
-        let owner = display_products();
-        let credit = Self::directory(owner, len)?;
         let mut pages = Vec::new();
         pages
             .try_reserve_exact(len.div_ceil(PAGE_ITEMS))
@@ -407,14 +307,10 @@ impl<T: Product + Clone> Product for Paged<T> {
         let mut left = len;
         while left != 0 {
             let count = left.min(PAGE_ITEMS);
-            pages.push(Retained::try_build_in(
-                owner,
-                count.checked_mul(size_of::<T>()).ok_or_else(overflow)?,
-                || T::decode_many(input, count),
-            )?);
+            pages.push(Retained::new(T::decode_many(input, count)?));
             left -= count;
         }
-        Ok(Self::install(owner, len, pages, credit))
+        Ok(Self::install(len, pages))
     }
     fn schema(schema: &mut Schema) {
         Vec::<T>::schema(schema);
@@ -435,9 +331,7 @@ mod tests {
             }
         }
         let comparisons = Arc::new(AtomicUsize::new(0));
-        let owner = MemoryBudget::new(1 << 20);
-        let base = Paged::try_from_iter_in(
-            &owner,
+        let base = Paged::try_from_iter(
             PAGE_ITEMS * 3,
             (0..PAGE_ITEMS * 3).map(|value| Counted(value as u32, comparisons.clone())),
         )
@@ -451,33 +345,6 @@ mod tests {
         comparisons.store(0, Ordering::Relaxed);
         assert_eq!(base, base.clone());
         assert_eq!(comparisons.load(Ordering::Relaxed), 0);
-    }
-    #[test]
-    fn page_and_root_credit_survives_every_shared_output_owner() {
-        let owner = MemoryBudget::new(1 << 20);
-        let first =
-            Paged::try_from_iter_in(&owner, PAGE_ITEMS * 2, (0..PAGE_ITEMS * 2).map(|n| n as u8))
-                .unwrap();
-        let first_bytes = owner.used();
-        let copy = first.clone();
-        assert_eq!(owner.used(), first_bytes);
-        let changed = first.try_edited([(PAGE_ITEMS + 7, 42)]).unwrap();
-        assert!(owner.used() > first_bytes);
-        let page = changed.root().pages[0].clone();
-        changed.try_as_slice().unwrap();
-        drop(first);
-        drop(copy);
-        drop(changed);
-        assert!(owner.used() > 0, "a page outlives its directory");
-        drop(page);
-        assert_eq!(owner.used(), 0);
-        let small = MemoryBudget::new(8);
-        let reads = std::cell::Cell::new(0);
-        let error =
-            Paged::try_from_iter_in(&small, 16, (0..16).inspect(|_| reads.set(reads.get() + 1)))
-                .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-        assert_eq!(reads.get(), 0);
     }
     #[test]
     fn edits_share_unchanged_pages_and_keep_the_vector_wire() {

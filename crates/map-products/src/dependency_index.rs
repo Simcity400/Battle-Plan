@@ -20,7 +20,6 @@ struct Dependency {
 }
 struct Entry<V> {
     source: ViewIdentity,
-    _credit: map_display_data::credit::Credit,
     branch: u64,
     from: i64,
     until: i64,
@@ -44,22 +43,6 @@ impl<K, V> Default for DependencyIndex<K, V> {
                 sweep: None,
             }),
         }
-    }
-}
-impl<K, V> DependencyIndex<K, V> {
-    pub fn evict(&self) {
-        let old = {
-            let mut roots = self.roots.lock().unwrap_or_else(|error| error.into_inner());
-            std::mem::replace(
-                &mut *roots,
-                Roots {
-                    by_key: BTreeMap::new(),
-                    latest: None,
-                    sweep: None,
-                },
-            )
-        };
-        drop(old);
     }
 }
 impl<K: Ord + Clone, V> DependencyIndex<K, V> {
@@ -172,11 +155,6 @@ impl<K: Ord + Clone, V> DependencyIndex<K, V> {
                 }
             }
         }
-        let entry_bytes = 12 * (size_of::<Entry<V>>() + size_of::<K>() + size_of::<usize>()) + 128;
-        let mut credit = map_display_data::credit::display_products().admit(
-            entry_bytes
-                + TableId::ALL.len() * (size_of::<Dependency>() + 4 * size_of::<ViewIdentity>()),
-        )?;
         let (value, reads) = view_reads::record(build);
         let value = value?;
         let previous = roots
@@ -204,7 +182,6 @@ impl<K: Ord + Clone, V> DependencyIndex<K, V> {
                 })
         }));
         drop(reads);
-        credit.resize(entry_bytes + dependencies.capacity() * size_of::<Dependency>())?;
         let (from, until) = validity(frame, clock, &dependencies);
         if let Some((previous_key, previous)) = roots.latest.take() {
             drop(previous);
@@ -220,7 +197,6 @@ impl<K: Ord + Clone, V> DependencyIndex<K, V> {
             key.clone(),
             Entry {
                 source: frame.tables[TableId::Campaign.index()].identity(),
-                _credit: credit,
                 branch: frame.branch,
                 from,
                 until,
@@ -439,8 +415,7 @@ mod tests {
         }
         let cache = DependencyIndex::default();
         let mut encoder = FrameEncoder::new();
-        let mut decoder = FrameDecoder::for_tables(&[TableId::Countries])
-            .with_change_facts(map_display_data::credit::display_products().clone());
+        let mut decoder = FrameDecoder::for_tables(&[TableId::Countries]).with_change_facts();
         let first = encoder.encode(input(1, 20, 1), true).unwrap();
         let first = decoder.apply(&first).unwrap();
         let fields = |table: TableId| {

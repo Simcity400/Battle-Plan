@@ -222,6 +222,73 @@ pub(crate) fn frame_end() {
     );
 }
 
+/// Whether this process records its map timings.
+pub(crate) fn enabled() -> bool {
+    log().is_some()
+}
+
+fn view_json(view: Option<&str>) -> String {
+    view.map_or_else(
+        || "null".to_owned(),
+        |view| serde_json::to_string(view).unwrap_or_else(|_| "null".to_owned()),
+    )
+}
+
+/// A built map hour reaching the window: where its build time went, and how
+/// far behind the clock it arrived. `parts` holds each lap, decode first.
+pub(crate) fn map_hour(view: Option<&str>, built: &crate::hours::Built, clock: i32) {
+    use std::fmt::Write as _;
+    let Some(log) = log() else {
+        return;
+    };
+    let at = epoch_ms();
+    let mut parts = String::new();
+    for (name, timing) in &built.laps {
+        if !parts.is_empty() {
+            parts.push(',');
+        }
+        let _ = write!(parts, r#""{name}":{:.3}"#, timing.ms);
+    }
+    log.send(
+        format!(
+            r#"{{"t":"map_hour","at":{at:.3},"pid":{},"view":{},"epoch":{},"hour":{},"lag":{},"ok":{},"wall":{:.3},"source":{:.3},"parts":{{{parts}}}}}"#,
+            std::process::id(),
+            view_json(view),
+            built.epoch,
+            built.hour,
+            i64::from(clock) - i64::from(built.hour),
+            built.layers.is_ok(),
+            built.wall,
+            built.waits.source_ms,
+        ),
+        at,
+    );
+}
+
+/// A built map hour installed on screen: its upload time and lag behind the clock.
+pub(crate) fn map_upload(
+    view: Option<&str>,
+    epoch: u64,
+    hour: i32,
+    clock: i32,
+    upload_ms: f64,
+    ok: bool,
+) {
+    let Some(log) = log() else {
+        return;
+    };
+    let at = epoch_ms();
+    log.send(
+        format!(
+            r#"{{"t":"map_upload","at":{at:.3},"pid":{},"view":{},"epoch":{epoch},"hour":{hour},"lag":{},"ok":{ok},"upload":{upload_ms:.3}}}"#,
+            std::process::id(),
+            view_json(view),
+            i64::from(clock) - i64::from(hour),
+        ),
+        at,
+    );
+}
+
 /// Writes every queued line and any loss still owed, then waits for the writer to end.
 pub(crate) fn finish() {
     let Some(log) = LOG.get().and_then(Option::as_ref) else {

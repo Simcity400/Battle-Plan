@@ -317,6 +317,7 @@ impl Outgoing {
             .map(|(mode, overlays)| NativeEvent::CameraMode { mode, overlays })
     }
 
+    /// Whether the event pipe has nothing to write; map states have a pipe of their own.
     fn is_empty(&self) -> bool {
         !self.toggle_diagnostics
             && self.camera_mode.is_none()
@@ -327,8 +328,17 @@ impl Outgoing {
             && self.details.is_none()
             && self.state.is_none()
             && self.error.is_none()
-            && self.maps.is_empty()
             && self.data.is_empty()
+    }
+
+    /// Every pending map state, oldest first, as one event.
+    fn take_maps(&mut self) -> Option<NativeEvent> {
+        let states: Vec<_> = std::mem::take(&mut self.map_order)
+            .into_iter()
+            .filter_map(|id| self.maps.remove(&id))
+            .collect();
+        self.maps.clear();
+        (!states.is_empty()).then_some(NativeEvent::MapStates { states })
     }
 }
 
@@ -336,6 +346,7 @@ struct Shared {
     pending: Mutex<Pending>,
     outgoing: Mutex<Outgoing>,
     output_ready: Condvar,
+    maps_ready: Condvar,
     output_space: Condvar,
     stopped: AtomicBool,
     terminal_error: AtomicBool,
@@ -405,6 +416,11 @@ fn bounded_message(message: &str) -> String {
 }
 
 fn write_event(event: NativeEvent) -> io::Result<()> {
+    write_event_to(&mut io::stdout().lock(), event)
+}
+
+/// One whole line per write, so another writer to the same pipe cannot split it.
+fn write_event_to(out: &mut impl io::Write, event: NativeEvent) -> io::Result<()> {
     let json = serde_json::to_string(&event)?;
     if json.len() + EVENT_PREFIX.len() + 1 > MAX_MESSAGE_BYTES {
         return Err(io::Error::new(
@@ -412,9 +428,12 @@ fn write_event(event: NativeEvent) -> io::Result<()> {
             "Viewer event exceeds the pipe's line budget",
         ));
     }
-    let mut stdout = io::stdout().lock();
-    writeln!(stdout, "{EVENT_PREFIX}{json}")?;
-    stdout.flush()
+    let mut line = String::with_capacity(EVENT_PREFIX.len() + json.len() + 1);
+    line.push_str(EVENT_PREFIX);
+    line.push_str(&json);
+    line.push('\n');
+    out.write_all(line.as_bytes())?;
+    out.flush()
 }
 
 /// Startup failures happen before the asynchronous writer exists.
@@ -488,6 +507,7 @@ impl Parent {
             pending: Mutex::new(Pending::default()),
             outgoing: Mutex::new(Outgoing::default()),
             output_ready: Condvar::new(),
+            maps_ready: Condvar::new(),
             output_space: Condvar::new(),
             stopped: AtomicBool::new(false),
             terminal_error: AtomicBool::new(false),
@@ -559,10 +579,6 @@ impl Parent {
                     if outgoing.is_empty() {
                         return;
                     }
-                    let map = outgoing
-                        .map_order
-                        .pop_front()
-                        .and_then(|id| outgoing.maps.remove(&id));
                     let events =
                         [
                             outgoing
@@ -581,9 +597,6 @@ impl Parent {
                                 .error
                                 .take()
                                 .map(|message| NativeEvent::Error { message }),
-                            map.map(|state| NativeEvent::MapStates {
-                                states: vec![state],
-                            }),
                             outgoing
                                 .data
                                 .pop_front()
@@ -611,6 +624,33 @@ impl Parent {
                             output.input(NativeCommand::Close);
                             return;
                         }
+                    }
+                }
+            })?;
+        // Map acknowledgements go on the error pipe, which the host reads on a
+        // thread of its own, so megabyte data replies never queue ahead of them.
+        let maps = Arc::clone(&shared);
+        thread::Builder::new()
+            .name("viewer-map-states".into())
+            .spawn(move || {
+                loop {
+                    let mut outgoing = maps
+                        .outgoing
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    while outgoing.maps.is_empty() && !maps.stopped.load(Ordering::Acquire) {
+                        outgoing = maps
+                            .maps_ready
+                            .wait(outgoing)
+                            .unwrap_or_else(|error| error.into_inner());
+                    }
+                    let Some(event) = outgoing.take_maps() else {
+                        return;
+                    };
+                    drop(outgoing);
+                    if write_event_to(&mut io::stderr().lock(), event).is_err() {
+                        maps.input(NativeCommand::Close);
+                        return;
                     }
                 }
             })?;
@@ -860,7 +900,7 @@ impl Controller {
         }
         self.last_maps = Some(states);
         drop(outgoing);
-        self.shared.output_ready.notify_one();
+        self.shared.maps_ready.notify_one();
     }
 
     fn error(&self, message: impl Into<String>) {
@@ -910,6 +950,7 @@ impl Drop for Controller {
             self.shared.stopped.store(true, Ordering::Release);
         }
         self.shared.output_ready.notify_one();
+        self.shared.maps_ready.notify_one();
         self.shared.output_space.notify_all();
         let service = Arc::clone(&self.service);
         // Runtime/file joins must not stall eframe's window destruction.
@@ -1344,6 +1385,30 @@ mod tests {
         ));
         // Sent once: the press is consumed.
         assert!(outgoing.is_empty() && outgoing.take_toggle_diagnostics().is_none());
+    }
+
+    #[test]
+    fn map_states_leave_together_in_order_and_off_the_event_pipe() {
+        let mut outgoing = Outgoing::default();
+        for id in ["b", "a"] {
+            outgoing.map_order.push_back(id.into());
+            outgoing.maps.insert(
+                id.into(),
+                DashboardMapState {
+                    id: id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        assert!(outgoing.is_empty());
+        let Some(NativeEvent::MapStates { states }) = outgoing.take_maps() else {
+            panic!("pending map states")
+        };
+        assert_eq!(
+            states.iter().map(|state| state.id.as_str()).collect::<Vec<_>>(),
+            ["b", "a"]
+        );
+        assert!(outgoing.maps.is_empty() && outgoing.take_maps().is_none());
     }
 
     /// The host hears the latest camera mode and overlay choice once.

@@ -5,7 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 export interface QueryTiming { received?: number; parsed?: number; bytes?: number }
 
 interface MapStateSample { id: string; hour: number | null; fraction: number | null; sequence: number; requestedSequence: number; loading: boolean;
-  error: string | null; pending?: string | null }
+  behind?: number | null; behindReason?: string | null; error: string | null; pending?: string | null }
 
 /** Where a dashboard map should be now, in its own recording's hours. */
 export interface MapExpectation { position: number; follow: boolean }
@@ -114,6 +114,11 @@ export class PerfRecorder {
     this.push({ t: 'tick', at: epoch(performance.now()), hour: round(position), playing, speed: hoursPerSecond, sequence, seek: seekSequence });
   }
 
+  /** The clock told data views its hour (paced while playing). */
+  hour(hour: number): void {
+    this.push({ t: 'hour', at: epoch(performance.now()), hour });
+  }
+
   /** The dashboard maps laid out, recorded when which are visible or following changes. */
   mapViews(views: readonly MapViewSample[]): void {
     let key = '';
@@ -130,7 +135,8 @@ export class PerfRecorder {
     for (const state of states) {
       const expected = expect(state.id);
       this.push({ t: 'map_state', at, view: state.id, hour: state.hour, fraction: state.fraction, seq: state.sequence, req: state.requestedSequence,
-        loading: state.loading, blank: state.error != null || state.pending != null, playing: this.playing,
+        loading: state.loading, behind: state.behind ?? null, behind_reason: state.behindReason ?? null,
+        blank: state.error != null || state.pending != null, playing: this.playing,
         follow: expected?.follow ?? null, expected: expected ? round(expected.position) : null });
     }
   }

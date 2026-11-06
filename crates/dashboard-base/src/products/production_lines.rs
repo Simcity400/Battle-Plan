@@ -77,10 +77,10 @@ use replay_frame::frame::FrameDecoder;
 use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError, TryLockError,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -523,6 +523,44 @@ pub struct ProductionDetailParams {
     pub branch_id: String,
     pub tag: String,
     pub window: i32,
+}
+
+/// A request for the line reads holding one hour, as playback asks them: of every line, or,
+/// after `since`, the hour asked before, of the lines whose reads differ there.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionHourParams {
+    pub branch_id: String,
+    pub tag: String,
+    pub hour: i32,
+    #[serde(default)]
+    #[ts(optional)]
+    pub since: Option<i32>,
+    /// The `basis` of the reply `since` was read from: lines are read against it only when
+    /// the view still answers from that basis.
+    #[serde(default)]
+    #[ts(optional)]
+    pub basis: Option<String>,
+}
+
+/// The line reads holding one hour ([`ProductionHourParams`]).
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionLineHourReply {
+    pub warnings: Vec<String>,
+    pub branch_id: String,
+    pub tag: String,
+    pub decimals: u8,
+    pub hour: i32,
+    /// The hour asked before that the lines are read against; none for every line.
+    pub since: Option<i32>,
+    /// The kept view it was read from, which a later hour names to be read against it; none
+    /// when no view was kept.
+    pub basis: Option<String>,
+    /// The reads holding `hour`, whole, of each line they differ for, in the order first seen.
+    pub lines: Vec<LineDetail>,
+    /// The lines with reads holding `since` and none holding `hour`.
+    pub ended: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -1417,6 +1455,19 @@ pub fn detail_window(window: i32) -> Option<(i32, i32)> {
     Some((first, first.checked_add(DETAIL_HOURS - 1)?))
 }
 
+/// The last hour a `production-line-detail` request reads: its hour's, or its window's last.
+pub fn detail_reach(params: &serde_json::Value) -> Option<i32> {
+    if let Some(hour) = params.get("hour") {
+        return hour.as_i64().and_then(|hour| i32::try_from(hour).ok());
+    }
+    params
+        .get("window")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|window| i32::try_from(window).ok())
+        .and_then(detail_window)
+        .map(|(_, last)| last)
+}
+
 /// Every line's runs and output reads that hold any hour from `first` to `last`,
 /// whole (a read before the window that holds into it is sent as it was read).
 /// Modifier trees stay out: they grow with every source of every factor.
@@ -1730,6 +1781,8 @@ fn last_block(replay: &Replay, branch: u64) -> Option<(i32, i32, u64)> {
 /// with the content its replies name and draw with.
 struct Opened {
     catalogue: Option<Arc<Catalogue>>,
+    /// Whether the icon content loaded beside the catalogue.
+    pictured: bool,
     index: read::Index<'static>,
     history: u64,
     approximate: Vec<super::country_groups::HourSpan>,
@@ -1812,11 +1865,226 @@ fn opened(
     view_warnings(&mut index, history, catalogue.as_deref(), warnings)?;
     let approximate = approximate(source, params.branch(), &index.directory.coverage);
     Ok(Opened {
+        pictured: icons.is_some(),
         catalogue,
         index,
         history,
         approximate,
     })
+}
+
+/// What a view's opened index answers alike: the store, the published directory and commits,
+/// the executable tables and the catalogue named with.
+struct ViewPublication {
+    key: store::SourceKey,
+    published: [u8; 32],
+    executable: bool,
+    catalogue: Option<Arc<Catalogue>>,
+}
+
+impl ViewPublication {
+    /// What names it to replies, the same in every run: its whole published digest, its
+    /// executable tables and whether it names with a catalogue.
+    fn basis(&self) -> String {
+        use std::fmt::Write;
+        let mut basis = String::with_capacity(66);
+        for byte in self.published {
+            let _ = write!(basis, "{byte:02x}");
+        }
+        basis.push(if self.executable { 'x' } else { '-' });
+        basis.push(if self.catalogue.is_some() { 'c' } else { '-' });
+        basis
+    }
+}
+
+impl PartialEq for ViewPublication {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.key, self.published, self.executable)
+            == (&other.key, other.published, other.executable)
+            && match (&self.catalogue, &other.catalogue) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+/// A view opened for one publication: what its index is opened from again for each read,
+/// with its own pages, and what opening it warned and noted. Kept for every detail read of the
+/// view until the publication changes.
+struct KeptView {
+    publication: ViewPublication,
+    directory: prepared::Directory,
+    published: Arc<read::Published>,
+    index_publication: Option<[u64; 3]>,
+    history: u64,
+    warnings: Vec<String>,
+    noted: catalogue::OwnRefusals,
+    /// The lines' reads holding the hour last asked, which the next hour is read against.
+    last: Option<(i32, Vec<LineDetail>)>,
+    /// Names it to the replies read from it ([`ViewPublication::basis`]).
+    basis: String,
+}
+
+/// Each branch and tag's kept view of its current publication.
+#[derive(Default)]
+struct KeptViews(HashMap<(u64, String), Arc<Mutex<Option<KeptView>>>>);
+
+/// What a detail read is given: the view's index, its warnings, and the reads it kept of the
+/// hour last asked.
+struct View<'a> {
+    index: read::Index<'static>,
+    history: u64,
+    warnings: &'a [String],
+    last: &'a mut Option<(i32, Vec<LineDetail>)>,
+    /// The kept view's basis; none for a view opened for one read.
+    basis: Option<&'a str>,
+}
+
+/// `read` of the view `params` names. Its index is opened once per publication, and read
+/// through pages of each read's own; where the publication cannot be named, or its pages name
+/// none, opened for this read alone.
+fn with_view<T>(
+    source: &Source,
+    params: &CountryParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    read: impl FnOnce(&mut View<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    let branch = params.branch();
+    let open = || {
+        let (opened, noted) = catalogue::capture_isolated(|| {
+            let mut warnings = Vec::new();
+            opened(source, params, context, cancelled, &mut warnings)
+                .map(|opened| (opened, warnings))
+        });
+        let (opened, mut warnings) = opened?;
+        prefix_warning(&opened.approximate, &mut warnings);
+        catalogue::credit(&noted);
+        Ok::<_, io::Error>((opened, warnings, noted))
+    };
+    let Ok((store, key)) = crate::prepared::files(source, context.content.as_ref()) else {
+        let (opened, warnings, _) = open()?;
+        return read_alone(opened, &warnings, read);
+    };
+    let publication = ViewPublication {
+        published: crate::prepared::query::observations::published(
+            &store,
+            &key,
+            &[
+                prepared::directory_section(branch).as_str(),
+                index::commits_section(branch).as_str(),
+            ],
+        )?,
+        key,
+        executable: engine_executable::executable_tables::is_initialized(),
+        catalogue: context
+            .content()
+            .ok()
+            .and_then(|content| catalogue::recorded_catalogue(source, content).ok()),
+    };
+    let state = source.state::<KeptViews>();
+    let slot = Arc::clone(
+        state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .entry((branch, params.tag.clone()))
+            .or_default(),
+    );
+    // Held while it is read, so the requests asking at once open it once.
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(view) = held.as_mut()
+        && view.publication == publication
+    {
+        // The reply names what opening its view noted, whichever request opened it.
+        catalogue::credit(&view.noted);
+        let index = prepared::reopen(
+            source,
+            context,
+            view.directory.clone(),
+            Arc::clone(&view.published),
+            view.index_publication,
+        )?;
+        return read(&mut View {
+            index,
+            history: view.history,
+            warnings: &view.warnings,
+            last: &mut view.last,
+            basis: Some(&view.basis),
+        });
+    }
+    *held = None;
+    let (opened, warnings, noted) = open()?;
+    // Icon content that did not load is tried again, as every reply tries it, and a fixture's
+    // pages name no publication.
+    if opened.index.publication.is_none() || (opened.catalogue.is_some() && !opened.pictured) {
+        return read_alone(opened, &warnings, read);
+    }
+    let published = (publication.key.clone(), publication.published);
+    let basis = publication.basis();
+    let view = held.insert(KeptView {
+        publication,
+        directory: opened.index.directory.clone(),
+        published: opened.index.published(),
+        index_publication: opened.index.publication,
+        history: opened.history,
+        warnings,
+        noted,
+        last: None,
+        basis,
+    });
+    let answer = read(&mut View {
+        index: opened.index,
+        history: view.history,
+        warnings: &view.warnings,
+        last: &mut view.last,
+        basis: Some(&view.basis),
+    });
+    drop(held);
+    // The branch's views of an earlier publication are never read again.
+    state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .0
+        .retain(|(held_branch, _), other| {
+            *held_branch != branch
+                || Arc::ptr_eq(other, &slot)
+                || match other.try_lock() {
+                    Ok(other) => other.as_ref().is_some_and(|other| {
+                        (&other.publication.key, other.publication.published)
+                            == (&published.0, published.1)
+                    }),
+                    Err(TryLockError::WouldBlock) => true,
+                    Err(TryLockError::Poisoned(_)) => false,
+                }
+        });
+    answer
+}
+
+/// `read` of a view opened for it alone.
+fn read_alone<T>(
+    opened: Opened,
+    warnings: &[String],
+    read: impl FnOnce(&mut View<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    read(&mut View {
+        index: opened.index,
+        history: opened.history,
+        warnings,
+        last: &mut None,
+        basis: None,
+    })
+}
+
+/// Every line's reads holding `hour`, whole.
+fn hour_details(
+    view: &mut View<'_>,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<LineDetail>> {
+    let window = view.index.window(view.history, hour, hour, cancelled)?;
+    Ok(window_details(&window, hour, hour))
 }
 
 /// The native `holder`'s view of an opened index, with the warnings opening a second view adds.
@@ -1908,6 +2176,7 @@ impl Product for ProductionLines {
             mut index,
             history,
             approximate,
+            ..
         } = opened(source, &params.country(), context, cancelled, &mut warnings)?;
         if params.exact == Some(true) && !approximate.is_empty() {
             return Err(crate::invalid("Production lines are still being prepared"));
@@ -2093,6 +2362,8 @@ impl Product for ProductionLineDetail {
             OrganisationStateRead::decl(),
             ProductionDetailParams::decl(),
             ProductionLineDetailReply::decl(),
+            ProductionHourParams::decl(),
+            ProductionLineHourReply::decl(),
         ]
     }
 
@@ -2121,17 +2392,16 @@ impl Product for ProductionLineDetail {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
         };
-        let mut warnings = Vec::new();
-        let Opened {
-            mut index,
-            history,
-            approximate,
-            ..
-        } = opened(source, &country, context, cancelled, &mut warnings)?;
-        prefix_warning(&approximate, &mut warnings);
         let (first_hour, last_hour) = detail_window(params.window).expect("validated window");
-        let window = index.window(history, first_hour, last_hour, cancelled)?;
-        let lines = window_details(&window, first_hour, last_hour);
+        let (mut warnings, lines) = with_view(source, &country, context, cancelled, |view| {
+            let window = view
+                .index
+                .window(view.history, first_hour, last_hour, cancelled)?;
+            Ok((
+                view.warnings.to_vec(),
+                window_details(&window, first_hour, last_hour),
+            ))
+        })?;
         warnings.sort();
         warnings.dedup();
         bounded(
@@ -2146,6 +2416,96 @@ impl Product for ProductionLineDetail {
                 lines,
             },
             "This month of production lines",
+            "its values cannot be shown.",
+        )
+    }
+}
+
+impl ProductionLineDetail {
+    /// The line reads holding `params.hour` ([`ProductionHourParams`]): read against the hour
+    /// asked before, from the reads the view kept of it where it is the last one asked.
+    pub fn hour(
+        source: &Source,
+        params: &ProductionHourParams,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<ProductionLineHourReply> {
+        let country = CountryParams {
+            branch_id: params.branch_id.clone(),
+            tag: params.tag.clone(),
+        };
+        country.validate().map_err(crate::invalid)?;
+        if params.since.is_some_and(|since| since >= params.hour) {
+            return Err(crate::invalid(
+                "Production lines are read against an earlier hour",
+            ));
+        }
+        let (mut warnings, lines, ended, since, basis) =
+            with_view(source, &country, context, cancelled, |view| {
+                let at = hour_details(view, params.hour, cancelled)?;
+                let last = view.last.take();
+                // The asker holds `since` as this basis read it; from any other it reads whole.
+                let before = match params.since {
+                    Some(since)
+                        if params.basis.is_some() && params.basis.as_deref() == view.basis =>
+                    {
+                        Some(match last {
+                            Some((hour, lines)) if hour == since => lines,
+                            _ => hour_details(view, since, cancelled)?,
+                        })
+                    }
+                    _ => None,
+                };
+                let since = before.as_ref().and(params.since);
+                let (lines, ended) = match &before {
+                    None => (at.clone(), Vec::new()),
+                    Some(before) => {
+                        let held: HashMap<&str, &LineDetail> = before
+                            .iter()
+                            .map(|line| (line.key.as_str(), line))
+                            .collect();
+                        let present: HashSet<&str> =
+                            at.iter().map(|line| line.key.as_str()).collect();
+                        (
+                            at.iter()
+                                .filter(|line| {
+                                    held.get(line.key.as_str())
+                                        .is_none_or(|held| *held != *line)
+                                })
+                                .cloned()
+                                .collect(),
+                            before
+                                .iter()
+                                .filter(|line| !present.contains(line.key.as_str()))
+                                .map(|line| line.key.clone())
+                                .collect(),
+                        )
+                    }
+                };
+                *view.last = Some((params.hour, at));
+                Ok((
+                    view.warnings.to_vec(),
+                    lines,
+                    ended,
+                    since,
+                    view.basis.map(str::to_owned),
+                ))
+            })?;
+        warnings.sort();
+        warnings.dedup();
+        bounded(
+            ProductionLineHourReply {
+                warnings,
+                branch_id: params.branch_id.clone(),
+                tag: params.tag.clone(),
+                decimals: EQUIPMENT_DECIMALS,
+                hour: params.hour,
+                since,
+                basis,
+                lines,
+                ended,
+            },
+            "This hour of production lines",
             "its values cannot be shown.",
         )
     }

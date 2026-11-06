@@ -121,6 +121,12 @@ impl Opened {
         self.stamp
     }
 
+    /// The last hour before the query's first hole it is read through, which [`Self::stamp`]
+    /// does not name.
+    pub fn through(&self) -> Option<i32> {
+        self.through
+    }
+
     /// `read` of the publication pinned for this query and its directory.
     pub fn read<T>(
         &self,

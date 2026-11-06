@@ -82,11 +82,11 @@ test('the prepared widget supplies its settled page and description to one parit
         throw new Error(product);
       },
       product: async (request: any) => {
-        const { mode, tokens: asked } = request.params;
+        const { mode, groups } = request.params;
         fixture.calls.push(`focus-art:${mode}`);
-        assert.ok(asked.every((token: string) => tokens().includes(token)));
-        return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], failures: [],
-          art: asked.map((token: string) => ({ artwork: { ...staticArt(token), description: mode === 'text' ? 'Scoped details' : null }, reason: null })) } };
+        assert.ok(groups.every((group: { tokens: string[] }) => group.tokens.every(token => tokens().includes(token))));
+        return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], groups: groups.map((group: { tokens: string[] }) => ({
+          failures: [], error: null, art: group.tokens.map(token => ({ artwork: { ...staticArt(token), description: mode === 'text' ? 'Scoped details' : null }, reason: null })) })) } };
       },
     };
     const props = { widget: { id: 'focus', kind: 'national-focus', trackIds: ['main'], countries: { kind: 'tags', tags: ['opaque'] }, time: { mode: 'follow' } },
@@ -111,12 +111,12 @@ test('the prepared widget supplies its settled page and description to one parit
         'settled prepared rows and empty/current layouts match the legacy renderer');
     };
     render(); await settle();
-    assert.equal(fixture.calls.length, 5, 'the visible page reads one point, order, static text and art at its two hours');
-    assert.deepEqual(fixture.calls.filter(call => call.startsWith('focus-art')), ['focus-art:display', 'focus-art:display']);
+    assert.equal(fixture.calls.length, 4, 'the visible page reads one point, order, static text and, in one request, art at its two hours');
+    assert.deepEqual(fixture.calls.filter(call => call.startsWith('focus-art')), ['focus-art:display']);
     assert.equal(fixture.statuses, 0);
     assert.equal(fixture.providers.length, 1, 'the complete parent model suppresses the page-only child model');
     fixture.providers[0].prepare!(); render(); await settle();
-    assert.equal(fixture.calls.length, 5, 'full-model preparation reuses the visible static text too');
+    assert.equal(fixture.calls.length, 4, 'full-model preparation reuses the visible static text too');
     assert.equal(fixture.providers[0].ready!(), true);
     assert.equal(fixture.providers[0].read().total, 2);
     compareOracle();

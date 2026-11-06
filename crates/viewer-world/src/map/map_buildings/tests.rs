@@ -124,8 +124,7 @@ fn prepared(hour: Hour, health: i128, landmark: bool) -> PreparedBuildings {
                         ..Default::default()
                     },
                 }
-                .retain()
-                .unwrap(),
+                .retain(),
             ),
         }]),
         groups: Arc::from([group([0.0, 0.0, 2.0, 2.0], vec![0])]),

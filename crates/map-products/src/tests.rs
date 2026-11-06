@@ -2859,8 +2859,7 @@ fn display_decoder() -> impl FnMut(
     bool,
 ) -> io::Result<replay_frame::frame::SharedView> {
     use replay_frame::frame::{Frame, FrameDecoder, TableUpdate};
-    let mut decoder =
-        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     move |table, update, _previous, hour, read| {
         let mut input = Frame {
             branch: 7,
@@ -2885,8 +2884,7 @@ impl Default for CertifiedFrames {
     fn default() -> Self {
         Self {
             encoder: replay_frame::frame::FrameEncoder::new(),
-            decoder: replay_frame::frame::FrameDecoder::new()
-                .with_change_facts(map_display_data::credit::display_products().clone()),
+            decoder: replay_frame::frame::FrameDecoder::new().with_change_facts(),
         }
     }
 }
@@ -3096,54 +3094,6 @@ fn incremental_fog_matches_frozen_bytes_and_knownness_without_population_sized_u
             }
         }
     }
-}
-
-#[test]
-fn vision_shared_byte_refusal_precedes_allocation_and_retry_is_exact() {
-    use viewer_foundation::map::perspective::incremental::Memory;
-    let stack = fixture("fog_credit_retry");
-    let original = fog_content(&stack);
-    let choice = perspective::Choice::default();
-    let mut certified = CertifiedFrames::default();
-    let mut frame = fog_frame(3);
-    let budget = map_display_data::credit::MemoryBudget::new(8 << 20);
-    let content = ProductContent::from_inputs_with_memory(
-        original.reads,
-        original.inputs,
-        Memory::new(budget.clone()),
-    );
-    certified.advance(&mut frame);
-    let first = ProductHour::new(&content, &frame, 0.5)
-        .vision(&choice)
-        .unwrap();
-    let held = budget.admit(budget.limit() - budget.used()).unwrap();
-    frame.hour += 1;
-    let mut provinces = frame.complete::<row_tables::Provinces>().unwrap().to_vec();
-    provinces[1].controller = 101;
-    fog_delta::<row_tables::Provinces>(&mut frame, provinces);
-    certified.advance(&mut frame);
-    let error = ProductHour::new(&content, &frame, 0.5)
-        .vision(&choice)
-        .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-    assert!(error.to_string().contains("memory credit unavailable"));
-    drop(held);
-    let recovered = ProductHour::new(&content, &frame, 0.5)
-        .vision(&choice)
-        .unwrap();
-    let expected = Original {
-        content: &content,
-        frame: &frame,
-        hour_fraction: 0.5,
-    }
-    .fog_vision(&choice)
-    .unwrap();
-    assert_eq!(recovered.province_fog(), expected.province_fog());
-    assert_ne!(first.province_fog(), recovered.province_fog());
-    drop(first);
-    drop(recovered);
-    drop(content);
-    assert_eq!(budget.used(), 0);
 }
 
 fn assert_incremental_vision(
@@ -3798,16 +3748,14 @@ fn incremental_fog_country_zero_packets_clocks_refusals_and_recovery_match_froze
 
 #[test]
 fn streamed_content_operand_witness_matches_bytes_and_never_publishes_partial_data() {
-    use map_display_data::credit::MemoryBudget;
     let stack = fixture("streamed_display_operand");
     let layers = stack.layers(&[]);
     let buffered = ContentReads::new(&layers);
     let streamed = ContentReads::new(&layers);
-    let budget = MemoryBudget::new(1 << 20);
     let bytes: Vec<_> = (0..200_000).map(|n| (n % 251) as u8).collect();
     buffered.operand_bytes(b"fixture", &[bytes.as_slice(), bytes.as_slice()].concat());
     streamed
-        .operand_write(b"fixture", &budget, |out| {
+        .operand_stream(b"fixture", |out| {
             for chunk in bytes.chunks(3) {
                 out.write_all(chunk)?;
             }
@@ -3819,24 +3767,13 @@ fn streamed_content_operand_witness_matches_bytes_and_never_publishes_partial_da
     assert_eq!(buffered.entries(), streamed.entries());
     let previous = streamed.entries();
     let refused = streamed
-        .operand_write(b"refused", &budget, |out| {
+        .operand_stream(b"refused", |out| {
             out.write_all(b"unfinished")?;
             Err(io::Error::other("fixture failure"))
         })
         .unwrap_err();
     assert_eq!(refused.to_string(), "fixture failure");
     assert_eq!(streamed.entries(), previous);
-    assert_eq!(budget.used(), 0);
-    let held = budget.admit(budget.limit()).unwrap();
-    let refused = streamed
-        .operand_write(b"no credit", &budget, |_| {
-            panic!("writer ran without credit")
-        })
-        .unwrap_err();
-    assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
-    assert_eq!(streamed.entries(), previous);
-    drop(held);
-    assert_eq!(budget.used(), 0);
 }
 
 #[test]

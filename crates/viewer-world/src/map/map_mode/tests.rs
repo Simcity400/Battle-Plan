@@ -64,9 +64,6 @@ fn defines() -> ModeDefines {
 
 pub(super) fn content(scripted: MapModes) -> Content {
     Content {
-        _credit: map_display_data::credit::display_products()
-            .admit_item(size_of::<Content>() + 2 * size_of::<usize>() + align_of::<Content>())
-            .unwrap(),
         memberships: Default::default(),
         styles: Default::default(),
         scripts: Default::default(),
@@ -3024,8 +3021,7 @@ fn selected_state_folds_match_independent_network_and_occupation_outputs_after_d
         ))
         .into();
     let mut encoder = FrameEncoder::new();
-    let mut decoder =
-        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     for step in 0..10 {
         input.hour += 1;
         if step == 2 || step == 3 {

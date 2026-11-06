@@ -1,7 +1,6 @@
-use crate::credit::{Credit, display_products};
 use std::{cmp::Ordering, io, sync::Arc};
 
-// Immutable AVL paths share untouched nodes; each node owns its pre-allocation credit.
+// Immutable AVL paths share untouched nodes.
 pub struct CopyIndex<K, V>(Option<Arc<Node<K, V>>>);
 struct Node<K, V> {
     key: K,
@@ -10,7 +9,6 @@ struct Node<K, V> {
     right: CopyIndex<K, V>,
     height: u8,
     len: usize,
-    _credit: Credit,
 }
 impl<K, V> Clone for CopyIndex<K, V> {
     fn clone(&self) -> Self {
@@ -32,7 +30,7 @@ impl<K: Ord + Copy, V: Copy + PartialEq> From<std::collections::BTreeMap<K, V>>
             .try_fold(Self::default(), |root, (key, value)| {
                 root.inserted(key, value)
             })
-            .expect("persistent fixture admission")
+            .expect("persistent index allocation")
     }
 }
 impl<K, V> CopyIndex<K, V> {
@@ -110,8 +108,6 @@ impl<K: Ord + Copy, V: Copy + PartialEq> CopyIndex<K, V> {
         self.get(key).is_some()
     }
     fn node(key: K, value: V, left: Self, right: Self) -> io::Result<Self> {
-        let credit = display_products()
-            .admit(size_of::<Node<K, V>>() + 2 * size_of::<usize>() + align_of::<Node<K, V>>())?;
         let height = 1 + left.height().max(right.height());
         let len = 1 + left.len() + right.len();
         Ok(Self(Some(Arc::new(Node {
@@ -121,7 +117,6 @@ impl<K: Ord + Copy, V: Copy + PartialEq> CopyIndex<K, V> {
             right,
             height,
             len,
-            _credit: credit,
         }))))
     }
     fn balanced(key: K, value: V, mut left: Self, mut right: Self) -> io::Result<Self> {

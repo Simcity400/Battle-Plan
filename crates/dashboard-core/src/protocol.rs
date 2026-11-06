@@ -686,6 +686,10 @@ pub struct DashboardMapState {
     pub sequence: u64,
     pub requested_sequence: u64,
     pub loading: bool,
+    /// Playing, how many hours the rendered frame trails the map's clock; none when paused.
+    pub behind: Option<u32>,
+    /// Playing, why a newer hour the clock passed is not shown: it failed or waits for memory.
+    pub behind_reason: Option<String>,
     pub error: Option<String>,
     /// Why the hour shows no map yet, which is no failure: its session is still being
     /// recorded, and the map holds its hours once the session's native recording lands.

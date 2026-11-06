@@ -232,6 +232,46 @@ pub fn read_prepared_histories(
     }
 }
 
+/// Each branch's published identities as [`read_prepared_histories`] gives them through one
+/// bound, with the page and bound they were read from.
+#[derive(Default)]
+struct KeptHistories(BTreeMap<u64, (store::SourceKey, [u64; 3], Option<i32>, Arc<RecordedHistories>)>);
+
+/// [`read_prepared_histories`] read once per published page and bound of `branch` and shared by
+/// every request asking them: another page or bound replaces it.
+pub fn kept_prepared_histories(
+    source: &Source,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    through: Option<i32>,
+) -> io::Result<Option<Arc<RecordedHistories>>> {
+    let section = format!("country-identities-{branch}");
+    if !crate::prepared::coverage::accepts_pages(store, key, &section, branch)? {
+        return Ok(None);
+    }
+    let Some(page) = store.read(key, &section, 0)?.map(|file| file.id().cache_key()) else {
+        return Ok(None);
+    };
+    let state = source.state::<KeptHistories>();
+    // Held while they are read, so the requests asking at once read them once.
+    let mut kept = state.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some((held_key, held_page, held_through, history)) = kept.0.get(&branch)
+        && held_key == key
+        && *held_page == page
+        && *held_through == through
+    {
+        return Ok(Some(Arc::clone(history)));
+    }
+    kept.0.remove(&branch);
+    let history = read_prepared_histories(store, key, branch, through)?;
+    if let Some(history) = &history {
+        kept.0
+            .insert(branch, (key.clone(), page, through, Arc::clone(history)));
+    }
+    Ok(history)
+}
+
 #[derive(Default)]
 struct HistoriesCache {
     entries: BTreeMap<u64, Arc<RecordedHistories>>,

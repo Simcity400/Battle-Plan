@@ -3,15 +3,10 @@ use crate::{
     witness::Operand,
 };
 use installed_content_core::map::MapData;
-use map_display_data::{
-    credit::{MemoryBudget, display_products},
-    province_field::Storage,
-    retained::Retained,
-};
-use replay_data::rows::{TableId, tables};
+use map_display_data::{province_field::Storage, retained::Retained};
+use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use std::{io, sync::Arc};
-use viewer_foundation::map::tables::rows;
 use viewer_world::map::{
     demilitarized::{self, Zone},
     political::Regions,
@@ -20,9 +15,6 @@ use viewer_world::map::{
 #[derive(Default)]
 pub(crate) struct Zones(DependencyIndex<(Operand<MapData>, Operand<Storage>), Retained<Zone>>);
 impl Zones {
-    pub(crate) fn evict(&self) {
-        self.0.evict();
-    }
     pub(crate) fn read(
         &self,
         frame: &DecodedFrame,
@@ -39,36 +31,14 @@ impl Zones {
                 TableId::States => 0, // Membership stamps still detect inserted/deleted keys.
                 _ => table.full_mask(),
             },
-            || admitted_zone(display_products(), frame, map, regions),
+            || zone(frame, map, regions),
         )?;
         Ok(value.as_ref().clone())
     }
 }
-fn admitted_zone(
-    owner: &MemoryBudget,
-    frame: &DecodedFrame,
-    map: &MapData,
-    regions: &Regions,
-) -> io::Result<Retained<Zone>> {
-    let states = rows::<tables::States>(frame)?.rows().len();
-    let node = 12 * (size_of::<u32>() + 2 * size_of::<usize>()) + 128;
-    // Pay both planes and the join's peak sets/collection staging before allocation.
-    let bytes = regions
-        .state_of
-        .len()
-        .checked_mul(2 * size_of::<bool>())
-        .and_then(|n| {
-            states
-                .checked_mul(4 * node)
-                .and_then(|sets| n.checked_add(sets))
-        })
-        .and_then(|n| n.checked_add(Retained::<Zone>::overhead()))
-        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-    let credit = owner.admit_item(bytes)?;
+fn zone(frame: &DecodedFrame, map: &MapData, regions: &Regions) -> io::Result<Retained<Zone>> {
     let states = demilitarized::recorded_states(frame)?;
-    Ok(Retained::with_credit(credit, || {
-        Zone::new(map, regions, &states)
-    }))
+    Ok(Retained::new(Zone::new(map, regions, &states)))
 }
 
 #[cfg(test)]
@@ -166,7 +136,7 @@ mod tests {
         let (mut source, map, regions) = inputs();
         let zones = Zones::default();
         let mut encoder = FrameEncoder::new();
-        let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+        let mut decoder = FrameDecoder::new().with_change_facts();
         let update = encoder.encode(source.clone(), true).unwrap();
         let first = zones
             .read(decoder.advance(&update).unwrap(), &map, &regions)
@@ -210,13 +180,5 @@ mod tests {
             .unwrap();
         assert!(!first.ptr_eq(&changed));
         assert!(!changed.splits(1, 2));
-    }
-    #[test]
-    fn tiny_owner_refuses_zone_before_allocating_the_planes() {
-        let (source, map, regions) = inputs();
-        let owner = MemoryBudget::new(1);
-        let error = admitted_zone(&owner, &source, &map, &regions).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-        assert_eq!(owner.used(), 0);
     }
 }

@@ -1,6 +1,7 @@
 //! Production lines' served replies: some countries' lines over each branch, as they are
-//! waited for and exactly, every detail window holding one of the branch's read hours, and some
-//! of their lines' every factor, and their output from the branch's first, middle and last hour.
+//! waited for and exactly, every detail window holding one of the branch's read hours, the reads
+//! holding each of those hours as playback asks them, and some of their lines' every factor, and
+//! their output from the branch's first, middle and last hour.
 
 use super::{DETAIL_HOURS, breakdown::FACTORS};
 use crate::prepared::served::{self, Ask, Plan};
@@ -15,9 +16,9 @@ pub static PLAN: Plan = Plan {
 fn queries(ask: &mut dyn Ask) -> io::Result<()> {
     for branch in ask.branches().to_vec() {
         let id = branch.name();
-        let mut windows: Vec<i32> = branch
-            .hours()
-            .into_iter()
+        let hours = branch.hours();
+        let mut windows: Vec<i32> = hours
+            .iter()
             .map(|hour| hour.div_euclid(DETAIL_HOURS))
             .collect();
         windows.dedup();
@@ -38,6 +39,25 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
                     "production-line-detail",
                     json!({ "branchId": id, "tag": tag, "window": window }),
                 )?;
+            }
+            // Playback's first hour, then each next one read against the one before, as its
+            // reply's basis names it.
+            let mut basis = serde_json::Value::Null;
+            for (index, &hour) in hours.iter().enumerate() {
+                if let Some(&since) = index.checked_sub(1).and_then(|at| hours.get(at)) {
+                    let mut params =
+                        json!({ "branchId": id, "tag": tag, "hour": hour, "since": since });
+                    if !basis.is_null() {
+                        params["basis"] = basis.clone();
+                    }
+                    ask.ask("production-line-detail", params)?;
+                }
+                basis = ask
+                    .ask(
+                        "production-line-detail",
+                        json!({ "branchId": id, "tag": tag, "hour": hour }),
+                    )?
+                    .map_or(serde_json::Value::Null, |reply| reply["basis"].clone());
             }
             for key in served::some(&keys) {
                 let breakdown =

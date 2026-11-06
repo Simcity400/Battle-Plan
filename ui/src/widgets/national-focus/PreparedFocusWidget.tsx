@@ -21,7 +21,7 @@ import { nameKey, isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { FocusEntry } from '../../generated/dashboard';
 import { lastPage, loadPreparedFocusPage, preparedArtKey, validatePreparedHour, canCarryPreparedFocus, loadPreparedFocusDetail, validateUnavailableFocus } from './preparedFocusData';
 import { activeFocus } from './focusData';
-import type { FocusPreparedClient, PreparedFocusArt, PreparedFocusSnapshot } from './preparedFocusData';
+import type { FocusPageReads, FocusPreparedClient, PreparedFocusArt, PreparedFocusSnapshot } from './preparedFocusData';
 
 import { usePreparedFocusParity } from './usePreparedFocusParity';
 
@@ -54,6 +54,8 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const flight = useRef<{ lane: string; hour: number; running: boolean; shown: boolean; controller: AbortController } | null>(null);
   const wanted = useRef(hour); wanted.current = hour;
   const [landed, setLanded] = useState(0);
+  // What the last page read, which any hour of this country, recording and content reuses; a retry reads afresh.
+  const pageReads = useRef<{ owner: string; client: typeof runtime.client; reads: FocusPageReads } | null>(null);
   useEffect(() => {
     if (!active || !track || !tag || !inRange) return;
     // A read that has shown its hour gives way to a moved one, even while it still prepares.
@@ -68,6 +70,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
       snapshot: prior && canCarryPreparedFocus(prior.snapshot.hour, hour) && !crossesGap(prior.snapshot) ? prior.snapshot : null,
       pending: true, error: null, warnings: [] });
     const client = runtime.client as FocusPreparedClient;
+    const readsOwner = JSON.stringify([identity, retry]);
     let generation = 0, lastRow = '', presentation: Promise<void> = Promise.resolve();
     const landedHour = () => { mine.shown = true; if (wanted.current !== hour) setLanded(value => value + 1); };
     const show = async (row: ReturnType<typeof validatePreparedHour>, own: number) => {
@@ -81,8 +84,10 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
         setAnswer({ identity, client: runtime.client, hour, snapshot: null, pending: true, error: null, warnings: [] });
       }
       const page = selected == null ? live ? lastPage(row.completed) : 0n : selected > lastPage(row.completed) ? lastPage(row.completed) : selected;
-      const data = await loadPreparedFocusPage(client, track.source, track.branch.id, tag, hour, row, page, controller.signal);
+      const kept = pageReads.current?.owner === readsOwner && pageReads.current.client === runtime.client ? pageReads.current.reads : undefined;
+      const { reads, ...data } = await loadPreparedFocusPage(client, track.source, track.branch.id, tag, hour, row, page, controller.signal, kept);
       if (controller.signal.aborted || own !== generation) return;
+      pageReads.current = { owner: readsOwner, client: runtime.client, reads };
       const snapshot = { ...data, hour: row, page };
       presented.current = { identity, client: runtime.client, snapshot };
       setOpened(previous => previous && (previous.identity !== identity || previous.client !== runtime.client || previous.slot !== row.slot || previous.countryId !== row.countryId) ? null : previous);

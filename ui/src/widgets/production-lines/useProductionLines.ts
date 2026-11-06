@@ -1,18 +1,18 @@
 import { failureText } from '../../dashboard/queryError.ts';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
-import type { ProductionLineDetailReply, ProductionLinesReply, ProductionLineBreakdownReply } from '../../generated/dashboard';
+import type { ProductionLineDetailReply, ProductionLineHourReply, ProductionLinesReply, ProductionLineBreakdownReply } from '../../generated/dashboard';
 import { datedCountrySpans } from '../../dashboard/datedCountry';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { NumericReply } from '../../dashboard/numericReply';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { validateDetailReply, validateProductionReply, validateBreakdownReply } from './productionData';
+import { joinHour, validateDetailReply, validateHourReply, validateProductionReply, validateBreakdownReply } from './productionData';
 
 /** The country's published production history, refreshed as preparation advances. */
 export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
@@ -37,6 +37,34 @@ export function useLineDetail(runtime: WidgetRuntime, track: BoundTrack | undefi
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : null;
   return useProductWindows<ProductionLineDetailReply>(runtime.client, identity, window => ({ sourceId: track!.source.id, revision: track!.source.revision,
     product: 'production-line-detail', params: { branchId: track!.branch.id, tag: tag!, window } }), wanted, active, validateDetailReply);
+}
+
+/** The live table's reads at `hour` while playback runs: every line's at the first hour read,
+ * then only the lines whose reads changed since the hour read before, joined to those held.
+ * `hour` is the hour the reads answer, which trails the playhead by the read in flight. */
+export function useLineHour(runtime: WidgetRuntime, track: BoundTrack | undefined, tag: string | undefined, hour: number | null, detailHours: number | undefined, active: boolean) {
+  const lane = track && tag && detailHours ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : null;
+  const [held, setHeld] = useState<{ lane: string; reply: ProductionLineHourReply; detail: ProductionLineDetailReply } | null>(null);
+  const holding = held && held.lane === lane ? held : null;
+  // A later hour is read against the one held; the held hour asks again what it was asked.
+  const since = !holding || hour === null || holding.reply.basis === null ? undefined : hour > holding.reply.hour ? holding.reply.hour
+    : hour === holding.reply.hour ? holding.reply.since ?? undefined : undefined;
+  const basis = since === undefined || !holding ? undefined : holding.reply.basis ?? undefined;
+  const read = useFollowedProduct<ProductionLineHourReply>(runtime.client, track && tag && lane && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'production-line-detail', params: { branchId: track.branch.id, tag, hour, ...(since === undefined ? {} : { since }), ...(basis === undefined ? {} : { basis }) } } : null,
+  ['hour', 'since', 'basis'], active, validateHourReply, track?.source);
+  useEffect(() => {
+    const reply = read.data;
+    if (!reply || !lane || !detailHours) return;
+    setHeld(previous => {
+      const kept = previous?.lane === lane ? previous : null;
+      if (kept?.reply === reply) return previous;
+      // Lines read against another hour than the one held are not joined to it.
+      if (reply.since !== null && (kept?.reply.hour !== reply.since || kept.reply.basis !== reply.basis)) return previous;
+      return { lane, reply, detail: joinHour(kept?.detail ?? null, reply, detailHours) };
+    });
+  }, [read.data, lane, detailHours]);
+  return { detail: holding?.detail, hour: holding?.reply.hour, error: read.error, retry: () => { setHeld(null); read.retry(); } };
 }
 
 export function useProductionCountry(selection: DatedCountrySelection | null, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) {

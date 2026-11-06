@@ -27,7 +27,6 @@ fn state() -> CoordinatorState {
         events,
         outbox,
         result_space: Default::default(),
-        refusal: Default::default(),
     }
 }
 
@@ -57,6 +56,7 @@ fn on_grid(mut want: Want, sequence: u64, stride: u32, anchor: Option<Hour>) -> 
             stride,
             count: 2,
             anchor,
+            lead: 0,
         },
         installed: None,
         usable: Vec::new(),
@@ -159,6 +159,42 @@ fn the_grid_keeps_a_due_fallback_until_a_newer_usable_hour_is_due_or_installed()
 }
 
 #[test]
+fn the_grid_starts_where_the_clock_will_be_when_a_build_lands() {
+    let state = state();
+    let mut want = on_grid(want(101), 1, 40, None);
+    assert_eq!(state.wanted_hours(&want, (0, 10_000)), [120, 160]);
+    want.grid.as_mut().unwrap().cadence.lead = 144;
+    assert_eq!(state.wanted_hours(&want, (0, 10_000)), [280, 320]);
+    assert_eq!(state.wanted_hours(&want, (0, 300)), [280, 300]);
+}
+
+#[test]
+fn a_strided_target_shares_only_with_settled_neighbours() {
+    let settled = Slots::new();
+    Fill(Arc::clone(&settled.political)).set(None);
+    Fill(Arc::clone(&settled.borders)).set(None);
+    Fill(Arc::clone(&settled.rails)).set(None);
+    Fill(Arc::clone(&settled.buildings)).set(None);
+    let slots: BTreeMap<(BranchId, Hour), Slots> = [
+        ((1, 80), settled.clone()),
+        ((1, 120), Slots::new()),
+        ((1, 200), Slots::new()),
+        ((1, 240), settled.clone()),
+    ]
+    .into();
+    let near: Vec<_> = settled_slots(&slots, 1, 160)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(near, [(1, 80), (1, 240)]);
+    let near: Vec<_> = neighbour_slots(&slots, 1, 160)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(near, [(1, 120), (1, 200)]);
+}
+
+#[test]
 fn an_anchor_is_wanted_until_the_window_has_it_and_its_intent_never_wants_it_again() {
     let mut state = state();
     let base = want(107);
@@ -251,6 +287,7 @@ fn an_old_epochs_feedback_never_ends_or_supersedes_a_new_intent() {
             stride: 40,
             count: 2,
             anchor: Some(anchor),
+            lead: 0,
         };
         let mut submitted = next.clone();
         assert!(submitted.discard_stale_have(Some(&old), false));

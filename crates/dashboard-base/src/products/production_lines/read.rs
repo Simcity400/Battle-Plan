@@ -322,6 +322,11 @@ impl<'a> Index<'a> {
         &self.published.identity
     }
 
+    /// What the index publishes, for an index of the same publication read through other pages.
+    pub fn published(&self) -> Arc<Published> {
+        Arc::clone(&self.published)
+    }
+
     /// The history a literal tag's view reads: none held is the absence's.
     pub fn tag_history(&self, tag: &str) -> u64 {
         self.published

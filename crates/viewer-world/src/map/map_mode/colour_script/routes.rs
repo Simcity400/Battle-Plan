@@ -1,10 +1,7 @@
 use super::*;
 use crate::map::projection_fold::{RowFold, fields};
 use dashboard_text::triggers::inputs::{Inputs as Reads, TableRead};
-use map_display_data::{
-    credit::{Credit, display_products},
-    value_index::ValueIndex,
-};
+use map_display_data::value_index::ValueIndex;
 use replay_data::rows::TableId;
 use replay_frame::frame::{RecordedSource, ViewIdentity};
 
@@ -74,7 +71,6 @@ pub(super) struct Routes {
     fresh_back: ValueIndex<(Target, usize), ()>,
     fresh_values: ValueIndex<usize, bool>,
     views: Vec<ViewIdentity>,
-    _credit: Option<Credit>,
     hour: Option<i32>,
     subjects: Option<RowFold<(i32, i32)>>,
     wars: Option<RowFold<(i32, i32)>>,
@@ -252,10 +248,7 @@ impl Routes {
         }
         self.fresh_values = fresh_values;
         if self.views.is_empty() {
-            let credit =
-                display_products().admit_item(frame.tables.len() * size_of::<ViewIdentity>())?;
             self.views = frame.tables.iter().map(|view| view.identity()).collect();
-            self._credit = Some(credit);
         } else {
             for (table, view) in frame.tables.iter().enumerate() {
                 let old = &self.views[table];

@@ -203,8 +203,6 @@ impl Styles {
                         refusal: 2,
                     });
                 };
-                let _scratch =
-                    map_display_data::credit::display_products().admit_item(name.len())?;
                 Ok(
                     match inputs
                         .content

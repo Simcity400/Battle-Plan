@@ -48,7 +48,7 @@ impl<V: Clone + PartialEq> RowFold<V> {
             return Ok(Self {
                 identity: view.identity(),
                 values: old.values.clone(),
-                edits: Retained::build(0, Vec::new)?,
+                edits: Retained::new(Vec::new()),
             });
         }
         let facts = match changes {
@@ -65,17 +65,7 @@ impl<V: Clone + PartialEq> RowFold<V> {
                 |facts| facts.changed().len().checked_add(facts.deleted().len()),
             )
             .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let bytes = count
-            .checked_mul(size_of::<u128>())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let credit = map_display_data::credit::display_products()
-            .admit_item(bytes + Retained::<Vec<u128>>::overhead())?;
         let mut edits = Vec::with_capacity(count);
-        let _scratch = map_display_data::credit::display_products().admit_item(
-            count
-                .checked_mul(2 * size_of::<(u128, Option<V>)>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
         let mut patches = Vec::with_capacity(count);
         let mut values = previous.map_or_else(ValueIndex::default, |old| old.values.clone());
         if let Some(facts) = facts {
@@ -139,7 +129,7 @@ impl<V: Clone + PartialEq> RowFold<V> {
         }
         edits.sort_unstable();
         edits.dedup();
-        let edits = Retained::with_credit(credit, || edits);
+        let edits = Retained::new(edits);
         Ok(Self {
             identity: view.identity(),
             values,
@@ -169,8 +159,7 @@ mod tests {
             ))
             .into();
         let mut encoder = FrameEncoder::new();
-        let mut decoder = FrameDecoder::for_tables(&[TableId::CountryLinks])
-            .with_change_facts(map_display_data::credit::display_products().clone());
+        let mut decoder = FrameDecoder::for_tables(&[TableId::CountryLinks]).with_change_facts();
         let update = encoder.encode(source.clone(), true).unwrap();
         let frame = decoder.advance(&update).unwrap();
         let first = RowFold::read(

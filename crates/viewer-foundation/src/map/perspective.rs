@@ -17,7 +17,6 @@
 //! Counters draw in full from 250 and as a question mark from 150. The province
 //! bytes are rebuilt per viewer by [`super::visibility::derive`].
 
-use map_display_data::credit::MemoryBudget;
 use std::sync::Arc;
 pub mod incremental;
 mod members;
@@ -367,7 +366,6 @@ impl Vision {
         (ours, resolution): (u32, Resolution),
         fog: Result<&FogContent, &'static str>,
     ) -> io::Result<Self> {
-        let budget = map_display_data::credit::display_products().clone();
         let unrecorded = FOG_TABLES
             .iter()
             .any(|table| matches!(*frame.tables[table.index()], TableView::NotRecorded { .. }));
@@ -382,8 +380,7 @@ impl Vision {
         vision.relate(
             relations.as_ref().map_err(|reason| *reason),
             tags.keys().copied(),
-            &budget,
-        )?;
+        );
         if let Err(reason) = &relations {
             vision.undecided = Some(reason);
         }
@@ -401,7 +398,7 @@ impl Vision {
         ordered.sort_by_key(|r| (r.unit, r.ordinal));
         for row in ordered {
             if !vision.levels.contains_key(&row.unit) {
-                vision.levels.insert(row.unit, row.level, &budget)?;
+                vision.levels.insert(row.unit, row.level);
             }
         }
         match frame.complete::<tables::CountryVisibility>() {
@@ -429,8 +426,8 @@ impl Vision {
                     navy.entry(row.target_index).or_insert(row.navy);
                 }
             }
-            vision.air_intel = Some(Values::from_iter(air, &budget)?);
-            vision.navy_intel = Some(Values::from_iter(navy, &budget)?);
+            vision.air_intel = Some(Values::from_iter(air));
+            vision.navy_intel = Some(Values::from_iter(navy));
         }
         vision.air_defines = fog
             .ok()
@@ -446,16 +443,14 @@ impl Vision {
                             && links.get(&r.country) == Some(&ours)
                     })
                     .map(|r| (r.target_index, ())),
-                &budget,
-            )?);
+            ));
         }
         if let Ok(provinces) = frame.complete::<tables::Provinces>() {
             vision.province_controllers = Values::from_iter(
                 provinces
                     .iter()
                     .filter_map(|p| Some((p.id, *links.get(&p.controller)?))),
-                &budget,
-            )?;
+            );
         }
 
         if vision.fog {
@@ -467,8 +462,8 @@ impl Vision {
             });
             match rebuilt {
                 Ok((bytes, sight)) => {
-                    vision.visibility = Arc::new(Values::from_iter(bytes, &budget)?);
-                    vision.sight_provinces = Values::from_iter(sight, &budget)?;
+                    vision.visibility = Arc::new(Values::from_iter(bytes));
+                    vision.sight_provinces = Values::from_iter(sight);
                 }
                 Err(reason) => vision.visibility_gap = Some(reason),
             }
@@ -482,22 +477,20 @@ impl Vision {
         &mut self,
         relations: Result<&Relations, &'static str>,
         slots: impl Iterator<Item = u32>,
-        budget: &MemoryBudget,
-    ) -> io::Result<()> {
+    ) {
         let ours = self.ours;
-        self.shares.insert(ours, (), budget)?;
+        self.shares.insert(ours, ());
         match relations {
             Ok(relations) => {
                 for slot in slots.filter(|&slot| relations.shared(slot, ours)) {
-                    self.shares.insert(slot, (), budget)?;
+                    self.shares.insert(slot, ());
                 }
                 for slot in relations.enemies(ours).filter(|&slot| slot != ours) {
-                    self.wars.insert(slot, (), budget)?;
+                    self.wars.insert(slot, ());
                 }
             }
             Err(reason) => self.relations_gap = Some(reason),
         }
-        Ok(())
     }
 
     /// The viewing country's canonical slot.
@@ -565,17 +558,10 @@ impl Vision {
         let mut vision = Self {
             ours,
             fog: true,
-            shares: Values::from_iter(
-                shares.into_iter().map(|slot| (slot, ())),
-                &map_display_data::credit::display_products().clone(),
-            )
-            .unwrap(),
+            shares: Values::from_iter(shares.into_iter().map(|slot| (slot, ()))),
             ..Self::default()
         };
-        vision
-            .shares
-            .insert(ours, (), &map_display_data::credit::display_products().clone())
-            .unwrap();
+        vision.shares.insert(ours, ());
         vision
     }
 
@@ -592,14 +578,14 @@ impl Vision {
         mut self,
         levels: impl IntoIterator<Item = (u64, i8)>,
     ) -> Self {
-        self.levels = Values::from_iter(levels, &map_display_data::credit::display_products().clone()).unwrap();
+        self.levels = Values::from_iter(levels);
         self.truncated.push("UnitIntel");
         self
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_visibility(&mut self, bytes: impl IntoIterator<Item = (u32, u8)>) {
-        self.visibility = Arc::new(Values::from_iter(bytes, &map_display_data::credit::display_products().clone()).unwrap());
+        self.visibility = Arc::new(Values::from_iter(bytes));
         self.visibility_gap = None;
     }
 

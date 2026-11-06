@@ -9,6 +9,7 @@ fn on_grid(base: &Want, hour: Hour, sequence: u64, stride: u32, anchor: Option<H
                 stride,
                 count: 2,
                 anchor,
+                lead: 0,
             },
             installed: None,
             usable: Vec::new(),
@@ -42,7 +43,7 @@ fn occupy_output(f: &mut RealDriver) {
     f.driver
         .core
         .outbox
-        .try_send(Output::Hour(gap_built(99, "occupy output")))
+        .try_send(gap_built(99, "occupy output"))
         .ok()
         .unwrap();
 }
@@ -232,6 +233,7 @@ fn an_immediate_off_grid_capture_is_requested_and_delivered_after_the_anchor_com
                 stride,
                 count: 2,
                 anchor: Some(101),
+                lead: 0,
             },
             installed: Some(101),
             usable: Vec::new(),

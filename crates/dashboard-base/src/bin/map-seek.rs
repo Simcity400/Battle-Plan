@@ -357,7 +357,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         options.workers,
         MemoryBudget::new(usize::MAX / 4),
     )?
-    .with_change_facts(MemoryBudget::new(usize::MAX / 4));
+    .with_change_facts();
     let mut random = Random(options.seed);
     let pick = |random: &mut Random| all[random.below(all.len() as u64) as usize];
 

@@ -156,7 +156,10 @@ pub mod emit;
 pub mod facts;
 pub mod query;
 pub mod served;
-pub use art::{FocusArt, FocusArtFailure, FocusArtMode, FocusArtParams, FocusArtReply};
+pub use art::{
+    FocusArt, FocusArtFailure, FocusArtGroup, FocusArtGroupReply, FocusArtMode, FocusArtParams,
+    FocusArtReply,
+};
 
 /// The hourly row census the publication is held to.
 #[cfg(test)]

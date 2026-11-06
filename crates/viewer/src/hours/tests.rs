@@ -514,7 +514,6 @@ pub(super) fn source_frame(client: &Arc<SourceMailbox>, branch: BranchId, hour: 
             reason: LANE_STOPPED.to_owned(),
         },
         source_mailbox::Reply::Cancelled => panic!("ordinary request is not cancelled"),
-        source_mailbox::Reply::Pressure(pressure) => panic!("{}", pressure.reason),
     }
 }
 
@@ -1080,66 +1079,8 @@ fn evicted_backward_and_branch_requests_match_independent_source_seeks() {
 }
 
 #[test]
-fn resource_pressure_is_pending_not_a_terminal_part_failure() {
-    assert!(Part::Names(Err(io::Error::from(io::ErrorKind::WouldBlock))).resource_pending());
-    assert!(!Part::Names(Err(io::Error::other("named content refusal"))).resource_pending());
-    assert!(!Part::Names(Ok(Arc::new(Placements::default()))).resource_pending());
-}
-
-#[test]
-fn a_colour_credit_retry_does_not_advance_or_reapply_its_predecessor() {
-    let (events, inbox) = mpsc::channel();
-    let initial = Arc::new(viewer_world::map::map_mode::ColourState {
-        mode: "before".into(),
-        layers: Default::default(),
-    });
-    let mut calls = 0;
-    let work = dispatch_plan::colour_job(
-        11,
-        (1, 100),
-        sized_frame(100, 1),
-        events,
-        None,
-        Some(Ok(Some(initial))),
-        move |_, previous| {
-            calls += 1;
-            assert_eq!(previous.unwrap().mode, "before");
-            if calls == 1 {
-                return Err(io::Error::from(io::ErrorKind::WouldBlock));
-            }
-            Ok(Some(Arc::new(viewer_world::map::map_mode::ColourState {
-                mode: "after".into(),
-                layers: Default::default(),
-            })))
-        },
-    );
-    work();
-    let retry = match inbox.recv().unwrap() {
-        Event::RetryColour {
-            ticket: 11,
-            key: (1, 100),
-            work,
-            ..
-        } => work,
-        _ => panic!("pressure is not a colour refusal"),
-    };
-    retry();
-    match inbox.recv().unwrap() {
-        Event::Colour {
-            ticket: 11,
-            key: (1, 100),
-            folded,
-        } => {
-            assert_eq!(folded.colour.unwrap().unwrap().mode, "after");
-        }
-        _ => panic!("one terminal result after retry"),
-    }
-    assert!(inbox.try_recv().is_err());
-}
-
-#[test]
 fn quiet_political_hours_never_rebuild_border_geometry() {
-    let zone = map_display_data::retained::Retained::build(0, Zone::default).unwrap();
+    let zone = map_display_data::retained::Retained::new(Zone::default());
     let built = Cell::new(0);
     let build = |_: &Zone| {
         built.set(built.get() + 1);

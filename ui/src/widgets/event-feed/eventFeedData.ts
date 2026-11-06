@@ -94,10 +94,12 @@ export function validateEventFeedReply(value: unknown): EventFeedReply {
 
 /** Feed-only cursor envelope; source IDs stay internal to this reader. */
 /** A page of the feed; `prefix` while it is answered from its gates' prepared
- * prefix, backwards from that prefix's last hour. */
-export interface PreparedFeedPage { reply: EventFeedReply; nextCursor: string | null; prefix?: PreparedPrefixFields | null }
+ * prefix, backwards from that prefix's last hour. With `after`, it holds only the rows
+ * read after that hour, every one dated after it, for a page answered through it to prepend. */
+export interface PreparedFeedPage { reply: EventFeedReply; nextCursor: string | null; prefix?: PreparedPrefixFields | null; after?: number }
 export function validateEventFeedPage(value: unknown): PreparedFeedPage {
-  if (!object(value) || !(value.nextCursor === null || typeof value.nextCursor === 'string')) {
+  if (!object(value) || !(value.nextCursor === null || typeof value.nextCursor === 'string')
+    || !(value.after === undefined || (int(value.after) && value.nextCursor === null))) {
     throw new Error('The prepared event feed page is malformed.');
   }
   const reply = validateEventFeedReply(value.reply);
@@ -105,7 +107,21 @@ export function validateEventFeedPage(value: unknown): PreparedFeedPage {
   // Live validation may remove every obsolete project candidate. The hook
   // checks this continuation against the request and earlier page cursors.
   if (value.nextCursor === '') throw new Error('The event feed page made no progress.');
-  return { reply, nextCursor: value.nextCursor, prefix: preparedPrefix(value) };
+  const after = int(value.after) ? value.after : undefined;
+  if (after !== undefined && reply.rows.some(row => row.hour <= after)) throw new Error('The event feed rows read after an hour date by it.');
+  return { reply, nextCursor: value.nextCursor, prefix: preparedPrefix(value), ...(after === undefined ? {} : { after }) };
+}
+
+/** The feed's notes as its newest reply gives them, with those an older one gave of rows it
+ * still shows: every warning once, and each refusal once, counted as its newest reply counts it. */
+export function feedNotes(newest: EventFeedReply, older: readonly EventFeedReply[]): EventFeedReply {
+  if (!older.length) return newest;
+  const refusal = (item: EventFeedReply['unavailable'][number]) => JSON.stringify([item.kind, item.label, item.reason]);
+  const seen = new Set(newest.unavailable.map(refusal));
+  const unavailable = [...newest.unavailable];
+  for (const reply of older) for (const item of reply.unavailable) if (!seen.has(refusal(item))) { seen.add(refusal(item)); unavailable.push(item); }
+  const warnings = [...new Set([...newest.warnings, ...older.flatMap(reply => reply.warnings)])];
+  return { ...newest, unavailable, warnings };
 }
 
 export interface FeedEvent { event: EventFeedRow; item: EventFeedItem | null; reply: EventFeedReply }

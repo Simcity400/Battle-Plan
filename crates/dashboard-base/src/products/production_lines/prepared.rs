@@ -4052,6 +4052,21 @@ pub(super) fn open(
     Ok(index)
 }
 
+/// The index of an opened publication ([`open`]), read through pages of its own.
+pub(super) fn reopen(
+    source: &Source,
+    context: &LoadContext,
+    directory: Directory,
+    published: Arc<read::Published>,
+    publication: Option<[u64; 3]>,
+) -> io::Result<read::Index<'static>> {
+    let (store, key) = crate::prepared::files(source, context.content.as_ref())?;
+    let pages = index::StoreRanges::scoped(store, key.clone())?;
+    let mut index = read::Index::with(Box::new(pages), directory, published, publication);
+    index.binding = Some(key);
+    Ok(index)
+}
+
 pub(super) fn country_at(
     index: &mut read::Index<'_>,
     tag: &str,

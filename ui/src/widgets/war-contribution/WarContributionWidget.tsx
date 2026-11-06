@@ -20,7 +20,7 @@ import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { currentWarsAt, joinedAt, observationAt, validateWarsReply, warContributions } from '../wars/warsData';
+import { currentWarsAt, joinedAt, observationAt, validateWarsHourly, validateWarsReply, warContributions } from '../wars/warsData';
 import { OPTIONS, SHOW_CHOICES } from './definition';
 import { SCALE, chosenWar, contributionRows, readHourFor, rowLengths, shareText, sideAmount, sideMagnitude, toNumber, warName } from './warContributionData';
 import type { ContributionRow, SideTotal } from './warContributionData';
@@ -53,7 +53,7 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   // The requested-hour groups, read from that hour's frame alone as Wars reads them.
   // The last read hour's groups stay shown while playback's newest is read; both halves use its hour.
   const exact = useFollowedProduct(runtime.client, track && readHour != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpointTag, current: [{ hour: readHour }] } } : null, ['current'], active, validateWarsReply, track?.source);
+    params: { branchId: track.branch.id, viewpointTag, current: [{ hour: readHour }] } } : null, ['current'], active, validateWarsHourly, track?.source);
   const shownHour = readHour == null ? null : exact.moment ? (JSON.parse(exact.moment) as [{ hour: number }[]])[0][0]?.hour ?? readHour : readHour;
   // The war each read hour was asked for: a reply still shown presents its own war.
   const asked = useRef(new Map<number, NonNullable<typeof war>>());

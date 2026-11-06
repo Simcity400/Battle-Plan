@@ -48,44 +48,14 @@ pub(crate) struct Projections {
     names: Mutex<Option<NameProjection>>,
 }
 
-impl Projections {
-    fn pressure<T>(&self, result: io::Result<T>, evict: impl FnOnce()) -> io::Result<T> {
-        result.map_err(|error| {
-            map_display_data::credit::display_products().reclaim_failure(error, || {
-                self.territory.evict();
-                self.zones.evict();
-                self.modes.evict();
-                self.buildings.evict();
-                self.territory_fold
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take();
-                self.building_bases
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take();
-                evict();
-            })
+fn default_mode_projection() -> Arc<map_display_data::landscape::ModeProjection> {
+    static VALUE: std::sync::OnceLock<Arc<map_display_data::landscape::ModeProjection>> =
+        std::sync::OnceLock::new();
+    Arc::clone(VALUE.get_or_init(|| {
+        Arc::new(map_display_data::landscape::ModeProjection::Stock {
+            fill: ModeFill::default(),
         })
-    }
-}
-
-fn default_mode_projection() -> io::Result<Arc<map_display_data::landscape::ModeProjection>> {
-    type Projection = map_display_data::landscape::ModeProjection;
-    static VALUE: Mutex<Option<(map_display_data::credit::Credit, Arc<Projection>)>> =
-        Mutex::new(None);
-    let mut value = VALUE.lock().unwrap_or_else(|error| error.into_inner());
-    if value.is_none() {
-        let bytes = size_of::<Projection>() + 2 * size_of::<usize>() + align_of::<Projection>();
-        let credit = map_display_data::credit::display_products().admit_item(bytes)?;
-        *value = Some((
-            credit,
-            Arc::new(Projection::Stock {
-                fill: ModeFill::default(),
-            }),
-        ));
-    }
-    Ok(Arc::clone(&value.as_ref().unwrap().1))
+    }))
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -210,18 +180,13 @@ impl ProductHour<'_> {
         let _scope = viewer_foundation::profiling::thread_span("modes");
         let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
         if *mode == MapMode::default() {
-            return self
-                .content
-                .landscape
-                .pressure(default_mode_projection(), || {
-                    content.evict_memberships();
-                });
+            return Ok(default_mode_projection());
         }
         let clock = match mode {
             MapMode::Scripted(_) => Clock::Hour,
             _ => Clock::Relations,
         };
-        let result = self.content.landscape.modes.project_fields(
+        self.content.landscape.modes.project_fields(
             self.frame,
             (
                 content.projection_id(),
@@ -262,10 +227,7 @@ impl ProductHour<'_> {
                 )?;
                 Ok(projection)
             },
-        );
-        self.content
-            .landscape
-            .pressure(result, || content.evict_memberships())
+        )
     }
 
     pub fn country_styles(
@@ -381,10 +343,11 @@ impl ProductHour<'_> {
         regions.warnings.extend(naval.warnings);
         regions.warnings.extend(fill.warnings);
         regions.mode = fill.draw.map(Arc::new);
-        let zone = self.content.landscape.pressure(
-            self.content.landscape.zones.read(self.frame, &self.content.map, &regions),
-            || {},
-        )?;
+        let zone = self
+            .content
+            .landscape
+            .zones
+            .read(self.frame, &self.content.map, &regions)?;
         Ok(PoliticalProduct {
             layers: political::PoliticalLayers {
                 regions: Arc::new(regions),
@@ -403,7 +366,7 @@ impl ProductHour<'_> {
             .content
             .reads
             .dependent_binding("territory", &["map", "session-error"])?;
-        let result = self.content.landscape.territory.project_fields(
+        self.content.landscape.territory.project_fields(
             self.frame,
             binding,
             Clock::Hour,
@@ -424,8 +387,7 @@ impl ProductHour<'_> {
                     .read_input_shared(&self.content.map, self.changes.input())
                     .map(|value| value.as_ref().clone())
             },
-        );
-        self.content.landscape.pressure(result, || {})
+        )
     }
 
     pub fn territory_projection(
@@ -573,10 +535,7 @@ impl ProductHour<'_> {
                 Ok(BuildingProduct { prepared, summary })
             },
         );
-        let value = self
-            .content
-            .landscape
-            .pressure(result, || assets.evict_tokens())?;
+        let value = result?;
         Ok((
             map_display_data::buildings::Buildings {
                 branch: self.frame.branch,
@@ -680,7 +639,7 @@ impl ProductHour<'_> {
                 Some((
                     Operand::new(&inputs.counter.localisation),
                     Operand::new(&inputs.counter.state_name_keys),
-                    KeyText::new(&inputs.counter.recorded_language)?,
+                    KeyText::new(&inputs.counter.recorded_language),
                 ))
             } else {
                 None
@@ -850,8 +809,8 @@ mod identity_tests {
     use super::*;
     #[test]
     fn default_projection_is_source_independent_and_keeps_default_wire_bytes() {
-        let first = default_mode_projection().unwrap();
-        let second = default_mode_projection().unwrap();
+        let first = default_mode_projection();
+        let second = default_mode_projection();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(
             product_codec::encode(first.as_ref()).unwrap(),
@@ -909,9 +868,7 @@ mod identity_tests {
             visibility_gap: None,
         };
         let mut next = old.clone();
-        let fog = Arc::new(perspective::values::Values::from_iter(
-            [(1, 255u8)], map_display_data::credit::display_products(),
-        ).unwrap());
+        let fog = Arc::new(perspective::values::Values::from_iter([(1, 255u8)]));
         next.fog_bytes = Some(Operand::new(&fog));
         assert!(old != next);
         assert!(old.same_base(&next));

@@ -334,10 +334,9 @@ impl Wars {
                 Some(_) => Ok(()),
             });
             if let Err(why) = &result {
-                errors = errors.inserted(key, Retained::build(why.len(), || why.clone())?)?;
+                errors = errors.inserted(key, Retained::new(why.clone()))?;
             }
-            let bytes = result.as_ref().err().map_or(0, String::len);
-            active = active.inserted(key, Retained::build(bytes, || result)?)?;
+            active = active.inserted(key, Retained::new(result))?;
         }
         Ok(Ok(Self {
             rows,
@@ -394,7 +393,7 @@ impl Fold {
         let mut refused = ValueIndex::default();
         if geometry.invalid != 0 {
             refused = refused.inserted(
-                Retained::build(48, || "region identity cannot be represented".to_owned())?,
+                Retained::new("region identity cannot be represented".to_owned()),
                 geometry.invalid,
             )?;
         }
@@ -419,7 +418,7 @@ impl Fold {
                     self.air = None;
                     let count = geometry.keys.len();
                     if count != 0 {
-                        let reason = Retained::build(reason.len(), || reason)?;
+                        let reason = Retained::new(reason);
                         let count = count + refused.get(&reason).copied().unwrap_or(0);
                         refused = refused.inserted(reason, count)?;
                     }
@@ -603,7 +602,7 @@ impl Air {
             if let Some(before) = outcomes.get(&region)
                 && let Err(reason) = &**before
             {
-                let reason = Retained::build(reason.len(), || reason.clone())?;
+                let reason = Retained::new(reason.clone());
                 adjust(&mut refused, &reason, false)?;
             }
             let winner = by_region_row
@@ -671,15 +670,14 @@ impl Air {
                 Ok(style(content.air[3]))
             };
             if let Err(reason) = &color {
-                let reason = Retained::build(reason.len(), || reason.clone())?;
+                let reason = Retained::new(reason.clone());
                 adjust(&mut refused, &reason, true)?;
             }
             styles = match &color {
                 Ok(style) => styles.inserted(key, *style)?,
                 Err(_) => styles.removed(&key)?,
             };
-            let bytes = color.as_ref().err().map_or(0, String::len);
-            outcomes = outcomes.inserted(region, Retained::build(bytes, || color)?)?;
+            outcomes = outcomes.inserted(region, Retained::new(color))?;
         }
         // These roots contain compact operands; a skipped lazy read must retain its own earlier cursor.
         if counters.is_none() {

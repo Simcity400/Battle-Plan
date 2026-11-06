@@ -229,9 +229,9 @@ impl Groups {
                                 ),
                                 None => (
                                     None,
-                                    Some(Retained::build(64, || {
-                                        format!("province {id} controller is unresolved")
-                                    })?),
+                                    Some(Retained::new(format!(
+                                        "province {id} controller is unresolved"
+                                    ))),
                                 ),
                             }
                         }
@@ -296,7 +296,7 @@ impl Groups {
         })();
         match route {
             Ok(route) => Ok(route),
-            Err(why) => Ok(Routing::Refused(Retained::build(why.len(), || why)?)),
+            Err(why) => Ok(Routing::Refused(Retained::new(why))),
         }
     }
     fn member(&mut self, target: TargetId, id: u32, present: bool) -> std::io::Result<()> {

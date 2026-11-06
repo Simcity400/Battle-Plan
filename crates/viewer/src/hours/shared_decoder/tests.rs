@@ -280,6 +280,8 @@ fn the_shared_registry_keeps_every_live_frame_and_prunes_dead_entries_on_decode(
     let mut state = DecoderState {
         playback: Playback::unloaded(replay.clone()).unwrap(),
         frames: BTreeMap::new(),
+        workers: 1,
+        dropper: None,
     };
     let mut held = Vec::new();
     for hour in 100..=227 {
@@ -317,6 +319,8 @@ fn the_shared_host_hands_forward_edits_and_explicit_seek_and_gap_boundaries() {
     let mut state = DecoderState {
         playback: Playback::unloaded(replay).unwrap().with_display_changes(),
         frames: BTreeMap::new(),
+        workers: 1,
+        dropper: None,
     };
     let Current::Frame(first) = state.frame(1, 100).unwrap() else {
         panic!("first hour")

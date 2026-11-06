@@ -1,5 +1,4 @@
 use super::{members::Members, values::Values, *};
-use map_display_data::credit::{Credit, MemoryBudget};
 use replay_data::rows::{Recorded, RowCodec, TableSchema};
 use replay_frame::frame::ViewIdentity;
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,7 +41,6 @@ struct Work {
     order: Order,
     deps: BTreeSet<Dep>,
     ops: Vec<Operation>,
-    credits: Vec<Credit>,
     error: Option<&'static str>,
 }
 impl Work {
@@ -52,52 +50,13 @@ impl Work {
             order: Order(0, 0, 0, 0, [0; 4]),
             deps: BTreeSet::new(),
             ops: Vec::new(),
-            credits: Vec::new(),
             error: None,
         }
     }
-    fn credit(&mut self, budget: &MemoryBudget, bytes: usize) -> io::Result<()> {
-        let credit = budget
-            .admit(
-                bytes
-                    .checked_add(2 * size_of::<Credit>())
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-            )
-            .map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "fog vision scratch admission ({bytes} bytes; {} / {} resident): {error}",
-                        budget.used(),
-                        budget.limit()
-                    ),
-                )
-            })?;
-        self.credits
-            .try_reserve(1)
-            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        self.credits.push(credit);
-        Ok(())
+    fn dep(&mut self, dep: Dep) {
+        self.deps.insert(dep);
     }
-    fn dep(&mut self, dep: Dep, budget: &MemoryBudget) -> io::Result<()> {
-        if !self.deps.contains(&dep) {
-            self.credit(
-                budget,
-                tree_entry_bytes::<Dep, ()>()
-                    + tree_entry_bytes::<Dep, Members<Job>>()
-                    + member_entry_bytes::<Job>(),
-            )?;
-            self.deps.insert(dep);
-        }
-        Ok(())
-    }
-    fn op(&mut self, op: Operation, budget: &MemoryBudget) -> io::Result<()> {
-        self.credit(
-            budget,
-            2 * size_of::<Operation>()
-                + tree_entry_bytes::<u32, BTreeMap<(Order, Job, usize), Action>>()
-                + tree_node_bytes::<(Order, Job, usize), Action>(),
-        )?;
+    fn op(&mut self, op: Operation) -> io::Result<()> {
         self.ops
             .try_reserve(1)
             .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
@@ -110,17 +69,9 @@ struct RetainedWork {
     order: Order,
     deps: Vec<Dep>,
     ops: Vec<Operation>,
-    _credits: Vec<Credit>,
 }
 impl Work {
-    fn retain(mut self, budget: &MemoryBudget) -> io::Result<RetainedWork> {
-        self.credit(
-            budget,
-            self.deps
-                .len()
-                .checked_mul(size_of::<Dep>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
+    fn retain(self) -> io::Result<RetainedWork> {
         let mut deps = Vec::new();
         deps.try_reserve_exact(self.deps.len())
             .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
@@ -130,13 +81,11 @@ impl Work {
             order: self.order,
             deps,
             ops: self.ops,
-            _credits: self.credits,
         })
     }
 }
 struct Indexed {
     groups: Vec<Group>,
-    _credit: Credit,
 }
 struct Index {
     rows: BTreeMap<Input, Indexed>,
@@ -167,28 +116,8 @@ impl Index {
             }
         }
     }
-    fn install(
-        &mut self,
-        frame: &DecodedFrame,
-        input: Input,
-        budget: &MemoryBudget,
-    ) -> io::Result<()> {
+    fn install(&mut self, frame: &DecodedFrame, input: Input) -> io::Result<()> {
         self.remove(input);
-        let extra = if input.0 == TableId::Countries.index() {
-            row::<tables::Countries>(frame, input.1)?.map_or(0, |r| r.tag.len().saturating_mul(3))
-        } else {
-            0
-        };
-        let credit = budget.admit(
-            (tree_entry_bytes::<Input, Indexed>()
-                + 3 * (2 * size_of::<Group>()
-                    + tree_entry_bytes::<Group, Members<u128>>()
-                    + member_entry_bytes::<u128>())
-                + tree_entry_bytes::<u32, u32>()
-                + tree_entry_bytes::<u32, &'static str>())
-            .checked_add(extra)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
         if input.0 == TableId::FactionMembers.index() || input.0 == TableId::CountryLinks.index() {
             let raw = input.1 as u32;
             self.invalid_factions.remove(&raw);
@@ -216,13 +145,7 @@ impl Index {
             let r = row::<tables::CountryLinks>(frame, input.1)?.unwrap();
             self.links.insert(r.id, r.canonical_slot);
         }
-        self.rows.insert(
-            input,
-            Indexed {
-                groups,
-                _credit: credit,
-            },
-        );
+        self.rows.insert(input, Indexed { groups });
         Ok(())
     }
 }
@@ -253,25 +176,17 @@ struct Query<'a> {
     frame: &'a DecodedFrame,
     index: &'a Index,
     work: &'a mut Work,
-    budget: &'a MemoryBudget,
     content: &'a FogContent,
     ours: u32,
 }
 impl<'a> Query<'a> {
     fn row<T: TableSchema>(&mut self, key: u128) -> Result<Option<&'a T::Row>> {
-        self.work.dep(Dep::Row((T::ID.index(), key)), self.budget)?;
+        self.work.dep(Dep::Row((T::ID.index(), key)));
         Ok(row::<T>(self.frame, key)?)
     }
     fn group(&mut self, table: TableId, dim: u8, value: u128) -> Result<Vec<u128>> {
         let group = (table.index(), dim, value);
-        self.work.dep(Dep::Group(group), self.budget)?;
-        let count = self.index.groups.get(&group).map_or(0, Members::len);
-        self.work.credit(
-            self.budget,
-            count
-                .checked_mul(2 * size_of::<u128>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
+        self.work.dep(Dep::Group(group));
         Ok(self
             .index
             .groups
@@ -308,7 +223,6 @@ impl<'a> Query<'a> {
         let mut raws = self.raws(slot)?;
         raws.retain(|&raw| raw != 0);
         if slot == 0 {
-            self.work.credit(self.budget, 2 * size_of::<u128>())?;
             raws.insert(0, 0);
         }
         for raw in raws {
@@ -424,14 +338,11 @@ impl<'a> Query<'a> {
         if self.row::<tables::Provinces>(p as u128)?.is_none() {
             return Err("visibility revealed province".into());
         };
-        self.work.op(
-            Operation {
-                province: p,
-                order,
-                action,
-            },
-            self.budget,
-        )?;
+        self.work.op(Operation {
+            province: p,
+            order,
+            action,
+        })?;
         Ok(())
     }
     fn neighbors(
@@ -978,13 +889,6 @@ impl Query<'_> {
                         let mut provinces = Vec::new();
                         for raw in self.raws(host)?.into_iter().filter(|&raw| raw != 0) {
                             let group = self.group(TableId::Provinces, 1, raw)?;
-                            self.work.credit(
-                                self.budget,
-                                group
-                                    .len()
-                                    .checked_mul(2 * size_of::<u128>())
-                                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                            )?;
                             provinces.extend(group);
                         }
                         provinces.sort_unstable();
@@ -1157,9 +1061,9 @@ impl Query<'_> {
                 let exists = !self.countries(slot)?.is_empty();
                 let shared =
                     slot == self.ours || (exists && self.sharing(slot, self.ours, false)?);
-                set(&mut vision.shares, slot, shared.then_some(()), self.budget)?;
+                set(&mut vision.shares, slot, shared.then_some(()));
                 let war = slot != self.ours && self.pair(TableId::WarRelations, self.ours, slot)?;
-                set(&mut vision.wars, slot, war.then_some(()), self.budget)?;
+                set(&mut vision.wars, slot, war.then_some(()));
             }
             Job::Level(unit) => {
                 let mut level = None;
@@ -1170,7 +1074,7 @@ impl Query<'_> {
                         break;
                     }
                 }
-                set(&mut vision.levels, unit, level, self.budget)?;
+                set(&mut vision.levels, unit, level);
             }
             Job::Intel(target) => {
                 let mut lanes = None;
@@ -1183,10 +1087,10 @@ impl Query<'_> {
                     }
                 }
                 if let Some(air) = &mut vision.air_intel {
-                    set(air, target, lanes.map(|v| v.0), self.budget)?;
+                    set(air, target, lanes.map(|v| v.0));
                 }
                 if let Some(navy) = &mut vision.navy_intel {
-                    set(navy, target, lanes.map(|v| v.1), self.budget)?;
+                    set(navy, target, lanes.map(|v| v.1));
                 }
             }
             Job::Controller(province) => {
@@ -1204,12 +1108,7 @@ impl Query<'_> {
                             .map(|r| r.canonical_slot),
                         None => None,
                     };
-                set(
-                    &mut vision.province_controllers,
-                    province,
-                    controller,
-                    self.budget,
-                )?;
+                set(&mut vision.province_controllers, province, controller);
             }
             Job::Invasion(unit) => {
                 let mut target = None;
@@ -1240,7 +1139,7 @@ impl Query<'_> {
                         }
                     }
                 }
-                set(&mut vision.sight_provinces, unit, target, self.budget)?;
+                set(&mut vision.sight_provinces, unit, target);
             }
             Job::Access(target) => {
                 let mut yes = false;
@@ -1252,7 +1151,7 @@ impl Query<'_> {
                     }
                 }
                 if let Some(access) = &mut vision.air_access {
-                    set(access, target, yes.then_some(()), self.budget)?;
+                    set(access, target, yes.then_some(()));
                 }
             }
             Job::Source(_) => unreachable!(),
@@ -1260,16 +1159,11 @@ impl Query<'_> {
         Ok(())
     }
 }
-fn set<K: values::Key, V: Clone + Eq>(
-    map: &mut Values<K, V>,
-    key: K,
-    value: Option<V>,
-    budget: &MemoryBudget,
-) -> io::Result<()> {
+fn set<K: values::Key, V: Clone + Eq>(map: &mut Values<K, V>, key: K, value: Option<V>) {
     if let Some(value) = value {
-        map.insert(key, value, budget)
+        map.insert(key, value)
     } else {
-        map.remove(&key, budget)
+        map.remove(&key)
     }
 }
 
@@ -1282,7 +1176,7 @@ pub struct WorkStats {
 enum EmptyView {
     Complete(TableId),
     Truncated(TableId, u32),
-    Unavailable { reason: String, _credit: Credit },
+    Unavailable { reason: String },
     NotRecorded(CaptureMode),
 }
 struct InputView {
@@ -1291,23 +1185,19 @@ struct InputView {
     empty: Option<EmptyView>,
 }
 impl InputView {
-    fn new(view: &replay_frame::frame::SharedView, budget: &MemoryBudget) -> io::Result<Self> {
+    fn new(view: &replay_frame::frame::SharedView) -> io::Result<Self> {
         let empty = match &**view {
             TableView::Complete(rows) if rows.is_empty() => Some(EmptyView::Complete(rows.table())),
             TableView::Truncated { rows, missing } if rows.is_empty() => {
                 Some(EmptyView::Truncated(rows.table(), *missing))
             }
             TableView::Unavailable { reason } => {
-                let credit = budget.admit(reason.len())?;
                 let mut owned = String::new();
                 owned
                     .try_reserve_exact(reason.len())
                     .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
                 owned.push_str(reason);
-                Some(EmptyView::Unavailable {
-                    reason: owned,
-                    _credit: credit,
-                })
+                Some(EmptyView::Unavailable { reason: owned })
             }
             TableView::NotRecorded { mode } => Some(EmptyView::NotRecorded(*mode)),
             _ => None,
@@ -1338,13 +1228,9 @@ impl InputView {
             _ => false,
         }
     }
-    fn refresh(
-        &mut self,
-        view: &replay_frame::frame::SharedView,
-        budget: &MemoryBudget,
-    ) -> io::Result<()> {
+    fn refresh(&mut self, view: &replay_frame::frame::SharedView) -> io::Result<()> {
         if !self.empty_matches(view) {
-            self.empty = Self::new(view, budget)?.empty;
+            self.empty = Self::new(view)?.empty;
         }
         self.identity = view.identity();
         self.allocation = view.as_ptr() as usize;
@@ -1396,7 +1282,6 @@ fn source_job(table: TableId, fog: bool) -> bool {
 
 pub struct Fold {
     pub last: WorkStats,
-    _base_credit: Credit,
     branch: u64,
     choice: Choice,
     views: Vec<InputView>,
@@ -1417,7 +1302,6 @@ impl Fold {
         frame: &DecodedFrame,
         choice: &Choice,
         content: std::result::Result<&FogContent, &'static str>,
-        budget: &MemoryBudget,
     ) -> io::Result<Arc<Vision>> {
         let _ = core::<tables::CountryLinks>(frame)?;
         let _ = core::<tables::Countries>(frame)?;
@@ -1466,7 +1350,7 @@ impl Fold {
             let mut fold = if let Some(fold) = previous.take() {
                 fold
             } else {
-                Self::cold(frame, choice, fog, budget)?
+                Self::cold(frame, choice, fog)?
             };
             let placeholder = FogContent {
                 topology: visibility::Topology::default(),
@@ -1496,23 +1380,6 @@ impl Fold {
                 .get(&(TableId::CountryIntel.index(), 2, 0))
                 .and_then(Members::last)
                 .copied();
-            let mut dirty = Work::new();
-            dirty.credit(
-                budget,
-                tree_node_bytes::<Job, ()>() + tree_node_bytes::<u32, ()>(),
-            )?;
-            if cold {
-                dirty.credit(
-                    budget,
-                    fold.index
-                        .rows
-                        .len()
-                        .checked_mul(
-                            2 * tree_entry_bytes::<Job, ()>() + tree_entry_bytes::<u32, ()>(),
-                        )
-                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                )?;
-            }
             let mut queue = BTreeSet::new();
             for (&table, old) in VISION_TABLES.iter().zip(&fold.views) {
                 let view = &frame.tables[table.index()];
@@ -1533,26 +1400,20 @@ impl Fold {
                     .map(|change| change.key)
                     .chain(facts.deleted().iter().copied())
                 {
-                    dirty.credit(budget, 32768)?;
                     let input = (table.index(), key);
-                    fold.enqueue(Dep::Row(input), &mut queue, &mut dirty, budget)?;
+                    fold.enqueue(Dep::Row(input), &mut queue);
                     if let Some(indexed) = fold.index.rows.get(&input) {
                         for &group in &indexed.groups {
-                            fold.enqueue(Dep::Group(group), &mut queue, &mut dirty, budget)?;
+                            fold.enqueue(Dep::Group(group), &mut queue);
                         }
                     }
-                    fold.index.install(frame, input, budget)?;
+                    fold.index.install(frame, input)?;
                     if let Some(indexed) = fold.index.rows.get(&input) {
                         for &group in &indexed.groups {
-                            fold.enqueue(Dep::Group(group), &mut queue, &mut dirty, budget)?;
+                            fold.enqueue(Dep::Group(group), &mut queue);
                         }
                     }
-                    fold.enqueue(
-                        Dep::Group((table.index(), 0, 0)),
-                        &mut queue,
-                        &mut dirty,
-                        budget,
-                    )?;
+                    fold.enqueue(Dep::Group((table.index(), 0, 0)), &mut queue);
                     if source_job(table, fog) {
                         queue.insert(Job::Source(input));
                     }
@@ -1566,7 +1427,7 @@ impl Fold {
                     .first_key_value()
                     .map(|(&key, &reason)| (key, reason))
             {
-                fold.enqueue(Dep::FactionValidation, &mut queue, &mut dirty, budget)?;
+                fold.enqueue(Dep::FactionValidation, &mut queue);
             }
             if old_zero
                 != fold
@@ -1576,10 +1437,10 @@ impl Fold {
                     .and_then(Members::last)
                     .copied()
             {
-                fold.enqueue(Dep::ZeroBoundary, &mut queue, &mut dirty, budget)?;
+                fold.enqueue(Dep::ZeroBoundary, &mut queue);
             }
             if fold.clock != clock(frame) {
-                fold.enqueue(Dep::Clock, &mut queue, &mut dirty, budget)?;
+                fold.enqueue(Dep::Clock, &mut queue);
             }
             if fold.jobs.is_empty() {
                 for &input in fold.index.rows.keys() {
@@ -1598,7 +1459,6 @@ impl Fold {
                     frame,
                     choice,
                     content_gap.map_or(Ok(content), Err),
-                    budget,
                 )?;
                 *state = replacement;
                 return Ok(value);
@@ -1622,7 +1482,6 @@ impl Fold {
                 TableView::Complete(_)
             )
             .then(|| vision.air_access.take().unwrap_or_default());
-            dirty.credit(budget, tree_entry_bytes::<Job, ()>())?;
             queue.insert(Job::Share(ours));
             let mut dirty_provinces = BTreeSet::new();
             let mut executed = 0;
@@ -1634,18 +1493,11 @@ impl Fold {
                     }
                 }
                 let mut work = Work::new();
-                work.credit(
-                    budget,
-                    tree_entry_bytes::<Job, RetainedWork>()
-                        + tree_entry_bytes::<(u16, Order, Job), &'static str>()
-                        + tree_node_bytes::<Dep, ()>(),
-                )?;
                 {
                     let mut query = Query {
                         frame,
                         index: &fold.index,
                         work: &mut work,
-                        budget,
                         content,
                         ours,
                     };
@@ -1670,14 +1522,6 @@ impl Fold {
                         Err(Failure::Resource(error)) => return Err(error),
                     }
                 }
-                let dirty_count = fold
-                    .jobs
-                    .get(&job)
-                    .map_or(0, |work| work.ops.len())
-                    .checked_add(work.ops.len())
-                    .and_then(|n| n.checked_mul(512))
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                dirty.credit(budget, dirty_count)?;
                 if let Some(old) = fold.jobs.remove(&job) {
                     fold.errors.remove(&(old.stage, old.order, job));
                     for dep in old.deps {
@@ -1749,7 +1593,7 @@ impl Fold {
                     }
                 };
                 if retained {
-                    fold.jobs.insert(job, work.retain(budget)?);
+                    fold.jobs.insert(job, work.retain()?);
                 } else {
                     for dep in &work.deps {
                         if let Some(dependents) = fold.dependents.get_mut(dep) {
@@ -1786,7 +1630,6 @@ impl Fold {
                 frame,
                 index: &fold.index,
                 work: &mut scalar,
-                budget,
                 content,
                 ours,
             };
@@ -1819,15 +1662,6 @@ impl Fold {
                 .or_else(|| visibility_gap(frame, &fold.index, &fold.errors, ours));
             {
                 if cold && fog {
-                    dirty.credit(
-                        budget,
-                        fold.index
-                            .groups
-                            .get(&(TableId::Provinces.index(), 0, 0))
-                            .map_or(0, Members::len)
-                            .checked_mul(512)
-                            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                    )?;
                     dirty_provinces.extend(
                         fold.index
                             .groups
@@ -1850,7 +1684,7 @@ impl Fold {
                         .rows
                         .contains_key(&(TableId::Provinces.index(), province as u128))
                     {
-                        values.remove(&province, budget)?;
+                        values.remove(&province);
                         continue;
                     }
                     let mut byte = 0u8;
@@ -1872,7 +1706,7 @@ impl Fold {
                             }
                         };
                     }
-                    values.insert(province, byte, budget)?;
+                    values.insert(province, byte);
                 }
                 if !values.same_root(&vision.visibility) {
                     vision.visibility = Arc::new(values);
@@ -1888,12 +1722,12 @@ impl Fold {
                 vision.visibility_gap = None;
             }
             if vision.relations_gap.is_some() {
-                vision.shares = Values::from_iter([(ours, ())], budget)?;
+                vision.shares = Values::from_iter([(ours, ())]);
                 vision.wars = Values::default();
             }
             fold.clock = clock(frame);
             for (identity, &table) in fold.views.iter_mut().zip(VISION_TABLES) {
-                identity.refresh(&frame.tables[table.index()], budget)?;
+                identity.refresh(&frame.tables[table.index()])?;
             }
             let value = Arc::new(vision);
             fold.value = Arc::clone(&value);
@@ -1902,37 +1736,11 @@ impl Fold {
         })();
         result
     }
-    fn cold(
-        frame: &DecodedFrame,
-        choice: &Choice,
-        fog: bool,
-        budget: &MemoryBudget,
-    ) -> io::Result<Self> {
-        let tag_bytes = match &choice.country {
-            Country::Recorded => 0,
-            Country::Tag(tag) => tag
-                .len()
-                .checked_mul(2)
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        };
-        let base_credit = budget.admit(
-            size_of::<Self>()
-                + 4 * size_of::<Vision>()
-                + VISION_TABLES.len() * size_of::<InputView>()
-                + tag_bytes
-                + tree_node_bytes::<Input, Indexed>()
-                + tree_node_bytes::<Group, Members<u128>>()
-                + tree_node_bytes::<u32, u32>()
-                + tree_node_bytes::<u32, &'static str>()
-                + tree_node_bytes::<Job, RetainedWork>()
-                + tree_node_bytes::<Dep, Members<Job>>()
-                + tree_node_bytes::<u32, BTreeMap<(Order, Job, usize), Action>>()
-                + tree_node_bytes::<(u16, Order, Job), &'static str>(),
-        )?;
+    fn cold(frame: &DecodedFrame, choice: &Choice, fog: bool) -> io::Result<Self> {
         let mut index = Index::new();
         for &table in VISION_TABLES.iter().filter(|&&table| active(table, fog)) {
             all_keys(frame, table, |key| {
-                index.install(frame, (table.index(), key), budget)
+                index.install(frame, (table.index(), key))
             })?;
         }
         let mut views = Vec::new();
@@ -1940,11 +1748,10 @@ impl Fold {
             .try_reserve_exact(VISION_TABLES.len())
             .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
         for &table in VISION_TABLES {
-            views.push(InputView::new(&frame.tables[table.index()], budget)?);
+            views.push(InputView::new(&frame.tables[table.index()])?);
         }
         Ok(Self {
             last: WorkStats::default(),
-            _base_credit: base_credit,
             branch: frame.branch,
             choice: choice.clone(),
             views,
@@ -1959,23 +1766,8 @@ impl Fold {
             computed: Arc::new(Vision::default()),
         })
     }
-    fn enqueue(
-        &self,
-        dep: Dep,
-        jobs: &mut BTreeSet<Job>,
-        work: &mut Work,
-        budget: &MemoryBudget,
-    ) -> io::Result<()> {
-        let dependents = self.dependents.get(&dep);
-        work.credit(
-            budget,
-            dependents
-                .map_or(0, Members::len)
-                .checked_mul(tree_entry_bytes::<Job, ()>())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-        )?;
-        jobs.extend(dependents.into_iter().flatten().copied());
-        Ok(())
+    fn enqueue(&self, dep: Dep, jobs: &mut BTreeSet<Job>) {
+        jobs.extend(self.dependents.get(&dep).into_iter().flatten().copied());
     }
 }
 
@@ -2203,28 +1995,10 @@ fn visibility_gap(
     None
 }
 
-#[derive(Clone)]
-pub struct Memory(MemoryBudget);
-impl Default for Memory {
-    fn default() -> Self {
-        Self(map_display_data::credit::display_products().clone())
-    }
-}
-impl Memory {
-    pub fn new(budget: MemoryBudget) -> Self {
-        Self(budget)
-    }
-    pub fn budget(&self) -> &MemoryBudget {
-        &self.0
-    }
-}
-
 impl<'a> Query<'a> {
     fn reserved(&mut self) -> Result<&'a replay_data::rows::ReservedCountryNamingRow> {
-        self.work.dep(
-            Dep::Row((TableId::ReservedCountryNaming.index(), 0)),
-            self.budget,
-        )?;
+        self.work
+            .dep(Dep::Row((TableId::ReservedCountryNaming.index(), 0)));
         let [row] = self
             .frame
             .complete::<tables::ReservedCountryNaming>()
@@ -2235,7 +2009,7 @@ impl<'a> Query<'a> {
         Ok(row)
     }
     fn zero_faction(&mut self, target: u32) -> Result<Option<u64>> {
-        self.work.dep(Dep::FactionValidation, self.budget)?;
+        self.work.dep(Dep::FactionValidation);
         if !matches!(
             *self.frame.tables[TableId::FactionMembers.index()],
             TableView::Complete(_)
@@ -2250,7 +2024,6 @@ impl<'a> Query<'a> {
         let mut raws = self.raws(target)?;
         raws.retain(|&raw| raw != 0);
         if target == 0 {
-            self.work.credit(self.budget, 2 * size_of::<u128>())?;
             raws.insert(0, 0);
         }
         let mut faction = None;
@@ -2279,17 +2052,13 @@ impl<'a> Query<'a> {
     ) -> Result<bool> {
         if let Some(parties) = subject.parties {
             for raw in parties.into_iter().flatten() {
-                self.work.dep(
-                    Dep::Row((TableId::CountryLinks.index(), raw as u128)),
-                    self.budget,
-                )?;
+                self.work
+                    .dep(Dep::Row((TableId::CountryLinks.index(), raw as u128)));
             }
         }
         if let Ok(raw) = target {
-            self.work.dep(
-                Dep::Row((TableId::CountryLinks.index(), raw as u128)),
-                self.budget,
-            )?;
+            self.work
+                .dep(Dep::Row((TableId::CountryLinks.index(), raw as u128)));
         }
         Ok(replay_derive::visibility::map_intel_subject(
             subject,
@@ -2299,7 +2068,7 @@ impl<'a> Query<'a> {
     }
     fn reverse_zero(&mut self, target: u32) -> Result<bool> {
         let reserved = self.reserved()?;
-        self.work.dep(Dep::Clock, self.budget)?;
+        self.work.dep(Dep::Clock);
         let packet = match &reserved.reverse_visibility {
             Recorded::NotRecorded => {
                 return Err("ReservedCountryNaming.reverse_visibility not recorded".into());
@@ -2438,7 +2207,7 @@ impl<'a> Query<'a> {
             return Err("CountryIntel owner0 target outside native index range".into());
         }
         let reserved = self.reserved()?;
-        self.work.dep(Dep::Clock, self.budget)?;
+        self.work.dep(Dep::Clock);
         let sample = match &reserved.country_intel_sample {
             Recorded::NotRecorded => {
                 return Err("ReservedCountryNaming.country_intel_sample not recorded".into());
@@ -2462,7 +2231,7 @@ impl<'a> Query<'a> {
         ) {
             return Err("CountryIntel".into());
         }
-        self.work.dep(Dep::ZeroBoundary, self.budget)?;
+        self.work.dep(Dep::ZeroBoundary);
         let last = self
             .index
             .groups
@@ -2523,19 +2292,4 @@ fn field_mask(table: TableId) -> u64 {
                 .is_some_and(|name| names.contains(&name))
         })
         .fold(0, |mask, field| mask | (1u64 << field))
-}
-
-// Non-root B-tree nodes hold at least five keys; each tree separately admits its root.
-fn tree_entry_bytes<K, V>() -> usize {
-    tree_node_bytes::<K, V>().div_ceil(5)
-}
-// A Members tree exists only above its allocation-free singleton representation.
-fn member_entry_bytes<K>() -> usize {
-    tree_node_bytes::<K, ()>().div_ceil(2)
-}
-fn tree_node_bytes<K, V>() -> usize {
-    11 * (size_of::<K>() + size_of::<V>())
-        + 16 * size_of::<usize>()
-        + align_of::<K>()
-        + align_of::<V>()
 }

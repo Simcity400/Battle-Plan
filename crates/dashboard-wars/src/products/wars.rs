@@ -201,6 +201,25 @@ pub struct WarsAtHour {
     pub wars: Vec<WarTimeline>,
     pub warnings: Vec<String>,
 }
+/// One war's casualty runs at the hours a read at hours asks.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WarCasualties {
+    /// The war's id in the reply without hours of the same publication.
+    pub id: String,
+    pub runs: Vec<WarCasualtyRun>,
+}
+/// A read at hours: what depends on them alone. The wars themselves are the reply without
+/// hours ([`WarsReply`]).
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WarsHourly {
+    pub branch_id: String,
+    /// Each war observed at a `reads` hour, in the order of the wars, with its runs there.
+    pub casualties: Vec<WarCasualties>,
+    /// The groups and contributions at each `current` hour the publication accepted.
+    pub current: Vec<WarsAtHour>,
+}
 /// A walk's only warning that is not an hour it refused.
 const CAPITULATIONS_UNOBSERVED: &str =
     "Capitulations whose country identity at the event hour is unobserved are omitted.";
@@ -232,6 +251,8 @@ impl Product for Wars {
             WarTimeline::decl(),
             WarsReply::decl(),
             WarsAtHour::decl(),
+            WarCasualties::decl(),
+            WarsHourly::decl(),
             WarContributionGroup::decl(),
             WarContributionCountry::decl(),
         ]

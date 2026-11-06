@@ -43,7 +43,7 @@ pub use self::decoder::{
 #[doc(hidden)]
 pub use self::wire::{decode_recorded_update, decode_update};
 pub use self::{
-    decoder::{FrameAdvance, FrameDecoder, Spare, Spares, change_credit},
+    decoder::{FrameAdvance, FrameDecoder, Spare, Spares},
     encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment},
 };
 use engine_allocation as allocation;
@@ -207,27 +207,15 @@ impl SharedView {
 }
 
 /// The change facts and field stamp of a complete view built outside a decoder (a columnar
-/// walk's), made before the view is, as a decoder makes them, and charged and refused as a
-/// decoder's are ([`change_credit`]).
+/// walk's), made before the view is, as a decoder makes them.
 #[derive(Debug)]
 pub struct Stamp(Option<Arc<ChangeFacts>>, Arc<FieldStamp>);
 
 impl Stamp {
-    /// The credit [`Self::new`] takes.
-    pub const BYTES: usize = decoder::stamp_bytes();
-
     /// A field stamp of its own and no change facts, as a decoder's snapshot makes them: no
     /// earlier view is known to share the view's fields.
-    pub fn new(hour: Hour, credit: allocation::credit::Credit) -> io::Result<Self> {
-        Ok(Self(None, decoder::field_stamp(None, None, hour, credit)?))
-    }
-
-    /// The credit [`SharedView::edited`] takes for `changed` rows and `deleted` keys.
-    pub fn edit_bytes(changed: usize, deleted: usize) -> io::Result<usize> {
-        allocation::add(
-            decoder::stamp_bytes(),
-            decoder::change_bytes(changed, deleted)?,
-        )
+    pub fn new(hour: Hour) -> Self {
+        Self(None, decoder::field_stamp(None, None, hour))
     }
 }
 
@@ -235,23 +223,16 @@ impl SharedView {
     /// The stamp of the complete view this complete view becomes at `hour` by `changed` rows,
     /// ascending by key, and `deleted` keys: those are its change facts, and its field stamp
     /// follows this view's, as a decoder's delta makes them.
-    pub fn edited(
-        &self,
-        changed: Vec<RowChange>,
-        deleted: Vec<u128>,
-        hour: Hour,
-        mut credit: allocation::credit::Credit,
-    ) -> io::Result<Stamp> {
+    pub fn edited(&self, changed: Vec<RowChange>, deleted: Vec<u128>, hour: Hour) -> Stamp {
         let facts = ChangeFacts {
             previous: self.identity(),
             fields: changed.iter().fold(0, |fields, row| fields | row.fields),
             membership: !deleted.is_empty() || changed.iter().any(|row| row.inserted),
-            _credit: credit.split_off(decoder::change_bytes(changed.len(), deleted.len())?),
             changed,
             deleted,
         };
-        let stamp = decoder::field_stamp(self.3.as_deref(), Some(&facts), hour, credit)?;
-        Ok(Stamp(Some(Arc::new(facts)), stamp))
+        let stamp = decoder::field_stamp(self.3.as_deref(), Some(&facts), hour);
+        Stamp(Some(Arc::new(facts)), stamp)
     }
 
     /// This view with `stamp`'s change facts and field stamp.
@@ -261,7 +242,7 @@ impl SharedView {
         self
     }
 
-    /// Drops its change facts when no other view holds them, giving their credit back.
+    /// Drops its change facts when no other view holds them.
     pub fn reclaim_changes(&mut self) {
         if self
             .2
@@ -296,7 +277,6 @@ pub struct ChangeFacts {
     deleted: Vec<u128>,
     fields: u64,
     membership: bool,
-    _credit: allocation::credit::Credit,
 }
 impl ChangeFacts {
     pub fn changed(&self) -> &[RowChange] {
@@ -328,7 +308,6 @@ struct FieldStamp {
     epoch: Arc<()>,
     fields: [i64; 64],
     membership: i64,
-    _credit: allocation::credit::Credit,
 }
 
 impl ViewIdentity {

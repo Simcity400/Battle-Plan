@@ -64,7 +64,7 @@ impl Ord for Canonical {
 pub struct Recorder {
     roster: Arc<[Layer]>,
     sources: Arc<[(LayerSource, Layer)]>,
-    entries: Arc<Mutex<BTreeMap<Canonical, Option<CachedRecord>>>>,
+    entries: Arc<Mutex<BTreeMap<Canonical, Option<Weak<EncodedRecord>>>>>,
     shards: Arc<Mutex<std::collections::BTreeMap<Vec<String>, Witness>>>,
 }
 impl Recorder {
@@ -249,35 +249,9 @@ impl Recorder {
     }
 }
 
-fn witness_credit(
-    count: usize,
-    purposes: &[&str],
-) -> io::Result<engine_allocation::credit::Credit> {
-    use engine_allocation::{add, mul};
-    let bytes = add(256, mul(count, size_of::<Arc<EncodedRecord>>())?)?;
-    let bytes = if purposes.is_empty() {
-        bytes
-    } else {
-        add(
-            bytes,
-            12 * (size_of::<Vec<String>>() + size_of::<Witness>() + size_of::<usize>()) + 128,
-        )?
-    };
-    let bytes = purposes
-        .iter()
-        .try_fold(bytes, |bytes, purpose| add(bytes, add(64, purpose.len())?))?;
-    engine_allocation::credit::display_products().admit(bytes)
-}
-
 #[derive(Debug)]
 struct EncodedRecord {
     bytes: Vec<u8>,
-    _credit: engine_allocation::credit::Credit,
-    _allocation: Arc<engine_allocation::credit::Credit>,
-}
-struct CachedRecord {
-    weak: Weak<EncodedRecord>,
-    _allocation: Arc<engine_allocation::credit::Credit>,
 }
 impl PartialEq for EncodedRecord {
     fn eq(&self, other: &Self) -> bool {
@@ -286,40 +260,20 @@ impl PartialEq for EncodedRecord {
 }
 impl Eq for EncodedRecord {}
 impl EncodedRecord {
-    fn get(entry: &Entry, cached: &mut Option<CachedRecord>) -> io::Result<Arc<Self>> {
-        if let Some(record) = cached.as_ref().and_then(|cached| cached.weak.upgrade()) {
+    fn get(entry: &Entry, cached: &mut Option<Weak<Self>>) -> io::Result<Arc<Self>> {
+        if let Some(record) = cached.as_ref().and_then(Weak::upgrade) {
             return Ok(record);
         }
-        cached.take();
-        use engine_allocation::add;
-        let length = entry_bytes(entry)?;
-        let owner = engine_allocation::credit::display_products();
-        let allocation = Arc::new(owner.admit(
-            size_of::<Self>()
-                + size_of::<CachedRecord>()
-                + 4 * size_of::<usize>()
-                + align_of::<Self>()
-                + size_of::<engine_allocation::credit::Credit>()
-                + align_of::<engine_allocation::credit::Credit>(),
-        )?);
-        let credit = owner.admit(add(length, size_of::<Vec<u8>>())?)?;
-        let mut bytes = engine_allocation::vec(length)?;
+        let mut bytes = engine_allocation::vec(entry_bytes(entry)?)?;
         entry.encode(&mut bytes)?;
-        let record = Arc::new(Self {
-            bytes,
-            _credit: credit,
-            _allocation: Arc::clone(&allocation),
-        });
-        *cached = Some(CachedRecord {
-            weak: Arc::downgrade(&record),
-            _allocation: allocation,
-        });
+        let record = Arc::new(Self { bytes });
+        *cached = Some(Arc::downgrade(&record));
         Ok(record)
     }
 }
 
 fn build_witness(
-    entries: &mut BTreeMap<Canonical, Option<CachedRecord>>,
+    entries: &mut BTreeMap<Canonical, Option<Weak<EncodedRecord>>>,
     purposes: &[&str],
     all: bool,
 ) -> io::Result<Witness> {
@@ -327,11 +281,6 @@ fn build_witness(
         all || matches!(entry, Entry::Roster { .. }) || purposes.contains(&entry.location().1)
     };
     let count = entries.keys().filter(|entry| selected(&entry.0)).count();
-    let credit = witness_credit(count, purposes)?;
-    let scratch = engine_allocation::credit::display_products().admit(engine_allocation::mul(
-        count,
-        size_of::<Arc<EncodedRecord>>(),
-    )?)?;
     let mut records = engine_allocation::vec(count)?;
     let mut hash = witness_hash();
     for (entry, cached) in entries.iter_mut().filter(|(entry, _)| selected(&entry.0)) {
@@ -340,12 +289,10 @@ fn build_witness(
         records.push(record);
     }
     let records = records.into();
-    drop(scratch);
     Ok(Witness {
         digest: hash.finalize().into(),
         entries: u64::try_from(count).map_err(|_| invalid("content witness count overflows"))?,
         records,
-        _credit: Some(Arc::new(credit)),
     })
 }
 fn layer_bytes(layer: &Layer) -> io::Result<usize> {
@@ -411,7 +358,6 @@ pub struct Witness {
     pub digest: [u8; 32],
     pub entries: u64,
     records: Arc<[Arc<EncodedRecord>]>,
-    _credit: Option<Arc<engine_allocation::credit::Credit>>,
 }
 impl PartialEq for Witness {
     fn eq(&self, other: &Self) -> bool {
@@ -427,7 +373,6 @@ impl Default for Witness {
             digest: witness_hash().finalize().into(),
             entries: 0,
             records: Arc::from([]),
-            _credit: None,
         }
     }
 }

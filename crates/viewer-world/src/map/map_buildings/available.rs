@@ -164,39 +164,34 @@ fn referenced_names(
         }
     }
     let count = dirty.len();
-    let owner = map_display_data::credit::display_products();
-    let edits_credit = owner.admit_item(
-        count.checked_mul(size_of::<u128>())
-            .and_then(|n| n.checked_add(Retained::<Vec<u128>>::overhead()))
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-    )?;
-    let _patch_credit = owner.admit_item(
-        count.checked_mul(size_of::<(u128, Option<Name>)>())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-    )?;
     let mut patches = Vec::with_capacity(count);
     let mut edits = Vec::with_capacity(count);
     let mut values = previous.map_or_else(ValueIndex::default, |old| old.values.clone());
     for &token in dirty.keys() {
-        let referenced = by_token_row.iter_from(&(token, false, 0))
-            .next().is_some_and(|(key, _)| key.0 == token);
-        let row = referenced.then(|| rows.binary_search_by_key(&token, |row| row.token).ok())
-            .flatten().map(|at| &rows[at]);
-        let next = row.map(|row| {
-            let names = TokenNames::from_rows(std::slice::from_ref(row), complete);
-            let result = names.name(token);
-            let bytes = row.literal.len().checked_add(160)
-                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            Ok::<_, io::Error>(Name {
-                invalid: result.is_err(),
-                reason: Retained::build(bytes, || match result {
-                    Ok(spelling) => format!(
-                        "token {} ({spelling}) names no authored building type", token
-                    ),
-                    Err(error) => error.to_string(),
-                })?,
+        let referenced = by_token_row
+            .iter_from(&(token, false, 0))
+            .next()
+            .is_some_and(|(key, _)| key.0 == token);
+        let row = referenced
+            .then(|| rows.binary_search_by_key(&token, |row| row.token).ok())
+            .flatten()
+            .map(|at| &rows[at]);
+        let next = row
+            .map(|row| {
+                let names = TokenNames::from_rows(std::slice::from_ref(row), complete);
+                let result = names.name(token);
+                Ok::<_, io::Error>(Name {
+                    invalid: result.is_err(),
+                    reason: Retained::new(match result {
+                        Ok(spelling) => format!(
+                            "token {} ({spelling}) names no authored building type",
+                            token
+                        ),
+                        Err(error) => error.to_string(),
+                    }),
+                })
             })
-        }).transpose()?;
+            .transpose()?;
         let key = u128::from(token);
         if values.get(&key) != next.as_ref() {
             edits.push(key);
@@ -207,12 +202,11 @@ fn referenced_names(
     Ok(RowFold {
         identity: input.frame().tables[table.index()].identity(),
         values,
-        edits: Retained::with_credit(edits_credit, || edits),
+        edits: Retained::new(edits),
     })
 }
 
 pub(super) struct AvailableRows {
-    _credit: map_display_data::credit::Credit,
     branch: u64,
     campaign: ViewIdentity,
     rows: [RowFold<BuildingInput>; 2],
@@ -270,8 +264,6 @@ impl AvailableRows {
         summary: &mut MapBuildingSummary,
     ) -> io::Result<Self> {
         let frame = input.frame();
-        let credit = map_display_data::credit::display_products()
-            .admit_item(size_of::<Self>() + 2 * size_of::<usize>() + align_of::<Self>())?;
         let old = old.filter(|old| {
             old.branch == frame.branch && old.campaign.is(&frame.tables[TableId::Campaign.index()])
         });
@@ -417,18 +409,16 @@ impl AvailableRows {
             let invalid = name.is_none_or(|name| name.invalid);
             let reason = match name {
                 Some(name) => name.reason.clone(),
-                None => Retained::build(128, || {
-                    if row.building_type == 0 {
-                        "token 0 stands for every key the lexer rejects".to_owned()
-                    } else if lexical_complete {
-                        format!("token {} is not in LexicalTokens", row.building_type)
-                    } else {
-                        format!(
-                            "token {} is among LexicalTokens' missing rows",
-                            row.building_type
-                        )
-                    }
-                })?,
+                None => Retained::new(if row.building_type == 0 {
+                    "token 0 stands for every key the lexer rejects".to_owned()
+                } else if lexical_complete {
+                    format!("token {} is not in LexicalTokens", row.building_type)
+                } else {
+                    format!(
+                        "token {} is among LexicalTokens' missing rows",
+                        row.building_type
+                    )
+                }),
             };
             if invalid {
                 invalid_names = invalid_names.inserted((provincial, key), reason.clone())?;
@@ -444,8 +434,6 @@ impl AvailableRows {
                     let building = &assets.facts.ordered[index];
                     if slots_for_level(building, row.level, assets.defines.max_levels) != 0 {
                         count.built = true;
-                        let _scratch = map_display_data::credit::display_products()
-                            .admit_item(building.slot_name().len())?;
                         count.missing = !assets
                             .slots
                             .contains_key(&(row.location, building.slot_name().to_owned()));
@@ -458,7 +446,7 @@ impl AvailableRows {
                     }
                 }
                 Some(Err(why)) => {
-                    count.refused = Some(Retained::build(why.len(), || why.clone())?);
+                    count.refused = Some(Retained::new(why.clone()));
                 }
                 None => {
                     count.refused = Some(reason);
@@ -507,48 +495,45 @@ impl AvailableRows {
         census.apply(assets, summary);
         let selected = match old {
             Some(old) => old.selected.clone(),
-            None => Retained::build(
-                assets.facts.ordered.len() * size_of::<usize>() + 256,
-                || {
-                    let types = &assets.facts.ordered;
-                    let infrastructure = types
+            None => Retained::new((|| {
+                let types = &assets.facts.ordered;
+                let infrastructure = types
+                    .iter()
+                    .filter(|kind| kind.name.eq_ignore_ascii_case("infrastructure"))
+                    .count();
+                if infrastructure > 1 {
+                    return Err(format!(
+                        "infrastructure: {infrastructure} ambiguous city-damage templates"
+                    ));
+                }
+                if types.iter().any(|kind| kind.name == "industrial_complex") {
+                    let count = types
                         .iter()
-                        .filter(|kind| kind.name.eq_ignore_ascii_case("infrastructure"))
+                        .filter(|kind| kind.name.eq_ignore_ascii_case("industrial_complex"))
                         .count();
-                    if infrastructure > 1 {
+                    if count > 1 {
                         return Err(format!(
-                            "infrastructure: {infrastructure} ambiguous city-damage templates"
+                            "industrial_complex: {count} ambiguous city-damage templates"
                         ));
                     }
-                    if types.iter().any(|kind| kind.name == "industrial_complex") {
-                        let count = types
-                            .iter()
-                            .filter(|kind| kind.name.eq_ignore_ascii_case("industrial_complex"))
-                            .count();
-                        if count > 1 {
-                            return Err(format!(
-                                "industrial_complex: {count} ambiguous city-damage templates"
-                            ));
-                        }
-                    }
-                    let mut selected = Vec::with_capacity(types.len());
-                    selected.extend(
-                        types
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, kind)| kind.name.eq_ignore_ascii_case("infrastructure"))
-                            .map(|(index, _)| index),
-                    );
-                    selected.extend(
-                        types
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, kind)| kind.name == "industrial_complex")
-                            .map(|(index, _)| index),
-                    );
-                    Ok(selected)
-                },
-            )?,
+                }
+                let mut selected = Vec::with_capacity(types.len());
+                selected.extend(
+                    types
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, kind)| kind.name.eq_ignore_ascii_case("infrastructure"))
+                        .map(|(index, _)| index),
+                );
+                selected.extend(
+                    types
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, kind)| kind.name == "industrial_complex")
+                        .map(|(index, _)| index),
+                );
+                Ok(selected)
+            })()),
         };
         let city = old.and_then(|old| old.city.as_ref()).map(|old| City {
             provinces: old.provinces.clone(),
@@ -557,7 +542,6 @@ impl AvailableRows {
             health: old.health.clone(),
         });
         Ok(Self {
-            _credit: credit,
             branch: frame.branch,
             campaign: frame.tables[TableId::Campaign.index()].identity(),
             rows: current,
@@ -742,8 +726,7 @@ mod tests {
             token, literal: format!("unused_{token}").into_bytes(),
         }).collect();
         let mut encoder = FrameEncoder::new();
-        let mut decoder = FrameDecoder::for_tables(&[TableId::LexicalTokens])
-            .with_change_facts(map_display_data::credit::display_products().clone());
+        let mut decoder = FrameDecoder::for_tables(&[TableId::LexicalTokens]).with_change_facts();
         let mut references = ValueIndex::default().inserted((700, false, 1), ()).unwrap();
         let mut previous = None;
         for step in 0..8 {

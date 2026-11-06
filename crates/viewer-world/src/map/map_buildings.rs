@@ -263,8 +263,8 @@ struct PreparedEntity {
 }
 
 impl PreparedEntity {
-    fn retain(self) -> io::Result<map_display_data::retained::Retained<Self>> {
-        map_display_data::retained::Retained::build(0, || self)
+    fn retain(self) -> map_display_data::retained::Retained<Self> {
+        map_display_data::retained::Retained::new(self)
     }
 }
 
@@ -278,7 +278,7 @@ impl PreparedSlot {
     fn entity_mut(&mut self) -> &mut PreparedEntity {
         let entity = self.entity.as_mut().unwrap();
         if entity.get_mut().is_none() {
-            *entity = (**entity).clone().retain().unwrap();
+            *entity = (**entity).clone().retain();
         }
         entity.get_mut().unwrap()
     }
@@ -802,7 +802,6 @@ pub struct MapBuildingAssets {
     damaged_entities: BTreeMap<(usize, usize), usize>,
     /// Which [`BuildingFacts::ordered`](viewer_foundation::map::building_facts::BuildingFacts::ordered) type each `LexicalTokens` token names, kept
     /// while the hours share the token table.
-    token_key_bytes: Option<usize>,
     tokens: std::sync::Mutex<
         Option<(
             replay_frame::frame::ViewIdentity,
@@ -1202,11 +1201,6 @@ impl MapBuildingAssets {
                 }
             }
         }
-        let token_key_bytes = index.keys().try_fold(0usize, |n, key| {
-            key.len()
-                .checked_add(2)
-                .and_then(|length| n.checked_add(length))
-        });
         Self {
             library,
             defines,
@@ -1221,7 +1215,6 @@ impl MapBuildingAssets {
                 keys,
                 index,
             }),
-            token_key_bytes,
             tokens: Default::default(),
             floating: Vec::new(),
             floating_mesh: None,
@@ -1439,7 +1432,7 @@ impl MapBuildingAssets {
         };
         let city_bits = match shared_city {
             Some(bits) => bits.clone(),
-            None => self.city_bits(city)?,
+            None => self.city_bits(city),
         };
         let plan = match base {
             Err(reason) => Err(reason),
@@ -1464,14 +1457,13 @@ impl MapBuildingAssets {
         let ordinary = match plan {
             Ok((base, affected)) => spans.measure("buildings.patch.slots", |_| {
                 let _cost = replay_frame::cpu::scope("buildings.patch.slots", Some("buildings"));
-                let (slots, tallies, totals, credit) =
+                let (slots, tallies, totals) =
                     incremental::patch(base, &affected, &self.facts.ordered, |id| {
                         let (key, ordinal, position, province) = self.site(id);
                         let candidates = self.bucket_candidates(&key.1);
                         self.slot(id, ordinal, position, province, candidates, &context)
                     })?;
                 Ok::<_, io::Error>(incremental::Ordinary::Patched {
-                    _credit: credit,
                     base,
                     slots,
                     tallies,
@@ -1480,8 +1472,8 @@ impl MapBuildingAssets {
             }),
             Err(reason) => spans.measure("buildings.slots", |_| {
                 let _cost = replay_frame::cpu::scope("buildings.slots", Some("buildings"));
-                let mut slots = incremental::ChunkBuilder::new()?;
-                let mut tallies = incremental::ChunkBuilder::new()?;
+                let mut slots = incremental::ChunkBuilder::new();
+                let mut tallies = incremental::ChunkBuilder::new();
                 let mut totals = incremental::SlotSummary::default();
                 for ((_, bucket), positions) in &self.slots {
                     let candidates = self.bucket_candidates(bucket);
@@ -1607,8 +1599,7 @@ impl MapBuildingAssets {
             };
             prepared.entity = self
                 .entity(index, row, position, province, &mut tally, gates)
-                .map(PreparedEntity::retain)
-                .transpose()?;
+                .map(PreparedEntity::retain);
         }
         Ok((prepared, tally))
     }
@@ -1964,13 +1955,9 @@ fn named_types(
     keys: &TokenKeys,
     index: &BTreeMap<String, usize>,
 ) -> io::Result<TokenTypes> {
-    let keys_bytes = index
-        .keys()
-        .try_fold(0usize, |n, key| n.checked_add(key.len() + 2))
-        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
     let mut types = TokenTypes::default();
     for (token, spelling) in names.iter() {
-        if let Some(value) = named_type(spelling, keys, index, keys_bytes)? {
+        if let Some(value) = named_type(spelling, keys, index)? {
             types.0 = types.0.inserted(token, value)?;
         }
     }
@@ -1980,16 +1967,8 @@ fn named_type(
     spelling: &str,
     keys: &TokenKeys,
     index: &BTreeMap<String, usize>,
-    keys_bytes: usize,
 ) -> io::Result<Option<map_display_data::retained::Retained<Result<usize, String>>>> {
-    use map_display_data::{credit::display_products, retained::Retained};
-    let bytes = spelling
-        .len()
-        .checked_add(keys_bytes)
-        .and_then(|n| n.checked_mul(2))
-        .and_then(|n| n.checked_add(128 + Retained::<Result<usize, String>>::overhead()))
-        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-    let credit = display_products().admit(bytes)?;
+    use map_display_data::retained::Retained;
     let named = match keys.resolve(spelling) {
         Ok(Some(key)) => match index.get(key) {
             Some(index) => Ok(*index),
@@ -1998,7 +1977,7 @@ fn named_type(
         Ok(None) => return Ok(None),
         Err(reason) => Err(reason),
     };
-    Ok(Some(Retained::with_credit(credit, || named)))
+    Ok(Some(Retained::new(named)))
 }
 
 #[cfg(test)]

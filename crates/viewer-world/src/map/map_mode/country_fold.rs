@@ -553,15 +553,7 @@ impl CountryLayers {
                     old.map(|old| &old.parties),
                     parties,
                     fields(TableId::PoliticalParties, &["token"]),
-                    |row| {
-                        Ok((
-                            row.country,
-                            (
-                                row.id,
-                                Retained::build(row.token.len(), || row.token.clone())?,
-                            ),
-                        ))
-                    },
+                    |row| Ok((row.country, (row.id, Retained::new(row.token.clone())))),
                     |_| true,
                 )?;
                 let mut by_slot_party_row =
@@ -626,12 +618,6 @@ impl CountryLayers {
                                 .map(|(_, token)| token)
                         })
                     {
-                        let _scratch = map_display_data::credit::display_products().admit_item(
-                            token
-                                .len()
-                                .checked_mul(3)
-                                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                        )?;
                         let text = String::from_utf8_lossy(token);
                         let group = match inputs.content.ideologies.get(&text) {
                             Ok(Some(group)) => Ok(Some(group)),
@@ -645,7 +631,7 @@ impl CountryLayers {
                             _ => None,
                         };
                         if color.is_none() {
-                            let token = Retained::build(text.len(), || text.into_owned())?;
+                            let token = Retained::new(text.into_owned());
                             let count = unknown.get(&token).copied().unwrap_or(0);
                             unknown = unknown.inserted(token.clone(), count + 1)?;
                             unknown_of = unknown_of.inserted(slot, token)?;

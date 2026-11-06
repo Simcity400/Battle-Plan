@@ -36,8 +36,8 @@ test('prepared current and completed titles survive an independent static-text f
       const client = { preparedQuery: async (_source: unknown, product: string) => {
         if (product === 'focus-order-page') return [{ ordinal: 0, token: 'completed', completedByHour: 10 }];
         throw error;
-      }, product: async (request: any) => ({ ...request, data: { art: request.params.tokens.map((token: string) => ({
-        artwork: { token, name: `Dated ${token} title`, description: null, baseDurationDays: null, icon: null }, reason: null })), warnings: [], failures: [] } }) };
+      }, product: async (request: any) => ({ ...request, data: { groups: request.params.groups.map((group: { tokens: string[] }) => ({ art: group.tokens.map(token => ({
+        artwork: { token, name: `Dated ${token} title`, description: null, baseDurationDays: null, icon: null }, reason: null })), failures: [], error: null })), warnings: [] } }) };
       const props = { widget: { id: 'focus', kind: 'national-focus', trackIds: ['main'], countries: { kind: 'tags', tags: ['TAG'] }, time: { mode: 'pin', windows: { main: { firstOffset: 35, lastOffset: 35 } } } },
         runtime: { client, tracks: [{ id: 'main', axisOffset: 0, source, branch }], clock: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
       const loaded = await loadPreparedFocusPage(client as never, source as never, '1', 'TAG', 35, row, 0n, new AbortController().signal);

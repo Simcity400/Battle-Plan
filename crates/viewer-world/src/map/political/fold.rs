@@ -10,13 +10,6 @@ use map_display_data::{
 use replay_data::rows::TableId;
 use replay_frame::frame::ViewIdentity;
 
-fn staging<T>(count: usize) -> io::Result<(map_display_data::credit::Credit, Vec<T>)> {
-    let bytes = count
-        .checked_mul(size_of::<T>())
-        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-    let credit = map_display_data::credit::display_products().admit_item(bytes)?;
-    Ok((credit, Vec::with_capacity(count)))
-}
 fn patch<K: Ord + Clone, V: Clone + PartialEq>(
     index: &ValueIndex<K, V>,
     edits: &mut Vec<(K, Option<V>)>,
@@ -111,11 +104,7 @@ impl TerritoryFold {
             country_rows,
             fields(TableId::Countries, &["canonical_slot", "tag"]),
             before.map(|old| &old.countries),
-            |row| {
-                Retained::build(row.tag.len(), || {
-                    (row.id, row.canonical_slot, row.tag.clone())
-                })
-            },
+            |row| Ok(Retained::new((row.id, row.canonical_slot, row.tag.clone()))),
         )?;
         let links = RowFold::read_input(
             input,
@@ -187,13 +176,13 @@ impl TerritoryFold {
                 .filter(|(key, _)| key.0 == slot)
                 .map(|(key, _)| key.1);
             if let Some(native) = native {
-                let country = Retained::build(CONTINUITY.len(), || CountryKey {
+                let country = Retained::new(CountryKey {
                     branch: frame.branch,
                     native,
                     canonical_slot: slot,
                     observed_hour: frame.hour,
                     continuity: CONTINUITY.into(),
-                })?;
+                });
                 country_facts = country_facts.inserted(slot, country)?;
                 by_slot = by_slot.inserted(slot, native)?;
             } else {
@@ -207,7 +196,7 @@ impl TerritoryFold {
                 None => link_facts.removed(&(*key as u32))?,
             };
         }
-        let (_dirty_credit, mut dirty_edits) = staging(provinces.edits.len())?;
+        let mut dirty_edits = Vec::with_capacity(provinces.edits.len());
         dirty_edits.extend(provinces.edits.iter().map(|id| (*id as u32, Some(()))));
         let mut dirty = ValueIndex::<u32, ()>::default().patched(&dirty_edits)?;
         for key in links.edits.iter() {
@@ -253,11 +242,11 @@ impl TerritoryFold {
         let quadruple = changed
             .checked_mul(4)
             .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let (_plane_credit, mut plane_edits) = staging::<[(usize, u32); 3]>(changed)?;
-        let (_province_credit, mut province_edits) = staging(changed)?;
-        let (_link_credit, mut link_edits) = staging(quadruple)?;
-        let (_controller_credit, mut controller_edits) = staging(double)?;
-        let (_references_credit, mut reference_edits) = staging(double)?;
+        let mut plane_edits = Vec::<[(usize, u32); 3]>::with_capacity(changed);
+        let mut province_edits = Vec::with_capacity(changed);
+        let mut link_edits = Vec::with_capacity(quadruple);
+        let mut controller_edits = Vec::with_capacity(double);
+        let mut reference_edits = Vec::with_capacity(double);
         let mut dirty_colors = ValueIndex::<u32, ()>::default();
         let mut first_error: Option<(u32, io::Error)> = None;
         for (&id, _) in dirty.iter() {
@@ -384,7 +373,7 @@ impl TerritoryFold {
         by_link = patch(&by_link, &mut link_edits)?;
         by_controller = patch(&by_controller, &mut controller_edits)?;
         reference_edits.sort_unstable_by_key(|edit| edit.0);
-        let (_counts_credit, mut count_edits) = staging(reference_edits.len())?;
+        let mut count_edits = Vec::with_capacity(reference_edits.len());
         let mut at = 0;
         while at < reference_edits.len() {
             let slot = reference_edits[at].0;
@@ -484,14 +473,7 @@ impl TerritoryFold {
                             .values
                             .get(&(country_native as u128))
                             .expect("validated country row");
-                        let tag = Retained::build(
-                            country
-                                .2
-                                .len()
-                                .checked_mul(3)
-                                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                            || String::from_utf8_lossy(&country.2).into_owned(),
-                        )?;
+                        let tag = Retained::new(String::from_utf8_lossy(&country.2).into_owned());
                         let count = missing_tags.get(&tag).copied().unwrap_or(0);
                         missing_tags = missing_tags.inserted(tag.clone(), count + 1)?;
                         missing_by_slot = missing_by_slot.inserted(slot, tag)?;

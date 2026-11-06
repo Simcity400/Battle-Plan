@@ -13,9 +13,9 @@ use crate::products::{Product, validate_tag};
 use replay_frame::frame::SharedView;
 use std::sync::{Arc, PoisonError};
 
-/// Most tokens one `focus-art` request evaluates: one page of a country's
-/// completed focuses.
-const MAX_TOKENS: usize = PAGE_ROWS;
+/// Most tokens one `focus-art` request evaluates, over all its hours: one
+/// page of a country's completed focuses and its active focus.
+const MAX_TOKENS: usize = PAGE_ROWS + 1;
 
 /// Bytes of art kept across requests (icons included). A budget on reuse
 /// only: evicted art is evaluated again, never refused or shortened.
@@ -362,6 +362,15 @@ fn recorded(source: &Source, branch: u64, hour: i32) -> bool {
         .any(|block| block.branch == branch && block.first_hour <= hour && hour <= block.last_hour)
 }
 
+/// One hour's focus art: in token order (none when it failed), with the
+/// content's standing warnings and the evaluation's failures.
+#[derive(Clone, Debug, Serialize)]
+pub struct HourArt {
+    pub art: Vec<PresentedFocus>,
+    pub warnings: Vec<String>,
+    pub failures: Vec<FocusArtFailure>,
+}
+
 /// `tokens`' focus tree art for `tag` at `hour`, each looked up in
 /// `database`, as hourly preparation presented it at that hour, in token
 /// order. A content binding that failed, or an evaluation that failed, is the
@@ -377,10 +386,10 @@ pub fn art_at(
     tokens: &[String],
     mode: Presentation,
     cancelled: &AtomicBool,
-) -> io::Result<FocusArtReply> {
+) -> io::Result<HourArt> {
     check_cancel(cancelled)?;
     let state = source.state::<ArtState>();
-    let failed = |reason: String, warnings: Vec<String>| FocusArtReply {
+    let failed = |reason: String, warnings: Vec<String>| HourArt {
         art: Vec::new(),
         warnings,
         failures: vec![FocusArtFailure {
@@ -416,7 +425,7 @@ pub fn art_at(
                 let inputs = artwork::FocusFrame::new(decoded, &catalogue);
                 let warnings = evaluator.warnings.clone();
                 return match evaluator.present(&inputs, database, tag, tokens, mode, cancelled) {
-                    Ok(art) => Ok(FocusArtReply {
+                    Ok(art) => Ok(HourArt {
                         art,
                         warnings,
                         failures: Vec::new(),
@@ -772,7 +781,9 @@ pub(crate) fn event_art(
     Ok(Ok((art, warnings)))
 }
 
-/// `focus-art`: a country's focus art at one hour.
+/// `focus-art`: a country's focus art at several hours, each hour's tokens
+/// looked up in one database: a page of completions, each at the hour that
+/// confirmed it, and the active focus, in one request.
 pub struct FocusArt;
 
 /// What `focus-art` presents: tree titles and icons, or titles and
@@ -793,20 +804,30 @@ impl FocusArtMode {
     }
 }
 
+/// Tokens at one hour, each looked up in one database.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FocusArtGroup {
+    pub hour: i32,
+    /// The database every token is looked up in.
+    pub database: FocusDatabase,
+    /// Distinct tokens in ascending order.
+    pub tokens: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusArtParams {
     pub branch_id: String,
     pub tag: String,
-    pub hour: i32,
-    /// The database every token is looked up in.
-    pub database: FocusDatabase,
-    /// Distinct tokens in ascending order, at most one page.
-    pub tokens: Vec<String>,
+    /// Ascending by hour, then database, each pair once; at most a page of
+    /// tokens and the active focus over all of them.
+    pub groups: Vec<FocusArtGroup>,
     pub mode: FocusArtMode,
 }
 
-/// A failure of the whole request, and how many tokens it left without art.
+/// A failure of a whole group's evaluation, and how many tokens it left
+/// without art.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FocusArtFailure {
@@ -814,14 +835,23 @@ pub struct FocusArtFailure {
     pub tokens: u32,
 }
 
-/// The requested tokens' art in token order (none when the request failed),
-/// the content's standing warnings and the request's failures.
+/// One group's art in token order (none when it failed): its evaluation's
+/// failures, or the error that refused or failed that group alone.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusArtGroupReply {
+    pub art: Vec<PresentedFocus>,
+    pub failures: Vec<FocusArtFailure>,
+    pub error: Option<crate::QueryError>,
+}
+
+/// Each group's art, in request order, and the content's standing warnings
+/// once.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FocusArtReply {
-    pub art: Vec<PresentedFocus>,
+    pub groups: Vec<FocusArtGroupReply>,
     pub warnings: Vec<String>,
-    pub failures: Vec<FocusArtFailure>,
 }
 
 impl crate::products::ReplyWarnings for FocusArtReply {
@@ -839,9 +869,11 @@ impl Product for FocusArt {
 
     fn types() -> Vec<String> {
         vec![
+            FocusArtGroup::decl(),
             FocusArtParams::decl(),
             FocusArtMode::decl(),
             FocusArtFailure::decl(),
+            FocusArtGroupReply::decl(),
             FocusArtReply::decl(),
         ]
     }
@@ -852,15 +884,28 @@ impl Product for FocusArt {
             .branch_id
             .parse::<u64>()
             .map_err(|_| "Invalid focus art branch")?;
-        if params.tokens.is_empty()
-            || params.tokens.len() > MAX_TOKENS
-            || params
-                .tokens
-                .iter()
-                .any(|token| token.is_empty() || token.contains('\0'))
-            || params.tokens.windows(2).any(|pair| pair[0] >= pair[1])
+        if params.groups.is_empty()
+            || params.groups.windows(2).any(|pair| {
+                (pair[0].hour, pair[0].database) >= (pair[1].hour, pair[1].database)
+            })
         {
-            return Err("Focus art tokens must be distinct, ascending and at most one page");
+            return Err("Focus art hours must be ascending, each with a database once");
+        }
+        let mut total = 0_usize;
+        for group in &params.groups {
+            total += group.tokens.len();
+            if group.tokens.is_empty()
+                || group
+                    .tokens
+                    .iter()
+                    .any(|token| token.is_empty() || token.contains('\0'))
+                || group.tokens.windows(2).any(|pair| pair[0] >= pair[1])
+            {
+                return Err("Focus art tokens must be distinct and ascending at each hour");
+            }
+        }
+        if total > MAX_TOKENS {
+            return Err("Focus art asks for at most a page and the active focus");
         }
         Ok(())
     }
@@ -873,19 +918,48 @@ impl Product for FocusArt {
     ) -> io::Result<Self::Reply> {
         check_cancel(cancelled)?;
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
-        if !recorded(source, branch, params.hour) {
-            return Err(dashboard_core::refused("Focus art hour was not recorded"));
+        let mut warnings: Vec<String> = Vec::new();
+        let mut groups = Vec::with_capacity(params.groups.len());
+        for group in &params.groups {
+            let evaluated = if recorded(source, branch, group.hour) {
+                context.content().and_then(|content| {
+                    art_at(
+                        source,
+                        content,
+                        branch,
+                        &params.tag,
+                        group.hour,
+                        group.database,
+                        &group.tokens,
+                        params.mode.presentation(),
+                        cancelled,
+                    )
+                })
+            } else {
+                Err(dashboard_core::refused("Focus art hour was not recorded"))
+            };
+            groups.push(match evaluated {
+                Ok(hour) => {
+                    // Every hour names the same content's standing warnings.
+                    for warning in hour.warnings {
+                        if !warnings.contains(&warning) {
+                            warnings.push(warning);
+                        }
+                    }
+                    FocusArtGroupReply {
+                        art: hour.art,
+                        failures: hour.failures,
+                        error: None,
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+                Err(error) => FocusArtGroupReply {
+                    art: Vec::new(),
+                    failures: Vec::new(),
+                    error: Some(crate::QueryError::from(&error)),
+                },
+            });
         }
-        art_at(
-            source,
-            context.content()?,
-            branch,
-            &params.tag,
-            params.hour,
-            params.database,
-            &params.tokens,
-            params.mode.presentation(),
-            cancelled,
-        )
+        Ok(FocusArtReply { groups, warnings })
     }
 }

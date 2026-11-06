@@ -3,12 +3,13 @@ import type { BoundTrack } from './model';
 import type { PlaybackController } from './playback';
 
 type ClockTarget = Pick<ReturnType<PlaybackController['getSnapshot']>, 'hour' | 'fraction' | 'hoursPerSecond' | 'playing' | 'seekSequence'>;
-type MapClock = { getSnapshot: () => ClockTarget; subscribe: PlaybackController['subscribe'] };
+type MapClock = { getSnapshot: () => ClockTarget; subscribe: PlaybackController['subscribe']; subscribeFrame: PlaybackController['subscribeFrame'] };
 export type MapPlayback = Omit<ClockTarget, 'hour'>;
 type SeekMap = (path: string, revision: string, branch: string, hour: number, playback: MapPlayback) => Promise<void>;
 
-/** Send only the latest clock anchor when the native command is busy. Returns the call that stops following, whose
- * `resend` sends the clock's anchor again, unchanged or not. */
+/** Sends the clock's anchors, only the latest when the native command is busy; the map runs its own clock between
+ * them. Each frame only checks the branch's ends, sending the clock again when it comes back inside. Returns the
+ * call that stops following, whose `resend` sends the clock's anchor again, unchanged or not. */
 export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: SeekMap, onStatus: (error: unknown | null) => void) {
   let active = true;
   let sending = false;
@@ -29,26 +30,32 @@ export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: Seek
       }
     } finally { sending = false; }
   };
-  const update = () => {
+  let outside = false;
+  const update = (anchor: boolean) => {
     if (!active) return;
     const snapshot = clock.getSnapshot();
     const target = { hour: snapshot.hour + track.axisOffset, playing: snapshot.playing, seekSequence: snapshot.seekSequence, fraction: snapshot.fraction, hoursPerSecond: snapshot.hoursPerSecond };
     if (target.hour === last?.hour && target.fraction === last.fraction && target.hoursPerSecond === last.hoursPerSecond
       && target.playing === last.playing && target.seekSequence === last.seekSequence) return;
-    last = target;
     const { hour } = target;
     if (hour < track.branch.firstHour || hour > track.branch.lastHour) {
+      last = target;
+      outside = true;
       pending = null;
       onStatus(new Error('This date is outside the selected campaign branch. Choose a date within its recording.'));
       return;
     }
+    if (!anchor && !outside) return;
+    last = target;
+    outside = false;
     pending = target;
     void flush();
   };
-  const unsubscribe = clock.subscribe(update);
-  update();
-  const stop = () => { active = false; pending = null; unsubscribe(); };
-  return Object.assign(stop, { resend: () => { last = null; update(); } });
+  const unsubscribe = clock.subscribe(() => update(true));
+  const unsubscribeFrame = clock.subscribeFrame(() => update(false));
+  update(true);
+  const stop = () => { active = false; pending = null; unsubscribe(); unsubscribeFrame(); };
+  return Object.assign(stop, { resend: () => { last = null; update(true); } });
 }
 
 /** Map commands, each failure reported by its operation until a later send of that operation succeeds. Only an

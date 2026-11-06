@@ -6,61 +6,8 @@ use std::{collections::BTreeSet, io, sync::Arc, time::Instant};
 const PAGE_CELLS: usize = map_display_data::PAGE_ITEMS / 4;
 const PAGE_WORDS: usize = PAGE_CELLS.div_ceil(u64::BITS as usize);
 
-struct DirtyCells {
-    pages: std::collections::BTreeMap<usize, [u64; PAGE_WORDS]>,
-    credit: map_display_data::credit::Credit,
-    budget: map_display_data::credit::MemoryBudget,
-}
-impl DirtyCells {
-    fn new(budget: &map_display_data::credit::MemoryBudget) -> io::Result<Self> {
-        Ok(Self {
-            pages: Default::default(),
-            credit: budget.admit_item(0)?,
-            budget: budget.clone(),
-        })
-    }
-    fn insert(&mut self, cell: usize) -> io::Result<()> {
-        let page = cell / PAGE_CELLS;
-        if !self.pages.contains_key(&page) {
-            // A whole B-tree node per page also covers its root and internal links.
-            let node_bytes = 12 * (size_of::<usize>() + size_of::<[u64; PAGE_WORDS]>()) + 128;
-            let bytes = self
-                .credit
-                .bytes()
-                .checked_add(node_bytes)
-                .ok_or_else(|| invalid("snow dirty-page byte count overflow"))?;
-            if bytes > self.budget.limit() {
-                return Err(io::Error::new(
-                    io::ErrorKind::OutOfMemory,
-                    "snow dirty-page working set exceeds its display owner; common paging is required",
-                ));
-            }
-            self.credit.resize(bytes).map_err(|error| {
-                io::Error::new(error.kind(), format!("snow dirty-page admission: {error}"))
-            })?;
-            self.pages.insert(page, [0; PAGE_WORDS]);
-        }
-        let within = cell % PAGE_CELLS;
-        self.pages.get_mut(&page).unwrap()[within / u64::BITS as usize] |=
-            1 << (within % u64::BITS as usize);
-        Ok(())
-    }
-    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        self.pages.iter().flat_map(|(&page, words)| {
-            words.iter().enumerate().flat_map(move |(word, &bits)| {
-                let mut bits = bits;
-                std::iter::from_fn(move || {
-                    if bits == 0 {
-                        return None;
-                    }
-                    let bit = bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    Some(page * PAGE_CELLS + word * u64::BITS as usize + bit)
-                })
-            })
-        })
-    }
-}
+type DirtyCells = map_display_data::dirty::Dirty<PAGE_WORDS>;
+const _: () = assert!(PAGE_WORDS * u64::BITS as usize == PAGE_CELLS);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Province {
@@ -169,16 +116,8 @@ impl Fold {
                 row.id, cells.largest
             )));
         }
-        let owner = map_display_data::credit::display_products();
         if self.value.is_none() {
             let value = Arc::new(crate::build(cells, frame, winter)?);
-            let _scratch = owner.admit_item(
-                cells
-                    .provinces()
-                    .checked_mul(size_of::<Option<Province>>())
-                    .and_then(|n| n.checked_add(128))
-                    .ok_or_else(|| invalid("snow province-state byte count overflow"))?,
-            )?;
             let mut values = Vec::new();
             values
                 .try_reserve_exact(cells.provinces())
@@ -189,20 +128,16 @@ impl Fold {
                 values[row.id as usize] = Some(Province::read(row));
                 present = present.inserted(row.id, ())?;
             }
-            let provinces = map_display_data::Paged::try_from_vec_in(owner, values)?;
+            let provinces = map_display_data::Paged::try_from_vec(values)?;
             let volumes = if let Some(volumes) = winter.snow_records() {
                 type Index = std::collections::BTreeMap<u32, Vec<usize>>;
-                let mut allocation = map_display_data::admission::Accounting::new(
-                    owner,
-                    map_display_data::retained::Retained::<Index>::overhead(),
-                )?;
                 let mut index = Index::new();
                 for (volume, records) in volumes.iter().enumerate() {
                     for record in records {
-                        allocation.push_index(&mut index, record.province, volume)?;
+                        index.entry(record.province).or_default().push(volume);
                     }
                 }
-                Some(allocation.finish(index))
+                Some(map_display_data::retained::Retained::new(index))
             } else {
                 None
             };
@@ -269,19 +204,6 @@ impl Fold {
             rows.len().checked_add(self.present.len())
         }
         .ok_or_else(|| invalid("snow changed-row count overflow"))?;
-        let row_bytes = 2
-            * (size_of::<(u32, Option<Province>)>() + size_of::<(usize, Option<i64>)>())
-            + if changes.is_none() {
-                12 * (size_of::<u32>() + size_of::<Province>()) + 256
-            } else {
-                0
-            };
-        let _scratch = owner.admit_item(
-            count
-                .checked_mul(row_bytes)
-                .and_then(|n| n.checked_add(256))
-                .ok_or_else(|| invalid("snow changed-row byte count overflow"))?,
-        )?;
         let mut updates = Vec::new();
         updates
             .try_reserve_exact(count)
@@ -317,19 +239,19 @@ impl Fold {
                     .map(|(&id, _)| (id, None)),
             );
         }
-        let mut dirty = DirtyCells::new(map_display_data::credit::display_products())?;
-        let mut dirty_known = DirtyCells::new(map_display_data::credit::display_products())?;
+        let mut dirty = DirtyCells::default();
+        let mut dirty_known = DirtyCells::default();
         for &(id, value) in &updates {
             let old = self.provinces[id as usize];
             if old.map_or([0; 2], |p| p.display) != value.map_or([0; 2], |p| p.display) {
                 for &cell in cells.province_cells.get(&id).into_iter().flatten() {
-                    dirty.insert(cell)?;
+                    dirty.insert(cell);
                 }
             }
             // Under an unchanged completeness only a partial table's rows change what is known.
             if !complete && !complete_changed && old.is_some() != value.is_some() {
                 for &cell in cells.province_cells.get(&id).into_iter().flatten() {
-                    dirty_known.insert(cell)?;
+                    dirty_known.insert(cell);
                 }
             }
         }
@@ -431,7 +353,6 @@ impl Fold {
         };
         let unknown = if complete_changed {
             let count = cells.perm.len();
-            let _scratch = owner.admit_item(count)?;
             let mut values = Vec::new();
             values
                 .try_reserve_exact(count)
@@ -443,7 +364,7 @@ impl Fold {
                     cells.cell_unknown(cell, known)
                 }
             }));
-            map_display_data::Paged::try_from_vec_in(owner, values)?
+            map_display_data::Paged::try_from_vec(values)?
         } else {
             let interior = dirty_known
                 .iter()
@@ -459,11 +380,11 @@ impl Fold {
         };
         drop(dirty_known);
         let raw_changed = !raw_edits.is_empty();
-        let mut dirty_volumes = map_display_data::dirty::Dirty::<16>::new(owner)?;
+        let mut dirty_volumes = map_display_data::dirty::Dirty::<16>::default();
         if let Some(index) = &self.volumes {
             for (province, _) in &raw_edits {
                 for &volume in index.get(&(*province as u32)).into_iter().flatten() {
-                    dirty_volumes.insert(volume)?;
+                    dirty_volumes.insert(volume);
                 }
             }
         }
@@ -622,8 +543,7 @@ mod tests {
     #[test]
     fn dirty_pages_keep_exact_sparse_order_without_population_limits() {
         for count in [3usize, 1500, 5000] {
-            let budget = map_display_data::credit::MemoryBudget::new(32_000_000);
-            let mut actual = DirtyCells::new(&budget).unwrap();
+            let mut actual = DirtyCells::default();
             let mut expected = BTreeSet::new();
             for cell in (0..count).map(|key| key.wrapping_mul(104729)).chain([
                 0,
@@ -633,37 +553,11 @@ mod tests {
                 PAGE_CELLS,
                 usize::MAX,
             ]) {
-                actual.insert(cell).unwrap();
-                actual.insert(cell).unwrap();
+                actual.insert(cell);
+                actual.insert(cell);
                 expected.insert(cell);
             }
             assert!(actual.iter().eq(expected.iter().copied()));
-            assert!(budget.used() > 0);
-            drop(actual);
-            assert_eq!(budget.used(), 0);
         }
-    }
-
-    #[test]
-    fn dirty_page_admission_refuses_before_mutation_and_can_retry() {
-        let budget = map_display_data::credit::MemoryBudget::new(4096);
-        let held = budget.admit(3000).unwrap();
-        let mut dirty = DirtyCells::new(&budget).unwrap();
-        let error = dirty.insert(7).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-        assert!(error.to_string().contains("snow dirty-page admission"));
-        assert!(dirty.iter().next().is_none());
-        assert_eq!(budget.used(), 3000);
-        drop(held);
-        dirty.insert(7).unwrap();
-        dirty.insert(PAGE_CELLS + 7).unwrap();
-        let before = budget.used();
-        let error = dirty.insert(2 * PAGE_CELLS + 7).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-        assert!(error.to_string().contains("common paging is required"));
-        assert_eq!(budget.used(), before);
-        assert!(dirty.iter().eq([7, PAGE_CELLS + 7]));
-        drop(dirty);
-        assert_eq!(budget.used(), 0);
     }
 }

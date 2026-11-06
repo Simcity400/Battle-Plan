@@ -1,7 +1,4 @@
-use crate::{
-    copy_index::CopyIndex,
-    credit::{Credit, display_products},
-};
+use crate::copy_index::CopyIndex;
 use product_codec::Product;
 use std::{
     io,
@@ -21,30 +18,16 @@ pub struct Pages {
     len: usize,
     pages: CopyIndex<usize, [u32; PAGE]>,
     dense: OnceLock<Vec<u32>>,
-    _credit: Credit,
 }
 impl ProvinceField {
     pub fn filled(len: usize) -> io::Result<Self> {
         Self::paged(len, CopyIndex::default())
     }
     fn paged(len: usize, pages: CopyIndex<usize, [u32; PAGE]>) -> io::Result<Self> {
-        let bytes = len
-            .checked_mul(size_of::<u32>())
-            .and_then(|n| {
-                n.checked_add(
-                    size_of::<Pages>()
-                        + size_of::<Storage>()
-                        + 4 * size_of::<usize>()
-                        + align_of::<Pages>(),
-                )
-            })
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let credit = display_products().admit_item(bytes)?;
         Ok(Self(Arc::new(Storage::Paged(Arc::new(Pages {
             len,
             pages,
             dense: OnceLock::new(),
-            _credit: credit,
         })))))
     }
     pub fn patched(&self, changes: impl IntoIterator<Item = (usize, u32)>) -> io::Result<Self> {

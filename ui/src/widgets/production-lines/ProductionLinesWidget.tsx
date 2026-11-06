@@ -27,14 +27,14 @@ import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { readAt } from '../../dashboard/reads';
 import type { ProductionLineDetailReply, ProductionLinesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { approximateWithin, bandScale, wantedDetailWindows, breakdownItems, breakdownTooltip, emptyHistoryState, firstViewLineReason, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
   organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, productionLineLabel, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf } from './productionData.ts';
 import type { LineAt, LineOrder, TooltipForms } from './productionData';
-import { useLineDetail, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
+import { useLineDetail, useLineHour, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
 import ProductionDrill from './ProductionDrill';
 import EquipmentDesignDetail from './EquipmentDesignDetail';
 import './productionLines.css';
@@ -72,11 +72,16 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const [hovered, setHovered] = useState<number | null>(null);
   useEffect(() => setHovered(null), [track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const shownHour = playhead != null ? Math.floor(playhead) : null;
+  // While playback runs the live table reads each hour's rows; a pinned or scrubbed view reads
+  // whole windows.
+  const motion = usePlaybackMotion(runtime.clock);
+  const playing = widget.time.mode === 'follow' && motion !== undefined;
   const wanted = useMemo(() => {
     if (!data || !track) return NO_WINDOWS;
-    return wantedDetailWindows(data, track.branch.lastHour, shownHour, hovered);
-  }, [data, track, shownHour, hovered]);
+    return wantedDetailWindows(data, track.branch.lastHour, playing ? null : shownHour, hovered);
+  }, [data, track, playing, shownHour, hovered]);
   const windows = useLineDetail(runtime, track, tag, wanted, active);
+  const hourly = useLineHour(runtime, track, tag, playing ? shownHour : null, data?.detailHours, active);
   // What an open organisation window could not draw.
   const [windowNotes, setWindowNotes] = useState<string[]>(NO_WARNINGS);
   const anchor = useRef<HTMLDivElement>(null);
@@ -138,12 +143,13 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   useEffect(() => {
     const warnings = new Set(data?.warnings ?? NO_WARNINGS);
     for (const detail of windows.data.values()) for (const warning of detail.warnings) warnings.add(warning);
+    for (const warning of hourly.detail?.warnings ?? []) warnings.add(warning);
     for (const warning of breakdown.data?.warnings ?? []) warnings.add(warning);
     for (const run of breakdown.data?.runs ?? []) for (const warning of run.warnings) warnings.add(warning);
     for (const note of windowNotes) warnings.add(note);
     onDiagnostics(warnings.size ? [...warnings] : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, windows.data, breakdown.data, windowNotes, onDiagnostics]);
+  }, [data, windows.data, hourly.detail, breakdown.data, windowNotes, onDiagnostics]);
 
   if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its production lines." /></>;
   if (missingSavedDate) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
@@ -159,12 +165,16 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     ...(key && data ? breakdownItems(data, part => openBreakdown(key, part, hour)) : [])]);
   const liveTable = () => {
     if (!data) return null;
-    const hour = Math.floor(playhead!);
+    const shown = Math.floor(playhead!);
+    // Playback shows the hour its reads answer, never one past the playhead; held reads of the
+    // playhead itself are shown at once.
+    const held = hourly.detail && hourly.hour !== undefined && (playing ? hourly.hour <= shown : hourly.hour === shown) ? hourly : null;
+    const hour = held && playing ? held.hour! : shown;
     const window = windowOf(data, hour);
-    const detail = windows.data.get(window);
-    const failed = windows.errors.get(window);
+    const detail = held ? held.detail : windows.data.get(window);
+    const failed = playing ? hourly.error : windows.errors.get(window);
     // A window is answered once the published history reaches its last hour.
-    if (!detail) return failed ? <WidgetState kind="error" failure={failed} onRetry={windows.retry} />
+    if (!detail) return failed ? <WidgetState kind="error" failure={failed} onRetry={playing ? hourly.retry : windows.retry} />
       : <WidgetState kind="loading" label={approximateWithin(data, window * data.detailHours, (window + 1) * data.detailHours - 1)
         ? 'This range is still being prepared.' : 'Loading production lines…'} />;
     return <LiveTable data={data} detail={detail} hour={hour} order={options.order as LineOrder} more={options.columns === 'more'} owner={`production-lines:${widget.id}`}

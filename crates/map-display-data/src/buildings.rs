@@ -175,111 +175,16 @@ impl Product for SlotChunks {
         let mut chunks = Self::default();
         for index in 0..count {
             let count = input.count64(Slot::MIN_BYTES)?;
-            let mut census = SlotCensus {
-                input: product_codec::Decoder::new(input.rest()),
-                bytes: 0,
-            };
-            census.add(count.checked_mul(size_of::<Slot>()))?;
-            census.add(Some(Retained::<Vec<Slot>>::overhead()))?;
-            for _ in 0..count {
-                census.slot()?;
-            }
-            let bytes = census.bytes;
-            let credit = crate::credit::display_products().admit_item(bytes)?;
             let mut chunk = Vec::with_capacity(count);
             for _ in 0..count {
                 chunk.push(Slot::decode(input)?);
             }
-            chunks = chunks.inserted(index, Retained::with_credit(credit, || chunk))?;
+            chunks = chunks.inserted(index, Retained::new(chunk))?;
         }
         Ok(chunks)
     }
     fn schema(schema: &mut product_codec::Schema) {
         <Arc<Vec<Arc<Vec<Slot>>>> as Product>::schema(schema);
-    }
-}
-
-struct SlotCensus<'a> {
-    input: product_codec::Decoder<'a>,
-    bytes: usize,
-}
-impl SlotCensus<'_> {
-    fn add(&mut self, bytes: Option<usize>) -> io::Result<()> {
-        self.bytes = bytes
-            .and_then(|bytes| self.bytes.checked_add(bytes))
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        Ok(())
-    }
-    fn bytes(&mut self) -> io::Result<()> {
-        let count = self.input.count64(1)?;
-        self.input.take(count)?;
-        self.add(Some(count))
-    }
-    fn string(&mut self) -> io::Result<()> {
-        let count = self.input.count64(1)?;
-        std::str::from_utf8(self.input.take(count)?)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf-8 string"))?;
-        self.add(Some(count))
-    }
-    fn key(&mut self) -> io::Result<()> {
-        self.add(Some(
-            size_of::<AssetKey>() + 2 * size_of::<usize>() + align_of::<AssetKey>(),
-        ))?;
-        match self.input.u8()? {
-            0 => Ok(()),
-            1 => {
-                self.string()?;
-                let count = self.input.count64(AssetLayer::MIN_BYTES)?;
-                self.add(count.checked_mul(size_of::<AssetLayer>()))?;
-                for _ in 0..count {
-                    self.string()?;
-                    self.bytes()?;
-                    self.string()?;
-                    self.input.bool()?;
-                    let paths = self.input.count64(8)?;
-                    self.add(paths.checked_mul(size_of::<Vec<u8>>()))?;
-                    for _ in 0..paths {
-                        self.bytes()?;
-                    }
-                }
-                self.input.u8()?;
-                self.input.u32()?;
-                self.input.bool()?;
-                Ok(())
-            }
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unknown building asset tag",
-            )),
-        }
-    }
-    fn selection(&mut self) -> io::Result<()> {
-        self.input.bool()?;
-        self.key()?;
-        self.key()?;
-        self.input.u64()?;
-        Ok(())
-    }
-    fn slot(&mut self) -> io::Result<()> {
-        self.input.u32()?;
-        if self.input.bool()? {
-            self.string()?;
-        }
-        if self.input.bool()? {
-            self.input.u32()?;
-        }
-        if self.input.bool()? {
-            self.input.bool()?;
-        }
-        if self.input.bool()? {
-            self.selection()?;
-            self.selection()?;
-            for _ in 0..4 {
-                self.input.bool()?;
-            }
-            self.input.take(Instance::MIN_BYTES)?;
-        }
-        Ok(())
     }
 }
 
@@ -331,10 +236,7 @@ mod tests {
                 entity: None,
             }];
             chunks = chunks
-                .inserted(
-                    id as usize,
-                    Retained::build(size_of::<Slot>(), || values.clone()).unwrap(),
-                )
+                .inserted(id as usize, Retained::new(values.clone()))
                 .unwrap();
             dense.push(Arc::new(values));
         }
@@ -358,10 +260,7 @@ mod tests {
         let mut changed = (*chunks[777]).clone();
         changed[0].drawn_at_distance = None;
         chunks = chunks
-            .inserted(
-                777,
-                Retained::build(size_of::<Slot>(), || changed.clone()).unwrap(),
-            )
+            .inserted(777, Retained::new(changed.clone()))
             .unwrap();
         dense[777] = Arc::new(changed);
         assert!(chunks.producer::<u32>(7).is_none());

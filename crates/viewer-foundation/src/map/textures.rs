@@ -804,8 +804,7 @@ pub fn clear_intel_map(map: &MapData) -> io::Result<IntelMap> {
         height: map.height,
     });
     Ok(IntelMap {
-        texels: map_display_data::Paged::try_from_iter_in(
-            map_display_data::credit::display_products(),
+        texels: map_display_data::Paged::try_from_iter(
             width as usize * height as usize,
             std::iter::repeat_n(0, width as usize * height as usize),
         )?,

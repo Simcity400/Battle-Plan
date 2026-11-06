@@ -237,6 +237,13 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     resendSeek.current?.();
     commands.retry();
   }, [mapRetry, commands]);
+  // The viewer runs its own clock between anchors, and a restarted one is restored with the last anchor
+  // it was sent: a viewer that becomes ready is sent the clock as it is now.
+  useEffect(() => {
+    if (!mapReady) return;
+    resendSeek.current?.();
+    maps.resend();
+  }, [mapReady, maps]);
   // Keyed on the window's generation, so every new pop-out window is sent the options and the
   // clock even when it opens in the same render that closed the previous one.
   const popoutConfig = popoutConfigKey(popout);

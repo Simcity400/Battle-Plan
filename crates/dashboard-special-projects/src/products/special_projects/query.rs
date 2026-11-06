@@ -504,6 +504,14 @@ impl Feed {
         })
     }
 
+    /// Whether a change of episode `id` was read by `hour`.
+    pub fn read_by(&self, id: u64, hour: i32) -> bool {
+        self.episodes
+            .get(&id)
+            .and_then(|changes| changes.first())
+            .is_some_and(|&(read, _, _)| read <= hour)
+    }
+
     /// The bytes it holds, about.
     pub fn bytes(&self) -> usize {
         self.changes.len() * 512 + self.episodes.len() * 64

@@ -962,6 +962,12 @@ pub struct Viewer {
     loaded_config: Option<Config>,
     rendered: Option<Playhead>,
     rendered_sequence: u64,
+    /// Milliseconds from planning a map hour to having it built, smoothed.
+    build_latency_ms: Option<f64>,
+    /// The newest hour the playing clock passed that could not be shown, and why.
+    held_back: Option<(i32, String)>,
+    /// The dashboard view this map draws, named in the perf log.
+    perf_view: Option<String>,
     /// The last frame's data limitations, built only while they are shown or
     /// a capture will print them.
     map_warnings: Vec<String>,
@@ -1498,6 +1504,9 @@ impl Viewer {
             loaded_config: None,
             rendered: None,
             rendered_sequence: 0,
+            build_latency_ms: None,
+            held_back: None,
+            perf_view: None,
             map_warnings: Vec::new(),
             diagnostics: options.diagnostics,
             diagnostics_open: false,
@@ -1887,6 +1896,9 @@ impl Viewer {
             .clone()
             .map_or(Country::Recorded, Country::Tag);
         self.perspective.fog = target.options.fog;
+        if crate::perf_log::enabled() && self.perf_view.as_deref() != Some(target.id.as_str()) {
+            self.perf_view = Some(target.id.clone());
+        }
         self.apply_host_options(&target.options);
         let branch = target
             .branch_id
@@ -2054,21 +2066,31 @@ impl Viewer {
                 })
                 .and(self.map_error.clone())
         });
-        let ready = target.branch_id.parse().ok().is_some_and(|branch| {
+        let clock = target.branch_id.parse().ok().map(|branch| {
             let requested = Playhead {
                 branch,
                 hour: target.hour,
                 fraction: f64::from(target.fraction),
             };
-            self.presentation_ready(
-                if target.playing {
-                    self.playhead.unwrap_or(requested)
-                } else {
-                    requested
-                },
-                target.playing,
-            )
-        }) && self.rendered_sequence == target.sequence;
+            if target.playing {
+                self.playhead.unwrap_or(requested)
+            } else {
+                requested
+            }
+        });
+        let ready = clock.is_some_and(|clock| self.presentation_ready(clock, target.playing))
+            && self.rendered_sequence == target.sequence;
+        // Playing, a frame of the same branch stands in for the clock's hour; say how far back.
+        let behind = clock
+            .zip(self.rendered)
+            .filter(|(clock, rendered)| target.playing && clock.branch == rendered.branch)
+            .map(|(clock, rendered)| {
+                u32::try_from(i64::from(clock.hour) - i64::from(rendered.hour)).unwrap_or(0)
+            });
+        let behind_reason = target
+            .playing
+            .then(|| self.held_back.as_ref().map(|(_, reason)| reason.clone()))
+            .flatten();
         let pending = self
             .shown
             .as_ref()
@@ -2088,6 +2110,8 @@ impl Viewer {
             sequence: self.rendered_sequence,
             requested_sequence: target.sequence,
             loading: error.is_none() && pending.is_none() && !ready,
+            behind,
+            behind_reason,
             error,
             pending,
         }
@@ -2551,9 +2575,7 @@ impl Viewer {
 
     fn hour_error(&mut self, error: Option<&std::io::Error>, ctx: &egui::Context) {
         self.map_error = error.map(ToString::to_string);
-        if let Some(error) = error
-            && error.kind() != std::io::ErrorKind::WouldBlock
-        {
+        if let Some(error) = error {
             self.failed_window_capture(&error.to_string(), ctx);
         }
     }
@@ -3575,12 +3597,14 @@ impl Viewer {
             {
                 self.tick_playhead(elapsed, last);
             }
+            // The host sends only clock anchors; a playing clock draws every frame on its own.
+            if self.playing {
+                ui.ctx().request_repaint();
+            }
         }
         // The scene arrives with the document from the loading thread
         // (`load_scene`); only hour data uploads per frame from here.
-        let hour_error = self
-            .refresh_hour(state, document, &mut laps, ui.ctx())
-            .err();
+        let hour_error = self.refresh_hour(state, document, &mut laps).err();
         self.hour_error(hour_error.as_ref(), ui.ctx());
         // An error view otherwise stops repainting; a paused seek away from it
         // still needs to poll the asynchronous builders until its hour arrives.
@@ -6237,7 +6261,7 @@ fn latest_built_key<T>(
 }
 
 /// Whether `rendered` answers `target`: exactly, or, playing, as an earlier
-/// hour of its branch.
+/// hour of its branch, which the acknowledgement reports as behind.
 fn presentation_matches(rendered: Playhead, target: Playhead, playing: bool) -> bool {
     rendered == target
         || (playing && rendered.branch == target.branch && rendered.hour <= target.hour)
@@ -7952,76 +7976,6 @@ pub(crate) mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn credit_pressure_names_the_refusal_and_keeps_a_window_capture_armed_until_recovery() {
-        let failure = Arc::new(Mutex::new(None));
-        let mut viewer = Viewer::create(
-            Config::default(),
-            Options {
-                out: Some("pressure.png".into()),
-                window_dump: true,
-                ..Default::default()
-            },
-            None,
-            Arc::clone(&failure),
-            None,
-            None,
-        );
-        let ctx = egui::Context::default();
-        let mut output = ctx.run_ui(Default::default(), |ui| {
-            viewer.hour_error(
-                Some(&std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "display change-fact working set remains pinned; common paging is required",
-                )),
-                ui.ctx(),
-            );
-        });
-        output.textures_delta.clear();
-        assert_eq!(
-            viewer.map_error.as_deref(),
-            Some("display change-fact working set remains pinned; common paging is required")
-        );
-        assert!(
-            viewer
-                .capture
-                .as_ref()
-                .is_some_and(|capture| capture.exit && capture.path == Path::new("pressure.png"))
-        );
-        assert!(failure.lock().unwrap().is_none());
-        assert!(!output.viewport_output.values().any(|viewport| {
-            viewport
-                .commands
-                .iter()
-                .any(|command| matches!(command, egui::ViewportCommand::Close))
-        }));
-        viewer.hour_error(None, &ctx);
-        assert!(viewer.map_error.is_none());
-        assert!(viewer.capture.is_some());
-        assert!(failure.lock().unwrap().is_none());
-        let mut output = ctx.run_ui(Default::default(), |ui| {
-            viewer.hour_error(
-                Some(&std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "hour was not recorded",
-                )),
-                ui.ctx(),
-            );
-        });
-        output.textures_delta.clear();
-        assert!(viewer.capture.is_none());
-        assert_eq!(
-            failure.lock().unwrap().as_deref(),
-            Some("Capture pressure.png failed: hour was not recorded")
-        );
-        assert!(output.viewport_output.values().any(|viewport| {
-            viewport
-                .commands
-                .iter()
-                .any(|command| matches!(command, egui::ViewportCommand::Close))
-        }));
     }
 
     #[test]

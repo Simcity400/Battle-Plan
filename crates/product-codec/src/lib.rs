@@ -1,4 +1,3 @@
-pub use engine_allocation::credit;
 pub use replay_data::codec::{Decoder, invalid_static as invalid, put_count64, put_fixed};
 use sha2::{Digest, Sha256};
 use std::{

@@ -29,7 +29,7 @@ import { formatAmount } from '../../charts/valueAxis';
 import type { CountryStyle, WarsAtHour } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color';
 import { OPTIONS } from './definition';
-import { NAME_WORDS, casualtiesAt, countryTagAt, currentWarsAt, labelObservationAt, laneCountries, observationAt, participantHoldingAt, prepareWars, retainExpandedWars, validateWarsReply, viewpointAt, viewpointSummary, warContributions, warsLanes, warsReplyState } from './warsData';
+import { NAME_WORDS, casualtyRunAt, countryTagAt, currentWarsAt, hourlyCasualties, labelObservationAt, laneCountries, observationAt, participantHoldingAt, prepareWars, retainExpandedWars, validateWarsHourly, validateWarsReply, viewpointAt, viewpointSummary, warContributions, warsLanes, warsReplyState } from './warsData';
 import type { CountryResolver, WarsColour, WarsLaneInfo, WarsView } from './warsData';
 import { warTooltip } from './warsTooltip';
 import { warsColourPlan, warsCountryColours, warsFixedColourKey, warsLookStart, warsSideColours } from './warsColours';
@@ -78,15 +78,16 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   // groups at that hour from its frame alone.
   const prefix = useMemo(() => preparedPrefix(data), [data]);
   const preparedThrough = prefix?.pending.length ? prefix.coverage.lastHour : null;
-  // The structural reply stays mounted while independent exact counter reads load. An hour's own
-  // frame is read only where it shows: the tooltip's hour, and the playhead past the prefix.
+  // The structural reply stays mounted while the hours' reads load: each answers only the wars'
+  // casualty runs there, by war id, and an hour's own frame where it shows: the tooltip's hour,
+  // and the playhead past the prefix.
   const framed = [...new Set([...(hoverHour === null ? [] : [hoverHour]), ...(preparedThrough != null && at > preparedThrough ? [at] : [])])];
   const exact=useFollowedProduct(runtime.client,track ? {sourceId:track.source.id,revision:track.source.revision,product:'wars',
     params:{branchId:track.branch.id,viewpointTag,reads:[...new Set([at,...(hoverHour===null ? [] : [hoverHour])])].map(hour=>({hour})),
       current:framed.map(hour=>({hour}))}} : null,
-    ['reads','current'],active,validateWarsReply,track?.source);
+    ['reads','current'],active,validateWarsHourly,track?.source);
   const current = preparedThrough != null && at > preparedThrough ? currentWarsAt(exact.data, at) : null;
-  const exactWars=useMemo(()=>new Map(exact.data?.wars.map(war=>[war.id,war]) ?? []),[exact.data]);
+  const exactWars=useMemo(()=>hourlyCasualties(exact.data),[exact.data]);
   // The hours the shown exact reply answers; another hour's losses are still loading.
   const answered = useMemo(() => exact.data && exact.moment ? new Set((JSON.parse(exact.moment) as [{ hour: number }[]])[0].map(read => read.hour)) : new Set<number>(), [exact.data, exact.moment]);
   const groups = useCountryGroups(runtime, track, active);
@@ -166,7 +167,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   useParityRows(root,()=>({kind:'chart',label:'Wars and casualties',scope:'displayed-hour',hour:at,
     complete:!!data && !!exact.data && !exact.error,total:lanes.length,
     rows:data?.wars.filter(war=>war.firstHour<=at).map(war=>({id:war.id,observation:observationAt(war,at),
-      casualties:exactWars.has(war.id) ? casualtiesAt(exactWars.get(war.id)!,at) : null,
+      casualties:exactWars.has(war.id) ? casualtyRunAt(exactWars.get(war.id)!,at) : null,
       participants:war.participants.filter(run=>run.firstHour<=at && at<=run.lastHour),capitulations:war.capitulations.filter(event=>event.hour<=at)})) ?? []}));
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its wars." />;
@@ -206,7 +207,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
       : [...new Set([...(labelled ? [labelled.viewpointTag] : []), ...(observation ? [...observation.viewpointSide, ...observation.opposingSide] : [])])];
     if (recorded) hover.ask(hour, tags.filter(tag => prepared.identities?.keyAt(tag, hour) !== null));
     const participant = about.kind === 'participant' ? about.participant : bar?.participant;
-    const content = warTooltip({ war, observation, losses: exactWars.has(war.id) && answered.has(Math.floor(hour)) ? casualtiesAt(exactWars.get(war.id)!,hour) : null,
+    const content = warTooltip({ war, observation, losses: exactWars.has(war.id) && answered.has(Math.floor(hour)) ? casualtyRunAt(exactWars.get(war.id)!,hour) : null,
       contributions: warContributions(currentWarsAt(exact.data, hour)?.contributions, observation),
       contributionsPending: !currentWarsAt(exact.data, hour),
       lossesPending:!answered.has(Math.floor(hour)), hour, until: at, preparedThrough,

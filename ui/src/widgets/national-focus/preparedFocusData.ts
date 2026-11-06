@@ -1,9 +1,9 @@
 import { failureText } from '../../dashboard/queryError.ts';
-import { asFailure, type Failure } from '../../dashboard/queryError.ts';
+import { asFailure, queryFailure, type Failure } from '../../dashboard/queryError.ts';
 import type { PreparationRequest, PreparationReply } from '../../shell/preparation/contract';
 import { validateProductReply } from '../../dashboard/client.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
-import type { Artwork, FocusDatabase, FocusEntry } from '../../generated/dashboard';
+import type { Artwork, FocusArtGroup, FocusDatabase, FocusEntry, QueryError } from '../../generated/dashboard';
 import { newId } from '../../shell/ids.ts';
 import { artworkEntry, drawableIcon } from '../../dashboard/artwork.ts';
 import { activeFocus } from './focusData.ts';
@@ -87,36 +87,87 @@ export type FocusArtMode = 'display' | 'text';
 const placeholder = (token: string, reason: string): PreparedFocusArt =>
   ({ artwork: { token, name: null, description: null, baseDurationDays: null, icon: null }, reason });
 
-/** `tokens`' focus art for `tag` at `hour`, each looked up in `database`, evaluated
- * when asked: one request per page of distinct tokens. A request's named failure
- * marks each of its tokens; its warnings are returned once. */
+/** Tokens wanted at an hour, each looked up in `database`. */
+export interface FocusArtAsk { hour: number; database: FocusDatabase; tokens: Iterable<string> }
+/** What `loadFocusArt` read, each by `preparedArtKey`. */
+export interface LoadedFocusArt {
+  /** Each token's art as evaluated. */
+  art: Map<string, PreparedFocusArt>;
+  /** Placeholders naming why an hour's evaluation failed. */
+  failed: Map<string, PreparedFocusArt>;
+  /** Tokens of an hour the service refused or failed alone. */
+  errors: Map<string, { token: string; failure: Failure }>;
+  warnings: string[];
+}
+/** Most tokens one request asks for: the service's limit, a page and the active focus. */
+const ART_TOKENS = PAGE_ROWS + 1;
+/** The service's order of databases. */
+const DATABASE_ORDER: Record<FocusDatabase, number> = { national: 0, continuous: 1 };
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
+const queryError = (value: unknown): value is QueryError => !!value && typeof value === 'object'
+  && ((value as { kind?: unknown }).kind === 'refused' && typeof (value as { text?: unknown }).text === 'string'
+    || (value as { kind?: unknown }).kind === 'failed' && typeof (value as { message?: unknown }).message === 'string');
+
+/** The asked tokens' focus art for `tag`, evaluated when asked: every hour of a page in one request,
+ * each token at its hour, looked up in its database. An hour's named failure marks each of its
+ * tokens; one the service refused or failed alone is that hour's error; warnings are returned once. */
 export async function loadFocusArt(client: DashboardClient, source: DashboardSource, branchId: string, tag: string,
-  hour: number, database: FocusDatabase, tokens: readonly string[], mode: FocusArtMode, signal: AbortSignal) {
-  const wanted = [...new Set(tokens)].sort(focusTokenOrder);
-  const art = new Map<string, PreparedFocusArt>();
-  const warnings = new Set<string>();
-  for (let first = 0; first < wanted.length; first += PAGE_ROWS) {
-    if (signal.aborted) throw new DOMException('Focus art cancelled', 'AbortError');
-    const page = wanted.slice(first, first + PAGE_ROWS);
-    const request = { sourceId: source.id, revision: source.revision, product: 'focus-art', params: { branchId, tag, hour, database, tokens: page, mode } };
-    const reply = validateProductReply(await client.product<unknown>(request, signal), request).data as
-      { art?: unknown; warnings?: unknown; failures?: unknown } | null;
-    if (signal.aborted) throw new DOMException('Focus art cancelled', 'AbortError');
-    if (!reply || !Array.isArray(reply.warnings) || !reply.warnings.every(item => typeof item === 'string') || !Array.isArray(reply.failures)
-      || !reply.failures.every((item: { reason?: unknown; tokens?: unknown }) => item && typeof item.reason === 'string' && Number.isInteger(item.tokens)))
-      throw new Error('Invalid focus art reply.');
-    for (const warning of reply.warnings as string[]) warnings.add(warning);
-    const failures = reply.failures as { reason: string; tokens: number }[];
-    const items = validatePreparedArt(reply.art);
-    if (failures.length) {
-      const reason = failures.map(failure => failure.reason).join('; ');
-      for (const token of page) art.set(token, placeholder(token, reason));
-      continue;
-    }
-    if (items.length !== page.length || items.some((item, index) => item.artwork.token !== page[index])) throw new Error('Focus art omitted requested tokens.');
-    for (const item of items) art.set(item.artwork.token, item);
+  asks: readonly FocusArtAsk[], mode: FocusArtMode, signal: AbortSignal): Promise<LoadedFocusArt> {
+  const merged = new Map<string, { hour: number; database: FocusDatabase; tokens: Set<string> }>();
+  for (const ask of asks) {
+    const key = `${ask.hour}:${ask.database}`;
+    let group = merged.get(key);
+    if (!group) merged.set(key, group = { hour: ask.hour, database: ask.database, tokens: new Set() });
+    for (const token of ask.tokens) group.tokens.add(token);
   }
-  return { art, warnings: [...warnings] };
+  const groups = [...merged.values()].map(({ hour, database, tokens }) => ({ hour, database, tokens: [...tokens].sort(focusTokenOrder) }))
+    .sort((a, b) => a.hour - b.hour || DATABASE_ORDER[a.database] - DATABASE_ORDER[b.database]);
+  // Requests within the service's limit, an hour split across two only where one would pass it.
+  const requests: FocusArtGroup[][] = [];
+  let batch: FocusArtGroup[] = [], size = 0;
+  for (const group of groups) {
+    for (let first = 0; first < group.tokens.length;) {
+      const tokens = group.tokens.slice(first, first + ART_TOKENS - size);
+      batch.push({ hour: group.hour, database: group.database, tokens });
+      first += tokens.length; size += tokens.length;
+      if (size === ART_TOKENS) { requests.push(batch); batch = []; size = 0; }
+    }
+  }
+  if (batch.length) requests.push(batch);
+  const loaded: LoadedFocusArt = { art: new Map(), failed: new Map(), errors: new Map(), warnings: [] };
+  const warnings = new Set<string>();
+  for (const asked of requests) {
+    if (signal.aborted) throw new DOMException('Focus art cancelled', 'AbortError');
+    const request = { sourceId: source.id, revision: source.revision, product: 'focus-art', params: { branchId, tag, groups: asked, mode } };
+    const reply = validateProductReply(await client.product<unknown>(request, signal), request).data as
+      { groups?: unknown; warnings?: unknown } | null;
+    if (signal.aborted) throw new DOMException('Focus art cancelled', 'AbortError');
+    if (!reply || !strings(reply.warnings) || !Array.isArray(reply.groups) || reply.groups.length !== asked.length) throw new Error('Invalid focus art reply.');
+    for (const warning of reply.warnings) warnings.add(warning);
+    asked.forEach((group, index) => {
+      const answer = (reply.groups as unknown[])[index] as { art?: unknown; failures?: unknown; error?: unknown } | null;
+      if (!answer || typeof answer !== 'object' || !(answer.error === null || queryError(answer.error)) || !Array.isArray(answer.failures)
+        || !answer.failures.every((item: { reason?: unknown; tokens?: unknown }) => item && typeof item.reason === 'string' && Number.isInteger(item.tokens)))
+        throw new Error('Invalid focus art reply.');
+      const key = (token: string) => preparedArtKey(group.database, group.hour, token);
+      if (answer.error) {
+        const failure = queryFailure(answer.error as QueryError);
+        for (const token of group.tokens) loaded.errors.set(key(token), { token, failure });
+        return;
+      }
+      const failures = answer.failures as { reason: string; tokens: number }[];
+      const items = validatePreparedArt(answer.art);
+      if (failures.length) {
+        const reason = failures.map(failure => failure.reason).join('; ');
+        for (const token of group.tokens) loaded.failed.set(key(token), placeholder(token, reason));
+        return;
+      }
+      if (items.length !== group.tokens.length || items.some((item, at) => item.artwork.token !== group.tokens[at])) throw new Error('Focus art omitted requested tokens.');
+      for (const item of items) loaded.art.set(key(item.artwork.token), item);
+    });
+  }
+  loaded.warnings = [...warnings];
+  return loaded;
 }
 
 const POLL_MS = 500;
@@ -222,9 +273,11 @@ export function validateUnavailableFocus(value: unknown, hour: number): string[]
 export async function loadPreparedFocusDetail(client: FocusPreparedClient, source: DashboardSource, branchId: string, tag: string,
   displayed: PreparedFocusHour, entry: FocusEntry, signal: AbortSignal): Promise<PreparedFocusArt | null> {
   const date = entry.completedByHour ?? displayed.orderFirstHour ?? displayed.at;
-  const { art } = await loadFocusArt(client, source, branchId, tag, date, 'national', [entry.token], 'text', signal);
+  const loaded = await loadFocusArt(client, source, branchId, tag, [{ hour: date, database: 'national', tokens: [entry.token] }], 'text', signal);
   if (signal.aborted) throw new DOMException('Focus details cancelled', 'AbortError');
-  return art.get(entry.token) ?? null;
+  const key = preparedArtKey('national', date, entry.token), error = loaded.errors.get(key);
+  if (error) throw error.failure;
+  return loaded.art.get(key) ?? loaded.failed.get(key) ?? null;
 }
 
 /** One focus's art at an hour: a national and a continuous focus of one id never share it. */
@@ -247,10 +300,20 @@ export async function loadPreparedFocusStaticText(client: FocusPreparedClient, s
   }
   return { text, warnings: [...warnings] };
 }
-/** One page of completed focuses, each with its art as evaluated at the hour
- * that confirmed it, and the active focus's art at `hour`. */
+/** What a focus page read that holds for any hour of the same country, recording and content: art as
+ * evaluated (by `preparedArtKey`) and static text (by `staticTextKey`), each with its reply's warnings.
+ * Failures are never kept. */
+export interface FocusPageReads {
+  art: Map<string, { item: PreparedFocusArt; warnings: readonly string[] }>;
+  text: Map<string, { item: Artwork; warnings: readonly string[] }>;
+}
+const staticTextKey = (database: FocusDatabase, token: string) => JSON.stringify([database, token]);
+
+/** One page of completed focuses, each with its art as evaluated at the hour that confirmed it, and
+ * the active focus's art at `hour`. What `held` has is not read again; `reads` is what this page used,
+ * for the next. */
 export async function loadPreparedFocusPage(client: FocusPreparedClient, source: DashboardSource, branchId: string, tag: string,
-  hour: number, row: PreparedFocusHour, page: bigint, signal: AbortSignal) {
+  hour: number, row: PreparedFocusHour, page: bigint, signal: AbortSignal, held?: FocusPageReads) {
   if (!client.preparedQuery) throw new Error('Prepared focus queries are unavailable.');
   const query = client.preparedQuery.bind(client);
   const params = { branchId, tag, hour, page: page.toString() };
@@ -266,37 +329,75 @@ export async function loadPreparedFocusPage(client: FocusPreparedClient, source:
   for (const entry of order) want('national', entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token);
   const active = activeFocus(row);
   if (active?.token) want(active.database, hour, active.token);
+  const reads: FocusPageReads = { art: new Map(), text: new Map() };
   const art = new Map<string, PreparedFocusArt>();
   const warnings = new Set<string>();
+  const asks: FocusArtAsk[] = [];
+  for (const { database, date, tokens } of wanted.values()) {
+    const missing: string[] = [];
+    for (const token of tokens) {
+      const key = preparedArtKey(database, date, token), kept = held?.art.get(key);
+      if (!kept) { missing.push(token); continue; }
+      reads.art.set(key, kept);
+      art.set(key, kept.item);
+      for (const warning of kept.warnings) warnings.add(warning);
+    }
+    if (missing.length) asks.push({ hour: date, database, tokens: missing });
+  }
+  const loadArt = async () => {
+    if (!asks.length) return;
+    try {
+      const loaded = await loadFocusArt(client, source, branchId, tag, asks, 'display', signal);
+      for (const warning of loaded.warnings) warnings.add(warning);
+      for (const [key, item] of loaded.art) { art.set(key, item); reads.art.set(key, { item, warnings: loaded.warnings }); }
+      for (const [key, item] of loaded.failed) art.set(key, item);
+      for (const [key, { token, failure }] of loaded.errors)
+        art.set(key, { ...placeholder(token, failureText(failure, 'Couldn’t load focus artwork.')), failure, titleFailure: failure });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      const failure = asFailure(error), reason = failureText(failure, 'Couldn’t load focus artwork.');
+      for (const ask of asks) for (const token of ask.tokens)
+        art.set(preparedArtKey(ask.database, ask.hour, token), { ...placeholder(token, reason), failure, titleFailure: failure });
+    }
+  };
   const staticReasons = new Map<FocusDatabase, Failure>();
   const staticTokens = (database: FocusDatabase) => [...new Set([...(database === 'national' ? order.map(entry => entry.token) : []),
     ...(active?.token && active.database === database ? [active.token] : [])])].sort();
-  const loadStatic = (database: FocusDatabase) => loadPreparedFocusStaticText(client, source, database, staticTokens(database), signal).catch(error => {
-    if (signal.aborted) throw error;
-    staticReasons.set(database, asFailure(error)); return { text: [] as Artwork[], warnings: [] as string[] };
-  });
-  const [national, continuous] = await Promise.all([loadStatic('national'), loadStatic('continuous'),
-    Promise.all([...wanted.values()].map(async ({ database, date, tokens }) => {
+  const loadStatic = async (database: FocusDatabase) => {
+    const tokens = staticTokens(database), texts = new Map<string, Artwork>(), told = new Set<string>(), missing: string[] = [];
+    for (const token of tokens) {
+      const keptText = held?.text.get(staticTextKey(database, token));
+      if (!keptText) { missing.push(token); continue; }
+      reads.text.set(staticTextKey(database, token), keptText);
+      texts.set(token, keptText.item);
+      for (const warning of keptText.warnings) told.add(warning);
+    }
     try {
-      const dated = await loadFocusArt(client, source, branchId, tag, date, database, [...tokens], 'display', signal);
-      for (const warning of dated.warnings) warnings.add(warning);
-      for (const [token, item] of dated.art) art.set(preparedArtKey(database, date, token), item);
+      const loaded = await loadPreparedFocusStaticText(client, source, database, missing, signal);
+      for (const item of loaded.text) {
+        texts.set(item.token, item);
+        reads.text.set(staticTextKey(database, item.token), { item, warnings: loaded.warnings });
+      }
+      for (const warning of loaded.warnings) told.add(warning);
+      return { text: tokens.flatMap(token => texts.get(token) ?? []), texts, warnings: [...told] };
     } catch (error) {
       if (signal.aborted) throw error;
-      const reason = failureText(asFailure(error), 'Couldn’t load focus artwork.');
-      for (const token of tokens) art.set(preparedArtKey(database, date, token), { ...placeholder(token, reason), failure: asFailure(error), titleFailure: asFailure(error) });
+      // A refused read leaves the database without static text, as the whole page reads it.
+      staticReasons.set(database, asFailure(error));
+      return { text: [] as Artwork[], texts: new Map<string, Artwork>(), warnings: [] as string[] };
     }
-  }))]);
+  };
+  const [national, continuous] = await Promise.all([loadStatic('national'), loadStatic('continuous'), loadArt()]);
   if (signal.aborted) throw new DOMException('Focus query cancelled', 'AbortError');
   if (order.some(entry => !art.has(preparedArtKey('national', entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token)))
     || active?.token && !art.has(preparedArtKey(active.database, hour, active.token))) throw new Error('Prepared focus artwork omitted requested tokens.');
   // Static descriptions can stand in for refused art, so their content's warnings are the page's.
   for (const warning of [...national.warnings, ...continuous.warnings]) warnings.add(warning);
-  const texts = { national: new Map(national.text.map(item => [item.token, item])), continuous: new Map(continuous.text.map(item => [item.token, item])) };
+  const texts = { national: national.texts, continuous: continuous.texts };
   for (const { database, date, tokens } of wanted.values()) for (const token of tokens) {
     const key = preparedArtKey(database, date, token), item = art.get(key)!;
     art.set(key, { ...item, failure: item.failure ?? staticReasons.get(database), reason: item.reason ?? (staticReasons.has(database) ? failureText(staticReasons.get(database), 'Couldn’t load focus text.') : null), artwork: { ...item.artwork,
       description: item.artwork.description ?? texts[database].get(item.artwork.token)?.description ?? null } });
   }
-  return { order, art, staticText: national.text, continuousStaticText: continuous.text, displayHour: hour, warnings: [...warnings] };
+  return { order, art, staticText: national.text, continuousStaticText: continuous.text, displayHour: hour, warnings: [...warnings], reads };
 }

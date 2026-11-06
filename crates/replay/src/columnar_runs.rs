@@ -25,7 +25,7 @@ use crate::{
     columnar_frames::{Damage, Limits, Recording, Segment, Views, metrics, schema, wire},
     container::{BlockIndex, Parallel, Replay},
     format::FormatVersion,
-    frame::{DecodedFrame, FrameDecoder, Metrics, TableView},
+    frame::{DecodedFrame, Metrics, TableView},
     identity::{IdentityCodec, SessionStart},
     rows::TableId,
     scope::CaptureMode,
@@ -1769,10 +1769,10 @@ impl Snapshots {
         })
     }
 
-    /// Complete views carrying change facts and field stamps charged to `budget`, as a decoder
-    /// with change facts makes them.
-    pub fn with_change_facts(mut self, budget: MemoryBudget) -> Self {
-        self.views = self.views.with_change_facts(budget);
+    /// Complete views carrying change facts and field stamps, as a decoder with change facts
+    /// makes them.
+    pub fn with_change_facts(mut self) -> Self {
+        self.views = self.views.with_change_facts();
         self
     }
 
@@ -1873,8 +1873,7 @@ impl Snapshots {
     }
 
     /// The frame of the hour moved to last, as walking the recording would have built it,
-    /// views built anew on `parallel`'s workers when given. A refused change-fact credit leaves
-    /// the views as they were, for the build to be asked again.
+    /// views built anew on `parallel`'s workers when given.
     pub fn build(&mut self, parallel: Option<&Parallel<'_>>) -> io::Result<DecodedFrame> {
         let (branch, hour, metrics) = self
             .at
@@ -1884,9 +1883,7 @@ impl Snapshots {
         let built = self
             .views
             .build(self.cursor.state(), (branch, hour), metrics, parallel);
-        if let Err(error) = &built
-            && !FrameDecoder::change_fact_admission_refused(error)
-        {
+        if built.is_err() {
             self.broken = true;
             self.at = None;
         }

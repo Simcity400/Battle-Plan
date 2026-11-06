@@ -179,7 +179,7 @@ test('a restarted or reopened pop-out is sent the hour and playback chosen meanw
     const track = { source: { path: 'campaign.battleplan', revision: 'r' }, branch: { id: '1', firstHour: 0, lastHour: 100 }, axisOffset: 0 } as Parameters<typeof followMapPlayback>[1];
     let snapshot = { hour: 10, fraction: 0.25, hoursPerSecond: 1440, playing: true, seekSequence: 0 };
     const listeners = new Set<() => void>();
-    const clock = { getSnapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
+    const clock = { getSnapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, subscribeFrame: () => () => {} };
     const move = (next: typeof snapshot) => { snapshot = next; for (const listener of listeners) listener(); };
     // The host refuses a seek naming any window but the one whose viewer runs.
     let running: number | null = 1;

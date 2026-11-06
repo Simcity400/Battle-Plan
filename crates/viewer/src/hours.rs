@@ -20,7 +20,10 @@
 //! it, then the hours just behind it — and at most one pool's worth at a
 //! time, so a seek is answered as soon as the pool drains rather than after a
 //! backlog of hours nobody wants any more. Only wholly unaccepted, unneeded
-//! targets can be superseded; a pool-accepted target runs all of its parts.
+//! targets can be cancelled; a pool-accepted target runs all of its parts.
+//! Fast play builds a stride grid of hours aimed where the clock will be when
+//! they land; those targets share only with already-built neighbours, so they
+//! build side by side.
 //! Decode, pool and output readiness arrive as events, so none can keep a
 //! completed hour waiting on a later dispatch.
 //!
@@ -137,6 +140,9 @@ pub struct Cadence {
     pub stride: u32,
     pub count: u32,
     pub anchor: Option<Hour>,
+    /// Hours the clock passes while a target is built: the grid starts past
+    /// them, where the clock will be when the build lands.
+    pub lead: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -205,9 +211,7 @@ impl Want {
     /// fallback. Future hours finish only while they remain wanted.
     fn keeps_pending(&self, key: (BranchId, Hour), keep: &BTreeSet<(BranchId, Hour)>) -> bool {
         keep.contains(&key)
-            || (self.playing
-                && key.0 == self.branch
-                && key.1 <= self.hour)
+            || (self.playing && key.0 == self.branch && key.1 <= self.hour)
             // A paused catch-up still needs the scripted colour chain from
             // preceding in-flight hours. Explicit seeks invalidate the epoch
             // first; ordinary pauses must not cold-start that history.
@@ -251,6 +255,7 @@ impl Want {
         }
     }
 
+    /// A due unstarted hour is kept only while it is the newest one.
     fn keeps_flight(
         &self,
         key: (BranchId, Hour),
@@ -284,7 +289,7 @@ impl Want {
     }
 }
 
-// Experimental fast-play grid; absent by default.
+// Experimental fast-play grid for the campaign map; dashboard maps always use it.
 pub fn page_grid() -> bool {
     static SWITCH: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         std::env::var_os("BATTLE_PLAN_VIEWER_PAGE_GRID").or_else(|| std::env::var_os("HOI4_VIEWER_PAGE_GRID")).is_some_and(|value| value == "1")
@@ -334,6 +339,27 @@ fn neighbour_slots<T>(
             slots
                 .range((branch, hour)..=(branch, i32::MAX))
                 .find(|(key, _)| key.1 > hour),
+        )
+        .map(|(key, value)| (*key, value))
+        .collect()
+}
+
+/// The nearest earlier/later candidates whose shared parts are already built,
+/// so a strided target shares with them without waiting on an hour in flight.
+fn settled_slots(
+    slots: &BTreeMap<(BranchId, Hour), Slots>,
+    branch: BranchId,
+    hour: Hour,
+) -> Vec<((BranchId, Hour), &Slots)> {
+    slots
+        .range((branch, i32::MIN)..(branch, hour))
+        .rev()
+        .find(|(_, slots)| slots.filled())
+        .into_iter()
+        .chain(
+            slots
+                .range((branch, hour)..=(branch, i32::MAX))
+                .find(|(key, slots)| key.1 > hour && slots.filled()),
         )
         .map(|(key, value)| (*key, value))
         .collect()
@@ -640,6 +666,13 @@ pub(crate) struct ViewingCountry {
     pub resolved: Result<u32, String>,
 }
 
+/// Where a built hour's wall time went outside its parts.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Waits {
+    /// From posting the hour's source reads to their replies.
+    pub source_ms: f64,
+}
+
 /// One built hour.
 pub struct Built {
     /// Which [`Want::invalidates`] generation it belongs to.
@@ -658,6 +691,7 @@ pub struct Built {
     pub child_laps: Vec<BuilderSpan>,
     /// Wall milliseconds from dispatch.
     pub wall: f64,
+    pub waits: Waits,
     pub(crate) trace: trace::TargetTrace,
 }
 
@@ -697,38 +731,29 @@ struct Reusable {
 }
 
 impl Part {
-    fn resource_pending(&self) -> bool {
-        self.resource_error()
-            .is_some_and(|error| error.kind() == io::ErrorKind::WouldBlock)
-    }
-    fn resource_error(&self) -> Option<&io::Error> {
-        match self {
-            Self::Political(value) => value.as_ref().err(),
-            Self::Names(value) => value.as_ref().err(),
-            Self::Overlay(value) => value.as_ref().err(),
-            Self::Rails(value) => value.as_ref().err(),
-            Self::Buildings(value) => value.as_ref().err(),
-            Self::Movers(value) => value.as_ref().err(),
-            Self::Fog(value) => value.as_ref().err(),
-            Self::Snow(value) => value.as_ref().err(),
-        }
-    }
     /// The error an hour carries when its builder panicked.
     ///
     /// The failed part still arrives, so [`Pending::take`] can finish the hour
     /// and choose the highest-priority error after all parts report. Its shared
     /// slots are already filled by the dropped [`Fill`].
     fn failed(name: &'static str) -> Self {
-        let error = || io::Error::other(format!("{name}: the hour builder panicked"));
+        Self::refused(
+            name,
+            io::Error::other(format!("{name}: the hour builder panicked")),
+        )
+    }
+
+    /// The named part, finished with `error` instead of a value.
+    fn refused(name: &'static str, error: io::Error) -> Self {
         match name {
-            "political" => Self::Political(Err(error())),
-            "names" => Self::Names(Err(error())),
-            "overlay" => Self::Overlay(Err(error())),
-            "rails" => Self::Rails(Err(error())),
-            "buildings" => Self::Buildings(Err(error())),
-            "movers" => Self::Movers(Err(error())),
-            "fog" => Self::Fog(Err(error())),
-            _ => Self::Snow(Err(error())),
+            "political" => Self::Political(Err(error)),
+            "names" => Self::Names(Err(error)),
+            "overlay" => Self::Overlay(Err(error)),
+            "rails" => Self::Rails(Err(error)),
+            "buildings" => Self::Buildings(Err(error)),
+            "movers" => Self::Movers(Err(error)),
+            "fog" => Self::Fog(Err(error)),
+            _ => Self::Snow(Err(error)),
         }
     }
 }
@@ -747,6 +772,11 @@ impl<T> Slot<T> {
             value: Mutex::new(None),
             done: Condvar::new(),
         })
+    }
+
+    /// Whether the part has finished, so `wait` returns at once.
+    fn filled(&self) -> bool {
+        self.value.lock().map_or(true, |value| value.is_some())
     }
 
     /// The value, waiting for the part building it; `None` when it failed or
@@ -815,6 +845,13 @@ impl Slots {
             buildings: Slot::new(),
         }
     }
+
+    fn filled(&self) -> bool {
+        self.political.filled()
+            && self.borders.filled()
+            && self.rails.filled()
+            && self.buildings.filled()
+    }
 }
 
 /// Hour layers the next hours usually rebuild unchanged, kept by what they
@@ -843,20 +880,6 @@ impl Memos {
 enum Event {
     Shutdown,
     PoolSpace,
-    ProductSpace,
-    RetryColour {
-        ticket: u64,
-        key: (BranchId, Hour),
-        generation: u64,
-        reason: String,
-        work: Box<dyn FnOnce() + Send>,
-    },
-    RetryPart {
-        ticket: u64,
-        generation: u64,
-        reason: String,
-        job: dispatch_plan::HeldJob,
-    },
     ResultSpace,
     Frame {
         ticket: u64,
@@ -917,10 +940,21 @@ impl Resources {
         }
         // The decoder owns Replay, so its address cannot be reused while this
         // weak entry can upgrade. No bytes or decoder are copied per map.
-        let decoder = Arc::new(SharedDecoder::new(replay)?);
+        let decoder = Arc::new(SharedDecoder::serving(
+            replay,
+            map_workers(&self.pool),
+            Some(Arc::clone(&self.dropper)),
+        )?);
         decoders.insert(key, Arc::downgrade(&decoder));
         Ok(decoder)
     }
+}
+
+/// The change-run reader's workers: the threads the builder pool leaves free.
+fn map_workers(pool: &Pool) -> usize {
+    viewer_foundation::parallel::usable_processors()
+        .saturating_sub(viewer_foundation::parallel::Spawn::threads(pool))
+        .max(1)
 }
 
 /// An hour dispatched and not yet assembled.
@@ -1331,7 +1365,6 @@ struct LaneState {
     throughput: Throughput,
     gate: Option<&'static str>,
     rewant: bool,
-    pressure: Option<(BranchId, Hour)>,
 }
 
 impl LaneState {
@@ -1349,9 +1382,6 @@ impl LaneState {
     }
 
     fn next(&self) -> Option<(BranchId, Hour)> {
-        if self.pressure.is_some() {
-            return None;
-        }
         self.urgent
             .filter(|key| !self.frames.contains_key(key))
             .or_else(|| {
@@ -1367,9 +1397,6 @@ impl LaneState {
     }
 
     fn set_want(&mut self, wanted: Vec<(BranchId, Hour)>, behind: i32, pool: usize) {
-        if self.pressure.is_some_and(|key| !wanted.contains(&key)) {
-            self.pressure = None;
-        }
         self.wanted = wanted;
         self.behind = behind;
         self.pool = pool.max(1);
@@ -1504,7 +1531,6 @@ impl DecodeLane {
                             shared.changed.notify_all();
                             continue 'next;
                         }
-                        state.pressure = None;
                         state.urgent = Some(target);
                         break (target, state.behind, Some(read));
                     }
@@ -1521,9 +1547,6 @@ impl DecodeLane {
             let decode_clock =
                 trace::DecodeClock::start(viewer_foundation::profile_writer::profiling());
             let started = Instant::now();
-            let owner = playback.change_memory_owner().clone();
-            let releases = owner.track_releases();
-            let attempt = owner.release_token();
             let walked = Self::walk_for(shared, &mut playback, target, read.as_ref());
             let mut passed = Vec::new();
             let cancelled = || {
@@ -1557,30 +1580,6 @@ impl DecodeLane {
                     state.evict(Self::pending(shared));
                     drop(state);
                     drop(read);
-                    continue 'next;
-                }
-                Err(error) if source_pressure(&error) => {
-                    drop(passed);
-                    let mut state = Self::lock(shared);
-                    // Prefetch is optional; release its pins before returning the continuation.
-                    state.frames.retain_only(&BTreeSet::new());
-                    state.decode_profile = None;
-                    state.pressure = Some(target);
-                    if state.urgent == Some(target) {
-                        state.urgent = None;
-                    }
-                    drop(state);
-                    let pressure = DecodePressure::from_error(
-                        &error,
-                        playback.walk_start(branch, hour),
-                        playback.change_memory_owner(),
-                        attempt,
-                    )
-                    .expect("resource pressure");
-                    drop(releases);
-                    if let Some(read) = read {
-                        read.pressure(pressure);
-                    }
                     continue 'next;
                 }
                 Err(error) => Current::Gap {
@@ -1667,7 +1666,7 @@ impl DecodeLane {
                 break;
             };
             if let Err(error) = playback.advance_cancellable(branch, step, &|| !wanted()) {
-                if source_pressure(&error) || error.kind() == io::ErrorKind::Interrupted {
+                if error.kind() == io::ErrorKind::Interrupted {
                     return Err(error);
                 }
                 break;
@@ -1722,175 +1721,6 @@ type SourceMailbox = source_mailbox::Mailbox<(BranchId, Hour), Current, trace::D
 type SourceRead = source_mailbox::Read<(BranchId, Hour), Current, trace::DecodeSample>;
 type SourceHandle = source_mailbox::ReadHandle<(BranchId, Hour), Current, trace::DecodeSample>;
 
-fn source_pressure(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::WouldBlock
-        || replay_frame::frame::FrameDecoder::change_fact_admission_refused(error)
-}
-
-#[derive(Clone, Debug)]
-struct DecodePressure {
-    budget: engine_allocation::credit::MemoryBudget,
-    bytes: usize,
-    cursor: Option<i64>,
-    release: engine_allocation::credit::ReleaseToken,
-    reason: String,
-}
-impl DecodePressure {
-    fn from_error(
-        error: &io::Error,
-        cursor: Option<i64>,
-        owner: &engine_allocation::credit::MemoryBudget,
-        attempt: engine_allocation::credit::ReleaseToken,
-    ) -> Option<Self> {
-        let (budget, bytes, release) =
-            match replay_frame::frame::FrameDecoder::change_fact_pressure(error) {
-                Some(pressure) => pressure,
-                None if error.kind() == io::ErrorKind::WouldBlock => (owner, 1, attempt),
-                None => return None,
-            };
-        Some(Self {
-            budget: budget.clone(),
-            bytes,
-            cursor,
-            release: budget.after_cleanup(release),
-            reason: error.to_string(),
-        })
-    }
-    fn available(&self) -> bool {
-        self.budget.used() <= self.budget.limit().saturating_sub(self.bytes)
-    }
-}
-
-pub(crate) enum Output {
-    Hour(Built),
-    Pressure,
-}
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum PressureStage {
-    Source,
-    Colour,
-    Vision,
-    Part(u8),
-}
-struct SourceRefusal {
-    epoch: u64,
-    key: (BranchId, Hour),
-    reason: String,
-}
-#[derive(Default)]
-pub(crate) struct SourceStatus {
-    current: Mutex<BTreeMap<(u64, PressureStage), SourceRefusal>>,
-    active: AtomicBool,
-    repaint: OnceLock<eframe::egui::Context>,
-}
-impl SourceStatus {
-    pub(crate) fn set(&self, ticket: u64, epoch: u64, key: (BranchId, Hour), reason: String) {
-        self.set_stage(ticket, PressureStage::Source, epoch, key, reason);
-    }
-    fn set_stage(
-        &self,
-        ticket: u64,
-        stage: PressureStage,
-        epoch: u64,
-        key: (BranchId, Hour),
-        reason: String,
-    ) {
-        let mut current = self.current.lock().unwrap_or_else(|p| p.into_inner());
-        current.insert((ticket, stage), SourceRefusal { epoch, key, reason });
-        self.active.store(true, Ordering::Release);
-        drop(current);
-        self.wake();
-    }
-    fn clear(&self, ticket: u64, stage: Option<PressureStage>) {
-        if self.is_empty() {
-            return;
-        }
-        let mut current = self.current.lock().unwrap_or_else(|p| p.into_inner());
-        let changed = match stage {
-            Some(stage) => current.remove(&(ticket, stage)).is_some(),
-            None => {
-                let before = current.len();
-                current.retain(|&(owner, _), _| owner != ticket);
-                before != current.len()
-            }
-        };
-        self.active.store(!current.is_empty(), Ordering::Release);
-        drop(current);
-        if changed {
-            self.wake();
-        }
-    }
-    fn is_empty(&self) -> bool {
-        !self.active.load(Ordering::Acquire)
-    }
-    fn bind(&self, context: &eframe::egui::Context) {
-        self.repaint.get_or_init(|| {
-            context.request_repaint();
-            context.clone()
-        });
-    }
-    fn wake(&self) {
-        if let Some(context) = self.repaint.get() {
-            context.request_repaint();
-        }
-    }
-    pub(crate) fn for_target(&self, epoch: u64, key: (BranchId, Hour)) -> io::Result<()> {
-        if self.is_empty() {
-            return Ok(());
-        }
-        match self
-            .current
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .find(|refusal| refusal.epoch == epoch && refusal.key == key)
-        {
-            Some(refusal) => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                refusal.reason.clone(),
-            )),
-            _ => Ok(()),
-        }
-    }
-    fn for_wait(&self, epoch: u64, target: (BranchId, Hour)) -> io::Result<()> {
-        if self.is_empty() {
-            return Ok(());
-        }
-        match self
-            .current
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .next()
-        {
-            Some(refusal) => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                if refusal.epoch != epoch {
-                    format!(
-                        "branch {} hour {} epoch {} blocks exact branch {} hour {} epoch {}: {}",
-                        refusal.key.0,
-                        refusal.key.1,
-                        refusal.epoch,
-                        target.0,
-                        target.1,
-                        epoch,
-                        refusal.reason
-                    )
-                } else if refusal.key == target {
-                    refusal.reason.clone()
-                } else {
-                    format!(
-                        "branch {} hour {} blocks exact branch {} hour {}: {}",
-                        refusal.key.0, refusal.key.1, target.0, target.1, refusal.reason
-                    )
-                },
-            )),
-            _ => Ok(()),
-        }
-    }
-}
-type Refusal = Arc<SourceStatus>;
-
 type Requested = (u64, Want, Option<trace::Stamp>);
 
 struct Coordinator {
@@ -1930,8 +1760,7 @@ struct CoordinatorState {
     pool: Arc<Pool>,
     parallel: usize,
     events: Sender<Event>,
-    outbox: mpsc::SyncSender<Output>,
-    refusal: Refusal,
+    outbox: mpsc::SyncSender<Built>,
     result_space: Arc<AtomicBool>,
 }
 
@@ -2016,7 +1845,10 @@ impl CoordinatorState {
             })
             .map(|anchor| anchor.key.1);
         let (stride, count) = (grid.cadence.stride, grid.cadence.count);
-        cadence::targets(stride, count, want.hour, anchor, range)
+        let from = want
+            .hour
+            .saturating_add(i32::try_from(grid.cadence.lead).unwrap_or(i32::MAX));
+        cadence::targets(stride, count, from, anchor, range)
     }
 
     fn note_sent(&mut self, epoch: u64, key: (BranchId, Hour), order: u64, usable: bool) {
@@ -2088,20 +1920,13 @@ impl coordinator::BuildTarget for Coordinator {
     ) -> dispatch_plan::PreparedTarget {
         use dispatch_plan::{DispatchPlan, PreparedTarget};
         let projected = if let Current::Frame(frame) = &current {
-            let reusable = self.reusable.get(&(plan.want.branch, plan.hour));
-            let projected = if let Some(parts) = reusable {
-                Ok(Arc::clone(&parts.vision))
-            } else {
-                let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
-                HourView::new(&self.content, frame, 0.0).vision(&plan.want.perspective)
-            };
-            if projected
-                .as_ref()
-                .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock)
-            {
-                return PreparedTarget::Pressure(Box::new(plan), current);
-            }
-            Some(projected)
+            Some(match self.reusable.get(&(plan.want.branch, plan.hour)) {
+                Some(parts) => Ok(Arc::clone(&parts.vision)),
+                None => {
+                    let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
+                    HourView::new(&self.content, frame, 0.0).vision(&plan.want.perspective)
+                }
+            })
         } else {
             None
         };
@@ -2137,6 +1962,7 @@ impl coordinator::BuildTarget for Coordinator {
                     laps: Vec::new(),
                     child_laps: Vec::new(),
                     wall: 0.0,
+                    waits: Waits::default(),
                     trace,
                 }));
             }
@@ -2167,6 +1993,7 @@ impl coordinator::BuildTarget for Coordinator {
                     laps: Vec::new(),
                     child_laps: Vec::new(),
                     wall: 0.0,
+                    waits: Waits::default(),
                     trace,
                 }));
             }
@@ -2536,21 +2363,6 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
                     Err(_) => Part::failed(name),
                 }
             };
-            if part.resource_pending() {
-                let reason = part.resource_error().expect("pending error").to_string();
-                drop(part);
-                // Failed-attempt staging is gone before observing the release generation.
-                let generation = map_display_data::credit::display_products().generation();
-                job.trace.finish(name, "pending-credit");
-                let events = job.events.clone();
-                let _ = events.send(Event::RetryPart {
-                    ticket,
-                    generation,
-                    reason,
-                    job: part_job(job),
-                });
-                return;
-            }
             let cpu_ms = cpu_started.and_then(|start| {
                 viewer_foundation::profiling::current_thread_cpu_time()?
                     .checked_sub(start)
@@ -2666,14 +2478,15 @@ impl Pipeline {
         resources: &Resources,
     ) -> io::Result<Self> {
         let decoder = resources.decoder(Arc::clone(&replay))?;
-        // Dashboard maps ask for one absolute target, without per-map lookahead.
+        // Each map keeps as many hours in flight as the shared pool builds at once.
+        let parallel = viewer_foundation::parallel::Spawn::threads(&*resources.pool);
         Self::start(
             content,
             replay,
             Arc::clone(&resources.pool),
             resources.frame_workers.clone(),
             Some(decoder),
-            1,
+            parallel,
             None,
         )
     }
@@ -2688,24 +2501,19 @@ impl Pipeline {
         binding: Option<Arc<crate::map_binding::MapBinding>>,
     ) -> io::Result<Self> {
         let (events, inbox) = mpsc::channel();
-        // Keep the original result-channel width. Complete unsent targets retain
-        // live credits, so a window that stops taking them bounds work rather
-        // than parking the event-driven coordinator on a channel send.
+        // A window that stops taking hours bounds work rather than parking the
+        // event-driven coordinator on a channel send.
         let (outbox, results) = mpsc::sync_channel(parallel);
         let requested = Arc::new(Mutex::new(None));
         let result_space = Arc::new(AtomicBool::new(false));
-        let refusal = Refusal::default();
         let workers = Workers::new(Arc::clone(&pool) as _);
         let lane = match shared_decoder {
             Some(_) => None,
             None => {
                 let reader = BlockReader::new(Arc::clone(&replay), Arc::new(Dropper::new()?));
-                let map_workers = viewer_foundation::parallel::usable_processors()
-                    .saturating_sub(viewer_foundation::parallel::Spawn::threads(&*pool))
-                    .max(1);
                 let mut playback = Playback::unloaded(Arc::clone(&replay))?
                     .with_reader(reader)
-                    .with_map_workers(map_workers);
+                    .with_map_workers(map_workers(&pool));
                 if let Some(binding) = binding {
                     playback = playback.with_map_binding(binding);
                 }
@@ -2740,10 +2548,9 @@ impl Pipeline {
                 events: events.clone(),
                 outbox,
                 result_space: result_space.clone(),
-                refusal: refusal.clone(),
             },
         };
-        let driver = coordinator::start(coordinator)?;
+        let driver = coordinator::start(coordinator);
         thread::Builder::new()
             .name("hour coordinator".into())
             .spawn(move || {
@@ -2751,7 +2558,7 @@ impl Pipeline {
                 background_priority();
                 coordinator::run(driver, inbox)
             })?;
-        let completed = Completions::new(results, refusal, result_space, events.clone());
+        let completed = Completions::new(results, result_space, events.clone());
         Ok(Self {
             device,
             content,
@@ -2925,41 +2732,30 @@ impl Pipeline {
 
     #[cfg(test)]
     pub fn wait(&self) -> io::Result<Built> {
-        let want = self.want.as_ref().ok_or_else(stopped)?;
-        self.completed.wait(self.epoch, (want.branch, want.hour))
-    }
-
-    pub(crate) fn bind_presentation(&self, context: &eframe::egui::Context) {
-        self.completed.bind_presentation(context);
+        self.want.as_ref().ok_or_else(stopped)?;
+        self.completed.wait()
     }
 }
 
 pub(crate) struct Completions {
-    results: Receiver<Output>,
-    refusal: Refusal,
+    results: Receiver<Built>,
     result_space: Arc<AtomicBool>,
     received: Cell<u64>,
     events: Sender<Event>,
 }
 impl Completions {
-    fn new(
-        results: Receiver<Output>,
-        refusal: Refusal,
-        result_space: Arc<AtomicBool>,
-        events: Sender<Event>,
-    ) -> Self {
+    fn new(results: Receiver<Built>, result_space: Arc<AtomicBool>, events: Sender<Event>) -> Self {
         Self {
             results,
-            refusal,
             result_space,
             received: Cell::new(0),
             events,
         }
     }
     #[cfg(test)]
-    pub(crate) fn for_test(results: Receiver<Output>, refusal: Arc<SourceStatus>) -> Self {
+    pub(crate) fn for_test(results: Receiver<Built>) -> Self {
         let (events, _) = mpsc::channel();
-        Self::new(results, refusal, Arc::new(AtomicBool::new(false)), events)
+        Self::new(results, Arc::new(AtomicBool::new(false)), events)
     }
 
     /// Every hour finished since the last call, without waiting.
@@ -2975,33 +2771,13 @@ impl Completions {
         Ok(built)
     }
 
-    /// The next hour to finish, or a named resource refusal without a source gap.
-    pub(crate) fn wait(&self, epoch: u64, target: (BranchId, Hour)) -> io::Result<Built> {
-        loop {
-            let output = match self.results.try_recv() {
-                Ok(output) => output,
-                Err(mpsc::TryRecvError::Empty) => {
-                    // Retired accepted jobs can also pin credit needed by this exact target.
-                    self.refusal.for_wait(epoch, target)?;
-                    self.results.recv().map_err(|_| stopped())?
-                }
-                Err(mpsc::TryRecvError::Disconnected) => return Err(stopped()),
-            };
-            self.results_freed();
-            if let Output::Hour(built) = output {
-                built.trace.delivered();
-                self.received.set(self.received.get() + 1);
-                return Ok(built);
-            }
-        }
-    }
-
-    pub(crate) fn bind_presentation(&self, context: &eframe::egui::Context) {
-        self.refusal.bind(context);
-    }
-
-    pub(crate) fn pressure_for(&self, epoch: u64, key: (BranchId, Hour)) -> io::Result<()> {
-        self.refusal.for_target(epoch, key)
+    /// The next hour to finish.
+    pub(crate) fn wait(&self) -> io::Result<Built> {
+        let built = self.results.recv().map_err(|_| stopped())?;
+        self.results_freed();
+        built.trace.delivered();
+        self.received.set(self.received.get() + 1);
+        Ok(built)
     }
 
     fn results_freed(&self) {
@@ -3011,17 +2787,9 @@ impl Completions {
     }
 }
 
-pub(crate) fn poll_completed(results: &Receiver<Output>) -> io::Result<(Vec<Built>, bool)> {
-    let mut consumed = false;
-    let built = poll_results(|| {
-        loop {
-            let output = results.try_recv()?;
-            consumed = true;
-            if let Output::Hour(built) = output {
-                return Ok(built);
-            }
-        }
-    })?;
+pub(crate) fn poll_completed(results: &Receiver<Built>) -> io::Result<(Vec<Built>, bool)> {
+    let built = poll_results(|| results.try_recv())?;
+    let consumed = !built.is_empty();
     Ok((built, consumed))
 }
 

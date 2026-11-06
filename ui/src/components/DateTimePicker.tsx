@@ -21,11 +21,18 @@ interface Props {
   describedBy?: string;
   id?: string;
   onChange: (hour: number) => void;
+  /** A value that changes too often to render: the trigger's date and time are painted from it
+   * directly; `value` still drives the calendar. */
+  live?: LiveValue;
 }
 
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+export interface LiveValue { read: () => number | null; subscribe: (changed: () => void) => () => void }
 
-export default function DateTimePicker({ label, hideLabel = false, value, min, max, otherValue, disabled, invalid, describedBy = 'date-range-help range-error', id: suppliedId, onChange }: Props) {
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const dateText = (date: ReturnType<typeof gameDate>, value: number | null) =>
+  date ? formatDate(date) : value != null ? formatDateTime(value) : 'Choose date';
+
+export default function DateTimePicker({ label, hideLabel = false, value, min, max, otherValue, disabled, invalid, describedBy = 'date-range-help range-error', id: suppliedId, onChange, live }: Props) {
   const generatedId = useId();
   const id = suppliedId ?? generatedId;
   const menu = usePopover('start');
@@ -51,7 +58,23 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
   const selectedDayStart = value != null && selected ? value - selected.hour + 1 : min;
   const rangeFirst = value != null && otherValue != null ? Math.min(value, otherValue) : null;
   const rangeLast = value != null && otherValue != null ? Math.max(value, otherValue) : null;
+  const liveDate = useRef<HTMLSpanElement>(null);
+  const liveTime = useRef<HTMLSpanElement>(null);
 
+  useLayoutEffect(() => {
+    if (!live) return;
+    let shown: number | null | undefined;
+    const paint = () => {
+      const current = live.read();
+      if (current === shown || !liveDate.current || !liveTime.current) return;
+      shown = current;
+      const date = current == null ? null : gameDate(current);
+      liveDate.current.textContent = dateText(date, current);
+      liveTime.current.textContent = date ? formatTime(date.hour) : '—';
+    };
+    paint();
+    return live.subscribe(paint);
+  }, [live]);
 
   useLayoutEffect(() => {
     if (!open || !focusDay.current) return;
@@ -124,17 +147,20 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
       popoverTarget={`${id}-popup`}>
       <Icon name="calendar" />
       <span id={`${id}-value`} className="date-time-value">
-        <span>{selected ? formatDate(selected) : value != null ? formatDateTime(value) : 'Choose date'}</span>
-        <span className="date-time-hour">{selected ? formatTime(selected.hour) : '—'}</span>
+        {live ? <><span key="live-date" ref={liveDate} /><span key="live-time" ref={liveTime} className="date-time-hour" /></>
+          : <><span key="date">{dateText(selected, value)}</span><span key="time" className="date-time-hour">{selected ? formatTime(selected.hour) : '—'}</span></>}
       </span>
       <Icon name="chevron-down" />
     </button>
     <Popover menu={menu} id={`${id}-popup`} className="date-time-popover"
       aria-label={`${label} date and time`} onToggle={(event) => {
         const isOpen = event.newState === 'open';
-        if (isOpen && initial) {
-          showMonth(monthIndex(initial), true);
-          setFocusedDay(initial.day);
+        // A live value opens on the date shown now, which `value` may trail.
+        const shown = live ? live.read() : value;
+        const opening = (shown == null ? null : gameDate(shown)) ?? minimum;
+        if (isOpen && opening) {
+          showMonth(monthIndex(opening), true);
+          setFocusedDay(opening.day);
         }
       }}>
       <PopoverBody open={open}>{() => <>

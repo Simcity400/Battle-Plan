@@ -1,11 +1,6 @@
 use super::*;
 use incremental::{BuildingsBase, FloatingInputs};
-use map_display_data::{
-    copy_index::CopyIndex,
-    credit::{Credit, display_products},
-    retained::Retained,
-    value_index::ValueIndex,
-};
+use map_display_data::{copy_index::CopyIndex, retained::Retained, value_index::ValueIndex};
 use replay_frame::frame::ViewIdentity;
 
 #[derive(Clone)]
@@ -37,7 +32,6 @@ impl Counts {
     }
 }
 pub(super) struct Output {
-    _credit: Credit,
     branch: u64,
     campaign: ViewIdentity,
     by_province_slot: CopyIndex<(u32, u32), ()>,
@@ -74,8 +68,6 @@ impl Output {
         previous: Option<&BuildingsBase>,
         fog_changes: Option<&CopyIndex<u32, ()>>,
     ) -> io::Result<Self> {
-        let credit = display_products()
-            .admit_item(size_of::<Self>() + 2 * size_of::<usize>() + align_of::<Self>())?;
         let old = previous.map(|base| &base.floating_output).filter(|old| {
             old.branch == frame.branch && old.campaign.is(&frame.tables[TableId::Campaign.index()])
         });
@@ -103,12 +95,6 @@ impl Output {
         let mut slots = old.map_or_else(ValueIndex::default, |old| old.slots.clone());
         let mut counts = old.map_or_else(CopyIndex::default, |old| old.counts.clone());
         let mut totals = old.map_or_else(Counts::default, |old| old.totals);
-        let bytes = dirty
-            .len()
-            .checked_mul(size_of::<(u32, PreparedSlot)>())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let changes_credit = display_products()
-            .admit_item(bytes + Retained::<Vec<(u32, PreparedSlot)>>::overhead())?;
         let mut changes = Vec::with_capacity(dirty.len());
         let ordinary = assets.ordinary_slot_count();
         for (&index, _) in dirty.iter() {
@@ -129,19 +115,18 @@ impl Output {
                 .get(&index)
                 .is_none_or(|before| !(**before).0.same_bits(&paint))
             {
-                slots = slots.inserted(index, Retained::build(0, || Paint(paint.clone()))?)?;
+                slots = slots.inserted(index, Retained::new(Paint(paint.clone())))?;
                 changes.push((id, paint));
             }
         }
         Ok(Self {
-            _credit: credit,
             branch: frame.branch,
             campaign: frame.tables[TableId::Campaign.index()].identity(),
             by_province_slot,
             slots,
             counts,
             totals,
-            changes: Retained::with_credit(changes_credit, || changes),
+            changes: Retained::new(changes),
         })
     }
 }
@@ -205,7 +190,7 @@ fn evaluate(
             source: None,
             id,
             drawn_at_distance: Some(false),
-            entity: entity.map(PreparedEntity::retain).transpose()?,
+            entity: entity.map(PreparedEntity::retain),
         },
         tally,
     ))

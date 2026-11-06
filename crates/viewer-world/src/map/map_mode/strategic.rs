@@ -55,9 +55,6 @@ impl Content {
             .unwrap_or_else(|error| error.into_inner())
             .bank = Some(std::sync::Arc::downgrade(map));
     }
-    pub fn evict(&self) {
-        *self.fold.lock().unwrap_or_else(|error| error.into_inner()) = Default::default();
-    }
     pub fn layer(
         &self,
         mode: Stock,

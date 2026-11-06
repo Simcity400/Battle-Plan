@@ -1,4 +1,3 @@
-use map_display_data::credit::{Credit, display_products};
 use replay_data::rows::{RowCodec, TableId, tables};
 use replay_frame::frame::{DecodedFrame, ViewIdentity};
 use std::{collections::BTreeMap, io, sync::Mutex};
@@ -11,11 +10,9 @@ struct State {
     branch: u64,
     table: ViewIdentity,
     by_native: BTreeMap<u32, u32>,
-    credit: Credit,
     #[cfg(test)]
     visits: usize,
 }
-const ENTRY_BYTES: usize = 12 * (2 * size_of::<u32>() + size_of::<usize>()) + 64;
 impl CountryIndex {
     pub fn contains(&self, frame: &DecodedFrame, native: u32, slot: u32) -> io::Result<bool> {
         let rows = core::<tables::Countries>(frame)?;
@@ -32,12 +29,6 @@ impl CountryIndex {
                 return Ok(state.by_native.get(&native) == Some(&slot));
             }
             if let Some(changes) = view.changes_for(&state.table, fields) {
-                let bytes = rows
-                    .len()
-                    .checked_mul(ENTRY_BYTES)
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                // Keep old nodes charged until removals and replacements have completed.
-                state.credit.resize(state.credit.bytes().max(bytes))?;
                 for key in changes.deleted() {
                     if let Ok(native) = u32::try_from(*key) {
                         state.by_native.remove(&native);
@@ -67,17 +58,11 @@ impl CountryIndex {
                         state.visits += 1;
                     }
                 }
-                state.credit.resize(bytes)?;
                 state.table = view.identity();
                 return Ok(state.by_native.get(&native) == Some(&slot));
             }
         }
         *held = None;
-        let bytes = rows
-            .len()
-            .checked_mul(ENTRY_BYTES)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let credit = display_products().admit(bytes)?;
         let by_native: BTreeMap<_, _> = rows
             .iter()
             .map(|row| (row.id, row.canonical_slot))
@@ -88,7 +73,6 @@ impl CountryIndex {
             branch: frame.branch,
             table: view.identity(),
             by_native,
-            credit,
             #[cfg(test)]
             visits: rows.len(),
         });
@@ -128,8 +112,7 @@ mod tests {
             })
             .collect();
         let mut encoder = FrameEncoder::new();
-        let mut decoder = FrameDecoder::for_tables(&[TableId::Countries])
-            .with_change_facts(display_products().clone());
+        let mut decoder = FrameDecoder::for_tables(&[TableId::Countries]).with_change_facts();
         let first = encoder.encode(frame(1, rows.clone()), true).unwrap();
         let first = decoder.apply(&first).unwrap();
         assert!(index.contains(&first, 1501, 6501).unwrap());

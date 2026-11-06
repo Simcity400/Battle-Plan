@@ -32,14 +32,27 @@ export interface PlaybackSnapshot {
   bounds: HourWindow | null;
 }
 
-/** One wall clock per dashboard. React only subscribes where time is needed. */
+/** How often the hour reaches data views while playing: each step renders as a transition that must
+ * finish before the next arrives. A seek, a step, a pause and the branch end are told at once. */
+export const HOUR_PACE_MS = 100;
+
+/** One wall clock per dashboard, with three signals:
+ * - `subscribeFrame`: every published position, once per display frame while playing; for direct
+ *   DOM painters only, never React state.
+ * - `subscribe`: the clock's anchor (play, pause, speed, seek, step, bounds, the branch end), not
+ *   forward playback; the native maps run their own clock between anchors.
+ * - `subscribeHour`: the hour for data, at most every `HOUR_PACE_MS` while playing, always the latest. */
 export class PlaybackController {
   private snapshot: PlaybackSnapshot = { position: 0, hour: 0, fraction: 0, playing: false, hoursPerSecond: 1, sequence: 0, seekSequence: 0, bounds: null };
   private listeners = new Set<() => void>();
+  private frameListeners = new Set<() => void>();
   private hourListeners = new Set<() => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private frame: number | null = null;
   private lastTime = 0;
+  /** An hour change hour listeners have not been told yet, and when they were last told. */
+  private hourDue = false;
+  private hourTold = -Infinity;
 
   getSnapshot = () => this.snapshot;
   /** The position at `now`, carried forward from the last tick while playing so
@@ -52,6 +65,7 @@ export class PlaybackController {
   getHour = () => this.snapshot.hour;
   getMotion = () => this.snapshot.playing ? this.snapshot.hoursPerSecond : undefined;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  subscribeFrame = (listener: () => void) => { this.frameListeners.add(listener); return () => { this.frameListeners.delete(listener); }; };
   subscribeHour = (listener: () => void) => { this.hourListeners.add(listener); return () => { this.hourListeners.delete(listener); }; };
 
   setBounds(bounds: HourWindow | null, reset = false): void {
@@ -110,7 +124,7 @@ export class PlaybackController {
     this.lastTime = now;
     const bound = this.snapshot.bounds?.lastHour ?? this.snapshot.position;
     const position = Math.min(bound, this.snapshot.position + seconds * this.snapshot.hoursPerSecond);
-    this.publish({ ...this.snapshot, position, playing: position < bound });
+    this.publish({ ...this.snapshot, position, playing: position < bound }, false, true);
     if (!this.snapshot.playing) this.syncTimer();
   }
 
@@ -124,15 +138,26 @@ export class PlaybackController {
     return position;
   }
 
-  private publish(next: PlaybackSnapshot, discontinuity = false): void {
+  /** `forward` marks a playback step, which moves no anchor unless it ends playback. */
+  private publish(next: PlaybackSnapshot, discontinuity = false, forward = false): void {
     const hour = Math.floor(next.position);
     const hourChanged = hour !== this.snapshot.hour;
+    const anchor = !forward || next.playing !== this.snapshot.playing;
     this.snapshot = { ...next, hour, fraction: next.position - hour,
       sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0),
       seekSequence: this.snapshot.seekSequence + (discontinuity ? 1 : 0) };
     perfLog?.clock(this.snapshot.position, this.snapshot.playing, this.snapshot.hoursPerSecond, this.snapshot.sequence, this.snapshot.seekSequence);
-    for (const listener of this.listeners) listener();
-    if (hourChanged || discontinuity) for (const listener of this.hourListeners) listener();
+    // Settled before anyone is told, so a listener that moves the clock tells its own change in full.
+    this.hourDue ||= hourChanged || discontinuity;
+    const now = performance.now();
+    const tellHour = this.hourDue && (anchor || now - this.hourTold >= HOUR_PACE_MS);
+    if (tellHour) { this.hourDue = false; this.hourTold = now; }
+    for (const listener of this.frameListeners) listener();
+    if (anchor) for (const listener of this.listeners) listener();
+    if (tellHour) {
+      perfLog?.hour(this.snapshot.hour);
+      for (const listener of this.hourListeners) listener();
+    }
   }
 
   private syncTimer(): void {
@@ -179,13 +204,14 @@ export function useTransitionValue<T>(subscribe: ((changed: () => void) => () =>
   return subscribe && shown.read === read && shown.generation === generation.current ? shown.value : read();
 }
 
-/** The clock's hour; unfollowed (pinned) widgets read it without re-rendering for it. */
+/** The clock's hour, paced for data while playing; unfollowed (pinned) widgets read it without
+ * re-rendering for it. */
 export function usePlaybackHour(clock: PlaybackController, follow = true): number {
   return useTransitionValue(follow ? clock.subscribeHour : null, clock.getHour);
 }
 
 /** The rate charts ease at: the playback speed while playing, none while paused, so a jump,
- * a scrub or a new selection is drawn at once. */
+ * a scrub or a new selection is drawn at once. Only anchors change it. */
 export function usePlaybackMotion(clock: PlaybackController): number | undefined {
   return useTransitionValue(clock.subscribe, clock.getMotion);
 }

@@ -313,6 +313,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
                 laps: Vec::new(),
                 child_laps: Vec::new(),
                 wall: 0.,
+                waits: Default::default(),
                 trace: Default::default(),
             },
         );

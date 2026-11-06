@@ -854,6 +854,7 @@ impl Product for ProductionLineBreakdown {
             mut index,
             history: original_history,
             approximate,
+            ..
         } = super::opened(source, &country, context, cancelled, &mut warnings)?;
         super::prefix_warning(&approximate, &mut warnings);
         let original = index.overview(original_history, cancelled)?;

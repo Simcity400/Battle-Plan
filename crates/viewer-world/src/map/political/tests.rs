@@ -784,8 +784,7 @@ fn territory_changed_rows_match_frozen_regions_and_keep_untouched_planes() {
     let mut source = occupied();
     source.tables[TableId::Campaign.index()] = crate::map::test_campaign();
     let mut encoder = FrameEncoder::new();
-    let mut decoder =
-        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     let mut fold = TerritoryFold::default();
     let raw = encoder.encode(source.clone(), true).unwrap();
     let frame = decoder.advance(&raw).unwrap();
@@ -942,8 +941,7 @@ fn undecided_colour_sources_are_withheld_not_guessed() {
         }]))
     };
     let mut encoder = FrameEncoder::new();
-    let mut decoder =
-        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     let mut fold = TerritoryFold::default();
     // Germany is key 1 and the Soviet Union, controlling province 3, key 2.
     let steps: [(TableView, [u8; 3], [u8; 3], Option<&str>); 5] = [
@@ -1025,8 +1023,7 @@ fn territory_relation_delta_boundaries_and_link_aliases_match_independent_oracle
         }]))
         .into();
     let mut encoder = FrameEncoder::new();
-    let mut decoder =
-        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     let mut fold = TerritoryFold::default();
     let mut previous: Option<Arc<Regions>> = None;
     for step in 0..9 {
@@ -1143,8 +1140,7 @@ fn batched_territory_indexes_keep_repeated_links_counts_and_sorted_planes_exact(
     source.tables[TableId::Campaign.index()] = crate::map::test_campaign();
     let map = Arc::new(map);
     let mut encoder = FrameEncoder::new();
-    let mut decoder = FrameDecoder::new()
-        .with_change_facts(map_display_data::credit::display_products().clone());
+    let mut decoder = FrameDecoder::new().with_change_facts();
     let mut fold = TerritoryFold::default();
     let mut previous: Option<Arc<Regions>> = None;
     for step in 0..4 {
