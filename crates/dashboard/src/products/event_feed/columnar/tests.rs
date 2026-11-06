@@ -12,7 +12,8 @@ use replay_data::{
         EventFeedEventIdentity, EventFeedScript,
     },
     rows::{
-        CountryPowerChangeRow, PoliticsCaptureCoverageRow, Recorded, RelationTupleRow, SliceReadRow,
+        CountryPowerChangeRow, PoliticsCaptureCoverageRow, Recorded, RelationTupleRow, RowCodec,
+        SliceReadRow,
     },
 };
 
