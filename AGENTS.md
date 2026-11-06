@@ -35,6 +35,10 @@
 
 - Don't run tests, not even before merging. Tests run once a day on this machine: the Windows task `Battle Plan daily tests` runs `tools/daily_tests.py` on `main` at 03:00.
 
+## Asking the user
+
+- Ask the user only with the question tool. A question written in an ordinary reply is never seen.
+
 ## Sharing this machine
 
 - Never use plain `git stash`; the stash is shared.
