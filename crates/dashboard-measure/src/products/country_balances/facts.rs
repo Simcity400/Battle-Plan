@@ -179,7 +179,7 @@ impl Operator<World> for Projector {
                 named,
                 whole: true,
                 countries,
-            });
+            })?;
             return Ok(());
         }
         let tags: BTreeSet<Tag> = if whole {
@@ -224,7 +224,7 @@ impl Operator<World> for Projector {
             named,
             whole,
             countries,
-        });
+        })?;
         Ok(())
     }
 }
