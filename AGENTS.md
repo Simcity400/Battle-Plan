@@ -7,6 +7,8 @@
 - Never show missing data as zero, and never fill a gap with a guess.
 - Keep the game out of the repo: no installed content, addresses, decompiler names, or copied game code, shaders, scripts or text. Name offsets for what they are.
 - Read game data from the user's installation at run time. Installed content are read-only.
+- A recording carries every game fact it needs (definitions, localisation, executable tables, map layout), so playback never takes facts from the installed game. Art comes from the current installation, labelled as current; missing art is a named placeholder.
+- An unrecognised game build is a warning, never a refusal. Each build-specific part verifies itself and is withheld by name if it fails.
 - Mods are first-class: read content through the recorded mod stack, hard-code nothing from vanilla, and refuse anything unsupported by name.
 
 ## Building
@@ -25,7 +27,7 @@
 
 - Make everything as fast and efficient as it can be. Design every part, new or changed, as the best solution built from scratch, not a patch on what is there.
 - Design for 1,500 countries. No caps we made up.
-- Change file-format readers, writers and users together. No backwards compatibility.
+- Change file-format readers, writers and users together. Recordings stay readable forever: a recording-format change ships a lossless upgrader from the previous format and keeps the original file. Other formats need no backwards compatibility.
 - Don't write READMEs or other docs.
 - Only comment what reading the code can't tell you: a quirk, or something an agent must know. Keep it to one short line. Licence notices stay.
 
