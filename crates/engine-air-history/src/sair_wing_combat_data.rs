@@ -3,7 +3,7 @@
 use crate::Memory;
 
 /// Primary record vtable.
-pub const VTABLE_RVA: usize = 0x02a9_8f50;
+pub const VTABLE_RVA: usize = 0x02a9_99d0;
 /// Array stride, used for reverse scans and growth.
 pub const STRIDE: usize = 0x98;
 /// Wing ID, u32.

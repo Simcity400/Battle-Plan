@@ -26,7 +26,7 @@ const OPERATIVE_MODIFIER: usize = 0x408;
 const STATIC_DATABASE_RVA: usize = 0x033d_e590;
 const NATIONALITY_MODIFIER: usize = 0x130;
 /// Counterintelligence mission country-tag virtual dispatch.
-const MISSION_VTABLE_RVA: usize = 0x02a9_8510;
+const MISSION_VTABLE_RVA: usize = 0x02a9_8f90;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {

@@ -3,7 +3,7 @@
 use crate::{Memory, cpdx_array::Array, read};
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x02aa_3d40;
+pub const VTABLE_RVA: usize = 0x02aa_4860;
 /// Railway-construction reference type identifier.
 pub const REFERENCE_TYPE_ID: u32 = 4_713;
 /// Initial railway level, signed i32, serialized as a dword.

@@ -7,9 +7,9 @@ use crate::{
 };
 
 /// Intel-state primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_bac8;
+pub const VTABLE_RVA: usize = 0x029d_bb28;
 /// Constructor publishing the country-owned intel object.
-pub const CONSTRUCTOR_RVA: usize = 0x00d6_3410;
+pub const CONSTRUCTOR_RVA: usize = 0x00d6_3480;
 /// Allocation size.
 pub const SIZE: usize = 0xf0;
 /// Owner raw country id, u32.

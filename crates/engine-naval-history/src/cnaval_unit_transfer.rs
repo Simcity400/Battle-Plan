@@ -2,7 +2,7 @@
 //! is installed.
 
 /// CNavalUnitTransfer vtable.
-pub const VTABLE_RVA: usize = 0x029e_a290;
+pub const VTABLE_RVA: usize = 0x029e_a3a0;
 /// CNavalUnitTransfer packed reference handle u64.
 pub const HANDLE: usize = 0x08;
 /// Signed combat-reference count. Nonzero selects combat action nine
@@ -17,7 +17,7 @@ pub const TARGET_PROVINCE: usize = 0x50;
 #[cfg(test)]
 pub const SOURCE_PROVINCE: usize = 0x54;
 /// CNavalUnitTransfer constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00e9_3e00;
+pub const CONSTRUCTOR_RVA: usize = 0x00e9_3e70;
 
 use crate::{
     Memory, ccountry, ccountry_intel, cdiplomacy_status, cgame_state, country_intel_row,

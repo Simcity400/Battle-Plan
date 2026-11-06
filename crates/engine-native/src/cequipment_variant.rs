@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// CEquipmentVariant vtable.
-pub const VTABLE_RVA: usize = 0x029c_e220;
+pub const VTABLE_RVA: usize = 0x029c_e250;
 /// CEquipmentVariant reference type.
 pub const REFERENCE_TYPE: u32 = 70;
 /// CEquipmentVariant u32 type word.
@@ -113,7 +113,7 @@ pub const ICON_OVERRIDE_TOKEN: usize = 0x458;
 /// within each pool, retaining the pool's content eligibility rules.
 pub const ICON_ENTRY_RECORDED: usize = 0x28;
 /// Equipment-variant constructor initializes the vtable and mission storage.
-pub const CONSTRUCTOR_RVA: usize = 0x00c2_5ff0;
+pub const CONSTRUCTOR_RVA: usize = 0x00c2_6060;
 
 /// Authenticates the variant and preserves its native low-type/high-id reference.
 pub fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {

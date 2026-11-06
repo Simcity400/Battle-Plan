@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// Serialized child-front record; stride 72 bytes.
-const ENTRY_VTABLE_RVA: usize = 0x02a0_2508;
+const ENTRY_VTABLE_RVA: usize = 0x02a0_2698;
 const DATA: usize = 0x380;
 const STRIDE: usize = 0x48;
 const BATCH: usize = 16;

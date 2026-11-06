@@ -62,110 +62,110 @@ pub(super) fn target(permission: u32) -> Target {
     use Object::*;
     use Source::{Country, Reference as R, References as A};
     let sources: &'static [Source] = match permission {
-        0x015d_6210 => &[Country(0x34)],
-        0x01ab_b810 | 0x011e_c3a0 | 0x011e_c350 | 0x011e_b870 | 0x013e_cf10 | 0x019d_3800
-        | 0x019d_3860 | 0x019d_35e0 | 0x019d_3660 | 0x01a3_2530 | 0x01a3_af60 | 0x01ab_b8c0
-        | 0x01c3_7c50 | 0x013e_d510 | 0x013e_d5d0 => &[Country(0x28)],
-        0x01a3_aee0 | 0x013e_d800 | 0x01ab_b7c0 | 0x01c3_7c00 | 0x011e_b730 => &[Country(0x30)],
-        0x01ab_b860 | 0x01c3_7d10 => &[Country(0x34)],
-        0x01ab_b7b0 => &[Country(0x48)],
-        0x011e_be00 | 0x011e_be30 | 0x019d_3580 => &[Country(0x40)],
-        0x011e_c460 => &[Country(0x2c)],
-        0x01ab_b870 => &[Country(0x50)],
-        0x01b1_0290 => &[Country(0x3c)],
-        0x01ba_e6b0 => &[Country(0xa8)],
-        0x01c2_d8b0 => &[Country(0x270)],
-        0x01c2_da30 => &[Country(0x278)],
-        0x011e_be10 => &[Source::ScriptCountry {
+        0x015d_6280 => &[Country(0x34)],
+        0x01ab_b880 | 0x011e_c410 | 0x011e_c3c0 | 0x011e_b8e0 | 0x013e_cf80 | 0x019d_3870
+        | 0x019d_38d0 | 0x019d_3650 | 0x019d_36d0 | 0x01a3_25a0 | 0x01a3_afd0 | 0x01ab_b930
+        | 0x01c3_7cc0 | 0x013e_d580 | 0x013e_d640 => &[Country(0x28)],
+        0x01a3_af50 | 0x013e_d870 | 0x01ab_b830 | 0x01c3_7c70 | 0x011e_b7a0 => &[Country(0x30)],
+        0x01ab_b8d0 | 0x01c3_7d80 => &[Country(0x34)],
+        0x01ab_b820 => &[Country(0x48)],
+        0x011e_be70 | 0x011e_bea0 | 0x019d_35f0 => &[Country(0x40)],
+        0x011e_c4d0 => &[Country(0x2c)],
+        0x01ab_b8e0 => &[Country(0x50)],
+        0x01b1_0300 => &[Country(0x3c)],
+        0x01ba_e720 => &[Country(0xa8)],
+        0x01c2_d920 => &[Country(0x270)],
+        0x01c2_daa0 => &[Country(0x278)],
+        0x011e_be80 => &[Source::ScriptCountry {
             pointer: 0x40,
             length: 0x4c,
         }],
-        0x011c_1070 => &[Source::Pointer(0x28, DiplomaticAction)],
-        0x011e_c030 => &[Source::Building {
+        0x011c_10e0 => &[Source::Pointer(0x28, DiplomaticAction)],
+        0x011e_c0a0 => &[Source::Building {
             definition: 0x28,
             state: 0x2c,
         }],
-        0x011e_c1f0 => &[
+        0x011e_c260 => &[
             Country(0x88),
             Source::Building {
                 definition: 0x50,
                 state: 0x54,
             },
         ],
-        0x011e_bc60 => &[Source::Building {
+        0x011e_bcd0 => &[Source::Building {
             definition: 0x28,
             state: 0x30,
         }],
-        0x013e_cdb0 => &[Source::Province(0x28)],
-        0x013e_cf90 => &[Source::NavalSide {
+        0x013e_ce20 => &[Source::Province(0x28)],
+        0x013e_d000 => &[Source::NavalSide {
             combat: 0x28,
             side: 0x30,
         }],
-        0x011e_b790 | 0x011e_c0e0 | 0x011e_c3f0 | 0x011e_b800 | 0x011e_c070 | 0x011e_bb80
-        | 0x011e_bbf0 => &[R(0x28, ProductionLine)],
-        0x011e_b780 | 0x011e_bf90 | 0x011e_c470 => &[A(0x28, ProductionLine)],
-        0x011e_c2e0 | 0x013f_ea90 => &[R(0x28, Leader)],
-        0x01a3_24c0 | 0x01a3_2580 => &[R(0x28, IndustrialOrganisation)],
-        0x018d_d070 => &[R(0x30, Leader)],
-        0x011e_c510 => &[Country(0x28)],
-        0x011e_b6c0 | 0x011e_c150 => &[R(0x28, Character)],
-        0x01c3_7ca0 => &[R(0x30, Character)],
-        0x011e_b8c0 => &[R(0x28, Ace), R(0x30, Wing)],
-        0x011e_c630 | 0x013f_e730 => &[R(0x28, Ship)],
-        0x013e_d4a0 => &[R(0x2c, Ship)],
-        0x01a3_aef0 | 0x01f6_b920 => &[R(0x28, CountryToken)],
-        0x01c2_d9c0 => &[R(0x28, DivisionTemplate)],
-        0x011e_c250 => &[Country(0x28)],
-        0x011e_c5c0 | 0x013f_e7d0 | 0x013f_eba0 | 0x013f_eb50 | 0x013f_e8b0 => &[R(0x28, Unit)],
-        0x011e_bee0 | 0x013f_ec50 | 0x013f_eb00 => &[A(0x28, Unit)],
-        0x013f_ec60 => &[R(0x38, Unit)],
-        0x013f_e7e0 => &[R(0x28, Group), R(0x30, DivisionTemplate)],
-        0x013f_ebb0 => &[R(0x28, Leader), R(0x30, Group)],
-        0x013f_e940 => &[A(0x28, Ship), R(0x40, Unit), R(0x48, Fleet)],
-        0x013e_d3a0 => &[A(0x28, Ship), R(0x40, Unit)],
-        0x013e_d350 => &[A(0x28, Unit), A(0x40, Ship)],
-        0x013e_d3f0 => &[A(0x28, Ship), R(0x40, Unit), R(0x48, CountryToken)],
-        0x013e_d490 => &[R(0x28, Unit)],
-        0x013e_cd40 => &[R(0x28, Fleet)],
-        0x013e_d760 => &[R(0x28, Fleet), A(0x30, Unit)],
-        0x013e_d6a0 => &[
+        0x011e_b800 | 0x011e_c150 | 0x011e_c460 | 0x011e_b870 | 0x011e_c0e0 | 0x011e_bbf0
+        | 0x011e_bc60 => &[R(0x28, ProductionLine)],
+        0x011e_b7f0 | 0x011e_c000 | 0x011e_c4e0 => &[A(0x28, ProductionLine)],
+        0x011e_c350 | 0x013f_eb00 => &[R(0x28, Leader)],
+        0x01a3_2530 | 0x01a3_25f0 => &[R(0x28, IndustrialOrganisation)],
+        0x018d_d0e0 => &[R(0x30, Leader)],
+        0x011e_c580 => &[Country(0x28)],
+        0x011e_b730 | 0x011e_c1c0 => &[R(0x28, Character)],
+        0x01c3_7d10 => &[R(0x30, Character)],
+        0x011e_b930 => &[R(0x28, Ace), R(0x30, Wing)],
+        0x011e_c6a0 | 0x013f_e7a0 => &[R(0x28, Ship)],
+        0x013e_d510 => &[R(0x2c, Ship)],
+        0x01a3_af60 | 0x01f6_b990 => &[R(0x28, CountryToken)],
+        0x01c2_da30 => &[R(0x28, DivisionTemplate)],
+        0x011e_c2c0 => &[Country(0x28)],
+        0x011e_c630 | 0x013f_e840 | 0x013f_ec10 | 0x013f_ebc0 | 0x013f_e920 => &[R(0x28, Unit)],
+        0x011e_bf50 | 0x013f_ecc0 | 0x013f_eb70 => &[A(0x28, Unit)],
+        0x013f_ecd0 => &[R(0x38, Unit)],
+        0x013f_e850 => &[R(0x28, Group), R(0x30, DivisionTemplate)],
+        0x013f_ec20 => &[R(0x28, Leader), R(0x30, Group)],
+        0x013f_e9b0 => &[A(0x28, Ship), R(0x40, Unit), R(0x48, Fleet)],
+        0x013e_d410 => &[A(0x28, Ship), R(0x40, Unit)],
+        0x013e_d3c0 => &[A(0x28, Unit), A(0x40, Ship)],
+        0x013e_d460 => &[A(0x28, Ship), R(0x40, Unit), R(0x48, CountryToken)],
+        0x013e_d500 => &[R(0x28, Unit)],
+        0x013e_cdb0 => &[R(0x28, Fleet)],
+        0x013e_d7d0 => &[R(0x28, Fleet), A(0x30, Unit)],
+        0x013e_d710 => &[
             R(0x28, Fleet),
             A(0x30, Unit),
             A(0x48, Ship),
             R(0x60, NavalTheatreGroup),
         ],
-        0x018d_d600 => &[
+        0x018d_d670 => &[
             R(0x48, Theatre),
             R(0x50, TheatreGroup),
             R(0x58, Group),
             A(0x30, Unit),
         ],
-        0x018d_cf60 => &[R(0x28, Theatre), A(0x30, Group), R(0x60, Front)],
-        0x018d_d1b0 => &[A(0x28, Group), R(0x40, Group)],
-        0x018d_d270 => &[A(0x28, Group)],
-        0x018d_d280 | 0x018d_d560 | 0x018d_d6f0 | 0x018d_d860 | 0x018d_d4c0 | 0x018d_d790
-        | 0x018d_d9f0 | 0x018d_da90 | 0x018d_dd50 | 0x018d_d0e0 | 0x018d_d910 | 0x018d_d2f0 => {
+        0x018d_cfd0 => &[R(0x28, Theatre), A(0x30, Group), R(0x60, Front)],
+        0x018d_d220 => &[A(0x28, Group), R(0x40, Group)],
+        0x018d_d2e0 => &[A(0x28, Group)],
+        0x018d_d2f0 | 0x018d_d5d0 | 0x018d_d760 | 0x018d_d8d0 | 0x018d_d530 | 0x018d_d800
+        | 0x018d_da60 | 0x018d_db00 | 0x018d_ddc0 | 0x018d_d150 | 0x018d_d980 | 0x018d_d360 => {
             &[R(0x28, Group)]
         }
-        0x018d_db30 => &[R(0x40, Group), A(0x28, Unit)],
-        0x018d_d200 => &[R(0x28, Front)],
-        0x018d_dbd0 => &[R(0x30, Group), R(0x28, Leader)],
-        0x018d_dc90 => &[R(0x30, Fleet), R(0x28, Leader)],
-        0x019d_37b0 => &[A(0x28, Wing), A(0x40, Wing)],
-        0x019d_3730 => &[R(0x28, Wing)],
-        0x019d_3740 => &[R(0x28, WingPool)],
-        0x019d_3480 => &[R(0x40, Group), A(0x28, Wing)],
-        0x019d_36c0 | 0x01c3_7d60 | 0x01f6_b880 | 0x01f6_b990 => &[R(0x28, CountryReference)],
-        0x019d_3510 => &[R(0x28, AirGroup)],
-        0x01b1_3e00 => &[R(0x28, TheatreGroup), A(0x30, Group)],
-        0x01b1_3ee0 => &[R(0x28, TheatreGroup)],
-        0x01b1_3f50 => &[R(0x28, NavalTheatreGroup)],
-        0x01b1_3fc0 => &[Country(0x28)],
-        0x01bc_5190 => &[R(0x28, Raid)],
-        0x01c3_11e0 | 0x01c3_1360 | 0x01c3_1250 => &[R(0x28, Conveyor)],
-        0x01c3_12f0 => &[R(0x28, ConveyorLine)],
-        0x00f0_1ce0 | 0x00f0_1d30 => &[A(0x28, Unit)],
-        0x00f0_1d40 => &[R(0x28, Unit)],
+        0x018d_dba0 => &[R(0x40, Group), A(0x28, Unit)],
+        0x018d_d270 => &[R(0x28, Front)],
+        0x018d_dc40 => &[R(0x30, Group), R(0x28, Leader)],
+        0x018d_dd00 => &[R(0x30, Fleet), R(0x28, Leader)],
+        0x019d_3820 => &[A(0x28, Wing), A(0x40, Wing)],
+        0x019d_37a0 => &[R(0x28, Wing)],
+        0x019d_37b0 => &[R(0x28, WingPool)],
+        0x019d_34f0 => &[R(0x40, Group), A(0x28, Wing)],
+        0x019d_3730 | 0x01c3_7dd0 | 0x01f6_b8f0 | 0x01f6_ba00 => &[R(0x28, CountryReference)],
+        0x019d_3580 => &[R(0x28, AirGroup)],
+        0x01b1_3e70 => &[R(0x28, TheatreGroup), A(0x30, Group)],
+        0x01b1_3f50 => &[R(0x28, TheatreGroup)],
+        0x01b1_3fc0 => &[R(0x28, NavalTheatreGroup)],
+        0x01b1_4030 => &[Country(0x28)],
+        0x01bc_5200 => &[R(0x28, Raid)],
+        0x01c3_1250 | 0x01c3_13d0 | 0x01c3_12c0 => &[R(0x28, Conveyor)],
+        0x01c3_1360 => &[R(0x28, ConveyorLine)],
+        0x00f0_1d50 | 0x00f0_1da0 => &[A(0x28, Unit)],
+        0x00f0_1db0 => &[R(0x28, Unit)],
         _ => return Target::Unknown,
     };
     Target::Sources(sources)
@@ -268,14 +268,14 @@ mod tests {
     #[test]
     fn theatre_group_assignment_alone_falls_back_to_orders_group_owners() {
         assert!(matches!(
-            target(0x01b1_3e00),
+            target(0x01b1_3e70),
             Target::Sources([
                 Source::Reference(0x28, Object::TheatreGroup),
                 Source::References(0x30, Object::Group),
             ])
         ));
         assert!(matches!(
-            target(0x01b1_3ee0),
+            target(0x01b1_3f50),
             Target::Sources([Source::Reference(0x28, Object::TheatreGroup)])
         ));
     }

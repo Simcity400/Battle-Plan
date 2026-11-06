@@ -299,7 +299,7 @@ pub const PLAYER_INPUT_ELIGIBLE: usize = 0xa39;
 /// Game-state constructor/reset initializes input state.
 pub const RESET_RVA: usize = 0x001f_6610;
 /// Load setup sets eligibility before remaining calls; it does not establish world readiness.
-pub const LOAD_SETUP_RVA: usize = 0x00e4_74f0;
+pub const LOAD_SETUP_RVA: usize = 0x00e4_7560;
 
 /// CGameState global scripted flag-manager pointer.
 pub const GLOBAL_FLAGS: usize = 0x258;

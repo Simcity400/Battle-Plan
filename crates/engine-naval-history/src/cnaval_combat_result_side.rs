@@ -182,7 +182,7 @@ pub fn visit_entries(
 }
 
 /// CNavalCombatResultSide vtable.
-pub const VTABLE_RVA: usize = 0x029d_a640;
+pub const VTABLE_RVA: usize = 0x029d_a670;
 
 /// CNavalCombatResultSide extent 0x70.
 pub const SIZE: usize = 0x70;
@@ -196,7 +196,7 @@ pub const COUNTRIES_CAPACITY: usize = 0x40;
 /// CNavalCombatResultSide country count u32.
 pub const COUNTRIES_COUNT: usize = 0x44;
 /// CNavalCombatResultSide constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d4_12d0;
+pub const CONSTRUCTOR_RVA: usize = 0x00d4_1340;
 
 pub(crate) fn authenticate(
     memory: &impl Memory,

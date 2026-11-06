@@ -11,7 +11,7 @@ use crate::{
 /// CNavalCombatResults allocation extent.
 pub const SIZE: usize = 0x168;
 /// CNavalCombatResults vtable.
-pub const VTABLE_RVA: usize = 0x029d_a690;
+pub const VTABLE_RVA: usize = 0x029d_a6c0;
 /// CNavalCombatResults packed reference handle u64.
 pub const HANDLE: usize = 0x08;
 /// CNavalCombatResults first embedded CNavalCombatResultSide.
@@ -41,11 +41,11 @@ pub const CATEGORY: usize = 0x148;
 /// CNavalCombatResults admitted country-id u32 array.
 pub const ADMITTED: usize = 0x150;
 /// CNavalCombatResults constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d4_13f0;
+pub const CONSTRUCTOR_RVA: usize = 0x00d4_1460;
 /// CNavalCombatResults merge path.
-pub const MERGE_RVA: usize = 0x00d4_4e30;
+pub const MERGE_RVA: usize = 0x00d4_4ea0;
 /// CNavalCombatResults fill from combat.
-pub const FILL_FROM_COMBAT_RVA: usize = 0x00d4_5bf0;
+pub const FILL_FROM_COMBAT_RVA: usize = 0x00d4_5c60;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

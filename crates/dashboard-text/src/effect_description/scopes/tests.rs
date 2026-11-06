@@ -1243,7 +1243,7 @@ fn random_selectors_and_character_list_use_native_multiple_virtual() {
                 .items
                 .remove(0);
             let class = renderer.effect_class(&item).unwrap();
-            if iterator_kind(class.vtable).is_some() || class.vtable == 0x1427BED78 {
+            if iterator_kind(class.vtable).is_some() || class.vtable == 0x1427BEDB8 {
                 assert!(renderer.iterator_multiple(&item), "{name}");
             }
         }

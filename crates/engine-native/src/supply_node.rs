@@ -20,7 +20,7 @@ pub const CONSUMED: usize = 0x40;
 /// a supply-route resource bonus when that maximum is positive.
 pub const ROUTE_VALUE: usize = 0x78;
 /// Node constructor initializing the `KIND`.
-pub const CONSTRUCTOR_RVA: usize = 0x012a_69f0;
+pub const CONSTRUCTOR_RVA: usize = 0x012a_6a60;
 
 use crate::{
     Memory, cpdx_array::Array, csupply_system, read, supply_companion, supply_parent_map,

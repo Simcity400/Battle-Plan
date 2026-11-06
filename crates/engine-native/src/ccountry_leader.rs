@@ -1,7 +1,7 @@
 //! CCountryLeader role object, reached through CCharacter's ideology map or a political party vector.
 
 /// Country-leader role vtable.
-pub const VTABLE_RVA: usize = 0x029f_d720;
+pub const VTABLE_RVA: usize = 0x029f_d8b0;
 /// Parent character pointer used by name effects and serialized role references.
 pub const CHARACTER: usize = 0x08;
 /// Role id, i32; loading assigns it, serialization omits -1 and nonzero
@@ -11,7 +11,7 @@ pub const LEADER_ID: usize = 0x148;
 /// retains tokens in occurrence order. Trait lookup compares objects.
 pub const TRAITS: usize = 0x50;
 /// Country-leader trait vtable.
-pub const TRAIT_VTABLE_RVA: usize = 0x0286_78a8;
+pub const TRAIT_VTABLE_RVA: usize = 0x0286_78c8;
 /// Trait lexer token, u32.
 pub const TRAIT_TOKEN: usize = 0x08;
 /// Trait database ordinal, u32, with null object at zero. Repeated names
@@ -22,10 +22,10 @@ pub const TRAIT_ORDINAL: usize = 0x1a0;
 /// Current ideology pointer; changes do not rekey the character's role map.
 pub const CURRENT_IDEOLOGY: usize = 0x140;
 /// Ideology primary vtable.
-pub const IDEOLOGY_VTABLE_RVA: usize = 0x029b_a2a8;
+pub const IDEOLOGY_VTABLE_RVA: usize = 0x029b_a2d8;
 /// Null-ideology vtable. The constructed null definition clears its valid
 /// byte and supplies each leader's initial ideology.
-pub const NULL_IDEOLOGY_VTABLE_RVA: usize = 0x029b_a528;
+pub const NULL_IDEOLOGY_VTABLE_RVA: usize = 0x029b_a558;
 
 pub fn current_ideology(
     memory: &impl crate::Memory,

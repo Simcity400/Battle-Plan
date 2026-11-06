@@ -8,29 +8,29 @@ use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKi
 
 use super::{keywords::KeywordTables, leak_string, pe::PeImage, verify_digest};
 
-const TRIGGER_REGISTRATION: u32 = 0x0059_7b90;
-const EFFECT_REGISTRATION: u32 = 0x0058_88e0;
-const OBJECT_ALLOCATION: u32 = 0x025a_009c;
+const TRIGGER_REGISTRATION: u32 = 0x0059_7c00;
+const EFFECT_REGISTRATION: u32 = 0x0058_8950;
+const OBJECT_ALLOCATION: u32 = 0x025a_01dc;
 const ENTRY_FACTORY: u32 = 8;
 const TRIGGER_VALUE_READER: u32 = 40;
 const TRIGGER_KEY_READER: u32 = 48;
 const TRIGGER_SCOPE_MASK: u32 = 112;
 const EFFECT_VALUE_READER: u32 = 24;
 const EFFECT_KEY_READER: u32 = 32;
-const ASSIGN_READER: u32 = 0x0144_6ac0;
-const COMPARISON_READER: u32 = 0x0144_5e70;
-const BODY_READER: u32 = 0x0059_6f30;
-const CONTEXT_EFFECT_VTABLE: u32 = 0x02a3_1110;
-const SCRIPTED_EFFECT_VTABLE: u32 = 0x02a3_11e0;
+const ASSIGN_READER: u32 = 0x0144_6b30;
+const COMPARISON_READER: u32 = 0x0144_5ee0;
+const BODY_READER: u32 = 0x0059_6fa0;
+const CONTEXT_EFFECT_VTABLE: u32 = 0x02a3_1830;
+const SCRIPTED_EFFECT_VTABLE: u32 = 0x02a3_1900;
 
 const TRIGGERS_DIGEST: &str = "03c08b0bd5ce9ccba4b299391d917c1a985fb197984924900dadd81e6a68ed28";
 const EFFECTS_DIGEST: &str = "5bc2422fcf914a6cfdf3dd9a3edefdcb74d30d6d20d584f7c89bf249b5b21473";
 const TRIGGER_CLASSES_DIGEST: &str =
-    "8593a4decfe245219b40614a3ff4c3d9b2c937023d5d8192abdf18208efa6084";
+    "d181afc852c909341f433b0d68bb3b833bb27b817e2e626a8867fb2cc3a5b3a3";
 const EFFECT_READERS_DIGEST: &str =
-    "6153bad5a9a2490702382501adcc3d5436d46870d4e8f8e874debd8b655baa08";
+    "00325eed1be525c901bedba6f9ce8535426bf8f36d94ead2e510d91299584fa8";
 const EFFECT_IDENTITIES_DIGEST: &str =
-    "763b7d3b25b3bc6da1b49bbda3caecac91ab4f2078164fd79d7f90dd1964d2f0";
+    "089ce76cc9e8871c9318d2015720b7b3f03e3c53955d792d129c954a7aae542a";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriggerReader {

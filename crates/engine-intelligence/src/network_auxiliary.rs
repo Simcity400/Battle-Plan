@@ -472,49 +472,49 @@ pub struct Site {
 pub const SITES: [Site; 7] = [
     Site {
         name: "national rebuild",
-        rva: 0x1263860,
+        rva: 0x12638d0,
         sentinel: [
             72, 137, 92, 36, 16, 72, 137, 116, 36, 24, 85, 87, 65, 84, 65, 85,
         ],
     },
     Site {
         name: "national token load",
-        rva: 0x1263390,
+        rva: 0x1263400,
         sentinel: [
             72, 137, 92, 36, 8, 85, 86, 87, 72, 139, 236, 72, 131, 236, 112, 72,
         ],
     },
     Site {
         name: "network construction",
-        rva: 0x125cc80,
+        rva: 0x125ccf0,
         sentinel: [
-            64, 83, 72, 131, 236, 32, 72, 141, 5, 203, 11, 124, 1, 72, 139, 217,
+            64, 83, 72, 131, 236, 32, 72, 141, 5, 0xdb, 0x0f, 124, 1, 72, 139, 217,
         ],
     },
     Site {
         name: "empty network construction",
-        rva: 0x125cd30,
+        rva: 0x125cda0,
         sentinel: [
-            72, 137, 92, 36, 8, 87, 72, 131, 236, 32, 72, 141, 5, 23, 11, 124,
+            72, 137, 92, 36, 8, 87, 72, 131, 236, 32, 72, 141, 5, 0x27, 0x0f, 124,
         ],
     },
     Site {
         name: "network destruction",
-        rva: 0x125df80,
+        rva: 0x125dff0,
         sentinel: [
             72, 137, 92, 36, 8, 72, 137, 116, 36, 16, 87, 72, 131, 236, 32, 72,
         ],
     },
     Site {
         name: "local token load",
-        rva: 0x1251da0,
+        rva: 0x1251e10,
         sentinel: [
             72, 137, 76, 36, 8, 85, 83, 86, 87, 65, 84, 65, 85, 65, 86, 65,
         ],
     },
     Site {
         name: "subnetwork preparation",
-        rva: 0x125e720,
+        rva: 0x125e790,
         sentinel: [
             72, 137, 92, 36, 16, 76, 137, 68, 36, 24, 72, 137, 76, 36, 8, 85,
         ],

@@ -8,7 +8,7 @@ pub const COUNTRY: usize = 8;
 /// Signed i64 mobilization ratio.
 pub const MOBILIZATION: usize = 0x10;
 /// Daily mobilization and exile growth using the embedded object.
-pub const DAILY_UPDATE_RVA: usize = 0x00d5_d820;
+pub const DAILY_UPDATE_RVA: usize = 0x00d5_d890;
 
 use crate::{Memory, ccountry, read};
 

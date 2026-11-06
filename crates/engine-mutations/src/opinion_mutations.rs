@@ -14,8 +14,8 @@ pub struct MutationSite {
     pub sentinel: [u8; 16],
 }
 
-const RESET_RVA: usize = 0xd7fd80;
-const LOAD_TOKEN_RVA: usize = 0xd8cd10;
+const RESET_RVA: usize = 0xd7fdf0;
+const LOAD_TOKEN_RVA: usize = 0xd8cd80;
 
 /// Receivers (rcx): a live relation status pointer for all but the constructor,
 /// whose receiver is its raw 0x9C0-byte storage. None takes more than four
@@ -24,9 +24,9 @@ pub const MUTATIONS: [MutationSite; 4] = [
     // Opinion recomputation with a status receiver.
     MutationSite {
         name: "recompute_opinion",
-        rva: 0xd8f2e0,
+        rva: 0xd8f350,
         sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x20, 0x03,
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xb0, 0x02,
             0x90, 0x02,
         ],
     },
@@ -82,92 +82,92 @@ pub const RELATIONS: [MutationSite; 15] = [
     // Air access and offered-air-access slot replacement (status, new, slot).
     MutationSite {
         name: "air_relation",
-        rva: 0xd7_65a0,
+        rva: 0xd7_6610,
         sentinel: RELATION_SENTINEL,
     },
     // Attache slot replacement (status, new, slot).
     MutationSite {
         name: "attache_relation",
-        rva: 0xd7_6850,
+        rva: 0xd7_68c0,
         sentinel: RELATION_SENTINEL,
     },
     // Party-popularity boost slot replacement (status, new, slot).
     MutationSite {
         name: "boost_party_relation",
-        rva: 0xd7_6b00,
+        rva: 0xd7_6b70,
         sentinel: RELATION_SENTINEL,
     },
     // Subject slot replacement (status, new, slot).
     MutationSite {
         name: "subject_relation",
-        rva: 0xd7_6db0,
+        rva: 0xd7_6e20,
         sentinel: RELATION_SENTINEL,
     },
     // Docking rights and offered-rights slot replacement (status, new, slot).
     MutationSite {
         name: "docking_relation",
-        rva: 0xd7_7060,
+        rva: 0xd7_70d0,
         sentinel: RELATION_SENTINEL,
     },
     // Embargo slot replacement (status, new, slot), from apply and clear;
     // the daily parallel sweep reaches clear.
     MutationSite {
         name: "embargo_relation",
-        rva: 0xd7_7310,
+        rva: 0xd7_7380,
         sentinel: RELATION_SENTINEL,
     },
     // Equipment-purchase slot replacement (status, new, slot).
     MutationSite {
         name: "equipment_purchase_relation",
-        rva: 0xd7_75c0,
+        rva: 0xd7_7630,
         sentinel: RELATION_SENTINEL,
     },
     // Guarantee slot replacement (status, new, slot).
     MutationSite {
         name: "guarantee_relation",
-        rva: 0xd7_7870,
+        rva: 0xd7_78e0,
         sentinel: RELATION_SENTINEL,
     },
     // Improve-relations slot replacement (status, new, slot).
     MutationSite {
         name: "improve_relation",
-        rva: 0xd7_7b20,
+        rva: 0xd7_7b90,
         sentinel: RELATION_SENTINEL,
     },
     // Lend-lease slot replacement (status, new, slot).
     MutationSite {
         name: "lend_lease_relation",
-        rva: 0xd7_7dd0,
+        rva: 0xd7_7e40,
         sentinel: RELATION_SENTINEL,
     },
     // Production-licence slot replacement (status, new, slot).
     MutationSite {
         name: "licence_relation",
-        rva: 0xd7_8080,
+        rva: 0xd7_80f0,
         sentinel: RELATION_SENTINEL,
     },
     // Market-access slot replacement (status, new, slot).
     MutationSite {
         name: "market_access_relation",
-        rva: 0xd7_8330,
+        rva: 0xd7_83a0,
         sentinel: RELATION_SENTINEL,
     },
     // Military access and offered-access slot replacement (status, new, slot).
     MutationSite {
         name: "military_access_relation",
-        rva: 0xd7_85e0,
+        rva: 0xd7_8650,
         sentinel: RELATION_SENTINEL,
     },
     // Blockade slot replacement (status, new, slot).
     MutationSite {
         name: "blockade_relation",
-        rva: 0xd7_8890,
+        rva: 0xd7_8900,
         sentinel: RELATION_SENTINEL,
     },
     // Non-aggression slot replacement (status, new, slot).
     MutationSite {
         name: "non_aggression_relation",
-        rva: 0xd7_8b40,
+        rva: 0xd7_8bb0,
         sentinel: RELATION_SENTINEL,
     },
 ];
@@ -180,7 +180,7 @@ const RELATION_SENTINEL: [u8; 16] = [
 mod tests {
     use super::*;
 
-    const WAR_RELATION_RVA: usize = 0xd7_8df0;
+    const WAR_RELATION_RVA: usize = 0xd7_8e60;
 
     #[test]
     fn relation_bodies_are_distinct_and_patched_by_no_other_family() {

@@ -34,7 +34,7 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // saving RDI follow.
     MutationSite {
         name: "add_unit",
-        rva: 0xee_b160,
+        rva: 0xee_b1d0,
         sentinel: [
             0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x68, 0x18, 0x48, 0x89, 0x70,
             0x20, 0x57,
@@ -45,7 +45,7 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // receiver in RDI and the start of loading the mixed list's count into ECX.
     MutationSite {
         name: "remove_unit",
-        rva: 0xef_1060,
+        rva: 0xef_10d0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xdb, 0x48, 0x8b,
             0xf9, 0x8b,
@@ -57,8 +57,8 @@ pub const MUTATIONS: [MutationSite; 2] = [
 mod tests {
     use super::*;
 
-    const EXPECTED_ADD_RVA: usize = 0xee_b160;
-    const EXPECTED_REMOVE_RVA: usize = 0xef_1060;
+    const EXPECTED_ADD_RVA: usize = 0xee_b1d0;
+    const EXPECTED_REMOVE_RVA: usize = 0xef_10d0;
 
     /// Each patch covers whole leading instructions: append's stack-pointer
     /// copy with its first spill, and erase's five-byte spill.

@@ -1,9 +1,9 @@
 //! CIncomingDiplomaticAction wrapper, distinct from the pointed-to action body.
 
 /// CIncomingDiplomaticAction primary vtable.
-pub const VTABLE_RVA: usize = 0x02aa_ec18;
+pub const VTABLE_RVA: usize = 0x02aa_f838;
 /// CIncomingDiplomaticAction constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x01b3_b160;
+pub const CONSTRUCTOR_RVA: usize = 0x01b3_b1d0;
 // Construction first copies the default invalid reference into its reference slot, then mints the
 // real identity from `creference_registry::ID_COUNTER_RVA`. The invalid identity is
 // `creference_registry::INVALID_REFERENCE_RVA`.

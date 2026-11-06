@@ -7,7 +7,7 @@
 use crate::{Memory, msvc_string, read, read_slice, walk::Buffer};
 
 /// CThreatSource primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_2ec8;
+pub const VTABLE_RVA: usize = 0x029f_2ff8;
 /// CThreatSource raw country reference.
 pub const COUNTRY: usize = 0x08;
 /// CThreatSource second raw country reference.
@@ -27,9 +27,9 @@ pub const SIZE: usize = 0x60;
 /// CThreatSource native fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 /// CThreatSource daily ramp/decay update.
-pub const DAILY_UPDATE_RVA: usize = 0x00f8_3b90;
+pub const DAILY_UPDATE_RVA: usize = 0x00f8_3c00;
 /// Matching-source update; replaces final, current and daily contribution.
-pub const UPDATE_RVA: usize = 0x00f8_4030;
+pub const UPDATE_RVA: usize = 0x00f8_40a0;
 
 /// Bytes copied in one guarded batch: every recorded scalar lies in the first 0x34 bytes.
 const HEAD: usize = 0x34;

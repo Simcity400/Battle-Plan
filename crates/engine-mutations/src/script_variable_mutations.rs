@@ -73,10 +73,10 @@ pub enum Receiver {
 pub const TABLE: usize = 0x10;
 
 /// Store clear invoked by [`Patch::Call`] sites.
-pub const CLEAR_RVA: usize = 0xc1_b950;
+pub const CLEAR_RVA: usize = 0xc1_b9c0;
 
 /// Context end invoked by [`Patch::EndContext`] sites.
-pub const END_CONTEXT_RVA: usize = 0x58_9510;
+pub const END_CONTEXT_RVA: usize = 0x58_9580;
 
 /// Context active byte, stored at begin and tested at end.
 pub const CONTEXT_ACTIVE: usize = 0;
@@ -129,7 +129,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     (
         MutationSite {
             name: "get_mutable_value",
-            rva: 0x58_9760,
+            rva: 0x58_97d0,
             // The RBX spill to RDX's home slot occupies exactly the five patched bytes.
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
@@ -143,7 +143,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     (
         MutationSite {
             name: "erase_variable",
-            rva: 0xc1_e900,
+            rva: 0xc1_e970,
             sentinel: [
                 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x71, 0x10,
                 0x4c, 0x8b,
@@ -157,7 +157,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     (
         MutationSite {
             name: "read_variables",
-            rva: 0xc1_e6b0,
+            rva: 0xc1_e720,
             sentinel: [
                 0x40, 0x53, 0x48, 0x83, 0xec, 0x40, 0x81, 0x7a, 0x30, 0xbb, 0x27, 0x00, 0x00, 0x48,
                 0x8b, 0xda,
@@ -171,7 +171,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     (
         MutationSite {
             name: "release_variables",
-            rva: 0x59_1680,
+            rva: 0x59_16f0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x59, 0x08,
                 0x48, 0x8d,
@@ -184,7 +184,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     (
         MutationSite {
             name: "reset_country_variables",
-            rva: 0x72_abc0,
+            rva: 0x72_ac30,
             sentinel: [
                 0xe8, 0x8b, 0x0d, 0x4f, 0x00, 0x48, 0x8b, 0x9e, 0x18, 0x02, 0x00, 0x00, 0x44, 0x39,
                 0x6e, 0x08,
@@ -197,7 +197,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     (
         MutationSite {
             name: "reset_state_variables",
-            rva: 0xa2_1bfa,
+            rva: 0xa2_1c6a,
             sentinel: [
                 0xe8, 0x51, 0x9d, 0x1f, 0x00, 0x8b, 0x55, 0x58, 0x48, 0x8b, 0x8d, 0xf8, 0x07, 0x00,
                 0x00, 0xe8,
@@ -213,8 +213,8 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
             name: "reset_global_variables",
             rva: 0x1e_76e0,
             sentinel: [
-                0xe8, 0x6b, 0x42, 0xa3, 0x00, 0x33, 0xd2, 0x48, 0x8b, 0x8b, 0x80, 0x09, 0x00, 0x00,
-                0xe8, 0x9d,
+                0xe8, 0xdb, 0x42, 0xa3, 0x00, 0x33, 0xd2, 0x48, 0x8b, 0x8b, 0x80, 0x09, 0x00, 0x00,
+                0xe8, 0x0d,
             ],
         },
         Receiver::First,
@@ -224,15 +224,15 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     // one stack-local context, following begin with change zero or change one.
     end_context(
         "end_effect_command",
-        0x29_697c,
+        0x29_69ec,
         [
-            0xe8, 0x8f, 0x2b, 0x2f, 0x00, 0x90, 0x48, 0x8d, 0x4c, 0x24, 0x48, 0xe8, 0xa4, 0x9b,
+            0xe8, 0x8f, 0x2b, 0x2f, 0x00, 0x90, 0x48, 0x8d, 0x4c, 0x24, 0x48, 0xe8, 0x34, 0x9b,
             0xe8, 0xff,
         ],
     ),
     end_context(
         "end_effect_command_run",
-        0x29_6a24,
+        0x29_6a94,
         [
             0xe8, 0xe7, 0x2a, 0x2f, 0x00, 0x41, 0xc6, 0x04, 0x24, 0x01, 0x45, 0x84, 0xed, 0x0f,
             0x85, 0x3f,
@@ -241,7 +241,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     // Scope-validated effect execution: a frame-local context addressed through RBP.
     end_context(
         "end_effect_execute",
-        0x58_4f79,
+        0x58_4fe9,
         [
             0xe8, 0x92, 0x45, 0x00, 0x00, 0xe9, 0x90, 0x04, 0x00, 0x00, 0x48, 0x8b, 0xcf, 0xe8,
             0x65, 0x9b,
@@ -250,7 +250,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     // Country daily update: a stack-local context.
     end_context(
         "end_country_daily",
-        0x72_faf5,
+        0x72_fb65,
         [
             0xe8, 0x16, 0x9a, 0xe5, 0xff, 0x90, 0x48, 0x8d, 0x4d, 0x40, 0xe8, 0x7c, 0xca, 0xe4,
             0xff, 0x48,
@@ -259,7 +259,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     // Country delayed events: a stack-local context.
     end_context(
         "end_delayed_events",
-        0x74_482f,
+        0x74_489f,
         [
             0xe8, 0xdc, 0x4c, 0xe4, 0xff, 0x90, 0x48, 0x8d, 0x4c, 0x24, 0x60, 0xe8, 0x41, 0x7d,
             0xe3, 0xff,
@@ -268,7 +268,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     // State daily update, from game-state daily update: a stack-local context.
     end_context(
         "end_state_daily",
-        0xa2_2159,
+        0xa2_21c9,
         [
             0xe8, 0xb2, 0x73, 0xb6, 0xff, 0x90, 0x48, 0x8d, 0x4c, 0x24, 0x60, 0xe8, 0x17, 0xa4,
             0xb5, 0xff,
@@ -277,7 +277,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     // Scripted-window effect execution: a stack-local context.
     end_context(
         "end_scripted_window",
-        0x11e_082f,
+        0x11e_089f,
         [
             0xe8, 0xdc, 0x8c, 0x3a, 0xff, 0x90, 0x48, 0x85, 0xf6, 0x74, 0x2f, 0x48, 0x8b, 0xfb,
             0x85, 0xdb,
@@ -286,7 +286,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
     // Event-firing effect execution: a stack-local context.
     end_context(
         "end_fire_event",
-        0x142_fbbf,
+        0x142_fc2f,
         [
             0xe8, 0x4c, 0x99, 0x15, 0xff, 0xe9, 0xdc, 0x01, 0x00, 0x00, 0x48, 0x8d, 0x8b, 0x40,
             0x07, 0x00,

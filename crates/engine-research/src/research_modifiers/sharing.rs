@@ -2,7 +2,7 @@
 use super::*;
 
 const GROUP_VTABLE: usize = crate::ctechnology_sharing_group::VTABLE_RVA;
-pub(super) const FACTION_VTABLE: usize = 0x02ac_5908;
+pub(super) const FACTION_VTABLE: usize = 0x02ac_66b8;
 #[derive(Clone)]
 struct Group {
     id: u32,
@@ -103,7 +103,7 @@ impl Country {
             )?;
             if is_group {
                 let template = pointer(memory, at(p, 0x48)?)?;
-                if read::<u64>(memory, template) != Some(at(base, 0x029c_11b0)? as u64) {
+                if read::<u64>(memory, template) != Some(at(base, 0x029c_11e0)? as u64) {
                     return Err("research sharing template identity mismatch");
                 }
                 let faction = read::<u8>(memory, at(template, 0x78)?)

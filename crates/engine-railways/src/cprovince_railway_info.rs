@@ -2,7 +2,7 @@
 //! province slot.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f2d0;
+pub const VTABLE_RVA: usize = 0x029e_f400;
 
 /// Object allocation size.
 pub const SIZE: usize = 0x70;
@@ -27,16 +27,16 @@ pub const PENDING_CONSTRUCTION: usize = 0x50;
 /// Railway cooldown ticks, native i32.
 pub const COOLDOWN_TICKS: usize = 0x68;
 /// Province-railway-info constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00f0_4f00;
+pub const CONSTRUCTOR_RVA: usize = 0x00f0_4f70;
 /// Railway-level setter updating an existing level or inserting a pair.
-pub const SET_RAILWAY_RVA: usize = 0x00f0_84d0;
+pub const SET_RAILWAY_RVA: usize = 0x00f0_8540;
 /// Railway token loader rebuilding pairs.
-pub const LOAD_TOKEN_RVA: usize = 0x00f0_7e60;
+pub const LOAD_TOKEN_RVA: usize = 0x00f0_7ed0;
 /// Destructor freeing pairs and clearing pointer/count.
-pub const DESTRUCTOR_RVA: usize = 0x00f0_53b0;
+pub const DESTRUCTOR_RVA: usize = 0x00f0_5420;
 /// Railway setter entry sentinel bytes.
 pub const SET_RAILWAY_SENTINEL: [u8; 16] = [
-    0x4c, 0x8b, 0xdc, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x50, 0x80, 0x3d, 0x30, 0x71, 0x78, 0x02,
+    0x4c, 0x8b, 0xdc, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x50, 0x80, 0x3d, 0xc0, 0x70, 0x78, 0x02,
 ];
 /// Railway loader entry sentinel bytes.
 pub const LOAD_TOKEN_SENTINEL: [u8; 16] = [

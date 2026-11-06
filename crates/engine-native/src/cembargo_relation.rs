@@ -1,6 +1,6 @@
 //! CEmbargoRelation; shared fields live in `crelation`.
 
 /// CEmbargoRelation primary vtable.
-pub const VTABLE_RVA: usize = 0x29dd480;
+pub const VTABLE_RVA: usize = 0x29dd4e0;
 /// CEmbargoRelation native type word.
 pub const TYPE: u32 = 0x3274;

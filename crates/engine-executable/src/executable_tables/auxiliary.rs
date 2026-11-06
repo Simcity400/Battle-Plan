@@ -8,65 +8,65 @@ use std::{
 };
 
 /// Native nonlocalized prefix used only by the simulation console override.
-const AIR_DETECTION_OVERRIDE_PREFIX: u32 = 0x029f_9030;
-const AIR_GRAPH_CHANNELS: u32 = 0x02a8_86f0;
-const AIR_GRAPH_UNIT: u32 = 0x027a_2250;
-const AIR_GRAPH_SCALE: u32 = 0x02a8_9d18;
+const AIR_DETECTION_OVERRIDE_PREFIX: u32 = 0x029f_91c0;
+const AIR_GRAPH_CHANNELS: u32 = 0x02a8_9090;
+const AIR_GRAPH_UNIT: u32 = 0x027a_2260;
+const AIR_GRAPH_SCALE: u32 = 0x02a8_a6b8;
 const AIR_GRAPH_OUR_GREEN: [u32; 11] = [
-    0x02a0_1228,
+    0x02a0_13b8,
     0x0279_dd60,
-    0x029e_9f50,
-    0x029c_72c4,
-    0x027b_6f98,
-    0x029c_0be8,
-    0x029f_5c7c,
-    0x029f_5c80,
-    0x02a8_9d10,
+    0x029e_a060,
+    0x029c_72f4,
+    0x027b_6fd8,
+    0x029c_0c18,
+    0x029f_5e0c,
+    0x029f_5e10,
+    0x02a8_a6b0,
     0x0279_dd64,
-    0x02a6_1748,
+    0x02a6_1f08,
 ];
 const AIR_GRAPH_ENEMY_RED: [u32; 11] = [
-    0x02a6_174c,
-    0x029b_3ae8,
-    0x02a8_9d14,
-    0x029c_7f24,
-    0x027b_4a54,
-    0x029f_5c90,
-    0x029e_9f58,
-    0x029f_5c88,
-    0x02a6_1748,
+    0x02a6_1f0c,
+    0x029b_3b08,
+    0x02a8_a6b4,
+    0x029c_7f54,
+    0x027b_4a94,
+    0x029f_5e20,
+    0x029e_a068,
+    0x029f_5e18,
+    0x02a6_1f08,
     0x0279_dd64,
-    0x02a8_9d10,
+    0x02a8_a6b0,
 ];
 
-const CATEGORY_START: u32 = 0x0100_c890;
-const CATEGORY_END: u32 = 0x0100_ca98;
-const CATEGORY_ZERO_CASE: u32 = 0x0100_ca2c;
+const CATEGORY_START: u32 = 0x0100_c900;
+const CATEGORY_END: u32 = 0x0100_cb08;
+const CATEGORY_ZERO_CASE: u32 = 0x0100_ca9c;
 const UNNAMED_CATEGORY: u64 = 0x80_0000;
-const STAT_START: u32 = 0x0148_3e70;
-const STAT_END: u32 = 0x0148_422a;
+const STAT_START: u32 = 0x0148_3ee0;
+const STAT_END: u32 = 0x0148_429a;
 const STAT_LABELS: u32 = 0x0312_b560;
 const STAT_POLARITY: u32 = 0x0312_b7d0;
 const STAT_COUNT: usize = 78;
-const AI_START: u32 = 0x0154_3e90;
-const AI_END: u32 = 0x0154_4ae7;
-const MISSION_START: u32 = 0x0104_8bd0;
-const MISSION_END: u32 = 0x0104_8cbf;
-const EQUIPMENT_MISSION_SELECT: u32 = 0x0109_a01c;
-const EQUIPMENT_MISSION_RESULT: u32 = 0x0109_a15a;
-const EXECUTION_START: u32 = 0x0154_4e90;
-const EXECUTION_END: u32 = 0x0154_4ee7;
-const ORDER_START: u32 = 0x006a_9a8a;
-const ORDER_END: u32 = 0x006a_9a97;
-const SELECTOR_START: u32 = 0x0058_4824;
-const SELECTOR_END: u32 = 0x0058_494f;
-const RULE_START: u32 = 0x0068_1670;
-const RULE_END: u32 = 0x0068_236f;
-const RULE_CONSTRUCT: u32 = 0x0067_fa90;
+const AI_START: u32 = 0x0154_3f00;
+const AI_END: u32 = 0x0154_4b57;
+const MISSION_START: u32 = 0x0104_8c40;
+const MISSION_END: u32 = 0x0104_8d2f;
+const EQUIPMENT_MISSION_SELECT: u32 = 0x0109_a08c;
+const EQUIPMENT_MISSION_RESULT: u32 = 0x0109_a1ca;
+const EXECUTION_START: u32 = 0x0154_4f00;
+const EXECUTION_END: u32 = 0x0154_4f57;
+const ORDER_START: u32 = 0x006a_9afa;
+const ORDER_END: u32 = 0x006a_9b07;
+const SELECTOR_START: u32 = 0x0058_4894;
+const SELECTOR_END: u32 = 0x0058_49bf;
+const RULE_START: u32 = 0x0068_16e0;
+const RULE_END: u32 = 0x0068_23df;
+const RULE_CONSTRUCT: u32 = 0x0067_fb00;
 const STRING_COPY: u32 = 0x0011_f770;
 const STRING_ASSIGN: u32 = 0x0011_f030;
-const STRING_ALLOCATE: u32 = 0x025a_009c;
-const STRING_RELEASE: u32 = 0x025a_00d8;
+const STRING_ALLOCATE: u32 = 0x025a_01dc;
+const STRING_RELEASE: u32 = 0x025a_0218;
 const RULE_STRIDE: u64 = 0x38;
 const RULE_LOCAL_BASE: u64 = 0x2e0;
 const RULE_TOKEN: u64 = 0x28;

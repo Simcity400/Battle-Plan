@@ -4,7 +4,7 @@
 use crate::{Memory, ccountry, cpdx_array::Array, walk::Outcome};
 
 /// Nuke primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_4620;
+pub const VTABLE_RVA: usize = 0x0286_4640;
 /// CNuke inline array stride.
 pub const STRIDE: usize = 0x48;
 /// CNuke owning CCountry pointer.

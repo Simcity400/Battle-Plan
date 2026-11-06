@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// Country-character vtable.
-pub const VTABLE_RVA: usize = 0x02a0_69b8;
+pub const VTABLE_RVA: usize = 0x02a0_6b48;
 /// Owning country pointer used for appointment scope.
 pub const OWNER: usize = 0x08;
 /// Appointed-advisor pointer array with signed capacity and count.

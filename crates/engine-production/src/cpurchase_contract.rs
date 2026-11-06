@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// CPurchaseContract primary vtable.
-pub const VTABLE_RVA: usize = 0x29e82c0;
+pub const VTABLE_RVA: usize = 0x29e83d0;
 /// CPurchaseContract persistent handle type, u32.
 pub const ID_TYPE: usize = 0x08;
 /// CPurchaseContract persistent handle id, u32.

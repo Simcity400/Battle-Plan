@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// CFaction primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_2af8;
+pub const VTABLE_RVA: usize = 0x029e_2b58;
 
 /// CFaction packed reference (low u32 type, high u32 id).
 pub const REFERENCE: usize = 0x08;

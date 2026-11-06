@@ -5,7 +5,7 @@
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read, walk::Outcome};
 
 /// CTechnologySharingGroup primary vtable.
-pub const VTABLE_RVA: usize = 0x0279_f738;
+pub const VTABLE_RVA: usize = 0x0279_f740;
 /// CTechnologySharingGroup lexer ordinal u32.
 pub const ID_TOKEN: usize = 0x08;
 /// Raw base bonus, i64 with denominator 100,000.

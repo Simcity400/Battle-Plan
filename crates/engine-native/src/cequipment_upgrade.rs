@@ -1,7 +1,7 @@
 //! Authored CEquipmentUpgrade definitions referenced by variant upgrade entries.
 
 /// CEquipmentUpgrade primary vtable.
-pub const VTABLE_RVA: usize = 0x02a4_de78;
+pub const VTABLE_RVA: usize = 0x02a4_e598;
 /// CEquipmentUpgrade signed token.
 pub const TOKEN: usize = 0x08;
 /// CEquipmentUpgrade MSVC name.

@@ -232,7 +232,7 @@ fn combat_links_fixture() -> (CombatLinksMemory, [u64; 2]) {
     put64(&mut bytes, COMBAT + 0x18, first);
     put64(&mut bytes, SIDE, cland_combatant::VTABLE_RVA as u64);
     put64(&mut bytes, NAVAL, cnaval_combat::VTABLE_RVA as u64);
-    put64(&mut bytes, NAVAL + 0x10, 0x02a5_6750);
+    put64(&mut bytes, NAVAL + 0x10, 0x02a5_6e70);
     put64(&mut bytes, NAVAL + 0x18, naval);
     let mut registry = Fixture::new(first as u32);
     registry.entry(Fixture::index(first), 1, first, (COMBAT + 0x10) as u64);

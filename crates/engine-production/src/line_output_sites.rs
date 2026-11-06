@@ -59,13 +59,13 @@ pub const PRODUCERS: [&str; 4] = ["military", "naval", "railway gun", "ship refi
 /// line at entry. Its entry instruction spills RBX to the stack.
 pub const CREDIT: HookSite = HookSite {
     name: "credit",
-    rva: 0x019b_ec70,
+    rva: 0x019b_ece0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x48, 0x83, 0xec, 0x20,
         0x48,
     ],
 
-    callers: [0x00ff_2e87, 0x00ff_3910, 0x00ff_471c, 0x00ff_6285],
+    callers: [0x00ff_2ef7, 0x00ff_3980, 0x00ff_478c, 0x00ff_62f5],
 };
 
 /// Delivery entry: RCX is the country's logistics status, RDX the variant
@@ -74,19 +74,19 @@ pub const CREDIT: HookSite = HookSite {
 /// to the stack.
 pub const DELIVERY: HookSite = HookSite {
     name: "delivery",
-    rva: 0x0140_aae0,
+    rva: 0x0140_ab50,
     sentinel: [
         0x4c, 0x89, 0x44, 0x24, 0x18, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
         0x41,
     ],
 
-    callers: [0x00ff_2e24, 0x00ff_387c, 0x00ff_439d, 0x00ff_6260],
+    callers: [0x00ff_2e94, 0x00ff_38ec, 0x00ff_440d, 0x00ff_62d0],
 };
 
 /// Rocket production entry; RCX is the line. Its six-byte entry prefix has
 /// no relative operands. The daily caller ignores RAX, which observers preserve.
 pub const ROCKET_ADVANCE: EntrySite = EntrySite {
-    rva: 0x00ff_5910,
+    rva: 0x00ff_5980,
     sentinel: [
         0x40, 0x57, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x8b, 0x41, 0x40, 0x48, 0x8b, 0xf9, 0x4d, 0x85,
         0xc0,
@@ -94,9 +94,9 @@ pub const ROCKET_ADVANCE: EntrySite = EntrySite {
 };
 
 /// DELIVERY's rocket-production caller.
-pub const ROCKET_DELIVERY_RETURN: usize = 0x00ff_5a0a;
+pub const ROCKET_DELIVERY_RETURN: usize = 0x00ff_5a7a;
 /// Rocket primary vtable.
-pub const ROCKET_VTABLE: usize = 0x029f_8908;
+pub const ROCKET_VTABLE: usize = 0x029f_8a98;
 /// Rocket's owning production status.
 pub const ROCKET_STATUS: usize = 0x38;
 /// Rocket's bound variant pointer, passed to DELIVERY.

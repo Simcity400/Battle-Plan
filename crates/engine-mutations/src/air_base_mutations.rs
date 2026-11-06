@@ -102,10 +102,10 @@ impl Receiver {
     }
 }
 
-const CREATE_COUNTRY_CONTAINER_RVA: usize = 0xca_8c30;
-const REGISTER_POOL_RVA: usize = 0xca_91e0;
-const ERASE_POOL_RVA: usize = 0xcc_0690;
-const DESTROY_POOL_RVA: usize = 0xfd_eee0;
+const CREATE_COUNTRY_CONTAINER_RVA: usize = 0xca_8ca0;
+const REGISTER_POOL_RVA: usize = 0xca_9250;
+const ERASE_POOL_RVA: usize = 0xcc_0700;
+const DESTROY_POOL_RVA: usize = 0xfd_ef50;
 /// Each state-base creator saves RBX in five relocated bytes.
 const CREATE_STATE_BASE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48,
@@ -130,7 +130,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "remove_country_access",
-            rva: 0xcc_0050,
+            rva: 0xcc_00c0,
             sentinel: [
                 0x40, 0x53, 0x56, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x83, 0x3a, 0x00, 0x48, 0x8b,
                 0xda, 0x48,
@@ -166,7 +166,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "add_wing",
-            rva: 0xfd_f770,
+            rva: 0xfd_f7e0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
                 0x20, 0x48,
@@ -178,7 +178,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "remove_wing",
-            rva: 0xfe_aec0,
+            rva: 0xfe_af30,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x48,
@@ -191,7 +191,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "destroy_all_wings",
-            rva: 0xfe_2100,
+            rva: 0xfe_2170,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70,
                 0x18, 0x48,
@@ -203,7 +203,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "split_wing",
-            rva: 0xfe_b960,
+            rva: 0xfe_b9d0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24,
                 0x18, 0x55,
@@ -227,7 +227,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "rebind_pool_definition",
-            rva: 0xfe_a620,
+            rva: 0xfe_a690,
             sentinel: [
                 0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0x49, 0x40, 0x48,
                 0x81, 0xc1,
@@ -239,7 +239,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "ensure_state_air_base",
-            rva: 0xca_8350,
+            rva: 0xca_83c0,
             sentinel: CREATE_STATE_BASE_SENTINEL,
         },
         Receiver::Manager,
@@ -248,7 +248,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "ensure_rocket_air_base",
-            rva: 0xca_9120,
+            rva: 0xca_9190,
             sentinel: CREATE_STATE_BASE_SENTINEL,
         },
         Receiver::Manager,
@@ -257,7 +257,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "ensure_gun_air_base",
-            rva: 0xca_8e20,
+            rva: 0xca_8e90,
             sentinel: CREATE_STATE_BASE_SENTINEL,
         },
         Receiver::Manager,
@@ -267,7 +267,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "refresh_capacity",
-            rva: 0xcc_21c0,
+            rva: 0xcc_2230,
             sentinel: [
                 0x40, 0x53, 0x56, 0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0xf1, 0x48, 0x8b, 0x49, 0x68,
                 0x48, 0x85,

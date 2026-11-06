@@ -136,7 +136,7 @@ pub const COMBAT_MODIFIER_DATA: usize = 0x170;
 pub const ATTACK_ACCUMULATOR: usize = 0x188;
 
 /// CUnit destructor.
-pub const DESTRUCTOR_RVA: usize = 0x00c4_e8e0;
+pub const DESTRUCTOR_RVA: usize = 0x00c4_e950;
 
 /// Simulation operands for map routes and stack kinds, independent of the map entity.
 /// The caller first authenticates the unit's class and roster. Routes are copied
@@ -552,7 +552,7 @@ fn map_combat_identity(
             COMBAT_BORDER_WAR,
         ),
         // Authenticate the naval combat's secondary reference-object vtable.
-        crate::cnaval_combat::VTABLE_RVA => (0x02a5_6750, COMBAT_NAVAL),
+        crate::cnaval_combat::VTABLE_RVA => (0x02a5_6e70, COMBAT_NAVAL),
         _ => return Err("map combat class unsupported"),
     };
     if base

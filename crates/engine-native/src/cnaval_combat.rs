@@ -14,7 +14,7 @@ type GroupOrdinals = HashMap<usize, Option<u32>>;
 type GroupSet = HashSet<usize>;
 
 /// CNavalCombat vtable.
-pub const VTABLE_RVA: usize = 0x02a5_6678;
+pub const VTABLE_RVA: usize = 0x02a5_6d98;
 /// Observed combat reference type comes from the runtime registry; it is not an admission filter.
 #[cfg(any(test, feature = "test-support"))]
 pub const OBSERVED_REFERENCE_TYPE: u32 = 4713;

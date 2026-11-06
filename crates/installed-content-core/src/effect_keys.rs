@@ -19,9 +19,9 @@ pub use key_readers::is_own_field;
 #[cfg(test)]
 mod tests;
 pub(crate) mod value_readers;
-pub(crate) const READ_SCRIPT: u64 = 0x140587ED0;
-pub(crate) const READ_EFFECT: u64 = 0x140588220;
-pub(crate) const READ_VALUE: u64 = 0x1414365f0;
+pub(crate) const READ_SCRIPT: u64 = 0x140587F40;
+pub(crate) const READ_EFFECT: u64 = 0x140588290;
+pub(crate) const READ_VALUE: u64 = 0x141436660;
 const IF_TOKEN: u32 = 0x27C3;
 pub static REGISTERED_EFFECTS: RuntimeTable<&'static [(u32, &'static str)]> =
     RuntimeTable::new(|| {
@@ -130,7 +130,7 @@ pub fn description_fields(item: &Item) -> Result<Vec<Item>, String> {
         token
     };
     let (value, key) = class(class_token).expect("registered effect class");
-    if value == READ_SCRIPT || value == 0x14056F210 {
+    if value == READ_SCRIPT || value == 0x14056F280 {
         if key == READ_EFFECT && value == READ_SCRIPT {
             return Ok(items.to_vec());
         }
@@ -153,7 +153,7 @@ pub fn random_member_fields(item: &Item) -> Vec<Item> {
 }
 pub(crate) fn bound_localization_shape(field: &Field<'_>) -> Shape<()> {
     if field.opens() {
-        Shape::EffectValueKeys(0x142426410)
+        Shape::EffectValueKeys(0x142426550)
     } else {
         Shape::One
     }

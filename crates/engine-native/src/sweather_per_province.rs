@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Province-weather vtable.
-pub const VTABLE_RVA: usize = 0x029f_3f48;
+pub const VTABLE_RVA: usize = 0x029f_4098;
 /// Province-weather array stride.
 pub const STRIDE: usize = 0x180;
 /// Province ID, i32, authenticated against its array slot.

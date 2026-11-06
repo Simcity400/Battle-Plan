@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// CCurrentAutonomyStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_1010;
+pub const VTABLE_RVA: usize = 0x0286_1030;
 /// CCurrentAutonomyStatus current score raw i64.
 pub const SCORE: usize = 0x08;
 /// CCurrentAutonomyStatus current autonomy-state definition pointer.
@@ -28,7 +28,7 @@ pub const SUBJECT_COUNTRY: usize = 0x50;
 pub const LAST_MODIFIED_HOUR: usize = 0x60;
 /// CCurrentAutonomyStatus writer Save.
 #[cfg(test)]
-pub const SAVE_RVA: usize = 0x006c_1fa0;
+pub const SAVE_RVA: usize = 0x006c_2010;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

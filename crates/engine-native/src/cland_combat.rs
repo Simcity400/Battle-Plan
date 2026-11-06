@@ -23,9 +23,9 @@ pub use details::{
 };
 
 /// CLandCombat primary vtable.
-pub const VTABLE_RVA: usize = 0x02a2_3338;
+pub const VTABLE_RVA: usize = 0x02a2_37b8;
 /// CLandCombat secondary vtable (`BODY`).
-pub const BODY_VTABLE_RVA: usize = 0x02a2_3418;
+pub const BODY_VTABLE_RVA: usize = 0x02a2_3898;
 /// CLandCombat secondary-base displacement.
 pub const BODY: usize = 0x10;
 /// Packed full u64 handle: low u32 type and high u32 id, in the reference base.

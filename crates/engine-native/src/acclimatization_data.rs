@@ -1,7 +1,7 @@
 //! Embedded division acclimatization state; hourly consistency is unverified.
 
 /// Embedded acclimatization object vtable.
-pub const VTABLE_RVA: usize = 0x0285_bb80;
+pub const VTABLE_RVA: usize = 0x0285_bba0;
 /// Category/weight vector data.
 pub const DATA: usize = 0x08;
 /// Vector capacity, u32.

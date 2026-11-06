@@ -14,11 +14,11 @@
 use crate::{Memory, read};
 
 /// First instruction after the finalized-flag write.
-pub const RVA: usize = 0x00eb_5019;
+pub const RVA: usize = 0x00eb_5089;
 /// Bridge return address at the instruction following relocation. While
 /// hooked, the site itself contains a tail-jump patch that would mislead unwinding.
 /// The two positions share stack depth and exception-handler state.
-pub const RETURN_RVA: usize = 0x00eb_5020;
+pub const RETURN_RVA: usize = 0x00eb_5090;
 /// File-backed instruction sentinel for the interior site.
 pub const SENTINEL: [u8; 16] = [
     0x49, 0x8b, 0x9d, 0xf8, 0x01, 0x00, 0x00, 0x4c, 0x8b, 0x43, 0x08, 0x49, 0x8d, 0x95, 0xf8, 0x01,

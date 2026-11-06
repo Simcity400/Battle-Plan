@@ -15,7 +15,7 @@ mod display_grid;
 pub use display_grid::{DisplayGrid, display_grid_size, read_display_grid};
 
 /// CWeatherManager vtable.
-pub const VTABLE_RVA: usize = 0x029f_3fe8;
+pub const VTABLE_RVA: usize = 0x029f_4138;
 /// CWeatherManager contiguous SWeatherPerProvince array header.
 pub const PROVINCES: usize = 0x10;
 /// CWeatherManager province array count, i32.
@@ -73,7 +73,7 @@ pub const INITIAL_MODE: usize = 0x348;
 /// weather and day/night. The weather-simulation reset command can change the second.
 pub const SUSPEND_FLAGS: usize = 0x349;
 /// CWeatherManager hourly update.
-pub const HOURLY_UPDATE_RVA: usize = 0x00f9_f3d0;
+pub const HOURLY_UPDATE_RVA: usize = 0x00f9_f440;
 
 /// An authenticated manager for one callback. Each table reads its own header,
 /// so failure of one weather array does not make the other table unavailable.

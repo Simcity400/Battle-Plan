@@ -10,9 +10,9 @@ use crate::{
 };
 
 /// Primary division vtable.
-pub const VTABLE_RVA: usize = 0x029d_6d68;
+pub const VTABLE_RVA: usize = 0x029d_6d98;
 /// Secondary division vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029d_6f48;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029d_6f78;
 /// Secondary subobject displacement.
 pub const SECONDARY_BASE: usize = 0x10;
 /// Low-supply counter input, i64 fixed5.
@@ -109,11 +109,11 @@ pub const FUEL_CANDIDATE: usize = 0x620;
 pub const SEPARATE_COUNTER: usize = 0x630;
 
 /// Constructor followed by registration of the full handle.
-pub const CONSTRUCTOR_RVA: usize = 0x00cc_a140;
+pub const CONSTRUCTOR_RVA: usize = 0x00cc_a1b0;
 /// Synchronous hourly division update.
-pub const HOURLY_UPDATE_RVA: usize = 0x00ce_4f50;
+pub const HOURLY_UPDATE_RVA: usize = 0x00ce_4fc0;
 /// Active-stat recalculation in staggered parallel work joined before returning.
-pub const UPDATE_ACTIVE_STATS_RVA: usize = 0x00ce_a350;
+pub const UPDATE_ACTIVE_STATS_RVA: usize = 0x00ce_a3c0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

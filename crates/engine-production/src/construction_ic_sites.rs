@@ -196,20 +196,20 @@ pub struct Site {
 /// following RIP-relative load remains at its original location.
 pub const BUILDING_SPEED: Site = Site {
     name: "building speed",
-    rva: 0x00ff_24d0,
+    rva: 0x00ff_2540,
     sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x05, 0xc4, 0x8d, 0x3f,
+        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x05, 0x54, 0x8d, 0x3f,
         0x02,
     ],
 };
 /// Return RVA of the [`BUILDING_SPEED`] call whose value building advancement spends.
-pub const BUILDING_SPEND_RETURN: usize = 0x00fe_ed57;
+pub const BUILDING_SPEND_RETURN: usize = 0x00fe_edc7;
 
 /// Building completion query: RCX is the line and AL is the result.
 /// Amount and repair count must both be zero.
 pub const BUILDING_COMPLETE: Site = Site {
     name: "building completion",
-    rva: 0x00ff_25d0,
+    rva: 0x00ff_2640,
     sentinel: [
         0x48, 0x83, 0xec, 0x28, 0x83, 0x79, 0x48, 0x00, 0x75, 0x14, 0x48, 0x8b, 0x01, 0xff, 0x90,
         0xa8,
@@ -221,7 +221,7 @@ pub const BUILDING_COMPLETE: Site = Site {
 /// RBX and reserves stack space before the indirect call.
 pub const BUILDING_RESET: Site = Site {
     name: "building count reset",
-    rva: 0x00fe_e9e0,
+    rva: 0x00fe_ea50,
     sentinel: [
         0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x01, 0x33, 0xd2, 0x48, 0x8b, 0xd9, 0xff,
         0x90,
@@ -252,9 +252,9 @@ pub fn count_reset(
 /// Cancellation or every adjacent route edge reaching the target level completes it.
 pub const RAILWAY_COMPLETE: Site = Site {
     name: "railway completion",
-    rva: 0x01a9_5850,
+    rva: 0x01a9_58c0,
     sentinel: [
-        0x40, 0x55, 0x48, 0x83, 0xec, 0x50, 0x80, 0x3d, 0xb4, 0x9d, 0xbf, 0x01, 0x00, 0x40, 0xb5,
+        0x40, 0x55, 0x48, 0x83, 0xec, 0x50, 0x80, 0x3d, 0x44, 0x9d, 0xbf, 0x01, 0x00, 0x40, 0xb5,
         0x01,
     ],
 };
@@ -262,13 +262,13 @@ pub const RAILWAY_COMPLETE: Site = Site {
 /// The daily production pass checks completion after advancing the line and
 /// removes and deletes it on a true result. Other getter calls are not
 /// queue-completion events.
-pub const COMPLETE_RETURN: usize = 0x00ed_85ae;
+pub const COMPLETE_RETURN: usize = 0x00ed_861e;
 
 /// General-line removal: RCX is the status and RDX is the line.
 /// It removes the roster index and destroys the line.
 pub const REMOVE_GENERAL_LINE: Site = Site {
     name: "linked building completion removal",
-    rva: 0x00ee_0340,
+    rva: 0x00ee_03b0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30,
         0x48,
@@ -277,7 +277,7 @@ pub const REMOVE_GENERAL_LINE: Site = Site {
 /// Primary advancement decrements its partner, tests for zero amount, and
 /// deletes it before the daily completion check. Command and hourly removal
 /// callers are not completion events.
-pub const LINKED_COMPLETE_RETURN: usize = 0x00fe_f27c;
+pub const LINKED_COMPLETE_RETURN: usize = 0x00fe_f2ec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Completion {
@@ -402,7 +402,7 @@ pub fn linked_completion(
 /// The relocated prefix comprises four register pushes occupying five bytes.
 pub const RAILWAY_ADVANCE: Site = Site {
     name: "railway advance",
-    rva: 0x01a9_4450,
+    rva: 0x01a9_44c0,
     sentinel: [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8b, 0xec, 0x48,
         0x83,
@@ -415,7 +415,7 @@ pub const RAILWAY_ADVANCE: Site = Site {
 /// stack.
 pub const RAILWAY_PROGRESS: Site = Site {
     name: "railway progress",
-    rva: 0x00f0_5cf0,
+    rva: 0x00f0_5d60,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
         0x41,

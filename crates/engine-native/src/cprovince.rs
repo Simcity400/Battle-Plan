@@ -678,7 +678,7 @@ const DIRECT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DIRECT_FIELDS, DIRECT_ROW_BYTES).expect("valid record layout");
 
 /// Province primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_e248;
+pub const VTABLE_RVA: usize = 0x029e_e358;
 /// Province ID authenticated against its roster slot.
 pub const ID: usize = 0xa4;
 /// Owning-state pointer.

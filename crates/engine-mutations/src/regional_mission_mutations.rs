@@ -45,7 +45,7 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // The five-byte RBX spill to R8's home slot relocates.
     MutationSite {
         name: "register_mission",
-        rva: 0xcb_a810,
+        rva: 0xcb_a880,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24,
             0x10, 0x57,
@@ -54,7 +54,7 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // The five-byte RBX spill to R8's home slot relocates.
     MutationSite {
         name: "unregister_mission",
-        rva: 0xcb_aa20,
+        rva: 0xcb_aa90,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24,
             0x10, 0x56,

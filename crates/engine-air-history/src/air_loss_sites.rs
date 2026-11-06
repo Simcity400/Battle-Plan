@@ -32,7 +32,7 @@ use crate::{
 };
 
 /// Seven-argument writer: manager entry, wing, count, enemy, region, selection, cause.
-pub const WRITER_RVA: usize = 0x00cb_9630;
+pub const WRITER_RVA: usize = 0x00cb_96a0;
 /// Field count used by air-history construction.
 pub const FIELD_COUNT: usize = cloop_history::air_stats::FIELD_COUNT as usize;
 /// Own/enemy family bases; unknown families select zero.
@@ -49,7 +49,7 @@ pub struct Site {
 pub const SITES: [Site; 2] = [
     Site {
         name: "own_air_loss",
-        rva: 0x00cb_9949,
+        rva: 0x00cb_99b9,
         sentinel: [
             0xe8, 0xe2, 0xfc, 0xff, 0xff, 0x8b, 0x06, 0x8b, 0x17, 0x3b, 0xc2, 0x74, 0x48, 0x85,
             0xc0, 0x74,
@@ -57,7 +57,7 @@ pub const SITES: [Site; 2] = [
     },
     Site {
         name: "credited_air_loss",
-        rva: 0x00cb_9999,
+        rva: 0x00cb_9a09,
         sentinel: [
             0xe8, 0x92, 0xfc, 0xff, 0xff, 0x48, 0x8b, 0xcf, 0xe8, 0xea, 0xcd, 0x06, 0x00, 0x45,
             0x85, 0xff,

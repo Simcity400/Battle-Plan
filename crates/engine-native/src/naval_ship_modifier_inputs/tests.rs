@@ -436,7 +436,7 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
     let key = *b"abcde";
     for length in [257, 4097, 5000] {
         let mut memory = fixture();
-        memory.globals.push((IMAGE + 0x029f_59c8, key.to_vec()));
+        memory.globals.push((IMAGE + 0x029f_5b58, key.to_vec()));
         memory.globals.push((
             IMAGE + crate::cterrain_database::SINGLETON_RVA,
             (DATABASE as u64).to_le_bytes().to_vec(),
@@ -500,7 +500,7 @@ fn a_capture_scans_the_terrain_database_for_the_ocean_once() {
     const OCEAN: usize = 0x3400;
     let key = *b"ocean";
     let mut memory = fixture();
-    memory.globals.push((IMAGE + 0x029f_59c8, key.to_vec()));
+    memory.globals.push((IMAGE + 0x029f_5b58, key.to_vec()));
     memory.globals.push((
         IMAGE + crate::cterrain_database::SINGLETON_RVA,
         (DATABASE as u64).to_le_bytes().to_vec(),

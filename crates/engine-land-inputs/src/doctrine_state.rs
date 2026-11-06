@@ -4,14 +4,14 @@
 //! template strings for every country's selection.
 use crate::{Memory, cpdx_array::Array, memory::Raw, msvc_string, read};
 
-pub const STATUS_VTABLE: usize = 0x29e1ce8;
-pub const FOLDER_VTABLE: usize = 0x29e1c98;
-pub const TRACK_VTABLE: usize = 0x29e1c48;
-pub const COST_VTABLE: usize = 0x29e1ba8;
-pub const GRANT_VTABLE: usize = 0x284f268;
-pub const FILTER_VTABLE: usize = 0x284f218;
-pub const LEADER_VTABLE: usize = 0x29e1bf8;
-pub const EQUIPMENT_VTABLE: usize = 0x29e1b00;
+pub const STATUS_VTABLE: usize = 0x29e1d48;
+pub const FOLDER_VTABLE: usize = 0x29e1cf8;
+pub const TRACK_VTABLE: usize = 0x29e1ca8;
+pub const COST_VTABLE: usize = 0x29e1c08;
+pub const GRANT_VTABLE: usize = 0x284f288;
+pub const FILTER_VTABLE: usize = 0x284f238;
+pub const LEADER_VTABLE: usize = 0x29e1c58;
+pub const EQUIPMENT_VTABLE: usize = 0x29e1b60;
 pub const FOLDER_TEMPLATE_VTABLE: usize = 0x2796f30;
 pub const GRAND_TEMPLATE_VTABLE: usize = 0x27970f0;
 pub const SUB_TEMPLATE_VTABLE: usize = 0x27972a0;

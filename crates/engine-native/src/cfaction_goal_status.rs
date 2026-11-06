@@ -5,7 +5,7 @@
 use crate::{Memory, allocation, cgame_date, cpdx_array::Array, read};
 
 pub const STATUS: usize = 0x620;
-pub const VTABLE_RVA: usize = 0x029b_8d48;
+pub const VTABLE_RVA: usize = 0x029b_8d78;
 pub const OWNER: usize = 0x08;
 pub const MANIFEST: usize = 0x10;
 pub const GOALS: usize = 0x18;

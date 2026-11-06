@@ -5,7 +5,7 @@
 //! than selecting a definition by token.
 
 /// Primary database vtable.
-pub const VTABLE_RVA: usize = 0x0285_cc90;
+pub const VTABLE_RVA: usize = 0x0285_ccb0;
 /// Global definition-pointer vector with a null object in slot zero.
 pub const DEFINITIONS: usize = 0x40;
 

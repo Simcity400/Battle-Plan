@@ -3,7 +3,7 @@
 
 use crate::{Memory, allocation, cpdx_array::Array, read};
 
-pub const VTABLE_RVA: usize = 0x02ac_5908;
+pub const VTABLE_RVA: usize = 0x02ac_66b8;
 /// Retained sharing base set by faction scientist refresh. It is independent
 /// of the current scientist roster and the per-country bonus array.
 pub const BASE: usize = 0x10;

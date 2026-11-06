@@ -1641,13 +1641,13 @@ impl WarImage {
         image.d(CANDIDATE + crelation::FIRST_COUNTRY, 1);
         image.d(CANDIDATE + crelation::SECOND_COUNTRY, 2);
         image.bytes(CANDIDATE + crelation::CANCEL, &[0, 0]);
-        image.q(STACK + 0x1d8, BASE + 0x00d8_1b8f);
-        image.q(STACK + 0x448, BASE + 0x00d8_160d);
+        image.q(STACK + 0x1d8, BASE + 0x00d8_1bff);
+        image.q(STACK + 0x448, BASE + 0x00d8_167d);
         image.q(STACK + 0x438, SELECTED);
-        image.q(STACK + 0x4a8, BASE + 0x00d9_89ae);
-        image.bytes(BASE + 0x00d8_1b89, &[0xff, 0x90, 0xa8, 0, 0, 0]);
-        image.bytes(BASE + 0x00d8_1608, &[0xe8, 0x03, 0x05, 0, 0]);
-        image.bytes(BASE + 0x00d9_89a9, &[0xe8, 0xb2, 0x8a, 0xfe, 0xff]);
+        image.q(STACK + 0x4a8, BASE + 0x00d9_8a1e);
+        image.bytes(BASE + 0x00d8_1bf9, &[0xff, 0x90, 0xa8, 0, 0, 0]);
+        image.bytes(BASE + 0x00d8_1678, &[0xe8, 0x03, 0x05, 0, 0]);
+        image.bytes(BASE + 0x00d9_8a19, &[0xe8, 0xb2, 0x8a, 0xfe, 0xff]);
         image
     }
     fn attach(&mut self) {

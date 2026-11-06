@@ -3,7 +3,7 @@
 //! the parked acquisition boundary.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0280_76f0;
+pub const VTABLE_RVA: usize = 0x0280_7710;
 /// CSubUnitDefinition cached defense, i64/100000.
 pub const DEFENSE: usize = 0xa8;
 /// CSubUnitDefinition cached breakthrough, i64/100000.
@@ -358,13 +358,13 @@ pub(crate) fn category_of(bytes: &[u8; CATEGORY_LEN]) -> i32 {
     }
 }
 /// Subunit-definition constructor, also used for the null subtype.
-pub const CONSTRUCTOR_RVA: usize = 0x0109_eda0;
+pub const CONSTRUCTOR_RVA: usize = 0x0109_ee10;
 /// Null-subtype singleton pointer.
 pub const NULL_OBJECT_RVA: usize = 0x033e_7be0;
 /// Null-singleton getter used by default air-wing pools.
-pub const GET_NULL_OBJECT_RVA: usize = 0x00bf_1ce0;
+pub const GET_NULL_OBJECT_RVA: usize = 0x00bf_1d50;
 /// Null-subtype primary vtable.
-pub const NULL_VTABLE_RVA: usize = 0x029c_1148;
+pub const NULL_VTABLE_RVA: usize = 0x029c_1178;
 /// Persistent null-subunit lexer token, checked against its loaded spelling.
 pub const NULL_TOKEN: u32 = 0x165;
 
@@ -402,8 +402,8 @@ pub fn movement_terrain(
     terrain: usize,
 ) -> Result<i64, &'static str> {
     // Authenticate terrain type and its embedded unit adjuster.
-    const TERRAIN_VTABLE: usize = 0x02a3_ad50;
-    const ADJUSTER_VTABLE: usize = 0x0280_75b8;
+    const TERRAIN_VTABLE: usize = 0x02a3_b470;
+    const ADJUSTER_VTABLE: usize = 0x0280_75d8;
     const UNREADABLE: &str = "movement stat operand unreadable";
     // A null or overflowing leaf is an unreadable operand without a read; the
     // scattered copy stops at its zero address exactly where the leaf stops.
@@ -585,12 +585,12 @@ mod movement_tests {
             .copy_from_slice(&1_u32.to_le_bytes());
         bytes[stats + MOVEMENT_TERRAIN_ADJUSTERS + 12..stats + MOVEMENT_TERRAIN_ADJUSTERS + 16]
             .copy_from_slice(&1_u32.to_le_bytes());
-        bytes[terrain..terrain + 8].copy_from_slice(&((base + 0x02a3_ad50) as u64).to_le_bytes());
+        bytes[terrain..terrain + 8].copy_from_slice(&((base + 0x02a3_b470) as u64).to_le_bytes());
         bytes[terrain + 8..terrain + 12].copy_from_slice(&123_u32.to_le_bytes());
         bytes[terrain + 0x88..terrain + 0x8c].copy_from_slice(&1_i32.to_le_bytes());
         for pointer in [cache, terrain + 0x168] {
             bytes[pointer..pointer + 8]
-                .copy_from_slice(&((base + 0x0280_75b8) as u64).to_le_bytes());
+                .copy_from_slice(&((base + 0x0280_75d8) as u64).to_le_bytes());
         }
         bytes[cache + 8..cache + 12].copy_from_slice(&123_u32.to_le_bytes());
         bytes[cache + 0x20..cache + 0x28].copy_from_slice(&i64::MAX.to_le_bytes());
@@ -622,7 +622,7 @@ mod movement_tests {
 
 /// The `CUnitAdjuster` vtable of each entry of [`MOVEMENT_TERRAIN_ADJUSTERS`]
 /// and of a terrain's own adjuster.
-pub const UNIT_ADJUSTER_VTABLE_RVA: usize = 0x0280_75b8;
+pub const UNIT_ADJUSTER_VTABLE_RVA: usize = 0x0280_75d8;
 /// Unit adjuster stride and its attack component, used by additive adjustment.
 pub const UNIT_ADJUSTER_STRIDE: usize = 0x28;
 pub const UNIT_ADJUSTER_ATTACK: usize = 0x10;

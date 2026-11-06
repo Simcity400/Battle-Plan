@@ -39,7 +39,7 @@ pub struct LicenseRow {
 }
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_cf88;
+pub const VTABLE_RVA: usize = 0x029e_d098;
 
 /// Production-line pointer-array data.
 pub const LINES: usize = 0x58;
@@ -51,7 +51,7 @@ pub const ORGANISATIONS: usize = 0x130;
 /// Cached allowed-policy roster, rebuilt from content by refresh and loading.
 pub const POLICIES: usize = 0x148;
 /// Policy primary vtable and definition-token layout.
-pub const POLICY_VTABLE_RVA: usize = 0x029b_a578;
+pub const POLICY_VTABLE_RVA: usize = 0x029b_a5a8;
 /// Lexer token used to resolve the localized policy name.
 pub const POLICY_TOKEN: usize = 8;
 /// Construction-line pointer-array data.

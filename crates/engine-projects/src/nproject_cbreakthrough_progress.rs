@@ -3,7 +3,7 @@
 //! The walk checks the exact declared size rather than accepting a prefix.
 
 /// Breakthrough-progress primary vtable.
-pub const VTABLE_RVA: usize = 0x02aa_3e90;
+pub const VTABLE_RVA: usize = 0x02aa_49b0;
 /// MSVC tree sentinel pointer.
 pub const TREE_HEADER: usize = 0x08;
 /// Tree u64 size checked against the exact traversed count.

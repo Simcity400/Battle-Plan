@@ -13,7 +13,7 @@ pub mod fresh_inputs;
 pub mod selected_inputs;
 
 /// CRailwayManager primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f320;
+pub const VTABLE_RVA: usize = 0x029e_f450;
 
 /// CRailwayManager province-indexed CProvinceRailwayInfo pointer table.
 pub const PROVINCE_INFO_TABLE: usize = 0x08;
@@ -27,16 +27,16 @@ pub const COOLDOWN_PROVINCE_COUNT: usize = 0x2c;
 /// CRailwayManager table pointer stride.
 pub const PROVINCE_INFO_STRIDE: usize = 8;
 /// Manager constructor sizing and zero-filling the province table.
-pub const CONSTRUCTOR_RVA: usize = 0x00f0_5170;
+pub const CONSTRUCTOR_RVA: usize = 0x00f0_51e0;
 /// Railway manager scalar deleting destructor (vtable slot 0); destruction
 /// stores the vtable and frees every info object.
-pub const DESTRUCTOR_RVA: usize = 0x00f0_5450;
+pub const DESTRUCTOR_RVA: usize = 0x00f0_54c0;
 /// Railway token loader can allocate and replace info slots.
-pub const LOAD_TOKEN_RVA: usize = 0x00f0_8110;
+pub const LOAD_TOKEN_RVA: usize = 0x00f0_8180;
 /// Province-cooldown setter writes stored cooldown and notifies supply.
-pub const SET_PROVINCE_ON_COOLDOWN_RVA: usize = 0x00f0_77a0;
+pub const SET_PROVINCE_ON_COOLDOWN_RVA: usize = 0x00f0_7810;
 /// Cooldown updater decrements values and removes expired IDs.
-pub const UPDATE_COOLDOWNS_RVA: usize = 0x00f0_6f50;
+pub const UPDATE_COOLDOWNS_RVA: usize = 0x00f0_6fc0;
 
 /// Passive railway speed computation, before CArmy's outer movement-speed
 /// scale. Road infrastructure and the directed rail edge compete by signed

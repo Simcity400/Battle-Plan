@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// CVariables vtable.
-pub const VTABLE_RVA: usize = 0x0285_32f8;
+pub const VTABLE_RVA: usize = 0x0285_3318;
 /// CVariables primary vtable pointer.
 pub const VTABLE: usize = 0;
 /// Raw u32 scoped-variable seed; initialized to one and hashed as context changes.

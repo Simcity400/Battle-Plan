@@ -16,7 +16,7 @@
 use crate::{Memory, msvc_string, read, read_slice};
 
 /// Division-name object vtable.
-pub const VTABLE_RVA: usize = 0x029b_3c68;
+pub const VTABLE_RVA: usize = 0x029b_3c88;
 /// Division-name type word, signed i32, initially zero and saved unconditionally; not recorded.
 pub const TYPE: usize = 0x08;
 /// Type-two name-group key hashed in the name database; not serialized.
@@ -27,7 +27,7 @@ pub const TEMPLATE_REFERENCE: usize = 0x58;
 pub const NAMING_EQUIPMENT: usize = 0x50;
 pub const TEMPLATE_NAME_GROUP: usize = 0x1d0;
 /// Name-group vtable and authored key string.
-pub const GROUP_VTABLE_RVA: usize = 0x029b_3cb8;
+pub const GROUP_VTABLE_RVA: usize = 0x029b_3cd8;
 pub const GROUP_KEY: usize = 8;
 /// Division-name signed order, initially zero. Nonpositive setter
 /// arguments store -1; save omits only zero.
@@ -44,7 +44,7 @@ pub const FLAG_A: usize = 0xa8;
 /// Programmatic-override flag byte, initially zero; save emits only when set. Recorded raw.
 pub const FLAG_B: usize = 0xa9;
 /// Division-name constructor.
-pub const CONSTRUCT_RVA: usize = 0x00a0_abe0;
+pub const CONSTRUCT_RVA: usize = 0x00a0_ac50;
 /// Operative name-database global used for type-two group lookup.
 const NAME_DATABASE_RVA: usize = 0x033d_d2d0;
 

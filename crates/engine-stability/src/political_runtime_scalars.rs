@@ -17,8 +17,8 @@ pub const RVAS: [usize; 6] = [
     0x033e_11d8,
     0x033e_3278,
     0x033e_1520,
-    0x029c_fa00,
-    0x029c_f9f8,
+    0x029c_fa30,
+    0x029c_fa28,
 ];
 const UNREADABLE: [&str; 6] = [
     "river_small global unreadable",

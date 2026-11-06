@@ -1,7 +1,7 @@
 //! COccupationLaw layout. Preserve its string token as identity.
 
 /// COccupationLaw vtable.
-pub const VTABLE_RVA: usize = 0x029b_c260;
+pub const VTABLE_RVA: usize = 0x029b_c290;
 /// COccupationLaw embedded MSVC string token.
 pub const NAME: usize = 0x10;
 

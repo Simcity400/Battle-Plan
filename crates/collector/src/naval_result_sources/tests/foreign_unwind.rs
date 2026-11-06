@@ -162,7 +162,7 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
             // The actual constructor shim receives this caller's return PC as
             // the native load factory: no invented birth or native globals.
             let base = if site_index == 2 {
-                caller_site + 5 - 0xc0dba9
+                caller_site + 5 - 0xc0dc19
             } else {
                 world.base()
             };

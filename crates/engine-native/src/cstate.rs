@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029b_4d38;
+pub const VTABLE_RVA: usize = 0x029b_4d58;
 /// State ID, u32, copied from the template and used as its roster slot.
 pub const ID: usize = 0x58;
 
@@ -101,13 +101,13 @@ const MANPOWER_SPAN: usize = POPULATION + 4 - MANPOWER_AVAILABLE;
 /// replace it, and the save writes its definition's name as `state_category`.
 pub const CATEGORY: usize = 0x898;
 /// State category definition vtable.
-pub const CATEGORY_VTABLE_RVA: usize = 0x02a3_5078;
+pub const CATEGORY_VTABLE_RVA: usize = 0x02a3_5798;
 /// The category definition's lexer token id, u32, beside its vtable.
 pub const CATEGORY_TOKEN: usize = 0x08;
 /// State constructor establishing template and ID.
-pub const CONSTRUCTOR_RVA: usize = 0x00a1_a830;
+pub const CONSTRUCTOR_RVA: usize = 0x00a1_a8a0;
 /// Owner setter updating the raw country reference before ownership notifications.
-pub const SET_OWNER_RVA: usize = 0x00a2_9220;
+pub const SET_OWNER_RVA: usize = 0x00a2_9290;
 /// Sorted conflict-tree head storing border combats. Predicates inspect
 /// side countries and intersect tree values.
 pub const BORDER_CONFLICT_TREE: usize = 0x8a0;
@@ -798,7 +798,7 @@ pub fn read_continents_selected(
             .and_then(|pointer| usize::try_from(pointer).ok())?;
         if database == 0
             || read::<u64>(memory, database)
-                != base.checked_add(0x029c_0958).map(|address| address as u64)
+                != base.checked_add(0x029c_0988).map(|address| address as u64)
         {
             return None;
         }

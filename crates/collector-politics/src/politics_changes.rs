@@ -1993,7 +1993,7 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 || read::<u64>(a)
                     .and_then(|vtable| at(vtable as usize, 0x150))
                     .and_then(item_read::<u64>)
-                    == Some((base() + 0xb03b50) as u64);
+                    == Some((base() + 0xb03bc0) as u64);
             if scripted && let Some(template) = at(a, 0x78).and_then(item_read::<u64>) {
                 identity.keys[0] = key(template as usize, 0x10);
             }
@@ -2060,7 +2060,7 @@ fn government_context(scope: Scope, caller: usize, mut context: Context) -> Cont
         // The election update invokes on_election synchronously. Other notifications
         // are new scopes and inherit no election/coup provenance.
         Scope::OnAction => {
-            context.government = if caller == 0xbfb85e {
+            context.government = if caller == 0xbfb8ce {
                 GovernmentCause::ElectionOnAction
             } else {
                 GovernmentCause::NotIdentified
@@ -2309,7 +2309,7 @@ unsafe fn entry_forward(
         // Only these exact native returns guarantee RDX is the live cost output.
         // Other nested commands in the daily scope have unrelated second arguments.
         match scope {
-            Scope::ImproveRelationDaily | Scope::BoostPartyDaily if caller == 0xbfce93 => {
+            Scope::ImproveRelationDaily | Scope::BoostPartyDaily if caller == 0xbfcf03 => {
                 if let Some(cost) = operand::<i64>(b) {
                     let identity = relation_identity(a);
                     component(owner, PowerDailyCostKind::Relation, cost, identity);
@@ -2317,10 +2317,10 @@ unsafe fn entry_forward(
                     failed("politics daily relation cost output unreadable");
                 }
             }
-            Scope::MioResearchDaily if caller == 0xed4f49 => {
+            Scope::MioResearchDaily if caller == 0xed4fb9 => {
                 mio_component(owner, a, operand::<i64>(b), PowerDailyCostKind::MioResearch)
             }
-            Scope::MioProductionDaily if caller == 0xed4f62 => mio_component(
+            Scope::MioProductionDaily if caller == 0xed4fd2 => mio_component(
                 owner,
                 a,
                 operand::<i64>(b),
@@ -2332,7 +2332,7 @@ unsafe fn entry_forward(
     // The ability activation caller supplies the activation charge.
     // Availability, AI and UI callers of the same getter are unrelated.
     if scope == Scope::AbilityCost
-        && caller == 0x732088
+        && caller == 0x7320f8
         && let Some(mut pending) = PENDING.get()
         && pending.site == PowerSite::ActivateAbility
         && let Some(cost) = read::<i64>(b)
@@ -2524,7 +2524,7 @@ unsafe fn writer(
     let mut identity = context.identity;
     // The nested ability allocator and release refund
     // belong to their observed parent, not an outer command.
-    if matches!(caller, 0x71b395 | 0x71b939 | 0x7323f7 | 0x732bdf)
+    if matches!(caller, 0x71b405 | 0x71b9a9 | 0x732467 | 0x732c4f)
         && let Some(parent) =
             previous.filter(|parent| owner.is_some_and(|owner| parent.owner.same_owner(owner)))
     {
@@ -2553,7 +2553,7 @@ unsafe fn writer(
         _ => None,
     };
     // The leader's embedded allocator receives the deployment charge.
-    if caller == 0xc711a2
+    if caller == 0xc71212
         && let Some(leader) = b.checked_sub(0x1078)
     {
         identity.set_reference(reference(
@@ -2785,7 +2785,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             let caller = at(registers.rbp, 0x358)
                 .and_then(operand::<u64>)
                 .map(|r| (r as usize).wrapping_sub(base()));
-            if caller != Some(0xbfb8e2) {
+            if caller != Some(0xbfb952) {
                 return;
             }
             DAILY.set(None);
@@ -2816,7 +2816,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
         }
         7 => {
             // Only the daily caller supplies an applied income observation.
-            if at(registers.rbp, 0x358).and_then(operand::<u64>) != Some((base() + 0xbfb8e2) as u64)
+            if at(registers.rbp, 0x358).and_then(operand::<u64>) != Some((base() + 0xbfb952) as u64)
             {
                 return;
             }
@@ -4334,7 +4334,7 @@ mod tests {
         let _sampled = crate::hook_timing::sample_all();
         let timed = crate::hook_timing::counts(family);
         let cost = 11i64;
-        for caller in [0x732087, 0x732089, 0] {
+        for caller in [0x7320f7, 0x7320f9, 0] {
             unsafe {
                 entry_body(
                     1,
@@ -4357,7 +4357,7 @@ mod tests {
                 0,
                 0,
                 index,
-                base().wrapping_add(0x732088),
+                base().wrapping_add(0x7320f8),
                 0,
             );
         }
@@ -4473,18 +4473,18 @@ mod tests {
 
     #[test]
     fn caller_classification_is_exact_and_does_not_use_time_or_country_control() {
-        assert_eq!(caller_cause(0x76fdbe), PowerCause::Decision);
-        assert_eq!(caller_cause(0x76317f), PowerCause::NotIdentified);
+        assert_eq!(caller_cause(0x76fe2e), PowerCause::Decision);
+        assert_eq!(caller_cause(0x7631ef), PowerCause::NotIdentified);
         assert_eq!(caller_cause(native::DAILY_CP_CALLER), PowerCause::DailyGain);
         let console = government_context(Scope::ConsoleSubject, 0, Context::default());
         assert_eq!(
             government_context(Scope::SubjectGovernment, 0, console).government,
             GovernmentCause::Console
         );
-        let context = government_context(Scope::OnAction, 0xbfb85e, Context::default());
+        let context = government_context(Scope::OnAction, 0xbfb8ce, Context::default());
         assert_eq!(context.government, GovernmentCause::ElectionOnAction);
         assert_eq!(
-            government_context(Scope::OnAction, 0xbfb85f, context).government,
+            government_context(Scope::OnAction, 0xbfb8cf, context).government,
             GovernmentCause::NotIdentified
         );
     }

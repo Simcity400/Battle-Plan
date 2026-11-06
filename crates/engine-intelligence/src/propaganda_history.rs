@@ -7,8 +7,8 @@ use crate::{Memory, memory::Raw, read};
 pub const HISTORY: usize = 0xb8;
 pub const WEEKLY_DRIFT: usize = 0x130;
 pub const EFFORT_STRIDE: usize = 0x28;
-pub const DAILY_UPDATE_RVA: usize = 0x0128_ec70;
-pub const RESET_RVA: usize = 0x0128_ced0;
+pub const DAILY_UPDATE_RVA: usize = 0x0128_ece0;
+pub const RESET_RVA: usize = 0x0128_cf40;
 pub const DAILY_UPDATE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
 ];

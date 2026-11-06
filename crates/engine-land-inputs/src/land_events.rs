@@ -102,16 +102,16 @@ fn destruction_words(combats: Array) -> usize {
     10 + combats.count as usize
 }
 
-pub const FINALIZE_RVA: usize = 0x13491f0;
+pub const FINALIZE_RVA: usize = 0x1349260;
 /// Round termination invokes this dispatch before removing losers; it
 /// resolves loser then winner and marks the winner's observer.
-pub const DISPATCH_RVA: usize = 0x1349130;
+pub const DISPATCH_RVA: usize = 0x13491a0;
 /// Exact loser-then-winner commander return addresses certify on-action
 /// commanders. Scripts can query the same resolver while dispatch state is active.
-pub const DISPATCH_LEADER_RETURNS: [usize; 2] = [0x134914c, 0x134916a];
+pub const DISPATCH_LEADER_RETURNS: [usize; 2] = [0x13491bc, 0x13491da];
 /// Six-byte verdict CALLs in on-action dispatch. Resolver entries and
 /// vtable slots are not patched.
-pub const DISPATCH_LEADER_CALLS: [usize; 2] = [0x1349146, 0x1349164];
+pub const DISPATCH_LEADER_CALLS: [usize; 2] = [0x13491b6, 0x13491d4];
 pub const DISPATCH_LEADER_CALL_SENTINEL: [u8; 6] = [0xff, 0x90, 0xe8, 0, 0, 0];
 /// The commander-resolver vtable slot each verdict CALL calls through, the displacement its
 /// sentinel ends with.
@@ -480,22 +480,22 @@ pub const FINALIZE_SENTINEL: [u8; 16] = [
 /// equipment pool and selected killer division. Deletion is deferred; hourly
 /// movement can continue after destruction dispatch. Preserve every invocation,
 /// including repeated dying-division handles.
-pub const DESTROY_RVA: usize = 0xd3bd50;
+pub const DESTROY_RVA: usize = 0xd3bdc0;
 /// Snapshot destruction-entry country choice and victim operands before
 /// leader experience or history can run effects. A later observation supplies
 /// the actual selected killer.
-pub const DESTRUCTION_RVA: usize = 0xce6300;
+pub const DESTRUCTION_RVA: usize = 0xce6370;
 pub const DESTRUCTION_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
 ];
 pub const DESTROY_SENTINEL: [u8; 16] = [
     0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55,
 ];
-pub const BORDER_FINALIZE_RVA: usize = 0x148a440;
-pub const BORDER_TERMINATE_RVA: usize = 0x148b8e0;
+pub const BORDER_FINALIZE_RVA: usize = 0x148a4b0;
+pub const BORDER_TERMINATE_RVA: usize = 0x148b950;
 /// Attacker-then-defender finalizer verdict returns, before scripts.
 /// Calls from effects are not verdict queries.
-pub const BORDER_TERMINATE_RETURNS: [usize; 2] = [0x148a4ad, 0x148a4bd];
+pub const BORDER_TERMINATE_RETURNS: [usize; 2] = [0x148a51d, 0x148a52d];
 /// Border finalizer and result-handler entry bytes.
 pub const BORDER_FINALIZE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,

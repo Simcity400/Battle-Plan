@@ -79,7 +79,7 @@ pub enum Receiver {
     Structure,
 }
 
-const SET_LEVEL_RVA: usize = 0x1163eb0;
+const SET_LEVEL_RVA: usize = 0x1163f20;
 
 /// Every site with its receiver; each returns
 /// RAX unchanged from its original, so a detour returns the original's
@@ -102,7 +102,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 8] = [
     (
         MutationSite {
             name: "apply_damage_step",
-            rva: 0x1163d00,
+            rva: 0x1163d70,
             sentinel: [
                 0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x57, 0x48, 0x83, 0xec,
                 0x30, 0x4c,
@@ -114,7 +114,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 8] = [
     (
         MutationSite {
             name: "advance_repair",
-            rva: 0x1162990,
+            rva: 0x1162a00,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x40,
                 0x45, 0x0f,
@@ -126,7 +126,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 8] = [
     (
         MutationSite {
             name: "destroy_healthy_levels",
-            rva: 0x1163a20,
+            rva: 0x1163a90,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56, 0x48, 0x83,
                 0xec, 0x50,
@@ -138,7 +138,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 8] = [
     (
         MutationSite {
             name: "get_or_create_building",
-            rva: 0x11ffa20,
+            rva: 0x11ffa90,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x57,
@@ -150,7 +150,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 8] = [
     (
         MutationSite {
             name: "read_building_status",
-            rva: 0x1205610,
+            rva: 0x1205680,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
                 0x40, 0x48,
@@ -162,7 +162,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 8] = [
     (
         MutationSite {
             name: "clear_building_status",
-            rva: 0x1201640,
+            rva: 0x12016b0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -176,7 +176,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 8] = [
     (
         MutationSite {
             name: "enter_nudge_mode",
-            rva: 0x1363e90,
+            rva: 0x1363f00,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24,
                 0x20, 0x48,

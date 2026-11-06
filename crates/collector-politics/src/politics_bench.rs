@@ -274,7 +274,7 @@ fn politics_daily_tap_profile() {
         let mut rate = [0u8; 0x400];
         for (frame, cost) in [(&mut modifier, 1i64), (&mut rate, 8i64)] {
             frame[8..16].copy_from_slice(&cost.to_le_bytes());
-            frame[0x398..0x3a0].copy_from_slice(&((world.base + 0xbfb8e2) as u64).to_le_bytes());
+            frame[0x398..0x3a0].copy_from_slice(&((world.base + 0xbfb952) as u64).to_le_bytes());
         }
         let modifier_frame = modifier.as_ptr() as usize + 0x40;
         let rate_frame = rate.as_ptr() as usize + 0x40;

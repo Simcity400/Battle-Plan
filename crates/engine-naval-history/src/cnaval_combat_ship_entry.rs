@@ -150,7 +150,7 @@ pub(crate) fn capture_hits(
 }
 
 /// CNavalCombatShipEntry vtable.
-pub const VTABLE_RVA: usize = 0x029d_a5f0;
+pub const VTABLE_RVA: usize = 0x029d_a620;
 /// CNavalCombatShipEntry extent.
 pub const SIZE: usize = 0x120;
 /// Ship or convoy full native reference u64.

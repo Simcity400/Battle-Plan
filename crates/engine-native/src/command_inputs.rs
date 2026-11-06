@@ -10,52 +10,52 @@ pub struct Site {
 
 pub const SITES: [Site; 10] = [
     Site {
-        rva: 0x022c_6434,
-        fingerprint: 0x18e2_cc8b_8cd0_c073,
+        rva: 0x022c_64a4,
+        fingerprint: 0x18e3_1c8b_8cd1_4863,
         span: 5,
     },
     Site {
-        rva: 0x022c_6c97,
+        rva: 0x022c_6d07,
         fingerprint: 0xe5ba_ea5b_4c5c_b671,
         span: 6,
     },
     Site {
-        rva: 0x022c_47d7,
+        rva: 0x022c_4847,
         fingerprint: 0x8116_36c1_6581_b6eb,
         span: 6,
     },
     Site {
-        rva: 0x00e4_8d69,
-        fingerprint: 0xe037_f039_e539_8552,
+        rva: 0x00e4_8dd9,
+        fingerprint: 0xd8a2_97a9_b64f_7e6d,
         span: 7,
     },
     Site {
-        rva: 0x00e4_7952,
-        fingerprint: 0x0c7a_4b6a_00f0_8be0,
+        rva: 0x00e4_79c2,
+        fingerprint: 0xefb0_68dc_6518_7020,
         span: 10,
     },
     Site {
-        rva: 0x00e4_ae24,
+        rva: 0x00e4_ae94,
         fingerprint: 0x7203_3f4d_f3e2_018f,
         span: 7,
     },
     Site {
-        rva: 0x00e4_b636,
-        fingerprint: 0x8210_572f_b2a4_d040,
+        rva: 0x00e4_b6a6,
+        fingerprint: 0xb93b_9f97_0b5d_bf13,
         span: 5,
     },
     Site {
-        rva: 0x00e4_ca55,
+        rva: 0x00e4_cac5,
         fingerprint: 0x8655_3c76_6857_374b,
         span: 7,
     },
     Site {
-        rva: 0x00e4_e10d,
+        rva: 0x00e4_e17d,
         fingerprint: 0x8f9c_fe19_3632_808c,
         span: 6,
     },
     Site {
-        rva: 0x00e4_e5d3,
+        rva: 0x00e4_e643,
         fingerprint: 0xc7ba_35f1_aee1_2fab,
         span: 7,
     },
@@ -67,7 +67,7 @@ pub const SESSION_PLAYER: usize = 0x84;
 pub const REMOVED_PLAYER_KEY: usize = 0x2c;
 const HUMAN_COUNTRY_AUTOMATION_RVA: usize = 0x033d_daa9;
 pub const IDLER_RVA: usize = 0x033d_db08;
-pub const IN_GAME_IDLER_VTABLE_RVA: usize = 0x029e_5838;
+pub const IN_GAME_IDLER_VTABLE_RVA: usize = 0x029e_58d8;
 pub const IDLER_PAUSED: usize = 0x6c1;
 
 pub fn paused(memory: &impl Memory, base: usize) -> Result<Option<bool>, &'static str> {

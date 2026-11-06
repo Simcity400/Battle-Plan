@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// CTheatre vtable.
-pub const VTABLE_RVA: usize = 0x029f_2188;
+pub const VTABLE_RVA: usize = 0x029f_22b8;
 /// CTheatre reference type.
 pub const REFERENCE_TYPE: u32 = 67;
 /// CTheatre packed type/id handle.
@@ -36,7 +36,7 @@ pub const VOLUNTEERS_THEATRE: usize = 0x110;
 /// CTheatre allocation size.
 pub const SIZE: usize = 0x1d0;
 /// CTheatre constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00f6_8b80;
+pub const CONSTRUCTOR_RVA: usize = 0x00f6_8bf0;
 
 /// The CTheatre spans of one LandTheatres header row, as `(offset, len)`:
 /// identity (vtable and handle), raw owner, and volunteer key. The land walk

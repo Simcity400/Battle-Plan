@@ -21,7 +21,7 @@ pub use hull_variant::{HullVariantInputs, read_hull_variant};
 pub use naval_power::{NavalPowerCache, read_naval_power};
 
 /// CShip primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_4858;
+pub const VTABLE_RVA: usize = 0x029d_4888;
 /// CShip reference handle {u32 type, u32 id}.
 pub const HANDLE: usize = 0x08;
 /// CShip reference type 51.
@@ -80,7 +80,7 @@ pub const TASK_FORCE: usize = 0x728;
 /// CShip allocation size.
 pub const SIZE: usize = 0x938;
 /// Ship constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00c8_6540;
+pub const CONSTRUCTOR_RVA: usize = 0x00c8_65b0;
 /// Shared type-0x33 unit-ID high-water counter, signed i32, serialized as
 /// `unit` and restored on load. Divisions share this type with ships.
 pub const NEXT_ID_RVA: usize = 0x030f_f228;

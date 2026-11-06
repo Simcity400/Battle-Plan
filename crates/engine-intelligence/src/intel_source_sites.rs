@@ -9,168 +9,168 @@ pub struct Site {
 pub const SITES: [Site; 24] = [
     Site {
         name: "reset",
-        rva: 0xd64830,
+        rva: 0xd648a0,
         sentinel: [
             72, 137, 92, 36, 16, 72, 137, 108, 36, 24, 72, 137, 116, 36, 32, 87,
         ],
     },
     Site {
         name: "replace allied contributions",
-        rva: 0xd67d00,
+        rva: 0xd67d70,
         sentinel: [
             64, 86, 72, 131, 236, 32, 72, 141, 113, 40, 72, 59, 242, 116, 62, 72,
         ],
     },
     Site {
         name: "replace cryptology contributions",
-        rva: 0xd67d60,
+        rva: 0xd67dd0,
         sentinel: [
             64, 86, 72, 131, 236, 32, 72, 141, 177, 136, 0, 0, 0, 72, 59, 242,
         ],
     },
     Site {
         name: "replace source contributions",
-        rva: 0xd67f70,
+        rva: 0xd67fe0,
         sentinel: [
             72, 137, 92, 36, 8, 72, 137, 116, 36, 16, 72, 137, 124, 36, 24, 65,
         ],
     },
     Site {
         name: "rotate prior day",
-        rva: 0xd640c0,
+        rva: 0xd64130,
         sentinel: [
             72, 141, 81, 88, 72, 131, 193, 112, 233, 83, 250, 255, 255, 204, 204, 204,
         ],
     },
     Site {
         name: "create source context",
-        rva: 0xd64ca0,
+        rva: 0xd64d10,
         sentinel: [
             72, 137, 92, 36, 8, 72, 137, 108, 36, 16, 72, 137, 116, 36, 24, 87,
         ],
     },
     Site {
         name: "cheat source context",
-        rva: 0xd65400,
+        rva: 0xd65470,
         sentinel: [
             72, 137, 92, 36, 16, 72, 137, 116, 36, 24, 87, 72, 131, 236, 80, 72,
         ],
     },
     Site {
         name: "set source context",
-        rva: 0xd67e20,
+        rva: 0xd67e90,
         sentinel: [
             72, 137, 92, 36, 8, 72, 137, 116, 36, 16, 87, 72, 131, 236, 64, 73,
         ],
     },
     Site {
         name: "retire source context",
-        rva: 0xd67490,
+        rva: 0xd67500,
         sentinel: [
             64, 83, 72, 131, 236, 32, 69, 51, 192, 72, 139, 218, 232, 191, 232, 255,
         ],
     },
     Site {
         name: "pending contribution context",
-        rva: 0xd63e40,
+        rva: 0xd63eb0,
         sentinel: [
             133, 210, 116, 77, 87, 72, 131, 236, 32, 73, 139, 249, 131, 250, 6, 119,
         ],
     },
     Site {
         name: "dynamic aggregation context",
-        rva: 0xd688f0,
+        rva: 0xd68960,
         sentinel: [
             72, 137, 108, 36, 24, 87, 72, 131, 236, 32, 139, 129, 196, 0, 0, 0,
         ],
     },
     Site {
         name: "dynamic decay context",
-        rva: 0xd64d10,
+        rva: 0xd64d80,
         sentinel: [
             72, 137, 108, 36, 16, 72, 137, 116, 36, 24, 72, 137, 124, 36, 32, 65,
         ],
     },
     Site {
         name: "prune sources",
-        rva: 0xd64d90,
+        rva: 0xd64e00,
         sentinel: [
             72, 137, 92, 36, 8, 87, 72, 131, 236, 32, 72, 139, 153, 160, 0, 0,
         ],
     },
     Site {
         name: "clear static pool",
-        rva: 0xd64b20,
+        rva: 0xd64b90,
         sentinel: [
             133, 210, 15, 136, 105, 1, 0, 0, 72, 137, 92, 36, 8, 72, 137, 116,
         ],
     },
     Site {
         name: "clear dynamic pool",
-        rva: 0xd64a40,
+        rva: 0xd64ab0,
         sentinel: [
             133, 210, 15, 136, 197, 0, 0, 0, 72, 137, 92, 36, 8, 87, 72, 131,
         ],
     },
     Site {
         name: "set source lanes",
-        rva: 0x123bf00,
+        rva: 0x123bf70,
         sentinel: [
             72, 137, 92, 36, 8, 137, 84, 36, 16, 87, 72, 131, 236, 64, 72, 141,
         ],
     },
     Site {
         name: "mark source removed",
-        rva: 0x123b0e0,
+        rva: 0x123b150,
         sentinel: [
             198, 65, 36, 1, 195, 204, 204, 204, 204, 204, 204, 204, 204, 204, 204, 204,
         ],
     },
     Site {
         name: "create static source",
-        rva: 0x123b0f0,
+        rva: 0x123b160,
         sentinel: [
             72, 131, 236, 104, 72, 137, 116, 36, 96, 76, 139, 193, 139, 113, 64, 76,
         ],
     },
     Site {
         name: "add pending contribution",
-        rva: 0x1a10e10,
+        rva: 0x1a10e80,
         sentinel: [
             72, 137, 92, 36, 24, 72, 137, 108, 36, 32, 86, 87, 65, 84, 72, 131,
         ],
     },
     Site {
         name: "aggregate dynamic pool",
-        rva: 0x1a10f70,
+        rva: 0x1a10fe0,
         sentinel: [
             72, 137, 92, 36, 16, 72, 137, 116, 36, 24, 72, 137, 124, 36, 32, 85,
         ],
     },
     Site {
         name: "decay dynamic pool",
-        rva: 0x1a11290,
+        rva: 0x1a11300,
         sentinel: [
             64, 83, 76, 139, 81, 32, 76, 139, 202, 72, 99, 65, 44, 72, 141, 12,
         ],
     },
     Site {
         name: "move source reference",
-        rva: 0x1a118a0,
+        rva: 0x1a11910,
         sentinel: [
             139, 66, 8, 137, 65, 8, 139, 66, 12, 137, 65, 12, 139, 66, 16, 137,
         ],
     },
     Site {
         name: "reset source reference",
-        rva: 0x1a118d0,
+        rva: 0x1a11940,
         sentinel: [
             72, 137, 92, 36, 24, 86, 72, 131, 236, 48, 131, 121, 8, 0, 72, 139,
         ],
     },
     Site {
         name: "clear allied contributions",
-        rva: 0xd64b10,
+        rva: 0xd64b80,
         sentinel: [
             199, 65, 52, 0, 0, 0, 0, 195, 204, 204, 204, 204, 204, 204, 204, 204,
         ],

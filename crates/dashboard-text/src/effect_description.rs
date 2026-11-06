@@ -848,16 +848,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 installed_content_core::effect_keys::is_own_field(token, b"target")
                     || installed_content_core::effect_keys::class(token).is_some_and(
                         |(value_reader, key_reader)| {
-                            value_reader == 0x1403C2810 // Make puppet's value reader.
+                            value_reader == 0x1403C2880 // Make puppet's value reader.
                                 || matches!(
                                     key_reader,
-                                    0x1403CABB0 // Declare war.
-                                        | 0x1403CD6E0 // Remove wargoal.
-                                        | 0x1403CD060 // Release autonomy.
-                                        | 0x1403CD8A0 // Set autonomy.
-                                        | 0x1404BE080 // Send equipment.
-                                        | 0x1404BE250 // Send equipment fraction.
-                                        | 0x1403CEE80 // Transfer units fraction.
+                                    0x1403CAC20 // Declare war.
+                                        | 0x1403CD750 // Remove wargoal.
+                                        | 0x1403CD0D0 // Release autonomy.
+                                        | 0x1403CD910 // Set autonomy.
+                                        | 0x1404BE0F0 // Send equipment.
+                                        | 0x1404BE2C0 // Send equipment fraction.
+                                        | 0x1403CEEF0 // Transfer units fraction.
                                 )
                         },
                     )
@@ -971,7 +971,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .keyword()
             .and_then(|key| installed_content_core::effect_keys::registered(&key.folded()))
             .and_then(installed_content_core::effect_keys::class)
-            .is_some_and(|(_, reader)| reader == 0x1403C81B0);
+            .is_some_and(|(_, reader)| reader == 0x1403C8220);
         if fields.clone().nth(1).is_some()
             && fields.clone().any(|field| {
                 scope_selector(field).is_some()
@@ -1342,9 +1342,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return text;
         }
         match self.effect_class(item).map(|class| class.vtable) {
-            Some(0x142A31110) => return self.context_effect(item, scopes, indent),
-            Some(0x142A31728) => return self.tooltip_group(item, scopes, indent),
-            Some(0x142A31658) => return self.hidden_group(item, scopes, indent),
+            Some(0x142A31830) => return self.context_effect(item, scopes, indent),
+            Some(0x142A31E48) => return self.tooltip_group(item, scopes, indent),
+            Some(0x142A31D78) => return self.hidden_group(item, scopes, indent),
             _ => {}
         }
         let Some(own) = self.own(item, scopes) else {
@@ -1381,7 +1381,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.effect_class(item).is_some_and(|class| {
             matches!(
                 class.vtable,
-                0x1427f3960 | 0x1427f3cf0 | 0x1427f3bf8 | 0x1427E47C8 | 0x1427FC010 | 0x1427FBF40
+                0x1427f39a0 | 0x1427f3d30 | 0x1427f3c38 | 0x1427E4808 | 0x1427FC050 | 0x1427FBF80
             )
         })
     }

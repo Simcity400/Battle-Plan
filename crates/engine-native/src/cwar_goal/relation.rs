@@ -4,7 +4,7 @@ use crate::{
 };
 
 /// Primary goal vtable.
-pub const VTABLE_RVA: usize = 0x02a5_8b30;
+pub const VTABLE_RVA: usize = 0x02a5_9250;
 /// Registered u64 reference.
 pub const HANDLE: usize = 8;
 /// Embedded goal actor.

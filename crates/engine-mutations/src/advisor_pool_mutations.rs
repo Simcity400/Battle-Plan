@@ -73,8 +73,8 @@ pub enum Receiver {
     Unnamed,
 }
 
-const DESTROY_POOL_RVA: usize = 0x1170620;
-const UNAPPOINT_ADVISOR_RVA: usize = 0x1172b20;
+const DESTROY_POOL_RVA: usize = 0x1170690;
+const UNAPPOINT_ADVISOR_RVA: usize = 0x1172b90;
 
 /// Every site with its receiver; each returns RAX unchanged from its
 /// original, so a detour returns the original's value.
@@ -85,7 +85,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "update_advisor_status",
-            rva: 0x11762c0,
+            rva: 0x1176330,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x50, 0x10, 0x55, 0x56, 0x57,
                 0x41, 0x54,
@@ -97,7 +97,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "add_advisor",
-            rva: 0x1170b50,
+            rva: 0x1170bc0,
             sentinel: [
                 0x40, 0x55, 0x56, 0x57, 0x41, 0x56, 0x48, 0x8b, 0xec, 0x48, 0x83, 0xec, 0x58, 0x49,
                 0x83, 0x78,
@@ -109,7 +109,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "retire_character",
-            rva: 0x11751f0,
+            rva: 0x1175260,
             sentinel: [
                 0x44, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24,
                 0x10, 0x55,
@@ -121,7 +121,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "transfer_characters",
-            rva: 0x11759a0,
+            rva: 0x1175a10,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
                 0x41, 0x57,
@@ -133,7 +133,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "remove_advisor_role",
-            rva: 0x374f10,
+            rva: 0x374f80,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24,
                 0x20, 0x55,
@@ -145,7 +145,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "construct_pool",
-            rva: 0x11703d0,
+            rva: 0x1170440,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
                 0x56, 0x41,
@@ -169,7 +169,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "update_advisor_tokens",
-            rva: 0x702590,
+            rva: 0x702600,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x57,
@@ -181,7 +181,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "clear_character_manager",
-            rva: 0x701680,
+            rva: 0x7016f0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x57,
@@ -193,9 +193,9 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "construct_character_manager",
-            rva: 0x6fc5f0,
+            rva: 0x6fc660,
             sentinel: [
-                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x0b, 0x6c, 0x16, 0x02, 0xc7,
+                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0xbb, 0x6b, 0x16, 0x02, 0xc7,
                 0x41, 0x08,
             ],
         },
@@ -205,7 +205,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "destroy_character_manager",
-            rva: 0x6fc8b0,
+            rva: 0x6fc920,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -217,7 +217,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "insert_appointed_advisor",
-            rva: 0x1171590,
+            rva: 0x1171600,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x55,
                 0x41, 0x56,
@@ -230,7 +230,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "register_character",
-            rva: 0x1171000,
+            rva: 0x1171070,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
                 0x41, 0x57,
@@ -243,7 +243,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 15] = [
     (
         MutationSite {
             name: "copy_retired_characters",
-            rva: 0x11721e0,
+            rva: 0x1172250,
             sentinel: [
                 0x40, 0x55, 0x57, 0x41, 0x55, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0x7a, 0x28, 0x4c,
                 0x8b, 0xe9,

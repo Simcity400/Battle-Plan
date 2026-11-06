@@ -4,7 +4,7 @@
 //! Capacity is not a count and specialization population has no fixed cap.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_af98;
+pub const VTABLE_RVA: usize = 0x029f_b128;
 /// Trait-token vector data.
 pub const TRAIT_DATA: usize = 0x30;
 /// Trait-vector capacity, u32, separate from live count.
@@ -22,7 +22,7 @@ pub const TRAIT_TOKEN: usize = 0x08;
 /// Nullable retained scientist-template pointer controlling visible predicates.
 pub const VISIBILITY_TEMPLATE: usize = 0x128;
 /// Retained role-template and its embedded visible conjunction identities.
-pub const TEMPLATE_VTABLE_RVA: usize = 0x027e_36e0;
+pub const TEMPLATE_VTABLE_RVA: usize = 0x027e_3720;
 pub const TEMPLATE_VISIBLE: usize = 0x60;
 pub const VISIBLE_VTABLE_RVA: usize = 0x0279_64c8;
 const VISIBLE_CHILDREN: usize = 0x08;

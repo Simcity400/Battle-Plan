@@ -56,17 +56,17 @@ fn a_caller_outside_its_list_is_counted_and_names_no_route() {
     BASE.store(0x1_4000_0000, Ordering::Relaxed);
     let before = UNCLASSIFIED.load(Ordering::Relaxed);
     assert_eq!(
-        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_c8de),
+        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_c94e),
         EventFeedRoute::DeclareWarEffect
     );
     assert_eq!(UNCLASSIFIED.load(Ordering::Relaxed), before);
     // The CALL itself, not its return, and another site's caller.
     assert_eq!(
-        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_c8d9),
+        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_c949),
         EventFeedRoute::None
     );
     assert_eq!(
-        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_4fa4),
+        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_5014),
         EventFeedRoute::None
     );
     assert_eq!(UNCLASSIFIED.load(Ordering::Relaxed), before + 2);
@@ -154,7 +154,7 @@ fn a_join_runs_its_original_inside_its_route_and_operands() {
     BASE.store(0x1_4000_0000, Ordering::Relaxed);
     ORIGINAL[JOIN_WAR].store(witness as *const () as usize, Ordering::Release);
     let _decision = politics(PoliticsScope::Decision, 0).unwrap();
-    let _outer = politics(PoliticsScope::Diplomacy, 0x1_4000_0000 + 0x0118_ac4c).unwrap();
+    let _outer = politics(PoliticsScope::Diplomacy, 0x1_4000_0000 + 0x0118_acbc).unwrap();
     let unread = UNREAD.load(Ordering::Relaxed);
     let result = unsafe {
         body(
@@ -167,7 +167,7 @@ fn a_join_runs_its_original_inside_its_route_and_operands() {
             0,
             0x0f,
             JOIN_WAR,
-            0x1_4000_0000 + 0x0118_e39f,
+            0x1_4000_0000 + 0x0118_e40f,
         )
     };
     assert_eq!(result, 0x5a);

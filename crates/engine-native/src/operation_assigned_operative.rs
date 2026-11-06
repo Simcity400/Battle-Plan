@@ -10,7 +10,7 @@ pub const REFERENCE_TYPE: u32 = 4_713;
 #[cfg(test)]
 pub const SELECTION: usize = 0x08;
 /// Assigned-slot writer omitting both-zero handles, zero selection and null optional values.
-pub const WRITER_RVA: usize = 0x01c7_da50;
+pub const WRITER_RVA: usize = 0x01c7_dac0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn writer_rva_matches_supported_operation_layout() {
-        assert_eq!(WRITER_RVA, 0x1C7DA50);
+        assert_eq!(WRITER_RVA, 0x1C7DAC0);
         assert_eq!((STRIDE, HANDLE, SELECTION), (0x38, 0x00, 0x08));
     }
 }

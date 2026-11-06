@@ -5,7 +5,7 @@
 use crate::{Memory, ccountry, read, walk::Outcome};
 
 /// Experience-state primary vtable.
-pub const VTABLE_RVA: usize = 0x02a2_3070;
+pub const VTABLE_RVA: usize = 0x02a2_34f0;
 /// Owning country pointer.
 pub const COUNTRY: usize = 0x08;
 /// Army experience, i64 fixed15, updated with a clamp.

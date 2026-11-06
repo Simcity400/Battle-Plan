@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Project primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_f270;
+pub const VTABLE_RVA: usize = 0x029f_f400;
 /// Project reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 86;
 /// Contiguous project-pool stride.
@@ -48,7 +48,7 @@ pub const REWARD_TOKEN: usize = 0x08;
 pub const REWARD_VTABLE_RVA: usize = 0x2799268;
 const DEFINITION_DATA: usize = 0x20;
 const TEMPLATE_DATA: usize = 0x18;
-const TEMPLATE_VTABLE_RVA: usize = 0x29b_deb8;
+const TEMPLATE_VTABLE_RVA: usize = 0x29b_dee8;
 const TEMPLATE_REWARDS: usize = 0x358;
 
 /// The pending object's occurrence in this project's retained template. The

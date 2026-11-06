@@ -2,9 +2,9 @@
 
 use super::{READ_EFFECT, READ_SCRIPT};
 
-const STRATEGIC_LOCATION_VALUE: u64 = 0x14056F210;
-const TARGETED_RESISTANCE_VALUE: u64 = 0x140333BA0;
-const COLLECTION_KEYS: u64 = 0x140A6A450;
+const STRATEGIC_LOCATION_VALUE: u64 = 0x14056F280;
+const TARGETED_RESISTANCE_VALUE: u64 = 0x140333C10;
+const COLLECTION_KEYS: u64 = 0x140A6A4C0;
 
 /// Conditional tails share the registered conditional body grammar.
 pub(super) const ELSE_TOKEN: u32 = 0x36D3;

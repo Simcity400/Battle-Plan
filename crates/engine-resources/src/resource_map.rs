@@ -67,7 +67,7 @@ pub const CLIENT_EFFICIENCY_A: usize = 0x48;
 pub const CLIENT_EFFICIENCY_B: usize = 0x50;
 
 /// Resource-origin client: the embedded route.
-pub const ORIGIN_VTABLE_RVA: usize = 0x29d_8d90;
+pub const ORIGIN_VTABLE_RVA: usize = 0x29d_8dc0;
 pub const ORIGIN_ROUTE: usize = 0x350;
 pub const ORIGIN_STATE: usize = 0x80;
 /// The origin's efficiency product, which the resource icon reads.
@@ -85,7 +85,7 @@ pub const EXCHANGE_VTABLE_RVA: usize = cresource_exchange::VTABLE_RVA;
 /// A country's delivery routes, one per canonical importer slot.
 pub const DELIVERY_ROUTES: usize = 0x788;
 /// Lend-lease client: its route pointer and receiver.
-pub const LEND_LEASE_VTABLE_RVA: usize = 0x2a9_9278;
+pub const LEND_LEASE_VTABLE_RVA: usize = 0x2a9_9cf8;
 pub const LEND_LEASE_ROUTE: usize = 0xc0;
 pub const LEND_LEASE_RECEIVER: usize = 0xb8;
 pub const LEND_LEASE_GIVEN: usize = 0x758;
@@ -99,14 +99,14 @@ const MARKET_BUYERS: usize = 0x48;
 const MARKET_COUNTRY_STRIDE: usize = 0x18;
 /// Market-contract client, embedded in the contract: its route pointer.
 pub const CONTRACT_CLIENT: usize = 0xf0;
-pub const CONTRACT_CLIENT_VTABLE_RVA: usize = 0x29e_8220;
+pub const CONTRACT_CLIENT_VTABLE_RVA: usize = 0x29e_8330;
 pub const CONTRACT_CLIENT_ROUTE: usize = 0xc8;
 pub const CONTRACT_SELLER: usize = 0x58;
 #[cfg(test)]
 pub const CONTRACT_BUYER: usize = 0x5c;
 pub const MARKET_OWNED_CONTRACTS: usize = 0;
 /// Supply-transfer client: the embedded route.
-pub const SUPPLY_VTABLE_RVA: usize = 0x2a1_e700;
+pub const SUPPLY_VTABLE_RVA: usize = 0x2a1_eb80;
 pub const SUPPLY_ROUTE: usize = 0xa0;
 pub const SUPPLY_COUNTRY_SYSTEMS: usize = 0x108;
 pub const SUPPLY_TRANSFERS: usize = 0xd0;
@@ -114,7 +114,7 @@ pub const SUPPLY_TRANSFER_STRIDE: usize = 40;
 pub const SUPPLY_TRANSFER_CLIENT: usize = 0x20;
 
 /// Route object.
-pub const ROUTE_VTABLE_RVA: usize = 0x29d_8d40;
+pub const ROUTE_VTABLE_RVA: usize = 0x29d_8d70;
 pub const ROUTE_KIND: usize = 0x08;
 pub const ROUTE_FROM: usize = 0x10;
 pub const ROUTE_TO: usize = 0x18;

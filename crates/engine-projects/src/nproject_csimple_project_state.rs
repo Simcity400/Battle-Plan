@@ -1,7 +1,7 @@
 //! Simple project state.
 
 /// Simple-state primary vtable.
-pub const VTABLE_RVA: usize = 0x02aa_7ce0;
+pub const VTABLE_RVA: usize = 0x02aa_8880;
 /// Signed i64 fixed5 phase progress.
 pub const PHASE_PROGRESS: usize = 0x48;
 /// Signed i32 whole-unit phase target.

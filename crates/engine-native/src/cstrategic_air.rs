@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_50c8;
+pub const VTABLE_RVA: usize = 0x029d_50f8;
 /// Per-country object allocation size.
 pub const SIZE: usize = 0x1d8;
 /// First air-site pointer vector visited by fuel aggregation.
@@ -36,7 +36,7 @@ pub const HISTORY_TABLE: usize = 0x158;
 /// Region-indexed air-region-combat-data pointer table.
 pub const REGION_COMBAT: usize = 0x170;
 /// Per-country strategic-air constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00ca_45f0;
+pub const CONSTRUCTOR_RVA: usize = 0x00ca_4660;
 
 /// An authenticated manager slot; the address is transient read context only.
 #[derive(Debug, Clone, Copy)]

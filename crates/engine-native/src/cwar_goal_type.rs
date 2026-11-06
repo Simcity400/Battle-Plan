@@ -3,7 +3,7 @@
 use crate::{Memory, read};
 
 /// Primary type vtable.
-pub const VTABLE_RVA: usize = 0x029b_9af0;
+pub const VTABLE_RVA: usize = 0x029b_9b20;
 /// Declared lexer type token.
 pub const TOKEN: usize = 8;
 /// Authored war-name override string used by naming.

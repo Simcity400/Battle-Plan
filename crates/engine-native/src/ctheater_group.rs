@@ -22,7 +22,7 @@ pub struct MemberRow {
 }
 
 /// CTheaterGroup vtable.
-pub const VTABLE_RVA: usize = 0x02a5_eb20;
+pub const VTABLE_RVA: usize = 0x02a5_f240;
 /// Theater-group reference type.
 pub const REFERENCE_TYPE: u32 = 68;
 /// CTheaterGroup packed type/id handle.
@@ -38,4 +38,4 @@ pub const ORDERS_GROUP_DATA: usize = 0x48;
 /// CTheaterGroup allocation size.
 pub const SIZE: usize = 0x60;
 /// CTheaterGroup constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x016d_8e60;
+pub const CONSTRUCTOR_RVA: usize = 0x016d_8ed0;

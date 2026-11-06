@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// Tactic primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_3950;
+pub const VTABLE_RVA: usize = 0x0286_3970;
 /// Token string.
 pub const TOKEN: usize = 0x10;
 /// Name string.

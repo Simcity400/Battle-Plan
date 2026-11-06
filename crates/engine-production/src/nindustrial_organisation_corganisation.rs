@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Organisation primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_4508;
+pub const VTABLE_RVA: usize = 0x029e_4568;
 /// Organisation reference-type discriminator.
 pub const REFERENCE_TYPE_ID: u32 = 79;
 /// Organisation full self-reference, two u32 words.

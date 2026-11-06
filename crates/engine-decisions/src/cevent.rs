@@ -7,7 +7,7 @@
 /// Packed native reference type and combined identifier words.
 pub const REFERENCE: usize = 0x08;
 /// Primary event-definition vtable.
-pub const VTABLE_RVA: usize = 0x02a1_5b88;
+pub const VTABLE_RVA: usize = 0x02a1_6008;
 /// Authored event identity, MSVC string; an empty name saves the numeric ID.
 pub const TOKEN: usize = 0x20;
 /// CEvent option pointer vector.

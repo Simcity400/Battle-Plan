@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Building vtable.
-pub const VTABLE_RVA: usize = 0x02a0_6438;
+pub const VTABLE_RVA: usize = 0x02a0_65c8;
 /// Lexer type id, u32.
 pub const TYPE_ID: usize = 0x08;
 /// Total level, i16.
@@ -23,7 +23,7 @@ pub const BUILDING_STATUS: usize = 0x1d8;
 /// Template pointer selecting localized names.
 pub const TEMPLATE: usize = 0x1e0;
 /// Signed-short level setter following status and template pointers.
-pub const SET_LEVEL_RVA: usize = 0x0116_3eb0;
+pub const SET_LEVEL_RVA: usize = 0x0116_3f20;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

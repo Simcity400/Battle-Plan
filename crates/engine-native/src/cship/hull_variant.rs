@@ -28,7 +28,7 @@ const DEFINITIONS: usize = 0x68;
 /// The database installs the null-definition vtable, clears ACTIVE and
 /// publishes its sole pointer. Null type construction supplies the null
 /// definition token and ordinal -1. This is not a null variant reference.
-pub(super) const NULL_DEFINITION_VTABLE_RVA: usize = 0x029b_5f50;
+pub(super) const NULL_DEFINITION_VTABLE_RVA: usize = 0x029b_5f70;
 pub(super) const NULL_DEFINITION_SINGLETON_RVA: usize = 0x033e_75a8;
 pub(super) const NULL_DEFINITION_TOKEN: u32 = 0x165;
 

@@ -3,13 +3,13 @@
 //! These layouts do not establish hourly coherence.
 
 /// CTechnology vtable.
-pub const VTABLE_RVA: usize = 0x029f_1670;
+pub const VTABLE_RVA: usize = 0x029f_17a0;
 /// The technology's listener subobject, whose vtable [`LISTENER_VTABLE_RVA`] maps slot 2 to
 /// observer propagation on the owning technology (the object enclosing it).
 pub const LISTENER: usize = 0x10;
 /// The technology listener vtable at [`LISTENER`], the technology's second
 /// vtable.
-pub const LISTENER_VTABLE_RVA: usize = 0x029f_16c0;
+pub const LISTENER_VTABLE_RVA: usize = 0x029f_17f0;
 /// The listeners classifier propagation notifies after a classifier change (pointer array with its
 /// count): dependency-list rebuilding registers each technology's [`LISTENER`] with the
 /// technologies of its template's three dependency lists, so a listener need not be a dependent
@@ -45,7 +45,7 @@ pub const CLASSIFIER_COMPLETED: u32 = 4;
 pub const CLASSIFIER_ACTIVE: u32 = 5;
 
 /// CTechnology constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00f4_f560;
+pub const CONSTRUCTOR_RVA: usize = 0x00f4_f5d0;
 /// Technology base-cost debug byte.
 pub const BASE_COST_DEBUG_FLAG_RVA: usize = 0x033d_dad1;
 /// Technology base-cost scale i64 fixed5.

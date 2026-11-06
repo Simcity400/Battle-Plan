@@ -1,9 +1,9 @@
 //! CTerrainType inputs consumed by the land combat window.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_ad50;
+pub const VTABLE_RVA: usize = 0x02a3_b470;
 /// Terrain null-object vtable.
-pub const NULL_VTABLE_RVA: usize = 0x029c_1b58;
+pub const NULL_VTABLE_RVA: usize = 0x029c_1b88;
 /// Serialization gate for the combat's stored terrain.
 pub const VALID: usize = 0x10;
 /// Native definition-name string.

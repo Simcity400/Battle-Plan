@@ -3,7 +3,7 @@
 use crate::cpdx_array::Array;
 
 /// Resource-pool primary vtable.
-pub const VTABLE_RVA: usize = 0x29ce1b8;
+pub const VTABLE_RVA: usize = 0x29ce1e8;
 /// Value-record pointer used by resource-amount predicates.
 pub const VALUES: usize = 0x08;
 /// Value-record stride selected by resource one-based ordinal.

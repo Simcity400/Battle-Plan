@@ -2,7 +2,7 @@
 //! subobject.
 
 /// Mission primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_8eb0;
+pub const VTABLE_RVA: usize = 0x029f_9040;
 
 /// Enabled mission mask, u32, including the training bit.
 pub const ENABLED_MASK: usize = 0x10;
@@ -32,4 +32,4 @@ pub const LAST_TARGET_PROVINCE: usize = 0x70;
 /// Training mission bit.
 pub const TRAINING_MASK: u32 = 0x800;
 /// Mask-to-bit-index helper used for mission fuel costs.
-pub const MISSION_BIT_INDEX_RVA: usize = 0x0109_9d20;
+pub const MISSION_BIT_INDEX_RVA: usize = 0x0109_9d90;

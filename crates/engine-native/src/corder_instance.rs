@@ -1267,10 +1267,10 @@ fn assigned_handle(
 }
 
 /// COrderInstance vtable.
-pub const VTABLE_RVA: usize = 0x02a0_2558;
+pub const VTABLE_RVA: usize = 0x02a0_26e8;
 /// Embedded convoy-subscriber vtable after the order's own vtable; its serializer stores allocated
 /// and required counts.
-const INVASION_SUBSCRIBER_VTABLE_RVA: usize = 0x029d_8b50;
+const INVASION_SUBSCRIBER_VTABLE_RVA: usize = 0x029d_8b80;
 /// The embedded subscriber's signed allocated convoys, saved even when zero.
 const INVASION_TRANSPORTS: usize = 0x10;
 /// COrderInstance signed order type.

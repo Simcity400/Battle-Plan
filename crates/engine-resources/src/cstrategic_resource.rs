@@ -3,7 +3,7 @@
 use crate::{Memory, cstrategic_resource_database, read, walk::Outcome};
 
 /// Resource primary vtable.
-pub const VTABLE_RVA: usize = 0x29ce120;
+pub const VTABLE_RVA: usize = 0x29ce150;
 
 /// Interned resource token ID, u32.
 pub const TOKEN_ID: usize = 0x08;
@@ -23,7 +23,7 @@ pub const TEMPORARY_KEY: usize = 0xf8;
 /// State resource-accumulator modifier key, u32.
 pub const MODIFIER_KEY: usize = 0xfc;
 /// Resource constructor initializing token and ordinal.
-pub const CONSTRUCTOR_RVA: usize = 0xc1fef0;
+pub const CONSTRUCTOR_RVA: usize = 0xc1ff60;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

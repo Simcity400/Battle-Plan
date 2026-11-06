@@ -27,7 +27,7 @@ pub const PARENT: usize = 0x60;
 /// Radar-group allocation size.
 pub const SIZE: usize = 0x70;
 /// Coverage update using game-state province indices.
-pub const UPDATE_RVA: usize = 0x0112_b5c0;
+pub const UPDATE_RVA: usize = 0x0112_b630;
 /// Supported executable's update-entry fingerprint, using FNV-1a over 16 bytes.
 pub const UPDATE_PREFIX_HASH: u64 = 0x348d_1fd7_4174_e813;
 

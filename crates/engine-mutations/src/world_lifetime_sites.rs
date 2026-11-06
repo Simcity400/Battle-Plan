@@ -31,7 +31,7 @@ pub const CONSTRUCT: Site = Site {
 /// resources. One argument (RCX, the editor); RBX is saved to RDX's home slot
 /// on entry.
 pub const STATE_RELOAD: Site = Site {
-    rva: 0x01be_db80,
+    rva: 0x01be_dbf0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
         0x57,
@@ -42,7 +42,7 @@ pub const STATE_RELOAD: Site = Site {
 /// map load: it rewrites both provinces' neighbour records, crossing kind and
 /// through province included. One argument (RCX, the map).
 pub const STRAITS_RELOAD: Site = Site {
-    rva: 0x00ab_35f0,
+    rva: 0x00ab_3660,
     sentinel: [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d,
         0xac,

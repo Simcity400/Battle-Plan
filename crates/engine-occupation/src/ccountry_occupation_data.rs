@@ -2,7 +2,7 @@
 //! establish membership.
 
 /// Occupation-data primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_0c38;
+pub const VTABLE_RVA: usize = 0x02a0_0dc8;
 /// Owning CCountryOccupationStatus pointer requiring an exact back-reference match.
 pub const PARENT_STATUS: usize = 0x08;
 /// Occupied country link, u32.

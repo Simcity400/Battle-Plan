@@ -6,7 +6,7 @@
 use crate::{Memory, ccharacter::Literal};
 
 /// Character-template primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_6db8;
+pub const VTABLE_RVA: usize = 0x02a3_74d8;
 /// Template lexer token, u32, copied to the built character and saved as its template tag.
 pub const TAG: usize = 0x08;
 /// Content source-file string, set before parsing; empty after construction.

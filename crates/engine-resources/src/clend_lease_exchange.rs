@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// Lend-lease exchange primary vtable.
-pub const VTABLE_RVA: usize = 0x02a9_9278;
+pub const VTABLE_RVA: usize = 0x02a9_9cf8;
 /// The exchange's reference (u32 type, u32 id) of its CReferenceObject base.
 pub const HANDLE: usize = 0x08;
 /// The receiver's raw country reference.
@@ -52,11 +52,11 @@ pub const LAST_FUEL_DELIVERED: usize = 0x370;
 /// Only these call sites supply a lend-lease update; additions to other pools
 /// must not acquire lend-lease identities or appear as deliveries.
 #[cfg(test)]
-pub const DELIVERED_POOL_RETURN_RVA: usize = 0x19f8eda;
+pub const DELIVERED_POOL_RETURN_RVA: usize = 0x19f8f4a;
 #[cfg(test)]
-pub const SUNK_POOL_RETURN_RVA: usize = 0x19faedf;
+pub const SUNK_POOL_RETURN_RVA: usize = 0x19faf4f;
 #[cfg(test)]
-pub const POOL_ADDITION_RVA: usize = 0x1092900;
+pub const POOL_ADDITION_RVA: usize = 0x1092970;
 #[cfg(test)]
 pub const DELIVERED_POOL_CALL_RVA: usize = DELIVERED_POOL_RETURN_RVA - 5;
 #[cfg(test)]

@@ -10,8 +10,8 @@ pub const ENEMY_KIND: u8 = 5;
 pub const MANPOWER: usize = 0x98;
 pub const TEMPLATES: usize = 0xb0;
 pub const REFERENCES: usize = 0xc8;
-pub const MANPOWER_VTABLE_RVA: usize = 0x029d_9f10;
-pub const TEMPLATE_VTABLE_RVA: usize = 0x029d_a190;
+pub const MANPOWER_VTABLE_RVA: usize = 0x029d_9f40;
+pub const TEMPLATE_VTABLE_RVA: usize = 0x029d_a1c0;
 pub const MANPOWER_SIZE: usize = 0x38;
 pub const TEMPLATE_SIZE: usize = 0x38;
 pub const TEMPLATE_REFERENCE: usize = 0x08;
@@ -221,8 +221,8 @@ pub const BATTLE_POOL_RVA: usize = 0x033e_a870;
 pub const BATTLE_COUNTS_RVA: usize = 0x033e_a888;
 pub const BATTLE_USED_RVA: usize = 0x033e_a8a0;
 pub const BATTLE_SIZE: usize = 0x448;
-pub const BATTLE_VTABLE_RVA: usize = 0x029d_a0f0;
-pub const SIDE_VTABLE_RVA: usize = 0x029d_9fb0;
+pub const BATTLE_VTABLE_RVA: usize = 0x029d_a120;
+pub const SIDE_VTABLE_RVA: usize = 0x029d_9fe0;
 pub const SIDE_SIZE: usize = 0x210;
 pub const BATTLE_ATTACKER: usize = 0x08;
 pub const BATTLE_DEFENDER: usize = 0x218;
@@ -431,7 +431,7 @@ impl BattlePool {
     }
 }
 
-pub const MODIFIER_HOURS_VTABLE_RVA: usize = 0x029d_9f60;
+pub const MODIFIER_HOURS_VTABLE_RVA: usize = 0x029d_9f90;
 
 #[cfg(test)]
 mod tests {

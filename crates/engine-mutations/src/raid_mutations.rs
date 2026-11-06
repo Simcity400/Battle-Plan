@@ -155,7 +155,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "refresh_resource_modifier_gates",
-            rva: 0xa2_af80,
+            rva: 0xa2_aff0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
                 0x41, 0x57,
@@ -168,7 +168,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "add_building_dynamic_modifier",
-            rva: 0xa1_c530,
+            rva: 0xa1_c5a0,
             sentinel: [
                 0x48, 0x81, 0xc1, 0x88, 0x07, 0x00, 0x00, 0x41, 0xb9, 0xff, 0xff, 0xff, 0xff, 0xe9,
                 0x8e, 0x1f,
@@ -181,7 +181,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "remove_building_dynamic_modifier",
-            rva: 0xa2_81a0,
+            rva: 0xa2_8210,
             sentinel: [
                 0x48, 0x81, 0xc1, 0x88, 0x07, 0x00, 0x00, 0xe9, 0x34, 0x04, 0xc3, 0xff, 0xcc, 0xcc,
                 0xcc, 0xcc,
@@ -193,7 +193,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "add_resource",
-            rva: 0xa1_be70,
+            rva: 0xa1_bee0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x41, 0x56, 0x48, 0x83,
                 0xec, 0x20,
@@ -205,7 +205,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "expire_timed_resource",
-            rva: 0xc2_0f60,
+            rva: 0xc2_0fd0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
                 0x20, 0x48,
@@ -217,7 +217,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "destroy_state",
-            rva: 0xa1_afd0,
+            rva: 0xa1_b040,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -229,7 +229,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "add_core",
-            rva: 0xa1_c380,
+            rva: 0xa1_c3f0,
             sentinel: [
                 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x83, 0x3a, 0x00, 0x48, 0x8b, 0xd9, 0x48, 0x89,
                 0x7c, 0x24,
@@ -241,7 +241,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "remove_core",
-            rva: 0xa2_8110,
+            rva: 0xa2_8180,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x83, 0x3a, 0x00, 0x48,
                 0x8b, 0xfa,
@@ -253,7 +253,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "construct_resource_origin",
-            rva: 0xd0_4220,
+            rva: 0xd0_4290,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24,
                 0x08, 0x57,
@@ -265,9 +265,9 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "destroy_resource_origin",
-            rva: 0xd0_4c80,
+            rva: 0xd0_4cf0,
             sentinel: [
-                0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0xff,
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0xbf,
                 0x40, 0xcd,
             ],
         },
@@ -277,7 +277,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "add_building_resource_modifier",
-            rva: 0xd0_55d0,
+            rva: 0xd0_5640,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24,
                 0x20, 0x55,
@@ -289,7 +289,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "clear_country_resources",
-            rva: 0xd0_a200,
+            rva: 0xd0_a270,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
                 0x41, 0x57,
@@ -301,7 +301,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "construct_strategic_air",
-            rva: 0xca_45f0,
+            rva: 0xca_4660,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
                 0x56, 0x41,
@@ -313,7 +313,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "append_air_site",
-            rva: 0xca_82c0,
+            rva: 0xca_8330,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24,
                 0x10, 0x57,
@@ -325,7 +325,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "append_missile_site",
-            rva: 0xca_90a0,
+            rva: 0xca_9110,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
                 0x20, 0x48,
@@ -337,7 +337,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "refresh_air_base_access",
-            rva: 0xcc_1a10,
+            rva: 0xcc_1a80,
             sentinel: [
                 0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x53, 0x10, 0x53, 0x56, 0x48, 0x83, 0xec, 0x58, 0x48,
                 0x63, 0x42,
@@ -349,7 +349,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "populate_air_sites",
-            rva: 0xcb_7b90,
+            rva: 0xcb_7c00,
             sentinel: [
                 0x4c, 0x8b, 0xdc, 0x41, 0x57, 0x48, 0x83, 0xec, 0x60, 0x48, 0x63, 0x41, 0x3c, 0x4c,
                 0x8b, 0xf9,
@@ -361,7 +361,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "repair_air_base_containers",
-            rva: 0xcb_6130,
+            rva: 0xcb_61a0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83,
                 0xec, 0x40,
@@ -373,7 +373,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "withdraw_air_site",
-            rva: 0xcb_fa90,
+            rva: 0xcb_fb00,
             sentinel: [
                 0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x53, 0x10, 0x49, 0x89, 0x4b, 0x08, 0x53, 0x55, 0x48,
                 0x83, 0xec,
@@ -385,7 +385,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "withdraw_missile_site",
-            rva: 0xcc_05a0,
+            rva: 0xcc_0610,
             sentinel: [
                 0x48, 0x89, 0x6c, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
                 0x20, 0x48,
@@ -397,7 +397,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "transfer_air_base",
-            rva: 0xcc_1130,
+            rva: 0xcc_11a0,
             sentinel: [
                 0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
                 0x8b, 0xec,
@@ -409,7 +409,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "clear_air_sites",
-            rva: 0xca_c450,
+            rva: 0xca_c4c0,
             sentinel: [
                 0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x08, 0x49, 0x89, 0x6b, 0x10, 0x49, 0x89, 0x73,
                 0x18, 0x49,
@@ -421,7 +421,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "clear_missile_sites",
-            rva: 0xca_c6b0,
+            rva: 0xca_c720,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -433,7 +433,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "destroy_strategic_air",
-            rva: 0xca_5760,
+            rva: 0xca_57d0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -445,7 +445,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "set_country_pool_capacity",
-            rva: 0xcc_0cd0,
+            rva: 0xcc_0d40,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x20, 0x41,
                 0x8b, 0x00,
@@ -457,7 +457,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "add_claim",
-            rva: 0xa1_c230,
+            rva: 0xa1_c2a0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20, 0x83, 0x3a, 0x00, 0x48,
                 0x8b, 0xfa,
@@ -469,7 +469,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "remove_claim",
-            rva: 0xa2_7f70,
+            rva: 0xa2_7fe0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x83, 0x3a, 0x00, 0x48,
                 0x8b, 0xfa,
@@ -481,7 +481,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "add_state_strategic_location",
-            rva: 0xa1_c5d0,
+            rva: 0xa1_c640,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x30,
                 0x8b, 0x5a,
@@ -493,7 +493,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "add_province_strategic_location",
-            rva: 0xee_afa0,
+            rva: 0xee_b010,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x41, 0x56, 0x48, 0x83,
                 0xec, 0x30,
@@ -505,7 +505,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "update_trade_route",
-            rva: 0xd1_c210,
+            rva: 0xd1_c280,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x20, 0x4c, 0x89, 0x40, 0x18, 0x55, 0x56, 0x57,
                 0x41, 0x54,
@@ -517,7 +517,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "construct_trade_route",
-            rva: 0xd0_4060,
+            rva: 0xd0_40d0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xff, 0xc6, 0x41,
                 0x08, 0x00,
@@ -530,7 +530,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "construct_country_resources",
-            rva: 0xd0_3a00,
+            rva: 0xd0_3a70,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x20, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
                 0x54, 0x41,
@@ -542,7 +542,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "load_trade_route",
-            rva: 0xd1_7bb0,
+            rva: 0xd1_7c20,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
                 0x41, 0x57,
@@ -554,7 +554,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "update_supply_trade_route",
-            rva: 0xd1_c750,
+            rva: 0xd1_c7c0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
                 0x41, 0x57,
@@ -566,7 +566,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     (
         MutationSite {
             name: "refresh_origin_trade_route",
-            rva: 0xd0_9330,
+            rva: 0xd0_93a0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -623,7 +623,7 @@ pub fn route_country(
 /// its own patch for the other capacity-recalculation paths.
 pub const DAILY_CAPACITIES: MutationSite = MutationSite {
     name: "daily_refresh_base_capacities",
-    rva: 0xca_9390,
+    rva: 0xca_9400,
     sentinel: [
         0x48, 0x8b, 0xc4, 0x48, 0x89, 0x50, 0x10, 0x41, 0x55, 0x41, 0x56, 0x48, 0x83, 0xec, 0x58,
         0x45,

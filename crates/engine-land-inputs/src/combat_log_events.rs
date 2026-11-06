@@ -59,8 +59,8 @@ pub const DAMAGE_FROM: usize = 8;
 pub const DAMAGE_RECEIVER: usize = 12;
 pub const DAMAGE_TO: usize = 16;
 pub const DAMAGE_VALUE: usize = 24;
-pub const ACTIVITY_VTABLE_RVA: usize = 0x029d_a050;
-pub const DAMAGE_VTABLE_RVA: usize = 0x029d_a000;
+pub const ACTIVITY_VTABLE_RVA: usize = 0x029d_a080;
+pub const DAMAGE_VTABLE_RVA: usize = 0x029d_a030;
 
 pub const ARRAYS: [usize; 9] = [
     group::REASONS,

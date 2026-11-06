@@ -13,6 +13,6 @@ pub const POINTER_STRIDE: usize = 0x08;
 /// Container allocation size.
 pub const SIZE: usize = 0x70;
 /// Licensed-production status constructor.
-pub const CONSTRUCT_RVA: usize = 0x014d_3230;
+pub const CONSTRUCT_RVA: usize = 0x014d_32a0;
 /// Licence registration appends to both owner and giver arrays.
-pub const REGISTER_LICENSE_RVA: usize = 0x014d_75c0;
+pub const REGISTER_LICENSE_RVA: usize = 0x014d_7630;

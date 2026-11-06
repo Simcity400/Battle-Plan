@@ -4,7 +4,7 @@
 use crate::{Memory, allocation, cpdx_array::Array, read};
 
 pub const STATUS: usize = 0x570;
-pub const VTABLE_RVA: usize = 0x02a9_b0d8;
+pub const VTABLE_RVA: usize = 0x02a9_bb58;
 pub const OWNER: usize = 0x08;
 pub const RULES: usize = 0x58;
 pub const DEFINITION_VTABLE_RVA: usize = 0x0279_7ee8;

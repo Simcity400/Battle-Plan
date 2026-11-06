@@ -68,29 +68,29 @@ pub fn key_reader(token: u32) -> KeyReader {
         .map(|index| registry[index].1)
         .expect("registered trigger key reader");
     match (reader, key) {
-        (Reader::Body, 0x1404C1800)
-        | (Reader::Body, 0x140455960)
-        | (Reader::Body, 0x14047AF30)
-        | (Reader::Body, 0x140491050)
-        | (Reader::Body, 0x1404791A0) => ITERATOR,
-        (Reader::Body, 0x1404C1950) => {
+        (Reader::Body, 0x1404C1870)
+        | (Reader::Body, 0x1404559d0)
+        | (Reader::Body, 0x14047AFA0)
+        | (Reader::Body, 0x1404910c0)
+        | (Reader::Body, 0x140479210) => ITERATOR,
+        (Reader::Body, 0x1404C19C0) => {
             KeyReader::Only(&[OwnKey::Value("specialization"), OwnKey::Value("level")])
         }
-        (Reader::Own(0x141446170), 0x140597260) => KeyReader::Only(&[
+        (Reader::Own(0x1414461e0), 0x1405972d0) => KeyReader::Only(&[
             OwnKey::Value("value"),
             OwnKey::Value("date"),
             OwnKey::Value("days"),
             OwnKey::Value("flag"),
         ]),
-        (Reader::Body, 0x1404C1840) => {
+        (Reader::Body, 0x1404C18B0) => {
             KeyReader::Only(&[OwnKey::Value("value"), OwnKey::Value("specialization")])
         }
-        (Reader::Own(0x140454220), 0x140597260) => KeyReader::Only(&[
+        (Reader::Own(0x140454290), 0x1405972d0) => KeyReader::Only(&[
             OwnKey::Value("state"),
             OwnKey::Value("preparation"),
             OwnKey::Value("activated"),
         ]),
-        (Reader::Body, 0x1404916B0) => KeyReader::ThenLoadKey(&[
+        (Reader::Body, 0x140491720) => KeyReader::ThenLoadKey(&[
             OwnKey::Value("ai_area"),
             OwnKey::Value("strategic_region"),
             OwnKey::Value("continent"),
@@ -98,14 +98,14 @@ pub fn key_reader(token: u32) -> KeyReader {
             OwnKey::BoundLocalization("tooltip"),
             OwnKey::Value("count"),
         ]),
-        (Reader::Body, 0x140458AB0) => KeyReader::Only(&[
+        (Reader::Body, 0x140458B20) => KeyReader::Only(&[
             OwnKey::Value("amount"),
             OwnKey::Value("buildings"),
             OwnKey::Value("resource"),
             OwnKey::Value("extracted"),
             OwnKey::Value("collection"),
         ]),
-        (Reader::Body, 0x140456670) => KeyReader::Only(&[
+        (Reader::Body, 0x1404566e0) => KeyReader::Only(&[
             OwnKey::Value("path"),
             OwnKey::Value("controller_priority"),
             OwnKey::Value("level"),
@@ -116,32 +116,32 @@ pub fn key_reader(token: u32) -> KeyReader {
             OwnKey::Value("target_province"),
             OwnKey::Value("build_only_on_allied"),
         ]),
-        (Reader::Body, 0x140458860) => {
+        (Reader::Body, 0x1404588d0) => {
             KeyReader::Only(&[OwnKey::Value("state"), OwnKey::Value("level")])
         }
-        (Reader::Body, 0x140456D40) => KeyReader::Native(0x140456D40),
-        (Reader::Body, 0x140459520) => {
+        (Reader::Body, 0x140456DB0) => KeyReader::Native(0x140456DB0),
+        (Reader::Body, 0x140459590) => {
             KeyReader::ThenLoadKey(&[OwnKey::Value("tooltip_evaluation")])
         }
-        (Reader::Body, 0x1404559A0)
-        | (Reader::Body, 0x140491870)
-        | (Reader::Body, 0x1404581D0)
-        | (Reader::Own(0x140454050), 0x141446B80) => {
+        (Reader::Body, 0x140455A10)
+        | (Reader::Body, 0x1404918e0)
+        | (Reader::Body, 0x140458240)
+        | (Reader::Own(0x1404540c0), 0x141446BF0) => {
             KeyReader::Only(&[OwnKey::Value("target"), OwnKey::Value("value")])
         }
-        (Reader::Body, 0x140458D90) => KeyReader::Only(&[
+        (Reader::Body, 0x140458E00) => KeyReader::Only(&[
             OwnKey::Value("amount"),
             OwnKey::Value("only_imported"),
             OwnKey::Value("buildings"),
             OwnKey::Value("resource"),
             OwnKey::Value("extracted"),
         ]),
-        (Reader::Body, 0x140459050) => KeyReader::Only(&[
+        (Reader::Body, 0x1404590c0) => KeyReader::Only(&[
             OwnKey::Value("receiver"),
             OwnKey::Value("state"),
             OwnKey::Value("resources"),
         ]),
-        (Reader::Body, 0x1404572a0) => KeyReader::Only(&[
+        (Reader::Body, 0x140457310) => KeyReader::Only(&[
             OwnKey::Value("size"),
             OwnKey::Value("type"),
             OwnKey::Value("state"),
@@ -149,23 +149,23 @@ pub fn key_reader(token: u32) -> KeyReader {
             OwnKey::Value("unit"),
             OwnKey::Value("tag"),
         ]),
-        (Reader::Body, 0x14045A970) => KeyReader::Only(&[
+        (Reader::Body, 0x14045A9E0) => KeyReader::Only(&[
             OwnKey::Value("size"),
             OwnKey::Value("type"),
             OwnKey::Value("area"),
         ]),
-        (Reader::Body, 0x1404577c0) => KeyReader::Only(&[
+        (Reader::Body, 0x140457830) => KeyReader::Only(&[
             OwnKey::Value("size"),
             OwnKey::Value("type"),
             OwnKey::Value("unit_category"),
         ]),
-        (Reader::Body, 0x140458720) => KeyReader::Only(&[
+        (Reader::Body, 0x140458790) => KeyReader::Only(&[
             OwnKey::Value("size"),
             OwnKey::Value("type"),
             OwnKey::Value("unit"),
             OwnKey::Value("archetype"),
         ]),
-        (Reader::Body, 0x140567820) => KeyReader::Only(&[
+        (Reader::Body, 0x140567890) => KeyReader::Only(&[
             OwnKey::Value("collection"),
             OwnKey::Value("buildings"),
             OwnKey::Value("unit_category"),
@@ -175,272 +175,272 @@ pub fn key_reader(token: u32) -> KeyReader {
             OwnKey::Value("manpower"),
             OwnKey::Value("unit"),
         ]),
-        (Reader::Body, 0x140459790) | (Reader::Body, 0x1404576c0) => {
+        (Reader::Body, 0x140459800) | (Reader::Body, 0x140457730) => {
             KeyReader::Only(&[OwnKey::Value("ratio"), OwnKey::Value("tag")])
         }
-        (Reader::Body, 0x140457700) => {
+        (Reader::Body, 0x140457770) => {
             KeyReader::Only(&[OwnKey::Value("size"), OwnKey::Value("type")])
         }
-        (Reader::Body, 0x140457900) => {
+        (Reader::Body, 0x140457970) => {
             KeyReader::Only(&[OwnKey::Value("type"), OwnKey::Value("value")])
         }
-        (Reader::Body, 0x1404550a0) => KeyReader::Only(&[
+        (Reader::Body, 0x140455110) => KeyReader::Only(&[
             OwnKey::Value("idea"),
             OwnKey::Value("limit"),
             OwnKey::Value("ignore"),
             OwnKey::Value("characters"),
         ]),
-        (Reader::Body, 0x140491900) => KeyReader::Only(&[
+        (Reader::Body, 0x140491970) => KeyReader::Only(&[
             OwnKey::Value("size"),
             OwnKey::Value("province"),
             OwnKey::Value("building"),
             OwnKey::Value("include_locked"),
         ]),
-        (Reader::Own(0x141445FF0), 0x141446BB0) => KeyReader::ThenLoadKey(&[
+        (Reader::Own(0x141446060), 0x141446C20) => KeyReader::ThenLoadKey(&[
             OwnKey::BoundLocalization("tooltip"),
             OwnKey::BoundLocalization("not_tooltip"),
         ]),
-        (Reader::Body, 0x140457B50) => KeyReader::Native(0x140457B50),
-        (Reader::Body, 0x140459B90) => {
+        (Reader::Body, 0x140457BC0) => KeyReader::Native(0x140457BC0),
+        (Reader::Body, 0x140459C00) => {
             KeyReader::ThenLoadKey(&[OwnKey::Value("progress"), OwnKey::Value("focus")])
         }
-        (Reader::Body, 0x14045A9E0) => KeyReader::Only(&[
+        (Reader::Body, 0x14045AA50) => KeyReader::Only(&[
             OwnKey::Value("size"),
             OwnKey::Value("type"),
             OwnKey::Value("state"),
         ]),
-        (Reader::Body, 0x1404594E0) => {
+        (Reader::Body, 0x140459550) => {
             KeyReader::Only(&[OwnKey::Value("count"), OwnKey::Value("tag")])
         }
-        (Reader::Body, 0x140457B20) => {
+        (Reader::Body, 0x140457B90) => {
             KeyReader::Only(&[OwnKey::Value("group"), OwnKey::Value("value")])
         }
-        (Reader::Own(0x140454800), 0x140597260) => {
+        (Reader::Own(0x140454870), 0x1405972d0) => {
             KeyReader::Only(&[OwnKey::Value("target"), OwnKey::Value("type")])
         }
-        (Reader::Body, 0x140491BA0) => KeyReader::Native(0x140491BA0),
-        (Reader::Body, 0x1404563c0) | (Reader::Body, 0x140474360) | (Reader::Body, 0x140474330) => {
+        (Reader::Body, 0x140491C10) => KeyReader::Native(0x140491C10),
+        (Reader::Body, 0x140456430) | (Reader::Body, 0x1404743d0) | (Reader::Body, 0x1404743a0) => {
             KeyReader::ThenLoadKey(&[OwnKey::Value("tooltip")])
         }
-        (Reader::Body, 0x140459210) => KeyReader::Only(&[
+        (Reader::Body, 0x140459280) => KeyReader::Only(&[
             OwnKey::Value("amount"),
             OwnKey::Value("state"),
             OwnKey::Value("resource"),
             OwnKey::Value("delivered"),
         ]),
-        (Reader::Body, 0x1404594A0) => {
+        (Reader::Body, 0x140459510) => {
             KeyReader::ThenLoadKey(&[OwnKey::Value("category"), OwnKey::Value("technology")])
         }
-        (Reader::Body, 0x140457A70) => KeyReader::Only(&[
+        (Reader::Body, 0x140457AE0) => KeyReader::Only(&[
             OwnKey::Value("id"),
             OwnKey::Value("name"),
             OwnKey::Value("ruling_only"),
             OwnKey::Value("character"),
         ]),
-        (Reader::Body, 0x1404571c0) => KeyReader::ThenLoadKey(&[OwnKey::Value("amount")]),
-        (Reader::Body, 0x140458090) => KeyReader::ThenLoadKey(&[
+        (Reader::Body, 0x140457230) => KeyReader::ThenLoadKey(&[OwnKey::Value("amount")]),
+        (Reader::Body, 0x140458100) => KeyReader::ThenLoadKey(&[
             OwnKey::Value("equipment"),
             OwnKey::Value("from"),
             OwnKey::Value("archetype"),
         ]),
-        (Reader::Body, 0x140459A50) => KeyReader::Refused(0x140459A50),
-        (Reader::Body, 0x1404588A0) => {
+        (Reader::Body, 0x140459AC0) => KeyReader::Refused(0x140459AC0),
+        (Reader::Body, 0x140458910) => {
             KeyReader::Only(&[OwnKey::Value("target"), OwnKey::Value("modifier")])
         }
-        (Reader::Body, 0x140491090) => KeyReader::Only(&[
+        (Reader::Body, 0x140491100) => KeyReader::Only(&[
             OwnKey::Value("province"),
             OwnKey::Value("building"),
             OwnKey::Value("level"),
         ]),
-        (Reader::Body, 0x1404574b0) => {
+        (Reader::Body, 0x140457520) => {
             KeyReader::Only(&[OwnKey::Value("value"), OwnKey::Value("tag")])
         }
-        (Reader::Body, 0x140455AC0) => KeyReader::Only(&[
+        (Reader::Body, 0x140455B30) => KeyReader::Only(&[
             OwnKey::Value("amount"),
             OwnKey::Value("categories"),
             OwnKey::Value("slots"),
         ]),
-        (Reader::Body, 0x1404742f0) => {
+        (Reader::Body, 0x140474360) => {
             KeyReader::ThenLoadKey(&[OwnKey::Value("tooltip"), OwnKey::Value("include_invisible")])
         }
-        (Reader::Body, 0x140457A00) => {
+        (Reader::Body, 0x140457A70) => {
             KeyReader::Only(&[OwnKey::Value("achievement"), OwnKey::Value("mod")])
         }
-        (Reader::Own(0x14046AC80), 0x14046ADB0) => KeyReader::Only(&[OwnKey::Value("character")]),
-        (Reader::Body, 0x140477C70) => KeyReader::ThenLoadKey(&[
+        (Reader::Own(0x14046ACF0), 0x14046AE20) => KeyReader::Only(&[OwnKey::Value("character")]),
+        (Reader::Body, 0x140477CE0) => KeyReader::ThenLoadKey(&[
             OwnKey::BoundLocalization("tooltip"),
             OwnKey::Value("include_invisible"),
             OwnKey::Value("count"),
         ]),
-        (Reader::Body, 0x14045AC00) => KeyReader::Native(0x14045AC00),
-        (Reader::Body, 0x140456f80) => KeyReader::Native(0x140456f80),
-        (Reader::Body, 0x1404578d0) => KeyReader::Native(0x1404578d0),
-        (Reader::Body, 0x1403CC4E0) => KeyReader::Native(0x1403CC4E0),
-        (Reader::Body, 0x140457160) => {
+        (Reader::Body, 0x14045AC70) => KeyReader::Native(0x14045AC70),
+        (Reader::Body, 0x140456ff0) => KeyReader::Native(0x140456ff0),
+        (Reader::Body, 0x140457940) => KeyReader::Native(0x140457940),
+        (Reader::Body, 0x1403CC550) => KeyReader::Native(0x1403CC550),
+        (Reader::Body, 0x1404571d0) => {
             KeyReader::Only(&[OwnKey::Value("value"), OwnKey::Value("regions")])
         }
-        (Reader::Body, 0x1404563f0) => KeyReader::Only(&[
+        (Reader::Body, 0x140456460) => KeyReader::Only(&[
             OwnKey::Value("type"),
             OwnKey::Value("amount"),
             OwnKey::Value("state"),
         ]),
-        (Reader::Body, 0x140457200) => KeyReader::Only(&[
+        (Reader::Body, 0x140457270) => KeyReader::Only(&[
             OwnKey::Value("size"),
             OwnKey::Value("type"),
             OwnKey::Value("state"),
             OwnKey::Value("border_state"),
         ]),
-        (Reader::Body, 0x14045ABB0) => {
+        (Reader::Body, 0x14045AC20) => {
             KeyReader::Only(&[OwnKey::Value("ratio"), OwnKey::Value("archetype")])
         }
-        (Reader::Body, 0x140457FD0) => KeyReader::Native(0x140457FD0),
-        (Reader::Body, 0x1403C90A0) => KeyReader::Native(0x1403C90A0),
-        (Reader::Body, 0x14045A780) => KeyReader::Native(0x14045A780),
-        (Reader::Body, 0x140454B60) => KeyReader::ThenLoadKey(&[
+        (Reader::Body, 0x140458040) => KeyReader::Native(0x140458040),
+        (Reader::Body, 0x1403C9110) => KeyReader::Native(0x1403C9110),
+        (Reader::Body, 0x14045A7F0) => KeyReader::Native(0x14045A7F0),
+        (Reader::Body, 0x140454BD0) => KeyReader::ThenLoadKey(&[
             OwnKey::Value("index"),
             OwnKey::Value("value"),
             OwnKey::Value("array"),
         ]),
-        (Reader::Body, 0x140454E00) => {
+        (Reader::Body, 0x140454E70) => {
             KeyReader::ThenLoadKey(&[OwnKey::Value("tooltip"), OwnKey::Value("array")])
         }
-        (Reader::Own(0x140454050), 0x1404919D0) => {
+        (Reader::Own(0x1404540c0), 0x140491A40) => {
             KeyReader::Only(&[OwnKey::Value("building"), OwnKey::Value("level")])
         }
-        (Reader::Body, 0x1403CC0E0) => KeyReader::Native(0x1403CC0E0),
-        (Reader::Own(0x1404540D0), 0x140457AE0) => {
+        (Reader::Body, 0x1403CC150) => KeyReader::Native(0x1403CC150),
+        (Reader::Own(0x140454140), 0x140457B50) => {
             KeyReader::Only(&[OwnKey::Value("modifier"), OwnKey::Value("scope")])
         }
-        (Reader::Body, 0x1403C79E0) => {
+        (Reader::Body, 0x1403C7A50) => {
             KeyReader::Only(&[OwnKey::Value("amount"), OwnKey::Value("region")])
         }
-        (Reader::Body, 0x140459C10) => KeyReader::Only(&[
+        (Reader::Body, 0x140459C80) => KeyReader::Only(&[
             OwnKey::Value("tooltip"),
             OwnKey::Value("ratio"),
             OwnKey::Value("other"),
             OwnKey::Value("sub_unit_def_weights"),
         ]),
-        (Reader::Body, 0x1404A9400) => {
+        (Reader::Body, 0x1404A9470) => {
             KeyReader::Only(&[OwnKey::Value("id"), OwnKey::Value("range")])
         }
-        (Reader::Body, 0x1404a5df0) => KeyReader::Only(&[OwnKey::Value("id")]),
-        (Reader::Own(0x140454050), 0x1404A94C0) => {
+        (Reader::Body, 0x1404a5e60) => KeyReader::Only(&[OwnKey::Value("id")]),
+        (Reader::Own(0x1404540c0), 0x1404A9530) => {
             KeyReader::Only(&[OwnKey::Value("id"), OwnKey::Value("value")])
         }
-        (Reader::Body, 0x1404A9470) => {
+        (Reader::Body, 0x1404A94E0) => {
             KeyReader::Only(&[OwnKey::Value("id"), OwnKey::Value("side")])
         }
-        (Reader::Body, 0x1404A5E20) => {
+        (Reader::Body, 0x1404A5E90) => {
             KeyReader::Only(&[OwnKey::Value("id"), OwnKey::Value("modifier")])
         }
-        (Reader::Body, 0x1404567f0) => {
+        (Reader::Body, 0x140456860) => {
             KeyReader::Only(&[OwnKey::Value("opponent"), OwnKey::Value("thousands")])
         }
-        (Reader::Body, 0x14045A230) => {
+        (Reader::Body, 0x14045A2A0) => {
             KeyReader::Only(&[OwnKey::Value("sender"), OwnKey::Value("value")])
         }
-        (Reader::Own(0x140454050), 0x140457A40) => KeyReader::Native(0x140457A40),
-        (Reader::Own(0x140454050), 0x140457130) => KeyReader::Native(0x140457130),
-        (Reader::Body, 0x14045FC90) => KeyReader::Native(0x14045FC90),
-        (Reader::Body, 0x14045FC00) => KeyReader::Only(&[
+        (Reader::Own(0x1404540c0), 0x140457AB0) => KeyReader::Native(0x140457AB0),
+        (Reader::Own(0x1404540c0), 0x1404571a0) => KeyReader::Native(0x1404571a0),
+        (Reader::Body, 0x14045FD00) => KeyReader::Native(0x14045FD00),
+        (Reader::Body, 0x14045FC70) => KeyReader::Only(&[
             OwnKey::Value("ratio"),
             OwnKey::Value("first"),
             OwnKey::Value("second"),
             OwnKey::Value("compare"),
         ]),
-        (Reader::Body, 0x14045FF10) => KeyReader::Native(0x14045FF10),
-        (Reader::Body, 0x14045FE40) => KeyReader::Refused(0x14045FE40),
-        (Reader::Body, 0x14045FA90) => KeyReader::Refused(0x14045FA90),
-        (Reader::Body, 0x14045FED0) => {
+        (Reader::Body, 0x14045FF80) => KeyReader::Native(0x14045FF80),
+        (Reader::Body, 0x14045FEB0) => KeyReader::Refused(0x14045FEB0),
+        (Reader::Body, 0x14045FB00) => KeyReader::Refused(0x14045FB00),
+        (Reader::Body, 0x14045FF40) => {
             KeyReader::Only(&[OwnKey::Value("tooltip"), OwnKey::Value("ribbon")])
         }
-        (Reader::Own(0x14049FA80), 0x1404A0970) => KeyReader::Only(&[
+        (Reader::Own(0x14049FAF0), 0x1404A09E0) => KeyReader::Only(&[
             OwnKey::Value("type"),
             OwnKey::Value("need"),
             OwnKey::Value("var"),
         ]),
-        (Reader::Own(0x140477C30), 0x140477D00) => KeyReader::Native(0x140477D00),
-        (Reader::Own(0x140477C50), 0x140319EB0) => {
+        (Reader::Own(0x140477CA0), 0x140477D70) => KeyReader::Native(0x140477D70),
+        (Reader::Own(0x140477CC0), 0x140319F20) => {
             KeyReader::Only(&[OwnKey::Value("trait"), OwnKey::Value("show_modifiers")])
         }
-        (Reader::Own(0x140477C50), 0x140477D20) => KeyReader::Only(&[
+        (Reader::Own(0x140477CC0), 0x140477D90) => KeyReader::Only(&[
             OwnKey::Value("check_mio_parent_completed"),
             OwnKey::Value("check_mio_mutually_exclusive"),
             OwnKey::Value("trait"),
             OwnKey::Value("show_modifiers"),
         ]),
-        (Reader::Body, 0x1405675b0) => KeyReader::Only(&[
+        (Reader::Body, 0x140567620) => KeyReader::Only(&[
             OwnKey::Value("country"),
             OwnKey::Value("countries"),
             OwnKey::Value("collection"),
         ]),
-        (Reader::Body, 0x140574660) => {
+        (Reader::Body, 0x1405746d0) => {
             KeyReader::Only(&[OwnKey::Value("track"), OwnKey::Value("amount")])
         }
-        (Reader::Body, 0x140574430) => {
+        (Reader::Body, 0x1405744a0) => {
             KeyReader::Only(&[OwnKey::Value("amount"), OwnKey::Value("sub_doctrine")])
         }
-        (Reader::Body, 0x140490ed0) | (Reader::Body, 0x1404C7310) => KeyReader::ThenLoadKey(&[
+        (Reader::Body, 0x140490f40) | (Reader::Body, 0x1404C7380) => KeyReader::ThenLoadKey(&[
             OwnKey::Value("target"),
             OwnKey::BoundLocalization("tooltip"),
             OwnKey::Value("count"),
         ]),
-        (Reader::Body, 0x14045ADD0) => {
+        (Reader::Body, 0x14045AE40) => {
             KeyReader::Only(&[OwnKey::Value("months"), OwnKey::Value("tag")])
         }
-        (Reader::Body, 0x140567520) => KeyReader::ThenLoadKey(&[
+        (Reader::Body, 0x140567590) => KeyReader::ThenLoadKey(&[
             OwnKey::BoundLocalization("tooltip"),
             OwnKey::Value("count"),
             OwnKey::Value("collection"),
         ]),
-        (Reader::Body, 0x1404D6800) => {
+        (Reader::Body, 0x1404D6870) => {
             KeyReader::Only(&[OwnKey::Value("value"), OwnKey::Value("leader")])
         }
-        (Reader::Body, 0x140459F80) => KeyReader::Only(&[
+        (Reader::Body, 0x140459FF0) => KeyReader::Only(&[
             OwnKey::Value("target"),
             OwnKey::Value("state"),
             OwnKey::Value("value"),
         ]),
-        (Reader::Body, 0x1403C7A60) => {
+        (Reader::Body, 0x1403C7AD0) => {
             KeyReader::Only(&[OwnKey::Value("tag"), OwnKey::Value("token")])
         }
-        (Reader::Own(0x14049F1E0), 0x1404A08E0) => {
+        (Reader::Own(0x14049F250), 0x1404A0950) => {
             KeyReader::Only(&[OwnKey::Value("var"), OwnKey::Value("scorer")])
         }
-        (Reader::Own(0x14049F630), 0x1404A0920) => KeyReader::Only(&[
+        (Reader::Own(0x14049F6A0), 0x1404A0990) => KeyReader::Only(&[
             OwnKey::Value("array"),
             OwnKey::Value("scores"),
             OwnKey::Value("scorer"),
         ]),
-        (Reader::Body, 0x140454A30) => KeyReader::ThenLoadKey(&[
+        (Reader::Body, 0x140454AA0) => KeyReader::ThenLoadKey(&[
             OwnKey::Value("original_tag"),
             OwnKey::Value("original_tag_to_check"),
             OwnKey::Value("count"),
             OwnKey::BoundLocalization("tooltip"),
         ]),
-        (Reader::Body, 0x1404570c0) | (Reader::Body, 0x1404599A0) => {
+        (Reader::Body, 0x140457130) | (Reader::Body, 0x140459A10) => {
             KeyReader::ThenLoadKey(&[OwnKey::Value("target")])
         }
-        (Reader::Own(0x14049FED0), 0x1404A09C0) => KeyReader::Native(0x1404A07A0),
-        (Reader::Own(0x140454050), 0x14045A1E0) => KeyReader::Native(0x14045A1E0),
-        (Reader::Own(0x1404A0320), 0x1404A09D0) => KeyReader::Only(&[
+        (Reader::Own(0x14049FF40), 0x1404A0A30) => KeyReader::Native(0x1404A0810),
+        (Reader::Own(0x1404540c0), 0x14045A250) => KeyReader::Native(0x14045A250),
+        (Reader::Own(0x1404A0390), 0x1404A0A40) => KeyReader::Only(&[
             OwnKey::Value("min"),
             OwnKey::Value("max"),
             OwnKey::Value("var"),
             OwnKey::Value("integer"),
         ]),
-        (Reader::Own(0x140454050), 0x140459A10) => {
+        (Reader::Own(0x1404540c0), 0x140459A80) => {
             KeyReader::Only(&[OwnKey::Value("target"), OwnKey::Value("operation")])
         }
-        (Reader::Body, 0x140567800) => {
+        (Reader::Body, 0x140567870) => {
             KeyReader::ThenLoadKey(&[OwnKey::Value("input"), OwnKey::Value("value")])
         }
-        (Reader::Body, 0x1404D68B0) => KeyReader::Refused(0x1404D68B0),
-        (Reader::Own(0x14046AD80), 0x14046ADE0) => KeyReader::Only(&[
+        (Reader::Body, 0x1404D6920) => KeyReader::Refused(0x1404D6920),
+        (Reader::Own(0x14046ADF0), 0x14046AE50) => KeyReader::Only(&[
             OwnKey::Value("province"),
             OwnKey::Value("include_field_marshal"),
         ]),
-        (Reader::Body, 0x140491AF0) => KeyReader::Only(&[
+        (Reader::Body, 0x140491B60) => KeyReader::Only(&[
             OwnKey::Value("count"),
             OwnKey::Value("states"),
             OwnKey::Value("types"),
@@ -789,14 +789,14 @@ mod tests {
             if matches!(
                 reader,
                 Reader::Own(
-                    0x140454050
-                        | 0x141445FF0
-                        | 0x14049F1E0
-                        | 0x14049F630
-                        | 0x14049FA80
-                        | 0x14049FED0
-                        | 0x1404A0320
-                        | 0x140477C30
+                    0x1404540c0
+                        | 0x141446060
+                        | 0x14049F250
+                        | 0x14049F6A0
+                        | 0x14049FAF0
+                        | 0x14049FF40
+                        | 0x1404A0390
+                        | 0x140477CA0
                 )
             ) {
                 assert!(

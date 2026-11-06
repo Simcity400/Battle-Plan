@@ -1,7 +1,7 @@
 //! CControllerArea geographic membership used by CTheatre.
 
 /// Controller-area vtable.
-pub const VTABLE_RVA: usize = 0x029d_b138;
+pub const VTABLE_RVA: usize = 0x029d_b198;
 /// Representative province pointer.
 pub const REPRESENTATIVE_PROVINCE: usize = 0x28;
 /// Member-province pointer array.
@@ -11,9 +11,9 @@ pub const PROVINCE_COUNT: usize = 0x3c;
 /// Allocation size.
 pub const SIZE: usize = 0x118;
 /// Constructor installing the vtable.
-pub const CONSTRUCTOR_RVA: usize = 0x00d5_1cb0;
+pub const CONSTRUCTOR_RVA: usize = 0x00d5_1d20;
 /// World clear walking members and clearing province backlinks.
-pub const CLEAR_RVA: usize = 0x00d5_4500;
+pub const CLEAR_RVA: usize = 0x00d5_4570;
 
 /// One controller area listed by one stationed theatre in native order.
 /// Theatre insertion deduplicates pointers, but rebuilding replaces the whole

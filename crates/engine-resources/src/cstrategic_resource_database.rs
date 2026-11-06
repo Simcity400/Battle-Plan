@@ -21,7 +21,7 @@ pub const OIL: usize = 0x60;
 /// Fuel descriptor pointer.
 pub const FUEL: usize = 0x68;
 /// Database constructor initializing item zero with the null object.
-pub const CONSTRUCTOR_RVA: usize = 0xb13a30;
+pub const CONSTRUCTOR_RVA: usize = 0xb13aa0;
 
 /// Item and key arrays load together. Validate descriptor/key correspondence
 /// without resolving the separate dynamically mutable lexer table.

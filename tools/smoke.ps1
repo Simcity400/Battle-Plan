@@ -348,7 +348,7 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         ulong idler = BitConverter.ToUInt64(bytes, 0);
         if (idler == 0 || idler > long.MaxValue - 0x1000) return false;
         if (!Read(image + 0x033ddb10, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
-        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x029e5838) return false;
+        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x029e58d8) return false;
         if (!Read(idler + 0x6c1, 1) || bytes[0] > 1) return false;
         clock.paused = bytes[0];
         // The live root member is a pointer.
@@ -438,8 +438,8 @@ function Invoke-FullSmoke {
     $selection = if (Test-Path -LiteralPath $selectionPath) { ,[IO.File]::ReadAllBytes($selectionPath) } else { $null }
     if (-not (Test-Path -LiteralPath $sourceSave -PathType Leaf)) { throw 'Expected save is missing.' }
     if (@(Get-Process -Name the game,recorder -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
-    if ((Get-Item -LiteralPath $gamePath).Length -ne 56530040 -or
-        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine 'cf781ed178cd801643b233b7e3fcd1c0efd19bd01aecd24bf07a35f69f10476f') { throw 'Unsupported game build.' }
+    if ((Get-Item -LiteralPath $gamePath).Length -ne 56535160 -or
+        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine 'bccc62909b6a1ec2c1d5a46ef18608e4d0c7cdc89ad341b7402a23c40f7a8037') { throw 'Unsupported game build.' }
     $ui = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $UiConfig)) | ConvertFrom-Json
     foreach ($name in @('menu','speed_up','speed_down','pause','save_menu','save_name','save_confirm','save_back','menu_close','exit_game','exit_confirm','map_center','capture_cursor')) {
         $point = $ui.$name
@@ -986,8 +986,8 @@ $game = $gameProcesses[0]
 if ($GameId -ne 0 -and $game.Id -ne $GameId) { throw "The running game has PID $($game.Id), not $GameId." }
 if ($game.Path -ine $gamePath) { throw "The running game executable differs from GameExe: $($game.Path)" }
 if ($Action -eq 'Clock') {
-    if ((Get-Item -LiteralPath $gamePath).Length -ne 56530040 -or
-        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine 'cf781ed178cd801643b233b7e3fcd1c0efd19bd01aecd24bf07a35f69f10476f') {
+    if ((Get-Item -LiteralPath $gamePath).Length -ne 56535160 -or
+        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine 'bccc62909b6a1ec2c1d5a46ef18608e4d0c7cdc89ad341b7402a23c40f7a8037') {
         throw 'Unsupported game build for clock reading.'
     }
     Initialize-SmokeClock
@@ -1011,8 +1011,8 @@ if ($Action -eq 'Baseline') {
     }
     if (Test-Path -LiteralPath $capturePath) { throw "Baseline already exists: $capturePath" }
     # Supported executable identity for clock reading.
-    $wantedSize = [int64]56530040
-    $wantedHash = 'cf781ed178cd801643b233b7e3fcd1c0efd19bd01aecd24bf07a35f69f10476f'
+    $wantedSize = [int64]56535160
+    $wantedHash = 'bccc62909b6a1ec2c1d5a46ef18608e4d0c7cdc89ad341b7402a23c40f7a8037'
     $actualSize = (Get-Item -LiteralPath $gamePath).Length
     $actualHash = (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash
     if ($actualSize -ne $wantedSize -or $actualHash -ine $wantedHash) {

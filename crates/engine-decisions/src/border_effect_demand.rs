@@ -14,19 +14,19 @@ use crate::{
 };
 
 /// Event and event-option vtables.
-const EVENT_VTABLE: usize = 0x02a1_5b88;
-const OPTION_VTABLE: usize = 0x02a1_5ae8;
+const EVENT_VTABLE: usize = 0x02a1_6008;
+const OPTION_VTABLE: usize = 0x02a1_5f68;
 /// Packed event reference type combined with the resolved identifier.
 const EVENT_TYPE: u32 = 0x32;
 /// Embedded option and its effect selector.
 const IMMEDIATE: usize = 0x118;
 const OPTION_EFFECT: usize = 0x120;
 /// Effect vtables and attached else-branch field.
-const EFFECT_VTABLE: usize = 0x0285_26c0;
-const IF_VTABLE: usize = 0x0285_2790;
+const EFFECT_VTABLE: usize = 0x0285_26e0;
+const IF_VTABLE: usize = 0x0285_27b0;
 const ELSE: usize = 0xb0;
 /// Targeted-decision removal vtable and name field.
-const REMOVE_VTABLE: usize = 0x027f_1fb0;
+const REMOVE_VTABLE: usize = 0x027f_1ff0;
 const DECISION_NAME: usize = 0x58;
 
 /// Supported effect-description vtables. These authenticate objects and do
@@ -35,31 +35,31 @@ const DESCRIBED: &[usize] = &[
     EFFECT_VTABLE,
     IF_VTABLE,
     REMOVE_VTABLE,
-    0x027e_5ae8,
-    0x027e_d8a8,
-    0x027e_c6e8,
-    0x027e_c8b8,
-    0x027e_70e8,
-    0x027e_6ce8,
-    0x027f_3dc0,
-    0x027e_ca88,
-    0x027e_a660,
-    0x0284_6348,
-    0x0284_fa80,
-    0x027c_f6c8,
-    0x027e_5710,
-    0x027e_9f40,
-    0x027f_4b48,
-    0x027f_3058,
-    0x027e_9cb8,
-    0x027e_9e68,
-    0x027c_b518,
-    0x027e_dc78,
-    0x02a3_1110,
-    0x027e_b1d8,
-    0x02a3_1658,
-    0x02a3_1728,
-    0x02a3_18c8,
+    0x027e_5b28,
+    0x027e_d8e8,
+    0x027e_c728,
+    0x027e_c8f8,
+    0x027e_7128,
+    0x027e_6d28,
+    0x027f_3e00,
+    0x027e_cac8,
+    0x027e_a6a0,
+    0x0284_6368,
+    0x0284_faa0,
+    0x027c_f708,
+    0x027e_5750,
+    0x027e_9f80,
+    0x027f_4b88,
+    0x027f_3098,
+    0x027e_9cf8,
+    0x027e_9ea8,
+    0x027c_b558,
+    0x027e_dcb8,
+    0x02a3_1830,
+    0x027e_b218,
+    0x02a3_1d78,
+    0x02a3_1e48,
+    0x02a3_1fe8,
 ];
 
 /// Validated native bytes, usable only inside this quiescent callback.

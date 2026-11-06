@@ -16,9 +16,9 @@ use baseline::Identity;
 pub use baseline::{Baseline, Counts as BaselineCounts, Mark, Observation};
 
 /// CRelationStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x029d_d430;
+pub const VTABLE_RVA: usize = 0x029d_d490;
 /// Relation-status constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d7_9410;
+pub const CONSTRUCTOR_RVA: usize = 0x00d7_9480;
 /// Relation-status allocation size.
 #[cfg(test)]
 pub const OBJECT_SIZE: usize = 0x9c0;

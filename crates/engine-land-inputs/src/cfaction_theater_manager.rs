@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Manager primary vtable.
-pub const VTABLE_RVA: usize = 0x02a9_7cf8;
+pub const VTABLE_RVA: usize = 0x02a9_8778;
 /// Owning CFaction pointer.
 pub const OWNER: usize = 0x08;
 /// Theatre array header: data, capacity and count. Serialization and pin visibility use the stored

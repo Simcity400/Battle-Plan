@@ -1,9 +1,9 @@
 //! Strategic-region fields relative to the primary object.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_9f68;
+pub const VTABLE_RVA: usize = 0x029e_a078;
 /// Secondary vtable (`SECONDARY`).
-pub const SECONDARY_VTABLE_RVA: usize = 0x029e_9fb8;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029e_a0c8;
 /// Secondary-subobject displacement; authenticate both vtables.
 pub const SECONDARY: usize = 0x08;
 /// Strategic-region ID, u32.
@@ -23,7 +23,7 @@ pub const AIR_PHASE: usize = 0x140;
 /// Strategic-region template pointer.
 pub const TEMPLATE: usize = 0x30;
 /// CStrategicRegionTemplate vtable, authenticated before the custom sea walk.
-pub const TEMPLATE_VTABLE_RVA: usize = 0x02a5_4c28;
+pub const TEMPLATE_VTABLE_RVA: usize = 0x02a5_5348;
 /// Template custom-modifier vector with array capacity and count.
 pub const TEMPLATE_MODIFIERS_CAPACITY: usize = 0x140;
 pub const TEMPLATE_MODIFIERS_COUNT: usize = 0x144;

@@ -1121,7 +1121,7 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
     let (game, database, state_array, continents, state, template, null, continent) = (
         0x1000, 0x2000, 0x3000, 0x3100, 0x4000, 0x5000, 0x6000, 0x6100,
     );
-    put(database, &0x029c_0958_u64.to_le_bytes());
+    put(database, &0x029c_0988_u64.to_le_bytes());
     for (at, array, count) in [
         (game + cgame_state::STATES, state_array, 2_u32),
         (database + 0x58, continents, 2_u32),

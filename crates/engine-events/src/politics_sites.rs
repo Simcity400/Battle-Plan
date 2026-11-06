@@ -17,10 +17,10 @@ pub struct HookSite {
 /// Entry: RCX status, RDX signed fixed5; signal follows clamping.
 pub const ADD_POLITICAL_POWER: HookSite = HookSite {
     name: "AddPoliticalPower",
-    function_rva: 0xbfa6b0,
-    rva: 0xbfa6b0,
+    function_rva: 0xbfa720,
+    rva: 0xbfa720,
     sentinel: [
-        0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xac, 0x5c, 0x90, 0x02, 0x00, 0x48, 0x8b,
+        0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x3c, 0x5c, 0x90, 0x02, 0x00, 0x48, 0x8b,
         0xf9,
     ],
     commit: false,
@@ -29,10 +29,10 @@ pub const ADD_POLITICAL_POWER: HookSite = HookSite {
 /// Entry: RCX status, RDX signed fixed5; applies the no-deficit floor.
 pub const ADD_POLITICAL_POWER_NO_DEFICIT: HookSite = HookSite {
     name: "AddPoliticalPowerNoDeficit",
-    function_rva: 0xbfa7a0,
-    rva: 0xbfa7a0,
+    function_rva: 0xbfa810,
+    rva: 0xbfa810,
     sentinel: [
-        0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xbc, 0x5b, 0x90, 0x02, 0x00, 0x48, 0x8b,
+        0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x4c, 0x5b, 0x90, 0x02, 0x00, 0x48, 0x8b,
         0xf9,
     ],
     commit: false,
@@ -41,8 +41,8 @@ pub const ADD_POLITICAL_POWER_NO_DEFICIT: HookSite = HookSite {
 /// Commit: RSI status, RCX evaluated target; a negative target floors to zero.
 pub const SET_POLITICAL_POWER: HookSite = HookSite {
     name: "SetPoliticalPower",
-    function_rva: 0x37c4e0,
-    rva: 0x37c527,
+    function_rva: 0x37c550,
+    rva: 0x37c597,
     sentinel: [
         0x48, 0x89, 0x8e, 0xe0, 0x00, 0x00, 0x00, 0x48, 0x83, 0x7c, 0x24, 0x40, 0x00, 0x7d, 0x0b,
         0x48,
@@ -55,8 +55,8 @@ pub const SET_POLITICAL_POWER: HookSite = HookSite {
 /// the commit tap inside only stages its operands.
 pub const SET_POLITICAL_POWER_EFFECT: HookSite = HookSite {
     name: "SetPoliticalPowerEffect",
-    function_rva: 0x37c4e0,
-    rva: 0x37c4e0,
+    function_rva: 0x37c550,
+    rva: 0x37c550,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30,
         0x48,
@@ -67,8 +67,8 @@ pub const SET_POLITICAL_POWER_EFFECT: HookSite = HookSite {
 /// Entry: RCX status; retains the old government before party destruction.
 pub const CLEAR_POLITICS: HookSite = HookSite {
     name: "ClearPolitics",
-    function_rva: 0xbfb3a0,
-    rva: 0xbfb3a0,
+    function_rva: 0xbfb410,
+    rva: 0xbfb410,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54, 0x48, 0x83, 0xec, 0x20, 0x65, 0x48,
         0x8b,
@@ -79,8 +79,8 @@ pub const CLEAR_POLITICS: HookSite = HookSite {
 /// Entry: RCX country; command-power reset and nested clear/setup are observed separately.
 pub const RESET_COUNTRY: HookSite = HookSite {
     name: "ResetCountry",
-    function_rva: 0x72a920,
-    rva: 0x72a920,
+    function_rva: 0x72a990,
+    rva: 0x72a990,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
         0x55,
@@ -91,8 +91,8 @@ pub const RESET_COUNTRY: HookSite = HookSite {
 /// Entry: RCX country, RDX pointer to signed fixed5; returns void.
 pub const ADD_COMMAND_POWER: HookSite = HookSite {
     name: "AddCommandPower",
-    function_rva: 0x717940,
-    rva: 0x717940,
+    function_rva: 0x7179b0,
+    rva: 0x7179b0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x20,
         0x48,
@@ -103,8 +103,8 @@ pub const ADD_COMMAND_POWER: HookSite = HookSite {
 /// Entry: RCX country, RDX charge pointer; AL reports success, preserving full RAX.
 pub const SPEND_COMMAND_POWER: HookSite = HookSite {
     name: "SpendCommandPower",
-    function_rva: 0x75ccd0,
-    rva: 0x75ccd0,
+    function_rva: 0x75cd40,
+    rva: 0x75cd40,
     sentinel: [
         0x48, 0x8b, 0x81, 0xf0, 0x01, 0x00, 0x00, 0x4c, 0x8b, 0x02, 0x49, 0x3b, 0xc0, 0x7c, 0x0d,
         0x49,
@@ -115,8 +115,8 @@ pub const SPEND_COMMAND_POWER: HookSite = HookSite {
 /// Entry: RCX country, RDX allocator, R8B charge; AL reports success, preserving full RAX.
 pub const ALLOCATE_COMMAND_POWER: HookSite = HookSite {
     name: "AllocateCommandPower",
-    function_rva: 0x75c940,
-    rva: 0x75c940,
+    function_rva: 0x75c9b0,
+    rva: 0x75c9b0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54, 0x41,
         0x56,
@@ -127,11 +127,11 @@ pub const ALLOCATE_COMMAND_POWER: HookSite = HookSite {
 /// Entry: RCX country, RDX allocator; nested command-power refund with its own cap.
 pub const RELEASE_COMMAND_POWER: HookSite = HookSite {
     name: "ReleaseCommandPower",
-    function_rva: 0x7329a0,
-    rva: 0x7329a0,
+    function_rva: 0x732a10,
+    rva: 0x732a10,
     sentinel: [
-        0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x5e,
-        0xcc,
+        0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xee,
+        0xcb,
     ],
     commit: false,
 };
@@ -139,8 +139,8 @@ pub const RELEASE_COMMAND_POWER: HookSite = HookSite {
 /// Entry: RCX country, RDX definition, R8 scope, R9B charge; upfront subtraction precedes nested allocation.
 pub const ACTIVATE_ABILITY: HookSite = HookSite {
     name: "ActivateAbility",
-    function_rva: 0x732040,
-    rva: 0x732040,
+    function_rva: 0x7320b0,
+    rva: 0x7320b0,
     sentinel: [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d,
         0x6c,
@@ -151,8 +151,8 @@ pub const ACTIVATE_ABILITY: HookSite = HookSite {
 /// Commit: R13 country, RCX balance, RDX charge, R15+RBX record; one commit per paid anniversary.
 pub const ABILITY_UPKEEP: HookSite = HookSite {
     name: "AbilityUpkeep",
-    function_rva: 0x744280,
-    rva: 0x74454d,
+    function_rva: 0x7442f0,
+    rva: 0x7445bd,
     sentinel: [
         0x49, 0x89, 0x8d, 0xf0, 0x01, 0x00, 0x00, 0xeb, 0x03, 0x40, 0x32, 0xff, 0x49, 0x8b, 0x54,
         0x1f,
@@ -163,8 +163,8 @@ pub const ABILITY_UPKEEP: HookSite = HookSite {
 /// Entry: RCX country, RDX region, R8 allocator, R9 adjustment, fifth byte charge.
 pub const GROUND_CREW: HookSite = HookSite {
     name: "GroundCrew",
-    function_rva: 0x71b350,
-    rva: 0x71b350,
+    function_rva: 0x71b3c0,
+    rva: 0x71b3c0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x20,
         0x55,
@@ -175,8 +175,8 @@ pub const GROUND_CREW: HookSite = HookSite {
 /// Commit: RBX status, RAX new party; precedes refresh and on-actions.
 pub const SET_RULING_PARTY: HookSite = HookSite {
     name: "SetRulingParty",
-    function_rva: 0xc019c0,
-    rva: 0xc01b36,
+    function_rva: 0xc01a30,
+    rva: 0xc01ba6,
     sentinel: [
         0x48, 0x89, 0x83, 0xd0, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xcb, 0x48, 0x8b, 0x5c, 0x24, 0x78,
         0x48,
@@ -187,8 +187,8 @@ pub const SET_RULING_PARTY: HookSite = HookSite {
 /// Commit: RBP status, RSI new party; precedes refresh and on-actions.
 pub const FORCE_RULING_PARTY: HookSite = HookSite {
     name: "ForceRulingParty",
-    function_rva: 0xc00a80,
-    rva: 0xc00b02,
+    function_rva: 0xc00af0,
+    rva: 0xc00b72,
     sentinel: [
         0x48, 0x89, 0xb5, 0xd0, 0x00, 0x00, 0x00, 0xe8, 0x32, 0xfd, 0xff, 0xff, 0xba, 0x80, 0x8d,
         0x5b,
@@ -199,8 +199,8 @@ pub const FORCE_RULING_PARTY: HookSite = HookSite {
 /// Commit: RBP status, RCX new party; setup and dynamic reuse.
 pub const SETUP_POLITICS: HookSite = HookSite {
     name: "SetupPolitics",
-    function_rva: 0xc01b60,
-    rva: 0xc01cf0,
+    function_rva: 0xc01bd0,
+    rva: 0xc01d60,
     sentinel: [
         0x48, 0x89, 0x8d, 0xd0, 0x00, 0x00, 0x00, 0x4c, 0x8b, 0xbd, 0xc8, 0x00, 0x00, 0x00, 0x48,
         0x8d,
@@ -213,8 +213,8 @@ pub const SETUP_POLITICS: HookSite = HookSite {
 /// maxima emit no event.
 pub const FALLBACK_RULING_PARTY: HookSite = HookSite {
     name: "FallbackRulingParty",
-    function_rva: 0xbffea0,
-    rva: 0xbffff3,
+    function_rva: 0xbfff10,
+    rva: 0xc00063,
     sentinel: [
         0x49, 0x8b, 0x86, 0xc8, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xa8, 0x68, 0x0f, 0x00, 0x00, 0x49,
         0x8b,
@@ -225,8 +225,8 @@ pub const FALLBACK_RULING_PARTY: HookSite = HookSite {
 /// Observation: R13 status, RDI gross, stack reduction, RAX net, R15 blockade count; precedes tooltip adjustment.
 pub const DAILY_POLITICAL_RATE: HookSite = HookSite {
     name: "DailyPoliticalRate",
-    function_rva: 0xbfc750,
-    rva: 0xbfd3c5,
+    function_rva: 0xbfc7c0,
+    rva: 0xbfd435,
     sentinel: [
         0x4c, 0x8b, 0xbd, 0x68, 0x03, 0x00, 0x00, 0x49, 0x89, 0x07, 0x4d, 0x85, 0xf6, 0x0f, 0x84,
         0x55,
@@ -235,19 +235,19 @@ pub const DAILY_POLITICAL_RATE: HookSite = HookSite {
 };
 
 /// Daily political-power application, separate timed charges and inline daily command-power application.
-pub const DAILY_PP_CALLER: usize = 0xbfb92c;
-pub const TIMED_PP_CALLER: usize = 0xbfbbb3;
-pub const DAILY_CP_CALLER: usize = 0x72f487;
+pub const DAILY_PP_CALLER: usize = 0xbfb99c;
+pub const TIMED_PP_CALLER: usize = 0xbfbc23;
+pub const DAILY_CP_CALLER: usize = 0x72f4f7;
 
 /// Daily reduction observation after the cost call. The seven-byte patch span
 /// has no relative operand, interior target or return PC. R13 status, stack cost
 /// and daily caller remain unchanged.
 pub const DAILY_PP_MODIFIER: HookSite = HookSite {
     name: "DailyPpModifier",
-    function_rva: 0xbfc750,
-    rva: 0xbfc852,
+    function_rva: 0xbfc7c0,
+    rva: 0xbfc8c2,
     sentinel: [
-        0x0f, 0x11, 0x85, 0xc0, 0x00, 0x00, 0x00, 0x66, 0x0f, 0x6f, 0x35, 0x2f, 0x91, 0xb9, 0x01,
+        0x0f, 0x11, 0x85, 0xc0, 0x00, 0x00, 0x00, 0x66, 0x0f, 0x6f, 0x35, 0xbf, 0x90, 0xb9, 0x01,
         0xf3,
     ],
     commit: true,
@@ -258,8 +258,8 @@ pub const DAILY_PP_MODIFIER: HookSite = HookSite {
 /// signal in RCX is unused by the thread-local flush.
 pub const PP_SIGNAL: HookSite = HookSite {
     name: "PpSignal",
-    function_rva: 0xbfa6b0,
-    rva: 0xbfa78b,
+    function_rva: 0xbfa720,
+    rva: 0xbfa7fb,
     sentinel: [
         0x48, 0x83, 0xc4, 0x30, 0x5f, 0xe9, 0xbb, 0xd5, 0x74, 0xff, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
         0xcc,
@@ -268,8 +268,8 @@ pub const PP_SIGNAL: HookSite = HookSite {
 };
 pub const PP_SIGNAL_NO_DEFICIT: HookSite = HookSite {
     name: "PpSignalNoDeficit",
-    function_rva: 0xbfa7a0,
-    rva: 0xbfa88e,
+    function_rva: 0xbfa810,
+    rva: 0xbfa8fe,
     sentinel: [
         0x48, 0x83, 0xc4, 0x30, 0x5f, 0xe9, 0xb8, 0xd4, 0x74, 0xff, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
         0xcc,
@@ -640,72 +640,72 @@ mod tests {
 
 /// Charging-path call return addresses, independent of item identity or table differences.
 pub const CHARGING_CALLERS: &[(usize, &str)] = &[
-    (0x2593e2, "Console"),
-    (0x286552, "Console"),
-    (0x2e774b, "FocusRefund"),
-    (0x2f380a, "Focus"),
-    (0x361842, "ScriptEffect"),
-    (0x363bc9, "ScriptEffect"),
-    (0x364587, "ScaledScriptEffect"),
-    (0x6bf995, "Autonomy"),
-    (0x6c19d3, "Autonomy"),
-    (0x71b395, "AirAction"),
-    (0x71b939, "AirAction"),
-    (0x7323f7, "AbilityActivation"),
-    (0x732bdf, "AllocationRefund"),
-    (0x76fdbe, "Decision"),
-    (0x771007, "DecisionTimeout"),
-    (0x77dc66, "TargetedDecision"),
-    (0xb02d16, "Diplomacy"),
-    (0xc711a2, "LeaderAssignment"),
-    (0xc75ff6, "LeaderAssignment"),
-    (0xc78caf, "LeaderAssignment"),
-    (0xc78ce1, "LeaderAssignment"),
-    (0xd890f2, "Diplomacy"),
-    (0xe22cf7, "MioPolicy"),
-    (0xfe8292, "AirAction"),
-    (0x100b835, "AirAction"),
-    (0x100b93c, "AirAction"),
-    (0x1052d35, "Idea"),
-    (0x106fddc, "Raid"),
-    (0x10727e6, "Raid"),
-    (0x10727fd, "Raid"),
-    (0x1172cf1, "AdvisorRemoval"),
-    (0x1189b73, "Diplomacy"),
-    (0x1189ba3, "Diplomacy"),
-    (0x118cfe0, "WarJustification"),
-    (0x118eda0, "JoinWar"),
-    (0x11c6c7a, "JoinWar"),
-    (0x11da81c, "Advisor"),
-    (0x11da873, "Advisor"),
-    (0x11dabc8, "Advisor"),
-    (0x11e00d1, "LeaderRecruitment"),
-    (0x11e376c, "Advisor"),
-    (0x11e37c5, "Advisor"),
-    (0x11e6937, "PreferredTactic"),
-    (0x11e740f, "ScorchedEarth"),
-    (0x11e9911, "OfficerUpgrade"),
-    (0x11e9aef, "CaptainUpgrade"),
-    (0x1333837, "Advisor"),
-    (0x133440e, "Advisor"),
-    (0x1334436, "Advisor"),
-    (0x13eb49f, "PrideOfFleet"),
-    (0x13fd0ec, "LeaderPromotion"),
-    (0x14e34f9, "Medal"),
-    (0x18d3682, "LeaderTrait"),
-    (0x18db41b, "LeaderAssignment"),
-    (0x1ab9b51, "SpyMaster"),
-    (0x1b3656c, "Blockade"),
-    (0x1c36c38, "ScientistFaction"),
-    (0x1f6b670, "ScientistRecruitment"),
+    (0x259452, "Console"),
+    (0x2865c2, "Console"),
+    (0x2e77bb, "FocusRefund"),
+    (0x2f387a, "Focus"),
+    (0x3618b2, "ScriptEffect"),
+    (0x363c39, "ScriptEffect"),
+    (0x3645f7, "ScaledScriptEffect"),
+    (0x6bfa05, "Autonomy"),
+    (0x6c1a43, "Autonomy"),
+    (0x71b405, "AirAction"),
+    (0x71b9a9, "AirAction"),
+    (0x732467, "AbilityActivation"),
+    (0x732c4f, "AllocationRefund"),
+    (0x76fe2e, "Decision"),
+    (0x771077, "DecisionTimeout"),
+    (0x77dcd6, "TargetedDecision"),
+    (0xb02d86, "Diplomacy"),
+    (0xc71212, "LeaderAssignment"),
+    (0xc76066, "LeaderAssignment"),
+    (0xc78d1f, "LeaderAssignment"),
+    (0xc78d51, "LeaderAssignment"),
+    (0xd89162, "Diplomacy"),
+    (0xe22d67, "MioPolicy"),
+    (0xfe8302, "AirAction"),
+    (0x100b8a5, "AirAction"),
+    (0x100b9ac, "AirAction"),
+    (0x1052da5, "Idea"),
+    (0x106fe4c, "Raid"),
+    (0x1072856, "Raid"),
+    (0x107286d, "Raid"),
+    (0x1172d61, "AdvisorRemoval"),
+    (0x1189be3, "Diplomacy"),
+    (0x1189c13, "Diplomacy"),
+    (0x118d050, "WarJustification"),
+    (0x118ee10, "JoinWar"),
+    (0x11c6cea, "JoinWar"),
+    (0x11da88c, "Advisor"),
+    (0x11da8e3, "Advisor"),
+    (0x11dac38, "Advisor"),
+    (0x11e0141, "LeaderRecruitment"),
+    (0x11e37dc, "Advisor"),
+    (0x11e3835, "Advisor"),
+    (0x11e69a7, "PreferredTactic"),
+    (0x11e747f, "ScorchedEarth"),
+    (0x11e9981, "OfficerUpgrade"),
+    (0x11e9b5f, "CaptainUpgrade"),
+    (0x13338a7, "Advisor"),
+    (0x133447e, "Advisor"),
+    (0x13344a6, "Advisor"),
+    (0x13eb50f, "PrideOfFleet"),
+    (0x13fd15c, "LeaderPromotion"),
+    (0x14e3569, "Medal"),
+    (0x18d36f2, "LeaderTrait"),
+    (0x18db48b, "LeaderAssignment"),
+    (0x1ab9bc1, "SpyMaster"),
+    (0x1b365dc, "Blockade"),
+    (0x1c36ca8, "ScientistFaction"),
+    (0x1f6b6e0, "ScientistRecruitment"),
 ];
 
 /// Synchronous charging scopes use up to five integer/pointer arguments and return through RAX.
 pub const SCOPES: &[HookSite] = &[
     HookSite {
         name: "PoliticsDaily",
-        function_rva: 0xbfb630,
-        rva: 0xbfb630,
+        function_rva: 0xbfb6a0,
+        rva: 0xbfb6a0,
         sentinel: [
             0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
             0x8d, 0xac,
@@ -714,8 +714,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "ImproveRelationDaily",
-        function_rva: 0xd85010,
-        rva: 0xd85010,
+        function_rva: 0xd85080,
+        rva: 0xd85080,
         sentinel: [
             0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xda, 0x4d, 0x8b, 0xc8, 0x4c, 0x8d,
             0x41, 0x14,
@@ -724,18 +724,18 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "BoostPartyDaily",
-        function_rva: 0xd849e0,
-        rva: 0xd849e0,
+        function_rva: 0xd84a50,
+        rva: 0xd84a50,
         sentinel: [
             0x83, 0x79, 0x10, 0x00, 0x7e, 0x14, 0x83, 0x79, 0x14, 0x00, 0x7e, 0x0e, 0x48, 0x8b,
-            0x05, 0x95,
+            0x05, 0x25,
         ],
         commit: false,
     },
     HookSite {
         name: "MioResearchDaily",
-        function_rva: 0xe23700,
-        rva: 0xe23700,
+        function_rva: 0xe23770,
+        rva: 0xe23770,
         sentinel: [
             0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
             0x40, 0x49,
@@ -744,8 +744,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "MioProductionDaily",
-        function_rva: 0xe23660,
-        rva: 0xe23660,
+        function_rva: 0xe236d0,
+        rva: 0xe236d0,
         sentinel: [
             0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
             0x40, 0x49,
@@ -754,8 +754,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "AddIdea",
-        function_rva: 0x11db5e0,
-        rva: 0x11db5e0,
+        function_rva: 0x11db650,
+        rva: 0x11db650,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x55, 0x57, 0x41, 0x55,
             0x41, 0x56,
@@ -764,18 +764,18 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "RemoveIdea",
-        function_rva: 0x11e3040,
-        rva: 0x11e3040,
+        function_rva: 0x11e30b0,
+        rva: 0x11e30b0,
         sentinel: [
-            0x40, 0x55, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x1c, 0xd3, 0x31, 0x02, 0x00, 0x48,
+            0x40, 0x55, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xac, 0xd2, 0x31, 0x02, 0x00, 0x48,
             0x8b, 0xe9,
         ],
         commit: false,
     },
     HookSite {
         name: "ReplaceIdea",
-        function_rva: 0x11e38b0,
-        rva: 0x11e38b0,
+        function_rva: 0x11e3920,
+        rva: 0x11e3920,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
             0x48, 0x83,
@@ -784,8 +784,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "HireAdvisor",
-        function_rva: 0x11da780,
-        rva: 0x11da780,
+        function_rva: 0x11da7f0,
+        rva: 0x11da7f0,
         sentinel: [
             0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
             0x8d, 0x6c,
@@ -794,8 +794,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "ReplaceAdvisor",
-        function_rva: 0x11e3660,
-        rva: 0x11e3660,
+        function_rva: 0x11e36d0,
+        rva: 0x11e36d0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54,
             0x41, 0x56,
@@ -804,8 +804,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "Decision",
-        function_rva: 0x76fc10,
-        rva: 0x76fc10,
+        function_rva: 0x76fc80,
+        rva: 0x76fc80,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
             0x41, 0x57,
@@ -814,8 +814,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "TargetedDecision",
-        function_rva: 0x77da40,
-        rva: 0x77da40,
+        function_rva: 0x77dab0,
+        rva: 0x77dab0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
             0x41, 0x57,
@@ -824,8 +824,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "DecisionTimeout",
-        function_rva: 0x770e90,
-        rva: 0x770e90,
+        function_rva: 0x770f00,
+        rva: 0x770f00,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x55,
             0x41, 0x56,
@@ -834,8 +834,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "Diplomacy",
-        function_rva: 0x11893b0,
-        rva: 0x11893b0,
+        function_rva: 0x1189420,
+        rva: 0x1189420,
         sentinel: [
             0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
             0x8d, 0xac,
@@ -844,8 +844,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "ScriptedDiplomacy",
-        function_rva: 0xb02c30,
-        rva: 0xb02c30,
+        function_rva: 0xb02ca0,
+        rva: 0xb02ca0,
         sentinel: [
             0x40, 0x53, 0x48, 0x81, 0xec, 0x90, 0x01, 0x00, 0x00, 0x48, 0x8b, 0xd9, 0x48, 0x8d,
             0x4c, 0x24,
@@ -854,8 +854,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "LeaderPromotion",
-        function_rva: 0x13fd080,
-        rva: 0x13fd080,
+        function_rva: 0x13fd0f0,
+        rva: 0x13fd0f0,
         sentinel: [
             0x40, 0x53, 0x48, 0x83, 0xec, 0x40, 0x83, 0x79, 0x28, 0x00, 0x48, 0x8d, 0x59, 0x28,
             0x75, 0x0a,
@@ -864,8 +864,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "LeaderTrait",
-        function_rva: 0x18d3630,
-        rva: 0x18d3630,
+        function_rva: 0x18d36a0,
+        rva: 0x18d36a0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xff, 0x48, 0x8b,
             0xd9, 0x40,
@@ -874,8 +874,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "AbilityCost",
-        function_rva: 0x108fd00,
-        rva: 0x108fd00,
+        function_rva: 0x108fd70,
+        rva: 0x108fd70,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
             0x20, 0x57,
@@ -884,8 +884,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "CoupCompletion",
-        function_rva: 0xb2d590,
-        rva: 0xb2d590,
+        function_rva: 0xb2d600,
+        rva: 0xb2d600,
         sentinel: [
             0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
             0x56, 0x41,
@@ -894,8 +894,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "CivilWar",
-        function_rva: 0x1165990,
-        rva: 0x1165990,
+        function_rva: 0x1165a00,
+        rva: 0x1165a00,
         sentinel: [
             0x48, 0x8b, 0xc4, 0x4c, 0x89, 0x40, 0x18, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48,
             0x08, 0x55,
@@ -904,8 +904,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "SetPoliticsEffect",
-        function_rva: 0x37c580,
-        rva: 0x37c580,
+        function_rva: 0x37c5f0,
+        rva: 0x37c5f0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
             0x48, 0x83,
@@ -914,8 +914,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "PeaceForceGovernment",
-        function_rva: 0x14f0fe0,
-        rva: 0x14f0fe0,
+        function_rva: 0x14f1050,
+        rva: 0x14f1050,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
             0x18, 0x48,
@@ -924,8 +924,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "SubjectGovernment",
-        function_rva: 0xd866a0,
-        rva: 0xd866a0,
+        function_rva: 0xd86710,
+        rva: 0xd86710,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x4c, 0x89, 0x4c, 0x24, 0x20, 0x44, 0x89, 0x44, 0x24,
             0x18, 0x89,
@@ -934,8 +934,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "ConsoleGovernment",
-        function_rva: 0x29d900,
-        rva: 0x29d900,
+        function_rva: 0x29d970,
+        rva: 0x29d970,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
             0x54, 0x41,
@@ -944,8 +944,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "ConsoleSubject",
-        function_rva: 0x24c330,
-        rva: 0x24c330,
+        function_rva: 0x24c3a0,
+        rva: 0x24c3a0,
         sentinel: [
             0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x55, 0x41, 0x56, 0x41,
             0x57, 0x48,
@@ -954,8 +954,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "OnAction",
-        function_rva: 0xacaef0,
-        rva: 0xacaef0,
+        function_rva: 0xacaf60,
+        rva: 0xacaf60,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24,
             0x18, 0x55,
@@ -964,8 +964,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "Focus",
-        function_rva: 0x2f3760,
-        rva: 0x2f3760,
+        function_rva: 0x2f37d0,
+        rva: 0x2f37d0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
             0x41, 0x57,
@@ -974,8 +974,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "FocusRefund",
-        function_rva: 0x2e74c0,
-        rva: 0x2e74c0,
+        function_rva: 0x2e7530,
+        rva: 0x2e7530,
         sentinel: [
             0x48, 0x8b, 0xc4, 0x88, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08, 0x48, 0x83, 0xec, 0x68,
             0x48, 0x89,

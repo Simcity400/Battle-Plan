@@ -8,9 +8,9 @@ use crate::{
 };
 
 /// CSupplySystem primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_0188;
+pub const VTABLE_RVA: usize = 0x029f_02b8;
 /// CSupplySystem secondary vtable (`SECONDARY_BASE`).
-pub const SECONDARY_VTABLE_RVA: usize = 0x029f_01b0;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029f_02e0;
 /// CSupplySystem secondary-base displacement.
 pub const SECONDARY_BASE: usize = 0x08;
 /// CSupplySystem SProvinceSupplyData array pointer.
@@ -22,7 +22,7 @@ pub const COUNTRY_SYSTEM_DATA: usize = 0x108;
 /// CSupplySystem inline companion array pointer.
 pub const COUNTRY_COMPANION_DATA: usize = 0x120;
 /// Supply-system constructor installing primary identity.
-pub const CONSTRUCTOR_RVA: usize = 0x00f3_ce20;
+pub const CONSTRUCTOR_RVA: usize = 0x00f3_ce90;
 
 /// Authenticates the root without allocating or calling engine functions.
 pub fn read_root(

@@ -4,11 +4,11 @@
 //! retain the serialized graph.
 
 /// Primary upgrade-status vtable.
-pub const VTABLE_RVA: usize = 0x2a4b308;
+pub const VTABLE_RVA: usize = 0x2a4ba28;
 /// Persistent subobject displacement.
 pub const PERSISTENT_SUBOBJECT: usize = 0x18;
 /// Persistent subobject vtable.
-pub const PERSISTENT_VTABLE_RVA: usize = 0x2a4b340;
+pub const PERSISTENT_VTABLE_RVA: usize = 0x2a4ba60;
 /// CArmyUpgradesRequests pointer-array data.
 #[cfg(test)]
 pub const GROUPS_DATA: usize = 0x20;

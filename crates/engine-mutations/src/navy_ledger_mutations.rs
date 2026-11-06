@@ -29,7 +29,7 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // saving RDI and reserving 0x20 stack bytes follow.
     MutationSite {
         name: "register_mission",
-        rva: 0xf1_e4f0,
+        rva: 0xf1_e560,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
             0x20, 0x49,
@@ -39,7 +39,7 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // saving RDI and reserving 0x20 stack bytes follow.
     MutationSite {
         name: "unregister_mission",
-        rva: 0xf2_2430,
+        rva: 0xf2_24a0,
         sentinel: [
             0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
             0x20, 0x4c,
@@ -57,7 +57,7 @@ mod tests {
         for site in MUTATIONS {
             assert_eq!(site.sentinel[..2], [0x48, 0x89], "{}", site.name);
             // The reset belongs to the world-input family.
-            assert_ne!(site.rva, 0xf1_edc0, "{}", site.name);
+            assert_ne!(site.rva, 0xf1_ee30, "{}", site.name);
         }
     }
 }

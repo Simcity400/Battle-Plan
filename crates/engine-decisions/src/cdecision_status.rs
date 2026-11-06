@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// CDecisionStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x0286_8740;
+pub const VTABLE_RVA: usize = 0x0286_8760;
 /// CDecisionStatus owner CCountry pointer.
 pub const COUNTRY: usize = 0x08;
 /// CDecisionStatus decisions-taken array.
@@ -29,7 +29,7 @@ pub const TARGETED_TIMED: usize = 0x100;
 pub const RANDOM_ITEMS: usize = 0x148;
 pub const RANDOM_ITEM_STRIDE: usize = 0x18;
 /// Random-count item primary vtable.
-pub const RANDOM_ITEM_VTABLE_RVA: usize = 0x0286_86f0;
+pub const RANDOM_ITEM_VTABLE_RVA: usize = 0x0286_8710;
 /// Random-count item definition pointer and signed seed/target words.
 pub const RANDOM_ITEM_DEFINITION: usize = 0x08;
 pub const RANDOM_ITEM_SEED: usize = 0x10;
@@ -605,7 +605,7 @@ fn description_seed(
 }
 
 /// Decision-status hourly update runs after joined country stages.
-pub const HOURLY_UPDATE_RVA: usize = 0x0077_7dc0;
+pub const HOURLY_UPDATE_RVA: usize = 0x0077_7e30;
 
 #[cfg(test)]
 mod tests;

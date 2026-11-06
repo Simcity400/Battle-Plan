@@ -3,7 +3,7 @@
 //! (`ccountry_characters.rs`).
 
 /// Advisor-role vtable.
-pub const VTABLE_RVA: usize = 0x02a2_2d50;
+pub const VTABLE_RVA: usize = 0x02a2_31d0;
 /// Parent CCharacter pointer requiring authentication.
 pub const CHARACTER: usize = 0x10;
 /// Idea-token string.

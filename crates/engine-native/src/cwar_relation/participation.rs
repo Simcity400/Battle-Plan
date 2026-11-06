@@ -5,7 +5,7 @@ use crate::memory::{RecordField, RecordLayout, RecordSources};
 use crate::{Memory, allocation, read};
 
 pub const DIRECTIONAL_LEDGERS: [usize; 2] = [0x70, 0xe0];
-pub const LEDGER_VTABLE_RVA: usize = 0x029d_ca48;
+pub const LEDGER_VTABLE_RVA: usize = 0x029d_caa8;
 pub const FIRST: usize = 8;
 pub const SECOND: usize = 12;
 pub const EQUIPMENT_DAMAGE: usize = 0x10;

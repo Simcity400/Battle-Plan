@@ -28,12 +28,12 @@ const NAMED_HANDLE: usize = 0xc0;
 // Embedded equipment bonuses start at one of two places; their entry arrays follow their headers.
 const SPECIFIC_VTABLE_RVA: usize = 0x0279_69f0;
 const BONUS_VTABLE_RVA: usize = 0x0279_6998;
-const NAMED_VTABLE_RVA: usize = 0x029e_cee8;
+const NAMED_VTABLE_RVA: usize = 0x029e_cff8;
 // The industrial-organisation trait bonus embedded in the variant.
 const MIO_BONUS: usize = 0x490;
 const MIO_VTABLE_RVA: usize = 0x0279_6c00;
 // Upgrade and module stat groups are embedded in the variant.
-const GROUP_VTABLE_RVA: usize = 0x029b_5d58;
+const GROUP_VTABLE_RVA: usize = 0x029b_5d78;
 const STATS_VTABLE_RVA: usize = 0x0279_6940;
 
 /// Reused caller-owned storage for selected named-bonus pointers. All

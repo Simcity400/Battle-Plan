@@ -4,7 +4,7 @@ use crate::capture_text::Value;
 use crate::{Memory, cnaval_combatant::field};
 
 /// Naval-hit entry primary vtable.
-pub const VTABLE_RVA: usize = 0x02a5_6868;
+pub const VTABLE_RVA: usize = 0x02a5_6f88;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {

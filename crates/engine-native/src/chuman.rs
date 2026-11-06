@@ -11,7 +11,7 @@ use crate::{
 /// CHuman primary vtable.
 pub const VTABLE_RVA: usize = 0x0279_edb8;
 /// CHuman constructor; the exact-build export names CHuman and writes the country tag and player key separately.
-pub const CONSTRUCTOR_RVA: usize = 0x00c1_0120;
+pub const CONSTRUCTOR_RVA: usize = 0x00c1_0190;
 /// CHuman array stride.
 pub const STRIDE: usize = 0xa0;
 /// Exact stored human user string, saved and loaded without transformation.

@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Building-status vtable.
-pub const VTABLE_RVA: usize = 0x02a1_5090;
+pub const VTABLE_RVA: usize = 0x02a1_5510;
 /// Signed building-index array keyed by template ordinal.
 pub const BUILDING_INDICES: usize = 0x20;
 /// Building-index count, i32, checked before lookup.
@@ -35,7 +35,7 @@ pub const PROVINCE_FLAG: u32 = 1;
 /// State-location flag.
 pub const STATE_FLAG: u32 = 2;
 /// Constructor installing arrays and location controls.
-pub const CONSTRUCTOR_RVA: usize = 0x011f_e640;
+pub const CONSTRUCTOR_RVA: usize = 0x011f_e6b0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {

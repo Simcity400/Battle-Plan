@@ -37,7 +37,7 @@ const REACHED_ENTRY: usize = 0x10;
 /// slot supplies the result before any other term or clamp.
 const EFFICIENCY_OVERRIDES_RVA: usize = 0x033d_da48;
 /// Console command's sole detection-vector writer and verified entry fingerprint.
-pub const DETECTION_OVERRIDE_WRITER_RVA: usize = 0x0027_ff50;
+pub const DETECTION_OVERRIDE_WRITER_RVA: usize = 0x0027_ffc0;
 pub const DETECTION_OVERRIDE_WRITER_PREFIX_HASH: u64 = 0x18aa_1a4c_14d9_dba7;
 /// The console's country-keyed fixed5 detection vector.
 const DETECTION_OVERRIDES_RVA: usize = 0x033d_da60;

@@ -3,12 +3,12 @@
 //! complete primary base.
 
 /// CEquipmentType primary vtable.
-pub const VTABLE_RVA: usize = 0x029b_5e00;
+pub const VTABLE_RVA: usize = 0x029b_5e20;
 /// Null equipment-type vtable. The placeholder keeps the complete layout
 /// and self-links its archetype pointer; ordinary types initially point to it.
-pub const NULL_VTABLE_RVA: usize = 0x029b_5f50;
+pub const NULL_VTABLE_RVA: usize = 0x029b_5f70;
 /// Equipment-type constructor initializes the primary vtable and self-links.
-pub const CONSTRUCTOR_RVA: usize = 0x00ce_efc0;
+pub const CONSTRUCTOR_RVA: usize = 0x00ce_f030;
 /// CEquipmentType token u32; variant_definition_body authenticates it against `cequipment_variant::EQUIPMENT_TOKEN`.
 pub const TOKEN: usize = 0x08;
 /// Build-cost IC stat, signed fixed5; weights required equipment entries.

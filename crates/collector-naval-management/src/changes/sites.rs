@@ -43,33 +43,33 @@ pub struct Method {
 }
 pub const REPAIR_CHILD_INSERT: Site = Site {
     name: "repair child insert",
-    rva: 0x00dd8808,
+    rva: 0x00dd8878,
     register: Register::Rdi,
     write: None,
     adjustment: 1176,
     base: false,
     retire: false,
     sentinel: [
-        0x48, 0x8d, 0x8f, 0x98, 0x04, 0x00, 0x00, 0xe8, 0xac, 0x9d, 0x40, 0xff, 0x41, 0x8d, 0x45,
+        0x48, 0x8d, 0x8f, 0x98, 0x04, 0x00, 0x00, 0xe8, 0x3c, 0x9d, 0x40, 0xff, 0x41, 0x8d, 0x45,
         0xfe,
     ],
 };
 pub const REPAIR_CHILD_REMOVE: Site = Site {
     name: "repair child remove",
-    rva: 0x00dd8dbe,
+    rva: 0x00dd8e2e,
     register: Register::Rdi,
     write: None,
     adjustment: 1176,
     base: false,
     retire: false,
     sentinel: [
-        0x89, 0x97, 0xa4, 0x04, 0x00, 0x00, 0x48, 0x8b, 0x05, 0xd5, 0x24, 0x61, 0x02, 0x48, 0x8d,
+        0x89, 0x97, 0xa4, 0x04, 0x00, 0x00, 0x48, 0x8b, 0x05, 0x65, 0x24, 0x61, 0x02, 0x48, 0x8d,
         0x93,
     ],
 };
 pub const REPAIR_CHILD_CLEAR: Site = Site {
     name: "repair child clear",
-    rva: 0x00dd8c41,
+    rva: 0x00dd8cb1,
     register: Register::R13,
     write: None,
     adjustment: 1176,
@@ -82,7 +82,7 @@ pub const REPAIR_CHILD_CLEAR: Site = Site {
 };
 pub const REJOIN_ASSIGN: Site = Site {
     name: "rejoin assign",
-    rva: 0x00ddf286,
+    rva: 0x00ddf2f6,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -95,7 +95,7 @@ pub const REJOIN_ASSIGN: Site = Site {
 };
 pub const REJOIN_COMPLETE: Site = Site {
     name: "rejoin complete",
-    rva: 0x00de0952,
+    rva: 0x00de09c2,
     register: Register::Rdi,
     write: None,
     adjustment: 0,
@@ -108,7 +108,7 @@ pub const REJOIN_COMPLETE: Site = Site {
 };
 pub const TASK_ACTIVITY: Site = Site {
     name: "task activity",
-    rva: 0x00dd9718,
+    rva: 0x00dd9788,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -121,7 +121,7 @@ pub const TASK_ACTIVITY: Site = Site {
 };
 pub const CLEAR_QUEUED_DESIGN: Site = Site {
     name: "clear queued design",
-    rva: 0x00dcdac0,
+    rva: 0x00dcdb30,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -134,7 +134,7 @@ pub const CLEAR_QUEUED_DESIGN: Site = Site {
 };
 pub const ATTACH_REINFORCEMENT: Site = Site {
     name: "attach reinforcement",
-    rva: 0x00dd8607,
+    rva: 0x00dd8677,
     register: Register::Rsi,
     write: None,
     adjustment: 0,
@@ -147,7 +147,7 @@ pub const ATTACH_REINFORCEMENT: Site = Site {
 };
 pub const PROMOTE_REFIT_DESIGN: Site = Site {
     name: "promote refit design",
-    rva: 0x00de098c,
+    rva: 0x00de09fc,
     register: Register::Rdi,
     write: None,
     adjustment: 0,
@@ -160,7 +160,7 @@ pub const PROMOTE_REFIT_DESIGN: Site = Site {
 };
 pub const QUEUE_REFIT_DESIGN: Site = Site {
     name: "queue refit design",
-    rva: 0x00ddf1e4,
+    rva: 0x00ddf254,
     register: Register::Rax,
     write: None,
     adjustment: 0,
@@ -173,7 +173,7 @@ pub const QUEUE_REFIT_DESIGN: Site = Site {
 };
 pub const QUEUE_REPAIR_REFIT: Site = Site {
     name: "queue repair refit",
-    rva: 0x00ddf298,
+    rva: 0x00ddf308,
     register: Register::R15,
     write: None,
     adjustment: 0,
@@ -186,7 +186,7 @@ pub const QUEUE_REPAIR_REFIT: Site = Site {
 };
 pub const REINFORCEMENT_SETTING: Site = Site {
     name: "reinforcement setting",
-    rva: 0x00dde040,
+    rva: 0x00dde0b0,
     register: Register::Rcx,
     write: Some(Write {
         value: Some(Register::Rdx),
@@ -204,7 +204,7 @@ pub const REINFORCEMENT_SETTING: Site = Site {
 };
 pub const REPAIR_ORDER_BEGIN: Site = Site {
     name: "repair order begin",
-    rva: 0x013e581f,
+    rva: 0x013e588f,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -217,7 +217,7 @@ pub const REPAIR_ORDER_BEGIN: Site = Site {
 };
 pub const REPAIR_ORDER_OTHER: Site = Site {
     name: "repair order other",
-    rva: 0x013e5844,
+    rva: 0x013e58b4,
     register: Register::Rax,
     write: None,
     adjustment: 0,
@@ -230,7 +230,7 @@ pub const REPAIR_ORDER_OTHER: Site = Site {
 };
 pub const MOVE_REPAIR_ORDER: Site = Site {
     name: "move repair order",
-    rva: 0x013e6499,
+    rva: 0x013e6509,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -243,7 +243,7 @@ pub const MOVE_REPAIR_ORDER: Site = Site {
 };
 pub const CANCEL_REPAIR_ORDER: Site = Site {
     name: "cancel repair order",
-    rva: 0x013e7d74,
+    rva: 0x013e7de4,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -256,7 +256,7 @@ pub const CANCEL_REPAIR_ORDER: Site = Site {
 };
 pub const REPAIR_POLICY_COMMAND: Site = Site {
     name: "repair policy command",
-    rva: 0x013e85a1,
+    rva: 0x013e8611,
     register: Register::Rdi,
     write: None,
     adjustment: 0,
@@ -270,7 +270,7 @@ pub const REPAIR_POLICY_COMMAND: Site = Site {
 // Split can be commanded independently of repair mode.
 pub const REPAIR_SPLIT_COMMAND: Site = Site {
     name: "repair split command",
-    rva: 0x013e85b1,
+    rva: 0x013e8621,
     register: Register::Rdi,
     write: None,
     adjustment: 0,
@@ -283,7 +283,7 @@ pub const REPAIR_SPLIT_COMMAND: Site = Site {
 };
 pub const COPY_TASK_POLICY: Site = Site {
     name: "copy task policy",
-    rva: 0x013fba37,
+    rva: 0x013fbaa7,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -296,7 +296,7 @@ pub const COPY_TASK_POLICY: Site = Site {
 };
 pub const AI_COMPOSITION_CHOICE: Site = Site {
     name: "ai composition choice",
-    rva: 0x013e9966,
+    rva: 0x013e99d6,
     register: Register::Rdi,
     write: None,
     adjustment: 0,
@@ -309,7 +309,7 @@ pub const AI_COMPOSITION_CHOICE: Site = Site {
 };
 pub const FLEET_HOMEBASE_POLICY: Site = Site {
     name: "fleet homebase policy",
-    rva: 0x00dc04b8,
+    rva: 0x00dc0528,
     register: Register::Rcx,
     write: None,
     adjustment: 0,
@@ -322,7 +322,7 @@ pub const FLEET_HOMEBASE_POLICY: Site = Site {
 };
 pub const SHIP_REFIT_ASSIGN: Site = Site {
     name: "ship refit assign",
-    rva: 0x00c8a857,
+    rva: 0x00c8a8c7,
     register: Register::Rcx,
     write: None,
     adjustment: 0,
@@ -335,7 +335,7 @@ pub const SHIP_REFIT_ASSIGN: Site = Site {
 };
 pub const SHIP_REFIT_COMPLETE: Site = Site {
     name: "ship refit complete",
-    rva: 0x00c942b9,
+    rva: 0x00c94329,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -348,7 +348,7 @@ pub const SHIP_REFIT_COMPLETE: Site = Site {
 };
 pub const SHIP_REFIT_RETURN: Site = Site {
     name: "ship refit return",
-    rva: 0x00c942c6,
+    rva: 0x00c94336,
     register: Register::Rcx,
     write: None,
     adjustment: 0,
@@ -361,7 +361,7 @@ pub const SHIP_REFIT_RETURN: Site = Site {
 };
 pub const REPAIR_FACTORY_COMMAND: Site = Site {
     name: "repair factory command",
-    rva: 0x00ed6b3d,
+    rva: 0x00ed6bad,
     register: Register::Rbx,
     write: Some(Write {
         value: Some(Register::R12),
@@ -379,7 +379,7 @@ pub const REPAIR_FACTORY_COMMAND: Site = Site {
 };
 pub const REPAIR_FACTORY_SETTING: Site = Site {
     name: "repair factory setting",
-    rva: 0x00ee1652,
+    rva: 0x00ee16c2,
     register: Register::Rcx,
     write: Some(Write {
         value: Some(Register::Rdx),
@@ -397,7 +397,7 @@ pub const REPAIR_FACTORY_SETTING: Site = Site {
 };
 pub const REPAIR_FACTORY_CLAMP: Site = Site {
     name: "repair factory clamp",
-    rva: 0x00edaa0f,
+    rva: 0x00edaa7f,
     register: Register::Rbp,
     write: Some(Write {
         value: Some(Register::Rcx),
@@ -416,7 +416,7 @@ pub const REPAIR_FACTORY_CLAMP: Site = Site {
 // The setting applies its own inline clamp; the hourly clamp above is separate.
 pub const REPAIR_FACTORY_SETTING_CLAMP: Site = Site {
     name: "repair factory setting clamp",
-    rva: 0x00ee16e3,
+    rva: 0x00ee1753,
     register: Register::R11,
     write: Some(Write {
         value: Some(Register::Rcx),
@@ -434,7 +434,7 @@ pub const REPAIR_FACTORY_SETTING_CLAMP: Site = Site {
 };
 pub const REPAIR_DOCKYARD_SETTING: Site = Site {
     name: "repair dockyard setting",
-    rva: 0x00f233b0,
+    rva: 0x00f23420,
     register: Register::Rcx,
     write: Some(Write {
         value: Some(Register::Rdx),
@@ -452,7 +452,7 @@ pub const REPAIR_DOCKYARD_SETTING: Site = Site {
 };
 pub const REPAIR_DOCKYARD_COMMAND: Site = Site {
     name: "repair dockyard command",
-    rva: 0x00f24b80,
+    rva: 0x00f24bf0,
     register: Register::R14,
     write: Some(Write {
         value: Some(Register::Rax),
@@ -470,7 +470,7 @@ pub const REPAIR_DOCKYARD_COMMAND: Site = Site {
 };
 pub const REPAIR_DOCKYARD_CLAMP: Site = Site {
     name: "repair dockyard clamp",
-    rva: 0x00f2501a,
+    rva: 0x00f2508a,
     register: Register::R14,
     write: Some(Write {
         value: Some(Register::Rcx),
@@ -488,7 +488,7 @@ pub const REPAIR_DOCKYARD_CLAMP: Site = Site {
 };
 pub const REPAIR_DOCKYARDS_USED: Site = Site {
     name: "repair dockyards used",
-    rva: 0x00f251ef,
+    rva: 0x00f2525f,
     register: Register::R14,
     write: Some(Write {
         value: Some(Register::R12),
@@ -506,7 +506,7 @@ pub const REPAIR_DOCKYARDS_USED: Site = Site {
 };
 pub const NAVY_RESET_USED: Site = Site {
     name: "navy reset used",
-    rva: 0x00f15d46,
+    rva: 0x00f15db6,
     register: Register::Rbx,
     write: Some(Write {
         value: Some(Register::R14),
@@ -524,7 +524,7 @@ pub const NAVY_RESET_USED: Site = Site {
 };
 pub const NAVY_RESET_BUDGET: Site = Site {
     name: "navy reset budget",
-    rva: 0x00f15d4d,
+    rva: 0x00f15dbd,
     register: Register::Rbx,
     write: Some(Write {
         value: None,
@@ -542,7 +542,7 @@ pub const NAVY_RESET_BUDGET: Site = Site {
 };
 pub const NAVY_REBUILD_USED: Site = Site {
     name: "navy rebuild used",
-    rva: 0x00f1ef36,
+    rva: 0x00f1efa6,
     register: Register::Rbx,
     write: Some(Write {
         value: Some(Register::Rbp),
@@ -560,7 +560,7 @@ pub const NAVY_REBUILD_USED: Site = Site {
 };
 pub const NAVY_REBUILD_BUDGET: Site = Site {
     name: "navy rebuild budget",
-    rva: 0x00f1ef3c,
+    rva: 0x00f1efac,
     register: Register::Rbx,
     write: Some(Write {
         value: None,
@@ -578,7 +578,7 @@ pub const NAVY_REBUILD_BUDGET: Site = Site {
 };
 pub const BASE_REPAIR_PRIORITY: Site = Site {
     name: "base repair priority",
-    rva: 0x00f233c0,
+    rva: 0x00f23430,
     register: Register::Rcx,
     write: Some(Write {
         value: Some(Register::Rdx),
@@ -596,7 +596,7 @@ pub const BASE_REPAIR_PRIORITY: Site = Site {
 };
 pub const BASE_REPAIR_ALLOCATION: Site = Site {
     name: "base repair allocation",
-    rva: 0x00f2522e,
+    rva: 0x00f2529e,
     register: Register::Rdx,
     write: Some(Write {
         value: Some(Register::Rax),
@@ -614,7 +614,7 @@ pub const BASE_REPAIR_ALLOCATION: Site = Site {
 };
 pub const BASE_QUEUE_PRUNE: Site = Site {
     name: "base queue prune",
-    rva: 0x00f154c7,
+    rva: 0x00f15537,
     register: Register::R15,
     write: None,
     adjustment: 0,
@@ -627,33 +627,33 @@ pub const BASE_QUEUE_PRUNE: Site = Site {
 };
 pub const BASE_QUEUE_INSERT: Site = Site {
     name: "base queue insert",
-    rva: 0x00f1307a,
+    rva: 0x00f130ea,
     register: Register::Rbp,
     write: None,
     adjustment: 0,
     base: true,
     retire: false,
     sentinel: [
-        0x8b, 0xd7, 0x48, 0x8d, 0x4d, 0x28, 0xe8, 0x9b, 0xa2, 0x2b, 0xff, 0x48, 0x8b, 0x7c, 0x24,
+        0x8b, 0xd7, 0x48, 0x8d, 0x4d, 0x28, 0xe8, 0x2b, 0xa2, 0x2b, 0xff, 0x48, 0x8b, 0x7c, 0x24,
         0x58,
     ],
 };
 pub const BASE_QUEUE_ARRIVAL: Site = Site {
     name: "base queue arrival",
-    rva: 0x00f1ea20,
+    rva: 0x00f1ea90,
     register: Register::Rbp,
     write: None,
     adjustment: 0,
     base: true,
     retire: false,
     sentinel: [
-        0x8b, 0xd7, 0x48, 0x8d, 0x4d, 0x28, 0xe8, 0xf5, 0xe8, 0x2a, 0xff, 0x4c, 0x8b, 0x74, 0x24,
+        0x8b, 0xd7, 0x48, 0x8d, 0x4d, 0x28, 0xe8, 0x85, 0xe8, 0x2a, 0xff, 0x4c, 0x8b, 0x74, 0x24,
         0x60,
     ],
 };
 pub const BASE_QUEUE_BULK: Site = Site {
     name: "base queue bulk",
-    rva: 0x00f1348b,
+    rva: 0x00f134fb,
     register: Register::Rbp,
     write: None,
     adjustment: 0,
@@ -666,7 +666,7 @@ pub const BASE_QUEUE_BULK: Site = Site {
 };
 pub const COMPOSITION_ATTACH_CLEAR: Site = Site {
     name: "composition attach clear",
-    rva: 0x00dd860e,
+    rva: 0x00dd867e,
     register: Register::Rsi,
     write: None,
     adjustment: 1336,
@@ -679,7 +679,7 @@ pub const COMPOSITION_ATTACH_CLEAR: Site = Site {
 };
 pub const COMPOSITION_DETACH_CLEAR: Site = Site {
     name: "composition detach clear",
-    rva: 0x00dd90f3,
+    rva: 0x00dd9163,
     register: Register::Rdi,
     write: None,
     adjustment: 1336,
@@ -692,7 +692,7 @@ pub const COMPOSITION_DETACH_CLEAR: Site = Site {
 };
 pub const REFIT_PRODUCTION_ADD: Site = Site {
     name: "refit production add",
-    rva: 0x00ff6218,
+    rva: 0x00ff6288,
     register: Register::Rbx,
     write: Some(Write {
         value: Some(Register::Rdi),
@@ -710,7 +710,7 @@ pub const REFIT_PRODUCTION_ADD: Site = Site {
 };
 pub const REFIT_PRODUCTION_COMPLETE: Site = Site {
     name: "refit production complete",
-    rva: 0x00ff622f,
+    rva: 0x00ff629f,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -723,7 +723,7 @@ pub const REFIT_PRODUCTION_COMPLETE: Site = Site {
 };
 pub const REFIT_PROGRESS_DAMAGE: Site = Site {
     name: "refit progress damage",
-    rva: 0x00ff617f,
+    rva: 0x00ff61ef,
     register: Register::Rcx,
     write: None,
     adjustment: 0,
@@ -736,7 +736,7 @@ pub const REFIT_PROGRESS_DAMAGE: Site = Site {
 };
 pub const REFIT_PROGRESS_REFRESH: Site = Site {
     name: "refit progress refresh",
-    rva: 0x019c51eb,
+    rva: 0x019c525b,
     register: Register::R14,
     write: None,
     adjustment: 0,
@@ -799,7 +799,7 @@ pub const SITES: &[Site] = &[
 ];
 pub const COMPOSITION_ENTRY: Method = Method {
     name: "composition entry",
-    rva: 0x01a1dfd0,
+    rva: 0x01a1e040,
     argument: 0,
     adjustment: -8,
     base: false,
@@ -811,7 +811,7 @@ pub const COMPOSITION_ENTRY: Method = Method {
 };
 pub const COMPOSITION_MERGE: Method = Method {
     name: "composition merge",
-    rva: 0x01a1e0d0,
+    rva: 0x01a1e140,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -823,7 +823,7 @@ pub const COMPOSITION_MERGE: Method = Method {
 };
 pub const COMPOSITION_ASSIGN: Method = Method {
     name: "composition assign",
-    rva: 0x00dca630,
+    rva: 0x00dca6a0,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -835,7 +835,7 @@ pub const COMPOSITION_ASSIGN: Method = Method {
 };
 pub const COMPOSITION_ERASE: Method = Method {
     name: "composition erase",
-    rva: 0x01a1ef70,
+    rva: 0x01a1efe0,
     argument: 0,
     adjustment: -8,
     base: false,
@@ -847,7 +847,7 @@ pub const COMPOSITION_ERASE: Method = Method {
 };
 pub const COMPOSITION_FULFILLMENT: Method = Method {
     name: "composition fulfillment",
-    rva: 0x01a1f060,
+    rva: 0x01a1f0d0,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -859,7 +859,7 @@ pub const COMPOSITION_FULFILLMENT: Method = Method {
 };
 pub const COMPOSITION_RANGE: Method = Method {
     name: "composition range",
-    rva: 0x01a1f0c0,
+    rva: 0x01a1f130,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -871,7 +871,7 @@ pub const COMPOSITION_RANGE: Method = Method {
 };
 pub const COMPOSITION_ROSTER_ADD: Method = Method {
     name: "composition roster add",
-    rva: 0x01a1e1f0,
+    rva: 0x01a1e260,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -883,7 +883,7 @@ pub const COMPOSITION_ROSTER_ADD: Method = Method {
 };
 pub const COMPOSITION_SHIP_ADD: Method = Method {
     name: "composition ship add",
-    rva: 0x01a1e320,
+    rva: 0x01a1e390,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -895,7 +895,7 @@ pub const COMPOSITION_SHIP_ADD: Method = Method {
 };
 pub const FLEET_DESTROY: Method = Method {
     name: "fleet destroy",
-    rva: 0x00db71d0,
+    rva: 0x00db7240,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -907,7 +907,7 @@ pub const FLEET_DESTROY: Method = Method {
 };
 pub const TASK_DESTROY: Method = Method {
     name: "task destroy",
-    rva: 0x00dc9970,
+    rva: 0x00dc99e0,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -919,7 +919,7 @@ pub const TASK_DESTROY: Method = Method {
 };
 pub const SHIP_DESTROY: Method = Method {
     name: "ship destroy",
-    rva: 0x00c86a20,
+    rva: 0x00c86a90,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -931,19 +931,19 @@ pub const SHIP_DESTROY: Method = Method {
 };
 pub const REFIT_DESTROY: Method = Method {
     name: "refit destroy",
-    rva: 0x00ff6090,
+    rva: 0x00ff6100,
     argument: 0,
     adjustment: 0,
     base: false,
     retire: true,
     sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x2f, 0x2a,
+        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x4f, 0x2b,
         0xa0,
     ],
 };
 pub const BASE_DESTROY: Method = Method {
     name: "base destroy",
-    rva: 0x00f12a40,
+    rva: 0x00f12ab0,
     argument: 0,
     adjustment: 0,
     base: true,
@@ -955,7 +955,7 @@ pub const BASE_DESTROY: Method = Method {
 };
 pub const PRODUCTION_DESTROY: Method = Method {
     name: "production destroy",
-    rva: 0x00ecd430,
+    rva: 0x00ecd4a0,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -967,7 +967,7 @@ pub const PRODUCTION_DESTROY: Method = Method {
 };
 pub const NAVY_DESTROY: Method = Method {
     name: "navy destroy",
-    rva: 0x00f11e20,
+    rva: 0x00f11e90,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -979,7 +979,7 @@ pub const NAVY_DESTROY: Method = Method {
 };
 pub const BASE_COUNTRY_REORDER: Method = Method {
     name: "base country reorder",
-    rva: 0x00f22720,
+    rva: 0x00f22790,
     argument: 0,
     adjustment: 0,
     base: true,
@@ -991,7 +991,7 @@ pub const BASE_COUNTRY_REORDER: Method = Method {
 };
 pub const REFIT_RECALCULATE: Method = Method {
     name: "refit recalculate",
-    rva: 0x00ff63f0,
+    rva: 0x00ff6460,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -1003,7 +1003,7 @@ pub const REFIT_RECALCULATE: Method = Method {
 };
 pub const BASE_QUEUE_REORDER: Method = Method {
     name: "base queue reorder",
-    rva: 0x00f225b0,
+    rva: 0x00f22620,
     argument: 0,
     adjustment: 0,
     base: true,
@@ -1015,7 +1015,7 @@ pub const BASE_QUEUE_REORDER: Method = Method {
 };
 pub const BASE_QUEUE_REMOVE: Method = Method {
     name: "base queue remove",
-    rva: 0x00f22510,
+    rva: 0x00f22580,
     argument: 0,
     adjustment: 0,
     base: true,

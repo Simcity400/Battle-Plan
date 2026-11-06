@@ -17,7 +17,7 @@ pub const NAVY: usize = 0x10;
 pub const AIR: usize = 0x18;
 
 /// Record serializer emitting conditional lane keys in this file's order.
-pub const WRITER_RVA: usize = 0x0112_2540;
+pub const WRITER_RVA: usize = 0x0112_25b0;
 /// Lane denominator used by the signed fixed5 formatter.
 pub const LANE_DENOMINATOR: i64 = 100_000;
 

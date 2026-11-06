@@ -24,10 +24,10 @@ pub struct Site {
 /// lies inside the patched call; preserve the original frame.
 pub const NEW: Site = Site {
     name: "naval_result_new",
-    rva: 0x0166_14a0,
+    rva: 0x0166_1510,
     sentinel_len: 16,
     sentinel: [
-        0xe8, 0x4b, 0x47, 0x6e, 0xff, 0x80, 0x3d, 0x65, 0xe1, 0x02, 0x02, 0x00, 0x0f, 0x84, 0xc7,
+        0xe8, 0x4b, 0x47, 0x6e, 0xff, 0x80, 0x3d, 0xf5, 0xe0, 0x02, 0x02, 0x00, 0x0f, 0x84, 0xc7,
         0x00,
     ],
 };
@@ -36,7 +36,7 @@ pub const NEW: Site = Site {
 /// original epilogue. Verify only the owned 13-byte sentinel.
 pub const MERGE: Site = Site {
     name: "naval_result_merge",
-    rva: 0x0166_15a3,
+    rva: 0x0166_1613,
     sentinel_len: 13,
     sentinel: [
         0xe8, 0x88, 0x38, 0x6e, 0xff, 0xeb, 0xde, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x48, 0x89,
@@ -55,7 +55,7 @@ pub const TARGETS: [usize; 2] = [
 /// observer can pass the return PC in RDX while preserving RCX.
 pub const CONSTRUCTOR: Site = Site {
     name: "naval_combat_constructor",
-    rva: 0x0165_e910,
+    rva: 0x0165_e980,
     sentinel_len: 16,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
@@ -80,10 +80,10 @@ pub enum BirthKind {
 /// call without registering the complete object's reference subobject.
 pub fn constructor_caller(return_rva: usize) -> BirthKind {
     match return_rva {
-        0x00c0_b1bd | 0x00c0_b33d | 0x00c0_b8af | 0x00c0_d7a3 => BirthKind::Persistent,
+        0x00c0_b22d | 0x00c0_b3ad | 0x00c0_b91f | 0x00c0_d813 => BirthKind::Persistent,
 
-        0x00c0_bb43 | 0x00c0_bd49 | 0x00c0_bedc => BirthKind::Transient,
-        0x00c0_dba9 => BirthKind::Loaded,
+        0x00c0_bbb3 | 0x00c0_bdb9 | 0x00c0_bf4c => BirthKind::Transient,
+        0x00c0_dc19 => BirthKind::Loaded,
         _ => BirthKind::Unknown,
     }
 }
@@ -355,14 +355,14 @@ mod tests {
 
     #[test]
     fn constructor_callers_cover_fresh_temporary_and_load_without_guessing() {
-        for caller in [0x00c0_b1bd, 0x00c0_b33d, 0x00c0_b8af, 0x00c0_d7a3] {
+        for caller in [0x00c0_b22d, 0x00c0_b3ad, 0x00c0_b91f, 0x00c0_d813] {
             assert_eq!(constructor_caller(caller), BirthKind::Persistent);
             assert_eq!(constructor_caller(caller + 1), BirthKind::Unknown);
         }
-        for caller in [0x00c0_bb43, 0x00c0_bd49, 0x00c0_bedc] {
+        for caller in [0x00c0_bbb3, 0x00c0_bdb9, 0x00c0_bf4c] {
             assert_eq!(constructor_caller(caller), BirthKind::Transient);
         }
-        assert_eq!(constructor_caller(0x00c0_dba9), BirthKind::Loaded);
+        assert_eq!(constructor_caller(0x00c0_dc19), BirthKind::Loaded);
         assert_eq!(constructor_caller(0), BirthKind::Unknown);
     }
 
@@ -475,6 +475,6 @@ mod tests {
         assert_eq!(NEW.sentinel_len, 16);
         assert_eq!(CONSTRUCTOR.sentinel_len, 16);
         assert_eq!(MERGE.sentinel_len, 13);
-        assert_eq!(MERGE.rva + MERGE.sentinel_len, 0x0166_15b0);
+        assert_eq!(MERGE.rva + MERGE.sentinel_len, 0x0166_1620);
     }
 }

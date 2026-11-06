@@ -4,9 +4,9 @@
 use crate::{Memory, ccountry, cpdx_array::Array, read};
 
 /// Program-status primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_dfc8;
+pub const VTABLE_RVA: usize = 0x029e_e0d8;
 /// Program-status secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029e_dfe8;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029e_e0f8;
 /// Program-status secondary-vtable pointer.
 pub const SECONDARY_VTABLE: usize = 0x08;
 /// Program-status allocation size.
