@@ -3098,6 +3098,7 @@ dependencies = [
  "dashboard-equipment-losses",
  "dashboard-text",
  "dashboard-world",
+ "engine-allocation",
  "engine-dlc",
  "engine-executable",
  "engine-land-inputs",

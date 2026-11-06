@@ -51,6 +51,7 @@ use dashboard_base::prepared::{
     roots::{self, Binding, Frontier},
 };
 use dashboard_world::{Needs, World};
+use engine_allocation::labels::{self, Kind, Owner};
 use measure::{Clock, Counted, Lap, Narrow, working_set};
 use replay::{
     columnar_frames::{Limits, Recording, Segment},
@@ -404,6 +405,7 @@ fn run(
     let context = LoadContext {
         content: content.cloned(),
     };
+    let memory = labels::enter(Owner::RUN, Kind::Content);
     let extents = dashboard_text::metadata::Extents::native(source.replay_ref(), &recording)?;
     let loading = Content::new(source, &context, extents);
     let caller = Caller::current();
@@ -417,8 +419,10 @@ fn run(
             .map(|registered| {
                 let caller = caller.clone();
                 let loading = &loading;
+                let owner = labels::owner(registered.name);
                 Box::new(move || {
                     caller.enter();
+                    let _memory = labels::enter(owner, Kind::Content);
                     (registered.load)(loading)
                 }) as Box<dyn FnOnce() -> io::Result<()> + Send + '_>
             })
@@ -426,6 +430,7 @@ fn run(
     );
     let content_lap = started.lap();
     drop(span);
+    drop(memory);
     let loaded_with = if options.measure { working_set()? } else { 0 };
     check_cancel(cancelled)?;
     let span = replay_frame::timeline::span("publisher open");
@@ -484,7 +489,10 @@ fn run(
     let mut members: Vec<Box<dyn Member + '_>> = Vec::new();
     for ((registered, family, stage, passes), going) in staged.into_iter().zip(&goings) {
         let taken = Taken { passes, going };
-        match (registered.bind)(family.id, &loading, stage, taken) {
+        let memory = labels::enter(labels::owner(registered.name), Kind::Emit);
+        let bound = (registered.bind)(family.id, &loading, stage, taken);
+        drop(memory);
+        match bound {
             // What it reads of the world is declared before the run, which reads it again.
             Ok(member) => match member.needs() {
                 Ok(_) => members.push(member),
@@ -837,6 +845,7 @@ fn settle(
 ) -> io::Result<()> {
     for (member, outcome) in members.iter_mut().zip(outcomes) {
         let _span = replay_frame::timeline::span("settle").lane(member.id().name());
+        let _memory = labels::enter(labels::owner(member.id().name()), Kind::Publish);
         if let Some(failure) = outcome
             .as_ref()
             .and_then(|outcome| outcome.failure.as_ref())
@@ -912,6 +921,7 @@ pub(crate) fn walk_all(
     let mut failed = Failed::new();
     let mut first = None;
     if narrow.iter().any(|member| !member.idle(shape)) {
+        labels::phase("ahead run");
         select(recording, shape, narrow);
         let span = replay_frame::timeline::span("ahead run");
         let clock = Clock::start();
@@ -942,6 +952,7 @@ pub(crate) fn walk_all(
         settle(narrow, &outcomes, &mut failed)?;
         first = Some((ran.stats, ran.world, lap, ran.tables));
     }
+    labels::phase("union run");
     select(recording, shape, union);
     let span = replay_frame::timeline::span("union run");
     let clock = Clock::start();
@@ -962,6 +973,7 @@ pub(crate) fn walk_all(
     if !ran.cancelled {
         settle(union, &ran.outcomes, &mut failed)?;
     }
+    labels::phase("run end");
     outcomes.append(&mut ran.outcomes);
     Ok(Walks {
         ran: Ran { outcomes, ..ran },
@@ -1018,6 +1030,7 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
     let ran = std::thread::scope(|scope| {
         let running = scope.spawn(|| {
             let _ended = Ended(commits);
+            let _memory = labels::enter(Owner::RUN, Kind::Executor);
             caller.enter();
             let mut lanes = Vec::with_capacity(needs.len());
             let working = members

@@ -1164,9 +1164,11 @@ impl Views {
         let built = engine_allocation::collect_vec(
             (0..tables.len()).map(|_| Mutex::new(None::<io::Result<TableRows>>)),
         )?;
+        let label = engine_allocation::labels::current();
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
+                    let _memory = engine_allocation::labels::resume(label);
                     (parallel.on_worker)();
                     let (mut slots, mut keys) = (Vec::new(), Vec::new());
                     while let Some(&at) = order.get(next.fetch_add(1, Ordering::Relaxed)) {

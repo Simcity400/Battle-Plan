@@ -836,12 +836,14 @@ impl<'r> Recorded<'r> {
         let caller = job_priority::Caller::current();
         let cpu = replay_frame::cpu::Context::capture();
         let diagnostics = installed_content_core::content::diagnostics::Context::capture();
+        let memory = engine_allocation::labels::current();
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .name("scripted-localisation".into())
                 // As the hour's evaluation reserves: 64 KiB per backstop level.
                 .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
                 .spawn_scoped(scope, move || {
+                    let _memory = engine_allocation::labels::resume(memory);
                     diagnostics.enter(|| {
                         let _cpu = cpu.enter("scripted localisation");
                         caller.enter();

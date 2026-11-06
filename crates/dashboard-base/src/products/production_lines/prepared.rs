@@ -3343,6 +3343,7 @@ where
     let generation = trees.generation;
     let (requests, asked) = std::sync::mpsc::channel::<keys::Request>();
     let context = replay_frame::cpu::Context::capture();
+    let memory = engine_allocation::labels::current();
     let step = &step;
     std::thread::scope(|scope| {
         let handles: Vec<_> = shards
@@ -3351,6 +3352,7 @@ where
                 let remote = keys::Remote::new(requests.clone());
                 let context = context.clone();
                 scope.spawn(move || {
+                    let _memory = engine_allocation::labels::resume(memory);
                     let _cpu = context.enter("fold observe");
                     let mut ctx = Ctx::remote(&remote, generation, chunk);
                     shard
@@ -3413,12 +3415,14 @@ fn encode_histories(
         groups.last_mut().unwrap().push(history);
     }
     let context = replay_frame::cpu::Context::capture();
+    let memory = engine_allocation::labels::current();
     std::thread::scope(|scope| {
         let handles: Vec<_> = groups
             .iter()
             .map(|group| {
                 let context = context.clone();
                 scope.spawn(move || {
+                    let _memory = engine_allocation::labels::resume(memory);
                     let _cpu = context.enter("fold publish");
                     let mut encoded = Vec::new();
                     for (history, events) in group {

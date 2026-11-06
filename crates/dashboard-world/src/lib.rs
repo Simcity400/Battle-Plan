@@ -317,6 +317,11 @@ impl World {
         frame.branch = self.branch;
         frame.hour = self.hour;
         frame.metrics.clone_from(&self.metrics);
+        // The views are the walk's, built by whichever lane asks first.
+        let _memory = engine_allocation::labels::enter(
+            engine_allocation::labels::Owner::RUN,
+            engine_allocation::labels::Kind::World,
+        );
         self.frame
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

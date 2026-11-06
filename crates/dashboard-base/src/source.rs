@@ -552,7 +552,13 @@ impl Source {
             Some(content) => content,
             None => match cache.ahead(options, true) {
                 Some(resolved) => resolved?,
-                None => Arc::new(installed_content_core::resolve(&self.replay.identity, options)?),
+                None => {
+                    let _memory = engine_allocation::labels::enter(
+                        engine_allocation::labels::Owner::RUN,
+                        engine_allocation::labels::Kind::Content,
+                    );
+                    Arc::new(installed_content_core::resolve(&self.replay.identity, options)?)
+                }
             },
         };
         if !cache
@@ -605,6 +611,10 @@ impl Source {
                     .spawn_scoped(scope, move || {
                         caller.enter();
                         let _cpu = cpu.enter("content resolve");
+                        let _memory = engine_allocation::labels::enter(
+                            engine_allocation::labels::Owner::RUN,
+                            engine_allocation::labels::Kind::Content,
+                        );
                         let resolved = installed_content_core::resolve_cancellable(
                             identity,
                             options,

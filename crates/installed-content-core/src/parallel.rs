@@ -25,6 +25,7 @@ pub fn map_entering<T: Sync, R: Send>(
     }
     let next = AtomicUsize::new(0);
     let diagnostics = crate::content::diagnostics::Context::capture();
+    let memory = engine_allocation::labels::current();
     let mut results: Vec<Option<R>> = Vec::new();
     results.resize_with(items.len(), || None);
     std::thread::scope(|scope| {
@@ -34,6 +35,7 @@ pub fn map_entering<T: Sync, R: Send>(
                 let cpu = job_priority::accounting::Context::capture();
                 let diagnostics = &diagnostics;
                 scope.spawn(move || {
+                    let _memory = engine_allocation::labels::resume(memory);
                     diagnostics.enter(|| {
                         let _cpu = cpu.enter("content parallel");
                         enter();
@@ -71,7 +73,9 @@ pub fn spawn<'scope, T: Send + 'scope>(
     let caller = job_priority::Caller::current();
     let cpu = job_priority::accounting::Context::capture();
     let diagnostics = crate::content::diagnostics::Context::capture();
+    let memory = engine_allocation::labels::current();
     scope.spawn(move || {
+        let _memory = engine_allocation::labels::resume(memory);
         diagnostics.enter(|| {
             let _cpu = cpu.enter("content helper");
             caller.enter();

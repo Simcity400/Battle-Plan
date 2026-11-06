@@ -191,6 +191,12 @@ pub struct Writer<'a> {
     encoded: Vec<u8>,
 }
 
+/// What a writer holds is its family's publication's.
+#[inline]
+fn publishing() -> engine_allocation::labels::Scope {
+    engine_allocation::labels::kind(engine_allocation::labels::Kind::Publish)
+}
+
 impl<'a> Writer<'a> {
     /// The bytes its appended rows hold of its budget until it is cut.
     pub fn held_bytes(&self) -> usize {
@@ -211,6 +217,7 @@ impl<'a> Writer<'a> {
     }
 
     pub fn new(budget: &'a Budget, identity: Identity, first: i32) -> io::Result<Self> {
+        let _memory = publishing();
         Ok(Self {
             budget,
             identity,
@@ -256,6 +263,7 @@ impl<'a> Writer<'a> {
         root: PageId,
         identity: Identity,
     ) -> io::Result<Self> {
+        let _memory = publishing();
         let mut reader = Reader::open(io, cache, root)?;
         if reader.root().identity != identity {
             return Err(invalid("series source/content/branch/schema changed"));
@@ -455,6 +463,7 @@ impl<'a> Writer<'a> {
         mode: RunMode,
         decimals: u8,
     ) -> io::Result<KeyHandle> {
+        let _memory = publishing();
         let hash = if spec.dimensions.len == 0 {
             [0; 32]
         } else {
@@ -507,6 +516,7 @@ impl<'a> Writer<'a> {
     }
     /// Binds a key defined in this segment, before any evidence, to a shared domain.
     pub fn bind_domain(&mut self, key: KeyHandle, domain: u64) -> io::Result<()> {
+        let _memory = publishing();
         let index = self.key(key)?;
         let edge = self.keys[index];
         if edge.domain != NONE && edge.domain != domain {
@@ -535,6 +545,7 @@ impl<'a> Writer<'a> {
         break_before: bool,
         supplying_boundary: bool,
     ) -> io::Result<()> {
+        let _memory = publishing();
         let index = self.key(key)?;
         let edge = self.keys[index];
         if edge.mode == RunMode::Exact && edge.last.is_some_and(|p| p.span.last >= span.first) {
@@ -603,6 +614,7 @@ impl<'a> Writer<'a> {
         value: Evidence,
         presentation: Option<u64>,
     ) -> io::Result<()> {
+        let _memory = publishing();
         let index = self.key(key)?;
         let edge = self.keys[index];
         if edge.domain != NONE {
@@ -646,6 +658,7 @@ impl<'a> Writer<'a> {
 
     /// Appends a row of a shared evidence domain.
     pub fn domain(&mut self, id: u64, value: Evidence) -> io::Result<DomainRow> {
+        let _memory = publishing();
         let index = self.domain_slot(id)?;
         if index.is_some_and(|index| {
             self.domains[index]
@@ -693,6 +706,7 @@ impl<'a> Writer<'a> {
         row: DomainRow,
         sequence: u64,
     ) -> io::Result<()> {
+        let _memory = publishing();
         let index = self.key(key)?;
         if self.keys[index].domain != row.domain {
             return Err(invalid(
@@ -726,6 +740,7 @@ impl<'a> Writer<'a> {
     }
 
     pub fn event(&mut self, value: Event) -> io::Result<()> {
+        let _memory = publishing();
         if value.fields.len % Cell::SIZE as u64 != 0 {
             return Err(invalid("event key/schema fields"));
         }
@@ -739,6 +754,7 @@ impl<'a> Writer<'a> {
     }
 
     pub fn catalogue(&mut self, id: u64, value: Cell) -> io::Result<()> {
+        let _memory = publishing();
         self.columns.metadata.push(Meta { id, value })
     }
 
@@ -757,6 +773,7 @@ impl<'a> Writer<'a> {
         Ok((start, end))
     }
     pub fn blob(&mut self, input: &mut impl Read, len: u64) -> io::Result<Blob> {
+        let _memory = publishing();
         if len == 0 {
             return Ok(Blob::EMPTY);
         }
@@ -786,6 +803,7 @@ impl<'a> Writer<'a> {
     }
     /// `bytes` as a blob, copied once.
     pub fn bytes(&mut self, bytes: &[u8]) -> io::Result<Blob> {
+        let _memory = publishing();
         if bytes.is_empty() {
             return Ok(Blob::EMPTY);
         }
@@ -800,6 +818,7 @@ impl<'a> Writer<'a> {
     /// `input` as a list blob: every cell encoded first, then appended at once, so a refused
     /// cell or a refused admission appends nothing.
     pub fn cells(&mut self, input: impl IntoIterator<Item = Cell>) -> io::Result<Blob> {
+        let _memory = publishing();
         let mut encoded = std::mem::take(&mut self.encoded);
         encoded.clear();
         let appended = (|| {
@@ -824,6 +843,7 @@ impl<'a> Writer<'a> {
     /// Closes the segment: its rows must lie within the publication's accepted hours.
     /// The returned job seals pages on any thread; the emit continues at once.
     pub fn cut(&mut self, publication: Publication, checkpoint: Blob) -> io::Result<Pending<'a>> {
+        let _memory = publishing();
         let start = self.start()?;
         Span::new(publication.accepted.first, publication.accepted.last)?;
         if publication.reached < publication.accepted.last
@@ -903,6 +923,7 @@ impl<'a> Writer<'a> {
         cache: &Cache<'_>,
         sealed: Sealed,
     ) -> io::Result<PageId> {
+        let _memory = publishing();
         self.tree
             .as_mut()
             .ok_or_else(|| invalid("series hierarchy lent out"))?
@@ -912,6 +933,7 @@ impl<'a> Writer<'a> {
     /// Lends out its hierarchy: the segments it cuts publish into it elsewhere, in order, until
     /// [`Self::return_tree`] takes it back.
     pub fn lend_tree(&mut self) -> io::Result<Tree> {
+        let _memory = publishing();
         self.tree
             .take()
             .ok_or_else(|| invalid("series hierarchy lent out"))
@@ -919,6 +941,7 @@ impl<'a> Writer<'a> {
 
     /// Takes back the hierarchy [`Self::lend_tree`] lent, with what was published into it.
     pub fn return_tree(&mut self, tree: Tree) -> io::Result<()> {
+        let _memory = publishing();
         if self.tree.is_some() || tree.identity != self.identity {
             return Err(invalid("series hierarchy returned to another writer"));
         }

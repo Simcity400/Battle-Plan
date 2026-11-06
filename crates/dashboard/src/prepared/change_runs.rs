@@ -5,6 +5,7 @@
 //! ([`dashboard_base::prepared::query::native`]).
 
 use crate::Source;
+use engine_allocation::labels::{self, Kind, Owner};
 use replay::{
     columnar_file,
     columnar_frames::{Limits, Recording},
@@ -247,6 +248,7 @@ pub(crate) fn publish(
 /// any index there is removed, the reason is kept in its place until they change
 /// ([`outcome`]), and returned.
 pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Prepared> {
+    let _memory = labels::enter(Owner::RUN, Kind::Index);
     let (target, refused) = (path(source)?, refusal_path(source)?);
     fs::create_dir_all(folder(source)?)?;
     let mut whole = match natives(source)? {

@@ -357,6 +357,7 @@ fn shared<T: Send, R: Send>(
         rest = tail;
     }
     let context = replay_frame::cpu::Context::capture();
+    let memory = engine_allocation::labels::current();
     let step = &step;
     std::thread::scope(|scope| {
         let handles: Vec<_> = chunks
@@ -364,6 +365,7 @@ fn shared<T: Send, R: Send>(
             .map(|chunk| {
                 let context = context.clone();
                 scope.spawn(move || {
+                    let _memory = engine_allocation::labels::resume(memory);
                     let _cpu = context.enter("equipment_losses fold");
                     step(chunk)
                 })

@@ -12,6 +12,9 @@ doctest = false
 [features]
 # Frontend contract generation; ordinary hosts need only the runtime registry.
 export-types = []
+# columnar-family-check counts every allocation by label for its memory report; nothing else
+# turns it on.
+memory-labels = ["engine-allocation/memory-labels"]
 
 [dependencies]
 dashboard-series.workspace = true

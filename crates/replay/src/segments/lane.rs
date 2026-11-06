@@ -6,6 +6,7 @@ use super::{
     Spilled, Start, caught, invalid, lock,
 };
 use crate::columnar_frames::Segment;
+use engine_allocation::labels::{self, Kind, Owner};
 use std::{
     cell::Cell,
     collections::{BTreeMap, VecDeque},
@@ -283,6 +284,7 @@ struct Filed<T> {
 
 pub(super) struct Typed<'a, O: Operator<W>, W> {
     name: &'a str,
+    owner: Owner,
     make: Make<'a, O>,
     /// The emit, taken out while a worker calls it: no lock is held around a family's code.
     emit: Mutex<Option<Emit<'a, O::Output>>>,
@@ -295,6 +297,7 @@ impl<'a, O: Operator<W>, W> Typed<'a, O, W> {
     pub(super) fn new(name: &'a str, make: Make<'a, O>, emit: Emit<'a, O::Output>) -> Self {
         Self {
             name,
+            owner: labels::owner(name),
             make,
             emit: Mutex::new(Some(emit)),
             filed: Mutex::new(BTreeMap::new()),
@@ -319,6 +322,7 @@ impl<'a, O: Operator<W>, W> Typed<'a, O, W> {
         mut restore: Option<Taken<'_>>,
         filed: Filed<O::Output>,
     ) -> Result<Emitted, Fault> {
+        let _memory = labels::enter(self.owner, Kind::Emit);
         let Filed {
             mut chunks,
             ending,
@@ -360,6 +364,7 @@ impl<'a, O: Operator<W>, W> Typed<'a, O, W> {
                     }
                     drop(spilled);
                     let loaded = caught(Operation::Load, || {
+                        let _memory = labels::kind(Kind::Restore);
                         let items = O::Output::load(&raw)?;
                         let held = resident(&items);
                         Ok((items, held))
@@ -420,6 +425,7 @@ impl<'a, O: Operator<W> + 'a, W> Erased<W> for Typed<'a, O, W> {
     }
 
     fn fresh<'s>(&'s self, segment: &Segment) -> io::Result<Box<dyn Walking<W> + 's>> {
+        let _memory = labels::enter(self.owner, Kind::Operator);
         Ok(Box::new(Walk {
             lane: self,
             operator: (self.make)(segment)?,
@@ -606,14 +612,17 @@ impl<O: Operator<W>, W> Walking<W> for Walk<'_, '_, O, W> {
     }
 
     fn start(&mut self, start: Start<'_>, branch: u64, first: i32) -> io::Result<()> {
+        let _memory = labels::enter(self.lane.owner, Kind::Operator);
         self.operator.start(start, branch, first)
     }
 
     fn cross(&mut self, first: i32) -> io::Result<()> {
+        let _memory = labels::enter(self.lane.owner, Kind::Operator);
         self.operator.cross(first)
     }
 
     fn hour(&mut self, hour: &Hour<'_, W>, context: &Context<'_>) -> io::Result<()> {
+        let _memory = labels::enter(self.lane.owner, Kind::Operator);
         self.operator.hour(
             hour,
             &mut Filling {
@@ -625,6 +634,7 @@ impl<O: Operator<W>, W> Walking<W> for Walk<'_, '_, O, W> {
     }
 
     fn end(&mut self, context: &Context<'_>) -> io::Result<()> {
+        let _memory = labels::enter(self.lane.owner, Kind::Operator);
         self.operator.end(&mut Filling {
             name: self.lane.name,
             chunks: &mut self.chunks,
@@ -633,6 +643,7 @@ impl<O: Operator<W>, W> Walking<W> for Walk<'_, '_, O, W> {
     }
 
     fn close(&mut self, context: &Context<'_>) -> io::Result<usize> {
+        let _memory = labels::enter(self.lane.owner, Kind::Operator);
         if let Some(fault) = &self.chunks.fault {
             // An operator going on past what its sink met has its walk end there.
             return Err(fault.echo());
@@ -671,10 +682,12 @@ impl<O: Operator<W>, W> Walking<W> for Walk<'_, '_, O, W> {
     }
 
     fn save(&self, out: &mut Vec<u8>) -> io::Result<bool> {
+        let _memory = labels::enter(self.lane.owner, Kind::Operator);
         self.operator.save(out)
     }
 
     fn load(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let _memory = labels::enter(self.lane.owner, Kind::Operator);
         self.operator.load(bytes)
     }
 }

@@ -25,6 +25,7 @@ use dashboard_base::prepared::{
     priority::Caller,
     roots::{self, Binding, Cursor, End, Held, Interval, Published},
 };
+use engine_allocation::labels::{self, Kind};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, VecDeque},
@@ -949,6 +950,7 @@ impl<'s> Publisher<'s> {
                 let caller = caller.clone();
                 scope.spawn(move || {
                     caller.enter();
+                    let _memory = labels::enter(labels::Owner::RUN, Kind::Publish);
                     self.serve();
                 });
             }
@@ -1043,6 +1045,7 @@ impl<'s> Publisher<'s> {
     /// leading it when no other does. A panic fails the job alone.
     fn seal(&self, job: Job) -> Finished {
         let _span = replay_frame::timeline::span("seal").lane(job.family.id.name());
+        let _memory = labels::enter(labels::owner(job.family.id.name()), Kind::Publish);
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.sealed(job))) {
             Ok(finished) => finished,
             Err(_) => Finished::failed(io::Error::other("A batch's seal panicked")),
@@ -1265,6 +1268,7 @@ impl Stage<'_, '_> {
         branch: u64,
         first_hour: i32,
     ) -> io::Result<&mut roots::Series> {
+        let _memory = labels::kind(Kind::Publish);
         if self.branch(branch)?.series.is_none() {
             let identity = self.publisher.binding.identity(branch, self.family.stamp);
             let resumes = self.branch(branch)?.resumes.take();

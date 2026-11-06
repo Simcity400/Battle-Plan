@@ -34,6 +34,7 @@ use crate::{
     columnar_frames::{Budget, Damage, DamageScope, Recording, Segment, Walker, schema},
     rows::TableId,
 };
+use engine_allocation::labels::{self, Kind, Owner};
 pub use replay_columnar::{manifest::Manifest, walk::State};
 use std::{
     any::Any,
@@ -1087,6 +1088,8 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
 
     fn work(&self) {
         let _unwinding = Unwinding(self.signal);
+        let _memory = labels::enter(Owner::RUN, Kind::Executor);
+        let walking = labels::enter(Owner::RUN, Kind::Walker);
         let mut walker = match Walker::without_waiting(self.recording, &self.budget) {
             Ok(walker) => walker,
             Err(error) => return self.signal.fail(error),
@@ -1095,6 +1098,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             Ok(state) => state,
             Err(error) => return self.signal.fail(error),
         };
+        drop(walking);
         loop {
             let task = {
                 let mut schedule = self.signal.lock();
@@ -1199,6 +1203,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     /// one's restart, and of each segment's own pages from there, what is not measured yet.
     fn measure(&self, walker: &mut Walker<'_>, at: usize) -> io::Result<()> {
         let _span = replay_frame::timeline::span("measure").at(at);
+        let _memory = labels::enter(Owner::RUN, Kind::Walker);
         let (from, restart, pages) = self.signal.lock().unmeasured(at)?;
         let restart = if restart {
             Some(walker.measure_restart(&self.segments[from])?)
@@ -1806,6 +1811,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     ) -> io::Result<Option<Job<'r, 'c, W>>> {
         let at = job.at;
         let mut span = replay_frame::timeline::span("walk").at(at);
+        let _memory = labels::enter(Owner::RUN, Kind::Walker);
         // A cold walk begins by replacing the tables the walk before left.
         if !job.hot {
             state.forget_charge_peak();
@@ -2052,7 +2058,10 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     .filter(|attached| attached.live())
                     .map(|attached| attached.lane),
             )?;
-            let mut world = (self.worlds)(segment, &visited)?;
+            let mut world = {
+                let _memory = labels::enter(Owner::RUN, Kind::World);
+                (self.worlds)(segment, &visited)?
+            };
             let (mut ordinal, mut hours, mut noted) = (segment.first, 0_u32, 0);
             // The hour being walked, and what of a family's code, for a panic there.
             let (mut now, mut doing) = (planned.first, Operation::Hour);
@@ -2060,7 +2069,11 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 walker.walk_isolated(segment, state, |state, manifest, first, lost| {
                     now = manifest.hour;
                     // The run's own, before any family: no family is blamed for it.
-                    world.hour(state, manifest)?;
+                    let advanced = {
+                        let _memory = labels::enter(Owner::RUN, Kind::World);
+                        world.hour(state, manifest)
+                    };
+                    advanced?;
                     // A table lost to its own damage is lost to the families reading it.
                     if lost.len() != noted {
                         for (table, error) in &lost[noted..] {

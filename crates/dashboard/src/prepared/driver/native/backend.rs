@@ -19,6 +19,7 @@ use dashboard_base::prepared::{
     roots::{self, Published},
 };
 use dashboard_world::{Hold, Needs, World};
+use engine_allocation::labels::{self, Kind};
 use replay::{
     columnar_frames::{Recording, Segment},
     segments::{
@@ -689,6 +690,7 @@ impl<N: Native> Emit<'_, '_, N> {
         at: usize,
         through: i32,
     ) -> io::Result<()> {
+        let _memory = labels::kind(Kind::Publish);
         let started = walking.measuring.then(cycles);
         let placed = *walking.shape.get(at);
         let (first, first_hour) = self.unprocessed(&placed)?;
@@ -747,6 +749,7 @@ impl<N: Native> Emit<'_, '_, N> {
         at: usize,
         made: Made,
     ) -> io::Result<()> {
+        let _memory = labels::kind(Kind::Publish);
         let started = walking.measuring.then(cycles);
         let placed = *walking.shape.get(at);
         let whole = made == Made::Prepared;

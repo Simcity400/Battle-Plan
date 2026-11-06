@@ -13,14 +13,19 @@
 //! `--scopes` also reports the CPU each accounting scope charged. `--walk-only` walks the runs
 //! with one lane doing no family's work, for the floor decode, apply and the world cost.
 //! report.json also holds the timeline of every task and phase, from the process's start.
+//! Built with the `memory-labels` feature, its `memory` section says, for the index run, the
+//! union run and the phases between, what each family and each part of the run held at the
+//! peak, as the allocator counted it, beside what the system and mimalloc held then.
 
 use dashboard::{
     config::{Config, ContentOptions},
     prepared::driver::native,
 };
+use engine_allocation::labels::{self, Kind, Phase};
 use replay::columnar_frames::{Limits, Recording};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io,
     path::PathBuf,
     sync::atomic::AtomicBool,
@@ -29,8 +34,13 @@ use std::{
 #[path = "support/shader_compiler.rs"]
 mod shader_compiler;
 
+#[cfg(not(feature = "memory-labels"))]
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(feature = "memory-labels")]
+#[global_allocator]
+static ALLOCATOR: labels::Counting<mimalloc::MiMalloc> = labels::Counting(mimalloc::MiMalloc);
 
 const USAGE: &str = "columnar-family-check --recording R --columnar C --output NEW \
                      [--family F[,F...]|ported] [--threads N] [--content-cache DIR] [--scopes] [--walk-only]";
@@ -138,6 +148,7 @@ fn run() -> io::Result<()> {
         source.resolving_ahead(options, &cancelled, || -> io::Result<_> {
             // The change-run index first, as production prepares it: native readers serve from it.
             let span = replay_frame::timeline::span("index");
+            labels::phase("index run");
             let started = std::time::Instant::now();
             let cpu_before = replay_frame::cpu::process_cpu_ns();
             let index = dashboard::prepared::change_runs::prepare(&source, &cancelled)?;
@@ -147,6 +158,7 @@ fn run() -> io::Result<()> {
                 .map(|(before, after)| after.saturating_sub(before) as f64 / 1e9);
             // The process's peaks so far: the index is its first heavy work.
             let (index_working, index_commit) = native::peaks()?;
+            labels::phase("families open");
             drop(span);
             let span = replay_frame::timeline::span("recording open");
             let file = Recording::open_path(&columnar, Limits::default())?;
@@ -206,6 +218,7 @@ fn run() -> io::Result<()> {
         "content": resolved,
         "failed": failed,
         "scopes": scopes.then(replay_frame::cpu::snapshot),
+        "memory": memory(),
     });
     let mut shown = String::new();
     render(&report, 0, &mut shown);
@@ -216,6 +229,168 @@ fn run() -> io::Result<()> {
     render(&report, 0, &mut written);
     std::fs::write(output.join("report.json"), written)?;
     Ok(())
+}
+
+/// What each phase held, as the counting allocator charged it to its labels, beside the
+/// system's and mimalloc's counts; why not, when this build counts nothing.
+fn memory() -> Value {
+    if !labels::ENABLED {
+        return json!("Built without the memory-labels feature: nothing was counted");
+    }
+    let (version, options) = dashboard::allocator::retention();
+    let options: serde_json::Map<String, Value> = options
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), json!(value)))
+        .collect();
+    json!({
+        "allocator": {"name": "mimalloc", "version": version, "options": options},
+        "phases": labels::phases().iter().map(phase_memory).collect::<Vec<_>>(),
+    })
+}
+
+/// What a family held at the peak, by kind, and as its phase ended.
+#[derive(Default)]
+struct Held {
+    /// Its operators' own: what they allocated and held then, less their output in flight.
+    operator: i64,
+    in_flight: i64,
+    emit: i64,
+    publish: i64,
+    content: i64,
+    emit_end: i64,
+    end: i64,
+}
+
+impl Held {
+    fn at_peak(&self) -> i64 {
+        self.operator + self.in_flight + self.emit + self.publish + self.content
+    }
+}
+
+fn phase_memory(phase: &Phase) -> Value {
+    let at = |owner: &str, kind: Kind| {
+        phase
+            .labels
+            .iter()
+            .find(|charge| charge.owner == owner && charge.kind == kind)
+            .map_or(0, |charge| charge.at_peak)
+    };
+    let tracked = phase.tracked_at_peak;
+    let less_tracked = |held: usize| i64::try_from(held).ok().map(|held| held - tracked);
+    let os = phase.os_at_peak;
+    let mut kinds: BTreeMap<&str, (i64, i64)> = BTreeMap::new();
+    let mut families: BTreeMap<&str, Held> = BTreeMap::new();
+    for charge in &phase.labels {
+        let kind = kinds.entry(charge.kind.name()).or_default();
+        kind.0 += charge.at_peak;
+        kind.1 += charge.end;
+        if charge.owner == "run" {
+            continue;
+        }
+        let held = families.entry(charge.owner).or_default();
+        held.end += charge.end;
+        let in_flight = charge.in_flight.unwrap_or(0);
+        match charge.kind {
+            Kind::Operator | Kind::Restore => {
+                held.operator += charge.at_peak - in_flight;
+                held.in_flight += in_flight;
+            }
+            Kind::Emit => {
+                held.emit += charge.at_peak;
+                held.emit_end += charge.end;
+            }
+            Kind::Publish => held.publish += charge.at_peak,
+            Kind::Content => held.content += charge.at_peak,
+            _ => {}
+        }
+    }
+    let mut ordered: Vec<(&str, &Held)> =
+        families.iter().map(|(name, held)| (*name, held)).collect();
+    ordered.sort_by_key(|(_, held)| std::cmp::Reverse(held.at_peak()));
+    let top = |bytes: fn(&Held) -> i64| {
+        let mut top: Vec<(&str, i64)> = ordered
+            .iter()
+            .map(|(name, held)| (*name, bytes(held)))
+            .collect();
+        top.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
+        top.into_iter()
+            .take(10)
+            .map(|(family, bytes)| json!({"family": family, "bytes": bytes}))
+            .collect::<Vec<_>>()
+    };
+    let mut charges: Vec<_> = phase.labels.iter().collect();
+    charges.sort_by_key(|charge| std::cmp::Reverse(charge.at_peak));
+    let (started, ended) = (phase.os_started, phase.os_ended);
+    // A phase's own peak is known only where it raised the process's.
+    let raised = |peak: fn(&labels::Os) -> usize| {
+        ended.and_then(|end| {
+            started
+                .is_none_or(|start| peak(&end) > peak(&start))
+                .then(|| peak(&end))
+        })
+    };
+    let index = families.get("change runs").map(|held| {
+        json!({
+            "openPagesBytes": held.operator,
+            "piecesBytes": held.in_flight,
+            "directoryBytes": held.emit + held.publish + at("run", Kind::Index),
+        })
+    });
+    json!({
+        "phase": phase.name,
+        "trackedPeakBytes": phase.tracked_peak,
+        "atPeak": {
+            "trackedBytes": tracked,
+            "headerBytes": at("run", Kind::Headers),
+            "commitBytes": os.map(|os| os.commit),
+            "workingSetBytes": os.map(|os| os.working),
+            "allocatorCommitBytes": os.and_then(|os| os.allocator),
+            // Freed pages mimalloc keeps committed, and its fragmentation.
+            "allocatorRetainedBytes": os.and_then(|os| os.allocator).and_then(less_tracked),
+            // C libraries' own heaps, thread stacks, and the system's and drivers' memory.
+            "outsideAllocatorBytes": os.and_then(|os| {
+                os.allocator.map(|held| os.commit as i64 - held as i64)
+            }),
+            "untrackedCommitBytes": os.and_then(|os| less_tracked(os.commit)),
+        },
+        "process": {
+            "peakCommitBytes": raised(|os| os.peak_commit),
+            "peakWorkingSetBytes": raised(|os| os.peak_working),
+            "processPeakCommitBytes": ended.map(|os| os.peak_commit),
+            "processPeakWorkingSetBytes": ended.map(|os| os.peak_working),
+            "endCommitBytes": ended.map(|os| os.commit),
+            "endWorkingSetBytes": ended.map(|os| os.working),
+        },
+        "kinds": kinds.iter().map(|(kind, (at_peak, end))| {
+            json!({"kind": kind, "atPeakBytes": at_peak, "endBytes": end})
+        }).collect::<Vec<_>>(),
+        "changeRuns": index,
+        "top": {
+            "operator": top(|held| held.operator),
+            "outputInFlight": top(|held| held.in_flight),
+            "emit": top(|held| held.emit),
+        },
+        "families": ordered.iter().map(|(family, held)| json!({
+            "family": family,
+            "atPeakBytes": held.at_peak(),
+            "operatorBytes": held.operator,
+            "outputInFlightBytes": held.in_flight,
+            "emitBytes": held.emit,
+            "publishBytes": held.publish,
+            "contentBytes": held.content,
+            "emitEndBytes": held.emit_end,
+            "endBytes": held.end,
+        })).collect::<Vec<_>>(),
+        "labels": charges.iter().map(|charge| json!({
+            "owner": charge.owner,
+            "kind": charge.kind.name(),
+            "peakBytes": charge.peak,
+            "atPeakBytes": charge.at_peak,
+            "endBytes": charge.end,
+            "inFlightAtPeakBytes": charge.in_flight,
+        })).collect::<Vec<_>>(),
+        "overflowedFamilies": phase.overflowed,
+    })
 }
 
 /// `value` as indented JSON, but each array of scalars on one line: a timeline's spans, one to
@@ -258,6 +433,7 @@ fn main() {
     replay_frame::timeline::enable();
     // Measured with the memory settings the data service runs with.
     dashboard::allocator::return_freed_memory_promptly();
+    labels::measure_allocator(dashboard::allocator::committed);
     if let Err(error) = run() {
         eprintln!("columnar-family-check: {error}");
         std::process::exit(1);

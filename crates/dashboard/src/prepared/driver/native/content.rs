@@ -338,9 +338,11 @@ pub(crate) fn load_all<T: Send>(
     let queue = Mutex::new(loads.into_iter().enumerate());
     let made: Mutex<Vec<Option<io::Result<T>>>> =
         Mutex::new(std::iter::repeat_with(|| None).take(count).collect());
+    let memory = engine_allocation::labels::current();
     std::thread::scope(|scope| {
         for _ in 0..threads.clamp(1, count.max(1)) {
             scope.spawn(|| {
+                let _memory = engine_allocation::labels::resume(memory);
                 loop {
                     let next = queue.lock().unwrap_or_else(PoisonError::into_inner).next();
                     let Some((at, load)) = next else {
