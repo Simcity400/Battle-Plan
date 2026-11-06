@@ -1216,18 +1216,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = &options.user_dir {
         config.user_dir = path.clone();
     }
-    if config.resolve_options().is_ok()
-        && let Err(error) = engine_executable::executable_tables::initialize(&config.game_dir)
-    {
-        config_error = Some(format!("Game tables: {error}"));
-    }
     if let (Some(output), true) = (&options.out, options.headless_dump) {
         if let Some(error) = config_error {
             return Err(invalid(format!("Content preferences: {error}")).into());
         }
         // The GUI textures load with the document, for the device the dump renders on.
         render::probe_dump_device()?;
-        let graphics = dashboard::map_settings::read_game(&config.user_dir)?.graphics;
+        let graphics =
+            engine_executable::executable_tables::or_installed(&config.game_dir, || {
+                dashboard::map_settings::read_game(&config.user_dir)
+            })?
+            .graphics;
         let mut document = document::Document::load(
             options.replay.as_ref().unwrap(),
             &config.resolve_options()?,
@@ -1240,6 +1239,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             None,
             graphics.texture_quality,
         )?;
+        // The dump works on this recording alone, with its own executable tables.
+        engine_executable::executable_tables::enter(document.content.tables);
         if let Some(path) = &options.change_runs {
             let index = replay::columnar_runs::IndexFile::open(path)?;
             if !document.bind_columnar(index) {

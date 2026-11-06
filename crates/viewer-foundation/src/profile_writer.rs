@@ -1,5 +1,6 @@
 //! Shared asynchronous profiling output for viewer workers and GPU passes.
 
+use job_priority::SpawnCarried as _;
 use std::{
     io::Write,
     sync::{
@@ -41,7 +42,7 @@ impl Sink {
         let (queue, lines) = mpsc::sync_channel(capacity);
         std::thread::Builder::new()
             .name("profile writer".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 for line in lines {
                     match line {
                         ProfileLine::Line(line) => {

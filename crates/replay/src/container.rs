@@ -30,6 +30,42 @@ const HEADER_MAGIC: &[u8; 4] = b"H4RP";
 const TRAILER_MAGIC: &[u8; 4] = b"H4TR";
 const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
+/// Starts a trailer's list of the fact packs it names ([`commit::encode_facts`]).
+const FACTS_MAGIC: &[u8; 4] = b"H4FX";
+
+/// Starts a session's facts file ([`encode_session_facts`]).
+const SESSION_FACTS_MAGIC: &[u8; 4] = b"H4SF";
+/// A session folder's facts file, which its recorder writes once the facts are gathered.
+pub const SESSION_FACTS_FILE: &str = "facts.bin";
+
+/// A session's game facts as its recorder gathered them, for the recordings its spools become:
+/// the identity they are the facts of, then the pack.
+pub fn encode_session_facts(identity: &Identity, pack: &[u8]) -> io::Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    identity.encode(&mut encoded)?;
+    let mut out = Vec::with_capacity(8 + encoded.len() + pack.len());
+    out.extend_from_slice(SESSION_FACTS_MAGIC);
+    put_bytes(&mut out, &encoded)?;
+    out.extend_from_slice(pack);
+    Ok(out)
+}
+
+/// The pack of a session's facts file, when they are `identity`'s facts.
+pub fn session_facts_for<'a>(bytes: &'a [u8], identity: &Identity) -> Option<&'a [u8]> {
+    let mut input = Decoder::new(bytes.strip_prefix(SESSION_FACTS_MAGIC)?);
+    let encoded = input.bytes().ok()?;
+    let mut decoder = Decoder::new(&encoded);
+    let recorded = Identity::decode(&mut decoder).ok()?;
+    let pack = &bytes[bytes.len() - input.remaining()..];
+    (recorded.same_content(identity) && !pack.is_empty()).then_some(pack)
+}
+
+/// Where a recording holds a pack of the game facts it depends on, among its blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FactRegion {
+    pub offset: u64,
+    pub length: u64,
+}
 mod aliases;
 mod changes;
 mod check;
@@ -300,6 +336,11 @@ pub struct Replay {
     pub damaged_parts: usize,
     pub damaged_range: Option<(Hour, Hour)>,
     pub index: Vec<BlockIndex>,
+    /// The game facts the recording carries, oldest first; empty for one recorded before
+    /// recordings carried them.
+    pub fact_packs: Vec<FactRegion>,
+    /// How many of them the newest trailer names.
+    newest_facts: usize,
     /// Each index entry's position among the file's entries, which opening
     /// may withhold; grouped keyframe anchors count the file's blocks.
     ordinals: Vec<usize>,
@@ -711,6 +752,7 @@ impl Replay {
             &pending.controls,
             &[],
             &index,
+            &[],
         )?;
         commit::stamp_slot(&mut bytes, Some(slot))?;
         Self::open(bytes)
@@ -769,6 +811,7 @@ impl Replay {
             &[],
             Some((self.revision.trailer, self.revision.length)),
             &index,
+            &[],
         )?;
         commit::stamp_slot(&mut bytes, self.slot)?;
         Self::open(bytes)
@@ -904,6 +947,7 @@ impl Replay {
             &self.recovery_notes[recovery..],
             self.previous,
             &self.index[blocks..],
+            &self.fact_packs[self.fact_packs.len() - self.newest_facts..],
         )?;
         commit::stamp_slot(&mut self.bytes, self.slot)?;
         Self::open(self.bytes)
@@ -1133,6 +1177,8 @@ impl Replay {
         let mut controls = Vec::new();
         let mut recovery_notes = Vec::new();
         let mut index = Vec::new();
+        let mut fact_packs = Vec::new();
+        let mut newest_facts = 0;
         let mut earlier = [0; 5];
         let mut previous = None;
         for (position, (_, bytes)) in trailers.iter().enumerate() {
@@ -1187,6 +1233,22 @@ impl Replay {
                     raw_length: trailer.u64()?,
                 });
             }
+            let named = fact_packs.len();
+            if trailer.remaining() >= FACTS_MAGIC.len()
+                && trailer.take(FACTS_MAGIC.len())? == FACTS_MAGIC
+            {
+                let count = trailer.count(16)?;
+                engine_allocation::reserve(&mut fact_packs, count)?;
+                for _ in 0..count {
+                    fact_packs.push(FactRegion {
+                        offset: trailer.u64()?,
+                        length: trailer.u64()?,
+                    });
+                }
+            }
+            if position + 1 == trailers.len() {
+                newest_facts = fact_packs.len() - named;
+            }
             if trailer.remaining() != 0 {
                 engine_allocation::reserve(&mut warnings, 1)?;
                 warnings.push("trailing bytes in replay trailer".into());
@@ -1195,6 +1257,17 @@ impl Replay {
         let capture_mode = file_capture_mode(&sessions)?;
         let trailer_start = trailers.last().map_or(header_end, |(start, _)| *start);
         let regions = commit::trailer_regions(&trailers);
+        // Fact packs lie among the blocks as earlier trailers do.
+        let mut held = regions.clone();
+        for fact in &fact_packs {
+            let end = fact
+                .offset
+                .checked_add(fact.length)
+                .filter(|end| fact.offset >= header_end as u64 && *end <= trailer_start as u64)
+                .ok_or_else(|| invalid("game facts lie outside the recording"))?;
+            held.push((fact.offset, end));
+        }
+        held.sort_unstable();
         let mut damaged_range = None;
         let mut ordinals = Vec::new();
         let control_check = validate_partial_controls(&controls).and_then(|()| {
@@ -1227,7 +1300,7 @@ impl Replay {
             &mut ordinals,
             header_end,
             trailer_start,
-            &regions,
+            &held,
             keyframe_interval,
             &mut warnings,
             &mut damaged_parts,
@@ -1261,6 +1334,8 @@ impl Replay {
             damaged_range,
             verified,
             index,
+            fact_packs,
+            newest_facts,
             ordinals,
             header_end,
             trailer_start,
@@ -1608,6 +1683,17 @@ impl Replay {
             None,
         )?;
         replay.bytes.truncate(replay.trailer_start);
+        // Every fact pack the recording carries, as it is, at its new place.
+        let mut facts = Vec::with_capacity(self.fact_packs.len());
+        for region in &self.fact_packs {
+            let mut pack = engine_allocation::filled(to_usize(region.length)?, 0)?;
+            self.read_facts_at(region.offset, &mut pack)?;
+            facts.push(FactRegion {
+                offset: replay.bytes.len() as u64,
+                length: region.length,
+            });
+            replay.bytes.extend_from_slice(&pack);
+        }
         finish_file(
             &mut replay.bytes,
             &self.sessions,
@@ -1616,6 +1702,7 @@ impl Replay {
             &self.controls,
             &self.recovery_notes,
             &replay.index,
+            &facts,
         )?;
         commit::stamp_slot(&mut replay.bytes, replay.slot)?;
         Self::open(replay.bytes)
@@ -1931,6 +2018,7 @@ fn finish_file(
     controls: &[ControlRecord],
     recovery_notes: &[RecoveryNote],
     index: &[BlockIndex],
+    facts: &[FactRegion],
 ) -> io::Result<()> {
     commit::encode_trailer(
         bytes,
@@ -1942,6 +2030,7 @@ fn finish_file(
         recovery_notes,
         None,
         index,
+        facts,
     )
     .map(|_| ())
 }

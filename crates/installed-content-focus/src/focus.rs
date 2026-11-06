@@ -638,9 +638,12 @@ fn focus_database(path: &[u8]) -> Option<Database> {
 }
 
 /// Layer then byte-path order; non-UTF-8 archive filenames must still load.
-fn database_paths(layers: &ResolvedLayers, continuous: bool) -> Vec<(usize, ScriptPath)> {
+fn database_paths(
+    layers: &ResolvedLayers,
+    continuous: bool,
+) -> io::Result<Vec<(usize, ScriptPath)>> {
     let mut paths = layers
-        .effective_paths()
+        .effective_paths()?
         .filter(|(path, _)| {
             focus_database(path)
                 .is_some_and(|database| continuous || database == Database::National)
@@ -649,14 +652,14 @@ fn database_paths(layers: &ResolvedLayers, continuous: bool) -> Vec<(usize, Scri
         .map(|(path, layer)| (layer, ScriptPath::new(path.to_vec())))
         .collect::<Vec<_>>();
     paths.sort();
-    paths
+    Ok(paths)
 }
 
 fn read_databases(
     layers: &ResolvedLayers,
     continuous: bool,
 ) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
-    let paths = database_paths(layers, continuous);
+    let paths = database_paths(layers, continuous)?;
     let names = layers.key_names()?;
     let workers = std::thread::available_parallelism().map_or(1, usize::from);
     read_files(&paths, &names, workers, |path| path.read(layers), parse)
@@ -697,7 +700,7 @@ fn read_files(
                         let priority = job_priority::JobPriority::current();
                         let cpu = job_priority::accounting::Context::capture();
                         let memory = engine_allocation::labels::current();
-                        scope.spawn(move || {
+                        job_priority::spawn_in(scope, move || {
                             let _memory = engine_allocation::labels::resume(memory);
                             let _cpu = cpu.enter("content focus");
                             priority.enter(job_priority::Level::Normal);

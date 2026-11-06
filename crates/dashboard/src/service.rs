@@ -4,6 +4,7 @@
 //! Opening files and answering products never depends on a visible window.
 //! Only compact JSON replies cross the desktop control pipe.
 
+use job_priority::SpawnCarried as _;
 use crate::{
     Config, Source, map_settings,
     products::{self, ContentOptions},
@@ -290,7 +291,7 @@ impl Service {
                             "dashboard {} {index}",
                             lane.name()
                         ))
-                        .spawn(move || {
+                        .spawn_carried(move || {
                             let _exit = ThreadExit(Arc::clone(&load_inner));
                             load_inner.run_loader(&jobs, lane);
                         })?,
@@ -301,7 +302,7 @@ impl Service {
             threads.push(
                 thread::Builder::new()
                     .name("dashboard response pump".into())
-                    .spawn(move || run_pump(pump_inner, emit))?,
+                    .spawn_carried(move || run_pump(pump_inner, emit))?,
             );
             Ok(())
         })();
@@ -324,20 +325,21 @@ impl Service {
     /// choice is its own preference ([`Self::apply_saved_preparation`]): a folder change
     /// leaves it as it is.
     pub fn configure_content(&self, config: &Config, allow_unverified: bool) -> io::Result<()> {
+        // A recording plays back from its own facts; without folders its art shows placeholders.
         let options = match config.resolve_options() {
             Ok(options) => options,
-            Err(_) => {
-                self.replace_content(None);
-                return Ok(());
-            }
+            Err(_) => match Config::content_cache_dir() {
+                Ok(cache_dir) => installed_content_core::ResolveOptions {
+                    game_dir: cache_dir.join("no game folder chosen"),
+                    user_dir: cache_dir.join("no user folder chosen"),
+                    cache_dir,
+                },
+                Err(_) => {
+                    self.replace_content(None);
+                    return Ok(());
+                }
+            },
         };
-        if let Err(error) = engine_executable::executable_tables::initialize(&options.game_dir) {
-            self.replace_content(None);
-            return Err(io::Error::new(
-                error.kind(),
-                format!("Game tables unavailable: {error}"),
-            ));
-        }
         self.replace_content(Some(ContentOptions {
             options,
             allow_unverified,
@@ -348,9 +350,19 @@ impl Service {
         Ok(())
     }
 
-    /// Whether products that read artwork or localisation have folders bound.
+    /// Gives the recording at `path` the facts it lacks before a user opens it, so the revision
+    /// the open names is the upgraded one.
+    pub fn upgrade_recording(&self, path: &std::path::Path) {
+        if let Ok(path) = path.canonicalize() {
+            self.inner.upgrade(&path);
+        }
+    }
+
+    /// Whether products that read artwork have the game's folders bound.
     pub fn content_bound(&self) -> bool {
-        self.inner.content().is_some()
+        self.inner
+            .content()
+            .is_some_and(|content| content.options.game_dir.join("hoi4.exe").is_file())
     }
 
     fn replace_content(&self, content: Option<ContentOptions>) {

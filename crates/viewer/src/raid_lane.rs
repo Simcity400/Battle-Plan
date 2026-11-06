@@ -22,6 +22,7 @@
 //! only one of the current reset built for the shown hour and resolved
 //! country ([`RaidLane::icons`], [`RaidIcons::drawable_at`]).
 
+use job_priority::SpawnCarried as _;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Condvar, Mutex, MutexGuard},
@@ -479,7 +480,7 @@ impl RaidLane {
             // the icons are still being built.
             self.started = std::thread::Builder::new()
                 .name("raid offers".into())
-                .spawn(move || serve(&shared))
+                .spawn_carried(move || serve(&shared))
                 .is_ok();
         }
         let mut state = lock(&self.shared);

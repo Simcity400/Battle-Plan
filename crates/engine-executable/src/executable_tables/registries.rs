@@ -113,9 +113,9 @@ pub struct RegistryTables {
     pub effects: Vec<(u32, &'static str)>,
     pub effect_classes: Vec<(u32, u64, u64)>,
     pub effect_identities: Vec<(u32, &'static str, u64)>,
-    context_effect_names: BTreeMap<u64, &'static str>,
+    pub(super) context_effect_names: BTreeMap<u64, &'static str>,
     /// Each unmatched identity's build-independent stand-in.
-    unmatched: BTreeMap<u64, u64>,
+    pub(super) unmatched: BTreeMap<u64, u64>,
 }
 
 impl RegistryTables {

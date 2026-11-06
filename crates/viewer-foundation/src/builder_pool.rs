@@ -1,6 +1,7 @@
 //! Bounded FIFO workers used by hour building and borrowed raid batches.
 mod capacity;
 pub use capacity::CapacityListener;
+use job_priority::SpawnCarried as _;
 use capacity::Capacity;
 
 use crate::{parallel::Spawn, worker_priority::background_priority};
@@ -12,6 +13,11 @@ use std::{
     thread,
 };
 type Job = Box<dyn FnOnce() + Send>;
+
+/// `job`, run by whichever builder takes it with the submitting thread's recording context.
+fn carried(job: Job) -> Job {
+    Box::new(job_priority::carry(job))
+}
 
 /// Nonblocking admission retains the rejected job and distinguishes a full queue.
 pub enum TrySubmitError {
@@ -40,7 +46,7 @@ impl Pool {
                 let capacity = Arc::clone(&capacity);
                 thread::Builder::new()
                     .name(format!("hour builder {index}"))
-                    .spawn(move || {
+                    .spawn_carried(move || {
                         let _cost = replay_frame::cpu::scope("jobs.dispatch", Some("other"));
                         background_priority();
                         loop {
@@ -69,7 +75,7 @@ impl Pool {
 
     pub fn submit(&self, job: Job) {
         if let Some(jobs) = &self.jobs {
-            let _ = jobs.send(job);
+            let _ = jobs.send(carried(job));
         }
     }
 
@@ -81,7 +87,7 @@ impl Pool {
 
     pub fn try_submit_status(&self, job: Job) -> Result<(), TrySubmitError> {
         match &self.jobs {
-            Some(jobs) => jobs.try_send(job).map_err(|error| match error {
+            Some(jobs) => jobs.try_send(carried(job)).map_err(|error| match error {
                 mpsc::TrySendError::Full(job) => TrySubmitError::Full(job),
                 mpsc::TrySendError::Disconnected(job) => TrySubmitError::Disconnected(job),
             }),

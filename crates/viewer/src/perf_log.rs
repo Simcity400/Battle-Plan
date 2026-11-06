@@ -1,5 +1,6 @@
 //! Opt-in window frame timings, one file per viewer process: `<BATTLE_PLAN_PERF_MAP_LOG>.<pid>.jsonl`.
 
+use job_priority::SpawnCarried as _;
 use std::{
     cell::Cell,
     fs::File,
@@ -68,7 +69,7 @@ fn open() -> Option<Log> {
     let (queue, lines) = mpsc::sync_channel::<Message>(QUEUE_LINES);
     let writer = std::thread::Builder::new()
         .name("perf map log".into())
-        .spawn(move || {
+        .spawn_carried(move || {
             let mut out = BufWriter::new(file);
             let _ = writeln!(out, "{opening}");
             let _ = out.flush();

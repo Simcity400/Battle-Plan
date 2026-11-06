@@ -598,6 +598,7 @@ fn bind_reads_recorded_layered_temperature_content_once_and_refuses_unverified_s
         layers: stack.layers(&["map/strategicregions"]),
         stats: Default::default(),
         changed: Vec::new(),
+        notes: Vec::new(),
     });
     let mut records =
         dashboard_base::test_fixtures::records(1, vec![frame(10, Some(vec![row(71)]))]);

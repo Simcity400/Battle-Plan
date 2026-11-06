@@ -2125,7 +2125,7 @@ fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::
     let mut files: Vec<(String, Gui)> = Vec::new();
     // The layers' own bytes, as the game's enumeration returns them; each file is read by them
     // and labelled with their text.
-    let listed = layers.listed_layer_paths(b"interface/");
+    let listed = layers.listed_layer_paths(b"interface/")?;
     let label = |path: &[u8]| String::from_utf8_lossy(path).into_owned();
     // Open the literal lowercase path through the virtual file system: folder lookup accepts
     // any case, archive lookup uses exact bytes. A missing file is passed.

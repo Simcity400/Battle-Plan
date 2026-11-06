@@ -582,6 +582,7 @@ mod tests {
             game_dir: game.into(),
             user_dir: user.into(),
             background_preparation: Some(false),
+            older_game_dirs: Vec::new(),
         };
         assert_eq!(
             folder_arguments(&config(r"C:\Game", r"C:\User")),
@@ -602,6 +603,7 @@ mod tests {
             game_dir: game.into(),
             user_dir: r"C:\User".into(),
             background_preparation: None,
+            older_game_dirs: Vec::new(),
         };
         let (applied, saved) = (config(r"C:\New"), config(r"C:\Old"));
         assert_eq!(

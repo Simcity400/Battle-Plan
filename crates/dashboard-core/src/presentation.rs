@@ -109,6 +109,7 @@ impl Presented {
                 layers,
                 stats: recorded.stats.clone(),
                 changed: recorded.changed.clone(),
+                notes: recorded.notes.clone(),
             }),
             refusals,
         })

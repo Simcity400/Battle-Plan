@@ -352,13 +352,15 @@ pub fn start(
             .unwrap_or_else(|error| error.into_inner())
             .state = State::Preparing;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            dashboard_base::prepared::priority::JobPriority::run(background, || {
-                pipeline::run(&worker_source, content.as_ref(), cancelled, |accepted| {
-                    let mut state = progress.lock().unwrap_or_else(|error| error.into_inner());
-                    state.bytes = accepted.bytes;
-                    state.sections = accepted.sections.clone();
-                    state.coverage = accepted.coverage.clone();
-                    state.families = accepted.families.clone();
+            worker_source.in_scope(|| {
+                dashboard_base::prepared::priority::JobPriority::run(background, || {
+                    pipeline::run(&worker_source, content.as_ref(), cancelled, |accepted| {
+                        let mut state = progress.lock().unwrap_or_else(|error| error.into_inner());
+                        state.bytes = accepted.bytes;
+                        state.sections = accepted.sections.clone();
+                        state.coverage = accepted.coverage.clone();
+                        state.families = accepted.families.clone();
+                    })
                 })
             })
         }));

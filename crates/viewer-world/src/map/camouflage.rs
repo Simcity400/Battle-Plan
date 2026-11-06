@@ -55,7 +55,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 impl Content {
     pub fn load(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
         let path = layers
-            .paths()
+            .paths()?
             .find(|path| path.eq_ignore_ascii_case(b"common/acclimatation.txt"))
             .ok_or_else(|| invalid("missing matching common/acclimatation.txt"))?;
         Self::parse(

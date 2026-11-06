@@ -222,6 +222,21 @@ impl Replay {
             .ok_or_else(|| invalid("block outside replay"))
     }
 
+    /// Bytes of a fact pack this recording names, from `offset` in the file.
+    pub fn read_facts_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()> {
+        let end = offset
+            .checked_add(output.len() as u64)
+            .ok_or_else(|| invalid("game facts offset overflow"))?;
+        if !self
+            .fact_packs
+            .iter()
+            .any(|pack| offset >= pack.offset && end <= pack.offset + pack.length)
+        {
+            return Err(invalid("game facts read outside the facts the recording names"));
+        }
+        self.read_at(offset, output)
+    }
+
     pub(super) fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()> {
         match &self.file {
             Some(file) => {

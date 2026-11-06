@@ -302,7 +302,7 @@ pub fn read_country_colors(layers: &ResolvedLayers) -> io::Result<CountryColors>
     let mut colors = CountryColors::default();
     let names = layers.key_names()?;
     // The database loader's roster: the folder's own files in byte order, each by its bytes.
-    for path in crate::script_files::paths(layers, "common/autonomous_states/", Some(".txt")) {
+    for path in crate::script_files::paths(layers, "common/autonomous_states/", Some(".txt"))? {
         apply_autonomy_colors(&mut colors, &path.read(layers)?, &names)?;
     }
     Ok(colors)

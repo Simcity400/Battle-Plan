@@ -19,6 +19,7 @@
 //! country tags and scripted localisation names match exactly. What the
 //! recording cannot answer is refused by name with the missing input.
 
+use job_priority::SpawnCarried as _;
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 
@@ -1187,7 +1188,7 @@ impl<'a> ScriptedText<'a> {
                 .name("scripted-localisation".into())
                 // Reserve 64 KiB per backstop level for the entry's debug call frames.
                 .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
-                .spawn_scoped(thread_scope, move || {
+                .spawn_scoped_carried(thread_scope, move || {
                     let _memory = engine_allocation::labels::resume(memory);
                     let _cpu = cpu.enter("scripted localisation");
                     caller.enter();

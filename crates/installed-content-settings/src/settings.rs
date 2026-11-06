@@ -322,9 +322,17 @@ fn point_in<'a>(
 
 /// The user folder's `settings.txt` through [`SettingsKeys`].
 pub fn read_keys(user: &Path) -> io::Result<SettingsKeys> {
-    Ok(SettingsKeys::read(&bounded_read(
-        &user.join("settings.txt"),
-    )?))
+    let bytes = bounded_read(&user.join("settings.txt"))?;
+    // The game folds its keys through its keyword table: with none in scope it cannot be read.
+    match engine_executable::executable_tables::current() {
+        Some(tables) => drop(tables.keywords.as_ref().map_err(io::Error::from)?),
+        None => {
+            return Err(io::Error::other(
+                "settings.txt is read through the game's keyword table, and none is in scope",
+            ));
+        }
+    }
+    Ok(SettingsKeys::read(&bytes))
 }
 
 /// Counter options from `settings.txt` used by the game's unit counters.

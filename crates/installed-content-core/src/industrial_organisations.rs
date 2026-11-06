@@ -272,7 +272,7 @@ pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
         layers,
         "common/military_industrial_organization/organizations/",
         Some(".txt"),
-    ) {
+    )? {
         let before = database.notes.len();
         if let Err(why) = database.read_file(&path.read(layers)?, names) {
             database.notes.push(why);
@@ -298,7 +298,7 @@ pub fn read_policies(
         layers,
         "common/military_industrial_organization/policies/",
         Some(".txt"),
-    ) {
+    )? {
         let before = catalog.notes.len();
         if let Err(why) = catalog.read_file(&path.read(layers)?, names) {
             notes.push(format!("{path}: {why}"));

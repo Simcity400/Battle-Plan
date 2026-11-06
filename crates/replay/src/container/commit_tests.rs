@@ -49,6 +49,7 @@ fn save_in_place(path: &Path, segments: &[(u32, Recovery)]) -> io::Result<Replay
         || Ok(()),
         |_| Ok(()),
         None,
+        None,
         |_| Ok(()),
     )?;
     Ok(replay)
@@ -255,6 +256,7 @@ fn only_a_current_recording_opened_to_be_added_to_is_saved_in_place() {
             |number, frame| restore(&next, number, frame),
             || Ok(()),
             |_| Ok(()),
+            None,
             None,
             |_| Ok(()),
         )
@@ -610,6 +612,7 @@ fn an_append_names_its_revision_before_changing_the_recording() {
             || Ok(()),
             |_| Ok(()),
             None,
+            None,
             |revision| {
                 assert_eq!(file.bytes(), old.bytes());
                 assert_eq!(revision, expected.revision());
@@ -635,6 +638,7 @@ fn an_append_refused_by_its_journal_keeps_the_previous_save() {
             || Ok(()),
             |_| Ok(()),
             None,
+            None,
             |_| Err(io::ErrorKind::Interrupted.into()),
         )
         .unwrap_err();
@@ -658,6 +662,7 @@ fn rejected_preparation_never_replaces_the_recording_or_removes_its_torn_tail() 
             |number, frame| restore(&next, number, frame),
             || Ok(()),
             |_| Ok(()),
+            None,
             None,
             |_| {
                 Err(io::Error::new(

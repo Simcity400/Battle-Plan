@@ -1245,6 +1245,17 @@ pub(crate) fn load_scene(
     document: &Document,
     graphics: dashboard::protocol::MapGraphics,
 ) -> std::io::Result<Scene> {
+    engine_executable::executable_tables::scope(document.content.tables, || {
+        load_scene_scoped(device, queue, document, graphics)
+    })
+}
+
+fn load_scene_scoped(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    document: &Document,
+    graphics: dashboard::protocol::MapGraphics,
+) -> std::io::Result<Scene> {
     let mut scene = Scene::new(
         device,
         queue,
@@ -2316,7 +2327,7 @@ impl Viewer {
         let fallbacks = Arc::clone(&self.visual_fallbacks);
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        job_priority::spawn(move || {
             let initial = InitialHour {
                 branch: options.branch,
                 hour: options.hour,
@@ -5817,11 +5828,28 @@ impl eframe::App for Viewer {
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         crate::perf_log::frame_start();
-        self.embedded_logic(ctx, frame);
+        engine_executable::executable_tables::scope(self.tables(), || {
+            self.embedded_logic(ctx, frame)
+        });
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         crate::perf_log::frame_ui();
+        let tables = self.tables();
+        engine_executable::executable_tables::scope(tables, || self.campaign_ui(ui, frame));
+        crate::perf_log::frame_end();
+    }
+}
+
+impl Viewer {
+    /// The executable tables of the recording this viewer shows, which its work reads.
+    pub(crate) fn tables(&self) -> Option<engine_executable::executable_tables::Tables> {
+        self.document
+            .as_ref()
+            .and_then(|document| document.content.tables)
+    }
+
+    fn campaign_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if let Some(recorder) = viewer_foundation::frame_writer::recorder() {
             let mut recording = Some(recorder.pass());
             let drawn = self.update(ui, frame, &mut recording);
@@ -5837,7 +5865,6 @@ impl eframe::App for Viewer {
         } else {
             self.update(ui, frame, &mut None);
         }
-        crate::perf_log::frame_end();
     }
 }
 

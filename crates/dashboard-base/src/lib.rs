@@ -16,6 +16,7 @@ static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod catalogue;
 pub mod content;
+pub mod facts;
 pub mod prepared;
 pub mod prepared_chart;
 pub mod prepared_measure;

@@ -8,6 +8,7 @@
 //! samples stay while voices use them and for [`RETAIN`] after their last
 //! use.
 
+use job_priority::SpawnCarried as _;
 use crate::{
     Frame, Mix,
     engine::{CALLBACK_FRAMES, Content, Engine, Load, RATE, Samples},
@@ -113,7 +114,7 @@ impl System {
         });
         let spawned = thread::Builder::new()
             .name("map audio".into())
-            .spawn(move || control(receiver, status, silent));
+            .spawn_carried(move || control(receiver, status, silent));
         if let Err(error) = spawned {
             system
                 .status
@@ -367,7 +368,7 @@ fn open_output() -> Result<(Output, String), String> {
     // The stream stays on its own thread: it is not sent between threads.
     thread::Builder::new()
         .name("map audio output".into())
-        .spawn(move || {
+        .spawn_carried(move || {
             let result = (|| {
                 let host = cpal::default_host();
                 let device = host
@@ -571,7 +572,7 @@ fn guarded<T>(
 /// over as a stream once it opens, then decoded into it a packet at a time
 /// until it ends or the player lets go of it, before the next request.
 fn loader(name: &str, requests: mpsc::Receiver<Request>, done: mpsc::Sender<Loaded>) {
-    let _ = thread::Builder::new().name(name.into()).spawn(move || {
+    let _ = thread::Builder::new().name(name.into()).spawn_carried(move || {
         for (generation, source, load) in requests {
             let send = |payload| {
                 done.send(Loaded {

@@ -135,7 +135,9 @@ pub fn cached(layers: &ResolvedLayers) -> Result<Arc<Catalog>, String> {
             ("common/factions/member_upgrades/", false),
             ("common/factions/member_upgrades/member_groups/", true),
         ] {
-            for path in script_files::paths(layers, folder, Some(".txt")) {
+            for path in
+                script_files::paths(layers, folder, Some(".txt")).map_err(|why| why.to_string())?
+            {
                 catalog.coverage.next_file();
                 let read = parse(
                     &path.read(layers).map_err(|why| why.to_string())?,

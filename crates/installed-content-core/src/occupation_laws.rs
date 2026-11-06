@@ -145,7 +145,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Laws> {
     // Direct files in file order; the last declaration replaces the previous
     // object of the same token.
     let names = layers.key_names()?;
-    for path in script_files::paths(layers, "common/occupation_laws/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/occupation_laws/", Some(".txt"))? {
         match parse(&path.read(layers)?, &names) {
             Ok(items) => {
                 for law in items {

@@ -5,6 +5,7 @@
 //! preparation's language read it. A reader expands the text again in its own language from
 //! them alone ([`expand`]), and refuses by name what the preparation did not read.
 
+use job_priority::SpawnCarried as _;
 use super::{numeric::format_variable, properties::date_property_at, *};
 use installed_content_country_names::country_names::Operands as Naming;
 use serde::{Deserialize, Serialize};
@@ -842,7 +843,7 @@ impl<'r> Recorded<'r> {
                 .name("scripted-localisation".into())
                 // As the hour's evaluation reserves: 64 KiB per backstop level.
                 .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
-                .spawn_scoped(scope, move || {
+                .spawn_scoped_carried(scope, move || {
                     let _memory = engine_allocation::labels::resume(memory);
                     diagnostics.enter(|| {
                         let _cpu = cpu.enter("scripted localisation");

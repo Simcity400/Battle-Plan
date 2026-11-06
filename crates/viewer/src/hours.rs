@@ -50,6 +50,7 @@ mod source_mailbox;
 pub use shared_decoder::SharedDecoder;
 mod trace;
 
+use job_priority::SpawnCarried as _;
 use crate::map_views::CounterView;
 use std::cell::Cell;
 use std::sync::MutexGuard;
@@ -1482,7 +1483,7 @@ impl DecodeLane {
         let lane = Arc::clone(&shared);
         thread::Builder::new()
             .name("hour decoder".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let _exit = LaneExit(&lane);
                 viewer_foundation::worker_priority::normal_priority();
                 Self::run(&lane, playback.with_display_changes());
@@ -2491,7 +2492,32 @@ impl Pipeline {
         )
     }
 
+    /// Every thread it starts and every job it hands the pool reads the recording's own
+    /// executable tables.
     fn start(
+        content: Arc<Content>,
+        replay: Arc<Replay>,
+        pool: Arc<Pool>,
+        frame_workers: Workers,
+        shared_decoder: Option<Arc<SharedDecoder>>,
+        parallel: usize,
+        binding: Option<Arc<crate::map_binding::MapBinding>>,
+    ) -> io::Result<Self> {
+        let tables = content.tables;
+        engine_executable::executable_tables::scope(tables, move || {
+            Self::start_scoped(
+                content,
+                replay,
+                pool,
+                frame_workers,
+                shared_decoder,
+                parallel,
+                binding,
+            )
+        })
+    }
+
+    fn start_scoped(
         content: Arc<Content>,
         replay: Arc<Replay>,
         pool: Arc<Pool>,
@@ -2553,7 +2579,7 @@ impl Pipeline {
         let driver = coordinator::start(coordinator);
         thread::Builder::new()
             .name("hour coordinator".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let _cost = replay_frame::cpu::scope("hour coordinator", Some("other"));
                 background_priority();
                 coordinator::run(driver, inbox)

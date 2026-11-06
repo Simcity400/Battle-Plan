@@ -35,10 +35,10 @@ pub struct KeywordTables {
     pub modifier_names: Vec<&'static str>,
     folded: HashMap<Vec<u8>, (u32, &'static str)>,
     /// Why token ids named in code do not hold for this build, if they do not.
-    fixed_keywords: Result<(), String>,
+    pub(super) fixed_keywords: Result<(), String>,
     /// Why modifier indices named in code do not hold for this build, if they do not.
-    fixed_modifiers: Result<(), String>,
-    content: [u8; 32],
+    pub(super) fixed_modifiers: Result<(), String>,
+    pub(super) content: [u8; 32],
 }
 
 impl KeywordTables {
@@ -64,29 +64,7 @@ impl KeywordTables {
         let names = names?;
         let modifiers = resolve_modifiers(&names, &reduce_modifier_groups(&assignments?)?)?;
 
-        let keyword_rows = canonical_rows(&names);
-        let modifier_rows = canonical_rows(&modifiers);
-        let fixed_keywords = verify_digest("keywords", keyword_rows.as_bytes(), KEYWORDS_DIGEST)
-            .map_err(|error| error.to_string());
-        let fixed_modifiers =
-            verify_digest("modifiers", modifier_rows.as_bytes(), MODIFIERS_DIGEST)
-                .map_err(|error| error.to_string())
-                .and_then(|()| {
-                    // The pinned digest fixes the count; the gap constant must agree with it.
-                    if modifiers.len() == crate::build::FIXED_MODIFIER_GAP as usize {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "{} fixed modifiers differ from the fixed modifier gap",
-                            modifiers.len()
-                        ))
-                    }
-                });
-        let mut content = Sha256::new();
-        content.update(keyword_rows.as_bytes());
-        // Rows are never empty, so a blank line separates the two lists.
-        content.update(b"\n");
-        content.update(modifier_rows.as_bytes());
+        let (fixed_keywords, fixed_modifiers, content) = fixed_ids(&names, &modifiers);
 
         let mut folded = HashMap::with_capacity(names.len());
         let mut installed_names = Vec::with_capacity(names.len());
@@ -111,8 +89,42 @@ impl KeywordTables {
             folded,
             fixed_keywords,
             fixed_modifiers,
-            content: content.finalize().into(),
+            content,
         })
+    }
+
+    /// The table a recording carries ([`super::recorded`]), with its folded lookup rebuilt.
+    pub(super) fn recorded(
+        names: Vec<(u32, &'static str)>,
+        modifier_names: Vec<&'static str>,
+    ) -> Self {
+        let rows = |rows: &mut dyn Iterator<Item = (u32, &str)>| {
+            rows.map(|(id, name)| (id, name.to_owned())).collect::<Vec<_>>()
+        };
+        let (fixed_keywords, fixed_modifiers, content) = fixed_ids(
+            &rows(&mut names.iter().copied()),
+            &rows(&mut modifier_names.iter().enumerate().map(|(key, name)| (key as u32, *name))),
+        );
+        let folded = names
+            .iter()
+            .map(|&(id, name)| {
+                let lowered = name.to_ascii_lowercase();
+                let lowered_name = if lowered == name {
+                    name
+                } else {
+                    super::leak_string(lowered.clone())
+                };
+                (lowered.into_bytes(), (id, lowered_name))
+            })
+            .collect();
+        Self {
+            names,
+            modifier_names,
+            folded,
+            fixed_keywords,
+            fixed_modifiers,
+            content,
+        }
     }
 
     pub fn by_id(&self, id: u32) -> Option<&'static str> {
@@ -971,6 +983,37 @@ fn reduce_modifier_groups(assignments: &[ModifierAssignment]) -> io::Result<BTre
         effective.insert(first.key, first.token);
     }
     Ok(effective)
+}
+
+/// Whether the token ids and fixed modifier indices this release's code names hold for these
+/// rows, and the rows' build-independent digest.
+fn fixed_ids(
+    names: &[(u32, String)],
+    modifiers: &[(u32, String)],
+) -> (Result<(), String>, Result<(), String>, [u8; 32]) {
+    let keyword_rows = canonical_rows(names);
+    let modifier_rows = canonical_rows(modifiers);
+    let fixed_keywords = verify_digest("keywords", keyword_rows.as_bytes(), KEYWORDS_DIGEST)
+        .map_err(|error| error.to_string());
+    let fixed_modifiers = verify_digest("modifiers", modifier_rows.as_bytes(), MODIFIERS_DIGEST)
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
+            // The pinned digest fixes the count; the gap constant must agree with it.
+            if modifiers.len() == crate::build::FIXED_MODIFIER_GAP as usize {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{} fixed modifiers differ from the fixed modifier gap",
+                    modifiers.len()
+                ))
+            }
+        });
+    let mut content = Sha256::new();
+    content.update(keyword_rows.as_bytes());
+    // Rows are never empty, so a blank line separates the two lists.
+    content.update(b"\n");
+    content.update(modifier_rows.as_bytes());
+    (fixed_keywords, fixed_modifiers, content.finalize().into())
 }
 
 fn canonical_rows(rows: &[(u32, String)]) -> String {

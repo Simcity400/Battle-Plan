@@ -34,7 +34,7 @@ impl DynamicTokens {
         // Byte paths preserve archive filenames that a text listing cannot represent.
         let directory = b"common/synchronized_dynamic_tokens/";
         for path in layers
-            .listed_layer_paths(directory)
+            .listed_layer_paths(directory)?
             .into_iter()
             .filter(|path| {
                 let name = &path[directory.len()..];

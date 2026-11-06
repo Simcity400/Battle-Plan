@@ -34,7 +34,7 @@ pub fn map_entering<T: Sync, R: Send>(
             .map(|_| {
                 let cpu = job_priority::accounting::Context::capture();
                 let diagnostics = &diagnostics;
-                scope.spawn(move || {
+                job_priority::spawn_in(scope, move || {
                     let _memory = engine_allocation::labels::resume(memory);
                     diagnostics.enter(|| {
                         let _cpu = cpu.enter("content parallel");
@@ -74,7 +74,7 @@ pub fn spawn<'scope, T: Send + 'scope>(
     let cpu = job_priority::accounting::Context::capture();
     let diagnostics = crate::content::diagnostics::Context::capture();
     let memory = engine_allocation::labels::current();
-    scope.spawn(move || {
+    job_priority::spawn_in(scope, move || {
         let _memory = engine_allocation::labels::resume(memory);
         diagnostics.enter(|| {
             let _cpu = cpu.enter("content helper");

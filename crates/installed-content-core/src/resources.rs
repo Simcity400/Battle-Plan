@@ -226,7 +226,7 @@ fn parse_file(input: &[u8]) -> FileRead {
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Resources, Vec<Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result = Resources::default();
-    for path in script_files::paths(layers, "common/resources/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/resources/", Some(".txt"))? {
         let path_text = path.to_string();
         let (resources, notes, stop) = parse_file(&path.read(layers)?);
         result.declarations.extend(resources);

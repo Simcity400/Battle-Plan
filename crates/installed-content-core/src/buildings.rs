@@ -939,7 +939,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Buildings> {
 /// [`read`], the triggers read against `names`, which
 /// [`KeyNames::read`] gives before any building is known.
 pub(crate) fn read_with(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Buildings> {
-    let paths = crate::script_files::database_paths(layers, BUILDINGS);
+    let paths = crate::script_files::database_paths(layers, BUILDINGS)?;
     let (resources, warnings) = crate::resources::read(layers)?;
     if !warnings.is_empty() {
         return Err(invalid(format!(

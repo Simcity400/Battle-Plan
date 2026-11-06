@@ -254,7 +254,7 @@ pub(crate) fn rewrite(
         &replay.gaps,
         &replay.controls,
         &replay.recovery_notes,
-        &indexes,
+        &indexes, &[],
     )
     .unwrap();
     super::super::commit::stamp_slot(&mut bytes, replay.slot).unwrap();
@@ -738,7 +738,7 @@ pub(crate) fn file_bytes(replay: &Replay, blocks: usize) -> Vec<u8> {
         &replay.gaps,
         &replay.controls,
         &replay.recovery_notes,
-        &replay.index[..blocks],
+        &replay.index[..blocks], &[],
     )
     .unwrap();
     super::super::commit::stamp_slot(&mut bytes, replay.slot).unwrap();

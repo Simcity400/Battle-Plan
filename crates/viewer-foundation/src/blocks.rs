@@ -15,6 +15,7 @@
 //! so a seek never leaves a stale block behind. Passed blocks are freed on the
 //! pipeline's dropper, not on the decoding thread.
 
+use job_priority::SpawnCarried as _;
 use std::sync::MutexGuard;
 use std::{
     collections::BTreeSet,
@@ -149,7 +150,7 @@ impl BlockReader {
         let reader = Arc::clone(self);
         let spawned = thread::Builder::new()
             .name("block read-ahead".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 // Ahead of need: never before the window's or the builders' threads.
                 crate::worker_priority::background_priority();
                 let guard = Reading {

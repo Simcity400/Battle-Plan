@@ -104,7 +104,7 @@ impl ScriptedTriggers {
 
     /// The name pass over the directory's own files.
     fn read_all_names(&mut self, layers: &ResolvedLayers) -> io::Result<()> {
-        for path in crate::script_files::paths(layers, DIRECTORY, Some(".txt")) {
+        for path in crate::script_files::paths(layers, DIRECTORY, Some(".txt"))? {
             self.read_names(&path.read(layers)?, &path.text());
         }
         Ok(())
@@ -238,7 +238,7 @@ fn read_with_bindings(
 ) -> io::Result<ScriptedTriggers> {
     let names = layers.key_names()?;
     let mut triggers = ScriptedTriggers::default();
-    let listed = layers.listed_layer_paths(DIRECTORY.as_bytes());
+    let listed = layers.listed_layer_paths(DIRECTORY.as_bytes())?;
     triggers.read_all_names(layers)?;
     for path in crate::defines::load_order_paths(
         DIRECTORY.as_bytes(),

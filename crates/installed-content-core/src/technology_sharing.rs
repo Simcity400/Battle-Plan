@@ -128,7 +128,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Group>, Vec<Stri
 pub fn read(layers: &ResolvedLayers) -> io::Result<TechnologySharing> {
     let names = layers.key_names()?;
     let mut result = TechnologySharing::default();
-    for path in script_files::paths(layers, "common/technology_sharing/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/technology_sharing/", Some(".txt"))? {
         match parse(&path.read(layers)?, &names) {
             Ok((groups, warnings)) => {
                 result

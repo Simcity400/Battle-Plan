@@ -317,7 +317,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut database = Database::default();
-    for path in script_files::paths(layers, "common/wargoals/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/wargoals/", Some(".txt"))? {
         match parse(&path.read(layers)?, &names) {
             Ok(parsed) => {
                 database.prefixes.extend(parsed.prefixes);

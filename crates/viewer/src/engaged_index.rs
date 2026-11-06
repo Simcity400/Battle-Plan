@@ -36,6 +36,7 @@
 //! ([`naval_check`]), publishing [`History::byte_check`].
 //! [`check_recorded_bytes`] uses the same fold for a dump.
 
+use job_priority::SpawnCarried as _;
 use replay::container::Replay;
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::{
@@ -240,7 +241,7 @@ impl EngagedIndex {
         let pass = Pass::new(Arc::clone(&shared), country.clone());
         thread::Builder::new()
             .name("engaged index".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 lowest_priority();
                 pass.run(replay, inbox)
             })?;

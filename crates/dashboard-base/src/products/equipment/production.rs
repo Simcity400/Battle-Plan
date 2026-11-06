@@ -1070,7 +1070,7 @@ mod scan_sharing_tests {
         let never = AtomicBool::new(false);
         let (cache, scans, never) = (&cache, &scans, &never);
         std::thread::scope(|scope| {
-            let first = scope.spawn(move || {
+            let first = job_priority::spawn_in(scope, move || {
                 shared_scan(cache, 1, never, || {
                     scans.fetch_add(1, Ordering::SeqCst);
                     released.recv().unwrap();
@@ -1080,7 +1080,7 @@ mod scan_sharing_tests {
             while !cache.lock().unwrap().scanning.contains(&1) {
                 std::thread::yield_now();
             }
-            let second = scope.spawn(move || {
+            let second = job_priority::spawn_in(scope, move || {
                 shared_scan(cache, 1, never, || {
                     scans.fetch_add(1, Ordering::SeqCst);
                     Ok(8)
@@ -1108,7 +1108,7 @@ mod scan_sharing_tests {
         let never = AtomicBool::new(false);
         let (shared, never) = (&cache, &never);
         std::thread::scope(|scope| {
-            let first = scope.spawn(move || {
+            let first = job_priority::spawn_in(scope, move || {
                 shared_scan(shared, 1, never, || {
                     released.recv().unwrap();
                     Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
@@ -1117,7 +1117,7 @@ mod scan_sharing_tests {
             while !cache.lock().unwrap().scanning.contains(&1) {
                 std::thread::yield_now();
             }
-            let second = scope.spawn(move || shared_scan(shared, 1, never, || Ok(8)));
+            let second = job_priority::spawn_in(scope, move || shared_scan(shared, 1, never, || Ok(8)));
             while waiting(shared) == 0 {
                 std::thread::yield_now();
             }

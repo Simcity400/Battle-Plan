@@ -56,7 +56,7 @@ impl Lane {
         if self.worker.is_none() {
             let shared = Arc::clone(shared);
             let ctx = ctx.clone();
-            self.worker = Some(std::thread::spawn(move || run(shared, ctx)));
+            self.worker = Some(job_priority::spawn(move || run(shared, ctx)));
         }
         let request = Request {
             content,

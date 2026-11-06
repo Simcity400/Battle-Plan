@@ -778,7 +778,7 @@ impl CounterAssets {
         let decoded: Vec<io::Result<(dds::Texture, u32, [u32; 2])>> = std::thread::scope(|scope| {
             sheet_names
                 .iter()
-                .map(|name| scope.spawn(|| decode_sheet(layers, sprites, name, decode)))
+                .map(|name| job_priority::spawn_in(scope, || decode_sheet(layers, sprites, name, decode)))
                 .collect::<Vec<_>>()
                 .into_iter()
                 .map(|handle| handle.join().expect("sheet decoder panicked"))

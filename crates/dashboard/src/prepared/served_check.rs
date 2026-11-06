@@ -1211,14 +1211,18 @@ impl Served {
             recording.to_owned(),
             &cancelled,
         )?;
-        let (store, key) = super::files(&source, content.as_ref())?;
-        if !store.is_reusable(&key)? {
-            return Err(invalid(format!(
-                "{} holds no preparation of this recording under this content",
-                folder.display()
-            )));
-        }
-        let complete = super::pipeline::restore(&source, content.as_ref(), &cancelled)?.is_some();
+        let complete = source.in_scope(|| {
+            let (store, key) = super::files(&source, content.as_ref())?;
+            if !store.is_reusable(&key)? {
+                return Err(invalid(format!(
+                    "{} holds no preparation of this recording under this content",
+                    folder.display()
+                )));
+            }
+            io::Result::Ok(
+                super::pipeline::restore(&source, content.as_ref(), &cancelled)?.is_some(),
+            )
+        })?;
         Ok(Self {
             source,
             content,
@@ -1228,7 +1232,9 @@ impl Served {
 
     pub fn require_family(&self, family: &str) -> io::Result<()> {
         if !self.complete
-            && !super::driver::native::complete(&self.source, self.content.as_ref(), family)?
+            && !self.source.in_scope(|| {
+                super::driver::native::complete(&self.source, self.content.as_ref(), family)
+            })?
         {
             return Err(invalid(format!(
                 "The store holds an unfinished preparation of {family} of this recording"
@@ -1239,7 +1245,9 @@ impl Served {
 
     pub fn family_bytes(&self) -> io::Result<HashMap<String, u64>> {
         use super::driver::plan::{self, Owner};
-        let (store, key) = super::files(&self.source, self.content.as_ref())?;
+        let (store, key) = self
+            .source
+            .in_scope(|| super::files(&self.source, self.content.as_ref()))?;
         let mut sizes = HashMap::<String, u64>::new();
         if let Some(session) = store.session(&key)? {
             let snapshot = session.snapshot();
@@ -1312,16 +1320,21 @@ impl Served {
         let cancelled = AtomicBool::new(false);
         let _scope = replay_frame::cpu::scope_named("query", product);
         let routed = crate::products::find(product).filter(|_| !super::query::answers(product));
-        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match routed {
-            // The product's own route, as the service asks it.
-            Some(registered) => {
-                let context = crate::config::LoadContext {
-                    content: self.content.clone(),
-                };
-                (registered.load)(&self.source, SOURCE, params.clone(), &context, &cancelled)
-                    .map_err(io::Error::other)
-            }
-            None => super::query::query(&self.source, &request, self.content.as_ref(), &cancelled),
+        // The recording's own executable tables answer it, never the installed game's.
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.source.in_scope(|| match routed {
+                // The product's own route, as the service asks it.
+                Some(registered) => {
+                    let context = crate::config::LoadContext {
+                        content: self.content.clone(),
+                    };
+                    (registered.load)(&self.source, SOURCE, params.clone(), &context, &cancelled)
+                        .map_err(io::Error::other)
+                }
+                None => {
+                    super::query::query(&self.source, &request, self.content.as_ref(), &cancelled)
+                }
+            })
         }));
         match answered {
             Ok(Ok(text)) => match serde_json::from_str::<Value>(&text) {

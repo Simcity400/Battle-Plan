@@ -232,7 +232,6 @@ fn run(args: &[OsString]) -> io::Result<()> {
     cpu::enable();
     let monitor = crate::app::playback_cost::Monitor::start()?;
     let setup = Instant::now();
-    engine_executable::executable_tables::initialize(&config.game_dir)?;
     crate::render::probe_dump_device()?;
     let document = Document::load(
         &recording,
@@ -246,6 +245,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
         None,
         0,
     )?;
+    engine_executable::executable_tables::enter(document.content.tables);
     let branch = options.branch.unwrap_or(document.playback.branch());
     let (first, last) = document
         .playback

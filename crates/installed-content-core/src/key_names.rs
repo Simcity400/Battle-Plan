@@ -202,7 +202,7 @@ impl KeyNames {
             template_columns: Some(template_columns),
             ..Self::default()
         };
-        if layers.paths().any(buildings::is_building_file) {
+        if layers.paths()?.any(buildings::is_building_file) {
             let buildings = buildings::read_with(layers, &names)?;
             names.counts.buildings =
                 CountTriggerNames::new(&buildings, &ideologies, &Default::default()).buildings;
@@ -305,7 +305,7 @@ fn template_columns(layers: &ResolvedLayers) -> Result<[i32; 3], String> {
 pub fn country_tags(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut tags = BTreeSet::new();
     // The files the database loader lists, each by its bytes.
-    for path in crate::script_files::paths(layers, "common/country_tags/", Some(".txt")) {
+    for path in crate::script_files::paths(layers, "common/country_tags/", Some(".txt"))? {
         tags.extend(file_tags(&path.read(layers)?));
     }
     Ok(tags)

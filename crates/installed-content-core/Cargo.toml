@@ -23,6 +23,8 @@ replay-spool.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+# Recorded game facts are zstd chunks (content::facts).
+zstd = "0.13"
 
 [dev-dependencies]
 mimalloc.workspace = true

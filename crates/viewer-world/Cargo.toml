@@ -13,6 +13,7 @@ doctest = false
 test-support = ["viewer-foundation/test-support", "dashboard-text/test-support", "shader-pipeline/test-support"]
 
 [dependencies]
+job-priority.workspace = true
 map-display-data.workspace = true
 map-snow.workspace = true
 replay.workspace = true

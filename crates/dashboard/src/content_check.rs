@@ -1753,6 +1753,7 @@ mod tests {
                 layers: installed_content_core::ResolvedLayers::from_folders(&[]).unwrap(),
                 stats: Default::default(),
                 changed: Vec::new(),
+                notes: Vec::new(),
             }),
             "english",
         );

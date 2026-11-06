@@ -1997,6 +1997,49 @@ impl Finalized {
 }
 
 /// Call only after detach and module-absence confirmation, or after process exit.
+/// Gives `recording` the game facts this session's recorder gathered, as a save of its own,
+/// when it carries none and they are its content's: a recording saved before the facts were
+/// packed, with no hours added since, gets them here. An unsaved recording, or one an unsaved
+/// recording continues, is left unchanged so the continuation still holds it: the facts wait
+/// beside the unsaved recording, which carries them when saved ([`publish_unsaved`]) and hands
+/// them back when discarded ([`discard_unsaved_recording`]). Whether it now carries them.
+pub fn attach_session_facts(session_dir: &Path, recording: &Path) -> Result<bool> {
+    let Some(bytes) = session_facts(session_dir)? else {
+        return Ok(false);
+    };
+    let folder = match recording.parent() {
+        Some(folder) if is_unsaved_recording(recording) => folder.parent().unwrap_or(folder),
+        Some(folder) => folder,
+        None => Path::new("."),
+    };
+    let _lock = NamesLock::wait(folder).map_err(|error| failure(folder, error))?;
+    let mut replay =
+        Replay::open_appendable(recording).map_err(|error| failure(recording, error))?;
+    if !replay.fact_packs.is_empty() {
+        return Ok(true);
+    }
+    let Some(pack) = replay::container::session_facts_for(&bytes, &replay.identity) else {
+        return Ok(false);
+    };
+    let staged = if is_unsaved_recording(recording) {
+        Some(recording.to_owned())
+    } else {
+        match std::str::from_utf8(&replay.campaign_id) {
+            Ok(campaign) => staged_recording(folder, campaign)?,
+            Err(_) => None,
+        }
+    };
+    if let Some(staged) = staged {
+        drop(replay);
+        keep_facts_beside(&staged, &bytes)?;
+        return Ok(false);
+    }
+    replay
+        .attach_facts_in_place(pack)
+        .map_err(|error| failure(recording, error))?;
+    Ok(true)
+}
+
 pub fn finalize_session(session_dir: &Path, replay_dir: &Path) -> Result<Vec<PathBuf>> {
     let finalized = finalize_session_outcome(session_dir, replay_dir)?;
     if finalized.errors.is_empty() {
@@ -2214,8 +2257,84 @@ pub fn finalize_session_ahead(
         for unrenamed in &finalized.unrenamed {
             println!("{unrenamed}");
         }
+        finalized
+            .errors
+            .extend(attach_published_facts(session_dir, &finalized.replays));
+        finalized
+            .errors
+            .extend(keep_unsaved_facts(session_dir, &finalized.unsaved));
         Ok(finalized)
     })
+}
+
+/// The game facts this session's recorder gathered, or none when it gathered none; one that
+/// cannot be read is an error, so nothing that waits on them is let go.
+fn session_facts(session_dir: &Path) -> Result<Option<Vec<u8>>> {
+    let path = session_dir.join(replay::container::SESSION_FACTS_FILE);
+    match fs::read(&path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(failure(&path, format!("{error}; the game facts are kept"))),
+    }
+}
+
+/// Where an unsaved recording's game facts wait beside it until it is saved: the staged file
+/// itself is never changed, so its checkpoint journal stays true.
+fn unsaved_facts(staged: &Path) -> PathBuf {
+    let mut name = staged.file_name().unwrap_or_default().to_owned();
+    name.push(".facts");
+    staged.with_file_name(name)
+}
+
+/// Keeps this session's facts beside each unsaved recording that lacks them and is its
+/// content's; what could not be kept, with why.
+fn keep_unsaved_facts(session_dir: &Path, unsaved: &[PathBuf]) -> Vec<String> {
+    let bytes = match session_facts(session_dir) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Vec::new(),
+        Err(error) => return vec![error],
+    };
+    unsaved
+        .iter()
+        .filter_map(|staged| keep_facts_beside(staged, &bytes).err())
+        .collect()
+}
+
+/// Keeps a session's facts (`bytes`, [`replay::container::SESSION_FACTS_FILE`]) beside the
+/// unsaved recording `staged` when it lacks them, they are its content's and none wait there.
+fn keep_facts_beside(staged: &Path, bytes: &[u8]) -> Result<()> {
+    let sidecar = unsaved_facts(staged);
+    let Ok(replay) = held_recording(staged) else {
+        return Ok(());
+    };
+    if !replay.fact_packs.is_empty()
+        || sidecar.is_file()
+        || replay::container::session_facts_for(bytes, &replay.identity).is_none()
+    {
+        return Ok(());
+    }
+    let staging = sidecar.with_extension("facts.tmp");
+    fs::write(&staging, bytes)
+        .and_then(|()| fs::rename(&staging, &sidecar))
+        .map_err(|error| format!("game facts were not kept for {}: {error}", staged.display()))
+}
+
+/// Gives every recording this session published, or noted as its own, the session's game facts
+/// when it still lacks them ([`attach_session_facts`]); what could not be given them, with why.
+pub fn attach_published_facts(session_dir: &Path, published: &[PathBuf]) -> Vec<String> {
+    let mut recordings: BTreeSet<PathBuf> = published.iter().cloned().collect();
+    if let Ok(Some(selection)) = selected_recordings(session_dir) {
+        recordings.extend(selection.recordings.into_values().flatten());
+    }
+    recordings
+        .into_iter()
+        .filter(|recording| recording.is_file())
+        .filter_map(|recording| {
+            attach_session_facts(session_dir, &recording)
+                .err()
+                .map(|error| format!("game facts were not added: {error}"))
+        })
+        .collect()
 }
 
 /// Save (or with `unsaved`, stage) a campaign's closed segments; its loads must be decided.
@@ -3942,6 +4061,13 @@ fn finalize_campaign_with_publisher(
         .and_then(|name| name.to_str())
         .ok_or_else(|| failure(campaign_dir, "campaign folder has no name"))?;
     let session_dir = campaign_dir.parent().unwrap_or(campaign_dir);
+    // The game facts this session's recorder gathered, which every save adds once.
+    let session_facts = fs::read(session_dir.join(replay::container::SESSION_FACTS_FILE)).ok();
+    let facts_for = |identity: &replay_data::identity::Identity| {
+        session_facts
+            .as_deref()
+            .and_then(|bytes| replay::container::session_facts_for(bytes, identity))
+    };
     // Held until the recording has its name, so no user rename slips in between.
     let lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
     reconcile_checkpoints(campaign_dir, replay_dir)?;
@@ -4683,6 +4809,7 @@ fn finalize_campaign_with_publisher(
                 ));
             }
             drop(previous);
+            let facts = facts_for(&appending.identity);
             appending
                 .append_in_place(
                     &segments[prefix..],
@@ -4690,6 +4817,7 @@ fn finalize_campaign_with_publisher(
                     progress,
                     observe,
                     ahead,
+                    facts,
                     |revision| {
                         if journaled {
                             intend_checkpoint(campaign_dir, target, revision)
@@ -4720,6 +4848,10 @@ fn finalize_campaign_with_publisher(
             observe,
             ahead,
         )
+        .and_then(|replay| match facts_for(&replay.identity) {
+            Some(pack) => replay.with_facts(pack),
+            None => Ok(replay),
+        })
         .map_err(|error| failure(campaign_dir, error))?,
     };
     let mut outcome = CampaignOutcome {
@@ -6370,43 +6502,105 @@ fn publish_unsaved_locked(
     naming: Naming<'_>,
 ) -> Result<Option<PathBuf>> {
     let Some(unsaved) = staged_recording(replay_dir, campaign)? else {
+        // Facts a save left waiting once its unsaved recording was gone go to what it saved.
+        hand_over_waiting_facts(replay_dir, campaign, None)?;
         return Ok(None);
     };
     let existing = recording_files::recording_of(replay_dir, campaign.as_bytes())
         .map_err(|error| failure(replay_dir, error))?;
-    let replay = held_recording(&unsaved)?;
-    replay
+    let sidecar = unsaved_facts(&unsaved);
+    // The facts its session kept for it; one that cannot be read keeps them waiting.
+    let waiting = match fs::read(&sidecar) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(failure(
+                &sidecar,
+                format!("{error}; nothing saved, and the game facts waiting for it are kept"),
+            ));
+        }
+    };
+    // A save that ended before its staged file was removed: the recording holds it already.
+    if let Some(existing) = &existing
+        && waiting.is_some()
+        && held_recording(existing).is_ok_and(|saved| saved.holds(&unsaved).unwrap_or(false))
+    {
+        replay::publication::posix_delete(&unsaved).map_err(|error| failure(&unsaved, error))?;
+        hand_over_waiting_facts(replay_dir, campaign, Some(&unsaved))?;
+        return Ok(Some(existing.clone()));
+    }
+    let staged = held_recording(&unsaved)?;
+    staged
         .require_undamaged()
         .map_err(|error| failure(&unsaved, error))?;
-    if !replay.campaign_id.eq_ignore_ascii_case(campaign.as_bytes()) {
+    if !staged.campaign_id.eq_ignore_ascii_case(campaign.as_bytes()) {
         return Err(failure(
             &unsaved,
             "existing replay belongs to a different campaign",
         ));
     }
-    let multiplayer = match known_roster(&unsaved).map_err(|error| failure(&unsaved, error))? {
-        Some(known) => known,
-        None => crate::recording_name::multiplayer(&replay, replay.index.len())
-            .map_err(|error| failure(&unsaved, error))?,
+    // The facts its session kept for it are in the copy that is saved; the staged file, which
+    // its checkpoint journal names, is only removed once that copy is saved.
+    let pack = waiting.as_deref().and_then(|bytes| {
+        replay::container::session_facts_for(bytes, &staged.identity).map(<[u8]>::to_vec)
+    });
+    let with_facts = pack.filter(|_| staged.fact_packs.is_empty()).map(|pack| {
+        let mut name = unsaved.file_name().unwrap_or_default().to_owned();
+        name.push(".facts.tmp");
+        (unsaved.with_file_name(name), pack)
+    });
+    let source = match &with_facts {
+        Some((copy, pack)) => {
+            let _ = fs::remove_file(copy);
+            staged
+                .write_with_facts(copy, pack)
+                .map_err(|error| failure(copy, error))?;
+            copy.clone()
+        }
+        None => unsaved.clone(),
     };
-    let stem =
-        recording_stem(&replay, naming, multiplayer).map_err(|error| failure(&unsaved, error))?;
-    let (recording, unrenamed) = save_recording_file(
-        &replay,
-        Bytes::Staged(&unsaved),
-        replay_dir,
-        existing.as_deref(),
-        &stem,
-        naming,
-        |_: &Replay, _: &Path| Ok(()),
-        recording_files::rename,
-        &|| Ok(()),
-    )?;
-    if let Some(unrenamed) = unrenamed {
-        println!("{unrenamed}");
+    let saved = (|| {
+        let replay = held_recording(&source)?;
+        let multiplayer = match known_roster(&unsaved).map_err(|error| failure(&unsaved, error))? {
+            Some(known) => known,
+            None => crate::recording_name::multiplayer(&replay, replay.index.len())
+                .map_err(|error| failure(&unsaved, error))?,
+        };
+        let stem = recording_stem(&replay, naming, multiplayer)
+            .map_err(|error| failure(&unsaved, error))?;
+        let (recording, unrenamed) = save_recording_file(
+            &replay,
+            Bytes::Staged(&source),
+            replay_dir,
+            existing.as_deref(),
+            &stem,
+            naming,
+            |_: &Replay, _: &Path| Ok(()),
+            recording_files::rename,
+            &|| Ok(()),
+        )?;
+        if let Some(unrenamed) = unrenamed {
+            println!("{unrenamed}");
+        }
+        remember_roster(&recording, multiplayer).map_err(|error| failure(&recording, error))?;
+        Ok(recording)
+    })();
+    if with_facts.is_some() {
+        match &saved {
+            Ok(_) => {
+                drop(staged);
+                replay::publication::posix_delete(&unsaved)
+                    .map_err(|error| failure(&unsaved, error))?;
+            }
+            Err(_) => {
+                let _ = fs::remove_file(&source);
+            }
+        }
     }
-    remember_roster(&recording, multiplayer).map_err(|error| failure(&recording, error))?;
-    Ok(Some(recording))
+    if saved.is_ok() {
+        let _ = fs::remove_file(&sidecar);
+    }
+    saved.map(Some)
 }
 
 /// Drop a recording's unsaved hours, keeping what it saved. An ambiguous unsaved recording, one
@@ -6415,10 +6609,54 @@ pub fn discard_unsaved_recording(replay_dir: &Path, campaign: &str) -> Result<()
     let _lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
     let unsaved = recording_files::unsaved_recording(replay_dir, campaign.as_bytes())
         .map_err(|error| failure(replay_dir, format!("{error}; nothing discarded")))?;
-    if let Some(unsaved) = unsaved {
-        replay::publication::posix_delete(&unsaved).map_err(|error| failure(&unsaved, error))?;
+    // Removed first, so the recording it continued changes only once nothing must hold it.
+    if let Some(unsaved) = &unsaved {
+        replay::publication::posix_delete(unsaved).map_err(|error| failure(unsaved, error))?;
     }
-    Ok(())
+    hand_over_waiting_facts(replay_dir, campaign, unsaved.as_deref())
+}
+
+/// Gives the facts that waited beside the campaign's unsaved recording, at `staged` or where it
+/// would be, now removed, to the recording it continued. They stay waiting until it takes them,
+/// so a later save or discard retries.
+fn hand_over_waiting_facts(replay_dir: &Path, campaign: &str, staged: Option<&Path>) -> Result<()> {
+    let sidecar = unsaved_facts(&staged.map_or_else(
+        || replay::publication::unsaved_path(replay_dir, campaign),
+        Path::to_owned,
+    ));
+    let bytes = match fs::read(&sidecar) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(failure(
+                &sidecar,
+                format!("{error}; the game facts waiting for these hours are kept"),
+            ));
+        }
+    };
+    if let Some(saved) = recording_files::recording_of(replay_dir, campaign.as_bytes())
+        .map_err(|error| failure(replay_dir, error))?
+    {
+        attach_facts_bytes(&saved, &bytes)
+            .map_err(|error| format!("{error}; the game facts waiting for these hours are kept"))?;
+    }
+    fs::remove_file(&sidecar).map_err(|error| failure(&sidecar, error))
+}
+
+/// Adds the session facts `bytes` to `recording` in place when it lacks them and they are its
+/// content's.
+fn attach_facts_bytes(recording: &Path, bytes: &[u8]) -> Result<()> {
+    let mut replay =
+        Replay::open_appendable(recording).map_err(|error| failure(recording, error))?;
+    if !replay.fact_packs.is_empty() {
+        return Ok(());
+    }
+    let Some(pack) = replay::container::session_facts_for(bytes, &replay.identity) else {
+        return Ok(());
+    };
+    replay
+        .attach_facts_in_place(pack)
+        .map_err(|error| failure(recording, error))
 }
 
 /// Call only once no one writes them. Hours checkpoints put into the unsaved recording go with it,

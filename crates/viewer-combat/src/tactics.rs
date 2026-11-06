@@ -2094,6 +2094,7 @@ mod tests {
                 layers,
                 stats: Default::default(),
                 changed: Vec::new(),
+                notes: Vec::new(),
             }),
             String::new(),
         )

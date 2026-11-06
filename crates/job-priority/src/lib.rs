@@ -21,7 +21,97 @@ use std::{
     },
 };
 
+/// What a thread's work reads besides its priority: the executable tables of the recording it
+/// works on. Every thread it starts with [`JobPriority::current`] or [`Caller::current`] works
+/// with it too.
+pub type Context = &'static (dyn std::any::Any + Send + Sync);
+
+/// The calling thread's [`Context`].
+pub fn context() -> Option<Context> {
+    CONTEXT.get()
+}
+
+/// Makes `context` the calling thread's from now on, for a thread that works on one thing alone.
+pub fn set_context(context: Option<Context>) {
+    CONTEXT.set(context);
+}
+
+/// Runs `work` with `context` as the calling thread's, restoring the previous one afterward.
+pub fn with_context<T>(context: Option<Context>, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Context>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CONTEXT.set(self.0);
+        }
+    }
+    let _restore = Restore(CONTEXT.replace(context));
+    work()
+}
+
+/// `work`, run with the calling thread's [`Context`] on whichever thread runs it.
+pub fn carry<T>(work: impl FnOnce() -> T) -> impl FnOnce() -> T {
+    let context = CONTEXT.get();
+    move || with_context(context, work)
+}
+
+/// [`std::thread::spawn`], the new thread working with the calling thread's [`Context`].
+pub fn spawn<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> std::thread::JoinHandle<T> {
+    std::thread::spawn(carry(work))
+}
+
+/// [`std::thread::Scope::spawn`], the new thread working with the calling thread's [`Context`].
+pub fn spawn_in<'scope, 'env, T: Send + 'scope>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    work: impl FnOnce() -> T + Send + 'scope,
+) -> std::thread::ScopedJoinHandle<'scope, T> {
+    scope.spawn(carry(work))
+}
+
+/// A named thread working with the calling thread's [`Context`].
+pub trait SpawnCarried {
+    fn spawn_carried<T: Send + 'static>(
+        self,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> std::io::Result<std::thread::JoinHandle<T>>;
+
+    fn spawn_scoped_carried<'scope, 'env, T: Send + 'scope>(
+        self,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+        work: impl FnOnce() -> T + Send + 'scope,
+    ) -> std::io::Result<std::thread::ScopedJoinHandle<'scope, T>>;
+}
+
+impl SpawnCarried for std::thread::Builder {
+    fn spawn_carried<T: Send + 'static>(
+        self,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> std::io::Result<std::thread::JoinHandle<T>> {
+        self.spawn(carry(work))
+    }
+
+    fn spawn_scoped_carried<'scope, 'env, T: Send + 'scope>(
+        self,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+        work: impl FnOnce() -> T + Send + 'scope,
+    ) -> std::io::Result<std::thread::ScopedJoinHandle<'scope, T>> {
+        self.spawn_scoped(scope, carry(work))
+    }
+}
+
+/// A [`Context`] handed to another thread.
+#[derive(Clone, Copy, Default)]
+struct Carried(Option<Context>);
+
+impl std::fmt::Debug for Carried {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(if self.0.is_some() { "Some(context)" } else { "None" })
+    }
+}
+
 thread_local! {
+    static CONTEXT: Cell<Option<Context>> = const { Cell::new(None) };
     static JOB: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     /// The thread runs in background mode, and so do the threads it starts.
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
@@ -301,12 +391,19 @@ pub enum Level {
 /// flag is shared with the job's progress, so a job the user joins stops
 /// lowering the threads it starts from then on.
 #[derive(Clone, Debug, Default)]
-pub struct JobPriority(Option<Arc<AtomicBool>>, bool, Option<Processors>);
+pub struct JobPriority(Option<Arc<AtomicBool>>, bool, Option<Processors>, Carried);
 
 impl JobPriority {
     /// The job this thread works for, to hand to a thread it starts.
     pub fn current() -> Self {
-        JOB.with(|job| Self(job.borrow().clone(), BACKGROUND.get(), CONFINED.get()))
+        JOB.with(|job| {
+            Self(
+                job.borrow().clone(),
+                BACKGROUND.get(),
+                CONFINED.get(),
+                Carried(CONTEXT.get()),
+            )
+        })
     }
 
     /// Run `work` at the coordinator level for the job whose flag is
@@ -348,6 +445,7 @@ impl JobPriority {
     pub fn enter(self, level: Level) {
         let lowered = self.background();
         Processors::confine(self.2);
+        CONTEXT.set(self.3.0);
         JOB.with(|job| *job.borrow_mut() = self.0);
         if self.1 {
             background_thread();
@@ -383,6 +481,7 @@ impl Caller {
     /// Enter the caller's job at the caller's priority on a new thread, on its processors.
     pub fn enter(self) {
         Processors::confine(self.job.2);
+        CONTEXT.set(self.job.3.0);
         JOB.with(|job| *job.borrow_mut() = self.job.0);
         #[cfg(windows)]
         unsafe {

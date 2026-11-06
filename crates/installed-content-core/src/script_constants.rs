@@ -203,7 +203,7 @@ impl Constants {
 /// The database of the content stack.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Constants> {
     let mut files = Vec::new();
-    for path in script_files::paths(layers, "common/script_constants/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/script_constants/", Some(".txt"))? {
         files.push((path.to_string(), path.read(layers)?));
     }
     Ok(parse(

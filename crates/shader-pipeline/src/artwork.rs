@@ -1,6 +1,7 @@
 //! Isolated native sprite shader output for straight-alpha dashboard images.
 //! GUI layout and compositing remain the caller's; programs and samplers come from content.
 
+use job_priority::SpawnCarried as _;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock},
@@ -192,7 +193,7 @@ const FLAG_RECTANGLE: u32 = 64;
 pub fn warm() {
     let _ = std::thread::Builder::new()
         .name("artwork renderer".into())
-        .spawn(|| drop(renderer()));
+        .spawn_carried(|| drop(renderer()));
 }
 
 fn renderer() -> Result<&'static Mutex<Renderer>, String> {

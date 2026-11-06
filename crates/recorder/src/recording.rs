@@ -1,4 +1,5 @@
 //! Passive process discovery, injection, detach and finalization.
+mod game_facts;
 mod history_requests;
 mod progress_io;
 mod scripted_map_demand;
@@ -1937,6 +1938,8 @@ pub(crate) fn capture(
             dll_hash,
         )
         .map_err(|e| e.to_string())?;
+    // Packed beside the capture; every save of this session's recordings carries them.
+    let game_facts = game_facts::GameFacts::start(&content, &identity, &directory);
     let mut frequency = 0;
     if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0 || frequency <= 0 {
         return Err("QueryPerformanceFrequency failed".into());
@@ -2382,6 +2385,16 @@ pub(crate) fn capture(
             .loads
             .keys()
             .any(|campaign| Some(campaign) != current.as_ref());
+    // Packed before anything this session published is saved, kept or discarded.
+    match game_facts.finish() {
+        Ok(summary) => println!("Game facts: {summary}."),
+        Err(error) => {
+            println!("Game facts are not carried: {error}");
+            outcome
+                .warnings
+                .push(format!("The recording carries no game facts: {error}"));
+        }
+    }
     if discarding && (set_aside_unsaved || others_admitted) {
         // Discard drops the campaign in progress; the others keep theirs.
         if let Some(current) = current.as_ref().filter(|current| spooled.contains(current)) {
@@ -2403,6 +2416,15 @@ pub(crate) fn capture(
         } else {
             println!("Collector spool closed; discarding this session's unsaved hours.");
         }
+        // Published checkpoint hours stay, with the facts they depend on. One that cannot take
+        // them now is a recording without facts, which Battle Plan upgrades when it next opens it.
+        outcome
+            .warnings
+            .extend(replay_io::attach_published_facts(&directory, &[]).into_iter().map(|error| {
+                format!(
+                    "{error}; Battle Plan adds them from this game installation when it next                      opens the recording"
+                )
+            }));
         return finish_capture(
             &directory,
             target,

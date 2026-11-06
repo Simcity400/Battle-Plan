@@ -204,6 +204,7 @@ pub fn run(
         layers: content.layers,
         stats: content.stats,
         changed: content.changed,
+        notes: Vec::new(),
     });
     let mut log = Log {
         values,
@@ -836,7 +837,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     let values = log.values.clone();
     if let Some(stops) = log.read("characters.portraits", || {
         let names = layers.key_names()?;
-        installed_content_core::characters::paths(layers)
+        installed_content_core::characters::paths(layers)?
             .into_iter()
             .map(|path| {
                 let (_, stop) = {

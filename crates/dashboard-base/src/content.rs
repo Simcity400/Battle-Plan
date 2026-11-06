@@ -20,15 +20,16 @@ pub fn content_key(content: Option<&ContentOptions>) -> Option<ContentKey> {
 }
 
 /// Everything a source's localisation depends on besides the recording: the
-/// folders, the cache folder and the user's game language.
-pub type LocalisationKey = (ContentKey, PathBuf, String);
+/// folders, the cache folder and the user's game language, or `None` for the language the
+/// recording carries when no user folder gives one.
+pub type LocalisationKey = (ContentKey, PathBuf, Option<String>);
 
 /// The key for these folders, reading the game language from the user folder.
 pub fn localisation_key(content: &ContentOptions) -> io::Result<LocalisationKey> {
     Ok((
         content_key(Some(content)).expect("content options given"),
         content.options.cache_dir.clone(),
-        language(&content.options)?,
+        language(&content.options).ok(),
     ))
 }
 
@@ -70,9 +71,15 @@ pub(crate) fn localisation_in(
         let mut warnings = Vec::new();
         check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
         let layers = resolved()?;
+        let language = match &key.2 {
+            Some(language) => language.clone(),
+            None => layers.layers.recorded_language().map(str::to_owned).ok_or_else(|| {
+                invalid("no game language: settings.txt is unavailable and the recording carries no text")
+            })?,
+        };
         installed_content_localisation::localisation::read_cached(
             &layers.layers,
-            &key.2,
+            &language,
             &content.options.cache_dir,
         )
     });

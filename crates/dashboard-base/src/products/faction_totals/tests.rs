@@ -2013,6 +2013,7 @@ fn faction_totals_use_main_template_names_and_dated_refusal_reasons() {
             layers,
             stats: Default::default(),
             changed: Vec::new(),
+            notes: Vec::new(),
         }),
     );
     let context = LoadContext {

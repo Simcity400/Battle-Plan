@@ -667,7 +667,7 @@ const DIRECTORY: &str = "history/states/";
 /// when a lookup finds no resource already registered.
 fn resources(layers: &ResolvedLayers) -> io::Result<Resources> {
     let mut resources = Resources::default();
-    for path in script_files::paths(layers, "common/resources/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/resources/", Some(".txt"))? {
         read_resources(&path.read(layers)?, &path.text(), &mut resources);
     }
     Ok(resources)
@@ -791,7 +791,7 @@ pub fn read_with_diagnostics(
     let names = layers.key_names()?;
     let max_building_levels = defines.int32("NBuildings", "MAX_BUILDING_LEVELS")?;
     let counted = province_count(provinces);
-    let paths = script_files::paths(layers, DIRECTORY, Some(".txt"));
+    let paths = script_files::paths(layers, DIRECTORY, Some(".txt"))?;
     // Each file reads and parses on its own; they merge below in listed order.
     let parsed = installed_content_core::parallel::map(&paths, |listed| {
         let context = Context {

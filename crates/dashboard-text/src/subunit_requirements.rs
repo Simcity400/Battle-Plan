@@ -154,7 +154,7 @@ impl Content {
                 .get_or_init(|| Database::load_complete(layers))?,
             ..Self::default()
         };
-        for path in installed_content_core::unit_leader::sub_unit_files(layers) {
+        for path in installed_content_core::unit_leader::sub_unit_files(layers)? {
             let shown = path.text();
             let document = parser::parse(&path.read(layers)?)
                 .map_err(|error| invalid(format!("{shown}: {error}")))?;

@@ -12,6 +12,7 @@
 
 mod turn_profile;
 
+use job_priority::SpawnCarried as _;
 use std::sync::MutexGuard;
 use std::{
     any::Any,
@@ -93,7 +94,7 @@ where
             .chunks(run)
             .map(|chunk| {
                 let spawned = thread::Builder::new()
-                    .spawn_scoped(scope, move || chunk.iter().map(work).collect::<Vec<R>>());
+                    .spawn_scoped_carried(scope, move || chunk.iter().map(work).collect::<Vec<R>>());
                 (chunk, spawned.ok())
             })
             .collect();
@@ -187,7 +188,7 @@ impl<T: Send + 'static> Detached<T> {
     fn new(job: impl FnOnce() -> T + Send + 'static) -> Self {
         Self {
             job: Arc::new(DetachedJob {
-                state: Mutex::new(DetachedState::Pending(Box::new(job))),
+                state: Mutex::new(DetachedState::Pending(Box::new(job_priority::carry(job)))),
                 done: Condvar::new(),
             }),
         }
@@ -330,7 +331,7 @@ impl Workers {
         if let Some(pool) = &self.pool {
             for _ in 0..admitted.capacity.saturating_sub(1) {
                 let gate = Arc::clone(&admitted.gate);
-                match pool.try_spawn_classified(Box::new(move || gate.help())) {
+                match pool.try_spawn_classified(Box::new(job_priority::carry(move || gate.help()))) {
                     Ok(source) => admitted.profile.accepted(source),
                     Err(_) => break,
                 }
@@ -371,7 +372,7 @@ impl Workers {
         let spawned = catch_unwind(AssertUnwindSafe(|| {
             for _ in 0..helpers {
                 let turn = Arc::clone(&turns);
-                match pool.try_spawn_classified(Box::new(move || turn.help())) {
+                match pool.try_spawn_classified(Box::new(job_priority::carry(move || turn.help()))) {
                     Ok(source) => profile.accepted(source),
                     Err(_) => break,
                 }
@@ -720,7 +721,7 @@ pub(crate) mod tests {
         let receiver = Arc::new(Mutex::new(receiver));
         for _ in 0..count {
             let receiver = Arc::clone(&receiver);
-            std::thread::spawn(move || {
+            job_priority::spawn(move || {
                 loop {
                     let job = receiver.lock().unwrap().recv();
                     match job {

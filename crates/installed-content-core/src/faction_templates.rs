@@ -198,7 +198,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     let names = layers.key_names()?;
     let mut result = Catalog::default();
     // Template definitions merge in file and layer order.
-    for path in script_files::paths(layers, "common/factions/templates/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/factions/templates/", Some(".txt"))? {
         result.names.next_file();
         result.icon_sources.next_file();
         let file = parse(&path.read(layers)?, &names);

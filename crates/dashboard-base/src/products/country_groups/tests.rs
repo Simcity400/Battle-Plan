@@ -1598,6 +1598,7 @@ fn country_groups_template_names_ignore_gfx_failures_and_unrelated_warnings() {
         layers,
         stats: Default::default(),
         changed: Vec::new(),
+        notes: Vec::new(),
     });
     let template_warnings = content.layers.faction_templates().unwrap().warnings.clone();
     assert!(!template_warnings.is_empty());

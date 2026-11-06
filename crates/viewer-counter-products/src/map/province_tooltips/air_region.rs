@@ -9,6 +9,7 @@
 //! and its ground grid for our missions and the enemy's. Each line uses the
 //! item's tooltip key and its value as the received-damage formatter
 //! writes it, green for ours and red for the enemy's.
+use job_priority::SpawnCarried as _;
 use super::{Arg, Context, line};
 use engine_allocation::credit::MemoryBudget;
 use replay::{
@@ -506,7 +507,7 @@ impl PassRosters {
         let shared = Arc::clone(&self.shared);
         let spawned = std::thread::Builder::new()
             .name("air roster history".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let _exit = Exit(Arc::clone(&shared));
                 viewer_foundation::worker_priority::lowest_priority();
                 loop {
@@ -975,7 +976,7 @@ pub(super) mod tests {
         let (done, waited) = std::sync::mpsc::channel();
         let waiter = {
             let rosters = Arc::clone(&rosters);
-            std::thread::spawn(move || {
+            job_priority::spawn(move || {
                 rosters.wait_beyond(0);
                 done.send(()).unwrap();
             })

@@ -187,7 +187,7 @@ fn parse_file(input: &[u8], names: &KeyNames) -> io::Result<Parsed> {
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut database = Database::default();
-    for path in script_files::paths(layers, "common/state_category/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/state_category/", Some(".txt"))? {
         match parse_file(&path.read(layers)?, &names) {
             Ok(parsed) => database.merge(parsed),
             Err(why) => {

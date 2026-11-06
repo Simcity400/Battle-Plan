@@ -3,7 +3,7 @@
 use crate::native::NativeHost;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     sync::{
         Mutex,
@@ -175,24 +175,23 @@ pub struct VideoReply {
     /// The manual map interface scales to offer, in percent.
     map_ui_scale_choices: &'static [u32],
 }
-/// The host's effective user folder, after initializing the selected game's tables.
-fn game_user_folder() -> Result<PathBuf, String> {
+/// `read` of the host's effective user folder, as the selected installed game reads it now.
+fn read_game_settings<T>(read: impl FnOnce(&Path) -> io::Result<T>) -> Result<T, String> {
     let (config, _) = crate::dashboard_service::host_config()?;
     if config.user_dir.as_os_str().is_empty() {
         return Err("Choose the Paradox user folder in Settings".into());
     }
-    engine_executable::executable_tables::initialize(&config.game_dir)
-        .map_err(|error| format!("Game tables: {error}"))?;
-    Ok(config.user_dir)
+    engine_executable::executable_tables::or_installed(&config.game_dir, || read(&config.user_dir))
+        .map_err(|error| error.to_string())
 }
 fn game_settings() -> Result<VideoSettings, String> {
-    let user = game_user_folder()?;
-    parse_game_display(&installed_content_settings::settings::read_keys(&user).map_err(|e| e.to_string())?)
+    parse_game_display(&read_game_settings(
+        installed_content_settings::settings::read_keys,
+    )?)
 }
 /// The viewer computes the same from the recording's user folder and the same monitors.
 fn game_map_ui_scale() -> Option<f64> {
-    let user = game_user_folder().ok()?;
-    let display = installed_content_settings::settings::read_display(&user).ok()?;
+    let display = read_game_settings(installed_content_settings::settings::read_display).ok()?;
     let scale = display.screen_scale(&installed_content_settings::settings::desktops().ok()?)?;
     dashboard::protocol::MAP_UI_SCALE_RANGE
         .contains(&scale)

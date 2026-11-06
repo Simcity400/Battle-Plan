@@ -313,7 +313,7 @@ impl Names {
 /// Every scripted localisation name in the content stack, as its files'
 /// readers read them.
 pub fn names(layers: &ResolvedLayers) -> io::Result<Names> {
-    let files = script_files::paths(layers, "common/scripted_localisation/", Some(".txt"))
+    let files = script_files::paths(layers, "common/scripted_localisation/", Some(".txt"))?
         .into_iter()
         .map(|path| Ok((path.read(layers)?, path.to_string())))
         .collect::<io::Result<Vec<_>>>()?;

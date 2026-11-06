@@ -1,5 +1,6 @@
 //! One serial source actor for all dashboard maps sharing a replay. Only its
 //! thread seeks the playback; each map owns one coalescing, cancellable mailbox.
+use job_priority::SpawnCarried as _;
 use super::*;
 
 pub struct SharedDecoder {
@@ -185,7 +186,7 @@ impl Actor {
         let stopping = Arc::clone(&closing);
         thread::Builder::new()
             .name("map source decoder".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let _exit = Exit(registry.clone());
                 background_priority();
                 // recv owns the idle source thread, never a map coordinator.

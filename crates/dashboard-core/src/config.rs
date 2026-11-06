@@ -18,6 +18,10 @@ pub struct Config {
     /// Prepare opened recordings in the background unless explicitly disabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_preparation: Option<bool>,
+    /// Folders of other game versions, which a recording made before recordings carried their
+    /// game facts may be upgraded from when the game folder no longer matches it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub older_game_dirs: Vec<PathBuf>,
 }
 
 impl Config {
@@ -48,7 +52,6 @@ impl Config {
     /// saved preparation choice.
     pub fn save(&self) -> io::Result<()> {
         self.resolve_options()?;
-        engine_executable::executable_tables::initialize(&self.game_dir)?;
         self.save_folders_at(&Self::path()?)
     }
 
@@ -212,6 +215,7 @@ mod tests {
             game_dir: "G".into(),
             user_dir: "U".into(),
             background_preparation: None,
+            older_game_dirs: Vec::new(),
         }
         .save_folders_at(&path)
         .unwrap();
@@ -243,6 +247,7 @@ mod tests {
                         game_dir: format!("G{round}").into(),
                         user_dir: format!("U{round}").into(),
                         background_preparation: None,
+                        older_game_dirs: Vec::new(),
                     }
                     .save_folders_at(&path)
                     .unwrap()

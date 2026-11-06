@@ -195,7 +195,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ScientistTraits, Vec<crate::
     let mut result = ScientistTraits::default();
     let mut notes = Vec::new();
     let mut earlier = BTreeSet::new();
-    for path in script_files::paths(layers, "common/scientist_traits/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/scientist_traits/", Some(".txt"))? {
         result.coverage.next_file();
         let file = parse(&path.read(layers)?, &names, &earlier);
         notes.extend(

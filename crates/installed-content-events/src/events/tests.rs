@@ -676,6 +676,7 @@ fn lazy_events_share_exact_content_and_viewer_layer_owners_and_memos() {
         layers: ResolvedLayers::default(),
         stats: Default::default(),
         changed: Vec::new(),
+        notes: Vec::new(),
     });
     let content_owner = Arc::downgrade(&content);
     let content_names = content.layers.key_names().unwrap();

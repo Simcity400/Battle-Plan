@@ -1176,7 +1176,22 @@ fn merge_file(
 /// earlier layer's replacement still beats a later layer's ordinary file.
 /// The `:N` version number never affects these comparisons.
 pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation> {
+    let language = carried(layers, language);
     read_with(layers, language, &|bytes| parse_file(bytes, language))
+}
+
+/// The language text is read in: `language`, unless the recording played back carries
+/// another one only, whose text is then shown instead, said once.
+fn carried<'a>(layers: &'a ResolvedLayers, language: &'a str) -> &'a str {
+    match layers.recorded_language() {
+        Some(recorded) if recorded != language => {
+            installed_content_core::content::diagnostics::Diagnostics::note(format!(
+                "Text is shown in {recorded}, the language this recording was made in: it carries no {language} text."
+            ));
+            recorded
+        }
+        _ => language,
+    }
 }
 
 /// [`read`], each file's bytes parsed by `parse`.
@@ -1194,7 +1209,7 @@ fn read_with(
     }
     // Every path by its bytes: an archive's name that is not UTF-8 still loads.
     let mut files = Vec::new();
-    for (path, layer) in layers.effective_paths() {
+    for (path, layer) in layers.effective_paths()? {
         let lower = path.to_ascii_lowercase();
         if !lower.starts_with(b"localisation/") || !lower.ends_with(b".yml") {
             continue;
@@ -1239,6 +1254,7 @@ pub fn read_cached(
     language: &str,
     cache_dir: &std::path::Path,
 ) -> io::Result<Localisation> {
+    let language = carried(layers, language);
     let Some((program, build)) = build() else {
         return read(layers, language);
     };

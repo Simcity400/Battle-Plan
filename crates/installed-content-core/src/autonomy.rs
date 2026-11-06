@@ -284,7 +284,7 @@ fn from_definitions(
 pub fn read(layers: &ResolvedLayers) -> io::Result<(AutonomyStates, Vec<Diagnostic>)> {
     let names = layers.key_names()?;
     let mut reading = Reading::default();
-    for path in script_files::paths(layers, "common/autonomous_states/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/autonomous_states/", Some(".txt"))? {
         reading.file(&path.to_string(), &path.read(layers)?, &names);
     }
     Ok((reading.result, reading.warnings))

@@ -51,6 +51,7 @@
 //! its own, in sections no family writes, so no family's pages, ranges or
 //! progress depend on it.
 
+use job_priority::SpawnCarried as _;
 use super::super::Section;
 use super::{
     Accepted, Batches, Checkpoint, Coverage, CoveragePage, FamilyTimings, Refused, SCHEMA, lanes,
@@ -1280,7 +1281,7 @@ pub(super) fn prepare(
             let priority = JobPriority::current();
             besides.push(
                 crate::prepared::runner::worker_thread(format!("preparation of {name}"))
-                    .spawn_scoped(scope, move || {
+                    .spawn_scoped_carried(scope, move || {
                         priority.enter(Level::Normal);
                         #[cfg(test)]
                         let _installed = context.install();
@@ -1424,7 +1425,7 @@ pub(super) fn prepare(
                     "preparation of {}",
                     run.own.family().name
                 ))
-                .spawn_scoped(scope, move || {
+                .spawn_scoped_carried(scope, move || {
                     priority.enter(Level::Normal);
                     // No group waits for it once it has finished.
                     let _finished = Finished(commits);

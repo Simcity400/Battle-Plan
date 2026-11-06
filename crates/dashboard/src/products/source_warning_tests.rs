@@ -138,6 +138,7 @@ impl DiagnosticFixture {
                 layers,
                 stats: Default::default(),
                 changed: Default::default(),
+                notes: Vec::new(),
             }),
         );
         source

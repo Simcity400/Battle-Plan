@@ -46,7 +46,7 @@ impl TagIndex {
 /// consumption is unsupported.
 pub fn country_tag_index(layers: &ResolvedLayers) -> io::Result<TagIndex> {
     let mut index = TagIndex::default();
-    for path in script_files::paths(layers, "common/country_tags/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/country_tags/", Some(".txt"))? {
         add_tag_index(&path.text(), &path.read(layers)?, &mut index)?;
     }
     Ok(index)
@@ -58,7 +58,7 @@ pub fn country_tag_index(layers: &ResolvedLayers) -> io::Result<TagIndex> {
 pub fn read_definitions(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, CountryTag>> {
     let mut tags = BTreeMap::new();
     let mut dynamic = false;
-    for path in script_files::paths(layers, "common/country_tags/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/country_tags/", Some(".txt"))? {
         add_definitions(&path.text(), &path.read(layers)?, &mut tags, &mut dynamic)?;
     }
     Ok(tags)

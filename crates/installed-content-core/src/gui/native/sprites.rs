@@ -611,7 +611,7 @@ pub fn gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
         b"interface/",
         b".gfx",
         layers
-            .listed_layer_paths(b"interface/")
+            .listed_layer_paths(b"interface/")?
             .iter()
             .map(Vec::as_slice),
     );
@@ -647,7 +647,7 @@ pub fn object_gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
     order.extend(crate::defines::load_order_paths(
         b"gfx/",
         b".gfx",
-        layers.listed_layer_paths(b"gfx/").iter().map(Vec::as_slice),
+        layers.listed_layer_paths(b"gfx/")?.iter().map(Vec::as_slice),
     ));
     Ok(order)
 }

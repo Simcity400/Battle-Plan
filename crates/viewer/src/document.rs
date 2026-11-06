@@ -239,6 +239,8 @@ fn load_sprawl(
 /// The verified local game content a replay is drawn with: everything that
 /// does not change with the recorded hour.
 pub struct Content {
+    /// The executable tables the recording carries, which its map's work reads in their scope.
+    pub tables: Option<engine_executable::executable_tables::Tables>,
     pub products: map_products::ProductContent,
     /// Fresh combat content identity, constructed with every host content load.
     pub combat: Arc<combat::Content>,
@@ -1422,7 +1424,7 @@ impl Document {
         )
     }
 
-    /// [`Self::load_shared`], once.
+    /// [`Self::load_shared`], once, with the recording's own executable tables in scope.
     #[allow(clippy::too_many_arguments)]
     fn load_shared_once(
         path: &Path,
@@ -1434,7 +1436,34 @@ impl Document {
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
     ) -> io::Result<Self> {
-        engine_executable::executable_tables::initialize(&options.game_dir)?;
+        let tables = dashboard_base::facts::recorded(&replay)
+            .ok()
+            .and_then(|pack| pack.tables().ok());
+        engine_executable::executable_tables::scope(tables, || {
+            Self::load_shared_scoped(
+                path,
+                options,
+                allow_unverified,
+                initial,
+                replay,
+                visual_mods,
+                texture_quality,
+                visual_fallback,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn load_shared_scoped(
+        path: &Path,
+        options: &ResolveOptions,
+        allow_unverified: bool,
+        initial: &InitialHour,
+        replay: Arc<Replay>,
+        visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
+        texture_quality: u8,
+        visual_fallback: Option<VisualFallback<'_>>,
+    ) -> io::Result<Self> {
         let mut warnings = dashboard_base::metadata::build_warnings(&replay);
         warnings.extend(replay.compatibility_gaps());
         warnings.extend(replay.warnings.iter().cloned());
@@ -1459,7 +1488,11 @@ impl Document {
         let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
         // Replay::open requires every session to have the same content identity.
         // The recorded layer ids and hashes, rather than launcher state, select it.
-        let mut content = installed_content_core::resolve(&replay.identity, options)?;
+        let mut content = installed_content_core::playback(
+            &replay.identity,
+            dashboard_base::facts::recorded(&replay),
+            options,
+        )?;
         content.append_changed_to(&mut warnings);
         let uncovered_reads = content.layers.report_uncovered_reads();
         let mut visual_revision = String::new();
@@ -1686,7 +1719,7 @@ impl Document {
         warnings.extend(region_notes);
         let wave1 = std::thread::scope(|scope| -> io::Result<_> {
             let layers = &content.layers;
-            let h_assets = scope.spawn(|| {
+            let h_assets = job_priority::spawn_in(scope, || {
                 let mut warnings = Vec::new();
                 let assets = crate::map_assets::load_with_products(
                     Some(product_loader),
@@ -1704,7 +1737,7 @@ impl Document {
             });
             // Artwork, interface, fonts, models and text load from the presentation stack, whose
             // visual mods show only under artwork roots, and fall back to the recording by name.
-            let h_icons = scope.spawn(|| {
+            let h_icons = job_priority::spawn_in(scope, || {
                 layers.artwork("map icons and interface", |stack| {
                     MapIcons::load_with_products(
                         Some(product_loader),
@@ -1719,7 +1752,7 @@ impl Document {
                     )
                 })
             });
-            let h_names = scope.spawn(|| {
+            let h_names = job_priority::spawn_in(scope, || {
                 layers.artwork("map names", |stack| {
                     NameContent::load_with_localisation(stack, &map, || {
                         product_loader.localisation(stack, &language)
@@ -1728,14 +1761,14 @@ impl Document {
             });
             // Naval source labels in another language recover through the recording
             // language's localisation, indexed here so drawing reads no content.
-            let h_labels = scope.spawn(|| {
+            let h_labels = job_priority::spawn_in(scope, || {
                 combat::naval_labels::RecordedLabels::prepare(
                     recorded_language.clone(),
                     &language,
                     layers,
                 )
             });
-            let h_counters = scope.spawn(|| {
+            let h_counters = job_priority::spawn_in(scope, || {
                 crate::map_assets::graphics_define(
                     layers,
                     "counters",
@@ -1753,7 +1786,7 @@ impl Document {
                     },
                 )
             });
-            let h_borders_in = scope.spawn(|| -> io::Result<_> {
+            let h_borders_in = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let border_assets = layers.artwork("borders", |stack| {
                     BorderAssets::load(
                         stack,
@@ -1767,7 +1800,7 @@ impl Document {
                 let adjacencies = installed_content_core::adjacencies::read(layers)?;
                 Ok((border_assets, states, adjacencies))
             });
-            let h_rail_reads = scope.spawn(|| -> io::Result<_> {
+            let h_rail_reads = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let (cities, city_styles) = installed_content_core::cities::read(layers)?;
                 let buildings_read = installed_content_core::positions::read_buildings(layers)?;
                 let building_types = product_loader.buildings()?;
@@ -1786,7 +1819,7 @@ impl Document {
                     rail_defines,
                 ))
             });
-            let h_trains = scope.spawn(|| -> io::Result<_> {
+            let h_trains = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let (trains, warnings) = layers.artwork("supply trains", |stack| {
                     let mut warnings = Vec::new();
                     viewer_world::map::trains::TrainAssets::load(
@@ -1799,7 +1832,7 @@ impl Document {
                 })?;
                 Ok((Arc::new(trains), warnings))
             });
-            let h_aircraft = scope.spawn(|| -> io::Result<_> {
+            let h_aircraft = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let (aircraft, warnings) = layers.artwork("aircraft", |stack| {
                     let mut warnings = Vec::new();
                     viewer_world::map::aircraft::AircraftAssets::load(
@@ -1814,14 +1847,14 @@ impl Document {
                 })?;
                 Ok((Arc::new(aircraft), warnings))
             });
-            let h_bridges = scope.spawn(|| -> io::Result<_> {
+            let h_bridges = job_priority::spawn_in(scope, || -> io::Result<_> {
                 layers.artwork("railway bridges", |stack| {
                     let mut warnings = Vec::new();
                     Bridges::load(stack, decode, defines_for(stack), &mut warnings)
                         .map(|bridges| (bridges, warnings))
                 })
             });
-            let h_units = scope.spawn(|| -> io::Result<_> {
+            let h_units = job_priority::spawn_in(scope, || -> io::Result<_> {
                 // Its refusals are its own warnings; it never fails as a whole.
                 let stack = layers.presentation();
                 let mut warnings = Vec::new();
@@ -1841,14 +1874,14 @@ impl Document {
                 );
                 Ok((unit_models, warnings))
             });
-            let h_orders = scope.spawn(|| -> io::Result<_> {
+            let h_orders = job_priority::spawn_in(scope, || -> io::Result<_> {
                 layers.artwork("orders and arrows", |stack| {
                     let mut warnings = Vec::new();
                     OrderAssets::load(stack, decode, (&defines, defines_for(stack)), &mut warnings)
                         .map(|order_assets| (order_assets, warnings))
                 })
             });
-            let h_weather = scope.spawn(|| -> io::Result<_> {
+            let h_weather = job_priority::spawn_in(scope, || -> io::Result<_> {
                 layers.artwork("weather effects", |stack| {
                     viewer_world::map::weather_effects::Assets::load(
                         stack,
@@ -1858,7 +1891,7 @@ impl Document {
                     )
                 })
             });
-            let h_mapbuildings = scope.spawn(|| -> io::Result<_> {
+            let h_mapbuildings = job_priority::spawn_in(scope, || -> io::Result<_> {
                 layers.artwork("map buildings", |stack| {
                     let mut warnings = Vec::new();
                     let building_layers = product_loader.reader(stack, "display/buildings");
@@ -1872,31 +1905,31 @@ impl Document {
                     .map(|map_buildings| (map_buildings, warnings))
                 })
             });
-            let h_geometry = scope.spawn(|| {
+            let h_geometry = job_priority::spawn_in(scope, || {
                 let started = Instant::now();
                 let geometry = ProvinceGeometry::build(&map);
                 (geometry, started.elapsed())
             });
-            let h_river_assets = scope.spawn(|| {
+            let h_river_assets = job_priority::spawn_in(scope, || {
                 layers.artwork("rivers", |stack| {
                     RiverAssets::load(stack, [map.width, map.height], texture_quality, decode)
                 })
             });
-            let h_rail_assets = scope.spawn(|| {
+            let h_rail_assets = job_priority::spawn_in(scope, || {
                 layers.artwork("railways", |stack| {
                     RailAssets::load(stack, [map.width, map.height], decode)
                 })
             });
             // The ideology groups supply the tactic triggers' ideology names.
             // Loading trigger keys registers those content names.
-            let h_ideologies = scope.spawn(|| product_loader.ideologies());
+            let h_ideologies = job_priority::spawn_in(scope, || product_loader.ideologies());
             // The resource declarations, for the tactic triggers' resource
             // names as the content is read.
-            let h_resources = scope.spawn(|| product_loader.resources());
+            let h_resources = job_priority::spawn_in(scope, || product_loader.resources());
             // The initial seek decodes from its block start to the hour, all
             // in memory; it overlaps the file reads above on its own thread.
             // Only playback moves here, so the joins below keep their order.
-            let h_initial = scope.spawn(|| Self::initial_playback(replay, initial));
+            let h_initial = job_priority::spawn_in(scope, || Self::initial_playback(replay, initial));
             let (assets_result, warnings) = h_assets.join().expect("assets loader panicked");
             let assets = assets_result?;
             let mut joined_warnings = warnings;
@@ -2149,12 +2182,12 @@ impl Document {
             // Decide only the initial hour's flag candidates, in the same stores the
             // hour workers will use. This requests no atlas cells; any refused
             // operands leave the original worker/acquire cold path in place.
-            let h_initial_flags = scope.spawn(|| {
+            let h_initial_flags = job_priority::spawn_in(scope, || {
                 if let crate::playback::Current::Frame(frame) = playback.current() {
                     let _ = counters::warm_initial_flags(frame, &counter_assets);
                 }
             });
-            let h_movement = scope.spawn(|| -> io::Result<_> {
+            let h_movement = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let mut movement = product_loader.movement(&defines)?;
                 movement.set_task_force_terrain(
                     combat_assets.movement_terrain(),
@@ -2164,7 +2197,7 @@ impl Document {
                 );
                 Ok(movement)
             });
-            let h_labels = scope.spawn(|| {
+            let h_labels = job_priority::spawn_in(scope, || {
                 crate::map_assets::graphics_define(
                     layers,
                     "map labels",
@@ -2173,7 +2206,7 @@ impl Document {
                     LabelContent::load,
                 )
             });
-            let h_borders = scope.spawn(|| -> io::Result<_> {
+            let h_borders = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let topology = Topology::new(&map, states.definitions(), &regions, &adjacencies)?;
                 let straits =
                     strait_quads(&adjacencies, &map, &|province| !topology.is_water(province))?;
@@ -2191,7 +2224,7 @@ impl Document {
                 )?;
                 Ok((straits, border_meshes, started.elapsed()))
             });
-            let h_rivers = scope.spawn(|| -> io::Result<_> {
+            let h_rivers = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let started = Instant::now();
                 let (river_mesh, river_trace) = rivers::build(
                     &RiverImage {
@@ -2203,7 +2236,7 @@ impl Document {
                 )?;
                 Ok((river_mesh, river_trace, started.elapsed()))
             });
-            let h_trees = scope.spawn(|| -> io::Result<_> {
+            let h_trees = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let started = Instant::now();
                 let tree_field = trees::generate(
                     &TreeImage {
@@ -2233,7 +2266,7 @@ impl Document {
                     warnings,
                 ))
             });
-            let h_sprawl = scope.spawn(|| -> io::Result<_> {
+            let h_sprawl = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let started = Instant::now();
                 let sprawl_plan = sprawl::generate(
                     &cities,
@@ -2247,7 +2280,7 @@ impl Document {
                     load_sprawl(layers, decode, &sprawl_plan, (&defines, &art_defines))?;
                 Ok((sprawl, started.elapsed(), warnings))
             });
-            let h_railgeom = scope.spawn(|| -> io::Result<_> {
+            let h_railgeom = job_priority::spawn_in(scope, || -> io::Result<_> {
                 let started = Instant::now();
                 let rail_geometry = rail_layer::RailGeometry::new(
                     &map,
@@ -2695,6 +2728,7 @@ impl Document {
         )
         .with_snow(snow_content);
         let content = Content {
+            tables: engine_executable::executable_tables::current(),
             products,
             radar_centers,
             resource_icons,

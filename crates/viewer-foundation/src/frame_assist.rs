@@ -1,5 +1,6 @@
 //! Frame-only idle helpers, then borrowed hour builders, with no frame queue.
 
+use job_priority::SpawnCarried as _;
 use crate::parallel::{HelperSource, Spawn, Workers};
 use std::{
     io,
@@ -77,7 +78,7 @@ impl FrameAssist {
             let run = Arc::clone(&slot);
             let thread = thread::Builder::new()
                 .name(format!("frame assist {index}"))
-                .spawn(move || run.run())?;
+                .spawn_carried(move || run.run())?;
             service.slots.push(slot);
             service.threads.push(thread);
         }
@@ -110,6 +111,8 @@ impl Spawn for FrameAssist {
     }
 
     fn try_spawn_classified(&self, job: Job) -> Result<HelperSource, Job> {
+        // Run with the submitter's recording context, whichever helper takes it.
+        let job: Job = Box::new(job_priority::carry(job));
         for slot in &self.slots {
             let mut state = slot.state.lock().unwrap_or_else(|e| e.into_inner());
             if !state.busy && !state.stopping {

@@ -700,6 +700,8 @@ fn mount(
             None => {
                 let mut layer = ResolvedLayer {
                     coverage: layers.coverage,
+                    role: super::LayerRole::Visual,
+                    facts: None,
                     id,
                     source,
                     descriptor: Some(candidate.descriptor.clone()),

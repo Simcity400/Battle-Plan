@@ -91,7 +91,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Locations> {
 pub fn read(layers: &ResolvedLayers) -> io::Result<Locations> {
     let names = layers.key_names()?;
     let mut all = Locations::default();
-    for path in script_files::paths(layers, "common/strategic_locations/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/strategic_locations/", Some(".txt"))? {
         match parse(&path.read(layers)?, &names) {
             Ok(file) => all.locations.extend(file.locations),
             Err(why) => {

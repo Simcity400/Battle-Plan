@@ -22,9 +22,10 @@ pub fn read_authored(
         Ok(bytes) => Ok(Some(bytes)),
         Err(error)
             if error.kind() == io::ErrorKind::NotFound
-                && !layers
-                    .paths()
-                    .any(|known| known.eq_ignore_ascii_case(path.as_bytes())) =>
+                // A listing the recording withholds proves no absence.
+                && !layers.paths().map_or(true, |mut paths| {
+                    paths.any(|known| known.eq_ignore_ascii_case(path.as_bytes()))
+                }) =>
         {
             Ok(None)
         }

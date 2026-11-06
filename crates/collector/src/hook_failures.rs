@@ -138,7 +138,7 @@ impl Family {
     fn verified(self) -> Verified<()> {
         self.piece().verified()?;
         if self == Self::PlayerCommands {
-            match engine_executable::executable_tables::EXECUTABLE_TABLES.get() {
+            match engine_executable::executable_tables::current() {
                 Some(tables) => tables
                     .commands
                     .as_ref()

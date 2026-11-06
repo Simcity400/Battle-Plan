@@ -55,16 +55,16 @@ pub const UNREPRODUCED_STAT_FIELDS: [&str; 3] = [
 
 /// Direct `.txt` files in `upgrades`, then `modules`, then root, each in
 /// filename byte order ([`crate::script_files::paths`]).
-pub fn files(layers: &ResolvedLayers) -> Vec<crate::script_files::ScriptPath> {
+pub fn files(layers: &ResolvedLayers) -> io::Result<Vec<crate::script_files::ScriptPath>> {
     let mut files = Vec::new();
     for directory in [
         format!("{DIRECTORY}upgrades/"),
         format!("{DIRECTORY}modules/"),
         DIRECTORY.to_owned(),
     ] {
-        files.extend(crate::script_files::paths(layers, &directory, Some(".txt")));
+        files.extend(crate::script_files::paths(layers, &directory, Some(".txt"))?);
     }
-    files
+    Ok(files)
 }
 
 /// Finds an executable category keyword with ASCII case folding.
@@ -865,7 +865,7 @@ impl Database {
     /// KeyNames' equipment roster without recursively loading KeyNames.
     pub(crate) fn load_with_names(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Self> {
         let mut database = Self::default();
-        for path in files(layers) {
+        for path in files(layers)? {
             database.read_file(&path.read(layers)?, &path.text(), names);
             if database.lost.is_some() {
                 return Ok(database);

@@ -6,6 +6,7 @@
 //! and eframe calls set_visible after its first paint. The subclass below keeps
 //! only this process's creation-context HWND a child, with host-owned geometry.
 
+use job_priority::SpawnCarried as _;
 use dashboard::protocol::{
     CameraMode, DashboardMapState, DashboardMapView, EVENT_PREFIX, GamepadMessage,
     MAX_MESSAGE_BYTES, NativeCommand, NativeEvent, ViewBounds, ViewerState, validate_map_views,
@@ -533,7 +534,7 @@ impl Parent {
         let input = Arc::clone(&shared);
         thread::Builder::new()
             .name("viewer-commands".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let mut stdin = io::stdin().lock();
                 let mut bytes = Vec::new();
                 while !input.stopped.load(Ordering::Acquire) {
@@ -561,7 +562,7 @@ impl Parent {
         let output = Arc::clone(&shared);
         thread::Builder::new()
             .name("viewer-events".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 // Disconnecting this zero-capacity channel signals that all
                 // queued output was written, without blocking the writer.
                 let _finished = output_finished;
@@ -657,7 +658,7 @@ impl Parent {
         let watch = Arc::clone(&shared);
         thread::Builder::new()
             .name("viewer-parent".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let mut visible = false;
                 while !watch.stopped.load(Ordering::Acquire) {
                     // SAFETY: the owned process handle stays open throughout the
@@ -956,7 +957,7 @@ impl Drop for Controller {
         // Runtime/file joins must not stall eframe's window destruction.
         let _ = thread::Builder::new()
             .name("dashboard shutdown".into())
-            .spawn(move || service.shutdown());
+            .spawn_carried(move || service.shutdown());
         // Let a healthy host receive the final error/state before exit, but
         // never hang shutdown on a peer that stopped draining stdout.
         let _ = self.output_done.recv_timeout(Duration::from_millis(100));

@@ -22,6 +22,7 @@
 //! icon page, and are never reused, so a quad laid out against an id that has
 //! since been evicted draws nothing rather than another texture.
 
+use job_priority::SpawnCarried as _;
 #[cfg(test)]
 use crate::map::test_support::TEST_HANG_GUARD;
 use std::{
@@ -252,7 +253,7 @@ impl LazyTextures {
         let textures = Arc::clone(this);
         let spawned = std::thread::Builder::new()
             .name("lazy icon loader".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 loop {
                     while textures.settle() {}
                     textures.running.store(false, Ordering::Release);
@@ -844,7 +845,7 @@ pub fn flag_set(
 ) -> io::Result<Arc<LazyFlags>> {
     let directory = set.directory();
     let mut index = BTreeMap::new();
-    for path in layers.paths() {
+    for path in layers.art_paths() {
         let Some(name) = path
             .get(..directory.len())
             .filter(|prefix| prefix.eq_ignore_ascii_case(directory.as_bytes()))
@@ -1322,6 +1323,7 @@ mod tests {
         assert!(
             layers
                 .paths()
+                .unwrap()
                 .any(|path| path == "common/abé.txt".as_bytes())
         );
         let textures = foreground();

@@ -1149,7 +1149,7 @@ impl Views {
         let label = engine_allocation::labels::current();
         std::thread::scope(|scope| {
             for _ in 0..workers {
-                scope.spawn(|| {
+                job_priority::spawn_in(scope, || {
                     let _memory = engine_allocation::labels::resume(label);
                     (parallel.on_worker)();
                     let (mut slots, mut keys) = (Vec::new(), Vec::new());

@@ -199,7 +199,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<cra
     let mut warnings = Vec::new();
     let mut scans = crate::modifiers::ScanFailures::default();
     let mut result = ModifierDefinitions::default();
-    for path in script_files::paths(layers, "common/modifier_definitions/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/modifier_definitions/", Some(".txt"))? {
         let read = read_file(&path.read(layers)?);
         // Registration takes the raw key's C string after its body returns.
         // Keep that identity even when the display fields cannot represent

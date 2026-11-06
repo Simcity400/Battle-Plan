@@ -3,6 +3,7 @@
 //! The host supplies absolute replay time and physical geometry. Source assets
 //! and decode/work resources are shared; mutable Scene state remains per view.
 
+use job_priority::SpawnCarried as _;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -108,7 +109,10 @@ impl MapView {
     fn state(&self) -> DashboardMapState {
         let error = self.admission_error.as_ref().or(self.error.as_ref());
         if error.is_none() && self.viewer.has_map() {
-            return self.viewer.map_state(&self.target);
+            let tables = self.viewer.tables();
+            return engine_executable::executable_tables::scope(tables, || {
+                self.viewer.map_state(&self.target)
+            });
         }
         DashboardMapState {
             id: self.target.id.clone(),
@@ -301,14 +305,17 @@ impl DashboardMaps {
         if !view.viewer.has_map() {
             return Err("Wait for the map widget to finish loading before exporting".into());
         }
-        view.viewer.host_map_action(
-            dashboard::protocol::MapAction::Export {
-                path,
-                view_id: None,
-            },
-            ctx,
-            frame,
-        );
+        let tables = view.viewer.tables();
+        engine_executable::executable_tables::scope(tables, || {
+            view.viewer.host_map_action(
+                dashboard::protocol::MapAction::Export {
+                    path,
+                    view_id: None,
+                },
+                ctx,
+                frame,
+            )
+        });
         Ok(())
     }
 
@@ -883,7 +890,7 @@ impl DashboardMaps {
                 let wake = ctx.clone();
                 match thread::Builder::new()
                     .name("native map source".into())
-                    .spawn(move || {
+                    .spawn_carried(move || {
                         background_priority();
                         if !job_alive.load(Ordering::Acquire) {
                             return;
@@ -1134,7 +1141,7 @@ impl DashboardMaps {
         let wake = ctx.clone();
         match thread::Builder::new()
             .name("dashboard map assets".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 if !job_alive.load(Ordering::Acquire) {
                     return;
                 }
@@ -1280,7 +1287,11 @@ impl DashboardMaps {
                 view.viewer.ui_scale = self.ui_scale;
                 view.viewer.muted = self.muted;
                 view.viewer.audio_focus = audio_view.as_ref() == Some(id);
-                view.viewer.map_ui(&mut map_ui, frame, &view.target);
+                // Each map reads its own recording's executable tables.
+                let tables = view.viewer.tables();
+                engine_executable::executable_tables::scope(tables, || {
+                    view.viewer.map_ui(&mut map_ui, frame, &view.target)
+                });
                 if view.viewer.interacted {
                     interacted = Some(id.clone());
                 }
@@ -1342,7 +1353,10 @@ impl DashboardMaps {
                         });
                     }
                     if diagnostics {
-                        view.viewer.diagnostics_ui(ui, height);
+                        let tables = view.viewer.tables();
+                        engine_executable::executable_tables::scope(tables, || {
+                            view.viewer.diagnostics_ui(ui, height)
+                        });
                     }
                 });
             }

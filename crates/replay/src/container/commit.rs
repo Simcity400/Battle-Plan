@@ -319,6 +319,7 @@ pub(super) fn encode_trailer(
     recovery_notes: &[RecoveryNote],
     previous: Option<(u64, u64)>,
     index: &[BlockIndex],
+    facts: &[FactRegion],
 ) -> io::Result<Revision> {
     let trailer_start = out.len();
     out.extend_from_slice(TRAILER_MAGIC);
@@ -339,6 +340,7 @@ pub(super) fn encode_trailer(
         out.extend_from_slice(&block.length.to_le_bytes());
         out.extend_from_slice(&block.raw_length.to_le_bytes());
     }
+    encode_facts(out, facts)?;
     let length = (out.len() - trailer_start) as u64;
     let trailer = at + trailer_start as u64;
     let revision = Revision {
@@ -349,6 +351,32 @@ pub(super) fn encode_trailer(
     };
     out.extend_from_slice(&revision.footer());
     Ok(revision)
+}
+
+/// The fact packs a trailer names, after its block index: a list only trailers that name one
+/// hold, so a trailer of any format can carry it.
+pub(super) fn encode_facts(out: &mut Vec<u8>, facts: &[FactRegion]) -> io::Result<()> {
+    if facts.is_empty() {
+        return Ok(());
+    }
+    out.extend_from_slice(FACTS_MAGIC);
+    put_count(out, facts.len())?;
+    for fact in facts {
+        out.extend_from_slice(&fact.offset.to_le_bytes());
+        out.extend_from_slice(&fact.length.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// The save a trailer with these bytes at `trailer` ends.
+fn revision_of(trailer: u64, bytes: &[u8]) -> Revision {
+    let length = bytes.len() as u64;
+    Revision {
+        end: trailer + length + FOOTER_SIZE as u64,
+        trailer,
+        length,
+        crc: crc32fast::hash(bytes),
+    }
 }
 
 /// Point a resident recording's commit slot at the footer it ends with.
@@ -449,7 +477,9 @@ impl Replay {
     /// [`Replay::append_recovered_with_reader`] adds them to a copy: crash-safe, holding
     /// only the new blocks. Returns once the new save is flushed, reopened and every new block
     /// read back whole; a failure leaves the recording as it was.
-    /// `prepare` receives the intended revision before any bytes are changed.
+    /// `prepare` receives the intended revision before any bytes are changed. `facts`, the
+    /// recording's game facts, are added with the blocks when it carries none yet.
+    #[allow(clippy::too_many_arguments)]
     pub fn append_in_place(
         &mut self,
         segments: &[(u32, Recovery<Recovered>)],
@@ -457,6 +487,7 @@ impl Replay {
         mut progress: impl FnMut() -> io::Result<()>,
         mut observe: impl FnMut(&Observed) -> io::Result<()>,
         ahead: Option<Ahead>,
+        facts: Option<&[u8]>,
         prepare: impl FnOnce(Revision) -> io::Result<()>,
     ) -> io::Result<()> {
         if !self.appendable {
@@ -490,7 +521,8 @@ impl Replay {
         let notes = recovery_notes(segments)?;
         let before = self.revision;
         let mut mutated = false;
-        let written = self.write_save(pending, &notes, prepare, &mut mutated);
+        let facts = facts.filter(|_| self.fact_packs.is_empty());
+        let written = self.write_save(pending, &notes, facts, prepare, &mut mutated);
         let checked = written.and_then(|()| self.reread(before));
         if let Err(error) = checked {
             // Replace the failed save without invalidating readers that already opened it.
@@ -510,6 +542,7 @@ impl Replay {
         &mut self,
         pending: Pending,
         notes: &[RecoveryNote],
+        facts: Option<&[u8]>,
         prepare: impl FnOnce(Revision) -> io::Result<()>,
         mutated: &mut bool,
     ) -> io::Result<()> {
@@ -531,6 +564,11 @@ impl Replay {
             });
             at += block.bytes.len() as u64;
         }
+        let region = facts.map(|pack| FactRegion {
+            offset: at,
+            length: pack.len() as u64,
+        });
+        at += region.map_or(0, |region| region.length);
         let mut trailer = Vec::new();
         let revision = encode_trailer(
             &mut trailer,
@@ -542,6 +580,7 @@ impl Replay {
             notes,
             previous,
             &index,
+            region.as_slice(),
         )?;
         prepare(revision)?;
         if self.file.as_ref().unwrap().metadata()?.len() > before.end {
@@ -563,6 +602,9 @@ impl Replay {
         *mutated = true;
         for block in pending.blocks {
             file.write_all(&block.bytes)?;
+        }
+        if let Some(pack) = facts {
+            file.write_all(pack)?;
         }
         let (body, footer) = trailer.split_at(trailer.len() - FOOTER_SIZE);
         file.write_all(body)?;
@@ -696,6 +738,182 @@ impl Replay {
             ));
         }
         replay.cut_to(revision)
+    }
+
+    /// Add `pack`, the recording's game facts, as a save of its own after the last complete one:
+    /// the pack, then a trailer adding nothing else that names it. Crash-safe like
+    /// [`Self::append_in_place`]; a recording that names facts already is left as it is.
+    pub fn attach_facts_in_place(&mut self, pack: &[u8]) -> io::Result<()> {
+        if !self.appendable {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this recording was not opened to be added to",
+            ));
+        }
+        self.require_undamaged()?;
+        if !self.fact_packs.is_empty() {
+            return Ok(());
+        }
+        let Some(slot) = self.slot else {
+            return Err(invalid(
+                "a recording without a commit slot is given facts by a rewritten copy",
+            ));
+        };
+        let before = self.revision;
+        let region = FactRegion {
+            offset: before.end,
+            length: pack.len() as u64,
+        };
+        let mut trailer = Vec::new();
+        let revision = encode_trailer(
+            &mut trailer,
+            before.end + region.length,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            Some((before.trailer, before.length)),
+            &[],
+            &[region],
+        )?;
+        let written = (|| {
+            if self.file.as_ref().unwrap().metadata()?.len() > before.end {
+                self.cut_to(before)?;
+            }
+            let mut file = Budgeted::new(self.file.as_mut().unwrap());
+            file.seek(SeekFrom::Start(slot as u64))?;
+            file.write_all(&before.slot())?;
+            file.seek(SeekFrom::Start(before.end))?;
+            file.write_all(pack)?;
+            let (body, footer) = trailer.split_at(trailer.len() - FOOTER_SIZE);
+            file.write_all(body)?;
+            file.get_ref().sync_data()?;
+            // The footer at the end commits the save.
+            file.write_all(footer)?;
+            file.get_ref().sync_data()?;
+            file.seek(SeekFrom::Start(slot as u64))?;
+            file.write_all(&revision.slot())?;
+            file.get_ref().sync_data()
+        })();
+        let checked = written.and_then(|()| {
+            let mut file = self.file.take().unwrap();
+            let reopened = Self::open_file_metadata(&mut file);
+            self.file = Some(file);
+            let mut reopened = reopened?;
+            reopened.require_undamaged()?;
+            if reopened.revision != revision || reopened.fact_packs != [region] {
+                return Err(invalid("the facts written do not reopen as the recording's"));
+            }
+            reopened.file = self.file.take();
+            reopened.appendable = true;
+            reopened.append_path = self.append_path.take();
+            *self = reopened;
+            Ok(())
+        });
+        if let Err(error) = checked {
+            if let Err(rollback) = self.cut_to(before) {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; the recording could not be restored: {rollback}"),
+                ));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// This resident recording, as yet unpublished, with `pack` as its game facts: the pack
+    /// before its newest trailer, whose bytes are kept and followed by the list naming it. One
+    /// that carries facts already is returned as it is.
+    pub fn with_facts(mut self, pack: &[u8]) -> io::Result<Self> {
+        self.require_resident()?;
+        if !self.fact_packs.is_empty() {
+            return Ok(self);
+        }
+        let start = to_usize(self.revision.trailer)?;
+        let end = start
+            .checked_add(to_usize(self.revision.length)?)
+            .filter(|end| *end <= self.bytes.len())
+            .ok_or_else(|| invalid("invalid trailer extent"))?;
+        let mut trailer = self.bytes[start..end].to_vec();
+        encode_facts(
+            &mut trailer,
+            &[FactRegion {
+                offset: start as u64,
+                length: pack.len() as u64,
+            }],
+        )?;
+        self.bytes.truncate(start);
+        self.bytes.extend_from_slice(pack);
+        let revision = revision_of(self.bytes.len() as u64, &trailer);
+        self.bytes.extend_from_slice(&trailer);
+        self.bytes.extend_from_slice(&revision.footer());
+        let slot = self.slot;
+        let mut bytes = std::mem::take(&mut self.bytes);
+        stamp_slot(&mut bytes, slot)?;
+        Self::open(bytes)
+    }
+
+    /// Write this recording with `pack` as its game facts to a new file at `path`, flushed: every
+    /// complete save's bytes as they are, then, for a recording with a commit slot, a save adding
+    /// the pack ([`Self::attach_facts_in_place`]); without one, the pack before its one trailer,
+    /// whose bytes are kept and followed by the list naming it. Nothing recorded is decoded and
+    /// written again, so the copy holds exactly what the recording held.
+    pub fn write_with_facts(&self, path: &Path, pack: &[u8]) -> io::Result<()> {
+        if !self.fact_packs.is_empty() {
+            return Err(invalid("this recording carries game facts already"));
+        }
+        self.require_undamaged()?;
+        if self.slot.is_some() {
+            self.copy_saved(path)?;
+            let attached = Self::open_appendable(path).and_then(|mut copy| {
+                copy.attach_facts_in_place(pack)?;
+                copy.file.take().unwrap().sync_all()
+            });
+            if attached.is_err() {
+                let _ = std::fs::remove_file(path);
+            }
+            return attached;
+        }
+        let mut output = Budgeted::new(OpenOptions::new().write(true).create_new(true).open(path)?);
+        let written = (|| {
+            let mut chunk = engine_allocation::filled(1 << 20, 0)?;
+            let start = self.revision.trailer;
+            let mut at = 0;
+            while at < start {
+                let length = (chunk.len() as u64).min(start - at) as usize;
+                self.read_at(at, &mut chunk[..length])?;
+                output.write_all(&chunk[..length])?;
+                at += length as u64;
+            }
+            output.write_all(pack)?;
+            let mut trailer = engine_allocation::filled(to_usize(self.revision.length)?, 0)?;
+            self.read_at(start, &mut trailer)?;
+            encode_facts(
+                &mut trailer,
+                &[FactRegion {
+                    offset: start,
+                    length: pack.len() as u64,
+                }],
+            )?;
+            let revision = revision_of(start + pack.len() as u64, &trailer);
+            output.write_all(&trailer)?;
+            output.write_all(&revision.footer())?;
+            output.get_ref().sync_all()
+        })();
+        drop(output);
+        let checked = written.and_then(|()| {
+            let copy = Self::open_path(path)?;
+            copy.require_undamaged()?;
+            (copy.fact_packs.len() == 1 && copy.index == self.index && copy.sessions == self.sessions)
+                .then_some(())
+                .ok_or_else(|| invalid("the copy with facts does not reopen as the recording"))
+        });
+        if checked.is_err() {
+            let _ = std::fs::remove_file(path);
+        }
+        checked
     }
 
     /// Copy the recording's complete saves to a new file at `path`, flushed.

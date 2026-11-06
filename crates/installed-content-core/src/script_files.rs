@@ -85,9 +85,13 @@ impl AsRef<[u8]> for ScriptPath {
 /// recursion. Merge every layer's filenames in byte order, listing repeated names once
 /// and reading them from the winning layer. Match `filter` by an exact suffix; `None`
 /// lists every file.
-pub fn paths(layers: &ResolvedLayers, folder: &str, filter: Option<&str>) -> Vec<ScriptPath> {
+pub fn paths(
+    layers: &ResolvedLayers,
+    folder: &str,
+    filter: Option<&str>,
+) -> io::Result<Vec<ScriptPath>> {
     let mut files: Vec<(LayerPath, LayerPath)> = layers
-        .listed_layer_paths(folder.as_bytes())
+        .listed_layer_paths(folder.as_bytes())?
         .into_iter()
         .filter_map(|path| {
             let name = path.get(folder.len()..)?.to_vec();
@@ -98,7 +102,7 @@ pub fn paths(layers: &ResolvedLayers, folder: &str, filter: Option<&str>) -> Vec
         })
         .collect();
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    files.into_iter().map(|(_, path)| ScriptPath(path)).collect()
+    Ok(files.into_iter().map(|(_, path)| ScriptPath(path)).collect())
 }
 
 /// Whether `path` is a database file directly in `folder` (lowercase and ending in `/`), its
@@ -112,14 +116,14 @@ pub fn is_database_file(path: &[u8], folder: &str) -> bool {
 /// Every effective database file directly in `folder` ([`is_database_file`]) in the order the
 /// database's folder scan lists them: by name, byte for byte. The scan spells the folder
 /// itself, so the case a layer gives the folder does not move a file.
-pub fn database_paths(layers: &ResolvedLayers, folder: &str) -> Vec<ScriptPath> {
+pub fn database_paths(layers: &ResolvedLayers, folder: &str) -> io::Result<Vec<ScriptPath>> {
     let mut paths: Vec<ScriptPath> = layers
-        .paths()
+        .paths()?
         .filter(|path| is_database_file(path, folder))
         .map(|path| ScriptPath(path.to_vec()))
         .collect();
     paths.sort_by(|a, b| a.0[folder.len()..].cmp(&b.0[folder.len()..]));
-    paths
+    Ok(paths)
 }
 
 /// Each parsed file under `folder` in load order, as trees, for the content
@@ -131,7 +135,7 @@ pub fn documents<D: DiagnosticMessage>(
     warnings: &mut Vec<D>,
 ) -> io::Result<Vec<(String, Document)>> {
     let mut result = Vec::new();
-    for path in paths(layers, folder, Some(".txt")) {
+    for path in paths(layers, folder, Some(".txt"))? {
         match crate::parser::parse_unclosed(&path.read(layers)?) {
             Ok((document, repaired)) => {
                 if repaired {
@@ -181,7 +185,7 @@ mod tests {
         }
         let layers = ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])]).unwrap();
         assert_eq!(
-            paths(&layers, "common/ideas/", Some(".txt")),
+            paths(&layers, "common/ideas/", Some(".txt")).unwrap(),
             [
                 "common/ideas/0.txt",
                 "common/ideas/a.txt",
@@ -192,7 +196,7 @@ mod tests {
             layers.read("common/ideas/a.txt").unwrap(),
             b"common/ideas/a.txt"
         );
-        assert_eq!(paths(&layers, "common/ideas/", None).len(), 5);
+        assert_eq!(paths(&layers, "common/ideas/", None).unwrap().len(), 5);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -219,7 +223,7 @@ mod tests {
             std::fs::write(path, file).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])]).unwrap();
-        let listed: Vec<_> = database_paths(&layers, "common/abilities/")
+        let listed: Vec<_> = database_paths(&layers, "common/abilities/").unwrap()
             .iter()
             .map(ToString::to_string)
             .collect();
@@ -268,7 +272,7 @@ mod tests {
         )
         .unwrap();
         let layers = ResolvedLayers::from_folders(&[(&archive, &[][..])]).unwrap();
-        let listed = paths(&layers, "common/ideas/", Some(".txt"));
+        let listed = paths(&layers, "common/ideas/", Some(".txt")).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].as_bytes(), b"common/ideas/\x80.txt");
         assert_eq!(listed[0].read(&layers).unwrap(), b"raw");

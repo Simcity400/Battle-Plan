@@ -313,6 +313,7 @@ fn scripted_content_with_files(
         layers,
         stats: Default::default(),
         changed: Vec::new(),
+        notes: Vec::new(),
     };
     let scripted =
         dashboard_text::scripted_text::ScriptedContent::read(Arc::new(content), String::new())

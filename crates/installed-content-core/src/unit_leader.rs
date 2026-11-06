@@ -274,7 +274,7 @@ impl Leaders<String> {
 /// The content stack's `common/unit_leader` files: the folder's own
 /// `.txt` files ([`script_files::paths`]), with their bytes; each path as text, for messages.
 fn files(layers: &ResolvedLayers) -> io::Result<Vec<(String, Vec<u8>)>> {
-    script_files::paths(layers, DIRECTORY, Some(".txt"))
+    script_files::paths(layers, DIRECTORY, Some(".txt"))?
         .into_iter()
         .map(|path| {
             let bytes = path.read(layers)?;

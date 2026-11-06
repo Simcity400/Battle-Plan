@@ -512,7 +512,7 @@ impl Assets {
         let systems: Vec<io::Result<LocalSystem>> = std::thread::scope(|scope| {
             keys.iter()
                 .map(|(key, pair)| {
-                    scope.spawn(move || {
+                    job_priority::spawn_in(scope, move || {
                         let mut textures = Vec::new();
                         let mut pages = BTreeMap::new();
                         let mut emitters = [Vec::new(), Vec::new()];
@@ -608,7 +608,7 @@ impl Assets {
             by_file
                 .iter()
                 .map(|(path, objects)| {
-                    scope.spawn(move || {
+                    job_priority::spawn_in(scope, move || {
                         let document = parser::parse(&path.read_uncovered(layers)?)?;
                         let text = path.text();
                         let path: &str = &text;

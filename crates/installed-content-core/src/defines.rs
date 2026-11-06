@@ -111,13 +111,13 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
     let shared = layers.derived::<Shared>();
     let mut slot = shared.0.lock().unwrap_or_else(|error| error.into_inner());
     if let Some(defines) = &*slot {
-        for path in script_paths(layers) {
+        for path in script_paths(layers)? {
             path.read(layers)?;
         }
         return Ok(defines.clone());
     }
     let mut defines = Defines::new()?;
-    for path in script_paths(layers) {
+    for path in script_paths(layers)? {
         defines.load(&path.text(), &path.read(layers)?)?;
     }
     defines.sealed = true;
@@ -129,12 +129,14 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
 /// in `lua`, case-sensitive and in byte order, then its subdirectories in
 /// byte order, depth first. A path repeated across layers uses the winning
 /// layer; paths differing only in case remain separate tree entries.
-pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<ScriptPath> {
-    let listed = layers.listed_layer_paths(b"common/defines/");
-    load_order_paths(b"common/defines/", b"lua", listed.iter().map(Vec::as_slice))
-        .into_iter()
-        .map(ScriptPath::new)
-        .collect()
+pub(crate) fn script_paths(layers: &ResolvedLayers) -> io::Result<Vec<ScriptPath>> {
+    let listed = layers.listed_layer_paths(b"common/defines/")?;
+    Ok(
+        load_order_paths(b"common/defines/", b"lua", listed.iter().map(Vec::as_slice))
+            .into_iter()
+            .map(ScriptPath::new)
+            .collect(),
+    )
 }
 
 /// Names under `root` ending in `filter`, with files before subdirectories

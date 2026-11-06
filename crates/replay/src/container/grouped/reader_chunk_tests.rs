@@ -17,7 +17,7 @@ fn rebuilt(replay: &Replay, blocks: Vec<(BlockIndex, Vec<u8>)>) -> Replay {
         &replay.gaps,
         &replay.controls,
         &replay.recovery_notes,
-        &index,
+        &index, &[],
     )
     .unwrap();
     super::super::commit::stamp_slot(&mut bytes, replay.slot).unwrap();

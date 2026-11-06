@@ -215,6 +215,12 @@ impl Diagnostics {
         .credit();
     }
 
+    /// A line shown to the reader as it is, such as what playback shows in place of what it
+    /// cannot show.
+    pub fn note(warning: String) {
+        Self::shader(warning);
+    }
+
     pub fn shader(warning: String) {
         if !is_active() {
             return;

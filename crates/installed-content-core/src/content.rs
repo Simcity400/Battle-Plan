@@ -32,7 +32,9 @@ use sha2::{Digest, Sha256};
 use crate::parser::{self, Document};
 pub use crate::script_files::ScriptPath;
 
+pub mod facts;
 mod physfs_zip;
+pub mod proof;
 pub mod visual;
 
 // Historical roots from 2ae47c8122 (policy 2), 2df8adf4b3 (3) and 5aea650ab7 (4).
@@ -130,8 +132,12 @@ pub struct ResolveOptions {
 pub struct ResolvedContent {
     pub layers: ResolvedLayers,
     pub stats: HashStats,
-    /// Recorded layers whose installed bytes differ: the installed bytes are read (owner, 28 Oct).
+    /// Recorded layers whose installed bytes differ, from [`resolve`], which only the recorder
+    /// and the upgrader use: playback never reads a fact from the installed game.
     pub changed: Vec<ChangedLayer>,
+    /// What playback shows from where: art from the installed game, art that is not
+    /// installed, and facts the recording withholds, each by name ([`playback`]).
+    pub notes: Vec<String>,
 }
 
 impl ResolvedContent {
@@ -143,15 +149,17 @@ impl ResolvedContent {
         }
     }
 
-    /// Refresh `warnings` with one line naming each changed layer.
+    /// Refresh `warnings` with one line per changed layer and per playback note.
     pub fn append_changed_to(&self, warnings: &mut Vec<String>) {
-        warnings.retain(|line| !line.ends_with(CHANGED_LAYER));
+        warnings.retain(|line| {
+            !line.ends_with(CHANGED_LAYER) && !self.notes.iter().any(|note| note == line)
+        });
         warnings.extend(self.changed.iter().map(ToString::to_string));
+        warnings.extend(self.notes.iter().cloned());
     }
 }
 
-const CHANGED_LAYER: &str =
-    "changed since the recording (content hash mismatch); the installed files are used";
+const CHANGED_LAYER: &str = "changed since the recording (content hash mismatch)";
 
 /// A recorded content layer whose installed bytes differ from the recording's.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -480,9 +488,65 @@ impl UncoveredReads {
     }
 }
 
+/// What a layer is in the game's mount: the base game, one of its built-in roots, the user
+/// folder a new recording's game mounts, a DLC, a mod, a built-in root mounted above every mod,
+/// or a visual mod shown for presentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayerRole {
+    Vanilla,
+    Builtin,
+    UserDirectory,
+    Dlc,
+    Mod,
+    AboveMods,
+    Visual,
+}
+
+impl LayerRole {
+    fn byte(self) -> u8 {
+        match self {
+            Self::Vanilla => 0,
+            Self::Builtin => 1,
+            Self::UserDirectory => 2,
+            Self::Dlc => 3,
+            Self::Mod => 4,
+            Self::AboveMods => 5,
+            Self::Visual => 6,
+        }
+    }
+
+    fn from_byte(byte: u8) -> io::Result<Self> {
+        Ok(match byte {
+            0 => Self::Vanilla,
+            1 => Self::Builtin,
+            3 => Self::Dlc,
+            4 => Self::Mod,
+            5 => Self::AboveMods,
+            _ => return Err(invalid("unknown recorded layer role")),
+        })
+    }
+}
+
+/// A played-back layer's facts: its layer of the recording's pack.
+#[derive(Clone, Debug)]
+struct Facts {
+    pack: Arc<facts::Pack>,
+    layer: usize,
+}
+
+impl Facts {
+    fn layer(&self) -> &facts::PackLayer {
+        &self.pack.layers[self.layer]
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ResolvedLayer {
     coverage: CoveragePolicy,
+    pub role: LayerRole,
+    /// For playback, the recording's facts of this layer: every covered path that is not art is
+    /// answered from them and never from `source`, which then holds the installed art only.
+    facts: Option<Facts>,
     pub id: String,
     pub source: LayerSource,
     pub descriptor: Option<PathBuf>,
@@ -837,6 +901,8 @@ struct RecordedHit {
     layer: usize,
     path: LayerPath,
     folder: Option<File>,
+    /// A played-back layer's carried fact, by its file in the pack.
+    fact: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -1184,6 +1250,8 @@ fn descriptor_layer(
     Ok((
         ResolvedLayer {
             coverage,
+            role: if is_mod { LayerRole::Mod } else { LayerRole::Dlc },
+            facts: None,
             id,
             source,
             descriptor: Some(path),
@@ -1483,9 +1551,108 @@ fn walk_below(
 
 impl ResolvedLayer {
     /// Whether reads check this layer's covered bytes against the recording. A visual mod the
-    /// recording does not hold is presentation only and has no recorded bytes to check.
+    /// recording does not hold is presentation only and has no recorded bytes to check, and a
+    /// played-back layer reads its facts from the recording and its art as installed.
     fn verifies(&self) -> bool {
-        self.overlay.as_ref().is_none_or(|overlay| overlay.verified)
+        self.facts.is_none() && self.overlay.as_ref().is_none_or(|overlay| overlay.verified)
+    }
+
+    /// Whether its files are listed as the game lists them (links and case variants kept)
+    /// rather than refused, as a verified layer's are.
+    fn listed_as_game(&self) -> bool {
+        self.overlay.is_some() || self.facts.is_some()
+    }
+
+    /// Whether `path` is a game fact in this played-back layer: covered by today's policy and not
+    /// art, whatever an older recording's identity hashed.
+    fn fact_path(&self, path: &[u8]) -> bool {
+        self.facts
+            .as_ref()
+            .is_some_and(|facts| fact_class(path) && !facts.pack.is_art(path))
+    }
+
+    /// The carried fact a lookup of `path` finds here: `Ok(None)` for no fact path or none
+    /// carried, an error when this layer's facts are withheld or its identity never hashed it.
+    fn fact_lookup(&self, path: &[u8]) -> io::Result<Option<(LayerPath, u32)>> {
+        let Some(facts) = self.facts.as_ref().filter(|_| self.fact_path(path)) else {
+            return Ok(None);
+        };
+        if !self.coverage.covered_path(path) {
+            return Err(unproven(path, self.coverage));
+        }
+        Ok(facts
+            .layer()
+            .find(path)?
+            .map(|(real, file)| (real.clone(), file)))
+    }
+
+    /// Why this played-back layer cannot list the facts a listing of `prefix` holds, when it
+    /// cannot: its facts are withheld, or the recording's identity never hashed them.
+    fn fact_listing_refusal(&self, prefix: &[u8], suffixes: &[String]) -> Option<io::Error> {
+        let facts = self.facts.as_ref()?;
+        if !lists_facts(prefix, suffixes) {
+            return None;
+        }
+        if let Some(reason) = facts.layer().withheld() {
+            return Some(invalid(format!(
+                "game facts of {} are withheld: {reason}",
+                self.id
+            )));
+        }
+        (!self.coverage.covered_path(prefix) && fact_class(prefix))
+            .then(|| unproven(prefix, self.coverage))
+    }
+
+    /// The `name` a DLC layer's descriptor gives it, which `has_dlc` tests.
+    fn dlc_name(&self) -> io::Result<Option<String>> {
+        if let Some(facts) = &self.facts {
+            let layer = facts.layer();
+            return match (&layer.dlc_name, self.role) {
+                (Some(name), _) => Ok(Some(name.clone())),
+                (None, LayerRole::Dlc) => Err(invalid(format!(
+                    "the name of DLC {} is withheld: {}",
+                    self.id,
+                    layer.withheld().unwrap_or("the recording does not give it")
+                ))),
+                (None, _) => Ok(None),
+            };
+        }
+        let Some(descriptor) = self.descriptor.as_ref().filter(|path| {
+            path.extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("dlc"))
+        }) else {
+            return Ok(None);
+        };
+        let bytes = fs::read(descriptor)?;
+        let actual: [u8; 32] = Sha256::digest(&bytes).into();
+        if self.descriptor_hash.map(|parsed| parsed.bytes) != Some(actual) {
+            return Err(invalid(format!(
+                "DLC descriptor {} changed after content verification",
+                descriptor.display()
+            )));
+        }
+        required(&parser::parse(&bytes)?, b"name").map(Some)
+    }
+
+    /// Whether lookups in this layer compare names exactly, as an archive's do, rather than
+    /// ignoring case, as a folder's do.
+    fn exact_names(&self) -> bool {
+        match &self.facts {
+            Some(facts) => facts.layer().archive,
+            None => matches!(self.source, LayerSource::Archive(_)),
+        }
+    }
+
+    /// Every path this layer lists: its carried facts, then the files of its source.
+    fn listed_keys(&self) -> impl Iterator<Item = &LayerPath> {
+        let facts = self
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.layer().paths().ok())
+            .into_iter()
+            .flatten();
+        facts.chain(self.files.keys())
     }
 
     fn inventory(&mut self) -> io::Result<()> {
@@ -1494,6 +1661,7 @@ impl ResolvedLayer {
         }
         match &self.source {
             LayerSource::Folder(root) => {
+                let listed_as_game = self.listed_as_game();
                 // `gfx` holds the descriptors and the covered `gfx/*` roots.
                 let walked = self
                     .coverage
@@ -1507,7 +1675,7 @@ impl ResolvedLayer {
                             &path,
                             std::sync::Arc::make_mut(&mut self.files),
                             self.coverage,
-                            self.overlay.is_some(),
+                            listed_as_game,
                         )?;
                     }
                 }
@@ -1524,7 +1692,7 @@ impl ResolvedLayer {
                         continue;
                     }
                     // A visual mod lists its link records, as the game does (see `collect_folder`).
-                    if entry.symlink && self.overlay.is_none() {
+                    if entry.symlink && !self.listed_as_game() {
                         return Err(invalid(format!(
                             "archive contains a symbolic link: {}",
                             display(&entry.name)
@@ -1556,7 +1724,7 @@ impl ResolvedLayer {
         for path in self.files.keys() {
             if folded.contains_key(&path.to_ascii_lowercase()) {
                 // See `collect_folder`: a visual mod keeps the first spelling.
-                if self.overlay.is_some() {
+                if self.listed_as_game() {
                     continue;
                 }
             }
@@ -1679,7 +1847,7 @@ impl ResolvedLayer {
             Ok(real) => normalize_path(text_path(real)?.as_bytes())?,
             // The game opens a mod's file through any link, out of its folder too.
             Err(_)
-                if self.overlay.is_some()
+                if self.listed_as_game()
                     && !(self.verifies() && self.coverage.covered_path(relative)) =>
             {
                 relative.to_vec()
@@ -1696,6 +1864,10 @@ impl ResolvedLayer {
             && self.lookup.folders.get(&real.to_ascii_lowercase()) != Some(&real)
         {
             return Err(changed(&real));
+        }
+        // Played back, a fact is read only from the recording, never through an installed alias.
+        if self.fact_path(&real) {
+            return Err(fact_alias(relative, &real));
         }
         Ok(Some((real, file)))
     }
@@ -1774,7 +1946,8 @@ impl ResolvedLayer {
         };
         let unchanged =
             Stamp::read(path).is_ok_and(|stamp| self.archive_stamp.as_ref() == Some(&stamp));
-        if !unchanged {
+        // A played-back layer's archive holds art only, read as it is installed now.
+        if !unchanged && self.verifies() {
             return Err(invalid(format!(
                 "archive changed since verification: {}",
                 path.display()
@@ -1842,6 +2015,9 @@ impl ResolvedLayer {
         if entry.symlink {
             return Err(unfollowed_link(request).into());
         }
+        if self.fact_path(&entry.name) {
+            return Err(fact_alias(request, &entry.name).into());
+        }
         let context = |error: io::Error| invalid(format!("{}: {error}", display(request)));
         if self.verifies() && self.files.contains_key(&entry.name) {
             let record = record_digest_observed(&mut archive, entry, observed)
@@ -1874,6 +2050,7 @@ impl ResolvedLayer {
         let (mut archive, mounted) = self.verified_archive()?;
         match mounted.lookup(request) {
             Some((entry, _)) if entry.symlink => Err(unfollowed_link(request)),
+            Some((entry, _)) if self.fact_path(&entry.name) => Err(fact_alias(request, &entry.name)),
             Some((entry, password)) => archive.opens(entry, password),
             None => Ok(false),
         }
@@ -1921,6 +2098,44 @@ impl ResolvedLayer {
             }
         }
     }
+}
+
+/// Whether a path is a game fact's by today's coverage: what playback reads only from a recording.
+fn fact_class(path: &[u8]) -> bool {
+    CoveragePolicy::default().covered_path(path)
+}
+
+/// Whether a listing of `prefix` for names ending in one of `suffixes` can hold facts.
+fn lists_facts(prefix: &[u8], suffixes: &[String]) -> bool {
+    let lower = prefix.to_ascii_lowercase();
+    fact_class(&lower)
+        || lower.is_empty()
+        || ((lower == b"gfx" || below(&lower, b"gfx") || lower == b"gfx/" || lower.starts_with(b"gfx/"))
+            && (suffixes.is_empty() || suffixes.iter().any(|suffix| {
+                [".gfx", ".asset", ".txt"]
+                    .iter()
+                    .any(|fact| fact.ends_with(suffix.as_str()) || suffix.ends_with(fact))
+            })))
+}
+
+/// A fact the recording's content identity, made under an older coverage policy, never hashed,
+/// so no game folder can prove it.
+fn unproven(path: &[u8], coverage: CoveragePolicy) -> io::Error {
+    invalid(format!(
+        "{} is a game fact this recording's content identity (coverage policy {}) never hashed, so it is withheld",
+        display(path),
+        coverage.0
+    ))
+}
+
+/// A request naming a recorded game fact by another spelling, which playback never reads from
+/// the installed game.
+fn fact_alias(request: &[u8], fact: &[u8]) -> io::Error {
+    invalid(format!(
+        "{} names the recorded game fact {} by another spelling, which playback does not read from the installed game",
+        display(request),
+        display(fact)
+    ))
 }
 
 /// A covered record that differs from what was verified: changed, gone or added.
@@ -2083,6 +2298,16 @@ impl ResolvedLayers {
         .downcast::<T>()
         .expect("cache type owns its entry")
     }
+    /// The language whose text a played-back recording carries, without its `l_`; `None` for
+    /// content read from an installation.
+    pub fn recorded_language(&self) -> Option<&str> {
+        self.layers
+            .iter()
+            .find_map(|layer| layer.facts.as_ref())
+            .filter(|facts| facts.pack.layers.iter().any(|layer| layer.withheld().is_none()))
+            .map(|facts| facts.pack.language_name())
+    }
+
     /// Whether this recording's coverage policy hashes a text path.
     pub fn covered(&self, path: &str) -> bool {
         self.covered_path(path.as_bytes())
@@ -2115,15 +2340,36 @@ impl ResolvedLayers {
                 return Err(invalid("content layers use different coverage policies"));
             }
             let defines_visible = self.defines_visible;
-            let sees = |lower: &[u8]| overlay_sees(defines_visible, lower);
+            let pack = self
+                .layers
+                .iter()
+                .find_map(|layer| layer.facts.as_ref())
+                .map(|facts| Arc::clone(&facts.pack));
+            let sees = |lower: &[u8]| {
+                overlay_sees(defines_visible, lower)
+                    && pack
+                        .as_ref()
+                        .is_none_or(|pack| !fact_class(lower) || pack.is_art(lower))
+            };
+            // Played back, a layer's installed art is listed as it is now, whatever its spellings.
+            let all = |_: &[u8]| true;
             let mut effective = std::mem::take(&mut self.effective);
             apply_overlay(
                 &mut effective,
                 index,
-                matches!(layer.source, LayerSource::Archive(_)),
-                layer.files.keys(),
+                match &layer.facts {
+                    Some(facts) => facts.layer().archive,
+                    None => matches!(layer.source, LayerSource::Archive(_)),
+                },
+                layer.listed_keys(),
                 &layer.replace_paths,
-                layer.overlay.is_some().then_some(&sees as Sees<'_>),
+                if layer.overlay.is_some() {
+                    Some(&sees as Sees<'_>)
+                } else if layer.facts.is_some() {
+                    Some(&all as Sees<'_>)
+                } else {
+                    None
+                },
             )?;
             self.effective = effective;
         }
@@ -2150,6 +2396,8 @@ impl ResolvedLayers {
             let root = fs::canonicalize(root)?;
             let mut layer = ResolvedLayer {
                 coverage: CoveragePolicy::default(),
+                role: LayerRole::Mod,
+                facts: None,
                 id: format!("test{index}"),
                 source: LayerSource::Folder(root.clone()),
                 descriptor: None,
@@ -2207,6 +2455,8 @@ impl ResolvedLayers {
         for (index, (root, replace_paths)) in folders.iter().enumerate() {
             let mut layer = ResolvedLayer {
                 coverage: layers.coverage,
+                role: LayerRole::Mod,
+                facts: None,
                 id: format!("test{index}"),
                 source: if root.is_file()
                     && root
@@ -2237,16 +2487,51 @@ impl ResolvedLayers {
         Ok(layers)
     }
 
-    /// The game loads non-UTF-8 archive paths too; read these with [`Self::read_path`].
-    pub fn paths(&self) -> impl Iterator<Item = &[u8]> {
-        self.effective.values().map(|file| file.path.as_slice())
+    /// The game loads non-UTF-8 archive paths too; read these with [`Self::read_path`]. Refused
+    /// by name when a played-back layer cannot list its facts.
+    pub fn paths(&self) -> io::Result<impl Iterator<Item = &[u8]>> {
+        self.refuse_listing(b"", &[])?;
+        Ok(self.effective.values().map(|file| file.path.as_slice()))
     }
 
-    /// Paths retain non-UTF-8 bytes; read them with [`Self::read_path`].
-    pub fn effective_paths(&self) -> impl Iterator<Item = (&[u8], usize)> {
+    /// Paths retain non-UTF-8 bytes; read them with [`Self::read_path`]. Refused by name when a
+    /// played-back layer cannot list its facts.
+    pub fn effective_paths(&self) -> io::Result<impl Iterator<Item = (&[u8], usize)>> {
+        self.refuse_listing(b"", &[])?;
+        Ok(self
+            .effective
+            .values()
+            .map(|file| (file.path.as_slice(), file.layer)))
+    }
+
+    /// Every effective path that is no game fact (art, and what no policy covers), which a
+    /// played-back layer lists from its installation whatever it withholds.
+    pub fn art_paths(&self) -> impl Iterator<Item = &[u8]> {
+        let pack = self
+            .layers
+            .iter()
+            .find_map(|layer| layer.facts.as_ref())
+            .map(|facts| Arc::clone(&facts.pack));
         self.effective
             .values()
-            .map(|file| (file.path.as_slice(), file.layer))
+            .map(|file| file.path.as_slice())
+            .filter(move |path| {
+                pack.as_ref()
+                    .is_none_or(|pack| !fact_class(path) || pack.is_art(path))
+            })
+    }
+
+    /// The first refusal of a played-back layer that cannot list the facts a listing of
+    /// `prefix` for `suffixes` holds: a listing that left them out would read as their absence.
+    fn refuse_listing(&self, prefix: &[u8], suffixes: &[String]) -> io::Result<()> {
+        match self
+            .layers
+            .iter()
+            .find_map(|layer| layer.fact_listing_refusal(prefix, suffixes))
+        {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
     }
 
     /// The `name` of every recorded DLC layer, which `has_dlc` tests: its
@@ -2254,22 +2539,7 @@ impl ResolvedLayers {
     pub fn dlc_names(&self) -> io::Result<BTreeSet<String>> {
         let mut names = BTreeSet::new();
         for layer in &self.layers {
-            let Some(descriptor) = layer.descriptor.as_ref().filter(|path| {
-                path.extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dlc"))
-            }) else {
-                continue;
-            };
-            let bytes = fs::read(descriptor)?;
-            let actual: [u8; 32] = Sha256::digest(&bytes).into();
-            if layer.descriptor_hash.map(|parsed| parsed.bytes) != Some(actual) {
-                return Err(invalid(format!(
-                    "DLC descriptor {} changed after content verification",
-                    descriptor.display()
-                )));
-            }
-            names.insert(required(&parser::parse(&bytes)?, b"name")?);
+            names.extend(layer.dlc_name()?);
         }
         Ok(names)
     }
@@ -2287,14 +2557,15 @@ impl ResolvedLayers {
     /// UTF-8 is never listed, as none opens (the conversion described by [`Self::lookup_path`]
     /// makes each invalid byte `?`, which [`folder_file`] cannot open): a folder layer's
     /// index holds only its files' UTF-8 names.
-    pub fn listed_layer_paths(&self, prefix: &[u8]) -> BTreeSet<LayerPath> {
+    pub fn listed_layer_paths(&self, prefix: &[u8]) -> io::Result<BTreeSet<LayerPath>> {
+        self.refuse_listing(prefix, &[])?;
         let prefix = prefix.to_ascii_lowercase();
         let mut listed = BTreeSet::new();
         // Each replaced root, and whether a visual mod replaced it (that hides only what the
         // mod shows, `Self::overlay_sees`).
         let mut hidden: Vec<(LayerPath, bool)> = Vec::new();
         for layer in self.layers.iter().rev() {
-            for path in layer.files.keys() {
+            for path in layer.listed_keys() {
                 let lower = path.to_ascii_lowercase();
                 if lower.starts_with(&prefix)
                     && !self.hides(layer, &lower)
@@ -2312,12 +2583,13 @@ impl ResolvedLayers {
                     .map(|path| (path.to_ascii_lowercase(), layer.overlay.is_some())),
             );
         }
-        listed
+        Ok(listed)
     }
 
     #[cfg(test)]
     pub(crate) fn listed_paths(&self, prefix: &str) -> BTreeSet<String> {
         self.listed_layer_paths(prefix.as_bytes())
+            .unwrap()
             .into_iter()
             .filter_map(|path| String::from_utf8(path).ok())
             .collect()
@@ -2357,7 +2629,7 @@ impl ResolvedLayers {
             .zip(&listings)
             .map(|(layer, listing)| {
                 let mut folded = BTreeMap::new();
-                if matches!(layer.source, LayerSource::Folder(_)) {
+                if !layer.exact_names() {
                     for (path, hit) in listing {
                         folded.entry(path.to_ascii_lowercase()).or_insert(hit);
                     }
@@ -2371,9 +2643,10 @@ impl ResolvedLayers {
                 if self.hides(layer, &lower) {
                     continue;
                 }
-                let hit = match layer.source {
-                    LayerSource::Folder(_) => folded[index].get(&lower).copied(),
-                    LayerSource::Archive(_) => listings[index].get(name),
+                let hit = if layer.exact_names() {
+                    listings[index].get(name)
+                } else {
+                    folded[index].get(&lower).copied()
                 };
                 if let Some(hit) = hit {
                     return Some((index, hit));
@@ -2617,6 +2890,10 @@ impl ResolvedLayers {
         let Some(hit) = self.lookup_path(&path)? else {
             return Ok(false);
         };
+        // A recorded fact is stamped with the recording itself.
+        if hit.fact.is_some() {
+            return Ok(true);
+        }
         let layer = &self.layers[hit.layer];
         Ok(layer.overlay.is_none()
             && self.covered_path(layer.record_name(&hit.path))
@@ -2656,6 +2933,7 @@ impl ResolvedLayers {
             observed.layer = hit.as_ref().map(|hit| hit.layer);
             if let Some(hit) = &hit
                 && hit.folder.is_none()
+                && hit.fact.is_none()
                 && self.layers[hit.layer].reaches_link(&hit.path)
             {
                 return Err(unfollowed_link(&relative).into());
@@ -2821,9 +3099,17 @@ impl ResolvedLayers {
                         display(path)
                     )).into());
                 }
-                let bytes = match file.folder {
-                    Some(handle) => layer.folder_read(&file.path, handle, observed),
-                    None => layer
+                let bytes = match (file.fact, file.folder) {
+                    (Some(fact), _) => layer
+                        .facts
+                        .as_ref()
+                        .expect("a fact hit is a played-back layer's")
+                        .pack
+                        .read(fact)
+                        .map(|bytes| observed.bytes((), &bytes).map(|()| bytes))
+                        .map_err(ReadFailure::from),
+                    (None, Some(handle)) => layer.folder_read(&file.path, handle, observed),
+                    (None, None) => layer
                         .archive_open_observed(&file.path, observed)?
                         .ok_or_else(|| ReadFailure::from(changed(&relative))),
                 }?;
@@ -3109,7 +3395,16 @@ impl ResolvedLayers {
     /// stack still reads recorded simulation content. A mod's defines show only in
     /// [`Self::presentation_defines`].
     fn overlay_sees(&self, lower: &[u8]) -> bool {
-        overlay_sees(self.defines_visible, lower)
+        overlay_sees(self.defines_visible, lower) && !self.recorded_fact(lower)
+    }
+
+    /// Whether `path` is one of the facts a played-back recording carries, which only the
+    /// recording answers: a visual mod shows art alone over it.
+    fn recorded_fact(&self, path: &[u8]) -> bool {
+        self.layers
+            .iter()
+            .find_map(|layer| layer.facts.as_ref())
+            .is_some_and(|facts| fact_class(path) && !facts.pack.is_art(path))
     }
 
     /// Whether `layer` stays out of a lookup of the lowercase `lower`.
@@ -3197,6 +3492,24 @@ impl ResolvedLayers {
             if self.hides(layer, &lower) {
                 continue;
             }
+            if layer.fact_path(relative) {
+                if let Some((path, file)) = layer.fact_lookup(relative)? {
+                    return Ok(Some(RecordedHit {
+                        layer: index,
+                        path,
+                        folder: None,
+                        fact: Some(file),
+                    }));
+                }
+                if layer
+                    .replace_paths
+                    .iter()
+                    .any(|path| below(&lower, &path.to_ascii_lowercase()))
+                {
+                    break;
+                }
+                continue;
+            }
             let hit = match &layer.source {
                 LayerSource::Folder(_) => {
                     layer
@@ -3205,6 +3518,7 @@ impl ResolvedLayers {
                             layer: index,
                             path,
                             folder: Some(handle),
+                            fact: None,
                         })
                 }
                 LayerSource::Archive(_) => layer
@@ -3216,6 +3530,7 @@ impl ResolvedLayers {
                         layer: index,
                         path: relative.to_vec(),
                         folder: None,
+                        fact: None,
                     }),
             };
             if let Some(hit) = hit {
@@ -3621,7 +3936,7 @@ fn listed_files(
 ) -> io::Result<BTreeMap<LayerPath, UncoveredHit>> {
     let mut paths = BTreeMap::new();
     let mut folded = BTreeSet::new();
-    let overlay = layer.overlay.is_some();
+    let overlay = layer.listed_as_game();
     let mut admit = |relative: LayerPath, hit: UncoveredHit| -> io::Result<()> {
         let lower = relative.to_ascii_lowercase();
         if below(&lower, prefix) && extensions.iter().any(|e| lower.ends_with(e.as_bytes())) {
@@ -3636,6 +3951,18 @@ fn listed_files(
         }
         Ok(())
     };
+    // A carried fact's hit is never memoized (it is covered); it only marks the answering layer.
+    // A layer that cannot list the facts asked for refuses the whole listing by name.
+    if let Some(refusal) = layer.fact_listing_refusal(prefix, extensions) {
+        return Err(refusal);
+    }
+    if let Some(facts) = &layer.facts
+        && let Ok(carried) = facts.layer().paths()
+    {
+        for path in carried {
+            admit(path.clone(), UncoveredHit::Folder(index, path.clone()))?;
+        }
+    }
     match &layer.source {
         LayerSource::Folder(root) => {
             let Some(directory) = folded_path(root, folder_text(prefix)?)? else {
@@ -3644,17 +3971,22 @@ fn listed_files(
             if !directory.is_dir() {
                 return Ok(paths);
             }
-            walk_folder(
-                root,
-                &directory,
-                overlay,
-                &entry_kind,
-                &mut |relative, _| admit(relative.clone(), UncoveredHit::Folder(index, relative)),
-            )?;
+            walk_folder(root, &directory, overlay, &entry_kind, &mut |relative, _| {
+                if layer.fact_path(&relative) {
+                    return Ok(());
+                }
+                admit(relative.clone(), UncoveredHit::Folder(index, relative))
+            })?;
         }
         LayerSource::Archive(_) => {
-            for entry in layer.verified_archive()?.1.entries {
-                if !entry.directory {
+            let entries = match layer.verified_archive() {
+                Ok((_, mounted)) => mounted.entries,
+                // Its art is unavailable; its facts were listed above.
+                Err(_) if layer.facts.is_some() => Vec::new(),
+                Err(error) => return Err(error),
+            };
+            for entry in entries {
+                if !entry.directory && !layer.fact_path(&entry.name) {
                     admit(entry.name, UncoveredHit::Archive(index))?;
                 }
             }
@@ -4201,6 +4533,7 @@ fn check_hash(
 }
 
 fn builtin_layer(
+    role: LayerRole,
     id: String,
     source: LayerSource,
     descriptor: Option<PathBuf>,
@@ -4217,6 +4550,8 @@ fn builtin_layer(
         .transpose()?;
     Ok(ResolvedLayer {
         coverage,
+        role,
+        facts: None,
         id,
         source,
         descriptor,
@@ -4305,7 +4640,249 @@ pub fn resolve_cancellable(
         layers: content.layers,
         stats: content.stats,
         changed: content.changed,
+        notes: Vec::new(),
     })
+}
+
+/// The recording's content played back: every layer it recorded, in its recorded order with its
+/// recorded `replace_path`s, answering each fact from `facts` (the recording's pack) and its art
+/// from the same layer as installed now, unverified. A layer that is not installed shows no art;
+/// a layer whose facts the recording withholds refuses every fact read through it, by name.
+/// Nothing is hashed and no fact is ever read from the installed game.
+pub fn playback(
+    identity: &Identity,
+    facts: Result<Arc<facts::Pack>, String>,
+    options: &ResolveOptions,
+) -> io::Result<ResolvedContent> {
+    identity.validate()?;
+    let coverage = CoveragePolicy::recorded(identity.coverage_policy)?;
+    let game_dir = fs::canonicalize(&options.game_dir).ok();
+    let user_dir = fs::canonicalize(&options.user_dir).ok();
+    let missing = options.cache_dir.join("art-not-installed");
+    let pack = facts
+        .and_then(|pack| match pack.binding_differs(identity) {
+            Some(why) => Err(why),
+            None => Ok(pack),
+        })
+        .unwrap_or_else(|reason| {
+            Arc::new(facts::Pack::withheld(
+                identity,
+                &reason,
+                game_dir.as_deref().map(builtin_roots).unwrap_or_default(),
+            ))
+        });
+    let mut notes = Vec::new();
+    let mut unshown = Vec::new();
+    let mut layers = ResolvedLayers {
+        coverage,
+        ..ResolvedLayers::default()
+    };
+    let descriptors = Descriptors::installed(game_dir.as_deref(), user_dir.as_deref());
+    for (index, recorded) in pack.layers.iter().enumerate() {
+        let installed = match (&game_dir, &user_dir) {
+            (Some(game_dir), Some(user_dir)) => {
+                installed_source(recorded, &descriptors, game_dir, user_dir, coverage)
+            }
+            _ => Err("the game and user folders are not set".to_owned()),
+        };
+        let mut layer = ResolvedLayer {
+            coverage,
+            role: recorded.role,
+            facts: Some(Facts {
+                pack: Arc::clone(&pack),
+                layer: index,
+            }),
+            id: recorded.id.clone(),
+            source: LayerSource::Folder(missing.clone()),
+            descriptor: None,
+            replace_paths: recorded.replace_paths.clone(),
+            files: Default::default(),
+            lookup: Default::default(),
+            hashes: Default::default(),
+            archive_stamp: None,
+            descriptor_hash: None,
+            overlay: None,
+        };
+        match installed {
+            Ok(source) => {
+                layer.source = source;
+                if let Err(error) = layer.inventory() {
+                    unshown.push(format!("{} ({error})", layer_name(recorded, identity)));
+                    layer.source = LayerSource::Folder(missing.clone());
+                    layer.files = Default::default();
+                    layer.lookup = Default::default();
+                    layer.archive_stamp = None;
+                }
+                Arc::make_mut(&mut layer.files).retain(|path, _| pack.is_art(path));
+                Arc::make_mut(&mut layer.lookup)
+                    .folders
+                    .retain(|_, path| pack.is_art(path));
+            }
+            Err(why) => unshown.push(format!("{} ({why})", layer_name(recorded, identity))),
+        }
+        if let Some(reason) = recorded.withheld() {
+            notes.push(format!(
+                "Game facts of {} are withheld: {reason}",
+                layer_name(recorded, identity)
+            ));
+        }
+        if recorded.role == LayerRole::AboveMods {
+            layers.above_mods += 1;
+        }
+        layers.layers.push(layer);
+    }
+    layers.finish()?;
+    notes.push(
+        "Artwork, fonts and sounds come from the game installed now, not from the recording; names, numbers and the map are the recording's own."
+            .to_owned(),
+    );
+    if !unshown.is_empty() {
+        notes.push(format!(
+            "Artwork of {} is not installed, so placeholders are shown.",
+            unshown.join("; ")
+        ));
+    }
+    // Work on the recording reads its own tables, never the installed executable's.
+    if let Err(reason) = pack.tables() {
+        notes.push(format!("The game's executable tables are withheld: {reason}"));
+    }
+    Ok(ResolvedContent {
+        layers,
+        stats: HashStats::default(),
+        changed: Vec::new(),
+        notes,
+    })
+}
+
+/// A recorded layer's name as a reader knows it: the game, a DLC by id, a mod by its name.
+fn layer_name(layer: &facts::PackLayer, identity: &Identity) -> String {
+    match layer.role {
+        LayerRole::Vanilla => "the base game".to_owned(),
+        LayerRole::Dlc => format!("DLC {}", layer.id),
+        LayerRole::Mod => identity
+            .mods
+            .iter()
+            .find(|recorded| recorded.id == layer.id)
+            .map_or_else(
+                || format!("mod {}", layer.id),
+                |recorded| format!("mod {}", recorded.display_name),
+            ),
+        _ => format!("the game's {}", layer.id),
+    }
+}
+
+/// The built-in roots the installed game mounts, as [`gather`] finds them: each
+/// `integrated_dlc` folder in descriptor order, then the tweaker assets above every mod.
+fn builtin_roots(game_dir: &Path) -> Vec<(LayerRole, String)> {
+    let mut roots = Vec::new();
+    let mut integrated = Vec::new();
+    if find_descriptors(&game_dir.join("integrated_dlc"), &mut integrated).is_ok()
+        && sort_descriptors(&mut integrated).is_ok()
+    {
+        for descriptor in integrated {
+            if let Some(prefix) = descriptor
+                .parent()
+                .and_then(|parent| parent.strip_prefix(game_dir).ok())
+                .and_then(|relative| relative.to_str())
+                .and_then(|relative| normalize_relative(relative).ok())
+            {
+                roots.push((LayerRole::Builtin, prefix));
+            }
+        }
+    }
+    if game_dir.join("tweakergui_assets").is_dir() {
+        roots.push((LayerRole::AboveMods, "tweakergui_assets".to_owned()));
+    } else if game_dir.join("tweakergui_assets.zip").is_file() {
+        roots.push((LayerRole::AboveMods, "tweakergui_assets.zip".to_owned()));
+    }
+    roots
+}
+
+/// The DLC and mod descriptors installed now, by the ids a recording names them by.
+#[derive(Default)]
+struct Descriptors {
+    dlc: BTreeMap<String, Vec<PathBuf>>,
+    mods: BTreeMap<String, Vec<PathBuf>>,
+}
+
+impl Descriptors {
+    fn installed(game_dir: Option<&Path>, user_dir: Option<&Path>) -> Self {
+        let mut found = Self::default();
+        let mut dlc = Vec::new();
+        if let Some(game_dir) = game_dir
+            && find_descriptors(&game_dir.join("dlc"), &mut dlc).is_ok()
+        {
+            for path in dlc {
+                if let Some(id) = path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                {
+                    found.dlc.entry(id.to_owned()).or_default().push(path);
+                }
+            }
+        }
+        if let Some(entries) = user_dir.and_then(|dir| directory_entries(&dir.join("mod")).ok()) {
+            for entry in entries {
+                let path = entry.path();
+                if !entry.file_type().is_ok_and(|kind| kind.is_file())
+                    || !listed_mod_descriptor(&entry.file_name().to_string_lossy())
+                {
+                    continue;
+                }
+                let id = read_document(&path)
+                    .and_then(|document| mod_id(&document, &path))
+                    .unwrap_or_else(|_| entry.file_name().to_string_lossy().into_owned());
+                found.mods.entry(id).or_default().push(path);
+            }
+        }
+        found
+    }
+}
+
+/// Where a recorded layer's art is installed now, or why it is not.
+fn installed_source(
+    layer: &facts::PackLayer,
+    descriptors: &Descriptors,
+    game_dir: &Path,
+    user_dir: &Path,
+    coverage: CoveragePolicy,
+) -> Result<LayerSource, String> {
+    let one = |found: Option<&Vec<PathBuf>>| match found.map(Vec::as_slice) {
+        Some([path]) => Ok(path.clone()),
+        Some(_) => Err("several installed descriptors have its id".to_owned()),
+        None => Err("not installed".to_owned()),
+    };
+    let found = match layer.role {
+        LayerRole::Vanilla => return Ok(LayerSource::Folder(game_dir.to_owned())),
+        LayerRole::Builtin | LayerRole::AboveMods => {
+            let path = game_dir.join(&layer.id);
+            return if path.is_dir() {
+                Ok(LayerSource::Folder(path))
+            } else if path.is_file() {
+                Ok(LayerSource::Archive(path))
+            } else {
+                Err("not installed".to_owned())
+            };
+        }
+        LayerRole::Dlc => {
+            let path = one(descriptors.dlc.get(&layer.id))?;
+            descriptor_layer(layer.id.clone(), path, game_dir, false, coverage)
+        }
+        LayerRole::Mod => {
+            let path = one(descriptors.mods.get(&layer.id))?;
+            descriptor_layer(layer.id.clone(), path, user_dir, true, coverage)
+        }
+        LayerRole::UserDirectory | LayerRole::Visual => {
+            return Err("not a recorded layer".to_owned());
+        }
+    };
+    found
+        .map(|(resolved, _)| resolved.source)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => "not installed".to_owned(),
+            _ => error.to_string(),
+        })
 }
 
 fn gather_selected(
@@ -4361,6 +4938,8 @@ fn gather_selected(
         }
         let mut vanilla = ResolvedLayer {
             coverage,
+            role: LayerRole::Vanilla,
+            facts: None,
             id: "vanilla".into(),
             source: LayerSource::Folder(game_dir.clone()),
             descriptor: None,
@@ -4398,6 +4977,7 @@ fn gather_selected(
         let mut order_notes = Vec::new();
         if recorded.is_none() {
             let mut user_layer = builtin_layer(
+                LayerRole::UserDirectory,
                 "user directory".into(),
                 LayerSource::Folder(user_dir.clone()),
                 None,
@@ -4428,6 +5008,7 @@ fn gather_selected(
                         .map_err(|_| invalid("integrated content escaped game folder"))?,
                 )?)?;
                 let layer = builtin_layer(
+                    LayerRole::Builtin,
                     prefix.clone(),
                     LayerSource::Folder(parent),
                     Some(descriptor),
@@ -4615,7 +5196,7 @@ fn gather_selected(
             None
         };
         if let Some((prefix, source)) = tweaker {
-            let layer = builtin_layer(prefix.into(), source, None, coverage)?;
+            let layer = builtin_layer(LayerRole::AboveMods, prefix.into(), source, None, coverage)?;
             append_builtin(
                 layer,
                 prefix,

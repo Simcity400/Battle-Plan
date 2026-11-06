@@ -49,6 +49,7 @@ pub fn with_independent_block_frames(replay: &Replay, blocks: &[&[Frame]]) -> io
         &replay.controls,
         &replay.recovery_notes,
         &index,
+        &[],
     )?;
     Replay::open(bytes)
 }
@@ -70,6 +71,7 @@ pub fn with_trailing_table_control(replay: &Replay, table: TableId) -> io::Resul
         &replay.controls,
         &replay.recovery_notes,
         &[index],
+        &[],
     )?;
     Replay::open(bytes)
 }

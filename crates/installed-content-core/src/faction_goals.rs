@@ -167,7 +167,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
         ("common/factions/goals/", false),
         ("common/factions/templates/", true),
     ] {
-        for path in script_files::paths(layers, folder, Some(".txt")) {
+        for path in script_files::paths(layers, folder, Some(".txt"))? {
             catalog.coverage.next_file();
             let bytes = path.read(layers)?;
             let read = if templates {

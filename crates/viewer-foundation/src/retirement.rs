@@ -1,5 +1,6 @@
 //! Bounded background retirement shared by decode and presentation workers.
 
+use job_priority::SpawnCarried as _;
 use crate::worker_priority::background_priority;
 use std::{io, sync::mpsc, thread};
 
@@ -46,7 +47,7 @@ impl Dropper {
         let (bin, inbox) = mpsc::sync_channel::<Box<dyn Send>>(capacity);
         thread::Builder::new()
             .name("hour dropper".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let _cost = replay_frame::cpu::scope("display.retire", Some("other"));
                 background_priority();
                 while inbox.recv().is_ok() {}

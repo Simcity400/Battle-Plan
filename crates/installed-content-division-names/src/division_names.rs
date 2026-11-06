@@ -631,9 +631,10 @@ pub fn read_directories<N: crate::DiagnosticMessage>(
     directories: &[&str],
 ) -> io::Result<(Database, Vec<N>)> {
     // List direct `.txt` files in each directory's loader order.
-    let paths = directories
-        .iter()
-        .flat_map(|directory| crate::script_files::paths(layers, directory, Some(".txt")));
+    let mut paths = Vec::new();
+    for directory in directories {
+        paths.extend(crate::script_files::paths(layers, directory, Some(".txt"))?);
+    }
     let mut database = Database::default();
     let mut warnings = Vec::new();
     let names = layers.key_names()?;

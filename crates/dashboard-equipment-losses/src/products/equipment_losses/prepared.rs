@@ -364,7 +364,7 @@ fn shared<T: Send, R: Send>(
             .into_iter()
             .map(|chunk| {
                 let context = context.clone();
-                scope.spawn(move || {
+                job_priority::spawn_in(scope, move || {
                     let _memory = engine_allocation::labels::resume(memory);
                     let _cpu = context.enter("equipment_losses fold");
                     step(chunk)

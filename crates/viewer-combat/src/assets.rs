@@ -743,7 +743,7 @@ impl Assets {
         let names = layers.key_names()?;
         // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
         for file in layers
-            .paths()
+            .paths()?
             .filter(|p| p.starts_with(b"common/characters/") && p.ends_with(b".txt"))
         {
             portrait_paths(

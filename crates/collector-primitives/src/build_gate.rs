@@ -87,7 +87,7 @@ pub fn status() -> impl Serialize {
     impl Serialize for Withholding {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             let mut sequence = serializer.serialize_seq(None)?;
-            if let Some(tables) = executable_tables::EXECUTABLE_TABLES.get() {
+            if let Some(tables) = executable_tables::current() {
                 for withheld in tables.withheld() {
                     sequence.serialize_element(&Entry(withheld))?;
                 }

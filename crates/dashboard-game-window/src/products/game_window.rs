@@ -6,6 +6,7 @@
 //! in [`GameWindowReply::slots`]; their controls keep what the game's construction leaves, or
 //! are hidden where the authored text is a placeholder, never filled with an invented value.
 
+use job_priority::SpawnCarried as _;
 use std::{
     io,
     sync::atomic::{AtomicBool, Ordering},
@@ -335,7 +336,7 @@ pub fn warm_in_background(source: &std::sync::Arc<Source>, mut options: ContentO
     let source = std::sync::Arc::downgrade(source);
     let _ = std::thread::Builder::new()
         .name("game window read-ahead".into())
-        .spawn(move || {
+        .spawn_carried(move || {
             let ahead = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
             job_priority::JobPriority::run(ahead, move || {
                 // The read-ahead's entry: its mount is resolved before any stage takes a lock.
@@ -421,7 +422,7 @@ mod read_ahead_tests {
                 Arc::clone(&release),
                 Arc::clone(&later),
             );
-            std::thread::spawn(move || {
+            job_priority::spawn(move || {
                 let first = |_: &()| {
                     entered.wait();
                     release.wait();

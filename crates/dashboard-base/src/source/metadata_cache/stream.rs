@@ -1,3 +1,4 @@
+use job_priority::SpawnCarried as _;
 use serde::Serialize;
 use std::{
     io::{self, Read, Write},
@@ -86,7 +87,7 @@ fn encode<T: Serialize + Sync>(
         let cpu = replay_frame::cpu::Context::capture();
         let encoder = std::thread::Builder::new()
             .name("metadata cache JSON".into())
-            .spawn_scoped(scope, move || -> io::Result<()> {
+            .spawn_scoped_carried(scope, move || -> io::Result<()> {
                 let _cpu = cpu.enter("metadata cache JSON");
                 let mut output = Encoder {
                     sender,

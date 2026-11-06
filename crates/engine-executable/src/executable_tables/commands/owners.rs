@@ -31,6 +31,35 @@ pub enum Object {
 }
 
 impl Object {
+    /// Every object, in discriminant order.
+    pub const ALL: [Self; 25] = [
+        Self::Unit,
+        Self::Group,
+        Self::Theatre,
+        Self::TheatreGroup,
+        Self::Leader,
+        Self::IndustrialOrganisation,
+        Self::Wing,
+        Self::WingPool,
+        Self::Ship,
+        Self::Fleet,
+        Self::ProductionLine,
+        Self::DivisionTemplate,
+        Self::Character,
+        Self::Ace,
+        Self::AirGroup,
+        Self::CountryReference,
+        Self::CountryToken,
+        Self::NavalTheatreGroup,
+        Self::Raid,
+        Self::Conveyor,
+        Self::ConveyorLine,
+        Self::Front,
+        Self::NavalCombat,
+        Self::DiplomaticAction,
+        Self::MarketAccessRequest,
+    ];
+
     pub(super) fn mask(self) -> u32 {
         1 << self as u8
     }

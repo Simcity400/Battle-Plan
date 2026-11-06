@@ -7,6 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+job-priority.workspace = true
 map-display-data.workspace = true
 installed-content-core.workspace = true
 installed-content-sound.workspace = true

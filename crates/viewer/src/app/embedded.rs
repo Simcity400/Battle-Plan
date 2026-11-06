@@ -1,3 +1,4 @@
+use job_priority::SpawnCarried as _;
 use super::{Capture, Playhead, Viewer, VisualStale, seek_open_target};
 use eframe::{egui, wgpu};
 use replay_data::rows::TableId;
@@ -501,7 +502,7 @@ impl Viewer {
         let repaint = ctx.clone();
         let spawned = std::thread::Builder::new()
             .name("visual mod check".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 if reload_settings {
                     service.reload_map_settings();
                 }

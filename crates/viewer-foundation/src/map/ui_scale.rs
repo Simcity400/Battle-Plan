@@ -12,6 +12,7 @@
 //! linear filtering at the display stretch. Pointer coordinates undo that
 //! stretch before camera and interface hit tests.
 
+use job_priority::SpawnCarried as _;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -168,7 +169,7 @@ pub fn refresh_monitors(wake: impl Fn() + Send + 'static) {
     }
     let spawned = std::thread::Builder::new()
         .name("monitors".into())
-        .spawn(move || {
+        .spawn_carried(move || {
             let state = monitor_state();
             loop {
                 while state.again.swap(false, Ordering::AcqRel) {

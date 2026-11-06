@@ -2621,10 +2621,12 @@ dependencies = [
  "installed-content-wargoals",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "job-priority",
  "map-snow",
  "mimalloc",
  "once_cell",
  "png 0.18.1",
+ "recording-upgrade",
  "replay",
  "replay-data",
  "replay-frame",
@@ -2656,7 +2658,6 @@ dependencies = [
  "dashboard-air-aces",
  "dashboard-base",
  "dashboard-core",
- "dashboard-keyed",
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
@@ -3120,6 +3121,7 @@ dependencies = [
  "engine-resources",
  "installed-content-core",
  "indexmap 2.14.2",
+ "job-priority",
  "log",
  "mimalloc",
  "once_cell",
@@ -4825,6 +4827,7 @@ name = "engine-executable"
 version = "0.1.0"
 dependencies = [
  "iced-x86",
+ "job-priority",
  "memchr",
  "sha2",
  "test-unify",
@@ -5392,6 +5395,7 @@ dependencies = [
  "sha2",
  "test-unify",
  "windows-sys 0.61.2",
+ "zstd",
 ]
 
 [[package]]
@@ -9313,6 +9317,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "recording-upgrade"
+version = "0.1.0"
+dependencies = [
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "replay",
+ "replay-data",
+ "replay-identity",
+ "test-unify",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10030,9 +10047,9 @@ dependencies = [
  "bytemuck",
  "engine-allocation",
  "engine-executable",
- "foldhash 0.2.0",
  "installed-content-core",
  "indexmap 2.14.2",
+ "job-priority",
  "log",
  "mimalloc",
  "naga",
@@ -10767,6 +10784,7 @@ dependencies = [
  "cfg-if",
  "crossbeam-utils",
  "either",
+ "foldhash 0.2.0",
  "memchr",
  "num-traits",
  "proc-macro2",
@@ -11374,6 +11392,7 @@ dependencies = [
  "installed-content-states",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "job-priority",
  "map-display-data",
  "map-products",
  "map-snow",
@@ -11416,6 +11435,7 @@ dependencies = [
  "engine-native",
  "installed-content-core",
  "installed-content-sound",
+ "job-priority",
  "log",
  "map-display-data",
  "mimalloc",
@@ -11455,8 +11475,8 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "store",
  "test-unify",
- "uuid",
  "viewer-combat",
  "viewer-counter-products",
  "viewer-foundation",
@@ -11490,6 +11510,7 @@ dependencies = [
  "installed-content-unit-path",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "job-priority",
  "mimalloc",
  "once_cell",
  "replay",
@@ -11529,6 +11550,7 @@ dependencies = [
  "installed-content-states",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "job-priority",
  "map-products",
  "mimalloc",
  "once_cell",
@@ -11573,6 +11595,7 @@ dependencies = [
  "installed-content-states",
  "installed-content-unit-path",
  "indexmap 2.14.2",
+ "job-priority",
  "map-display-data",
  "map-snow",
  "mimalloc",
@@ -11616,6 +11639,7 @@ dependencies = [
  "installed-content-unit-path",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "job-priority",
  "map-products",
  "mimalloc",
  "once_cell",
@@ -11660,6 +11684,7 @@ dependencies = [
  "installed-content-states",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "job-priority",
  "map-display-data",
  "map-snow",
  "mimalloc",

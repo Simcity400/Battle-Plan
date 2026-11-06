@@ -720,7 +720,7 @@ fn fill_plane(
             .enumerate()
         {
             let origin = (index * band) as u32;
-            scope.spawn(move || {
+            job_priority::spawn_in(scope, move || {
                 fill_band(map, regions, grid, plane_width, origin, first, second);
             });
         }

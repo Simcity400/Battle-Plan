@@ -1002,7 +1002,7 @@ impl<'s> Publisher<'s> {
             let caller = Caller::current();
             for _ in 0..sealers {
                 let caller = caller.clone();
-                scope.spawn(move || {
+                job_priority::spawn_in(scope, move || {
                     caller.enter();
                     let _memory = labels::enter(labels::Owner::RUN, Kind::Publish);
                     self.serve();

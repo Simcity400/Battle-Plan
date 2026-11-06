@@ -342,7 +342,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(LeaderTraits, Vec<crate::Dia
     let mut warnings = Vec::new();
     let mut result = LeaderTraits::default();
     let names = layers.key_names()?;
-    for path in script_files::paths(layers, "common/country_leader/", Some(".txt")) {
+    for path in script_files::paths(layers, "common/country_leader/", Some(".txt"))? {
         result.coverage.next_file();
         result.tokens.next_file();
         let file = parse(&path.read(layers)?, &names);

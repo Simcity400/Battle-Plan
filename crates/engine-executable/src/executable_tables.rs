@@ -5,6 +5,7 @@ pub mod commands;
 pub mod keywords;
 pub mod numeric;
 pub mod pe;
+pub mod recorded;
 pub mod registries;
 pub mod variables;
 
@@ -18,34 +19,84 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
-pub static EXECUTABLE_TABLES: OnceLock<Arc<ExecutableTables>> = OnceLock::new();
-static INITIALIZATION: Mutex<()> = Mutex::new(());
-static TEST_INITIALIZATION: OnceLock<io::Result<Arc<ExecutableTables>>> = OnceLock::new();
+/// One build's tables. Each set is kept for the process's lifetime, so a view of it is
+/// `'static`; a process holds a set per build it has met, never more.
+pub type Tables = &'static ExecutableTables;
 
-/// A shared metadata view that can be retried after an uninitialized access.
-pub struct RuntimeTable<T> {
-    value: OnceLock<Verified<T>>,
+/// Every set of tables this process has decoded or been given, one per build.
+static REGISTRY: Mutex<Vec<Tables>> = Mutex::new(Vec::new());
+/// The live installed game's tables, for a process that works on it alone (the collector, the
+/// recorder and its tools): read where no recording's tables are in scope.
+static PROCESS: OnceLock<Tables> = OnceLock::new();
+static TEST_INITIALIZATION: OnceLock<Result<Tables, String>> = OnceLock::new();
+
+/// The tables in scope on this thread: the recording's whose work this is ([`scope`]), or the
+/// installed game's in a process that works on it alone.
+pub fn current() -> Option<Tables> {
+    job_priority::context()
+        .and_then(|context| context.downcast_ref::<ExecutableTables>())
+        .or_else(|| PROCESS.get().copied())
+}
+
+/// Runs `work` with `tables` in scope on this thread and every thread it starts with
+/// `job_priority`'s `JobPriority` or `Caller`; `None` leaves no recording's tables in scope.
+pub fn scope<T>(tables: Option<Tables>, work: impl FnOnce() -> T) -> T {
+    job_priority::with_context(tables.map(|tables| tables as job_priority::Context), work)
+}
+
+/// Puts `tables` in scope on the calling thread from now on, for a tool that works on one
+/// recording alone.
+pub fn enter(tables: Option<Tables>) {
+    job_priority::set_context(tables.map(|tables| tables as job_priority::Context));
+}
+
+/// A view of each build's tables, made once per build that is in scope when it is read.
+pub struct RuntimeTable<T: 'static> {
+    views: Mutex<Vec<(usize, &'static Verified<T>)>>,
     initialize: fn() -> Verified<T>,
 }
 
-impl<T> RuntimeTable<T> {
+impl<T: Send + Sync + 'static> RuntimeTable<T> {
     pub const fn new(initialize: fn() -> Verified<T>) -> Self {
         Self {
-            value: OnceLock::new(),
+            views: Mutex::new(Vec::new()),
             initialize,
         }
     }
 
     pub fn get(&self) -> Result<&T, &Withheld> {
-        self.value.get_or_init(self.initialize).as_ref()
+        let key = std::ptr::from_ref(get()) as usize;
+        let found = self
+            .views
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .find(|(tables, _)| *tables == key)
+            .map(|(_, view)| *view);
+        let view = match found {
+            Some(view) => view,
+            None => {
+                // Made unlocked: a view may read others.
+                let made: &'static Verified<T> = Box::leak(Box::new((self.initialize)()));
+                let mut views = self.views.lock().unwrap_or_else(|error| error.into_inner());
+                match views.iter().find(|(tables, _)| *tables == key) {
+                    Some((_, view)) => *view,
+                    None => {
+                        views.push((key, made));
+                        made
+                    }
+                }
+            }
+        };
+        view.as_ref()
     }
 }
 
 /// Reaching a withheld view stops its caller with the withheld reason, which the
 /// content and product boundaries report by name.
-impl<T> std::ops::Deref for RuntimeTable<T> {
+impl<T: Send + Sync + 'static> std::ops::Deref for RuntimeTable<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -143,14 +194,16 @@ impl ExecutableTables {
     }
 }
 
-/// Reads the selected installation and publishes each table that verifies itself.
-/// Only an unreadable executable is an error; a table that fails is withheld by name.
-pub fn initialize(game_dir: &Path) -> io::Result<Arc<ExecutableTables>> {
+/// Reads the installation a process works on alone (the collector, the recorder and its tools)
+/// and makes its tables the process's ([`current`]); each table that fails is withheld by name.
+/// Only an unreadable executable is an error. Playback never calls it: a recording's tables are
+/// its own ([`initialize_recorded`]).
+pub fn initialize(game_dir: &Path) -> io::Result<Tables> {
     initialize_from(&game_dir.join("hoi4.exe"), game_dir)
 }
 
 /// Uses the directory containing the selected executable for shipped documentation.
-pub fn initialize_executable(exe_path: &Path) -> io::Result<Arc<ExecutableTables>> {
+pub fn initialize_executable(exe_path: &Path) -> io::Result<Tables> {
     let game_dir = exe_path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -160,26 +213,33 @@ pub fn initialize_executable(exe_path: &Path) -> io::Result<Arc<ExecutableTables
     initialize_from(exe_path, game_dir)
 }
 
-fn initialize_from(exe_path: &Path, game_dir: &Path) -> io::Result<Arc<ExecutableTables>> {
+fn initialize_from(exe_path: &Path, game_dir: &Path) -> io::Result<Tables> {
     let bytes = fs::read(exe_path)?;
     let identity = ExecutableIdentity::of(&bytes);
-    // The guard only serializes publication.
-    let _guard = INITIALIZATION
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if let Some(tables) = EXECUTABLE_TABLES.get() {
-        if tables.identity != identity {
-            return Err(io::Error::other(
-                "the selected game is a different build from the one already loaded; restart to use it",
-            ));
-        }
-        return Ok(Arc::clone(tables));
+    if let Some(tables) = PROCESS.get() {
+        return if tables.identity == identity {
+            Ok(tables)
+        } else {
+            Err(io::Error::other(
+                "this process works on another build of the game; start it again for this one",
+            ))
+        };
     }
-    let tables = Arc::new(decode(identity, bytes, game_dir));
-    EXECUTABLE_TABLES
-        .set(Arc::clone(&tables))
-        .map_err(|_| io::Error::other("executable metadata was published during initialization"))?;
-    Ok(tables)
+    let tables = register(decode(identity, bytes, game_dir));
+    Ok(*PROCESS.get_or_init(|| tables))
+}
+
+/// `tables` kept for the process, or the same build's set kept before.
+fn register(tables: ExecutableTables) -> Tables {
+    let mut registry = REGISTRY.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(kept) = registry.iter().find(|kept| {
+        kept.identity == tables.identity && kept.content_digests() == tables.content_digests()
+    }) {
+        return kept;
+    }
+    let kept: Tables = Box::leak(Box::new(tables));
+    registry.push(kept);
+    kept
 }
 
 const KEYWORDS: &str = "keyword table";
@@ -281,15 +341,109 @@ fn stopped(name: &'static str) -> Withheld {
     Withheld::new(name, "its decoder stopped on an unexpected image")
 }
 
-pub fn get() -> &'static ExecutableTables {
-    EXECUTABLE_TABLES
-        .get()
-        .expect("executable metadata is uninitialized; call engine::executable_tables::initialize with the selected game directory before using installation-dependent features")
-        .as_ref()
+/// The tables in scope ([`current`]). With none in scope every table is withheld for that reason,
+/// so the work reaching them is refused by name as for a recording that carries none.
+pub fn get() -> Tables {
+    current().unwrap_or_else(|| {
+        debug_assert!(false, "no recording's tables are in scope for this work");
+        unscoped()
+    })
+}
+
+/// Every table withheld because no recording's tables are in scope.
+fn unscoped() -> Tables {
+    static UNSCOPED: OnceLock<ExecutableTables> = OnceLock::new();
+    UNSCOPED.get_or_init(|| {
+        let withheld = |name: &'static str| {
+            Withheld::new(name, "no recording's tables are in scope for this work")
+        };
+        ExecutableTables {
+            identity: ExecutableIdentity::of(&[]),
+            version: Err(withheld("executable version")),
+            keywords: Err(withheld(KEYWORDS)),
+            registries: Err(withheld(REGISTRIES)),
+            auxiliary: Err(withheld(AUXILIARY)),
+            variables: Err(withheld(VARIABLES)),
+            numeric: Err(withheld(NUMERIC)),
+            commands: Err(withheld(COMMANDS)),
+        }
+    })
 }
 
 pub fn is_initialized() -> bool {
-    EXECUTABLE_TABLES.get().is_some()
+    current().is_some()
+}
+
+/// The tables in scope as a recording carries them, so its playback reads no installed
+/// executable ([`recorded`]).
+pub fn recorded_facts() -> Result<Vec<u8>, String> {
+    current()
+        .map(recorded::encode)
+        .ok_or_else(|| "the game's executable tables were not loaded".to_owned())
+}
+
+/// [`recorded_facts`] of the executable at `path` and its installation's documentation, which
+/// must be the executable whose SHA-256 is `recorded`; decoded apart from every kept set.
+pub fn recorded_facts_from(path: &Path, recorded: [u8; 32]) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let identity = ExecutableIdentity::of(&bytes);
+    if identity.sha256 != recorded {
+        return Err(format!(
+            "{} is no longer the recorded executable",
+            path.display()
+        ));
+    }
+    let game_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    Ok(recorded::encode(&decode(identity, bytes, game_dir)))
+}
+
+/// The installed game's tables, for reading what that game reads now (the user's own
+/// `settings.txt`), never a recording: kept with every other build's, the executable read again
+/// only once its size or last write changes, and never made the process's.
+pub fn installed(game_dir: &Path) -> io::Result<Tables> {
+    type Stamp = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
+    static READ: Mutex<Vec<(Stamp, Tables)>> = Mutex::new(Vec::new());
+    let exe_path = game_dir.join("hoi4.exe");
+    let metadata = fs::metadata(&exe_path)?;
+    let stamp = (exe_path, metadata.len(), metadata.modified().ok());
+    let mut read = READ.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some((_, tables)) = read.iter().find(|(kept, _)| *kept == stamp) {
+        return Ok(tables);
+    }
+    let bytes = fs::read(&stamp.0)?;
+    let tables = register(decode(ExecutableIdentity::of(&bytes), bytes, game_dir));
+    read.retain(|(kept, _)| kept.0 != stamp.0);
+    read.push((stamp, tables));
+    Ok(tables)
+}
+
+/// `work` with the tables in scope, or with none the installed game's at `game_dir`
+/// ([`installed`]): what that game reads now, read outside any recording's work.
+pub fn or_installed<T>(game_dir: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    if current().is_some() {
+        return work();
+    }
+    let tables = installed(game_dir).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{}: {error}", game_dir.join("hoi4.exe").display()),
+        )
+    })?;
+    scope(Some(tables), work)
+}
+
+/// The tables a recording carries, kept with every other build's: work on that recording reads
+/// them in its [`scope`].
+pub fn initialize_recorded(bytes: &[u8]) -> io::Result<Tables> {
+    static DECODED: Mutex<Vec<([u8; 32], Tables)>> = Mutex::new(Vec::new());
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    let mut decoded = DECODED.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some((_, tables)) = decoded.iter().find(|(kept, _)| *kept == digest) {
+        return Ok(tables);
+    }
+    let tables = register(recorded::decode(bytes)?);
+    decoded.push((digest, tables));
+    Ok(tables)
 }
 
 /// The published keyword table, or why it is withheld.
@@ -318,27 +472,23 @@ pub fn commands() -> io::Result<&'static commands::CommandTables> {
 }
 
 /// Explicit installation opt-in for dependent crate tests, which need every table.
-pub fn initialize_for_tests() -> io::Result<Arc<ExecutableTables>> {
+pub fn initialize_for_tests() -> io::Result<Tables> {
     let game_dir = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation",
         )
     })?;
-    if let Some(tables) = EXECUTABLE_TABLES.get() {
-        return Ok(Arc::clone(tables));
-    }
     TEST_INITIALIZATION
         .get_or_init(|| {
-            let tables = initialize(Path::new(&game_dir))?;
+            let tables = initialize(Path::new(&game_dir)).map_err(|error| error.to_string())?;
             if let Some(withheld) = tables.withheld().next() {
-                return Err(withheld.into());
+                return Err(withheld.to_string());
             }
             Ok(tables)
         })
-        .as_ref()
-        .map(Arc::clone)
-        .map_err(|error| io::Error::new(error.kind(), error.to_string()))
+        .clone()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// Runtime names remain valid for the process lifetime of the published tables.

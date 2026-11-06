@@ -349,7 +349,7 @@ impl IconContent {
                         Some(database) if database.lost.is_none() => {
                             // Reuse registration only after the ordinary verified reads,
                             // in the order followed by the complete database loader.
-                            for path in installed_content_core::equipment::files(layers) {
+                            for path in installed_content_core::equipment::files(layers)? {
                                 path.read(layers)?;
                             }
                             Ok(Arc::clone(database))

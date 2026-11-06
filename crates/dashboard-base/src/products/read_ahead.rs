@@ -1,4 +1,5 @@
 //! The content many pages' first replies wait for, read ahead once a source opens.
+use job_priority::SpawnCarried as _;
 use super::{ContentOptions, LoadContext, politics_content, production_lines};
 use crate::{
     catalogue::{self, Catalogue},
@@ -25,7 +26,7 @@ pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
     let source = Arc::downgrade(source);
     let _ = std::thread::Builder::new()
         .name("page content read-ahead".into())
-        .spawn(move || job_priority::confined(|| read(&source, options)));
+        .spawn_carried(move || job_priority::confined(|| read(&source, options)));
 }
 
 /// Reads the native GUI registry every country flag's shield is drawn with ([`warm_guis`]), then

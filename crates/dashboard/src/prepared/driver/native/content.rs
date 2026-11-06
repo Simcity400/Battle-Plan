@@ -341,7 +341,7 @@ pub(crate) fn load_all<T: Send>(
     let memory = engine_allocation::labels::current();
     std::thread::scope(|scope| {
         for _ in 0..threads.clamp(1, count.max(1)) {
-            scope.spawn(|| {
+            job_priority::spawn_in(scope, || {
                 let _memory = engine_allocation::labels::resume(memory);
                 loop {
                     let next = queue.lock().unwrap_or_else(PoisonError::into_inner).next();

@@ -1,3 +1,4 @@
+use job_priority::SpawnCarried as _;
 use super::*;
 use replay_frame::cpu;
 use serde_json::{Value, json};
@@ -70,7 +71,7 @@ impl Monitor {
         let stopped = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("playback cost memory".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let _cost = cpu::scope("viewer", Some("other"));
                 let mut peak = memory()?;
                 loop {

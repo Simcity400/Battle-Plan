@@ -1,5 +1,6 @@
 //! Content-owned province multiplicities for the floor-sized fog grid.
 
+use job_priority::SpawnCarried as _;
 use std::{
     collections::HashMap,
     io,
@@ -60,7 +61,7 @@ impl IntelCellsCache {
         let pending = Arc::clone(&cache);
         let _ = std::thread::Builder::new()
             .name("map-intel-cells".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 crate::worker_priority::background_priority();
                 let _ = pending.get_or_init();
             });

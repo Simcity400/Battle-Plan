@@ -15,6 +15,7 @@
 //! is disposable: an unreadable entry is a miss, and the least recently used
 //! entries go once the folder passes [`LIMIT`].
 
+use job_priority::SpawnCarried as _;
 use std::{
     collections::BTreeMap,
     fs,
@@ -64,7 +65,7 @@ fn writer() -> &'static std::sync::mpsc::Sender<Write> {
         // A writer that cannot start leaves only misses.
         let _ = std::thread::Builder::new()
             .name("reply cache writer".into())
-            .spawn(move || receive.into_iter().for_each(|write| write()));
+            .spawn_carried(move || receive.into_iter().for_each(|write| write()));
         send
     })
 }

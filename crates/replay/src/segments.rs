@@ -2635,7 +2635,7 @@ pub fn run_in<W: World>(
         // First, so a failed spawn also wakes the workers already started.
         let _unwinding = Unwinding(&signal);
         for _ in 0..settings.threads {
-            scope.spawn(|| run.work());
+            job_priority::spawn_in(scope, || run.work());
         }
     });
     let (outcomes, mut stats, tables) = {

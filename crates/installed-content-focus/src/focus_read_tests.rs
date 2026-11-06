@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 fn paths(layers: &ResolvedLayers) -> Vec<(usize, ScriptPath)> {
-    database_paths(layers, true)
+    database_paths(layers, true).unwrap()
 }
 
 fn serial(

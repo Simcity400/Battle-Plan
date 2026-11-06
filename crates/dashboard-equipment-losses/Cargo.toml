@@ -15,6 +15,7 @@ test-support = ["dashboard-base/test-support"]
 
 [dependencies]
 engine-allocation.workspace = true
+job-priority.workspace = true
 dashboard-world.workspace = true
 replay.workspace = true
 engine-dlc.workspace = true

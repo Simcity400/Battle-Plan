@@ -218,7 +218,7 @@ pub fn load(
 ) -> io::Result<(Portraits, Vec<String>)> {
     let layers: &ResolvedLayers = shared;
     // The loader's own list and order.
-    let paths = characters::paths(layers);
+    let paths = characters::paths(layers)?;
     let names = layers.key_names()?;
     // Character files read and parse on a bounded pool; the merge below runs
     // in that order, so token agreement matches the serial load.

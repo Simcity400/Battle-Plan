@@ -387,7 +387,7 @@ pub fn parse(input: &[u8]) -> Vec<Ideology> {
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result = Ideologies::default();
-    for listed in script_files::paths(layers, "common/ideologies/", None) {
+    for listed in script_files::paths(layers, "common/ideologies/", None)? {
         let path = listed.to_string();
         result.coverage.next_file();
         let (read, undecided, refused) = read_file_in(&listed.read(layers)?, &listed, &result.frames);

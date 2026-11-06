@@ -171,7 +171,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
     let reports = Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
         for _ in 0..options.jobs.min(plans.len()) {
-            scope.spawn(|| {
+            job_priority::spawn_in(scope, || {
                 loop {
                     let Some(plan) = queue.lock().unwrap_or_else(|e| e.into_inner()).next() else {
                         break;

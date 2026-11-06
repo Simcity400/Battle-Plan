@@ -611,7 +611,7 @@ fn older_coverage_policies_verify_their_own_roots_and_leave_newer_roots_uncovere
             verification: Verification::Unchecked,
         };
         let resolved = resolve(&identity, &options).unwrap();
-        assert_eq!(resolved.layers.paths().count(), kept.len());
+        assert_eq!(resolved.layers.paths().unwrap().count(), kept.len());
         for path in &kept {
             assert!(resolved.layers.covered(path), "policy {policy}: {path}");
             assert_eq!(resolved.layers.read(path).unwrap(), b"original");
@@ -1261,6 +1261,8 @@ fn remote_mod_ids_take_precedence_over_local_descriptor_names() {
 fn folder_layer(id: &str, root: &Path, replace_paths: Vec<String>) -> ResolvedLayer {
     ResolvedLayer {
         coverage: CoveragePolicy::default(),
+        role: LayerRole::Mod,
+        facts: None,
         id: id.into(),
         source: LayerSource::Folder(fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())),
         descriptor: None,
@@ -1521,7 +1523,7 @@ fn folder_fixtures_replace_directories_as_descriptors_do() {
         let layers =
             ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[replace][..])]).unwrap();
         assert_eq!(
-            layers.paths().collect::<BTreeSet<_>>(),
+            layers.paths().unwrap().collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 b"common/other.txt".as_slice(),
                 b"common/units/c.txt".as_slice()
@@ -1563,6 +1565,8 @@ fn raw_zip(members: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
 fn archive_layer(id: &str, path: &Path, replace_paths: &[&[u8]]) -> ResolvedLayer {
     let mut layer = ResolvedLayer {
         coverage: CoveragePolicy::default(),
+        role: LayerRole::Mod,
+        facts: None,
         id: id.into(),
         source: LayerSource::Archive(path.to_path_buf()),
         descriptor: None,
@@ -1653,6 +1657,7 @@ fn archive_members_keep_their_raw_name_bytes() {
     assert!(
         layers
             .paths()
+            .unwrap()
             .any(|path| path == b"gfx/interface/\x81.dds".as_slice())
     );
     // A later layer wins by the same bytes; its `replace_path`, bytes too, hides the base's
@@ -1731,7 +1736,7 @@ fn records_whose_names_decode_alike_stay_apart() {
         assert_eq!(layers.read_path(cp437).unwrap(), b"cp437", "{order}");
         assert_eq!(layers.read_path(utf8).unwrap(), b"utf8", "{order}");
         assert_eq!(
-            layers.listed_layer_paths(b"gfx/interface/"),
+            layers.listed_layer_paths(b"gfx/interface/").unwrap(),
             BTreeSet::from([cp437.to_vec(), utf8.to_vec()]),
             "{order}"
         );
@@ -1894,7 +1899,7 @@ fn records_the_game_does_not_open_pass_to_the_layers_below() {
     assert_eq!(layers.read_path(covered).unwrap(), b"base a");
     assert_eq!(layers.read_uncovered_path(uncovered).unwrap(), b"base f");
     assert_eq!(layers.read_path(b"gfx/interface/e.dds").unwrap(), b"base e");
-    let listed = layers.listed_layer_paths(b"gfx/interface/");
+    let listed = layers.listed_layer_paths(b"gfx/interface/").unwrap();
     assert!(listed.contains(covered) && listed.contains(b"gfx/interface/e.dds".as_slice()));
     fs::remove_dir_all(&root).unwrap();
 }
@@ -1966,7 +1971,7 @@ fn a_backslash_is_part_of_a_record_name_and_fails_a_request() {
     }
     // A name without `/` is a file at the tree's root, never below `gfx/`.
     assert_eq!(
-        layers.listed_layer_paths(b"gfx/interface/"),
+        layers.listed_layer_paths(b"gfx/interface/").unwrap(),
         BTreeSet::from([
             b"gfx/interface/b.dds".to_vec(),
             b"gfx/interface/fat.dds".to_vec()
@@ -2237,6 +2242,8 @@ fn a_cache_written_by_an_earlier_digest_scheme_is_not_served() {
     let layer = |cache: &mut HashCache| {
         let mut layer = ResolvedLayer {
             coverage: CoveragePolicy::default(),
+            role: LayerRole::Mod,
+            facts: None,
             id: "encrypted".into(),
             source: LayerSource::Archive(path.clone()),
             descriptor: None,
@@ -2796,7 +2803,7 @@ fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
         ..ResolvedLayers::default()
     };
     layers.finish().unwrap();
-    let listed = layers.listed_layer_paths(b"interface/");
+    let listed = layers.listed_layer_paths(b"interface/").unwrap();
     assert!(listed.contains(b"interface/\xE9t\xE9.gui".as_slice()));
     assert!(listed.contains(b"interface/sub/\x80.gfx".as_slice()));
     assert_eq!(
@@ -2852,6 +2859,7 @@ fn hash_mismatch_names_the_layer_and_both_digests() {
         layers: ResolvedLayers::default(),
         stats: Default::default(),
         changed,
+        notes: Vec::new(),
     };
     content.append_changed_to(&mut warnings);
     assert_eq!(warnings, ["kept".to_owned(), content.changed[0].to_string()]);

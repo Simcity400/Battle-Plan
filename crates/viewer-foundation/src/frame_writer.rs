@@ -1,3 +1,4 @@
+use job_priority::SpawnCarried as _;
 use std::{
     borrow::Cow,
     ffi::OsString,
@@ -83,7 +84,7 @@ impl Recorder {
         let (queue, frames) = mpsc::sync_channel(capacity);
         std::thread::Builder::new()
             .name("viewer frame writer".into())
-            .spawn(move || {
+            .spawn_carried(move || {
                 let mut out = match open(path) {
                     Ok(out) => out,
                     Err(error) => {

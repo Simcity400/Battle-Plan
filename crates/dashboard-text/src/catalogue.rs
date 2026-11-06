@@ -1071,6 +1071,7 @@ impl Catalogue {
             layers,
             stats: Default::default(),
             changed: Vec::new(),
+            notes: Vec::new(),
         });
         Self::from_content(
             content,
@@ -1934,7 +1935,7 @@ pub mod tests {
                 .map(|index| {
                     let cache = &cache;
                     let barrier = &barrier;
-                    threads.spawn(move || {
+                    job_priority::spawn_in(threads, move || {
                         let key = if index % 2 == 0 { "known" } else { "refused" }.to_owned();
                         barrier.wait();
                         let result = cache.get_or_init(&key, |spelling| {
@@ -2017,7 +2018,7 @@ pub mod tests {
             let pending: Vec<_> = (0..16)
                 .map(|_| {
                     let cache = Arc::clone(&cache);
-                    threads.spawn(move || {
+                    job_priority::spawn_in(threads, move || {
                         cache
                             .get_or_init(|| Ok(vec!["mod/token".to_owned()]))
                             .unwrap()
@@ -2389,6 +2390,7 @@ pub mod tests {
                 layers,
                 stats: Default::default(),
                 changed: Vec::new(),
+                notes: Vec::new(),
             }),
             presentation: Presentation::default(),
             localisation: Arc::new(localisation),

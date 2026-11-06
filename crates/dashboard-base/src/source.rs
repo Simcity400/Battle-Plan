@@ -1,5 +1,6 @@
 //! One opened recording shared by every widget and map that reads it.
 
+use job_priority::SpawnCarried as _;
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
@@ -182,6 +183,9 @@ pub struct Source {
     /// The metadata with country names resolved for the last folders it was asked for.
     named: Mutex<Option<(NamesKey, ResidentMetadata, Diagnostics)>>,
     content: Mutex<ContentCache>,
+    /// The game facts the recording carries, opened once ([`crate::facts::recorded`]).
+    facts: std::sync::OnceLock<Result<Arc<installed_content_core::content::facts::Pack>, String>>,
+    tables: std::sync::OnceLock<Option<engine_executable::executable_tables::Tables>>,
     /// What work on this source is bound to now ([`Self::bind`]), swapped in whole, never
     /// changed in place; `None` until the service binds it.
     binding: Mutex<Option<Arc<Binding>>>,
@@ -208,6 +212,18 @@ fn country_observation(country: &crate::CountryMetadata) -> (&str, &str, &str, i
     )
 }
 
+/// A recording's facts and the executable tables they carry.
+type Recorded = (
+    Result<Arc<installed_content_core::content::facts::Pack>, String>,
+    Option<engine_executable::executable_tables::Tables>,
+);
+
+fn recorded(replay: &Arc<Replay>) -> Recorded {
+    let facts = crate::facts::recorded(replay);
+    let tables = facts.as_ref().ok().and_then(|pack| pack.tables().ok());
+    (facts, tables)
+}
+
 impl Source {
     /// Reads the file and its initial country catalogue. Cancellation is
     /// checked between reads and decoded frames.
@@ -216,29 +232,48 @@ impl Source {
         let replay = Arc::new(Replay::open_path(&path)?);
         replay.cache_decoded_sections(true);
         metadata::check_cancel(cancelled)?;
-        if let Ok(Some(restored)) = metadata_cache::read(&path, &replay, cancelled) {
-            metadata::check_cancel(cancelled)?;
-            return Ok(Self {
-                key,
-                path,
-                block_windows: block_windows(&replay),
-                replay,
-                metadata: restored.metadata,
-                cached_named: restored.named,
-                cached_inputs: Some(restored.inputs),
-                named: Mutex::new(None),
-                content: Mutex::default(),
-                binding: Mutex::new(None),
-                state: Mutex::new(HashMap::new()),
-            });
-        }
-        Self::from_replay(key, path, replay, cancelled)
+        let (facts, tables) = recorded(&replay);
+        // The catalogue is read with the recording's own executable tables.
+        engine_executable::executable_tables::scope(tables, || {
+            if let Ok(Some(restored)) = metadata_cache::read(&path, &replay, cancelled) {
+                metadata::check_cancel(cancelled)?;
+                return Ok(Self {
+                    key,
+                    path,
+                    block_windows: block_windows(&replay),
+                    replay,
+                    metadata: restored.metadata,
+                    cached_named: restored.named,
+                    cached_inputs: Some(restored.inputs),
+                    named: Mutex::new(None),
+                    content: Mutex::default(),
+                    facts: facts.into(),
+                    tables: tables.into(),
+                    binding: Mutex::new(None),
+                    state: Mutex::new(HashMap::new()),
+                });
+            }
+            Self::read(key, path, replay, (facts, tables), cancelled)
+        })
     }
 
     pub fn from_replay(
         key: SourceKey,
         path: PathBuf,
         replay: Arc<Replay>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        let recorded = recorded(&replay);
+        engine_executable::executable_tables::scope(recorded.1, || {
+            Self::read(key, path, replay, recorded, cancelled)
+        })
+    }
+
+    fn read(
+        key: SourceKey,
+        path: PathBuf,
+        replay: Arc<Replay>,
+        (facts, tables): Recorded,
         cancelled: &AtomicBool,
     ) -> io::Result<Self> {
         replay.cache_decoded_sections(true);
@@ -253,6 +288,8 @@ impl Source {
             cached_inputs: None,
             named: Mutex::new(None),
             content: Mutex::default(),
+            facts: facts.into(),
+            tables: tables.into(),
             binding: Mutex::new(None),
             state: Mutex::new(HashMap::new()),
         })
@@ -276,6 +313,32 @@ impl Source {
 
     pub fn replay_ref(&self) -> &Replay {
         &self.replay
+    }
+
+    /// The game facts the recording carries, or why it carries none.
+    pub fn facts(&self) -> Result<Arc<installed_content_core::content::facts::Pack>, String> {
+        self.facts
+            .get_or_init(|| crate::facts::recorded(&self.replay))
+            .clone()
+    }
+
+    /// The executable tables the recording carries, which every piece of work on it reads in
+    /// its scope ([`Self::in_scope`]); `None` when it carries none.
+    pub fn tables(&self) -> Option<engine_executable::executable_tables::Tables> {
+        *self
+            .tables
+            .get_or_init(|| self.facts().ok().and_then(|pack| pack.tables().ok()))
+    }
+
+    /// Runs `work` with the recording's executable tables in scope.
+    pub fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
+        engine_executable::executable_tables::scope(self.tables(), work)
+    }
+
+    /// The recording's content played back over these folders: its own facts and the
+    /// installed art ([`installed_content_core::playback`]).
+    fn play(&self, options: &ResolveOptions) -> io::Result<ResolvedContent> {
+        installed_content_core::playback(&self.replay.identity, self.facts(), options)
     }
     pub fn block_windows(&self, branch: u64) -> &[crate::products::country_groups::HourSpan] {
         self.block_windows.get(&branch).map_or(&[], Vec::as_slice)
@@ -342,10 +405,7 @@ impl Source {
             return resolved;
         }
         drop(cache);
-        Ok(Arc::new(installed_content_core::resolve(
-            &self.replay.identity,
-            options,
-        )?))
+        Ok(Arc::new(self.play(options)?))
     }
 
     /// Name the layers that changed since the recording in the content a reply was admitted
@@ -558,7 +618,7 @@ impl Source {
                         engine_allocation::labels::Owner::RUN,
                         engine_allocation::labels::Kind::Content,
                     );
-                    Arc::new(installed_content_core::resolve(&self.replay.identity, options)?)
+                    Arc::new(self.play(options)?)
                 }
             },
         };
@@ -602,25 +662,26 @@ impl Source {
                     return None;
                 }
                 let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                let identity = &self.replay.identity;
                 let finished = &finished;
                 let caller = job_priority::Caller::current();
                 let cpu = job_priority::accounting::Context::capture();
                 // Not started, it is resolved when asked for.
                 let handle = std::thread::Builder::new()
                     .name("content resolve".into())
-                    .spawn_scoped(scope, move || {
+                    .spawn_scoped_carried(scope, move || {
                         caller.enter();
                         let _cpu = cpu.enter("content resolve");
                         let _memory = engine_allocation::labels::enter(
                             engine_allocation::labels::Owner::RUN,
                             engine_allocation::labels::Kind::Content,
                         );
-                        let resolved = installed_content_core::resolve_cancellable(
-                            identity,
-                            options,
-                            &[cancelled, finished],
-                        );
+                        let resolved = if cancelled.load(Ordering::Acquire)
+                            || finished.load(Ordering::Acquire)
+                        {
+                            Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"))
+                        } else {
+                            self.play(options)
+                        };
                         // Stopped as the preparation ended: whoever asks still resolves. A
                         // cancelled preparation's waiters are told so instead of hashing again.
                         let stopped = matches!(&resolved, Err(error)
@@ -1034,7 +1095,7 @@ pub fn verify_ahead(source: &Arc<Source>, stop: Arc<AtomicBool>) {
     }
     let spawned = std::thread::Builder::new()
         .name("block verify-ahead".into())
-        .spawn(|| {
+        .spawn_carried(|| {
             job_priority::background_thread();
             while let Some((replay, position, stop)) = next_block(&AHEAD) {
                 let _cpu = ::replay_frame::cpu::scope("block verify-ahead", None);

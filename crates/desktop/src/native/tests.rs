@@ -335,6 +335,7 @@ fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
         game_dir: r"C:\Game".into(),
         user_dir: r"C:\User".into(),
         background_preparation: None,
+        older_game_dirs: Vec::new(),
     };
     host.set_folders(&config);
     let inner = host.shared.0.lock().unwrap();

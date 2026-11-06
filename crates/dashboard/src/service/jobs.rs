@@ -9,6 +9,7 @@ use crate::{
         bounded_text,
     },
 };
+use job_priority::SpawnCarried as _;
 use std::{
     collections::{BTreeMap, BTreeSet},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -299,6 +300,17 @@ impl Inner {
         checked: Checked,
         cancelled: &AtomicBool,
     ) -> std::io::Result<()> {
+        Arc::clone(&source).in_scope(|| self.start_scoped(source, admission, checked, cancelled))
+    }
+
+    /// [`Self::start_preparation`] with the recording's executable tables in scope.
+    fn start_scoped(
+        &self,
+        source: Arc<Source>,
+        admission: Admission,
+        checked: Checked,
+        cancelled: &AtomicBool,
+    ) -> std::io::Result<()> {
         // Read the lease table and the other jobs before this source's
         // progress lock, which neither is taken under. The volume and the
         // store were read by the caller before the admission lock.
@@ -435,17 +447,23 @@ impl Inner {
     /// lock; the caller passes the outcome to admission. The epoch is read
     /// before the content, so a rebind in between shows as a changed epoch.
     pub(super) fn check_store(&self, source: &Source, room: bool) -> Checked {
-        let epoch = crate::prepared::store_epoch(source);
-        let content = self.content_for(source, crate::source::Work::Recorded);
-        let identity = store_identity(source);
-        let natives = crate::prepared::change_runs::native_revision(source.path()).ok();
-        Checked {
-            epoch,
-            restored: crate::prepared::pipeline::restore(source, content.as_ref(), &self.closed),
-            room,
-            identity,
-            natives,
-        }
+        source.in_scope(|| {
+            let epoch = crate::prepared::store_epoch(source);
+            let content = self.content_for(source, crate::source::Work::Recorded);
+            let identity = store_identity(source);
+            let natives = crate::prepared::change_runs::native_revision(source.path()).ok();
+            Checked {
+                epoch,
+                restored: crate::prepared::pipeline::restore(
+                    source,
+                    content.as_ref(),
+                    &self.closed,
+                ),
+                room,
+                identity,
+                natives,
+            }
+        })
     }
 
     /// Invalidate every store check taken so far, for a content rebind: every
@@ -765,6 +783,7 @@ impl Inner {
         self.check_open(&self.closed)
             .map_err(std::io::Error::other)?;
         let path = path.canonicalize()?;
+        self.upgrade(&path);
         let revision = self.recording_revision(&path)?;
         let natives = crate::prepared::change_runs::native_revision(&path)?;
         let result =
@@ -796,11 +815,7 @@ impl Inner {
         natives: String,
         room: bool,
     ) -> std::io::Result<()> {
-        use crate::prepared::{Progress, State};
-        let finished = |state: &Progress| {
-            matches!(state.state, State::Ready | State::Failed)
-                && state.natives.as_ref() == Some(&natives)
-        };
+        use crate::prepared::Progress;
         let previous = {
             let sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
             if sources.suppressed.contains(&path)
@@ -838,6 +853,24 @@ impl Inner {
                     std::io::Error::other(error)
                 }
             })?;
+        // Checked and admitted with the recording's own executable tables in scope.
+        Arc::clone(&source).in_scope(|| self.admit_opened(path, revision, natives, room, source))
+    }
+
+    /// [`Self::prepare_recording_inner`] of the opened `source`, its tables in scope.
+    fn admit_opened(
+        &self,
+        path: PathBuf,
+        revision: String,
+        natives: String,
+        room: bool,
+        source: Arc<Source>,
+    ) -> std::io::Result<()> {
+        use crate::prepared::{Progress, State};
+        let finished = |state: &Progress| {
+            matches!(state.state, State::Ready | State::Failed)
+                && state.natives.as_ref() == Some(&natives)
+        };
         let progress = source.state::<Progress>();
         // Check the store before taking the admission lock, so restoring many
         // recordings on a first scan never delays opens or preparation
@@ -957,6 +990,48 @@ impl Inner {
         self.content.get()
     }
 
+    /// Gives a recording made before recordings carried their game facts the facts it depends
+    /// on, proven from the game folders, and keeps the original ([`recording_upgrade`]). A
+    /// recording no folder holds any of stays as it is, and opens with its facts withheld.
+    pub(super) fn upgrade(&self, path: &Path) {
+        static UPGRADING: Mutex<()> = Mutex::new(());
+        let lacks_facts = |path: &Path| {
+            replay::container::Replay::open_path(path)
+                .is_ok_and(|replay| replay.fact_packs.is_empty())
+        };
+        let Some(content) = self.content() else {
+            return;
+        };
+        if !lacks_facts(path) {
+            return;
+        }
+        let _upgrading = UPGRADING.lock().unwrap_or_else(|error| error.into_inner());
+        if !lacks_facts(path) {
+            return;
+        }
+        let mut games = vec![content.options.game_dir.clone()];
+        games.extend(
+            dashboard_core::config::Config::load()
+                .map(|config| config.older_game_dirs)
+                .unwrap_or_default(),
+        );
+        let folders = recording_upgrade::Folders {
+            games,
+            user: content.options.user_dir.clone(),
+            cache: content.options.cache_dir.clone(),
+        };
+        match recording_upgrade::upgrade(path, &folders) {
+            Ok(recording_upgrade::Outcome::Upgraded { original, steps }) => eprintln!(
+                "Upgraded {} (original kept at {}): {}",
+                path.display(),
+                original.display(),
+                steps.join("; ")
+            ),
+            Ok(recording_upgrade::Outcome::Current) => {}
+            Err(error) => eprintln!("{} is not upgraded: {error}", path.display()),
+        }
+    }
+
     /// The content options of work on `source` admitted now (`Source::admit`): the source's
     /// binding as it is, which everything the work reads and every reply it gives keeps to, on
     /// any thread. This is the work's entry: the mount it draws is resolved here, before any
@@ -1067,9 +1142,12 @@ impl Inner {
             &self.content,
             &self.closed,
             |content| {
-                Ok(content
-                    .as_ref()
-                    .map(|content| map_settings::read_game(&content.options.user_dir)))
+                Ok(content.as_ref().map(|content| {
+                    engine_executable::executable_tables::or_installed(
+                        &content.options.game_dir,
+                        || map_settings::read_game(&content.options.user_dir),
+                    )
+                }))
             },
             |_, game| {
                 if let Some(game) = game {
@@ -1223,6 +1301,9 @@ impl Inner {
     ) -> Result<Arc<Source>, String> {
         self.check_open(cancelled)?;
         let path = path.canonicalize().map_err(|error| error.to_string())?;
+        if expected.is_none() {
+            self.upgrade(&path);
+        }
         let revision = self
             .recording_revision(&path)
             .map_err(|error| error.to_string())?;
@@ -1279,7 +1360,7 @@ impl Inner {
             .map_err(|error| error.to_string())?
             .binding
             .push(Weak::clone(&registered));
-        let bound = self.rebind(&source, cancelled);
+        let bound = source.in_scope(|| self.rebind(&source, cancelled));
         let unregister = || {
             self.sources
                 .lock()
@@ -1532,8 +1613,10 @@ impl Inner {
                 LoadJob::Open(_) => ::replay_frame::cpu::scope("service job", Some("open")),
                 _ => ::replay_frame::cpu::scope("service job", Some("other")),
             };
+            // Work on a recording reads its own executable tables.
+            let tables = job.source().and_then(|source| source.tables());
             let result = request_result(|| {
-                self.run_job(job, lane);
+                engine_executable::executable_tables::scope(tables, || self.run_job(job, lane));
                 Ok(())
             });
             if let (Err(error), Some(request)) = (result, request) {
@@ -1865,19 +1948,25 @@ impl Inner {
         if job.request.cancelled() {
             return;
         }
-        let result = self
-            .open(
-                Path::new(&job.path),
-                Some(&job.revision),
-                &job.request.cancelled,
-            )
-            .and_then(|source| {
-                read_key_names_ahead(&source, self.content());
-                source
-                    .name_countries(self.content().as_ref())
-                    .map_err(|error| error.to_string())?;
-                Ok(source)
-            });
+        let opened = self.open(
+            Path::new(&job.path),
+            Some(&job.revision),
+            &job.request.cancelled,
+        );
+        // Everything the open goes on to read is the recording's, with its own tables.
+        let tables = opened.as_ref().ok().and_then(|source| source.tables());
+        engine_executable::executable_tables::scope(tables, || self.opened(job, opened));
+    }
+
+    /// The rest of [`Self::open_job`] once the source is open, in its tables' scope.
+    fn opened(&self, job: OpenJob, opened: Result<Arc<Source>, String>) {
+        let result = opened.and_then(|source| {
+            read_key_names_ahead(&source, self.content());
+            source
+                .name_countries(self.content().as_ref())
+                .map_err(|error| error.to_string())?;
+            Ok(source)
+        });
         if let Ok(source) = &result {
             crate::source::verify_ahead(source, Arc::clone(&self.closed));
             // Read the store before the admission lock.
@@ -1984,7 +2073,7 @@ fn read_key_names_ahead(source: &Source, content: Option<ContentOptions>) {
     };
     let _ = std::thread::Builder::new()
         .name("key names ahead".into())
-        .spawn(move || drop(resolved.layers.key_names()));
+        .spawn_carried(move || drop(resolved.layers.key_names()));
 }
 
 fn request_result<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -2070,6 +2159,17 @@ pub(super) enum LoadJob {
 }
 
 impl LoadJob {
+    /// The recording this job works on, whose executable tables it reads.
+    fn source(&self) -> Option<&Arc<Source>> {
+        match self {
+            Self::PreparationRefresh { source, .. }
+            | Self::PreparedQuery { source, .. }
+            | Self::Preparation { source, .. }
+            | Self::Product { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+
     fn is_refresh(&self) -> bool {
         self.request()
             .is_some_and(|request| request.refresh.load(Ordering::Acquire))

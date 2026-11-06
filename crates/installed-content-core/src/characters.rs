@@ -1246,7 +1246,7 @@ fn merge<K: Ord + Clone, R: PartialEq>(
 /// report an error and skip their blocks.
 pub fn tokens(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut tokens = BTreeSet::new();
-    for path in paths(layers) {
+    for path in paths(layers)? {
         let read = native::read(
             &path.read(layers)?,
             native::Mode::SkipMark,
@@ -1273,7 +1273,7 @@ pub fn tokens(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
 
 /// Direct `.txt` files under `common/characters` in load order;
 /// see [`crate::script_files::paths`].
-pub fn paths(layers: &ResolvedLayers) -> Vec<crate::script_files::ScriptPath> {
+pub fn paths(layers: &ResolvedLayers) -> io::Result<Vec<crate::script_files::ScriptPath>> {
     crate::script_files::paths(layers, "common/characters/", Some(".txt"))
 }
 
@@ -1472,7 +1472,7 @@ pub fn read(
     let mut result = templates;
     let mut warnings = Vec::new();
     let names = layers.key_names()?;
-    for listed in paths(layers) {
+    for listed in paths(layers)? {
         let path = listed.to_string();
         result.next_file();
         let input = listed.read(layers)?;

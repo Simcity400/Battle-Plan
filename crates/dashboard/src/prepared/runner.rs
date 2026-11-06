@@ -1,5 +1,6 @@
 //! A bounded queue for cancellable background preparation.
 
+use job_priority::SpawnCarried as _;
 use std::{
     io,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -44,7 +45,7 @@ impl Runner {
         for index in 0..2 {
             let receive = Arc::clone(&receive);
             let revision = Arc::clone(&revision);
-            match worker_thread(format!("replay preparation {index}")).spawn(move || {
+            match worker_thread(format!("replay preparation {index}")).spawn_carried(move || {
                 loop {
                     let job = receive
                         .lock()
@@ -94,9 +95,13 @@ impl Runner {
         let send = queue
             .as_ref()
             .ok_or_else(|| io::Error::other("Preparation is closing"))?;
+        // The worker runs it with the submitter's recording context.
+        let context = job_priority::context();
         let job = Job {
             cancelled: Arc::clone(&cancelled),
-            work: Box::new(work),
+            work: Box::new(move |cancelled: &AtomicBool| {
+                job_priority::with_context(context, || work(cancelled))
+            }),
         };
         match send.try_send(job) {
             Ok(()) => {

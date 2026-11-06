@@ -275,6 +275,7 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
             layers,
             stats: Default::default(),
             changed: Vec::new(),
+            notes: Vec::new(),
         }),
         "english".into(),
     )

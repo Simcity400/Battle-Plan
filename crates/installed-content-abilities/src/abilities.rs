@@ -310,7 +310,7 @@ fn apply_with_terrain(
 /// definition remains in the native roster, whose lookup keeps the first exact
 /// name. Later definitions are still parsed and retain their diagnostics.
 pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
-    let paths = installed_content_core::script_files::database_paths(layers, "common/abilities/");
+    let paths = installed_content_core::script_files::database_paths(layers, "common/abilities/")?;
     let terrains = crate::terrain::read_definitions(layers)?
         .categories
         .into_iter()

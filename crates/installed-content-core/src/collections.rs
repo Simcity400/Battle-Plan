@@ -113,7 +113,7 @@ impl Database {
 
 pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
     let mut database = Database::default();
-    for path in crate::script_files::paths(layers, "common/collections/", Some(".txt")) {
+    for path in crate::script_files::paths(layers, "common/collections/", Some(".txt"))? {
         database.read_file(&path.read(layers)?, names);
     }
     Ok(database)

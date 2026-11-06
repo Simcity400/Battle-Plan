@@ -4,6 +4,7 @@
 //! budget, so scans running together never oversubscribe the machine. A scan keeping
 //! most tables reads one block at a time: its blocks are nearly whole raw blocks.
 
+use job_priority::SpawnCarried as _;
 use replay::{container::BlockIndex, container::Replay};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
@@ -165,7 +166,7 @@ pub fn scan_blocks_by<'a, B: Sync, T: Send, R>(
         let _stop = Stop(ahead);
         for _ in 0..readers.min(blocks.len().saturating_sub(1)) {
             let priority = job_priority::JobPriority::current();
-            thread::Builder::new().spawn_scoped(scope, || {
+            thread::Builder::new().spawn_scoped_carried(scope, || {
                 priority.enter(job_priority::Level::Normal);
                 let _cpu = replay_frame::cpu::scope("scan read-ahead", cpu_family);
                 while let Some(position) = ahead.take(cancelled) {

@@ -263,7 +263,7 @@ pub fn parse_into(
 /// Reads every scripted map mode the stack declares.
 pub fn read(layers: &ResolvedLayers) -> io::Result<MapModes> {
     let mut modes = MapModes::default();
-    for listed in script_files::paths(layers, "common/map_modes/", Some(".txt")) {
+    for listed in script_files::paths(layers, "common/map_modes/", Some(".txt"))? {
         let bytes = listed.read(layers)?;
         if let Err(error) = parse_into(&listed, &bytes, &mut modes) {
             modes

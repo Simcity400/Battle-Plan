@@ -13,6 +13,7 @@ doctest = false
 test-support = ["viewer-foundation/test-support"]
 
 [dependencies]
+job-priority.workspace = true
 map-products.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true

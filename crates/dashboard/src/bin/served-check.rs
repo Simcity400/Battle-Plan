@@ -127,7 +127,6 @@ impl Options {
         };
         let cache_dir = work.join("content");
         std::fs::create_dir_all(&cache_dir)?;
-        engine_executable::executable_tables::initialize(&game_dir)?;
         Ok(Some(ContentOptions {
             options: installed_content_core::ResolveOptions {
                 game_dir,

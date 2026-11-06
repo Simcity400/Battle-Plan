@@ -2662,7 +2662,7 @@ mod tests {
         assert!(construction.string(object).is_err());
     }
 
-    fn tables() -> std::sync::Arc<super::super::ExecutableTables> {
+    fn tables() -> super::super::Tables {
         super::super::initialize_for_tests()
             .expect("auxiliary-table checks require BATTLE_PLAN_GAME_DIR with the supported installation")
     }

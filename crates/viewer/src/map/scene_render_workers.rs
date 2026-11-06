@@ -14,7 +14,7 @@ impl Pool {
         let threads = (0..count)
             .map(|_| {
                 let receiver = receiver.clone();
-                std::thread::spawn(move || {
+                job_priority::spawn(move || {
                     loop {
                         let job = receiver.lock().unwrap().recv();
                         match job {
@@ -33,6 +33,7 @@ impl Pool {
 }
 impl Spawn for Pool {
     fn try_spawn(&self, job: Job) -> Result<(), Job> {
+        let job: Job = Box::new(job_priority::carry(job));
         self.sender
             .lock()
             .unwrap()

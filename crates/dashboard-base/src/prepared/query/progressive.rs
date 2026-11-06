@@ -158,7 +158,7 @@ pub fn join<A: Send, B: Send>(
         return (a, b());
     }
     std::thread::scope(|scope| {
-        let b = scope.spawn(b);
+        let b = job_priority::spawn_in(scope, b);
         let a = a();
         (
             a,

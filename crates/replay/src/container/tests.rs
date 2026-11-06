@@ -572,7 +572,7 @@ fn rebuild(replay: &Replay, prefix: Vec<u8>, index: &[BlockIndex]) -> Vec<u8> {
         &replay.gaps,
         &replay.controls,
         &replay.recovery_notes,
-        index,
+        index, &[],
     )
     .unwrap();
     bytes
@@ -1232,7 +1232,7 @@ fn compact_trailer_controls_preserve_order_duplicates_and_session_context() {
             last_hour: None,
         }],
         &replay.recovery_notes,
-        &replay.index,
+        &replay.index, &[],
     )
     .unwrap();
     let damaged = Replay::open(invalid_trailer).unwrap();
@@ -2373,7 +2373,7 @@ fn recovered_recordings_refuse_every_rewrite_and_append_without_touching_the_fil
                         last_hour: None,
                     }],
                     &[],
-                    &healthy.index,
+                    &healthy.index, &[],
                 )
                 .unwrap();
             }
@@ -2771,7 +2771,7 @@ fn readable_index_survives_unindexed_bytes_and_conflicting_controls() {
         }],
         &[],
         &[],
-        &replay.index,
+        &replay.index, &[],
     )
     .unwrap();
     let damaged = Replay::open(bytes).unwrap();
@@ -2803,7 +2803,7 @@ fn readable_index_survives_unindexed_bytes_and_conflicting_controls() {
             &replay.gaps,
             &controls,
             &[],
-            &replay.index,
+            &replay.index, &[],
         )
         .unwrap();
         let length = bytes.len() as u64;
@@ -2905,7 +2905,7 @@ fn invalid_length_prefixed_trailer_records_are_skipped_and_framing_stays_strict(
         &gaps,
         &controls,
         &notes,
-        &base.index,
+        &base.index, &[],
     )
     .unwrap();
     let footer = healthy.len() - FOOTER_SIZE;

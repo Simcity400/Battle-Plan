@@ -46,10 +46,15 @@ pub struct Kind {
 #[derive(Debug)]
 pub struct CommandTables {
     pub kinds: Vec<Kind>,
-    objects: Vec<(u32, u32)>,
+    pub(super) objects: Vec<(u32, u32)>,
 }
 
 impl CommandTables {
+    /// The table a recording carries ([`super::recorded`]).
+    pub(super) fn recorded(kinds: Vec<Kind>, objects: Vec<(u32, u32)>) -> Self {
+        Self { kinds, objects }
+    }
+
     /// SHA-256 of this table's build-independent content, comparable across builds.
     pub fn content_digest(&self) -> [u8; 32] {
         let mut kinds: Vec<_> = self.kinds.iter().collect();

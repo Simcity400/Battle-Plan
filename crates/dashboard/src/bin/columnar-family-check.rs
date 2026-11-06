@@ -63,7 +63,6 @@ fn content(cache_dir: io::Result<PathBuf>) -> io::Result<Option<ContentOptions>>
             ));
         }
     };
-    engine_executable::executable_tables::initialize(&game_dir)?;
     let cache_dir = cache_dir?;
     std::fs::create_dir_all(&cache_dir)?;
     Ok(Some(ContentOptions {
@@ -140,6 +139,8 @@ fn run() -> io::Result<()> {
         recording.clone(),
         &AtomicBool::new(false),
     )?;
+    // The check works on this recording alone, with its own executable tables.
+    engine_executable::executable_tables::enter(source.tables());
     drop(span);
     let cancelled = AtomicBool::new(false);
     // The content resolves beside the index, as production prepares it.
@@ -175,7 +176,16 @@ fn run() -> io::Result<()> {
                 &cancelled,
             )?;
             drop(span);
-            Ok((index, index_seconds, index_cpu, index_working, index_commit, damage, accepted, measured))
+            Ok((
+                index,
+                index_seconds,
+                index_cpu,
+                index_working,
+                index_commit,
+                damage,
+                accepted,
+                measured,
+            ))
         })?;
     let failed: Vec<_> = accepted
         .sections

@@ -126,6 +126,7 @@ fn bind(source: &dashboard_base::Source, stack: &Stack) -> ContentOptions {
             layers: stack.layers(&["map/strategicregions"]),
             stats: Default::default(),
             changed: Vec::new(),
+            notes: Vec::new(),
         }),
     );
     options

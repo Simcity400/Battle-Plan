@@ -1237,7 +1237,7 @@ pub fn read(
             names.at(Point::Late),
         ),
     ] {
-        for path in script_files::paths(layers, folder, Some(".txt")) {
+        for path in script_files::paths(layers, folder, Some(".txt"))? {
             coverage.next_file();
             advisors.next_file();
             let read = read_file(

@@ -435,7 +435,7 @@ fn faction_naming(
                 (
                     content::content_key(Some(options)).expect("content options given"),
                     options.options.cache_dir.clone(),
-                    viewer_language.clone(),
+                    Some(viewer_language.clone()),
                 ),
             )?;
             Ok::<_, io::Error>((layers.layers.faction_templates(), localisation))

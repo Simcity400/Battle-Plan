@@ -244,7 +244,7 @@ fn the_loader_reads_its_three_directories_in_order() {
     }
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     assert_eq!(
-        files(&layers),
+        files(&layers).unwrap(),
         [
             "common/units/equipment/upgrades/z.txt",
             "common/units/equipment/modules/m.txt",

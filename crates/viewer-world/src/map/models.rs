@@ -512,7 +512,7 @@ impl ModelLibrary {
             for shard_names in unique.chunks(chunk).collect::<Vec<_>>() {
                 let mut worker = spans.fork();
                 let asset_namespace = Arc::clone(&asset_namespace);
-                handles.push(scope.spawn(move || {
+                handles.push(job_priority::spawn_in(scope, move || {
                     let baked = viewer_foundation::worker_priority::at_bake_priority(|| {
                         worker.measure(labels.worker, |_| {
                             let mut library = ModelLibrary {
@@ -3553,7 +3553,7 @@ mod parallel_animation_tests {
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
         for _ in 0..3 {
             let receiver = Arc::clone(&receiver);
-            std::thread::spawn(move || {
+            job_priority::spawn(move || {
                 loop {
                     let job = receiver.lock().unwrap().recv();
                     match job {

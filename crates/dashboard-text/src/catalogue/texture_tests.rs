@@ -41,6 +41,7 @@ pub fn texture_catalogue(
         layers,
         stats: Default::default(),
         changed: Vec::new(),
+        notes: Vec::new(),
     });
     (catalogue, [base, modification])
 }

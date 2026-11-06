@@ -148,7 +148,7 @@ fn load_with(
         (
             content::content_key(Some(options)).expect("content options given"),
             options.options.cache_dir.clone(),
-            language,
+            Some(language),
         ),
         &resolved,
     )?;
@@ -833,7 +833,7 @@ mod loader_tests {
         source.content(&old.options).unwrap();
         let (entered, release) = (Barrier::new(2), Barrier::new(2));
         let (requested, warnings_before) = std::thread::scope(|scope| {
-            let ahead = scope.spawn(|| {
+            let ahead = job_priority::spawn_in(scope, || {
                 bound_catalogue_with(&source, &old, || {
                     entered.wait();
                     release.wait();

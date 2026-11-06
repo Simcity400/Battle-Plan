@@ -12,6 +12,7 @@
 //! [`MapAction::FlyAircraft`]: dashboard::protocol::MapAction::FlyAircraft
 //! [`NativeEvent::FlyAircraft`]: dashboard::protocol::NativeEvent::FlyAircraft
 
+use job_priority::SpawnCarried as _;
 use dashboard::protocol::{FlyAircraftState, FlyAircraftStatus};
 use std::sync::{Arc, mpsc};
 use viewer_world::map::aircraft::{AircraftAssets, PlayerAircraft};
@@ -149,7 +150,7 @@ fn start(
     let (send, receive) = mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("fly aircraft".into())
-        .spawn(move || {
+        .spawn_carried(move || {
             let _ = send.send(assets.player(&name));
             repaint();
         });

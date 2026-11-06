@@ -308,7 +308,7 @@ const FOLDER: &str = "common/country_tag_aliases/";
 /// the scope step finds by token once the pass has run, before ideologies.
 pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut names = BTreeSet::new();
-    for path in script_files::paths(layers, FOLDER, Some(".txt")) {
+    for path in script_files::paths(layers, FOLDER, Some(".txt"))? {
         let read = name_pass(&path.read(layers)?, &|name| names.contains(name));
         names.extend(
             read.items
@@ -323,7 +323,7 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
 /// files through [`script_files::paths`].
 pub fn read(layers: &ResolvedLayers) -> io::Result<TagAliases> {
     let mut files = Vec::new();
-    for path in script_files::paths(layers, FOLDER, Some(".txt")) {
+    for path in script_files::paths(layers, FOLDER, Some(".txt"))? {
         files.push((path.to_string(), path.read(layers)?));
     }
     Ok(parse(

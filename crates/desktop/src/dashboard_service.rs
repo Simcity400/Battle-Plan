@@ -91,20 +91,12 @@ pub struct DashboardService {
     >,
 }
 
-/// Why configured content is unbound, and so what binds it again without a new Apply.
+/// Why configured content is unbound, and so what binds it again without a new Apply. A
+/// recording's executable tables are its own, so no installed executable is read here.
 #[derive(PartialEq)]
 enum Unbound {
     /// The folders were unavailable: they bind once they are back.
     Folders,
-    /// The game's executable could not be read: it binds once the executable changes, so a
-    /// broken installation is not read again on every request.
-    Executable(Option<(u64, std::time::SystemTime)>),
-}
-
-/// The size and modification time of the game's executable, if it can be read.
-fn executable_stamp(game_dir: &std::path::Path) -> Option<(u64, std::time::SystemTime)> {
-    let metadata = std::fs::metadata(game_dir.join("hoi4.exe")).ok()?;
-    Some((metadata.len(), metadata.modified().ok()?))
 }
 
 impl DashboardService {
@@ -155,19 +147,14 @@ impl DashboardService {
                 || match unbound {
                     None => false,
                     Some(Unbound::Folders) => config.resolve_options().is_ok(),
-                    Some(Unbound::Executable(stamp)) => {
-                        executable_stamp(&config.game_dir) != *stamp
-                    }
                 }
         });
         if stale {
-            // Taken first, so an executable replaced while it is read is read again.
-            let stamp = executable_stamp(&config.game_dir);
             // Recording-only products remain available when content refuses.
             let unbound = match runtime.configure_content(&config, allow_unverified) {
                 Err(error) => {
                     eprintln!("Dashboard content unavailable: {error}");
-                    Some(Unbound::Executable(stamp))
+                    Some(Unbound::Folders)
                 }
                 Ok(()) if !runtime.content_bound() => Some(Unbound::Folders),
                 Ok(()) => None,
@@ -419,6 +406,12 @@ pub async fn dashboard_open_source(
     request_id: String,
 ) -> Result<Response, QueryError> {
     let path = crate::replay_path(&path)?;
+    // Upgraded before its revision is read, so the open names the recording as it now is.
+    let runtime = service.runtime(window.app_handle())?;
+    let upgraded = path.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.upgrade_recording(&upgraded))
+        .await
+        .map_err(|error| error.to_string())?;
     let revision = replay_revision(&path).map_err(|error| error.to_string())?;
     request(
         &window,

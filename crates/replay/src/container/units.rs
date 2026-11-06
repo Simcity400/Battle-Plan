@@ -304,6 +304,8 @@ fn duplicate(replay: &Replay) -> io::Result<Replay> {
         recovery_notes: replay.recovery_notes.clone(),
         warnings: replay.warnings.clone(),
         index: replay.index.clone(),
+        fact_packs: replay.fact_packs.clone(),
+        newest_facts: replay.newest_facts,
         ordinals: replay.ordinals.clone(),
         regions: replay.regions.clone(),
         decoded_sections: decoded_sections::Cache::default(),
