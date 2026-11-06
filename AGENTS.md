@@ -28,7 +28,7 @@
 
 - Make everything as fast and efficient as it can be. Design every part, new or changed, as the best solution built from scratch, not a patch on what is there.
 - Design for 1,500 countries. No caps we made up.
-- Change file-format readers, writers and users together. Recordings stay readable forever: a recording-format change ships a lossless upgrader from the previous format and keeps the original file. Other formats need no backwards compatibility.
+- Change file-format readers, writers and users together. No backwards compatibility. Recordings must keep playing across game updates, but a recording-format change needs no upgrader: it refuses older recordings by name.
 - Don't write READMEs or other docs.
 - Only comment what reading the code can't tell you: a quirk, or something an agent must know. Keep it to one short line. Licence notices stay.
 
