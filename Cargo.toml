@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["fuzz", "vendor/eframe"]
+exclude = ["fuzz", "vendor/eframe", "vendor/tao"]
 
 [workspace.package]
 version = "0.1.0"
@@ -346,3 +346,4 @@ debug = "line-tables-only"
 
 [patch.crates-io]
 eframe = { path = "vendor/eframe" }
+tao = { path = "vendor/tao" }
