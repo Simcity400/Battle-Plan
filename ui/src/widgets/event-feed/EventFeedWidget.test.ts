@@ -19,7 +19,7 @@ function source(id: string, firstHour: number, lastHour: number): DashboardSourc
   return { id, path: `C:/recordings/${id}.battleplan`, revision: '1', metadata: { path: `C:/recordings/${id}.battleplan`, revision: '1',
     name: id, format: 1, captureMode: 'full', campaignKey: 'c0ffee', branches: [{ id: '1', sessionId: '1', firstHour, lastHour,
       parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] }],
-    countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [] } };
+    countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [], buildWarnings: [] } };
 }
 
 test('Event feed validates the resolved track cutoff, suspends old viewport reads and offers independent Pin', async () => {

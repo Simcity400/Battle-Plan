@@ -9,7 +9,9 @@ fn sortie_content_keys_spell_the_fixed_modifier_keys() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (index, name) in SORTIE.into_iter().zip(SORTIE_KEYS) {
         assert!(
-            keys::all().any(|key| key.index == index && key.name == name),
+            keys::all()
+                .unwrap()
+                .any(|key| key.index == index && key.name == name),
             "{name}"
         );
     }

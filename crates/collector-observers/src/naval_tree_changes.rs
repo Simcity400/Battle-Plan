@@ -326,7 +326,7 @@ pub struct Hooks {
     occupation: crate::occupation_changes::Hooks,
 }
 impl Hooks {
-    /// The enclosing runtime verified the executable hash before construction.
+    /// The runtime's build gate admitted this family before construction.
     /// A differing sentinel leaves the family uninstalled; every tree is then
     /// read afresh each hour.
     ///

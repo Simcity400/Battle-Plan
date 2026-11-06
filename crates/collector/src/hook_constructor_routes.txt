@@ -9,6 +9,8 @@
 # Engine owner routes size content buffers and lexical-key staging, initialize
 # verified immutable executable metadata, and set scripted-sharing demand.
 # These loader preparation calls construct no hooks.
+# The build gate records the running build and reports it in status; admission
+# refuses withheld essential families before any game read. None constructs hooks.
 # Detach macro fingerprints retain every composed owner across failed teardown.
 # Decode panic routes install only the standard panic handler and read its retained
 # diagnostic. Conditional event-feed status uses bool::then; detach retains the
@@ -62,6 +64,8 @@ call:collector_observers::occupation_changes::demand
 call:collector_observers::occupation_changes::prepare
 call:collector_observers::wargoal_changes::note_countries
 call:collector_observers::wargoal_changes::presize
+call:collector_primitives::build_gate::record
+call:collector_primitives::build_gate::status
 call:configure_alloc_fault
 call:crate::acquisition::recommended_worker_count
 call:crate::air_losses::capacity
@@ -122,6 +126,7 @@ call:crate::hook::restoration::active
 call:crate::hook::restoration::attempt
 call:crate::hook::shared::Round::collect
 call:crate::hook::shared::take_reported_ticks
+call:crate::hook_failures::admit_essential
 call:crate::hook_failures::configure
 call:crate::hook_failures::failed
 call:crate::hook_failures::fatal_installation_error
@@ -235,6 +240,7 @@ method:apply
 method:as_deref
 method:as_mut
 method:as_ref
+method:build_warning
 method:busy_sites
 method:cast_mut
 method:clone
@@ -311,6 +317,7 @@ method:raise_for_pride_names
 method:raise_for_raid_arenas
 method:raise_for_supply_origins
 method:raise_reserved_visibility
+method:recognised
 method:refusal
 method:release
 method:release_after_quiet

@@ -1,23 +1,22 @@
 use super::{pe::PeImage, registries::class_name};
-use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
-use std::io;
+use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+};
 
 mod owners;
 pub use owners::{Object, Source};
 
-const ENVELOPE_WRITER: u32 = 0x022d_9400;
-const ENVELOPE_READER: u32 = 0x022d_9160;
-const COUNTRY_PERMISSION: u32 = 0x011c_13e0;
-const PLAN_PERMISSION: u32 = 0x013f_ed40;
-const PLAN_ASSIGNMENT_PERMISSION: u32 = 0x018d_d440;
-const MOVEMENT_PERMISSION: u32 = 0x013f_e970;
-const MASS_MOVEMENT_PERMISSION: u32 = 0x013f_e910;
-const CANCEL_MOVEMENT_PERMISSION: u32 = 0x013f_e790;
-const NAVAL_MOVEMENT_PERMISSION: u32 = 0x013e_d3b0;
-const AIR_MISSION_PERMISSION: u32 = 0x019d_3640;
-const PURE_VIRTUAL_HANDLER: u32 = 0x025c_2320;
-const TYPE_SLOT: u32 = 0x58;
-const PERMISSION_SLOT: u32 = 0x98;
+/// FNV-1a of the decorated type every command derives from.
+const COMMAND_TYPE: u64 = 0xfa4c_d01a_a014_fc8b;
+/// Length and FNV-1a of the text only the shared country access check reports.
+const ACCESS_CHECK_TEXT: (usize, u64) = (12, 0x2483_988f_1cc5_66b3);
+/// Instructions one owner confirmation may decode, across the check and the calls it follows.
+const CONFIRMATION_BUDGET: usize = 4096;
+/// Bytes read from a leaf function without an exception-directory extent.
+const LEAF_BYTES: u32 = 128;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Target {
@@ -51,81 +50,163 @@ pub struct CommandTables {
 }
 
 impl CommandTables {
-    pub(super) fn decode(image: &PeImage) -> io::Result<Self> {
-        let writer = (image.base + u64::from(ENVELOPE_WRITER)).to_le_bytes();
-        let mut kinds = Vec::new();
-        for (section, bytes) in image.data_sections() {
-            for offset in (16..bytes.len().saturating_sub(8)).step_by(8) {
-                if bytes[offset..offset + 8] != writer {
-                    continue;
+    /// SHA-256 of this table's build-independent content, comparable across builds.
+    pub fn content_digest(&self) -> [u8; 32] {
+        let mut kinds: Vec<_> = self.kinds.iter().collect();
+        kinds.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        let mut digest = Sha256::new();
+        for kind in kinds {
+            digest.update((kind.name.len() as u32).to_le_bytes());
+            digest.update(kind.name.as_bytes());
+            match kind.token {
+                Token::Constant(value) => {
+                    digest.update([0]);
+                    digest.update(value.to_le_bytes());
                 }
-                let vtable = section + offset as u32 - 16;
-                if image.u64(vtable + 32)? != image.base + u64::from(ENVELOPE_READER) {
-                    continue;
-                }
-                let function = image.va_to_rva(image.u64(vtable + TYPE_SLOT)?)?;
-                // The abstract envelope every command derives from is never issued.
-                if function == PURE_VIRTUAL_HANDLER {
-                    continue;
-                }
-                let name = class_name(image, vtable)?;
-                let mut decoder = Decoder::with_ip(
-                    64,
-                    image.bytes(function, 16)?,
-                    image.base + u64::from(function),
-                    DecoderOptions::NONE,
-                );
-                let load = decoder.decode();
-                let constant = load.mnemonic() == Mnemonic::Mov
-                    && load.op0_kind() == OpKind::Memory
-                    && load.memory_base() == Register::RDX
-                    && load.memory_displacement64() == 0
-                    && load.op1_kind() == OpKind::Immediate32;
-                if !constant
-                    && (load.mnemonic() != Mnemonic::Mov
-                        || load.op0_register() != Register::EAX
-                        || load.op1_kind() != OpKind::Memory
-                        || !load.is_ip_rel_memory_operand())
-                {
-                    return Err(invalid(format!("command type reader unsupported: {name}")));
-                }
-                let token = if constant {
-                    Token::Constant(load.immediate32())
-                } else {
-                    Token::Word(image.va_to_rva(load.ip_rel_memory_address())?)
-                };
-                let store = if constant { load } else { decoder.decode() };
-                let result = decoder.decode();
-                let end = decoder.decode();
-                if store.mnemonic() != Mnemonic::Mov
-                    || store.memory_base() != Register::RDX
-                    || store.memory_displacement64() != 0
-                    || (!constant && store.op1_register() != Register::EAX)
-                    || result.mnemonic() != Mnemonic::Mov
-                    || result.op0_register() != Register::RAX
-                    || result.op1_register() != Register::RDX
-                    || end.mnemonic() != Mnemonic::Ret
-                {
-                    return Err(invalid(format!("command type reader unsupported: {name}")));
-                }
-                let permission = image.va_to_rva(image.u64(vtable + PERMISSION_SLOT)?)?;
-                let target = match permission {
-                    COUNTRY_PERMISSION => Target::Country(0x28),
-                    PLAN_PERMISSION => Target::Group(0x28),
-                    PLAN_ASSIGNMENT_PERMISSION => Target::Group(0x40),
-                    MOVEMENT_PERMISSION => Target::Unit(0x38),
-                    MASS_MOVEMENT_PERMISSION => Target::Units(0x40),
-                    CANCEL_MOVEMENT_PERMISSION | NAVAL_MOVEMENT_PERMISSION => Target::Units(0x28),
-                    AIR_MISSION_PERMISSION => Target::Wings(0x28),
-                    _ => owners::target(permission),
-                };
-                kinds.push(Kind {
-                    vtable,
-                    name,
-                    token,
-                    target,
-                });
+                Token::Word(_) => digest.update([1]),
             }
+            target_content(kind.target, &mut digest);
+        }
+        let mut masks: Vec<_> = self.objects.iter().map(|&(_, mask)| mask).collect();
+        masks.sort_unstable();
+        for mask in masks {
+            digest.update(mask.to_le_bytes());
+        }
+        digest.finalize().into()
+    }
+
+    pub(super) fn decode(image: &PeImage) -> io::Result<Self> {
+        let mut bases = Vec::new();
+        let mut commands = Vec::new();
+        let mut families = Vec::new();
+        let mut names = HashMap::new();
+        // Only primary vtables identify a command or an operand object.
+        let mut primaries: Vec<_> = image
+            .classes()
+            .iter()
+            .filter(|class| class.offset == 0)
+            .map(|class| (class.locator, class.descriptor))
+            .collect();
+        primaries.dedup();
+        for (locator, own) in primaries {
+            let mut mask = 0;
+            let mut command = false;
+            for (descriptor, displacement) in image.locator_bases(locator)? {
+                if displacement != 0 {
+                    continue;
+                }
+                let class = type_hash(image, &mut names, descriptor)?;
+                if let Some(object) = owners::family(class) {
+                    mask |= object.mask();
+                }
+                if class == COMMAND_TYPE {
+                    if descriptor == own {
+                        bases.push(locator);
+                    } else {
+                        command = true;
+                    }
+                }
+            }
+            if command {
+                commands.push(locator);
+            }
+            if mask != 0 {
+                families.push((locator, mask));
+            }
+        }
+        let [base] = bases[..] else {
+            return Err(invalid("command base type missing or repeated"));
+        };
+        let mut wanted: Vec<_> = commands
+            .iter()
+            .chain(&[base])
+            .copied()
+            .chain(families.iter().map(|&(locator, _)| locator))
+            .collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let vtables: Vec<(u32, u32)> = image
+            .classes()
+            .iter()
+            .filter(|class| wanted.binary_search(&class.locator).is_ok())
+            .map(|class| (class.locator, class.vtable))
+            .collect();
+        let vtable_of = |locator: u32| {
+            let mut found = vtables
+                .iter()
+                .filter(|&&(owner, _)| owner == locator)
+                .map(|&(_, vtable)| vtable);
+            match (found.next(), found.next()) {
+                (Some(vtable), None) => Ok(vtable),
+                _ => Err(invalid("command type vtable missing or repeated")),
+            }
+        };
+        let base = slots(image, vtable_of(base)?)?;
+        let mut concrete = Vec::with_capacity(commands.len());
+        for &locator in &commands {
+            concrete.push(vtable_of(locator)?);
+        }
+        let type_slot = unique_slot(&base, "type", |index| {
+            let mut issued = false;
+            for &vtable in &concrete {
+                let function = slot(image, vtable, index)?;
+                if function != base[index] {
+                    if token(image, function).is_none() {
+                        return Ok(false);
+                    }
+                    issued = true;
+                }
+            }
+            Ok(issued)
+        })?;
+        // A kind still abstract at the type slot is never issued.
+        concrete.retain(|&vtable| {
+            slot(image, vtable, type_slot).is_ok_and(|reader| reader != base[type_slot])
+        });
+        let check = access_check(image)?;
+        let permission_slot = unique_slot(&base, "permission", |index| {
+            if index == type_slot {
+                return Ok(false);
+            }
+            let mut checked = HashSet::new();
+            for &vtable in &concrete {
+                let function = slot(image, vtable, index)?;
+                if function != base[index]
+                    && checked.insert(function)
+                    && reaches(image, function, check)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })?;
+        let mut confirmed = HashMap::new();
+        let mut kinds = Vec::with_capacity(concrete.len());
+        for vtable in concrete {
+            let name = class_name(image, vtable)?;
+            let token = token(image, slot(image, vtable, type_slot)?)
+                .ok_or_else(|| invalid(format!("command type reader unsupported: {name}")))?;
+            let target = owners::target(class_hash(&name));
+            let fields = target_fields(target);
+            if !fields.is_empty() {
+                let read = confirmed
+                    .entry(slot(image, vtable, permission_slot)?)
+                    .or_insert_with_key(|&check| operand_offsets(image, check));
+                if fields
+                    .iter()
+                    .any(|&field| read.binary_search(&i64::from(field)).is_err())
+                {
+                    return Err(invalid(format!(
+                        "command owner operands unconfirmed: {name}"
+                    )));
+                }
+            }
+            kinds.push(Kind {
+                vtable,
+                name,
+                token,
+                target,
+            });
         }
         kinds.sort_unstable_by_key(|kind| kind.vtable);
         if kinds.is_empty()
@@ -135,10 +216,21 @@ impl CommandTables {
         {
             return Err(invalid("command type catalog missing or duplicated"));
         }
-        Ok(Self {
-            kinds,
-            objects: owners::objects(image)?,
-        })
+        let mut objects: Vec<_> = vtables
+            .iter()
+            .filter_map(|&(locator, vtable)| {
+                families
+                    .binary_search_by_key(&locator, |&(family, _)| family)
+                    .ok()
+                    .map(|index| (vtable, families[index].1))
+            })
+            .collect();
+        objects.sort_unstable();
+        objects.dedup();
+        if objects.is_empty() {
+            return Err(invalid("command operand identities missing"));
+        }
+        Ok(Self { kinds, objects })
     }
 
     pub fn object(&self, vtable: u32, expected: Object) -> bool {
@@ -150,9 +242,385 @@ impl CommandTables {
 
 /// FNV-1a of a class name, which identifies supported classes without spelling them.
 pub fn class_hash(name: &str) -> u64 {
-    name.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+    hash(name.as_bytes())
+}
+
+/// FNV-1a of a type descriptor's decorated name, hashed once per descriptor.
+pub(super) fn type_hash(
+    image: &PeImage,
+    names: &mut HashMap<u32, u64>,
+    descriptor: u32,
+) -> io::Result<u64> {
+    if let Some(&class) = names.get(&descriptor) {
+        return Ok(class);
+    }
+    let class = hash(image.type_name(descriptor)?.as_bytes());
+    names.insert(descriptor, class);
+    Ok(class)
+}
+
+fn hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
     })
+}
+
+fn target_fields(target: Target) -> Vec<u32> {
+    match target {
+        Target::Unknown => Vec::new(),
+        Target::Country(field)
+        | Target::Group(field)
+        | Target::Unit(field)
+        | Target::Units(field)
+        | Target::Wings(field) => vec![field],
+        Target::Sources(sources) => sources
+            .iter()
+            .flat_map(|source| source.fields())
+            .flatten()
+            .collect(),
+    }
+}
+
+fn target_content(target: Target, digest: &mut Sha256) {
+    let (tag, field) = match target {
+        Target::Unknown => (0, 0),
+        Target::Country(field) => (1, field),
+        Target::Group(field) => (2, field),
+        Target::Unit(field) => (3, field),
+        Target::Units(field) => (4, field),
+        Target::Wings(field) => (5, field),
+        Target::Sources(sources) => {
+            digest.update([6, sources.len() as u8]);
+            for &source in sources {
+                let (tag, object) = match source {
+                    Source::Country(_) => (0, None),
+                    Source::Reference(_, object) => (1, Some(object)),
+                    Source::References(_, object) => (2, Some(object)),
+                    Source::Pointer(_, object) => (3, Some(object)),
+                    Source::Province(_) => (4, None),
+                    Source::Building { .. } => (5, None),
+                    Source::NavalSide { .. } => (6, None),
+                    Source::ScriptCountry { .. } => (7, None),
+                };
+                digest.update([tag, object.map_or(u8::MAX, |object| object as u8)]);
+                for field in source.fields().into_iter().flatten() {
+                    digest.update(field.to_le_bytes());
+                }
+            }
+            return;
+        }
+    };
+    digest.update([tag]);
+    digest.update(field.to_le_bytes());
+}
+
+/// The index of the one base slot `matches` accepts.
+fn unique_slot(
+    base: &[u32],
+    role: &str,
+    mut matches: impl FnMut(usize) -> io::Result<bool>,
+) -> io::Result<usize> {
+    let mut found = None;
+    for index in 0..base.len() {
+        if matches(index)? && found.replace(index).is_some() {
+            return Err(invalid(format!("command {role} slot is ambiguous")));
+        }
+    }
+    found.ok_or_else(|| invalid(format!("command {role} slot missing")))
+}
+
+/// The code slots of a vtable, up to the first entry that is not code.
+fn slots(image: &PeImage, vtable: u32) -> io::Result<Vec<u32>> {
+    let mut slots = Vec::new();
+    loop {
+        let entry = image.u64(at(vtable, slots.len() as u32 * 8)?)?;
+        if !image.is_code_pointer(entry) {
+            break;
+        }
+        slots.push(image.va_to_rva(entry)?);
+    }
+    Ok(slots)
+}
+
+fn slot(image: &PeImage, vtable: u32, index: usize) -> io::Result<u32> {
+    let entry = image.u64(at(vtable, index as u32 * 8)?)?;
+    if !image.is_code_pointer(entry) {
+        return Err(invalid("command vtable is shorter than its base"));
+    }
+    image.va_to_rva(entry)
+}
+
+/// The type token a command's type reader stores, if `function` has that exact shape.
+fn token(image: &PeImage, function: u32) -> Option<Token> {
+    let mut decoder = Decoder::with_ip(
+        64,
+        image.bytes(function, 16).ok()?,
+        image.base + u64::from(function),
+        DecoderOptions::NONE,
+    );
+    let load = decoder.decode();
+    let constant = load.mnemonic() == Mnemonic::Mov
+        && load.op0_kind() == OpKind::Memory
+        && load.memory_base() == Register::RDX
+        && load.memory_displacement64() == 0
+        && load.op1_kind() == OpKind::Immediate32;
+    if !constant
+        && (load.mnemonic() != Mnemonic::Mov
+            || load.op0_register() != Register::EAX
+            || load.op1_kind() != OpKind::Memory
+            || !load.is_ip_rel_memory_operand())
+    {
+        return None;
+    }
+    let token = if constant {
+        Token::Constant(load.immediate32())
+    } else {
+        Token::Word(image.va_to_rva(load.ip_rel_memory_address()).ok()?)
+    };
+    let store = if constant { load } else { decoder.decode() };
+    let result = decoder.decode();
+    let end = decoder.decode();
+    (store.mnemonic() == Mnemonic::Mov
+        && store.memory_base() == Register::RDX
+        && store.memory_displacement64() == 0
+        && (constant || store.op1_register() == Register::EAX)
+        && result.mnemonic() == Mnemonic::Mov
+        && result.op0_register() == Register::RAX
+        && result.op1_register() == Register::RDX
+        && end.mnemonic() == Mnemonic::Ret)
+        .then_some(token)
+}
+
+/// The start of the one function that reports the access check's text.
+fn access_check(image: &PeImage) -> io::Result<u32> {
+    match text_users(image, ACCESS_CHECK_TEXT)?[..] {
+        [(start, _)] => Ok(start),
+        [] => Err(invalid("command access check missing")),
+        _ => Err(invalid("command access check repeated")),
+    }
+}
+
+/// The functions that address a NUL-terminated text of this length and FNV-1a.
+fn text_users(image: &PeImage, anchor: (usize, u64)) -> io::Result<Vec<(u32, u32)>> {
+    image.referencing_functions(
+        image
+            .rip_leas()
+            .iter()
+            .filter(|lea| is_text(image, lea.target, anchor))
+            .map(|lea| lea.instruction),
+    )
+}
+
+/// Whether `rva` is a whole read-only text of this length and FNV-1a.
+pub(super) fn is_text(image: &PeImage, rva: u32, (length, text): (usize, u64)) -> bool {
+    image
+        .text_at(rva, length)
+        .is_some_and(|bytes| hash(bytes) == text)
+}
+
+/// Whether a function calls or jumps straight to `target`, reading its exception-directory
+/// extent when it has one, otherwise the leaf up to its first exit, and stopping at data.
+fn reaches(image: &PeImage, function: u32, target: u32) -> bool {
+    let (end, leaf) = match image.function(function) {
+        Ok((start, end)) if start == function => (end, false),
+        _ => (function.saturating_add(LEAF_BYTES), true),
+    };
+    let Some(&(_, limit)) = image
+        .executable_ranges()
+        .iter()
+        .find(|&&(start, end)| (start..end).contains(&function))
+    else {
+        return false;
+    };
+    let Ok(bytes) = image.bytes(function, (end.min(limit) - function) as usize) else {
+        return false;
+    };
+    let target = image.base + u64::from(target);
+    let mut decoder = Decoder::with_ip(
+        64,
+        bytes,
+        image.base + u64::from(function),
+        DecoderOptions::NONE,
+    );
+    while decoder.can_decode() {
+        let instruction = decoder.decode();
+        if instruction.is_invalid() {
+            break;
+        }
+        if matches!(instruction.mnemonic(), Mnemonic::Call | Mnemonic::Jmp)
+            && instruction.op0_kind() == OpKind::NearBranch64
+            && instruction.near_branch_target() == target
+        {
+            return true;
+        }
+        if leaf
+            && matches!(
+                instruction.flow_control(),
+                FlowControl::Return
+                    | FlowControl::UnconditionalBranch
+                    | FlowControl::IndirectBranch
+                    | FlowControl::Interrupt
+            )
+        {
+            break;
+        }
+    }
+    false
+}
+
+fn decode(image: &PeImage, rva: u32) -> io::Result<Instruction> {
+    let (_, end) = image
+        .executable_ranges()
+        .iter()
+        .copied()
+        .find(|&(start, end)| (start..end).contains(&rva))
+        .ok_or_else(|| invalid("command code lies outside executable storage"))?;
+    let bytes = image.bytes(rva, (end - rva).min(15) as usize)?;
+    let instruction =
+        Decoder::with_ip(64, bytes, image.base + u64::from(rva), DecoderOptions::NONE).decode();
+    if instruction.is_invalid() {
+        return Err(invalid("command code has an invalid instruction"));
+    }
+    Ok(instruction)
+}
+
+/// Sorted offsets from the command that a permission check reads or addresses, following its
+/// branches and, one level deep, the calls it makes on the command or a field of it.
+fn operand_offsets(image: &PeImage, function: u32) -> Vec<i64> {
+    let mut found = Vec::new();
+    let mut budget = CONFIRMATION_BUDGET;
+    trace(image, function, 0, true, &mut budget, &mut found);
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+// A path into bytes that do not decode, or out of the image, ends there; that only narrows
+// what is confirmed.
+fn trace(
+    image: &PeImage,
+    start: u32,
+    receiver: i64,
+    follow: bool,
+    budget: &mut usize,
+    found: &mut Vec<i64>,
+) {
+    // Each general register's offset from the command, while it holds one.
+    let mut initial = [None; 16];
+    initial[Register::RCX.number()] = Some(receiver);
+    let mut work = vec![(start, initial)];
+    let mut seen = HashSet::new();
+    while let Some((mut at, mut state)) = work.pop() {
+        while *budget > 0 && seen.insert(at) {
+            *budget -= 1;
+            let Ok(instruction) = decode(image, at) else {
+                break;
+            };
+            at += instruction.len() as u32;
+            if let Some(offset) = memory_offset(&instruction, &state) {
+                found.push(offset);
+            }
+            match instruction.flow_control() {
+                FlowControl::Return | FlowControl::Interrupt | FlowControl::IndirectBranch => {
+                    break;
+                }
+                FlowControl::UnconditionalBranch => {
+                    let Ok(target) = branch(image, &instruction) else {
+                        break;
+                    };
+                    at = target;
+                    continue;
+                }
+                FlowControl::ConditionalBranch => {
+                    if let Ok(target) = branch(image, &instruction) {
+                        work.push((target, state));
+                    }
+                    continue;
+                }
+                FlowControl::Call | FlowControl::IndirectCall => {
+                    if follow
+                        && instruction.op0_kind() == OpKind::NearBranch64
+                        && let Some(receiver) = state[Register::RCX.number()]
+                        && let Ok(target) = branch(image, &instruction)
+                    {
+                        trace(image, target, receiver, false, budget, found);
+                    }
+                    for register in [
+                        Register::RAX,
+                        Register::RCX,
+                        Register::RDX,
+                        Register::R8,
+                        Register::R9,
+                        Register::R10,
+                        Register::R11,
+                    ] {
+                        state[register.number()] = None;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            track(&instruction, &mut state, found);
+        }
+    }
+}
+
+fn branch(image: &PeImage, instruction: &Instruction) -> io::Result<u32> {
+    image.va_to_rva(instruction.near_branch_target())
+}
+
+fn memory_offset(instruction: &Instruction, state: &[Option<i64>; 16]) -> Option<i64> {
+    if !(0..instruction.op_count()).any(|operand| instruction.op_kind(operand) == OpKind::Memory)
+        || instruction.memory_index() != Register::None
+        || !instruction.memory_base().is_gpr64()
+    {
+        return None;
+    }
+    Some(state[instruction.memory_base().number()]? + instruction.memory_displacement64() as i64)
+}
+
+fn track(instruction: &Instruction, state: &mut [Option<i64>; 16], found: &mut Vec<i64>) {
+    if instruction.op0_kind() != OpKind::Register || !instruction.op0_register().is_gpr() {
+        return;
+    }
+    let destination = instruction.op0_register();
+    let full = destination.full_register().number();
+    let whole = destination.is_gpr64();
+    state[full] = match instruction.mnemonic() {
+        Mnemonic::Cmp | Mnemonic::Test | Mnemonic::Push => return,
+        Mnemonic::Mov
+            if whole
+                && instruction.op1_kind() == OpKind::Register
+                && instruction.op1_register().is_gpr64() =>
+        {
+            state[instruction.op1_register().number()]
+        }
+        Mnemonic::Lea
+            if whole
+                && instruction.memory_index() == Register::None
+                && instruction.memory_base().is_gpr64() =>
+        {
+            state[instruction.memory_base().number()]
+                .map(|offset| offset + instruction.memory_displacement64() as i64)
+        }
+        Mnemonic::Add
+            if whole
+                && matches!(
+                    instruction.op1_kind(),
+                    OpKind::Immediate8to64 | OpKind::Immediate32to64
+                ) =>
+        {
+            let offset = state[full].map(|offset| offset + instruction.immediate(1) as i64);
+            found.extend(offset);
+            offset
+        }
+        _ => None,
+    };
+}
+
+fn at(rva: u32, offset: u32) -> io::Result<u32> {
+    rva.checked_add(offset)
+        .ok_or_else(|| invalid("command address overflows"))
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -164,7 +632,7 @@ mod tests {
     #[test]
     fn installed_command_catalog_retains_distinct_vtables_and_owned_targets() {
         let tables = super::super::initialize_for_tests().unwrap();
-        let kinds = &tables.commands.kinds;
+        let kinds = &tables.commands.as_ref().unwrap().kinds;
         assert!(!kinds.is_empty());
         assert!(kinds.windows(2).all(|pair| pair[0].vtable < pair[1].vtable));
         assert!(

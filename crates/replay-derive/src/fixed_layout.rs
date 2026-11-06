@@ -608,9 +608,7 @@ pub const FAMILIES: &[Family] = &[
 pub fn validate_recording(frame: &dyn DecodedSource, family: Family) -> Result<(), String> {
     let validate = || -> Result<(), String> {
         if !engine_executable::executable_tables::is_initialized() {
-            return Err(
-                "executable metadata unavailable; configure a supported game installation".into(),
-            );
+            return Err("executable metadata unavailable; choose the game folder".into());
         }
         let definitions = frame
             .complete::<tables::ModifierDefinitions>()
@@ -623,7 +621,10 @@ pub fn validate_recording(frame: &dyn DecodedSource, family: Family) -> Result<(
         {
             return Err(format!("modifier definition gap ({gap:#x}) is registered"));
         }
-        for key in keys::all().filter(|key| family.keys.contains(&key.index)) {
+        for key in keys::all()
+            .map_err(|e| e.to_string())?
+            .filter(|key| family.keys.contains(&key.index))
+        {
             let failure = |reason| format!("{} ({:#x}): {reason}", key.name, key.index);
             let row = definitions
                 .binary_search_by_key(&key.index, |row| row.index)
@@ -655,7 +656,7 @@ mod tests {
     fn fixture() -> DecodedFrame {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-        let mut keys = keys::all().collect::<Vec<_>>();
+        let mut keys = keys::all().unwrap().collect::<Vec<_>>();
         keys.sort_unstable_by_key(|key| key.index);
         let mut frame = DecodedFrame {
             branch: 1,
@@ -790,7 +791,7 @@ mod tests {
                     .literal = b"renumbered_by_patch".to_vec();
                 let refusal = validate_recording(&frame, family).unwrap_err();
                 assert!(refusal.contains(family.name));
-                assert!(refusal.contains(keys::name(key).unwrap()));
+                assert!(refusal.contains(keys::fixed_name(key).unwrap()));
                 assert!(refusal.contains("different script name"));
             }
         }

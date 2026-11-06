@@ -434,7 +434,7 @@ pub struct Hooks {
     operands: crate::panel_operand_hooks::Hooks,
 }
 impl Hooks {
-    /// The enclosing runtime verified the executable hash before construction.
+    /// The runtime's build gate admitted this family before construction.
     /// A differing sentinel refuses installation with the owning family and site.
     ///
     /// # Safety

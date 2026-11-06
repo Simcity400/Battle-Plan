@@ -292,10 +292,13 @@ fn string_scalar(field: &Field<'_>) -> ScalarRead {
         ScalarRead::One
     } else if field.value.kind == Kind::Bare
         && !field.value.is_number()
-        && engine_executable::executable_tables::get()
-            .keywords
-            .static_keyword(field.value.c_str())
-            .is_none()
+        && engine_executable::executable_tables::required(
+            engine_executable::executable_tables::get()
+                .keywords
+                .as_ref(),
+        )
+        .static_keyword(field.value.c_str())
+        .is_none()
     {
         ScalarRead::Deferred
     } else {

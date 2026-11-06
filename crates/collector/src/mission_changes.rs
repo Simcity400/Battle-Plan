@@ -223,7 +223,7 @@ pub struct Hooks {
     fleet_regions: collector_observers::fleet_region_changes::Hooks,
 }
 impl Hooks {
-    /// The enclosing runtime verified the executable hash before construction.
+    /// The runtime's build gate admitted this family before construction.
     /// A differing sentinel leaves the family uninstalled; AirRegionalMissions
     /// then reads every country afresh.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {

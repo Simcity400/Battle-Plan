@@ -2,7 +2,7 @@
 //! their accepted order. Reader and class identities come from the verified
 //! executable; parsing retains effects as data.
 
-use engine_executable::executable_tables::RuntimeTable;
+use engine_executable::executable_tables::{RuntimeTable, view};
 
 use crate::{
     key_names::KeyNames,
@@ -24,15 +24,12 @@ pub(crate) const READ_EFFECT: u64 = 0x140588290;
 pub(crate) const READ_VALUE: u64 = 0x141436660;
 const IF_TOKEN: u32 = 0x27C3;
 pub static REGISTERED_EFFECTS: RuntimeTable<&'static [(u32, &'static str)]> =
-    RuntimeTable::new(|| {
-        &engine_executable::executable_tables::get()
-            .registries
-            .effects
-    });
+    RuntimeTable::new(|| view(|tables| &tables.registries, |table| &table.effects[..]));
 pub static EFFECT_CLASSES: RuntimeTable<&'static [(u32, u64, u64)]> = RuntimeTable::new(|| {
-    &engine_executable::executable_tables::get()
-        .registries
-        .effect_classes
+    view(
+        |tables| &tables.registries,
+        |table| &table.effect_classes[..],
+    )
 });
 pub fn registered(keyword: &[u8]) -> Option<u32> {
     REGISTERED_EFFECTS

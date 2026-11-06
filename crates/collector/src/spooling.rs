@@ -4678,6 +4678,7 @@ impl Processor {
             "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": &stats.last_error,
             "validation_refusals": &stats.validation_refusals,
             "failed_hook_families": crate::hook_failures::status(),
+            "build": collector_primitives::build_gate::status(),
             "input_demand_errors": stats.input_demand_errors,
             "input_demand_last_error": stats.input_demand_last_error,
             "sampled_buffer_allocation": {

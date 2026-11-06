@@ -29,6 +29,12 @@ pub struct VariableTables {
 }
 
 impl VariableTables {
+    /// SHA-256 of this table's build-independent content, comparable across builds.
+    pub fn content_digest(&self) -> [u8; 32] {
+        // FIXME(lane-b): replace with the canonical build-independent content.
+        <sha2::Sha256 as sha2::Digest>::digest(format!("{self:?}").as_bytes()).into()
+    }
+
     /// Read and validate documentation before publishing any names.
     pub fn decode(game_dir: &Path) -> io::Result<Self> {
         let mut scopes = read_documentation(game_dir)?;
@@ -292,7 +298,7 @@ mod tests {
     fn installed_global_variables_match_digest() {
         let tables = crate::executable_tables::initialize_for_tests().unwrap();
         assert_scope_digest(
-            &tables.variables.global,
+            &tables.variables.as_ref().unwrap().global,
             19,
             GLOBAL_DIGEST,
             "global variables",
@@ -304,7 +310,7 @@ mod tests {
     fn installed_country_variables_match_digest() {
         let tables = crate::executable_tables::initialize_for_tests().unwrap();
         assert_scope_digest(
-            &tables.variables.country,
+            &tables.variables.as_ref().unwrap().country,
             265,
             COUNTRY_DIGEST,
             "country variables",
@@ -315,7 +321,7 @@ mod tests {
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn installed_state_variables_match_digest() {
         let tables = crate::executable_tables::initialize_for_tests().unwrap();
-        assert_scope_digest(&tables.variables.state, 22, STATE_DIGEST, "state variables");
+        assert_scope_digest(&tables.variables.as_ref().unwrap().state, 22, STATE_DIGEST, "state variables");
     }
 
     #[test]
@@ -323,7 +329,7 @@ mod tests {
     fn installed_unit_leader_variables_match_digest() {
         let tables = crate::executable_tables::initialize_for_tests().unwrap();
         assert_scope_digest(
-            &tables.variables.unit_leader,
+            &tables.variables.as_ref().unwrap().unit_leader,
             66,
             UNIT_LEADER_DIGEST,
             "unit leader variables",
@@ -335,7 +341,7 @@ mod tests {
     fn installed_organisation_variables_match_digest() {
         let tables = crate::executable_tables::initialize_for_tests().unwrap();
         assert_scope_digest(
-            &tables.variables.industrial_organisation,
+            &tables.variables.as_ref().unwrap().industrial_organisation,
             8,
             ORGANISATION_DIGEST,
             "industrial organisation variables",
@@ -347,7 +353,7 @@ mod tests {
     fn installed_project_variables_match_digest() {
         let tables = crate::executable_tables::initialize_for_tests().unwrap();
         assert_scope_digest(
-            &tables.variables.project,
+            &tables.variables.as_ref().unwrap().project,
             3,
             PROJECT_DIGEST,
             "special project variables",

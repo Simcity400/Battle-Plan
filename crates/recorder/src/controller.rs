@@ -1,12 +1,10 @@
 //! The in-process recording API the tray recorder drives. The command line
 //! runs the same capture through [`crate::recording`].
 use crate::{
-    recording::{
-        self, COLLECTOR_LOADED, CaptureOptions, GAME_CLAIMED, TWO_GAMES, UNSUPPORTED_BUILD,
-    },
+    recording::{self, COLLECTOR_LOADED, CaptureOptions, GAME_CLAIMED, TWO_GAMES},
     windows::{self, Process, ProcessMemory},
 };
-use engine_executable::{build::PINNED_BUILD, build::hash_executable};
+use engine_executable::build::hash_executable;
 use replay_data::{identity::IdentityCodec, scope::CaptureMode};
 use std::{
     fs::File,
@@ -94,7 +92,7 @@ pub struct LoadedCampaign {
     pub load: i64,
 }
 
-/// Reads which campaign a supported game has loaded, without the collector.
+/// Reads which campaign the game has loaded, without the collector.
 /// The game is opened with read-only rights; nothing is written or injected,
 /// and nothing read here is recorded.
 pub struct Probe {
@@ -103,13 +101,16 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// Verify the game build, then find its image base.
+    /// Find the game's image base. The campaign is read through the recognised build's
+    /// memory layout, so on any other build the probe is withheld.
     pub fn open(pid: u32) -> Result<Self, String> {
         let process = Process::open(pid, false)?;
         let exe = hash_executable(File::open(&process.path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-        if !PINNED_BUILD.matches(&exe) {
-            return Err(format!("{UNSUPPORTED_BUILD}. Nothing recorded."));
+        if !exe.recognised() {
+            return Err(format!(
+                "{PROBE_WITHHELD}: it reads the recognised build's memory layout"
+            ));
         }
         let name = process
             .path
@@ -220,16 +221,18 @@ pub fn resolve_user_directory() -> Result<PathBuf, String> {
     crate::directories::resolve_user_directory()
 }
 
-/// A build refusal lasts for the lifetime of that game process.
-pub fn unsupported_build(error: &str) -> bool {
-    error.starts_with(UNSUPPORTED_BUILD)
+const PROBE_WITHHELD: &str = "the loaded campaign is withheld on this unrecognised game build";
+
+/// A withheld probe stays withheld for the lifetime of that game process.
+pub fn probe_withheld(error: &str) -> bool {
+    error.starts_with(PROBE_WITHHELD)
 }
 
 /// A capture error in plain words; the original text stays the detail.
 /// `started` says whether the collector had begun recording.
 pub fn problem_text(error: &str, started: bool) -> &'static str {
-    if unsupported_build(error) {
-        "This the game version is not supported. Nothing recorded."
+    if error.contains("withheld: the game build is unrecognised") {
+        "This game build isn't recognised, so nothing it holds could be checked for recording. Nothing recorded."
     } else if error == TWO_GAMES {
         "More than one game is running. Close the extra game to record."
     } else if error == COLLECTOR_LOADED || error == GAME_CLAIMED {
@@ -318,15 +321,6 @@ mod tests {
 
     #[test]
     fn capture_refusals_read_as_plain_problems() {
-        assert_eq!(
-            problem_text(
-                &format!(
-                    "{UNSUPPORTED_BUILD}; wanted 1 bytes / 00; found 2 bytes / 01. Nothing recorded."
-                ),
-                false
-            ),
-            "This the game version is not supported. Nothing recorded."
-        );
         assert_eq!(
             problem_text(TWO_GAMES, false),
             "More than one game is running. Close the extra game to record."

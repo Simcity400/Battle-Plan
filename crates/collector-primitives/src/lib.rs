@@ -1,7 +1,8 @@
-//! Shared typed capture rows and arenas, observed country sizing, observer publication lanes, address-table hashing, raw-memory capacity accounting and session clock reads. Buffer growth remains off the game thread and keeps exact observed demand and refusal outcomes.
+//! The build gate, shared typed capture rows and arenas, observed country sizing, observer publication lanes, address-table hashing, raw-memory capacity accounting and session clock reads. Buffer growth remains off the game thread and keeps exact observed demand and refusal outcomes.
 
 use collector_status::status;
 
+pub mod build_gate;
 pub mod capacity;
 pub mod clock;
 pub mod country_slots;

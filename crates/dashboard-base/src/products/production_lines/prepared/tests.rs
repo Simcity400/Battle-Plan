@@ -943,7 +943,7 @@ pub(super) fn authored(
         CountryProductionModifiersRow, LexicalTokenRow, ModifierBreakdownNode,
         ModifierDefinitionRow, ProductionLineModifiersRow, ProductionModifierTree,
     };
-    let mut keys: Vec<_> = engine_executable::modifier_keys::all().collect();
+    let mut keys: Vec<_> = engine_executable::modifier_keys::all().unwrap().collect();
     keys.sort_by_key(|key| key.index);
     *frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(

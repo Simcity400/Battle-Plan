@@ -633,7 +633,7 @@ fn validate_sentinels(memory: &impl Memory, base: usize) -> Result<(), &'static 
 }
 
 impl Hooks {
-    /// The runtime verified the executable hash. Installation failure leaves
+    /// The runtime's build gate admitted this family. Installation failure leaves
     /// the output table unavailable; site order preserves paired observation.
     ///
     /// # Safety

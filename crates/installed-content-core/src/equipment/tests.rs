@@ -60,9 +60,13 @@ fn module_slot_rules_follow_skipped_duplicates_aliases_inheritance_and_generated
 fn category_names_invert_the_table_and_refuse_unknown_bits() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("equipment category checks require BATTLE_PLAN_GAME_DIR");
-    for &(name, bit) in &engine_executable::executable_tables::get()
+    for &(name, bit) in engine_executable::executable_tables::get()
         .auxiliary
+        .as_ref()
+        .unwrap()
         .category_names
+        .as_ref()
+        .unwrap()
     {
         assert_eq!(category_mask(name), Some(bit));
         if bit != 0 {

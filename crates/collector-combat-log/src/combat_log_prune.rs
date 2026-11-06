@@ -444,7 +444,7 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// The enclosing runtime verified the executable hash before construction.
+    /// The runtime's build gate admitted this family before construction.
     /// Never fails: without the hook every drain reports the prunes unobserved.
     ///
     /// # Safety

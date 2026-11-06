@@ -574,10 +574,10 @@ pub fn target(
         state,
         inputs,
         registry: HeaderResolver::default(),
+        // The player command family is refused before this runs when the table is withheld.
         object_identity: |identity, object| {
-            engine_executable::executable_tables::get()
-                .commands
-                .object(identity, object)
+            engine_executable::executable_tables::commands()
+                .is_ok_and(|commands| commands.object(identity, object))
         },
     };
     reader.target(command, target, player, actor_country)

@@ -279,7 +279,7 @@ pub(crate) fn publish_preference_lifetime(enabled: bool, installed: usize) {
 }
 
 impl Hooks {
-    /// The enclosing runtime verified the executable hash before construction.
+    /// The runtime's build gate admitted this family before construction.
     /// A differing sentinel leaves the family uninstalled; WingEquipment then
     /// reads every wing afresh.
     ///

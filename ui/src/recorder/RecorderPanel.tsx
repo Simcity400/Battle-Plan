@@ -126,6 +126,8 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
     {error && <button type="button" className="icon-button recorder-dismiss" aria-label="Dismiss" data-tooltip="Dismiss" onClick={actions.dismiss}>
       <Icon name="close" /></button>}
   </div>;
+  const buildNotice: ReactNode = snapshot.buildWarning && <div className="notice warning" role="status">
+    <Icon name="alert" /><span>{snapshot.buildWarning}</span></div>;
   const shown = head(snapshot);
   const prompt = stopPromptVisible(asking, snapshot);
   const length = sessionLength(snapshot.startedAt, now);
@@ -261,6 +263,7 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
       <button key="save" type="button" className="button small primary" onClick={() => actions.stop(false)}>Save</button>
     </>}</div> : <>
       {notice}
+      {buildNotice}
       {shown.bar !== undefined && <div className={`recorder-bar${shown.bar == null ? ' is-open' : ''}`} role="progressbar" aria-label={shown.label ?? undefined}
         aria-valuemin={0} aria-valuemax={100} aria-valuenow={shown.bar == null ? undefined : Math.round(shown.bar * 100)}>
         <i style={shown.bar == null ? undefined : { width: `${shown.bar * 100}%` }} /></div>}

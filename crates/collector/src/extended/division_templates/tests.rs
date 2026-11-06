@@ -261,6 +261,7 @@ fn failed_template_observer_preserves_fresh_template_and_country_values() {
             String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
         return;
     }
+    collector_primitives::build_gate::record(true, None);
     let hooks = FamilyHooks::<crate::template_changes::Hooks>::construct(0, || {
         Err("synthetic nearby relay allocation failure")
     }).unwrap();

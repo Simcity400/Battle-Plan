@@ -47,7 +47,7 @@ function track(): BoundTrack {
   return { id: 'track', roleId: 'track', label: 'Synthetic', branchIndex: 0, anchorOffset: null, axisOffset: 0, selectedTag: null, branch,
     source: { id: 'source', path: 'C:/recordings/synthetic.battleplan', revision: '1', metadata: {
       path: 'C:/recordings/synthetic.battleplan', revision: '1', name: 'Synthetic', format: 1, captureMode: 'full', campaignKey: 'c0ffee',
-      branches: [branch], countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [] } } };
+      branches: [branch], countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [], buildWarnings: [] } } };
 }
 type TileProps = { children?: ReactNode; 'aria-label': string; className: string;
   onPointerMove(event: { clientX: number; clientY: number }): void;

@@ -66,7 +66,9 @@ pub(super) fn admit<'a>(
     start: usize,
 ) -> Result<(), String> {
     if let Some((_, suffix)) = operand.rsplit_once('.') {
-        if registered_property(&engine_executable::executable_tables::get().numeric, suffix)?
+        let numeric =
+            engine_executable::executable_tables::numeric().map_err(|error| error.to_string())?;
+        if registered_property(numeric, suffix)?
             || text.content.names.entries.contains_key(suffix.as_bytes())
         {
             return Err(format!(

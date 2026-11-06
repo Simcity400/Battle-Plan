@@ -92,6 +92,8 @@ pub struct Snapshot {
     /// The name of the mode the session attached to the game records, even at its menu: fixed
     /// until it detaches.
     pub capture_mode: Option<&'static str>,
+    /// The collector's warning that this release does not recognise the game build.
+    pub build_warning: Option<String>,
 }
 
 /// The fields of one collector status publication the panel uses.
@@ -106,6 +108,7 @@ pub struct Live {
     pub problem: Option<Problem>,
     /// The flag file keys the game tries for the viewed country, in order.
     pub flag_keys: Option<Vec<String>>,
+    pub build_warning: Option<String>,
 }
 
 pub fn read_live(status: &Value) -> Live {
@@ -149,6 +152,7 @@ pub fn read_live(status: &Value) -> Live {
         spool_bytes: status["spool_bytes"].as_u64(),
         problem,
         flag_keys: flag_keys(&status["player"]),
+        build_warning: status["build"]["warning"].as_str().map(str::to_owned),
     }
 }
 

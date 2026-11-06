@@ -1675,6 +1675,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "engine-allocation",
+ "engine-executable",
  "engine-native",
  "serde",
  "test-unify",

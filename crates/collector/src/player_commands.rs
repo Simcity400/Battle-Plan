@@ -249,7 +249,7 @@ impl<const N: usize> Reasons<N> {
 
 impl Live {
     fn new(memory: &impl Memory, base: usize) -> io::Result<Self> {
-        let tables = &engine_executable::executable_tables::get().commands;
+        let tables = engine_executable::executable_tables::commands()?;
         let mut kinds = engine_allocation::vec(tables.kinds.len())?;
         let mut catalog = engine_allocation::vec(tables.kinds.len())?;
         engine_allocation::reserve(&mut catalog, 1)?;

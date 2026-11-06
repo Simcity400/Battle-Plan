@@ -13,10 +13,13 @@ use crate::parser::native::Token;
 /// The static keyword `word` (the text up to its first NUL) names, lowered, if the lexer's table
 /// holds it.
 pub(super) fn static_keyword(word: &[u8]) -> Option<&'static str> {
-    engine_executable::executable_tables::get()
-        .keywords
-        .static_keyword(word)
-        .map(|(_, name)| name)
+    engine_executable::executable_tables::required(
+        engine_executable::executable_tables::get()
+            .keywords
+            .as_ref(),
+    )
+    .static_keyword(word)
+    .map(|(_, name)| name)
 }
 
 /// The dynamic tokens the lexer holds when the interface is read: those of
@@ -131,7 +134,7 @@ mod tests {
     fn supported_static_keywords_keep_folded_identity() {
         let tables = engine_executable::executable_tables::initialize_for_tests()
             .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
-        let names = &tables.keywords.names;
+        let names = &tables.keywords.as_ref().unwrap().names;
         assert_eq!(names.len(), 10_767);
         assert!(names.iter().all(|(_, name)| name.is_ascii()));
         assert_eq!(static_keyword(b"SpriteTypes"), Some("spritetypes"));

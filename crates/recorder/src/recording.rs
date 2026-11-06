@@ -7,7 +7,7 @@ use crate::{
     replay_io,
     windows::{self, Event, Process, ProcessMemory},
 };
-use engine_executable::{build::PINNED_BUILD, build::hash_executable};
+use engine_executable::build::hash_executable;
 use installed_content_core::{
     content::GatherOptions, content::GatheredContent, content::gather_cancellable,
 };
@@ -1493,7 +1493,6 @@ fn inspect_characters(args: &[OsString]) -> Result<(), String> {
 
 pub(crate) const TWO_GAMES: &str =
     "two hoi4.exe processes are unsupported; no second process will be recorded";
-pub(crate) const UNSUPPORTED_BUILD: &str = "unsupported game build";
 pub(crate) const COLLECTOR_LOADED: &str =
     "collector.dll is already loaded in this process; detach its recorder first";
 pub(crate) const GAME_CLAIMED: &str =
@@ -1837,22 +1836,17 @@ pub(crate) fn capture(
     stage(Stage::Preparing);
     fs::create_dir_all(target).map_err(|error| failure_text(target, error))?;
     let process = Process::open(pid, true)?;
-    let mut executable = File::open(&process.path).map_err(|e| e.to_string())?;
-    let exe = hash_executable(&mut executable).map_err(|e| e.to_string())?;
-    if !PINNED_BUILD.matches(&exe) {
-        return Err(format!(
-            "{UNSUPPORTED_BUILD}; wanted {} bytes / {}; found {} bytes / {}. Nothing recorded.",
-            PINNED_BUILD.exe_size,
-            hex(&PINNED_BUILD.exe_sha256),
-            exe.size,
-            hex(&exe.sha256)
-        ));
-    }
-    engine_executable::executable_tables::initialize_executable(&process.path)
+    let tables = engine_executable::executable_tables::initialize_executable(&process.path)
         .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
-    let game_version = PINNED_BUILD
-        .read_version_banner(&mut executable)
-        .map_err(|e| format!("game version text: {e}"))?;
+    let exe = tables.identity().clone();
+    for warning in tables.warnings() {
+        println!("Warning: {warning}");
+    }
+    // The recorded build is named by its hash when its version text is withheld.
+    let game_version = match &tables.version {
+        Ok(version) => version.clone(),
+        Err(_) => format!("unknown version, SHA-256 {}", hex(&exe.sha256)),
+    };
     // Held until this capture ends, so no other recorder checks or injects this game meanwhile.
     let _attachment =
         windows::Claim::take(&game_claim(pid, process.start_time))?.ok_or(GAME_CLAIMED)?;
@@ -1925,7 +1919,10 @@ pub(crate) fn capture(
     if let Some(note) = &content.order_note {
         println!("Content order is unverified: {note}");
     }
-    if !wait_for_loaded_campaign(&process, pid, control)? {
+    // The loaded campaign is read through the recognised build's memory layout.
+    if !exe.recognised() {
+        println!("The loaded campaign can't be read on this unrecognised build; attaching now.");
+    } else if !wait_for_loaded_campaign(&process, pid, control)? {
         return Ok(CaptureOutcome {
             detach_requested: true,
             ..CaptureOutcome::default()

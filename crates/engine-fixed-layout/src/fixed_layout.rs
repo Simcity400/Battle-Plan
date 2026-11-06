@@ -5,8 +5,7 @@
 //! made during startup can precede completed registration.
 
 use crate::{
-    Memory, cbuilding_database, cpdx_lexer, modifier_definition as definition, modifier_keys,
-    msvc_string, read,
+    Memory, cbuilding_database, cpdx_lexer, modifier_definition as definition, msvc_string, read,
 };
 
 /// Default row between built-ins and dynamic definitions; a layout sentinel
@@ -30,15 +29,24 @@ pub const TOKEN_IDS: &[u32] = &[
     cpdx_lexer::MAXIMUM_SPEED_TOKEN,
 ];
 
-pub fn tokens() -> impl Iterator<Item = Token> + Clone {
-    TOKEN_IDS.iter().map(|&id| Token {
+/// The static tokens, when the keyword table matches the ids named above.
+pub fn tokens() -> std::io::Result<impl Iterator<Item = Token> + Clone> {
+    let keywords = crate::executable_tables::keywords()?;
+    for &id in TOKEN_IDS {
+        keywords.fixed_token(id)?;
+    }
+    Ok(TOKEN_IDS.iter().map(move |&id| Token {
         id,
-        name: crate::executable_tables::get()
-            .keywords
-            .by_id(id)
-            .expect("fixed token identity is present in verified executable metadata"),
-    })
+        name: keywords.fixed_token(id).expect("fixed token checked above"),
+    }))
 }
+
+/// Built-in modifier names, when their indices match the ones named in code.
+fn modifier_names() -> std::io::Result<&'static [&'static str]> {
+    crate::executable_tables::keywords()?.fixed_modifiers()
+}
+
+const NAMES_WITHHELD: &str = "fixed modifier and token names are withheld on this build";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Failure {
@@ -79,7 +87,8 @@ impl Report {
             index: GAP,
             reason,
         });
-        let rows = modifier_keys::names()
+        let rows = modifier_names()
+            .expect("a report exists only after its names were read")
             .iter()
             .zip(&self.modifiers)
             .enumerate()
@@ -94,7 +103,8 @@ impl Report {
     }
 
     fn token_failures(&self) -> impl Iterator<Item = Failure> + Clone + '_ {
-        tokens().zip(&self.tokens).filter_map(|(token, result)| {
+        let tokens = tokens().expect("a report exists only after its tokens were read");
+        tokens.zip(&self.tokens).filter_map(|(token, result)| {
             result.err().map(|reason| Failure {
                 name: token.name,
                 index: token.id,
@@ -124,6 +134,9 @@ const _: () = assert!(definition::TOKEN == definition::INDEX + 4);
 /// dictionary was unreadable, or a writer changed either meanwhile. All reads
 /// are guarded.
 pub fn check(memory: &impl Memory, base: usize, buffer: &mut [u8]) -> Result<Report, &'static str> {
+    let (Ok(names), Ok(fixed_tokens)) = (modifier_names(), tokens()) else {
+        return Err(NAMES_WITHHELD);
+    };
     let (dictionary, witness) = cpdx_lexer::TokenNames::witnessed(memory, base)?;
     let table = definition::table(memory, base)?;
     let mut spells = |token: u32, name: &str| -> Result<bool, &'static str> {
@@ -147,7 +160,7 @@ pub fn check(memory: &impl Memory, base: usize, buffer: &mut [u8]) -> Result<Rep
         }
     };
     let mut modifiers = [Ok(()); GAP as usize];
-    for (key, (result, &name)) in modifiers.iter_mut().zip(modifier_keys::names()).enumerate() {
+    for (key, (result, &name)) in modifiers.iter_mut().zip(names).enumerate() {
         let key = key as u32;
         let Some(address) = table.element(key, definition::STRIDE) else {
             *result = Err("definition row missing");
@@ -165,7 +178,7 @@ pub fn check(memory: &impl Memory, base: usize, buffer: &mut [u8]) -> Result<Rep
     }
     let static_token_maximum = witness.static_maximum();
     let mut tokens = [Ok(()); TOKEN_IDS.len()];
-    for (result, token) in tokens.iter_mut().zip(self::tokens()) {
+    for (result, token) in tokens.iter_mut().zip(fixed_tokens) {
         if token.id > static_token_maximum {
             *result = Err("exceeds the static token maximum");
         } else if !spells(token.id, token.name)? {
@@ -186,11 +199,15 @@ pub fn check(memory: &impl Memory, base: usize, buffer: &mut [u8]) -> Result<Rep
 
 /// Text storage required for a complete fixed-layout check. Prepare it before
 /// publishing capture hooks; the check never grows its caller-owned buffer.
+/// Zero when the names are withheld, since the check then refuses before reading.
 pub fn longest_name() -> usize {
-    modifier_keys::names()
+    let (Ok(names), Ok(tokens)) = (modifier_names(), tokens()) else {
+        return 0;
+    };
+    names
         .iter()
         .map(|name| name.len())
-        .chain(tokens().map(|token| token.name.len()))
+        .chain(tokens.map(|token| token.name.len()))
         .max()
         .unwrap_or(0)
 }
@@ -213,6 +230,7 @@ fn gap_bytes() -> [u8; definition::STRIDE] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modifier_keys;
     use std::{cell::Cell, collections::BTreeMap};
 
     fn initialize_tables() {
@@ -258,7 +276,7 @@ mod tests {
             lexer[60..64].copy_from_slice(&0x6001_u32.to_le_bytes());
             result.put(cpdx_lexer::INITIALIZED_RVA, &lexer);
             result.maximum(0x5000);
-            for (index, &name) in modifier_keys::names().iter().enumerate() {
+            for (index, &name) in modifier_keys::names().unwrap().iter().enumerate() {
                 let index = index as u32;
                 let mut row = [0; 8];
                 row[..4].copy_from_slice(&index.to_le_bytes());
@@ -269,7 +287,7 @@ mod tests {
                 );
                 result.name(KEY_TOKENS + index, name.as_bytes());
             }
-            for token in tokens() {
+            for token in tokens().unwrap() {
                 result.name(token.id, token.name.as_bytes());
             }
             result
@@ -309,7 +327,7 @@ mod tests {
         let valid = check(&fixture, 0).unwrap();
         assert!(valid.is_verified());
         assert_eq!(valid.static_token_maximum, 0x5000);
-        let names = modifier_keys::names();
+        let names = modifier_keys::names().unwrap();
         // The first, a middle and the last built-in row stand for all of them.
         for index in [0, names.len() / 2, names.len() - 1] {
             let name = names[index];
@@ -368,7 +386,7 @@ mod tests {
     #[test]
     fn inconsistent_rows_fail_and_short_reads_repeat_the_check() {
         initialize_tables();
-        let key = modifier_keys::all().next().unwrap();
+        let key = modifier_keys::all().unwrap().next().unwrap();
         let address = TABLE + key.index as usize * definition::STRIDE + definition::INDEX;
         for offset in 0..8 {
             let mut fixture = Fixture::new();
@@ -397,7 +415,7 @@ mod tests {
     #[test]
     fn static_tokens_must_spell_their_name_within_the_inclusive_maximum() {
         initialize_tables();
-        for (position, token) in tokens().enumerate() {
+        for (position, token) in tokens().unwrap().enumerate() {
             let mut fixture = Fixture::new();
             // A token exactly at the inclusive static maximum is accepted,
             // even with later dynamic tokens in the reverse dictionary.
@@ -472,12 +490,12 @@ mod tests {
     #[test]
     fn registry_has_unique_indices_and_names_and_excludes_gap() {
         initialize_tables();
-        assert_eq!(modifier_keys::names().len(), GAP as usize);
-        for (index, name) in modifier_keys::names().iter().enumerate() {
+        assert_eq!(modifier_keys::names().unwrap().len(), GAP as usize);
+        for (index, name) in modifier_keys::names().unwrap().iter().enumerate() {
             assert!(!name.is_empty());
-            assert!(!modifier_keys::names()[..index].contains(name));
+            assert!(!modifier_keys::names().unwrap()[..index].contains(name));
         }
-        let keys: Vec<_> = modifier_keys::all().collect();
+        let keys: Vec<_> = modifier_keys::all().unwrap().collect();
         for (i, key) in keys.iter().enumerate() {
             assert!(
                 keys[..i]

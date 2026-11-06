@@ -717,7 +717,7 @@ mod tests {
      {
         use dashboard_text::triggers::{ContentFacts, World};
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let modifier = engine_executable::modifier_keys::name(0x269).unwrap();
+        let modifier = engine_executable::modifier_keys::fixed_name(0x269).unwrap();
         for (gate, expected) in [("no", 8), ("yes", 10)] {
             let root =
                 std::env::temp_dir().join(format!("design_mio_cost_{}", uuid::Uuid::new_v4()));
@@ -986,7 +986,7 @@ mod tests {
     fn organisation_change_cost_keeps_its_clamped_ineligible_and_negative_results() {
         use dashboard_text::triggers::{ContentFacts, World};
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let modifier = engine_executable::modifier_keys::name(0x269).unwrap();
+        let modifier = engine_executable::modifier_keys::fixed_name(0x269).unwrap();
         let root = std::env::temp_dir().join(format!("design_mio_edges_{}", uuid::Uuid::new_v4()));
         let write = |path: &str, text: &str| {
             let path = root.join(path);

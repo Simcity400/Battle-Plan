@@ -1,22 +1,23 @@
+use crate::availability::{Verified, Withheld};
 use sha2::{Digest, Sha256};
-use std::io::{self, BufRead, Read, Seek, SeekFrom};
+use std::{fmt::Write as _, io::{self, Read}};
 
 /// Default modifier row separating fixed registrations from dynamic definitions.
 pub const FIXED_MODIFIER_GAP: u32 = 0x29a;
 
-/// Image-relative location of the executable's NUL-terminated version text.
-pub const VERSION_BANNER_RVA: usize = 0x0279_5070;
-
+/// An executable identity this release was made against.
 #[derive(Debug, Clone, Copy)]
 pub struct Build {
-    pub version_banner_rva: usize,
+    /// The release number players see, for messages.
+    pub version: &'static str,
     pub exe_size: u64,
     pub exe_sha256: [u8; 32],
 }
 
-/// Supported executable identity and version-text location.
+/// The build this release recognises. Any other build is read part by part, each part
+/// verifying itself.
 pub const PINNED_BUILD: Build = Build {
-    version_banner_rva: VERSION_BANNER_RVA,
+    version: "1.19.4.2",
     exe_size: 56_535_160,
     exe_sha256: [
         0xbc, 0xcc, 0x62, 0x90, 0x9b, 0x6a, 0x1e, 0xc2, 0xc1, 0xd5, 0xa4, 0x6e, 0xf1, 0x86, 0x08,
@@ -25,7 +26,7 @@ pub const PINNED_BUILD: Build = Build {
     ],
 };
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutableIdentity {
     pub size: u64,
     pub sha256: [u8; 32],
@@ -35,92 +36,122 @@ impl Build {
     pub fn matches(&self, identity: &ExecutableIdentity) -> bool {
         identity.size == self.exe_size && identity.sha256 == self.exe_sha256
     }
-
-    /// Load owned version text from the supported executable, outside acquisition.
-    /// The same source is hash-verified before its image-relative location is mapped
-    /// to file bytes. Section geometry bounds the string; missing text is refused.
-    pub fn read_version_banner(&self, mut source: impl Read + Seek) -> io::Result<String> {
-        source.seek(SeekFrom::Start(0))?;
-        if !self.matches(&hash_executable(&mut source)?) {
-            return Err(invalid_image(
-                "version text requires the supported executable",
-            ));
-        }
-        let (offset, available) =
-            file_span_for_rva(&mut source, self.version_banner_rva as u64, self.exe_size)?;
-        source.seek(SeekFrom::Start(offset))?;
-        let mut bytes = Vec::new();
-        io::BufReader::new(source.take(available)).read_until(0, &mut bytes)?;
-        if bytes.pop() != Some(0) || bytes.is_empty() {
-            return Err(invalid_image(
-                "executable version text is empty or unterminated",
-            ));
-        }
-        String::from_utf8(bytes).map_err(|_| invalid_image("executable version text is not UTF-8"))
-    }
 }
 
-fn invalid_image(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
-fn file_span_for_rva(
-    source: &mut (impl Read + Seek),
-    rva: u64,
-    file_size: u64,
-) -> io::Result<(u64, u64)> {
-    source.seek(SeekFrom::Start(0))?;
-    let mut dos = [0_u8; 64];
-    source.read_exact(&mut dos)?;
-    if &dos[..2] != b"MZ" {
-        return Err(invalid_image("executable DOS header is invalid"));
-    }
-    let pe_offset = u32::from_le_bytes(dos[60..64].try_into().unwrap()) as u64;
-    source.seek(SeekFrom::Start(pe_offset))?;
-    let mut header = [0_u8; 24];
-    source.read_exact(&mut header)?;
-    if &header[..4] != b"PE\0\0" {
-        return Err(invalid_image("executable PE header is invalid"));
-    }
-    let sections = u16::from_le_bytes(header[6..8].try_into().unwrap());
-    let optional_size = u16::from_le_bytes(header[20..22].try_into().unwrap());
-    if optional_size < 64 {
-        return Err(invalid_image("executable optional header is truncated"));
-    }
-    let mut optional = [0_u8; 64];
-    source.read_exact(&mut optional)?;
-    if u16::from_le_bytes(optional[..2].try_into().unwrap()) != 0x20b {
-        return Err(invalid_image("executable optional header is unsupported"));
-    }
-    let header_size = u32::from_le_bytes(optional[60..64].try_into().unwrap()) as u64;
-    if rva < header_size {
-        if header_size > file_size {
-            return Err(invalid_image("executable headers exceed the file"));
+impl ExecutableIdentity {
+    pub fn of(bytes: &[u8]) -> Self {
+        Self {
+            size: bytes.len() as u64,
+            sha256: Sha256::digest(bytes).into(),
         }
-        return Ok((rva, header_size - rva));
     }
-    let section_offset = pe_offset + 24 + u64::from(optional_size);
-    source.seek(SeekFrom::Start(section_offset))?;
-    for _ in 0..sections {
-        let mut section = [0_u8; 40];
-        source.read_exact(&mut section)?;
-        let start = u32::from_le_bytes(section[12..16].try_into().unwrap()) as u64;
-        let raw_size = u32::from_le_bytes(section[16..20].try_into().unwrap()) as u64;
-        let raw_offset = u32::from_le_bytes(section[20..24].try_into().unwrap()) as u64;
-        let Some(displacement) = rva.checked_sub(start) else {
-            continue;
+
+    pub fn recognised(&self) -> bool {
+        PINNED_BUILD.matches(self)
+    }
+
+    /// Plain-language warning for a build this release does not recognise.
+    pub fn warning(&self, version: Option<&str>) -> Option<String> {
+        if self.recognised() {
+            return None;
+        }
+        let found = match version {
+            Some(version) => format!("{version} ({})", describe(self.size, &self.sha256)),
+            None => describe(self.size, &self.sha256),
         };
-        if displacement >= raw_size {
-            continue;
-        }
-        if raw_offset + raw_size > file_size {
-            return Err(invalid_image("executable section exceeds the file"));
-        }
-        return Ok((raw_offset + displacement, raw_size - displacement));
+        Some(format!(
+            "Unrecognised game build: this release was made for version {} ({}), but the game is {found}. \
+             Parts that fail their own checks on this build are withheld.",
+            PINNED_BUILD.version,
+            describe(PINNED_BUILD.exe_size, &PINNED_BUILD.exe_sha256),
+        ))
     }
-    Err(invalid_image(
-        "executable version text has no file-backed section",
-    ))
+}
+
+/// The game build a recording names, as its recorder saw it.
+pub struct RecordedBuild<'a> {
+    pub version: &'a str,
+    pub identity: ExecutableIdentity,
+}
+
+impl RecordedBuild<'_> {
+    /// A plain-language warning when the installed game (its identity and version text)
+    /// is another build than the recorded one.
+    pub fn warning(&self, installed: (&ExecutableIdentity, Option<&str>)) -> Option<String> {
+        let (identity, version) = installed;
+        if *identity == self.identity {
+            return None;
+        }
+        let installed = match version {
+            Some(version) => format!("{version} ({})", describe(identity.size, &identity.sha256)),
+            None => describe(identity.size, &identity.sha256),
+        };
+        Some(format!(
+            "This recording was made with game {} ({}), but the installed game is {installed}. \
+             Installed content and tables are read from the installed game.",
+            self.version,
+            describe(self.identity.size, &self.identity.sha256),
+        ))
+    }
+}
+
+fn describe(size: u64, sha256: &[u8; 32]) -> String {
+    let mut text = format!("hoi4.exe of {size} bytes, SHA-256 ");
+    for byte in &sha256[..6] {
+        let _ = write!(text, "{byte:02x}");
+    }
+    text.push('…');
+    text
+}
+
+/// The executable's own version text, found by its shape: the one NUL-delimited string in
+/// read-only data of the form `<Title> v<n>.<n>.<n>[.<n>…].<hex>`. None or several withhold it.
+pub fn version_banner(read_only_data: &[&[u8]]) -> Verified<String> {
+    let mut found = None;
+    for data in read_only_data {
+        for at in memchr::memmem::find_iter(data, b" v") {
+            let start = data[..at].iter().rposition(|&byte| byte == 0).map_or(0, |nul| nul + 1);
+            let Some(length) = data[start..].iter().position(|&byte| byte == 0) else {
+                continue;
+            };
+            let text = &data[start..start + length];
+            if is_banner(text, at - start) {
+                if found.replace(text).is_some_and(|previous| previous != text) {
+                    return Err(Withheld::new(
+                        "game version text",
+                        "the executable holds more than one version-shaped string",
+                    ));
+                }
+            }
+        }
+    }
+    let text = found.ok_or_else(|| {
+        Withheld::new(
+            "game version text",
+            "the executable holds no version-shaped string",
+        )
+    })?;
+    Ok(String::from_utf8(text.to_vec()).expect("banner shape is ASCII"))
+}
+
+fn is_banner(text: &[u8], separator: usize) -> bool {
+    let (title, version) = (&text[..separator], &text[separator + 2..]);
+    if title.len() > 64
+        || !title.first().is_some_and(u8::is_ascii_uppercase)
+        || !title.iter().all(|&byte| byte.is_ascii_alphabetic() || byte == b' ')
+    {
+        return false;
+    }
+    let parts: Vec<_> = version.split(|&byte| byte == b'.').collect();
+    let Some((build, numbers)) = parts.split_last() else {
+        return false;
+    };
+    numbers.len() >= 3
+        && numbers
+            .iter()
+            .all(|part| !part.is_empty() && part.len() <= 4 && part.iter().all(u8::is_ascii_digit))
+        && (1..=8).contains(&build.len())
+        && build.iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
 pub fn hash_executable(mut source: impl Read) -> io::Result<ExecutableIdentity> {
@@ -150,14 +181,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn byte_change_and_length_change_both_refuse_the_build() {
+    fn byte_change_and_length_change_both_change_the_identity() {
         let original = hash_executable(&b"engine"[..]).unwrap();
         let build = Build {
-            version_banner_rva: VERSION_BANNER_RVA,
+            version: "test",
             exe_size: original.size,
             exe_sha256: original.sha256,
         };
         assert!(build.matches(&original));
+        assert_eq!(original, ExecutableIdentity::of(b"engine"));
         assert!(!build.matches(&hash_executable(&b"Engine"[..]).unwrap()));
         assert!(!build.matches(&ExecutableIdentity {
             size: original.size + 1,
@@ -165,61 +197,27 @@ mod tests {
         }));
     }
 
-    fn version_image(text: &[u8]) -> (Build, Vec<u8>) {
-        let mut image = vec![0_u8; 0x280];
-        image[..2].copy_from_slice(b"MZ");
-        image[60..64].copy_from_slice(&0x80_u32.to_le_bytes());
-        image[0x80..0x84].copy_from_slice(b"PE\0\0");
-        image[0x86..0x88].copy_from_slice(&1_u16.to_le_bytes());
-        image[0x94..0x96].copy_from_slice(&0x70_u16.to_le_bytes());
-        image[0x98..0x9a].copy_from_slice(&0x20b_u16.to_le_bytes());
-        image[0xd4..0xd8].copy_from_slice(&0x200_u32.to_le_bytes());
-        image[0x114..0x118].copy_from_slice(&0x2000_u32.to_le_bytes());
-        image[0x118..0x11c].copy_from_slice(&0x80_u32.to_le_bytes());
-        image[0x11c..0x120].copy_from_slice(&0x200_u32.to_le_bytes());
-        image[0x208..0x208 + text.len()].copy_from_slice(text);
-        let identity = hash_executable(image.as_slice()).unwrap();
-        (
-            Build {
-                version_banner_rva: 0x2008,
-                exe_size: identity.size,
-                exe_sha256: identity.sha256,
-            },
-            image,
-        )
-    }
-
     #[test]
-    fn installed_version_text_uses_section_file_mapping() {
-        let (build, image) = version_image(b"Synthetic build label\0");
+    fn version_text_is_the_one_banner_shaped_string() {
+        let data: &[u8] = b"\0x v1\0Synthetic Label v2.31.4.0.9af3\0lower v1.2.3.ab\0Two v1.2\0";
         assert_eq!(
-            build.read_version_banner(io::Cursor::new(image)).unwrap(),
-            "Synthetic build label"
+            version_banner(&[data]).unwrap(),
+            "Synthetic Label v2.31.4.0.9af3"
         );
-    }
-
-    #[test]
-    fn installed_version_text_requires_matching_file_identity() {
-        let (build, mut image) = version_image(b"Synthetic build label\0");
-        image[0x208] ^= 1;
         assert_eq!(
-            build
-                .read_version_banner(io::Cursor::new(image))
+            version_banner(&[data, b"\0Other Label v2.31.4.0.9af4\0"])
                 .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
+                .reason,
+            "the executable holds more than one version-shaped string"
         );
+        assert!(version_banner(&[b"\0Title v1.2.zz\0"]).is_err());
     }
 
     #[test]
-    fn installed_version_text_cannot_cross_its_file_backed_section() {
-        let (build, image) = version_image(&[b'x'; 0x78]);
-        assert_eq!(
-            build
-                .read_version_banner(io::Cursor::new(image))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
+    fn unrecognised_identity_warns_with_both_builds() {
+        let identity = ExecutableIdentity::of(b"other");
+        let warning = identity.warning(Some("Label v9.9.9.9.abcd")).unwrap();
+        assert!(warning.contains(PINNED_BUILD.version));
+        assert!(warning.contains("Label v9.9.9.9.abcd (hoi4.exe of 5 bytes"));
     }
 }

@@ -585,7 +585,7 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime verified the executable hash before construction. A
+    /// The runtime's build gate admitted this family before construction. A
     /// differing sentinel leaves the family uninstalled and its table
     /// unavailable.
     ///

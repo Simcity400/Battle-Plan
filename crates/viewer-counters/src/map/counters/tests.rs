@@ -1809,6 +1809,7 @@ fn strategic_action_frame(
     *frame.tables[TableId::DivisionMovement.index()] =
         TableView::Complete(TableRows::DivisionMovement(rows));
     let keys: Vec<_> = engine_executable::modifier_keys::all()
+        .unwrap()
         .filter(|key| {
             replay_derive::fixed_layout::STRATEGIC_ACTION
                 .keys

@@ -29,6 +29,10 @@ pub struct ReplayMetadata {
     #[ts(optional = nullable)]
     pub damaged: Option<DamagedRecording>,
     pub warnings: Vec<String>,
+    /// The recorded and installed game builds, when either needs a warning; worked out as
+    /// metadata is served, since the installed game can change under a cached recording.
+    #[serde(default)]
+    pub build_warnings: Vec<String>,
 }
 
 /// replay-data's `scope::CaptureMode`, as the frontend names it.

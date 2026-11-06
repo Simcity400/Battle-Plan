@@ -40,7 +40,8 @@ impl Screening {
             .flat_map(|&modifier| {
                 ESCAPE_KEYS.iter().map(move |&key| Request {
                     modifier,
-                    key: engine_executable::modifier_keys::names()[key as usize],
+                    key: engine_executable::modifier_keys::fixed_name(key)
+                        .unwrap_or_else(|error| panic!("{error}")),
                 })
             })
             .collect();

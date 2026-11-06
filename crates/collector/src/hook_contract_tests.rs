@@ -583,6 +583,8 @@ pub(crate) fn isolated(test: &str) -> bool {
     false
 }
 pub(crate) fn reset_session() {
+    // These exercises run on the recognised build's contracts.
+    collector_primitives::build_gate::record(true, None);
     for flag in &FAILED {
         flag.store(false, Ordering::Release);
     }

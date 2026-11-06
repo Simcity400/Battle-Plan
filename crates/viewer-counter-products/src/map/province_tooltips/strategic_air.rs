@@ -165,9 +165,10 @@ fn calculate(reads: &RegionalDetection<'_>, ours: u32) -> Result<(i64, String), 
         if !engine_executable::executable_tables::is_initialized() {
             return Err("Air detection console prefix needs verified executable metadata".into());
         }
-        let prefix = engine_executable::executable_tables::get()
-            .auxiliary
-            .air_detection_override_prefix;
+        let prefix = engine_executable::executable_tables::auxiliary_part(|tables| {
+            &tables.air_detection_override_prefix
+        })
+        .map_err(|withheld| withheld.to_string())?;
         let amount = installed_content_core::fixed5::fixed5_to_string(raw.wrapping_mul(100), 0);
         return Ok((raw, format!("{prefix}{amount}%\n")));
     }

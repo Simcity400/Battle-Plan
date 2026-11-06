@@ -58,7 +58,7 @@ test('both construction renderers release dated-name demand outside their branch
   const source = (id: string, firstHour: number, lastHour: number): DashboardSource => ({ id, path: `C:/recordings/${id}.battleplan`, revision: '1',
     metadata: { path: `C:/recordings/${id}.battleplan`, revision: '1', name: id, format: 1, captureMode: 'full', campaignKey: 'c0ffee',
       branches: [{ id: '1', sessionId: '1', firstHour, lastHour, parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] }],
-      countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [] } });
+      countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [], buildWarnings: [] } });
   const tracks = bindTracks({ version: 1, name: 'Comparison', alignment: 'calendar', widgets: [], layouts: {},
     roles: ['short', 'long'].map(id => ({ id, label: id, selectedTag: null })),
     tracks: ['short', 'long'].map(id => ({ id, roleId: id, label: id, branchIndex: 0, anchorOffset: null })) },

@@ -80,6 +80,12 @@ function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: Branc
       <div className="diagnostics-list"><ul>{losses.map(({ branch, loss }, index) => <li key={index}>
         {branches.length > 1 && `${labels.get(branch)}: `}{formatDateTime(loss.afterHour)} – {formatDateTime(loss.hour)}: {loss.reason}</li>)}</ul></div>
     </details>}
+    {metadata.buildWarnings.length > 0 && <details className="diagnostics-details" open>
+      <summary><span className="settings-row-text"><strong>Game build</strong>
+        <small>The recorded or installed game build is one this release does not recognise, or they differ.</small></span>
+        <Icon name="chevron-down" className="diagnostics-chevron" /></summary>
+      <div className="diagnostics-list"><ul>{metadata.buildWarnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>
+    </details>}
     {metadata.warnings.length > 0 && <details className="diagnostics-details">
       <summary><span className="settings-row-text"><strong>File notes</strong>
         <small>{metadata.warnings.length} {metadata.warnings.length === 1 ? 'thing' : 'things'} this file couldn’t provide, such as details only newer versions record.</small></span>

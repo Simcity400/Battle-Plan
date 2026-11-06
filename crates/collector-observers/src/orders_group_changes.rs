@@ -251,7 +251,7 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The enclosing runtime verified the executable hash before construction. A differing
+    /// The runtime's build gate admitted this family before construction. A differing
     /// sentinel refuses installation with the site; the census then reads every group.
     ///
     /// # Safety

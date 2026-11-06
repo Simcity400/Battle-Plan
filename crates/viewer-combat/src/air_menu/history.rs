@@ -1,6 +1,7 @@
 use super::{Chart, Content, DecodedFrame, State, Vision, bind_hover, loc, text};
 use crate::binding::Bindings;
 use installed_content_localisation::localisation::Argument;
+use engine_executable::executable_tables::auxiliary::AIR_GRAPH_DISPLAYS;
 use replay_data::rows::{AirMenuWindow, tables};
 
 const LIMIT: i64 = 0x53e2_d620_fb40;
@@ -187,18 +188,16 @@ pub(super) fn bind(
         ),
     );
     let window = window(frame, vision.ours(), region, state.range);
-    let metadata = engine_executable::executable_tables::is_initialized()
-        .then(|| &engine_executable::executable_tables::get().auxiliary)
-        .ok_or_else(|| "air graph palette needs verified executable metadata".to_owned());
+    let metadata = air_graph();
     let mut graphs = Vec::new();
     let mut maximum = 0_i64;
-    for display in 0..24 {
+    for display in 0..AIR_GRAPH_DISPLAYS {
         let path = format!("details_wnd/channel_{}", display + 1);
         let channel = metadata
             .as_ref()
             .map_err(Clone::clone)
             .and_then(|metadata| {
-                let channel = metadata.air_graph_channels[display] as usize;
+                let channel = metadata.channels[display] as usize;
                 if channel < replay_data::rows::AIR_MENU_CHANNELS {
                     Ok(channel)
                 } else {
@@ -216,7 +215,7 @@ pub(super) fn bind(
                     .entry(format!("{path}/color_block"))
                     .or_default()
                     .color = Some(if selected {
-                    metadata.air_graph_colors[display]
+                    metadata.colors[display]
                 } else {
                     [0., 0., 0., 1.]
                 })
@@ -255,7 +254,7 @@ pub(super) fn bind(
             let max = values.iter().map(|v| v.wrapping_abs()).max().unwrap_or(0);
             maximum = maximum.max(max);
             let divisor = fixed15(max);
-            let color = metadata.air_graph_colors[display];
+            let color = metadata.colors[display];
             graphs.push(
                 values
                     .into_iter()
@@ -270,7 +269,7 @@ pub(super) fn bind(
                             color[0],
                             color[1],
                             color[2],
-                            (normalized as f32 / 32768.) / metadata.air_graph_scale,
+                            (normalized as f32 / 32768.) / metadata.scale,
                         ]
                     })
                     .collect(),
@@ -387,4 +386,24 @@ pub(crate) fn draw(
             .entry(format!("air history chart: {why}"))
             .or_default() += 1;
     }
+}
+
+/// The air view's graph channels, colours and scale from the executable.
+struct AirGraph {
+    channels: &'static [u32; AIR_GRAPH_DISPLAYS],
+    colors: &'static [[f32; 4]; AIR_GRAPH_DISPLAYS],
+    scale: f32,
+}
+
+fn air_graph() -> Result<AirGraph, String> {
+    use engine_executable::executable_tables::{auxiliary_part, is_initialized};
+    if !is_initialized() {
+        return Err("air graph palette needs the game's executable tables".into());
+    }
+    let withheld = |withheld: &engine_executable::availability::Withheld| withheld.to_string();
+    Ok(AirGraph {
+        channels: auxiliary_part(|tables| &tables.air_graph_channels).map_err(withheld)?,
+        colors: auxiliary_part(|tables| &tables.air_graph_colors).map_err(withheld)?,
+        scale: *auxiliary_part(|tables| &tables.air_graph_scale).map_err(withheld)?,
+    })
 }

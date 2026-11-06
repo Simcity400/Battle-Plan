@@ -96,8 +96,8 @@ pub fn local_modifier(
     let tree = traits
         .tree(name)?
         .ok_or_else(|| format!("organisation {name} traits are absent"))?;
-    let modifier_name = engine_executable::modifier_keys::name(key)
-        .ok_or("organisation modifier metadata unavailable")?;
+    let modifier_name =
+        engine_executable::modifier_keys::fixed_name(key).map_err(|error| error.to_string())?;
     let value = |modifiers: &installed_content_core::modifiers::Modifiers| {
         organisation_modifier_value(frame, modifiers, modifier_name, key)
     };

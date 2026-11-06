@@ -1,36 +1,100 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Write as _,
     io,
 };
 
-use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
+use iced_x86::{
+    Code, Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register,
+};
+use sha2::{Digest, Sha256};
 
-use super::{keywords::KeywordTables, leak_string, pe::PeImage, verify_digest};
+use super::{
+    keywords::KeywordTables,
+    leak_string,
+    pe::{Anchor, Hashed, PeImage},
+};
 
-const TRIGGER_REGISTRATION: u32 = 0x0059_7c00;
-const EFFECT_REGISTRATION: u32 = 0x0058_8950;
-const OBJECT_ALLOCATION: u32 = 0x025a_01dc;
+mod pinned;
+
 const ENTRY_FACTORY: u32 = 8;
 const TRIGGER_VALUE_READER: u32 = 40;
 const TRIGGER_KEY_READER: u32 = 48;
 const TRIGGER_SCOPE_MASK: u32 = 112;
 const EFFECT_VALUE_READER: u32 = 24;
 const EFFECT_KEY_READER: u32 = 32;
-const ASSIGN_READER: u32 = 0x0144_6b30;
-const COMPARISON_READER: u32 = 0x0144_5ee0;
-const BODY_READER: u32 = 0x0059_6fa0;
-const CONTEXT_EFFECT_VTABLE: u32 = 0x02a3_1830;
-const SCRIPTED_EFFECT_VTABLE: u32 = 0x02a3_1900;
 
-const TRIGGERS_DIGEST: &str = "03c08b0bd5ce9ccba4b299391d917c1a985fb197984924900dadd81e6a68ed28";
-const EFFECTS_DIGEST: &str = "5bc2422fcf914a6cfdf3dd9a3edefdcb74d30d6d20d584f7c89bf249b5b21473";
-const TRIGGER_CLASSES_DIGEST: &str =
-    "d181afc852c909341f433b0d68bb3b833bb27b817e2e626a8867fb2cc3a5b3a3";
-const EFFECT_READERS_DIGEST: &str =
-    "00325eed1be525c901bedba6f9ce8535426bf8f36d94ead2e510d91299584fa8";
-const EFFECT_IDENTITIES_DIGEST: &str =
-    "089ce76cc9e8871c9318d2015720b7b3f03e3c53955d792d129c954a7aae542a";
+const TRIGGER_ENTRY: Anchor = Anchor {
+    what: "the trigger registry entry template",
+    text: Hashed {
+        length: 20,
+        fnv: 0xa663d7d6fe7f1da5,
+    },
+};
+const EFFECT_ENTRY: Anchor = Anchor {
+    what: "the effect registry entry template",
+    text: Hashed {
+        length: 19,
+        fnv: 0x31c287a54eef8cbe,
+    },
+};
+const TRIGGER_BASE: Anchor = Anchor {
+    what: "the trigger base class",
+    text: Hashed {
+        length: 14,
+        fnv: 0xca718c196690dae2,
+    },
+};
+const ASSIGN_TRIGGER: Anchor = Anchor {
+    what: "the assign trigger class",
+    text: Hashed {
+        length: 26,
+        fnv: 0xe0a7399faa73c7af,
+    },
+};
+// The comparison base is abstract; its concrete subclasses inherit its reader.
+const COMPARISON_TRIGGERS: [Anchor; 2] = [
+    Anchor {
+        what: "the integer comparison trigger class",
+        text: Hashed {
+            length: 17,
+            fnv: 0xae16fcd95957b39d,
+        },
+    },
+    Anchor {
+        what: "the value comparison trigger class",
+        text: Hashed {
+            length: 19,
+            fnv: 0x666727962e04ae8d,
+        },
+    },
+];
+const EFFECT_BASE: Anchor = Anchor {
+    what: "the effect base class",
+    text: Hashed {
+        length: 13,
+        fnv: 0x460da4801231ad57,
+    },
+};
+const CONTEXT_EFFECTS: [Anchor; 2] = [
+    Anchor {
+        what: "the context effect class",
+        text: Hashed {
+            length: 20,
+            fnv: 0xdd2d190e7137c56c,
+        },
+    },
+    Anchor {
+        what: "the scripted effect class",
+        text: Hashed {
+            length: 21,
+            fnv: 0xbb1b503a9fc6ec09,
+        },
+    },
+];
+
+/// Set on an identity with no recognised-build counterpart, so it never equals one of its addresses.
+pub const UNMATCHED_IDENTITY: u64 = 1 << 63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriggerReader {
@@ -40,6 +104,7 @@ pub enum TriggerReader {
     Own(u64),
 }
 
+/// Reader and class identities are the recognised build's addresses for the same code or class.
 #[derive(Debug, Default)]
 pub struct RegistryTables {
     pub triggers: Vec<(u32, &'static str)>,
@@ -49,9 +114,58 @@ pub struct RegistryTables {
     pub effect_classes: Vec<(u32, u64, u64)>,
     pub effect_identities: Vec<(u32, &'static str, u64)>,
     context_effect_names: BTreeMap<u64, &'static str>,
+    /// Each unmatched identity's build-independent stand-in.
+    unmatched: BTreeMap<u64, u64>,
 }
 
 impl RegistryTables {
+    /// SHA-256 of this table's build-independent content, comparable across builds.
+    pub fn content_digest(&self) -> [u8; 32] {
+        let identity = |value: u64| match self.unmatched.get(&value) {
+            Some(stand_in) => format!("?{stand_in:016x}"),
+            None => format!("{value:x}"),
+        };
+        let mut text = String::new();
+        for ((&(token, name), &(_, mask, reader)), &(_, key)) in self
+            .triggers
+            .iter()
+            .zip(&self.trigger_classes)
+            .zip(&self.trigger_key_readers)
+        {
+            let reader = match reader {
+                TriggerReader::Assign => "assign".to_owned(),
+                TriggerReader::Comparison => "comparison".to_owned(),
+                TriggerReader::Body => "body".to_owned(),
+                TriggerReader::Own(value) => identity(value),
+            };
+            writeln!(
+                text,
+                "trigger\t{token}\t{name}\t{mask}\t{reader}\t{}",
+                identity(key)
+            )
+            .unwrap();
+        }
+        for ((&(token, name), &(_, value, key)), &(_, class, vtable)) in self
+            .effects
+            .iter()
+            .zip(&self.effect_classes)
+            .zip(&self.effect_identities)
+        {
+            writeln!(
+                text,
+                "effect\t{token}\t{name}\t{class}\t{}\t{}\t{}",
+                identity(vtable),
+                identity(value),
+                identity(key)
+            )
+            .unwrap();
+        }
+        for (&vtable, name) in &self.context_effect_names {
+            writeln!(text, "context\t{name}\t{}", identity(vtable)).unwrap();
+        }
+        Sha256::digest(text.as_bytes()).into()
+    }
+
     pub fn effect_class_name(&self, vtable: u64) -> Option<&'static str> {
         self.effect_identities
             .iter()
@@ -59,93 +173,314 @@ impl RegistryTables {
             .or_else(|| self.context_effect_names.get(&vtable).copied())
     }
 
+    /// Whether every reader and class identity has a recognised-build counterpart.
+    pub fn identities_matched(&self) -> bool {
+        self.unmatched.is_empty()
+    }
+
+    pub fn unmatched_identities(&self) -> usize {
+        self.unmatched.len()
+    }
+
     pub(super) fn decode(image: &PeImage, keywords: &KeywordTables) -> io::Result<Self> {
-        let [trigger_sites, effect_sites] =
-            call_sites(image, [TRIGGER_REGISTRATION, EFFECT_REGISTRATION])?;
-        let triggers = registrations(image, TRIGGER_REGISTRATION, trigger_sites, "triggers")?;
-        let effects = registrations(image, EFFECT_REGISTRATION, effect_sites, "effects")?;
+        let raw = Raw::decode(image, keywords)?;
+        let mut code = Fingerprints::new(image);
+        for (table, vtable, expected) in [
+            ("triggers", raw.trigger_base, pinned::TRIGGER_LAYOUT),
+            ("effects", raw.effect_base, pinned::EFFECT_LAYOUT),
+        ] {
+            if code.layout(vtable)? != expected {
+                return Err(invalid(format!(
+                    "{table}: the base class's virtual functions differ from the recognised build, so its reader slots are unconfirmed"
+                )));
+            }
+        }
+        let mut identities = Identities {
+            code,
+            ambiguous: &raw.ambiguous,
+            unmatched: BTreeMap::new(),
+        };
+        for (class, reader) in raw
+            .reader_classes
+            .into_iter()
+            .zip([raw.assign, raw.comparison, raw.body])
+        {
+            identities.function(class, TRIGGER_VALUE_READER, reader);
+        }
         let mut result = Self::default();
-        let mut factories = Factories::new(image);
+        for row in &raw.triggers {
+            if let Ok(index) =
+                pinned::SCOPE_MASKS.binary_search_by_key(&row.token, |&(token, _)| token)
+                && pinned::SCOPE_MASKS[index].1 != row.mask
+            {
+                return Err(invalid(format!(
+                    "trigger classes: keyword {}: scope mask {:#x} differs from the recognised build's {:#x}, whose scope bits readers assume",
+                    row.token,
+                    row.mask,
+                    pinned::SCOPE_MASKS[index].1
+                )));
+            }
+            let reader = if row.value == raw.assign {
+                TriggerReader::Assign
+            } else if row.value == raw.comparison {
+                TriggerReader::Comparison
+            } else if row.value == raw.body {
+                TriggerReader::Body
+            } else {
+                TriggerReader::Own(identities.function(row.class, TRIGGER_VALUE_READER, row.value))
+            };
+            let key = identities.function(row.class, TRIGGER_KEY_READER, row.key);
+            result.triggers.push((row.token, row.name));
+            result.trigger_classes.push((row.token, row.mask, reader));
+            result.trigger_key_readers.push((row.token, key));
+        }
+        for row in &raw.effects {
+            let value = identities.function(row.class, EFFECT_VALUE_READER, row.value);
+            let key = identities.function(row.class, EFFECT_KEY_READER, row.key);
+            let class = identities.class(row.class, row.vtable);
+            result.effects.push((row.token, row.name));
+            result.effect_classes.push((row.token, value, key));
+            result.effect_identities.push((
+                row.token,
+                leak_string(project_class_name(&canonical(row.class))?),
+                class,
+            ));
+        }
+        for &(decorated, vtable) in &raw.contexts {
+            let class = identities.class(decorated, vtable);
+            result.context_effect_names.insert(
+                class,
+                leak_string(project_class_name(&canonical(decorated))?),
+            );
+        }
+        result.unmatched = identities.unmatched;
+        Ok(result)
+    }
+}
+
+struct TriggerRow<'a> {
+    token: u32,
+    name: &'static str,
+    class: &'a str,
+    vtable: u32,
+    value: u32,
+    key: u32,
+    mask: u32,
+}
+
+struct EffectRow<'a> {
+    token: u32,
+    name: &'static str,
+    class: &'a str,
+    vtable: u32,
+    value: u32,
+    key: u32,
+}
+
+/// The registries as this build lays them out, before identities are mapped.
+struct Raw<'a> {
+    triggers: Vec<TriggerRow<'a>>,
+    effects: Vec<EffectRow<'a>>,
+    trigger_base: u32,
+    effect_base: u32,
+    assign: u32,
+    comparison: u32,
+    body: u32,
+    /// The decorated class names behind the assign, comparison and body readers.
+    reader_classes: [&'a str; 3],
+    contexts: Vec<(&'a str, u32)>,
+    /// Canonical class-name hashes that several classes share, which identify none of them.
+    ambiguous: BTreeSet<u64>,
+}
+
+impl<'a> Raw<'a> {
+    fn decode(image: &'a PeImage, keywords: &KeywordTables) -> io::Result<Self> {
+        let exact: Vec<Anchor> = [TRIGGER_BASE, ASSIGN_TRIGGER, EFFECT_BASE]
+            .into_iter()
+            .chain(COMPARISON_TRIGGERS)
+            .chain(CONTEXT_EFFECTS)
+            .collect();
+        let classes = primary_vtables(image, |name| {
+            TRIGGER_ENTRY.text.prefixes(name.as_bytes())
+                || EFFECT_ENTRY.text.prefixes(name.as_bytes())
+                || exact.iter().any(|anchor| anchor.text.matches(name.as_bytes()))
+        })?;
+        let class = |anchor: Anchor| {
+            classes
+                .iter()
+                .find(|(name, _)| anchor.text.matches(name.as_bytes()))
+                .map(|(&name, &vtable)| (name, vtable))
+                .ok_or_else(|| invalid(format!("registries: {} has no virtual table", anchor.what)))
+        };
+        let named = |anchor: Anchor| class(anchor).map(|(_, vtable)| vtable);
+        let entries = |prefix: Anchor| -> Vec<u32> {
+            let mut entries: Vec<u32> = classes
+                .iter()
+                .filter(|(name, _)| prefix.text.prefixes(name.as_bytes()))
+                .map(|(_, &vtable)| vtable)
+                .collect();
+            entries.sort_unstable();
+            entries
+        };
+        let trigger_entries = entries(TRIGGER_ENTRY);
+        let effect_entries = entries(EFFECT_ENTRY);
+        let located = locate_registrations(image, &trigger_entries, &effect_entries)?;
+        let [trigger_sites, effect_sites] = call_sites(image, [located.trigger, located.effect])?;
+        let triggers = registrations(
+            image,
+            located.allocation,
+            located.trigger,
+            trigger_sites,
+            "triggers",
+        )?;
+        let effects = registrations(
+            image,
+            located.allocation,
+            located.effect,
+            effect_sites,
+            "effects",
+        )?;
+
+        let trigger_base = named(TRIGGER_BASE)?;
+        let effect_base = named(EFFECT_BASE)?;
+        let body = code_rva(image, checked_add(trigger_base, TRIGGER_VALUE_READER)?)?;
+        let assign = code_rva(
+            image,
+            checked_add(named(ASSIGN_TRIGGER)?, TRIGGER_VALUE_READER)?,
+        )?;
+        let [comparison, other] = [COMPARISON_TRIGGERS[0], COMPARISON_TRIGGERS[1]].map(|name| {
+            named(name)
+                .and_then(|vtable| code_rva(image, checked_add(vtable, TRIGGER_VALUE_READER)?))
+        });
+        let comparison = comparison?;
+        if comparison != other? {
+            return Err(invalid(
+                "trigger classes: the comparison classes inherit different readers",
+            ));
+        }
+        if assign == body || comparison == body || comparison == assign {
+            return Err(invalid(
+                "trigger classes: the assign, comparison and body readers are not distinct",
+            ));
+        }
+
+        let mut result = Self {
+            triggers: Vec::with_capacity(triggers.len()),
+            effects: Vec::with_capacity(effects.len()),
+            trigger_base,
+            effect_base,
+            assign,
+            comparison,
+            body,
+            reader_classes: [
+                class(ASSIGN_TRIGGER)?.0,
+                class(COMPARISON_TRIGGERS[0])?.0,
+                class(TRIGGER_BASE)?.0,
+            ],
+            contexts: Vec::with_capacity(CONTEXT_EFFECTS.len()),
+            ambiguous: BTreeSet::new(),
+        };
+        let mut factories = Factories::new(image, located.allocation);
         for (token, entry) in triggers {
             let name = keyword(keywords, token, "triggers")?;
-            let object = factories.object(entry).map_err(|error| {
-                invalid(format!(
-                    "triggers: keyword {token}: {error} (1 unsupported occurrence)"
-                ))
-            })?;
-            let reader = code_pointer(image, checked_add(object, TRIGGER_VALUE_READER)?)?;
-            let reader_rva = image.va_to_rva(reader)?;
-            let reader = match reader_rva {
-                ASSIGN_READER => TriggerReader::Assign,
-                COMPARISON_READER => TriggerReader::Comparison,
-                BODY_READER => TriggerReader::Body,
-                _ => TriggerReader::Own(reader),
-            };
-            let mask_reader = code_pointer(image, checked_add(object, TRIGGER_SCOPE_MASK)?)?;
-            let mask = constant_return(image, image.va_to_rva(mask_reader)?)?;
-            let key = code_pointer(image, checked_add(object, TRIGGER_KEY_READER)?)?;
-            result.triggers.push((token, name));
-            result.trigger_classes.push((token, mask, reader));
-            result.trigger_key_readers.push((token, key));
+            let (vtable, class) = registered_class(
+                image,
+                &mut factories,
+                &trigger_entries,
+                entry,
+                TRIGGER_ENTRY,
+                TRIGGER_BASE,
+            )
+            .map_err(|error| invalid(format!("triggers: keyword {token}: {error}")))?;
+            let mask = code_rva(image, checked_add(vtable, TRIGGER_SCOPE_MASK)?)?;
+            result.triggers.push(TriggerRow {
+                token,
+                name,
+                class,
+                vtable,
+                value: code_rva(image, checked_add(vtable, TRIGGER_VALUE_READER)?)?,
+                key: code_rva(image, checked_add(vtable, TRIGGER_KEY_READER)?)?,
+                mask: constant_return(image, mask)?,
+            });
         }
         for (token, entry) in effects {
             let name = keyword(keywords, token, "effects")?;
-            let object = factories.object(entry).map_err(|error| {
-                invalid(format!(
-                    "effects: keyword {token}: {error} (1 unsupported occurrence)"
-                ))
-            })?;
-            let value = code_pointer(image, checked_add(object, EFFECT_VALUE_READER)?)?;
-            let key = code_pointer(image, checked_add(object, EFFECT_KEY_READER)?)?;
-            let class_name = leak_string(class_name(image, object)?);
-            result.effects.push((token, name));
-            result.effect_classes.push((token, value, key));
-            result
-                .effect_identities
-                .push((token, class_name, image.base + u64::from(object)));
+            let (vtable, class) = registered_class(
+                image,
+                &mut factories,
+                &effect_entries,
+                entry,
+                EFFECT_ENTRY,
+                EFFECT_BASE,
+            )
+            .map_err(|error| invalid(format!("effects: keyword {token}: {error}")))?;
+            result.effects.push(EffectRow {
+                token,
+                name,
+                class,
+                vtable,
+                value: code_rva(image, checked_add(vtable, EFFECT_VALUE_READER)?)?,
+                key: code_rva(image, checked_add(vtable, EFFECT_KEY_READER)?)?,
+            });
         }
-        for vtable in [CONTEXT_EFFECT_VTABLE, SCRIPTED_EFFECT_VTABLE] {
-            let name = leak_string(class_name(image, vtable)?);
+        for anchor in CONTEXT_EFFECTS {
+            let vtable = named(anchor)?;
+            if !derives(image, vtable, EFFECT_BASE)? {
+                return Err(invalid(format!(
+                    "effects: {} does not derive from the effect base class",
+                    anchor.what
+                )));
+            }
             result
-                .context_effect_names
-                .insert(image.base + u64::from(vtable), name);
+                .contexts
+                .push((decorated_name(image, vtable)?, vtable));
         }
-        result.verify()?;
+        let mut vtables: HashMap<u64, BTreeSet<u32>> = HashMap::new();
+        for (class, vtable) in (result.triggers.iter().map(|row| (row.class, row.vtable)))
+            .chain(result.effects.iter().map(|row| (row.class, row.vtable)))
+            .chain(result.contexts.iter().copied())
+        {
+            vtables.entry(name_hash(class)).or_default().insert(vtable);
+        }
+        result.ambiguous = vtables
+            .into_iter()
+            .filter(|(_, vtables)| vtables.len() > 1)
+            .map(|(hash, _)| hash)
+            .collect();
         Ok(result)
     }
+}
 
-    fn verify(&self) -> io::Result<()> {
-        verify_names("triggers", &self.triggers, 596, TRIGGERS_DIGEST)?;
-        verify_names("effects", &self.effects, 553, EFFECTS_DIGEST)?;
-        let mut text = String::new();
-        for &(token, mask, reader) in &self.trigger_classes {
-            let reader = match reader {
-                TriggerReader::Assign => "Assign".to_owned(),
-                TriggerReader::Comparison => "Comparison".to_owned(),
-                TriggerReader::Body => "Body".to_owned(),
-                TriggerReader::Own(address) => format!("Own({address})"),
-            };
-            writeln!(text, "{token}\t{mask}\t{reader}").unwrap();
-        }
-        verify_count("trigger classes", self.trigger_classes.len(), 596)?;
-        verify_digest("trigger classes", text.as_bytes(), TRIGGER_CLASSES_DIGEST)?;
-        text.clear();
-        for &(token, value, key) in &self.effect_classes {
-            writeln!(text, "{token}\t{value}\t{key}").unwrap();
-        }
-        verify_count("effect readers", self.effect_classes.len(), 553)?;
-        verify_digest("effect readers", text.as_bytes(), EFFECT_READERS_DIGEST)?;
-        text.clear();
-        for &(token, name, vtable) in &self.effect_identities {
-            writeln!(text, "{token}\t{name}\t{vtable}").unwrap();
-        }
-        verify_count("effect identities", self.effect_identities.len(), 553)?;
-        verify_digest(
-            "effect identities",
-            text.as_bytes(),
-            EFFECT_IDENTITIES_DIGEST,
-        )
+/// The factory's class for a registered entry, checked against the class its entry names.
+fn registered_class<'a>(
+    image: &'a PeImage,
+    factories: &mut Factories<'_>,
+    entries: &[u32],
+    entry: u32,
+    prefix: Anchor,
+    base: Anchor,
+) -> io::Result<(u32, &'a str)> {
+    if entries.binary_search(&entry).is_err() {
+        return Err(invalid("registration entry is not a registry entry class"));
     }
+    let decorated = decorated_name(image, entry)?;
+    let argument = (prefix.text.prefixes(decorated.as_bytes()))
+        .then(|| &decorated[prefix.text.length..])
+        .and_then(|name| name.strip_suffix("@@"))
+        .ok_or_else(|| invalid("registration entry class names no class"))?;
+    let vtable = factories.object(entry)?;
+    let class = decorated_name(image, vtable)?;
+    if class.strip_prefix(".?A") != Some(argument) {
+        return Err(invalid(
+            "registry factory returns a class other than the one its entry names",
+        ));
+    }
+    if !derives(image, vtable, base)? {
+        return Err(invalid(
+            "registered class does not derive from the registry base class",
+        ));
+    }
+    Ok((vtable, class))
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -163,25 +498,6 @@ fn keyword(keywords: &KeywordTables, token: u32, table: &str) -> io::Result<&'st
         .ok_or_else(|| invalid(format!("{table}: unknown keyword {token}")))
 }
 
-fn verify_count(table: &str, actual: usize, expected: usize) -> io::Result<()> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(invalid(format!(
-            "{table}: expected {expected} rows, found {actual}"
-        )))
-    }
-}
-
-fn verify_names(table: &str, rows: &[(u32, &str)], count: usize, digest: &str) -> io::Result<()> {
-    verify_count(table, rows.len(), count)?;
-    let mut text = String::new();
-    for &(token, name) in rows {
-        writeln!(text, "{token}\t{name}").unwrap();
-    }
-    verify_digest(table, text.as_bytes(), digest)
-}
-
 fn is_code(image: &PeImage, rva: u32) -> bool {
     image
         .executable_ranges()
@@ -195,6 +511,10 @@ fn code_pointer(image: &PeImage, rva: u32) -> io::Result<u64> {
         return Err(invalid("registry reader is outside executable sections"));
     }
     Ok(address)
+}
+
+fn code_rva(image: &PeImage, rva: u32) -> io::Result<u32> {
+    image.va_to_rva(code_pointer(image, rva)?)
 }
 
 fn is_vtable(image: &PeImage, address: u64) -> bool {
@@ -216,6 +536,229 @@ fn direct_target(image: &PeImage, instruction: &Instruction) -> io::Result<Optio
     Ok(None)
 }
 
+fn name_hash(name: &str) -> u64 {
+    truncated(Sha256::digest(canonical(name).as_bytes()).into())
+}
+
+/// A decorated name with its anonymous-namespace tags, which change with each compile, reduced to `?A`.
+fn canonical(decorated: &str) -> String {
+    let mut result = String::with_capacity(decorated.len());
+    let mut rest = decorated;
+    while let Some(at) = rest.find("?A0x") {
+        result.push_str(&rest[..at + 2]);
+        rest = rest[at + 4..].trim_start_matches(|byte: char| byte.is_ascii_hexdigit());
+    }
+    result.push_str(rest);
+    result
+}
+
+fn truncated(digest: [u8; 32]) -> u64 {
+    u64::from_le_bytes(digest[..8].try_into().unwrap())
+}
+
+/// Primary virtual tables, by RTTI decorated name, of the classes `wanted` accepts.
+fn primary_vtables<'a>(
+    image: &'a PeImage,
+    wanted: impl Fn(&str) -> bool,
+) -> io::Result<BTreeMap<&'a str, u32>> {
+    let mut locators = BTreeMap::new();
+    let mut result = BTreeMap::new();
+    for class in image.classes().iter().filter(|class| class.offset == 0) {
+        let Ok(name) = image.type_name(class.descriptor) else {
+            continue;
+        };
+        if !wanted(name) {
+            continue;
+        }
+        if locators
+            .insert(name, class.locator)
+            .is_some_and(|locator| locator != class.locator)
+        {
+            return Err(invalid(format!(
+                "registries: class identity {name} is not unique"
+            )));
+        }
+        if result.insert(name, class.vtable).is_some() {
+            return Err(invalid(format!(
+                "registries: class identity {name} has several virtual tables"
+            )));
+        }
+    }
+    Ok(result)
+}
+
+fn locator(image: &PeImage, vtable: u32) -> io::Result<u32> {
+    let pointer = vtable
+        .checked_sub(8)
+        .ok_or_else(|| invalid("class identity address underflow"))?;
+    let locator = image.va_to_rva(image.u64(pointer)?)?;
+    image.bytes(locator, 24)?;
+    if image.u32(locator)? != 1 || image.u32(checked_add(locator, 20)?)? != locator {
+        return Err(invalid("class identity locator is inconsistent"));
+    }
+    Ok(locator)
+}
+
+fn decorated_name(image: &PeImage, vtable: u32) -> io::Result<&str> {
+    let locator = locator(image, vtable)?;
+    let descriptor = image.u32(checked_add(locator, 12)?)?;
+    image.bytes(descriptor, 16)?;
+    let hierarchy = image.u32(checked_add(locator, 16)?)?;
+    image.bytes(hierarchy, 16)?;
+    image.string(checked_add(descriptor, 16)?)
+}
+
+/// Whether `vtable`'s class lists `base` among its RTTI base classes.
+fn derives(image: &PeImage, vtable: u32, base: Anchor) -> io::Result<bool> {
+    let hierarchy = image.u32(checked_add(locator(image, vtable)?, 16)?)?;
+    let count = image.u32(checked_add(hierarchy, 8)?)?;
+    let array = image.u32(checked_add(hierarchy, 12)?)?;
+    let span = usize::try_from(count)
+        .ok()
+        .and_then(|count| count.checked_mul(4))
+        .ok_or_else(|| invalid("class hierarchy overflow"))?;
+    for entry in image.bytes(array, span)?.chunks_exact(4) {
+        let descriptor = image.u32(u32::from_le_bytes(entry.try_into().unwrap()))?;
+        if base
+            .text
+            .matches(image.string(checked_add(descriptor, 16)?)?.as_bytes())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Each RIP-relative `lea` of one of `vtables` (sorted), with the table it loads.
+fn vtable_references(image: &PeImage, vtables: &[u32]) -> io::Result<Vec<(u32, u32)>> {
+    let (Some(&first), Some(&last)) = (vtables.first(), vtables.last()) else {
+        return Ok(Vec::new());
+    };
+    let mut result = Vec::new();
+    for &(start, end) in image.executable_ranges() {
+        let bytes = image.bytes(start, (end - start) as usize)?;
+        for at in memchr::memchr_iter(0x8D, bytes) {
+            // REX.W, opcode, a RIP-relative ModRM and a 32-bit displacement.
+            if at == 0
+                || at + 6 > bytes.len()
+                || bytes[at - 1] & 0xFB != 0x48
+                || bytes[at + 1] & 0xC7 != 0x05
+            {
+                continue;
+            }
+            let site = start + at as u32 - 1;
+            let displacement = i32::from_le_bytes(bytes[at + 2..at + 6].try_into().unwrap());
+            let target = i64::from(site) + 7 + i64::from(displacement);
+            let Ok(target) = u32::try_from(target) else {
+                continue;
+            };
+            if target < first || target > last || vtables.binary_search(&target).is_err() {
+                continue;
+            }
+            let mut decoder = Decoder::with_ip(
+                64,
+                &bytes[at - 1..at + 6],
+                image.base + u64::from(site),
+                DecoderOptions::NONE,
+            );
+            let instruction = decoder.decode();
+            if instruction.mnemonic() == Mnemonic::Lea
+                && instruction.len() == 7
+                && instruction.ip_rel_memory_address() == image.base + u64::from(target)
+            {
+                result.push((site, target));
+            }
+        }
+    }
+    Ok(result)
+}
+
+struct Located {
+    trigger: u32,
+    effect: u32,
+    allocation: u32,
+}
+
+/// The registration and allocation functions every entry's static initializer agrees on.
+fn locate_registrations(
+    image: &PeImage,
+    trigger_entries: &[u32],
+    effect_entries: &[u32],
+) -> io::Result<Located> {
+    let mut entries: Vec<u32> = trigger_entries
+        .iter()
+        .chain(effect_entries)
+        .copied()
+        .collect();
+    entries.sort_unstable();
+    let mut triggers = BTreeSet::new();
+    let mut effects = BTreeSet::new();
+    let mut allocations = BTreeSet::new();
+    for (site, vtable) in vtable_references(image, &entries)? {
+        let Some((registration, allocation)) = initializer(image, site)? else {
+            continue;
+        };
+        if trigger_entries.binary_search(&vtable).is_ok() {
+            triggers.insert(registration);
+        } else {
+            effects.insert(registration);
+        }
+        allocations.insert(allocation);
+    }
+    let one = |found: BTreeSet<u32>, what: &str| match (found.len(), found.first()) {
+        (1, Some(&found)) => Ok(found),
+        (count, _) => Err(invalid(format!(
+            "{what}: the entry initializers name {count} candidates, not one"
+        ))),
+    };
+    let located = Located {
+        trigger: one(triggers, "trigger registration")?,
+        effect: one(effects, "effect registration")?,
+        allocation: one(allocations, "registry allocation")?,
+    };
+    if located.trigger == located.effect {
+        return Err(invalid(
+            "trigger and effect registrations are the same function",
+        ));
+    }
+    Ok(located)
+}
+
+/// An entry initializer's final outside call and its one sized allocation, if it has that shape.
+fn initializer(image: &PeImage, site: u32) -> io::Result<Option<(u32, u32)>> {
+    let Ok((start, end)) = image.function(site) else {
+        return Ok(None);
+    };
+    let mut allocation = None;
+    let mut tail = None;
+    let mut previous: Option<&Instruction> = None;
+    let Ok(instructions) = image.instructions(start, end) else {
+        return Ok(None);
+    };
+    for instruction in &instructions {
+        if let Ok(Some(target)) = direct_target(image, instruction)
+            && !(start..end).contains(&target)
+        {
+            if instruction.mnemonic() == Mnemonic::Call
+                && previous.is_some_and(|previous| {
+                    previous.mnemonic() == Mnemonic::Mov
+                        && previous.op0_kind() == OpKind::Register
+                        && previous.op0_register() == Register::ECX
+                        && previous.op1_kind() == OpKind::Immediate32
+                })
+                && allocation.replace(target).is_some()
+            {
+                return Ok(None);
+            }
+            tail = Some(target);
+        }
+        previous = Some(instruction);
+    }
+    Ok(allocation
+        .zip(tail)
+        .map(|(allocation, tail)| (tail, allocation)))
+}
+
 /// The sites of every five-byte relative call or jump whose destination is one
 /// of `targets`, by target, from one pass over the executable sections.
 fn call_sites<const N: usize>(
@@ -234,7 +777,8 @@ fn call_sites<const N: usize>(
                 start,
                 u32::try_from(offset).map_err(|_| invalid("registry span overflow"))?,
             )?;
-            let displacement = i32::from_le_bytes(bytes[offset + 1..offset + 5].try_into().unwrap());
+            let displacement =
+                i32::from_le_bytes(bytes[offset + 1..offset + 5].try_into().unwrap());
             let destination = i64::from(site) + 5 + i64::from(displacement);
             for (&target, found) in targets.iter().zip(&mut sites) {
                 if destination == i64::from(target) {
@@ -248,6 +792,7 @@ fn call_sites<const N: usize>(
 
 fn registrations(
     image: &PeImage,
+    allocation: u32,
     target: u32,
     sites: BTreeSet<u32>,
     table: &str,
@@ -274,7 +819,7 @@ fn registrations(
                     && instruction.mnemonic() == Mnemonic::Call
                 {
                     state.clobber();
-                    if call == OBJECT_ALLOCATION {
+                    if call == allocation {
                         state.allocate(rva);
                     }
                 }
@@ -316,6 +861,9 @@ fn registrations(
         return Err(invalid(format!(
             "{table}: {refused} unsupported registration occurrences"
         )));
+    }
+    if result.is_empty() {
+        return Err(invalid(format!("{table}: no registrations")));
     }
     Ok(result)
 }
@@ -555,14 +1103,16 @@ struct Summary {
 
 struct Factories<'a> {
     image: &'a PeImage,
+    allocation: u32,
     cache: BTreeMap<u32, Summary>,
     visiting: BTreeSet<u32>,
 }
 
 impl<'a> Factories<'a> {
-    fn new(image: &'a PeImage) -> Self {
+    fn new(image: &'a PeImage, allocation: u32) -> Self {
         Self {
             image,
+            allocation,
             cache: BTreeMap::new(),
             visiting: BTreeSet::new(),
         }
@@ -638,7 +1188,7 @@ impl<'a> Factories<'a> {
                     }
                     let allocation_root = self.image.va_to_rva(instruction.ip())?;
                     let receiver = state.registers.get(&Register::RCX).copied();
-                    let summary = if target != OBJECT_ALLOCATION
+                    let summary = if target != self.allocation
                         && matches!(receiver, Some(Value::Object(_, 0)))
                     {
                         Some(self.summary(target)?)
@@ -646,7 +1196,7 @@ impl<'a> Factories<'a> {
                         None
                     };
                     state.clobber();
-                    if target == OBJECT_ALLOCATION {
+                    if target == self.allocation {
                         state.allocate(allocation_root);
                     } else if let Some(summary) = summary
                         && let Some(Value::Object(root, offset)) = receiver
@@ -753,21 +1303,33 @@ fn record_return(state: &State, summary: &mut Summary) -> io::Result<()> {
     Ok(())
 }
 
-fn function_body(image: &PeImage, start: u32) -> io::Result<Vec<Instruction>> {
+/// The exception-directory extent starting at `start`, or a leaf's span up to the next one.
+fn extent(image: &PeImage, start: u32) -> io::Result<(u32, u32)> {
     if let Ok((begin, end)) = image.function(start) {
         if begin != start {
             return Err(invalid("registry function pointer is not a function entry"));
         }
-        return image.instructions(begin, end);
+        return Ok((begin, end));
     }
     let mut end = image
         .executable_ranges()
         .iter()
         .find_map(|&(begin, end)| (begin <= start && start < end).then_some(end))
         .ok_or_else(|| invalid("registry function is outside executable sections"))?;
-    if let Some(&(next, _)) = image.functions().iter().find(|&&(begin, _)| begin > start) {
+    let functions = image.functions();
+    if let Some(&(next, _)) = functions.get(functions.partition_point(|&(begin, _)| begin <= start))
+    {
         end = end.min(next);
     }
+    Ok((start, end))
+}
+
+fn function_body(image: &PeImage, start: u32) -> io::Result<Vec<Instruction>> {
+    if image.function(start).is_ok() {
+        let (begin, end) = extent(image, start)?;
+        return image.instructions(begin, end);
+    }
+    let (_, end) = extent(image, start)?;
     let bytes = image.bytes(start, (end - start) as usize)?;
     let mut decoder = Decoder::with_ip(
         64,
@@ -801,6 +1363,408 @@ fn function_body(image: &PeImage, start: u32) -> io::Result<Vec<Instruction>> {
     Err(invalid("registry leaf function has no bounded terminator"))
 }
 
+/// One reachable instruction with its address-dependent bytes masked.
+struct Masked {
+    bytes: [u8; 15],
+    len: u8,
+    outside: Option<u32>,
+    /// A jump table's entries in case order, as offsets in the function, so a reordered
+    /// table changes the fingerprint.
+    cases: Vec<u32>,
+    /// The read-only data a RIP-relative operand names, so naming other data changes it.
+    data: Vec<u8>,
+}
+
+/// The reachable instructions of the function at `start` in address order, with
+/// RIP-relative, image-address and outside-branch displacements masked.
+fn masked_body(image: &PeImage, start: u32, data: bool) -> io::Result<Vec<Masked>> {
+    let (low, high) = extent(image, start)?;
+    let bytes = image.bytes(low, (high - low) as usize)?;
+    let mut decoder =
+        Decoder::with_ip(64, bytes, image.base + u64::from(low), DecoderOptions::NONE);
+    let mut decoded = BTreeMap::new();
+    let mut pending = vec![start];
+    let inside = |rva: u32| (low..high).contains(&rva);
+    let image_rva = |value: u64| {
+        value >= 0x1000
+            && image
+                .base
+                .checked_add(value)
+                .is_some_and(|address| image.va_to_rva(address).is_ok())
+    };
+    while let Some(mut at) = pending.pop() {
+        while inside(at) && !decoded.contains_key(&at) {
+            decoder
+                .set_position((at - low) as usize)
+                .map_err(|_| invalid("fingerprint position is outside its function"))?;
+            decoder.set_ip(image.base + u64::from(at));
+            let instruction = decoder.decode();
+            if instruction.is_invalid() {
+                return Err(invalid("fingerprinted function has an invalid instruction"));
+            }
+            let offsets = decoder.get_constant_offsets(&instruction);
+            let length = instruction.len();
+            let mut masked = Masked {
+                bytes: [0; 15],
+                len: length as u8,
+                outside: None,
+                cases: Vec::new(),
+                data: Vec::new(),
+            };
+            masked.bytes[..length]
+                .copy_from_slice(&bytes[(at - low) as usize..(at - low) as usize + length]);
+            if offsets.has_displacement() {
+                let offset = offsets.displacement_offset();
+                let size = match (offsets.displacement_size(), instruction.code()) {
+                    (
+                        8,
+                        Code::Mov_AL_moffs8
+                        | Code::Mov_AX_moffs16
+                        | Code::Mov_EAX_moffs32
+                        | Code::Mov_RAX_moffs64
+                        | Code::Mov_moffs8_AL
+                        | Code::Mov_moffs16_AX
+                        | Code::Mov_moffs32_EAX
+                        | Code::Mov_moffs64_RAX,
+                    ) => 8,
+                    (8, _) => 4,
+                    (size, _) => size,
+                };
+                let displacement = instruction.memory_displacement64();
+                if instruction.is_ip_rel_memory_operand() || size == 8 {
+                    masked.bytes[offset..offset + size].fill(0);
+                    if data && instruction.is_ip_rel_memory_operand() {
+                        masked.data = referenced_data(image, &instruction)?;
+                    }
+                } else if size == 4
+                    && inside(displacement as u32)
+                    && displacement <= u64::from(u32::MAX)
+                {
+                    let relative = displacement as u32 - low;
+                    masked.bytes[offset..offset + 4].copy_from_slice(&relative.to_le_bytes());
+                    // An indexed dword table inside the function is a jump table of addresses.
+                    if instruction.memory_index() != Register::None
+                        && instruction.memory_index_scale() == 4
+                    {
+                        let mut entry = displacement as u32;
+                        while entry.checked_add(4).is_some_and(|end| end <= high) {
+                            let target = image.u32(entry)?;
+                            if !inside(target) {
+                                break;
+                            }
+                            pending.push(target);
+                            masked.cases.push(target - low);
+                            entry += 4;
+                        }
+                    }
+                } else if size == 4
+                    && image_rva(displacement & u64::from(u32::MAX))
+                    && displacement <= u64::from(u32::MAX)
+                {
+                    masked.bytes[offset..offset + 4].fill(0);
+                }
+            }
+            let mut next = Some(at + length as u32);
+            if matches!(instruction.op0_kind(), OpKind::NearBranch64) {
+                let target = image.va_to_rva(instruction.near_branch_target())?;
+                if inside(target) {
+                    match instruction.flow_control() {
+                        FlowControl::UnconditionalBranch => next = Some(target),
+                        FlowControl::ConditionalBranch => pending.push(target),
+                        _ => {}
+                    }
+                } else {
+                    let offset = offsets.immediate_offset();
+                    masked.bytes[offset..offset + offsets.immediate_size()].fill(0);
+                    masked.outside = Some(target);
+                    if instruction.flow_control() == FlowControl::UnconditionalBranch {
+                        next = None;
+                    }
+                }
+            } else if offsets.has_immediate()
+                && offsets.immediate_size() == 8
+                && instruction
+                    .immediate64()
+                    .checked_sub(image.base)
+                    .is_some_and(image_rva)
+            {
+                let offset = offsets.immediate_offset();
+                masked.bytes[offset..offset + 8].fill(0);
+            }
+            if matches!(
+                instruction.flow_control(),
+                FlowControl::Return
+                    | FlowControl::Interrupt
+                    | FlowControl::Exception
+                    | FlowControl::IndirectBranch
+            ) {
+                next = None;
+            }
+            decoded.insert(at, masked);
+            match next {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+    }
+    Ok(decoded.into_values().collect())
+}
+
+/// The read-only bytes a RIP-relative operand reads, or the string a `lea` names; nothing for
+/// writable data, whose contents the game owns, or for values that are image addresses.
+fn referenced_data(image: &PeImage, instruction: &Instruction) -> io::Result<Vec<u8>> {
+    let target = image.va_to_rva(instruction.ip_rel_memory_address())?;
+    if instruction.mnemonic() == Mnemonic::Lea {
+        return Ok(image
+            .string(target)
+            .ok()
+            .filter(|text| {
+                !text.is_empty()
+                    && text.bytes().all(|byte| byte.is_ascii_graphic() || byte == b' ')
+                    && image.is_read_only(target, text.len() + 1)
+            })
+            .map(|text| text.as_bytes().to_vec())
+            .unwrap_or_default());
+    }
+    let size = instruction.memory_size().size();
+    if size == 0 || size > 16 || !image.is_read_only(target, size) {
+        return Ok(Vec::new());
+    }
+    let bytes = image.bytes(target, size)?;
+    if size == 8 {
+        let value = u64::from_le_bytes(bytes.try_into().unwrap());
+        if image.va_to_rva(value).is_ok() {
+            return Ok(Vec::new());
+        }
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Masked-code fingerprints, optionally mixing in each outside branch target's own.
+struct Fingerprints<'a> {
+    image: &'a PeImage,
+    memo: HashMap<(u32, bool), Option<u64>>,
+}
+
+impl<'a> Fingerprints<'a> {
+    fn new(image: &'a PeImage) -> Self {
+        Self {
+            image,
+            memo: HashMap::new(),
+        }
+    }
+
+    fn fingerprint(&mut self, start: u32, callees: bool) -> Option<u64> {
+        if let Some(&found) = self.memo.get(&(start, callees)) {
+            return found;
+        }
+        // A reader's own data decides its grammar; a callee's, such as logging text, may change.
+        let found = match masked_body(self.image, start, callees) {
+            Ok(body) => {
+                let mut hasher = Sha256::new();
+                for instruction in &body {
+                    hasher.update([instruction.len]);
+                    hasher.update(&instruction.bytes[..usize::from(instruction.len)]);
+                    hasher.update((instruction.data.len() as u32).to_le_bytes());
+                    hasher.update(&instruction.data);
+                    hasher.update((instruction.cases.len() as u32).to_le_bytes());
+                    for case in &instruction.cases {
+                        hasher.update(case.to_le_bytes());
+                    }
+                    if callees && let Some(target) = instruction.outside {
+                        let callee = self.fingerprint(target, false).unwrap_or(u64::MAX);
+                        hasher.update(callee.to_le_bytes());
+                    }
+                }
+                Some(truncated(hasher.finalize().into()))
+            }
+            Err(_) => None,
+        };
+        self.memo.insert((start, callees), found);
+        found
+    }
+
+    /// The fingerprint of every slot of a virtual table, which fixes its layout.
+    fn layout(&mut self, vtable: u32) -> io::Result<u64> {
+        let mut hasher = Sha256::new();
+        let mut slots = 0u32;
+        while let Some(slot) = vtable.checked_add(slots * 8)
+            && let Ok(address) = self.image.u64(slot)
+            && let Ok(rva) = self.image.va_to_rva(address)
+            && is_code(self.image, rva)
+        {
+            hasher.update(
+                self.fingerprint(rva, true)
+                    .unwrap_or(u64::MAX)
+                    .to_le_bytes(),
+            );
+            slots += 1;
+        }
+        if slots == 0 {
+            return Err(invalid("registry base class has no virtual functions"));
+        }
+        hasher.update(slots.to_le_bytes());
+        Ok(truncated(hasher.finalize().into()))
+    }
+}
+
+/// Maps readers and classes onto the recognised build's addresses by verified code and name.
+struct Identities<'a> {
+    code: Fingerprints<'a>,
+    ambiguous: &'a BTreeSet<u64>,
+    unmatched: BTreeMap<u64, u64>,
+}
+
+impl Identities<'_> {
+    fn function(&mut self, class: &str, slot: u32, rva: u32) -> u64 {
+        let fingerprint = self.code.fingerprint(rva, true);
+        let matched = fingerprint.and_then(|fingerprint| {
+            let first = pinned::FUNCTIONS.partition_point(|&(found, _)| found < fingerprint);
+            let candidates: Vec<u64> = pinned::FUNCTIONS[first..]
+                .iter()
+                .take_while(|&&(found, _)| found == fingerprint)
+                .map(|&(_, address)| address)
+                .collect();
+            match candidates[..] {
+                [] => None,
+                [address] => Some(address),
+                // Identical code in several places: the class and slot decide which.
+                _ => Some(name_hash(class))
+                    .filter(|hash| !self.ambiguous.contains(hash))
+                    .and_then(|hash| {
+                        pinned::COLLIDING
+                            .binary_search_by_key(&(hash, slot), |&(class, slot, _)| (class, slot))
+                            .ok()
+                    })
+                    .map(|index| pinned::COLLIDING[index].2)
+                    .filter(|address| candidates.contains(address)),
+            }
+        });
+        matched.unwrap_or_else(|| {
+            let identity = UNMATCHED_IDENTITY | u64::from(rva);
+            let stand_in = fingerprint.unwrap_or_else(|| name_hash(class) ^ u64::from(slot));
+            self.unmatched.insert(identity, stand_in);
+            identity
+        })
+    }
+
+    fn class(&mut self, decorated: &str, vtable: u32) -> u64 {
+        let hash = name_hash(decorated);
+        match pinned::CLASSES.binary_search_by_key(&hash, |&(found, _)| found) {
+            Ok(index) if !self.ambiguous.contains(&hash) => pinned::CLASSES[index].1,
+            _ => {
+                let identity = UNMATCHED_IDENTITY | u64::from(vtable);
+                self.unmatched.insert(identity, hash);
+                identity
+            }
+        }
+    }
+}
+
+/// The source of `pinned.rs`, from the recognised build.
+pub(super) fn pinned_source(image: &PeImage, keywords: &KeywordTables) -> io::Result<String> {
+    let raw = Raw::decode(image, keywords)?;
+    if !raw.ambiguous.is_empty() {
+        return Err(invalid(
+            "registries: several classes share a canonical name",
+        ));
+    }
+    let mut code = Fingerprints::new(image);
+    let mut functions: BTreeMap<u32, (u64, BTreeSet<(u64, u32)>)> = BTreeMap::new();
+    let mut uses: Vec<_> = raw
+        .reader_classes
+        .into_iter()
+        .zip([raw.assign, raw.comparison, raw.body])
+        .map(|(class, reader)| (class, TRIGGER_VALUE_READER, reader))
+        .collect();
+    for row in &raw.triggers {
+        uses.push((row.class, TRIGGER_VALUE_READER, row.value));
+        uses.push((row.class, TRIGGER_KEY_READER, row.key));
+    }
+    for row in &raw.effects {
+        uses.push((row.class, EFFECT_VALUE_READER, row.value));
+        uses.push((row.class, EFFECT_KEY_READER, row.key));
+    }
+    for (class, slot, rva) in uses {
+        let fingerprint = code
+            .fingerprint(rva, true)
+            .ok_or_else(|| invalid(format!("{class} slot {slot}: reader has no fingerprint")))?;
+        functions
+            .entry(rva)
+            .or_insert_with(|| (fingerprint, BTreeSet::new()))
+            .1
+            .insert((name_hash(class), slot));
+    }
+    let mut counts = HashMap::new();
+    for (fingerprint, _) in functions.values() {
+        *counts.entry(*fingerprint).or_insert(0) += 1;
+    }
+    let address = |rva: u32| image.base + u64::from(rva);
+    let mut by_fingerprint: Vec<_> = functions
+        .iter()
+        .map(|(&rva, (fingerprint, _))| (*fingerprint, address(rva)))
+        .collect();
+    by_fingerprint.sort_unstable();
+    let mut colliding: Vec<_> = functions
+        .iter()
+        .filter(|(_, (fingerprint, _))| counts[fingerprint] > 1)
+        .flat_map(|(&rva, (_, uses))| {
+            uses.iter()
+                .map(move |&(class, slot)| (class, slot, address(rva)))
+        })
+        .collect();
+    colliding.sort_unstable();
+    let mut classes: Vec<_> = raw
+        .effects
+        .iter()
+        .map(|row| (row.class, row.vtable))
+        .chain(raw.contexts.iter().copied())
+        .map(|(class, vtable)| (name_hash(class), address(vtable)))
+        .collect();
+    classes.sort_unstable();
+    classes.dedup();
+    let mut masks: Vec<_> = raw
+        .triggers
+        .iter()
+        .map(|row| (row.token, row.mask))
+        .collect();
+    masks.sort_unstable();
+
+    let mut text = String::from(
+        "//! Recognised-build identities that other builds' registries map onto; written by `executable-tables-check --pin`.\n\n",
+    );
+    writeln!(
+        text,
+        "pub(super) const TRIGGER_LAYOUT: u64 = {:#018x};",
+        code.layout(raw.trigger_base)?
+    )
+    .unwrap();
+    writeln!(
+        text,
+        "pub(super) const EFFECT_LAYOUT: u64 = {:#018x};",
+        code.layout(raw.effect_base)?
+    )
+    .unwrap();
+    text.push_str("\n/// Reader fingerprints and addresses, by fingerprint.\n#[rustfmt::skip]\npub(super) const FUNCTIONS: &[(u64, u64)] = &[\n");
+    for (fingerprint, address) in by_fingerprint {
+        writeln!(text, "    ({fingerprint:#018x}, {address:#x}),").unwrap();
+    }
+    text.push_str("];\n\n/// Class-name hash and slot of each use of a fingerprint shared by several readers.\n#[rustfmt::skip]\npub(super) const COLLIDING: &[(u64, u32, u64)] = &[\n");
+    for (class, slot, address) in colliding {
+        writeln!(text, "    ({class:#018x}, {slot}, {address:#x}),").unwrap();
+    }
+    text.push_str("];\n\n/// Class-name hashes and virtual tables of the effect classes.\n#[rustfmt::skip]\npub(super) const CLASSES: &[(u64, u64)] = &[\n");
+    for (class, address) in classes {
+        writeln!(text, "    ({class:#018x}, {address:#x}),").unwrap();
+    }
+    text.push_str("];\n\n/// Trigger scope masks, by keyword.\n#[rustfmt::skip]\npub(super) const SCOPE_MASKS: &[(u32, u32)] = &[\n");
+    for (token, mask) in masks {
+        writeln!(text, "    ({token:#x}, {mask:#x}),").unwrap();
+    }
+    text.push_str("];\n");
+    Ok(text)
+}
+
 fn constant_return(image: &PeImage, function: u32) -> io::Result<u32> {
     let mut result = None;
     for instruction in function_body(image, function)? {
@@ -830,20 +1794,7 @@ fn constant_return(image: &PeImage, function: u32) -> io::Result<u32> {
 }
 
 pub(crate) fn class_name(image: &PeImage, vtable: u32) -> io::Result<String> {
-    let locator_pointer = vtable
-        .checked_sub(8)
-        .ok_or_else(|| invalid("class identity address underflow"))?;
-    let locator = image.va_to_rva(image.u64(locator_pointer)?)?;
-    image.bytes(locator, 24)?;
-    if image.u32(locator)? != 1 || image.u32(checked_add(locator, 20)?)? != locator {
-        return Err(invalid("class identity locator is inconsistent"));
-    }
-    let descriptor = image.u32(checked_add(locator, 12)?)?;
-    image.bytes(descriptor, 16)?;
-    let hierarchy = image.u32(checked_add(locator, 16)?)?;
-    image.bytes(hierarchy, 16)?;
-    let decorated = image.string(checked_add(descriptor, 16)?)?;
-    project_class_name(decorated)
+    project_class_name(decorated_name(image, vtable)?)
 }
 
 fn project_class_name(decorated: &str) -> io::Result<String> {
@@ -883,6 +1834,10 @@ fn identifier(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TRIGGER_REGISTRATION: u32 = 0x0059_7b90;
+    const EFFECT_REGISTRATION: u32 = 0x0058_88e0;
+    const OBJECT_ALLOCATION: u32 = 0x025a_009c;
 
     const CODE_START: u32 = 0x1000;
     const FACTORY_START: u32 = 0x1100;
@@ -1011,7 +1966,13 @@ mod tests {
 
     fn trigger_registrations(image: &PeImage) -> io::Result<BTreeMap<u32, u32>> {
         let [sites] = call_sites(image, [TRIGGER_REGISTRATION])?;
-        registrations(image, TRIGGER_REGISTRATION, sites, "synthetic")
+        registrations(
+            image,
+            OBJECT_ALLOCATION,
+            TRIGGER_REGISTRATION,
+            sites,
+            "synthetic",
+        )
     }
 
     #[test]
@@ -1064,7 +2025,9 @@ mod tests {
         install_code(&mut bytes, FACTORY_START, &code);
         let image = PeImage::parse(bytes).unwrap();
         assert_eq!(
-            Factories::new(&image).object(ENTRY_TABLE).unwrap(),
+            Factories::new(&image, OBJECT_ALLOCATION)
+                .object(ENTRY_TABLE)
+                .unwrap(),
             OBJECT_TABLE
         );
     }
@@ -1090,7 +2053,9 @@ mod tests {
         install_code(&mut bytes, CONSTRUCTOR_START, &constructor);
         let image = PeImage::parse(bytes).unwrap();
         assert_eq!(
-            Factories::new(&image).object(ENTRY_TABLE).unwrap(),
+            Factories::new(&image, OBJECT_ALLOCATION)
+                .object(ENTRY_TABLE)
+                .unwrap(),
             OBJECT_TABLE
         );
     }
@@ -1126,7 +2091,9 @@ mod tests {
         );
         let image = PeImage::parse(bytes).unwrap();
         assert_eq!(
-            Factories::new(&image).object(ENTRY_TABLE).unwrap(),
+            Factories::new(&image, OBJECT_ALLOCATION)
+                .object(ENTRY_TABLE)
+                .unwrap(),
             OBJECT_TABLE
         );
     }
@@ -1156,7 +2123,9 @@ mod tests {
             FACTORY_START + code.len() as u32,
         );
         let image = PeImage::parse(bytes).unwrap();
-        let error = Factories::new(&image).object(ENTRY_TABLE).unwrap_err();
+        let error = Factories::new(&image, OBJECT_ALLOCATION)
+            .object(ENTRY_TABLE)
+            .unwrap_err();
         assert!(error.to_string().contains("ambiguous object identities"));
     }
 
@@ -1167,7 +2136,11 @@ mod tests {
         relative(&mut code, FACTORY_START, &[0xe9], FACTORY_START);
         install_code(&mut bytes, FACTORY_START, &code);
         let image = PeImage::parse(bytes).unwrap();
-        assert!(Factories::new(&image).object(ENTRY_TABLE).is_err());
+        assert!(
+            Factories::new(&image, OBJECT_ALLOCATION)
+                .object(ENTRY_TABLE)
+                .is_err()
+        );
         let mut bytes = fixture_bytes();
         write_u32(&mut bytes, offset(0x3400 + 20), 0x3420);
         let image = PeImage::parse(bytes).unwrap();
@@ -1203,39 +2176,62 @@ mod tests {
         assert!(project_class_name("Synthetic").is_err());
     }
 
+    #[test]
+    fn fingerprints_ignore_addresses_but_not_code() {
+        let mut bytes = fixture_bytes();
+        let mut first = Vec::new();
+        relative(&mut first, FACTORY_START, &[0x48, 0x8d, 0x05], OBJECT_TABLE);
+        first.extend_from_slice(&[0xb8, 1, 0, 0, 0]);
+        relative(&mut first, FACTORY_START, &[0xe9], CODE_START);
+        install_code(&mut bytes, FACTORY_START, &first);
+        let mut second = Vec::new();
+        relative(
+            &mut second,
+            CONSTRUCTOR_START,
+            &[0x48, 0x8d, 0x05],
+            HELPER_TABLE,
+        );
+        second.extend_from_slice(&[0xb8, 1, 0, 0, 0]);
+        relative(&mut second, CONSTRUCTOR_START, &[0xe9], CODE_START + 1);
+        install_code(&mut bytes, CONSTRUCTOR_START, &second);
+        install_code(&mut bytes, CODE_START + 0x80, &[0xb8, 2, 0, 0, 0, 0xc3]);
+        let image = PeImage::parse(bytes).unwrap();
+        let mut code = Fingerprints::new(&image);
+        assert!(code.fingerprint(FACTORY_START, false).is_some());
+        assert_eq!(
+            code.fingerprint(FACTORY_START, false),
+            code.fingerprint(CONSTRUCTOR_START, false)
+        );
+        assert_ne!(
+            code.fingerprint(FACTORY_START, false),
+            code.fingerprint(CODE_START + 0x80, false)
+        );
+    }
+
     fn installed() -> &'static RegistryTables {
         super::super::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
-        &super::super::get().registries
+        super::super::get().registries.as_ref().unwrap()
     }
 
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_trigger_registry_digest() {
-        verify_names("triggers", &installed().triggers, 596, TRIGGERS_DIGEST).unwrap();
+    fn installed_identities_all_match() {
+        assert!(installed().identities_matched());
     }
 
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_effect_registry_digest() {
-        verify_names("effects", &installed().effects, 553, EFFECTS_DIGEST).unwrap();
-    }
-
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_trigger_class_digest() {
-        installed().verify().unwrap();
-    }
-
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_effect_reader_digest() {
-        installed().verify().unwrap();
-    }
-
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_effect_identity_digest() {
-        installed().verify().unwrap();
+    fn pinned_identities_regenerate_from_the_recognised_build() {
+        let tables = super::super::initialize_for_tests().unwrap();
+        assert!(tables.recognised());
+        let folder = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap();
+        let exe = std::path::Path::new(&folder).join("hoi4.exe");
+        let image = PeImage::parse(std::fs::read(exe).unwrap()).unwrap();
+        let source = pinned_source(&image, tables.keywords.as_ref().unwrap()).unwrap();
+        assert!(
+            source == include_str!("registries/pinned.rs"),
+            "regenerated:\n{source}"
+        );
     }
 }

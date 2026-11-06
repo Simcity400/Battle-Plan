@@ -525,7 +525,7 @@ impl Hooks {
     fn world_inputs_enabled(&self, enabled: bool) -> bool {
         enabled && self.world_hooks == SITES
     }
-    /// The enclosing runtime verified the executable hash before construction.
+    /// The runtime's build gate admitted this family before construction.
     /// A differing sentinel leaves the family uninstalled. Existing polled
     /// families read afresh; doctrine tables refuse without their writer coverage.
     ///

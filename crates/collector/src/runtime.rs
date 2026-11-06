@@ -14,7 +14,6 @@ use crate::{
     spooling::{Distribution, Processor, WallTotals},
 };
 use collector_primitives::capacity::CapacityMax;
-use engine_executable::build::PINNED_BUILD;
 use engine_executable::build::hash_executable;
 use engine_native::{cgame_state, country_memory::SeedStatus, memory::LiveMemory, read};
 use replay_data::identity::IdentityCodec;
@@ -768,9 +767,6 @@ fn run(
             .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?,
     )
     .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
-    if !PINNED_BUILD.matches(&exe) {
-        return Err("unsupported game build");
-    }
     if session.identity.exe_hash != exe.sha256 || session.identity.exe_size != exe.size {
         return Err("collector config executable identity differs from running build");
     }
@@ -783,8 +779,10 @@ fn run(
     engine_research::research_modifiers::scripted_sharing_roster(
         config.scripted_maps.sharing_roster,
     );
-    engine_executable::executable_tables::initialize_executable(&executable_path)
+    let tables = engine_executable::executable_tables::initialize_executable(&executable_path)
         .map_err(|error| error_reason(error, "collector executable tables preparation failed"))?;
+    // An unrecognised build is a warning; each piece is then verified or withheld by name.
+    collector_primitives::build_gate::record(tables.recognised(), tables.build_warning());
     let dll = hash_executable(
         File::open(&dll_path).map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?,
     )
@@ -801,11 +799,16 @@ fn run(
     crate::hook_failures::configure(&config.output_dir, session.id, process_start);
     write_status(
         &status_path,
-        &crate::status::status!({"state":"starting", "session":session.id, "hours":0}),
+        &crate::status::status!({
+            "state":"starting", "session":session.id, "hours":0,
+            "build":collector_primitives::build_gate::status(),
+        }),
     )
     .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let progress = crate::progress::Progress::open(&config.output_dir);
     progress.step("attach_started", None);
+    // Nothing reads or patches the game unless every essential family verifies on this build.
+    crate::hook_failures::admit_essential()?;
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
     let rva = cgame_state::HOURLY_UPDATE_RVA;
@@ -831,6 +834,7 @@ fn run(
             &crate::status::status!({
                 "state":"preparing campaign history", "session":session.id,
                 "campaign":campaign, "hours":0,
+                "build":collector_primitives::build_gate::status(),
             }),
         )
     })
@@ -2299,6 +2303,7 @@ fn run(
             "event_feed_failure":restore_result.is_err().then(crate::event_feed_observer::status),
             "installation_error":installation_error,
             "failed_hook_families":crate::hook_failures::status(),
+            "build":collector_primitives::build_gate::status(),
             "validation_refusals": &validation_refusals,
             "hook_publication":crate::hook::publication::status(),
             "restoration_error":restore_result.err(),"collector_pinned":pinned,

@@ -28,7 +28,7 @@ function source(id: string, firstHour: number, lastHour: number): DashboardSourc
   return { id, path: `C:/recordings/${id}.battleplan`, revision: '1', metadata: { path: `C:/recordings/${id}.battleplan`, revision: '1',
     name: id, format: 1, captureMode: 'full', campaignKey: 'c0ffee', branches: [{ id: '1', sessionId: '1', firstHour, lastHour,
       parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] }],
-    countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [] } };
+    countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [], buildWarnings: [] } };
 }
 type ShownTimeline = { extent: [number, number]; playhead: number | null; labelHour: number; preserveZoomOnExtentChange: boolean; lanes: TimelineLane[];
   tooltip: (lane: TimelineLane, span: TimelineLane['spans'][number], hour: number, full: boolean) => { note?: string; rows?: { label: string; value?: string }[] } };

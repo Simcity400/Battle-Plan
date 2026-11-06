@@ -11,13 +11,12 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    fs::{self, File},
+    fs,
     path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use engine_dlc::{cdlc_manager, cdlc_manager::mounts_match};
-use engine_executable::{build::PINNED_BUILD, build::hash_executable};
 use engine_native::{
     capture_text::Owned as Descriptor, province_definition::MovementCensus,
     province_definition::read_movement_census, walk::Outcome,
@@ -64,20 +63,17 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     };
     // Read-only rights: the oracle never writes to or injects into the game.
     let process = Process::open(pid, false)?;
-    let exe = hash_executable(File::open(&process.path).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    if !PINNED_BUILD.matches(&exe) {
+    let tables = engine_executable::executable_tables::initialize_executable(&process.path)
+        .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
+    if let Some(warning) = tables.build_warning() {
         return Err(format!(
-            "unsupported game build {} bytes; wanted {} bytes",
-            exe.size, PINNED_BUILD.exe_size
+            "the movement oracle is withheld: it reads the recognised build's memory layout. {warning}"
         ));
     }
     let name = process
         .path
         .file_name()
         .ok_or("game executable has no name")?;
-    engine_executable::executable_tables::initialize_executable(&process.path)
-        .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
     let base = windows::modules(pid)?
         .into_iter()
         .find(|module| module.path.file_name() == Some(name))

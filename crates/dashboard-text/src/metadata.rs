@@ -185,6 +185,7 @@ impl ResidentMetadata {
                 reasons: Vec::new(),
             }),
             warnings: Vec::new(),
+            build_warnings: Vec::new(),
         })
     }
 }
@@ -276,6 +277,7 @@ fn read_from(
             reasons: Vec::new(),
         }),
         warnings: Vec::new(),
+        build_warnings: Vec::new(),
     };
     for warning in replay.compatibility_gaps() {
         warnings.warn(&warning)?;
@@ -453,6 +455,29 @@ fn damage(
 }
 
 /// The terminal marker is separate from gaps: an unknown failed hour has none.
+/// Warnings about the game build, once the installed game's tables are loaded: a recording
+/// of another build, an installed build this release does not recognise, and every table
+/// withheld on it.
+pub fn build_warnings(replay: &Replay) -> Vec<String> {
+    use engine_executable::{build, executable_tables};
+    let installed = executable_tables::is_initialized().then(executable_tables::get);
+    let recorded = build::RecordedBuild {
+        version: &replay.identity.game_version,
+        identity: build::ExecutableIdentity {
+            size: replay.identity.exe_size,
+            sha256: replay.identity.exe_hash,
+        },
+    };
+    let Some(tables) = installed else {
+        return Vec::new();
+    };
+    recorded
+        .warning((tables.identity(), tables.version.as_deref().ok()))
+        .into_iter()
+        .chain(tables.warnings())
+        .collect()
+}
+
 pub fn partial_recording(
     control: &replay::spool::ControlRecord,
 ) -> io::Result<Option<PartialRecording>> {

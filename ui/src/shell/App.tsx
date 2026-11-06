@@ -34,7 +34,7 @@ import { contentRevision } from '../dashboard/contentRevision';
 import type { ContentFolders, ReplayMetadata } from './api';
 import { hasMapOverlay, isMapOverlay } from './mapOverlays';
 import { useDiagnosticsShortcut } from './diagnosticsSetting';
-import { RecordingNotice } from './recordingNotice';
+import { BuildNotice, RecordingNotice } from './recordingNotice';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
@@ -406,6 +406,7 @@ export default function App() {
         <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
         {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} damaged={metadata?.damaged} path={metadata?.path} />}
+        {tab !== 'settings' && <BuildNotice warnings={metadata?.buildWarnings} />}
         {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status">{pageStorageWarning}</div>}
         {switchFailure && <div className="notice warning shell-switch-failure" role="alert"><Icon name="alert" />
           <span>{`${TAB_NAMES[switchFailure.tab]} could not be shown: ${switchFailure.message}`}</span>

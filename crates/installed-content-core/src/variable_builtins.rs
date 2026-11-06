@@ -2,40 +2,35 @@
 //! are considered. Names retain exact byte identity, without operand suffixes.
 //! Purchase contracts and factions have no built-in variable table.
 
-use engine_executable::executable_tables::RuntimeTable;
+use engine_executable::executable_tables::{RuntimeTable, view};
 
 /// Built-ins of the global variable store.
 pub static GLOBAL: RuntimeTable<&'static [&'static str]> =
-    RuntimeTable::new(|| &engine_executable::executable_tables::get().variables.global);
+    RuntimeTable::new(|| view(|tables| &tables.variables, |table| &table.global[..]));
 
 /// Built-ins of a country's variable store.
-pub static COUNTRY: RuntimeTable<&'static [&'static str]> = RuntimeTable::new(|| {
-    &engine_executable::executable_tables::get()
-        .variables
-        .country
-});
+pub static COUNTRY: RuntimeTable<&'static [&'static str]> =
+    RuntimeTable::new(|| view(|tables| &tables.variables, |table| &table.country[..]));
 
 /// Built-ins of a state's variable store.
 pub static STATE: RuntimeTable<&'static [&'static str]> =
-    RuntimeTable::new(|| &engine_executable::executable_tables::get().variables.state);
+    RuntimeTable::new(|| view(|tables| &tables.variables, |table| &table.state[..]));
 
 /// Built-ins of a character's variable store, documented as `unit_leader`.
-pub static CHARACTER: RuntimeTable<&'static [&'static str]> = RuntimeTable::new(|| {
-    &engine_executable::executable_tables::get()
-        .variables
-        .unit_leader
-});
+pub static CHARACTER: RuntimeTable<&'static [&'static str]> =
+    RuntimeTable::new(|| view(|tables| &tables.variables, |table| &table.unit_leader[..]));
 
 /// Built-ins of an industrial organisation's variable store.
 pub static ORGANISATION: RuntimeTable<&'static [&'static str]> = RuntimeTable::new(|| {
-    &engine_executable::executable_tables::get()
-        .variables
-        .industrial_organisation
+    view(
+        |tables| &tables.variables,
+        |table| &table.industrial_organisation[..],
+    )
 });
 
 /// Built-ins of a special project's variable store.
 pub static PROJECT: RuntimeTable<&'static [&'static str]> =
-    RuntimeTable::new(|| &engine_executable::executable_tables::get().variables.project);
+    RuntimeTable::new(|| view(|tables| &tables.variables, |table| &table.project[..]));
 
 /// Whether `name` is a built-in of `table` (sorted by bytes).
 pub fn contains(table: &[&str], name: &[u8]) -> bool {

@@ -66,7 +66,7 @@ const OWNER_ALIAS: u32 = 5_000;
 const OWNER: u32 = 6_000;
 
 fn frame(flags: u32, owner_modifier: Option<i64>) -> DecodedFrame {
-    let modifier = engine_executable::modifier_keys::name(KEY).unwrap();
+    let modifier = engine_executable::modifier_keys::fixed_name(KEY).unwrap();
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 0,
@@ -186,7 +186,7 @@ impl Content {
     fn with_visible(visible: &str, available: &str) -> Self {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("modifier name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-        let modifier = engine_executable::modifier_keys::name(KEY).unwrap();
+        let modifier = engine_executable::modifier_keys::fixed_name(KEY).unwrap();
         let root = std::env::temp_dir().join(format!("mio_policy_quote_{}", uuid::Uuid::new_v4()));
         let write = |path: &str, text: &str| {
             let path = root.join(path);

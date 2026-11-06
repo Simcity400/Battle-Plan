@@ -253,8 +253,8 @@ pub fn route(callers: &[Caller], return_rva: usize) -> Option<&'static str> {
         .map(|caller| caller.route)
 }
 
-/// Verify an entry's sentinel before publication, alongside
-/// `build::PINNED_BUILD`; a sentinel is not installation or unwind approval.
+/// Verify an entry's sentinel before publication, once the collector's build
+/// gate admits the family; a sentinel is not installation or unwind approval.
 pub fn verify(memory: &impl Memory, base: usize, entry: Entry) -> Result<usize, &'static str> {
     let address = at(base, entry.rva)?;
     if crate::read::<[u8; 16]>(memory, address) != Some(entry.sentinel) {

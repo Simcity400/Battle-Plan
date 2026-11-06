@@ -111,7 +111,7 @@
 /* Top bar */
 .shell-header { grid-column: 2 / -1; grid-row: 1; display: flex; flex-wrap: wrap; align-items: flex-start; min-width: 0; container-type: inline-size; box-shadow: inset 1px 0 0 var(--line-soft); }
 .app-shell:is([data-sidebar='hidden'], [data-sidebar='peek']) .shell-header { box-shadow: none; }
-.shell-recording-notice { flex-basis: 100%; margin: 0 10px 8px; }
+.shell-recording-notice, .shell-build-notice { flex-basis: 100%; margin: 0 10px 8px; }
 .sidebar-toggle { color: color-mix(in srgb, var(--muted) 70%, transparent); }
 .shell-campaign-controls { flex: 1; min-width: 0; }
 .shell-location { display: flex; align-items: center; gap: 6px; height: 69px; padding: 0 8px; color: var(--muted); font-size: 0.875rem; font-weight: 500; white-space: nowrap; }

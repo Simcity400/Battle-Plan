@@ -2298,7 +2298,8 @@ impl Viewer {
                 hour: options.hour,
                 hour_fraction: options.hour_fraction,
             };
-            let result = (|| -> Result<LoadedReplay, String> {
+            // A withheld game table stops its reader with the reason, which the map then names.
+            let load = std::panic::AssertUnwindSafe(|| -> Result<LoadedReplay, String> {
                 let revision = if verify_revision {
                     let revision = dashboard::protocol::replay_revision(&path)
                         .map_err(|error| error.to_string())?;
@@ -2445,7 +2446,14 @@ impl Viewer {
                     decoder,
                     config,
                 })
-            })();
+            });
+            let result = std::panic::catch_unwind(load).unwrap_or_else(|stopped| {
+                Err(stopped
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| stopped.downcast_ref::<&str>().map(|said| (*said).to_owned()))
+                    .unwrap_or_else(|| "Replay loader stopped before returning a result".into()))
+            });
             let _ = sender.send(result);
             ctx.request_repaint();
         });

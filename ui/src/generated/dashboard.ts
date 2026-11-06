@@ -23,7 +23,12 @@ contentVerified: boolean,
 /**
  * The capture stopped after the verified prefix; independent of gap coverage.
  */
-partial: PartialRecording | null, damaged?: DamagedRecording | null, warnings: Array<string>, };
+partial: PartialRecording | null, damaged?: DamagedRecording | null, warnings: Array<string>,
+/**
+ * The recorded and installed game builds, when either needs a warning; worked out as
+ * metadata is served, since the installed game can change under a cached recording.
+ */
+buildWarnings: Array<string>, };
 export type CaptureMode = "full" | "map";
 export type PartialRecording = { sessionId: string, reason: string,
 /**

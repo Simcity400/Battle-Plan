@@ -296,6 +296,7 @@ impl Source {
         };
         drop(named);
         self.append_content_warnings(&mut metadata.warnings);
+        metadata.build_warnings = metadata::build_warnings(&self.replay);
         Ok(metadata)
     }
 

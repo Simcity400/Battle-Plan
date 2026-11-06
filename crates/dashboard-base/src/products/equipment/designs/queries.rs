@@ -436,9 +436,10 @@ pub fn permitted_roles(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut roles = Vec::new();
-    for (name, mask) in &engine_executable::executable_tables::get()
-        .auxiliary
-        .category_names
+    for (name, mask) in engine_executable::executable_tables::auxiliary_part(|tables| {
+        &tables.category_names
+    })
+    .map_err(|withheld| withheld.to_string())?
     {
         if *mask != 0 && content.role_permitted(kind, &assignments, *mask)? {
             roles.push((*name).to_owned());

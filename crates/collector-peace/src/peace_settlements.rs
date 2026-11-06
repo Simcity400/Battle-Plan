@@ -600,7 +600,7 @@ pub struct Hooks {
     hook: Option<Hook>,
 }
 impl Hooks {
-    /// Runtime has verified PINNED_BUILD's hash, as for line_output.
+    /// The runtime's build gate admitted this family, as for line_output.
     ///
     /// # Safety
     /// The memory source and base must identify the authenticated executable in

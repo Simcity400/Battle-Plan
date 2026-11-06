@@ -1,4 +1,6 @@
 //! Session-scoped hook refusals. No capture callback formats diagnostics.
+use collector_primitives::build_gate::{self, Piece};
+use engine_executable::availability::{Verified, Withheld};
 use replay_data::rows::TableId;
 use replay_frame::{frame::FrameInput, frame::TableView};
 use serde::Serialize;
@@ -118,6 +120,39 @@ impl Family {
                     | (Self::NavalTrees, "occupation_changes")
                     | (Self::CombatLogPrune, "combat_log_history")
             )
+    }
+    /// What the build gate must verify before this family touches the game.
+    fn piece(self) -> Piece {
+        match self {
+            Self::Hourly => Piece::new(
+                "hourly sampling",
+                "hourly hook site, clock, country sizing and every sampled struct layout",
+            ),
+            // A sentinel proves 16 bytes, not function identity, branch targets or the writer set.
+            _ => Piece::new(
+                self.name(),
+                "hook sites, calling contracts, writer inventory and struct layouts",
+            ),
+        }
+    }
+    fn verified(self) -> Verified<()> {
+        self.piece().verified()?;
+        if self == Self::PlayerCommands {
+            match engine_executable::executable_tables::EXECUTABLE_TABLES.get() {
+                Some(tables) => tables
+                    .commands
+                    .as_ref()
+                    .map(drop)
+                    .map_err(|withheld| withheld.requires(self.name()))?,
+                None => {
+                    return Err(Withheld::new(
+                        self.name(),
+                        "executable tables are not loaded",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
     pub(crate) fn essential(self) -> Option<&'static str> {
         match self {
@@ -533,6 +568,7 @@ fn publish_attach_status(family: Family) -> io::Result<()> {
             "session": context.session,
             "process_start_time": context.process_start,
             "failed_hook_families": status(),
+            "build": build_gate::status(),
             "installation_error": family.essential(),
         });
         crate::runtime::write_status(&context.directory.join("status.json"), &status)?;
@@ -559,6 +595,29 @@ pub(crate) fn refuse(family: Family, stage: &'static str, cause: &str) -> Result
         };
     }
     refuse_at(family, None, stage, cause)
+}
+/// Whether `family` may touch the game; a withheld family is refused by name, never constructed.
+pub(crate) fn admit(family: Family) -> Result<bool, &'static str> {
+    let Err(withheld) = family.verified() else {
+        return Ok(true);
+    };
+    build_gate::report(&withheld).map_err(|_| "withheld piece could not be recorded")?;
+    let cause = withheld.to_string();
+    match refuse(family, "build", &cause) {
+        Ok(()) => Ok(false),
+        Err(_) if family.essential().is_some() => Err(crate::runtime::installation_message(cause)),
+        Err(error) => Err(error),
+    }
+}
+/// Stops before any game read or patch when a family every frame needs is withheld.
+pub(crate) fn admit_essential() -> Result<(), &'static str> {
+    for family in Family::ALL
+        .into_iter()
+        .filter(|family| family.essential().is_some())
+    {
+        admit(family)?;
+    }
+    Ok(())
 }
 fn refuse_at(
     family: Family,
@@ -811,6 +870,13 @@ impl<T: RegisteredFamily> FamilyHooks<T> {
         construct: impl FnOnce() -> Result<T, &'static str>,
     ) -> Result<Self, &'static str> {
         let family = T::FAMILY;
+        if !admit(family)? {
+            return Ok(Self {
+                inner: None,
+                family,
+                base,
+            });
+        }
         let (result, report) = crate::hook::installation::capture(|| {
             let result = construct();
             if let Err(cause) = &result {

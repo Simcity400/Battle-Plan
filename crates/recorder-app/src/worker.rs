@@ -181,7 +181,7 @@ fn save_root(settings: &RecorderSettings) -> Result<PathBuf, String> {
         .map_err(|error| format!("Save folder {}: {error}", root.display()))
 }
 
-/// Unsupported builds stay refused for the process; other probe failures retry at the next poll.
+/// A probe withheld on an unrecognised build stays withheld for the process; other failures retry at the next poll.
 struct GameProbe {
     start: u64,
     probe: Result<Probe, String>,
@@ -194,7 +194,7 @@ impl GameProbe {
                 .probe
                 .as_ref()
                 .err()
-                .is_none_or(|error| controller::unsupported_build(error))
+                .is_none_or(|error| controller::probe_withheld(error))
     }
 }
 
@@ -647,7 +647,7 @@ impl Recorder {
                             held = None;
                         }
                         if !game.as_ref().is_some_and(|game| game.settled(start)) {
-                            // An unsupported build cannot be read; its capture refuses it.
+                            // On an unrecognised build the probe is withheld; capture still attaches.
                             let probe = Probe::open(pid);
                             if let Err(error) = &probe
                                 && game.as_ref().is_none_or(|game| {
@@ -1264,6 +1264,9 @@ fn fold_live(
         snapshot.hour = live.hour.or(snapshot.hour);
         snapshot.saved_bytes = earlier;
         snapshot.spool_bytes = live.spool_bytes;
+    }
+    if live.build_warning.is_some() {
+        snapshot.build_warning = live.build_warning;
     }
     // A failed save of a set-aside campaign stays shown.
     snapshot.problem = live.problem.or_else(|| inner.sticky.clone());

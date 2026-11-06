@@ -17,10 +17,13 @@ impl Renderer<'_, '_, '_> {
         }
         if self.is_context(item) {
             return Some(installed_content_core::effect_keys::NativeClass {
-                name: engine_executable::executable_tables::get()
-                    .registries
-                    .effect_class_name(0x142A31830)
-                    .expect("context effect class is present in verified metadata"),
+                name: engine_executable::executable_tables::required(
+                    engine_executable::executable_tables::get()
+                        .registries
+                        .as_ref(),
+                )
+                .effect_class_name(0x142A31830)
+                .expect("context effect class is present in verified metadata"),
                 vtable: 0x142A31830,
             });
         }
@@ -30,10 +33,13 @@ impl Renderer<'_, '_, '_> {
             .key_names
             .filter(|names| names.scripted_effects.contains(&name.to_ascii_lowercase()))
             .map(|_| installed_content_core::effect_keys::NativeClass {
-                name: engine_executable::executable_tables::get()
-                    .registries
-                    .effect_class_name(0x142A31900)
-                    .expect("scripted effect class is present in verified metadata"),
+                name: engine_executable::executable_tables::required(
+                    engine_executable::executable_tables::get()
+                        .registries
+                        .as_ref(),
+                )
+                .effect_class_name(0x142A31900)
+                .expect("scripted effect class is present in verified metadata"),
                 vtable: 0x142A31900,
             })
     }

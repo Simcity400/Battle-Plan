@@ -3,7 +3,7 @@
 //! keys do not enter keyword lookup. Immutable registries come from the verified
 //! executable, while authored names come from the resolved content stack.
 
-use engine_executable::executable_tables::RuntimeTable;
+use engine_executable::executable_tables::{RuntimeTable, view};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
@@ -15,16 +15,13 @@ use crate::{
     scripted_triggers::{Lookup, ScriptedTriggers, Template},
 };
 pub static REGISTERED_TRIGGERS: RuntimeTable<&'static [(u32, &'static str)]> =
-    RuntimeTable::new(|| {
-        &engine_executable::executable_tables::get()
-            .registries
-            .triggers
-    });
+    RuntimeTable::new(|| view(|tables| &tables.registries, |table| &table.triggers[..]));
 pub use engine_executable::executable_tables::TriggerReader as Reader;
 pub static TRIGGER_CLASSES: RuntimeTable<&'static [(u32, u32, Reader)]> = RuntimeTable::new(|| {
-    &engine_executable::executable_tables::get()
-        .registries
-        .trigger_classes
+    view(
+        |tables| &tables.registries,
+        |table| &table.trigger_classes[..],
+    )
 });
 pub fn trigger_class(token: u32) -> Option<(u32, Reader)> {
     TRIGGER_CLASSES
@@ -59,9 +56,12 @@ pub fn key_reader(token: u32) -> KeyReader {
     let Some((_, reader)) = trigger_class(token) else {
         return KeyReader::ThenLoadKey(&[]);
     };
-    let registry = &engine_executable::executable_tables::get()
-        .registries
-        .trigger_key_readers;
+    let registry = &engine_executable::executable_tables::required(
+        engine_executable::executable_tables::get()
+            .registries
+            .as_ref(),
+    )
+    .trigger_key_readers;
     let key = registry
         .binary_search_by_key(&token, |&(id, _)| id)
         .ok()
@@ -458,9 +458,9 @@ pub fn registered_trigger(text: &[u8]) -> Option<u32> {
 }
 pub static EQUIPMENT_CATEGORIES: RuntimeTable<&'static [(u32, u64, &'static str)]> =
     RuntimeTable::new(|| {
-        &engine_executable::executable_tables::get()
-            .auxiliary
-            .equipment_categories
+        engine_executable::executable_tables::auxiliary_part(|tables| &tables.equipment_categories)
+            .map(|categories| &categories[..])
+            .map_err(Clone::clone)
     });
 pub fn equipment_category_mask(token: u32) -> Option<u64> {
     EQUIPMENT_CATEGORIES

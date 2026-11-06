@@ -8,7 +8,7 @@ use std::{
 };
 
 use engine_dlc::cdlc_manager;
-use engine_executable::build::{PINNED_BUILD, hash_executable};
+use engine_executable::build::hash_executable;
 use engine_native::{Memory, capture_text::Owned, cfleet, cgame_state, cship, read, walk::Outcome};
 use installed_content_core::content::{GatherOptions, gather};
 use replay::container::{Replay, SeekResult};
@@ -355,16 +355,15 @@ fn capture(options: Options) -> Result<(), String> {
     };
     // Read-only rights; no injection, game calls, writes or thread suspension.
     let process = Process::open(pid, false)?;
-    let mut executable = File::open(&process.path).map_err(|e| e.to_string())?;
-    let exe = hash_executable(&mut executable).map_err(|e| e.to_string())?;
-    if !PINNED_BUILD.matches(&exe) {
-        return Err("unsupported game build".into());
+    let tables = engine_executable::executable_tables::initialize_executable(&process.path)
+        .map_err(|e| e.to_string())?;
+    let exe = tables.identity().clone();
+    if let Some(warning) = tables.build_warning() {
+        return Err(format!(
+            "the ship-name witness is withheld: it reads the recognised build's memory layout. {warning}"
+        ));
     }
-    let version = PINNED_BUILD
-        .read_version_banner(&mut executable)
-        .map_err(|e| e.to_string())?;
-    engine_executable::executable_tables::initialize_executable(&process.path)
-        .map_err(|e| e.to_string())?;
+    let version = tables.version.clone().map_err(|e| e.to_string())?;
     let name = process
         .path
         .file_name()

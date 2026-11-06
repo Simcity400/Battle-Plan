@@ -70,9 +70,7 @@ pub fn files(layers: &ResolvedLayers) -> Vec<crate::script_files::ScriptPath> {
 /// Finds an executable category keyword with ASCII case folding.
 pub fn category_mask(name: impl AsRef<[u8]>) -> Option<u64> {
     let name = name.as_ref();
-    engine_executable::executable_tables::get()
-        .auxiliary
-        .category_names
+    engine_executable::executable_tables::required(engine_executable::executable_tables::auxiliary_part(|tables| &tables.category_names))
         .iter()
         .find(|(key, _)| name.eq_ignore_ascii_case(key.as_bytes()))
         .map(|(_, mask)| *mask)
@@ -82,10 +80,7 @@ pub fn category_mask(name: impl AsRef<[u8]>) -> Option<u64> {
 pub fn category_names(mask: u64) -> Result<Vec<&'static str>, u64> {
     let mut unknown = mask;
     let mut names = Vec::new();
-    for &(name, bit) in &engine_executable::executable_tables::get()
-        .auxiliary
-        .category_names
-    {
+    for &(name, bit) in engine_executable::executable_tables::required(engine_executable::executable_tables::auxiliary_part(|tables| &tables.category_names)) {
         if bit != 0 && mask & bit != 0 {
             names.push(name);
             unknown &= !bit;
@@ -168,9 +163,9 @@ pub const STAT_COUNT: usize = 78;
 
 /// Script keyword, localisation label and positive polarity by stat index.
 pub fn stat_metadata() -> &'static [(&'static str, &'static str, bool)] {
-    &engine_executable::executable_tables::get()
-        .auxiliary
-        .stat_metadata
+    use engine_executable::executable_tables::{auxiliary_part, required};
+    let stat_metadata = required(auxiliary_part(|tables| &tables.stat_metadata));
+    stat_metadata
 }
 
 /// A stat keyword's index in the equipment stat block.
@@ -184,9 +179,7 @@ pub fn stat_index(keyword: &[u8]) -> Option<usize> {
 /// the AI order enum. Unrecognized authored names contribute no bit.
 pub fn mission_mask(name: &[u8]) -> u32 {
     let name = c_string(name);
-    engine_executable::executable_tables::get()
-        .auxiliary
-        .equipment_missions
+    engine_executable::executable_tables::required(engine_executable::executable_tables::auxiliary_part(|tables| &tables.equipment_missions))
         .iter()
         .find(|(known, _)| known.as_bytes().eq_ignore_ascii_case(name))
         .map_or(0, |(_, mask)| *mask)

@@ -1,8 +1,6 @@
 use super::pe::PREFERRED_IMAGE_BASE;
-use super::{
-    PeImage, TableDigestMismatch, UnsupportedExecutable, identity_of, verify_digest,
-    verify_executable,
-};
+use super::{PeImage, TableDigestMismatch, verify_digest};
+use crate::build::ExecutableIdentity;
 use std::io;
 
 const OPTIONAL: usize = 0x98;
@@ -204,22 +202,6 @@ fn instruction_ips_use_preferred_addresses_and_invalid_spans_are_refused() {
 }
 
 #[test]
-fn mismatched_executable_bytes_are_refused_before_image_decoding() {
-    let error = verify_executable(b"synthetic executable").unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    let mismatch = error
-        .get_ref()
-        .unwrap()
-        .downcast_ref::<UnsupportedExecutable>()
-        .unwrap();
-    assert_eq!(mismatch.actual_size, 20);
-    assert_eq!(
-        mismatch.actual_sha256,
-        identity_of(b"synthetic executable").unwrap().sha256
-    );
-}
-
-#[test]
 fn digest_errors_preserve_the_table_identity_and_actual_hash() {
     const EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     verify_digest("synthetic table", b"", EMPTY).unwrap();
@@ -234,7 +216,7 @@ fn digest_errors_preserve_the_table_identity_and_actual_hash() {
     assert_eq!(mismatch.bytes, 7);
     assert_eq!(
         mismatch.actual_sha256,
-        identity_of(b"changed").unwrap().sha256
+        ExecutableIdentity::of(b"changed").sha256
     );
     assert_eq!(
         verify_digest("synthetic table", b"", "invalid")

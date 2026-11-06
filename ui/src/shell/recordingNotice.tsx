@@ -26,6 +26,15 @@ export function RecordingNotice({ partial, damaged, path }: NoticeProps & { path
   </div> : null;
 }
 
+/** The game build warning: the first in full, any further ones (parts withheld) on hover. */
+export function BuildNotice({ warnings }: { warnings?: string[] }) {
+  if (!warnings?.length) return null;
+  const [first, ...rest] = warnings;
+  return <div className="notice warning shell-build-notice" role="status" data-tooltip={rest.length ? rest.join('\n') : undefined}>
+    <span>{first}{rest.length > 0 && ` · ${rest.length} more ${rest.length === 1 ? 'note' : 'notes'}`}</span>
+  </div>;
+}
+
 export function PartialRecordingBadge({ partial, damaged }: NoticeProps) {
   const tooltip = [damaged && damagedRecordingText(damaged), ...(damaged?.reasons ?? []),
     partial && partialRecordingText(partial)].filter(Boolean).join('\n');

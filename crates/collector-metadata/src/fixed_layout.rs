@@ -304,7 +304,7 @@ mod tests {
                     .iter()
                     .all(|&key| key as usize != index)
             );
-            let name = modifier_keys::names()[index];
+            let name = modifier_keys::names().unwrap()[index];
             let report = mismatched(index);
             let mut input = inputs();
             apply(&mut input, &Ok(report)).unwrap();
@@ -342,6 +342,7 @@ mod tests {
     fn token_mismatch_refuses_its_consumers_by_name() {
         let mut report = valid();
         report.tokens[engine_fixed_layout::fixed_layout::tokens()
+            .unwrap()
             .position(|token| token.id == cresearch_slot::IDLE_HANDLE)
             .unwrap()] = Err("token spells a different name");
         let mut input = inputs();
@@ -358,6 +359,7 @@ mod tests {
         // The save oracle alone consumes the fixed15 token: named, nothing refused.
         let mut report = valid();
         report.tokens[engine_fixed_layout::fixed_layout::tokens()
+            .unwrap()
             .position(|token| token.id == cpdx_lexer::FIXED15_TOKEN)
             .unwrap()] = Err("exceeds the static token maximum");
         let mut input = inputs();

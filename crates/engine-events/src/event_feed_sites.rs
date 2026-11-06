@@ -36,8 +36,8 @@ pub const ANNEX: CallSite = CallSite {
     ],
 };
 
-/// Verify before publication, alongside build::PINNED_BUILD. A sentinel is
-/// not installation or unwind approval and does not match an installed patch.
+/// Verify before publication, once the collector's build gate admits the family. A sentinel
+/// is not installation or unwind approval and does not match an installed patch.
 pub fn verify(memory: &impl Memory, base: usize, site: CallSite) -> Result<usize, &'static str> {
     let address = at(base, site.rva)?;
     if read::<[u8; 16]>(memory, address) != Some(site.sentinel) {

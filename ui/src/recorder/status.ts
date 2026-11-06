@@ -37,6 +37,8 @@ export interface Snapshot {
   flag: FlagImage | null;
   /** Loads the finished session left out of its recordings; absent or null when none. */
   omitted?: OmittedLoads | null;
+  /** The collector's warning that this release does not recognise the game build. */
+  buildWarning?: string | null;
 }
 
 export type NextLoad = 'continue' | 'newFile';

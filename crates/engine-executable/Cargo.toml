@@ -9,6 +9,10 @@ license.workspace = true
 [lib]
 doctest = false
 
+[[bin]]
+name = "executable-tables-check"
+path = "src/bin/executable-tables-check.rs"
+
 [features]
 
 [dependencies]

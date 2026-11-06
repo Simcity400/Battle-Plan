@@ -229,7 +229,10 @@ mod tests {
             .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         let mut definitions = Vec::new();
         let mut tokens = Vec::new();
-        for key in engine_executable::modifier_keys::all().filter(|key| keys.contains(&key.index)) {
+        for key in engine_executable::modifier_keys::all()
+            .unwrap()
+            .filter(|key| keys.contains(&key.index))
+        {
             definitions.push(replay_data::rows::ModifierDefinitionRow {
                 index: key.index,
                 token: key.index + 10_000,

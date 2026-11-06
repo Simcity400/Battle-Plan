@@ -1266,7 +1266,7 @@ pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, Stri
     }
     let modifier = |key: u32| {
         super::naval_environment::modifier(&context, key).ok_or_else(|| {
-            let name = engine_executable::modifier_keys::name(key).unwrap_or("an unnamed key");
+            let name = engine_executable::modifier_keys::fixed_name(key).unwrap_or("an unnamed key");
             format!(
                 "naval_environment::modifier gives no {name} ({key:#x}) from its recorded weapon-context sources"
             )

@@ -6,8 +6,8 @@ Smoke uses receipt-verified final binaries with an explicit save, calibrated UiC
 and a new Out directory. An explicit Checkpoint runs the workspace checks
 before building the three release artifacts.
 It preserves the input save and restores the isolated user
-profile selection/settings after normal exit. Explicit actions remain available. Baseline verifies the pinned game build,
-then reads only its clock; it sends no input and does not inject.
+profile selection/settings after normal exit. Explicit actions remain available. Baseline reads only the game's clock,
+which is withheld on a build this release does not recognise; it sends no input and does not inject.
 The script does not modify settings or certify that a save finished loading.
 Launch and Smoke require a physical user directory without subst drives, junction or
 symbolic-link ancestors or hyphens in its path. ContinueLastSave requires ExpectedSave;
@@ -25,7 +25,7 @@ or minimize that application, including when it is TeamViewer.
 Console opens the console with the supplied key, types one line, presses Enter,
 and closes it. Use Text for an already-open console or a save-name field.
 .PARAMETER GameExe
-Path to the supported installed hoi4.exe, or set BATTLE_PLAN_GAME_DIR.
+Path to the installed hoi4.exe, or set BATTLE_PLAN_GAME_DIR. A build this release does not recognise is a warning.
 .PARAMETER CaptureRoot
 User-selected output root; defaults to LOCALAPPDATA/HOI4Replay/captures.
 .PARAMETER GameLock
@@ -154,37 +154,30 @@ $script:ShimCursorFlag = 1
 $script:ShimFocusFlag = 2
 $script:ShimLeftFlag = 4
 
-function Read-ExecutableVersionText([string]$Path, [uint32]$VersionTextRva) {
+function Get-GameBuild([string]$Path) {
+    # The recognised build is read from the source the binaries are built from, never repeated here.
+    $source = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'crates\engine-executable\src\build.rs'))
+    $pinned = [regex]::Match($source, '(?s)pub const PINNED_BUILD: Build = Build \{\s*version: "([^"]+)",\s*exe_size: ([\d_]+),\s*exe_sha256: \[([^\]]+)\]')
+    if (-not $pinned.Success) { throw 'PINNED_BUILD not found in crates/engine-executable/src/build.rs.' }
+    $wantedSize = [int64]($pinned.Groups[2].Value -replace '_', '')
+    $wantedHash = (-join ([regex]::Matches($pinned.Groups[3].Value, '0x([0-9a-fA-F]{2})') | ForEach-Object { $_.Groups[1].Value })).ToLowerInvariant()
     $bytes = [IO.File]::ReadAllBytes($Path)
-    if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
-        throw 'Executable version text requires a DOS header.'
+    $hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+    # The version text is the one NUL-delimited string shaped like a version banner, as build.rs finds it.
+    $text = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
+    $banners = @([regex]::Matches($text, '(?<=\x00)[A-Z][A-Za-z ]{0,63} v\d{1,4}(?:\.\d{1,4}){2,}\.[0-9a-f]{1,8}(?=\x00)') | ForEach-Object Value | Sort-Object -Unique)
+    $version = if ($banners.Count -eq 1) { $banners[0] } else { $null }
+    $recognised = $bytes.LongLength -eq $wantedSize -and $hash -eq $wantedHash
+    $found = "hoi4.exe of $($bytes.LongLength) bytes, SHA-256 $($hash.Substring(0, 12))..."
+    $warning = if ($recognised) { $null } else {
+        "Unrecognised game build: this release was made for version $($pinned.Groups[1].Value) (hoi4.exe of $wantedSize bytes, SHA-256 $($wantedHash.Substring(0, 12))...), " +
+        "but the game is $(if ($version) { "$version ($found)" } else { $found }). Parts that fail their own checks on this build are withheld."
     }
-    $peOffset = [int64][BitConverter]::ToUInt32($bytes, 60)
-    if ($peOffset + 24 -gt $bytes.LongLength -or [BitConverter]::ToUInt32($bytes, [int]$peOffset) -ne 0x00004550) {
-        throw 'Executable version text requires a PE header.'
-    }
-    $sectionCount = [BitConverter]::ToUInt16($bytes, [int]($peOffset + 6))
-    $optionalSize = [BitConverter]::ToUInt16($bytes, [int]($peOffset + 20))
-    $firstSection = $peOffset + 24 + $optionalSize
-    if ($firstSection + [int64]$sectionCount * 40 -gt $bytes.LongLength) {
-        throw 'Executable version text has an incomplete section table.'
-    }
-    for ($index = 0; $index -lt $sectionCount; $index++) {
-        $section = [int]($firstSection + $index * 40)
-        $virtualAddress = [int64][BitConverter]::ToUInt32($bytes, $section + 12)
-        $rawSize = [int64][BitConverter]::ToUInt32($bytes, $section + 16)
-        $rawOffset = [int64][BitConverter]::ToUInt32($bytes, $section + 20)
-        $delta = [int64]$VersionTextRva - $virtualAddress
-        if ($delta -lt 0 -or $delta -ge $rawSize) { continue }
-        $start = $rawOffset + $delta
-        $end = $rawOffset + $rawSize
-        if ($end -gt $bytes.LongLength) { throw 'Executable version text section exceeds the file.' }
-        $cursor = $start
-        while ($cursor -lt $end -and $bytes[$cursor] -ne 0) { $cursor++ }
-        if ($cursor -eq $end -or $cursor -eq $start) { throw 'Executable version text is empty or unterminated.' }
-        return [Text.UTF8Encoding]::new($false, $true).GetString($bytes, [int]$start, [int]($cursor - $start))
-    }
-    throw 'Executable version text has no file-backed section.'
+    [pscustomobject]@{ Size = $bytes.LongLength; Sha256 = $hash; Version = $version; Recognised = $recognised; Warning = $warning }
+}
+
+function Assert-ClockReadable($Build) {
+    if (-not $Build.Recognised) { throw "Clock reading is withheld: it reads the recognised build's memory layout. $($Build.Warning)" }
 }
 
 function Open-InputShim {
@@ -348,7 +341,7 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         ulong idler = BitConverter.ToUInt64(bytes, 0);
         if (idler == 0 || idler > long.MaxValue - 0x1000) return false;
         if (!Read(image + 0x033ddb10, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
-        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x029e58d8) return false;
+        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x029e5838) return false;
         if (!Read(idler + 0x6c1, 1) || bytes[0] > 1) return false;
         clock.paused = bytes[0];
         // The live root member is a pointer.
@@ -438,8 +431,10 @@ function Invoke-FullSmoke {
     $selection = if (Test-Path -LiteralPath $selectionPath) { ,[IO.File]::ReadAllBytes($selectionPath) } else { $null }
     if (-not (Test-Path -LiteralPath $sourceSave -PathType Leaf)) { throw 'Expected save is missing.' }
     if (@(Get-Process -Name the game,recorder -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
-    if ((Get-Item -LiteralPath $gamePath).Length -ne 56535160 -or
-        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine 'bccc62909b6a1ec2c1d5a46ef18608e4d0c7cdc89ad341b7402a23c40f7a8037') { throw 'Unsupported game build.' }
+    $gameBuild = Get-GameBuild $gamePath
+    if ($gameBuild.Warning) { Write-Warning $gameBuild.Warning }
+    # The smoke times its saves by the game clock.
+    Assert-ClockReadable $gameBuild
     $ui = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $UiConfig)) | ConvertFrom-Json
     foreach ($name in @('menu','speed_up','speed_down','pause','save_menu','save_name','save_confirm','save_back','menu_close','exit_game','exit_confirm','map_center','capture_cursor')) {
         $point = $ui.$name
@@ -458,7 +453,8 @@ function Invoke-FullSmoke {
         $bin = Join-Path $output 'bin'
         $null = New-Item -ItemType Directory -Path $bin
         $started = [Diagnostics.Stopwatch]::StartNew()
-        $report = [ordered]@{ passed=$false; phase='preflight'; checks=@(); source_save=$sourceSave; source_save_sha256=(Get-FileHash $sourceSave -Algorithm SHA256).Hash; started_utc=[DateTime]::UtcNow.ToString('o'); full_smoke=$true }
+        $report = [ordered]@{ passed=$false; phase='preflight'; checks=@(); source_save=$sourceSave; source_save_sha256=(Get-FileHash $sourceSave -Algorithm SHA256).Hash; started_utc=[DateTime]::UtcNow.ToString('o'); full_smoke=$true
+            game_build=[ordered]@{ version=$gameBuild.Version; bytes=$gameBuild.Size; sha256=$gameBuild.Sha256; recognised=$gameBuild.Recognised; warning=$gameBuild.Warning } }
     } catch {
         # Nothing has launched yet: release the lock this run just took.
         Remove-Item -LiteralPath $lock -Recurse -Force -ErrorAction SilentlyContinue
@@ -954,6 +950,8 @@ if ($Action -eq 'Launch') {
     if (-not $Foreground) {
         # Keep the game behind whatever was active: it takes focus when its window appears and again when the map
         # loads. Watch until the map is up and the window has stayed in the background for a few seconds.
+        $gameBuild = Get-GameBuild $gamePath
+        if ($gameBuild.Warning) { Write-Warning "$($gameBuild.Warning) The map load cannot be read from the clock; launch returns after the window stays in the background for 30 seconds." }
         Initialize-SmokeClock
         $reader = $null; $quietSince = $null; $pushes = 0; $loaded = $false
         $deadline = [DateTime]::UtcNow.AddSeconds(240)
@@ -966,15 +964,16 @@ if ($Action -eq 'Launch') {
                 if ([Hoi4ProbeInput]::GetForegroundWindow() -eq $handle) {
                     [void][Hoi4ProbeInput]::PushBehind($handle, $previousForeground); $pushes++; $quietSince = $null
                 } elseif ($null -eq $quietSince) { $quietSince = [DateTime]::UtcNow }
-                if ($null -eq $reader) { try { $reader = [Hoi4ClockBaseline]::new([uint32]$started.Id, [uint64]$started.MainModule.BaseAddress.ToInt64()) } catch { $reader = $null } }
+                if ($gameBuild.Recognised -and $null -eq $reader) { try { $reader = [Hoi4ClockBaseline]::new([uint32]$started.Id, [uint64]$started.MainModule.BaseAddress.ToInt64()) } catch { $reader = $null } }
             }
             $clock = if ($reader) { $reader.Sample() } else { $null }
             $loaded = [bool]($clock -and $clock.presentation_valid -and $null -ne $quietSince -and ([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 5)
-        } while (-not $loaded -and [DateTime]::UtcNow -lt $deadline)
+            $settled = -not $gameBuild.Recognised -and $null -ne $quietSince -and ([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 30
+        } while (-not $loaded -and -not $settled -and [DateTime]::UtcNow -lt $deadline)
         if ($reader) { $reader.Dispose() }
         # Background clicks need the shim; it is attached once, after the window exists.
         $shim = if ($started.MainWindowHandle -ne [IntPtr]::Zero) { Install-InputShim $started.Id } else { 'no window' }
-        [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath; Background = $true; ForegroundPushes = $pushes; LoadedBeforeReturn = $loaded; InputShim = $shim }
+        [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath; Background = $true; ForegroundPushes = $pushes; LoadedBeforeReturn = $(if ($gameBuild.Recognised) { $loaded } else { $null }); InputShim = $shim; GameBuildWarning = $gameBuild.Warning }
         return
     }
     [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath }
@@ -986,10 +985,7 @@ $game = $gameProcesses[0]
 if ($GameId -ne 0 -and $game.Id -ne $GameId) { throw "The running game has PID $($game.Id), not $GameId." }
 if ($game.Path -ine $gamePath) { throw "The running game executable differs from GameExe: $($game.Path)" }
 if ($Action -eq 'Clock') {
-    if ((Get-Item -LiteralPath $gamePath).Length -ne 56535160 -or
-        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine 'bccc62909b6a1ec2c1d5a46ef18608e4d0c7cdc89ad341b7402a23c40f7a8037') {
-        throw 'Unsupported game build for clock reading.'
-    }
+    Assert-ClockReadable (Get-GameBuild $gamePath)
     Initialize-SmokeClock
     $reader = [Hoi4ClockBaseline]::new([uint32]$game.Id, [uint64]$game.MainModule.BaseAddress.ToInt64())
     try { $reader.Sample() } finally { $reader.Dispose() }
@@ -1010,16 +1006,12 @@ if ($Action -eq 'Baseline') {
         throw 'Create the baseline capture directory before starting the measurement.'
     }
     if (Test-Path -LiteralPath $capturePath) { throw "Baseline already exists: $capturePath" }
-    # Supported executable identity for clock reading.
-    $wantedSize = [int64]56535160
-    $wantedHash = 'bccc62909b6a1ec2c1d5a46ef18608e4d0c7cdc89ad341b7402a23c40f7a8037'
-    $actualSize = (Get-Item -LiteralPath $gamePath).Length
-    $actualHash = (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash
-    if ($actualSize -ne $wantedSize -or $actualHash -ine $wantedHash) {
-        throw "Unsupported build: wanted $wantedSize bytes / $wantedHash; got $actualSize bytes / $actualHash."
-    }
-    $versionTextRva = [uint32]0x02795070
-    $exeVersion = Read-ExecutableVersionText -Path $gamePath -VersionTextRva $versionTextRva
+    $gameBuild = Get-GameBuild $gamePath
+    Assert-ClockReadable $gameBuild
+    $actualSize = $gameBuild.Size
+    $actualHash = $gameBuild.Sha256
+    if (-not $gameBuild.Version) { throw 'The executable has no single version text.' }
+    $exeVersion = $gameBuild.Version
     if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) {
         throw 'The free-run baseline requires collector.dll to be detached first.'
     }

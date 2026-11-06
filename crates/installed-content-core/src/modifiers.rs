@@ -15,9 +15,14 @@ use crate::{
 use std::collections::BTreeSet;
 
 fn builtin_registered(key: &[u8]) -> bool {
-    engine_executable::modifier_keys::names()
-        .iter()
-        .any(|name| name.as_bytes().eq_ignore_ascii_case(key))
+    engine_executable::executable_tables::required(
+        engine_executable::executable_tables::get()
+            .keywords
+            .as_ref(),
+    )
+    .modifier_names
+    .iter()
+    .any(|name| name.as_bytes().eq_ignore_ascii_case(key))
 }
 
 /// Bare keys are lexer-folded; quoted keys fold ASCII before hashing

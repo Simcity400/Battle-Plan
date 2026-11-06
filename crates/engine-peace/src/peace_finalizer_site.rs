@@ -24,8 +24,8 @@ pub const SENTINEL: [u8; 16] = [
     0x49, 0x8b, 0x9d, 0xf8, 0x01, 0x00, 0x00, 0x4c, 0x8b, 0x43, 0x08, 0x49, 0x8d, 0x95, 0xf8, 0x01,
 ];
 
-/// The enclosing loader must also verify `build::PINNED_BUILD`. A matching
-/// sentinel alone never authorizes installation on another executable.
+/// The loader's build gate must also admit the family. A matching sentinel
+/// alone never authorizes installation on another executable.
 pub fn verify(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
     let site = base
         .checked_add(RVA)

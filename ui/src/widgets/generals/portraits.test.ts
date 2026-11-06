@@ -107,7 +107,7 @@ test('actual portrait fact stores retain refusals only within the same edge, rec
       const path = `memory/${id}.battleplan`;
       return { source: { id, path, revision: '1', metadata: { path, name: id, revision: '1', format: 1, captureMode: 'full',
         campaignKey: 'c0ffee', branches: [branch], countries: [], playerCountryId: null,
-        contentVerified: false, partial: null, warnings: [] } }, branch };
+        contentVerified: false, partial: null, warnings: [], buildWarnings: [] } }, branch };
     };
     let track = recording('recording-a');
     const wanted = [{ hour: 100, tag: '8' }];

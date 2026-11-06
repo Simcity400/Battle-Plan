@@ -586,7 +586,7 @@ pub struct Hooks {
     taps: Vec<Tap>,
 }
 impl Hooks {
-    /// The enclosing runtime verified the executable hash before construction.
+    /// The runtime's build gate admitted this family before construction.
     /// A differing sentinel or an unreadable TLS index leaves the family
     /// uninstalled; ScriptVariables then reads every store afresh.
     ///

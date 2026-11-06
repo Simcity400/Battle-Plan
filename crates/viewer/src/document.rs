@@ -1434,9 +1434,10 @@ impl Document {
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
     ) -> io::Result<Self> {
-        let mut warnings = replay.compatibility_gaps();
-        warnings.extend(replay.warnings.iter().cloned());
         engine_executable::executable_tables::initialize(&options.game_dir)?;
+        let mut warnings = dashboard_base::metadata::build_warnings(&replay);
+        warnings.extend(replay.compatibility_gaps());
+        warnings.extend(replay.warnings.iter().cloned());
         if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
             warnings.push(format!("Partial recording: {reason}"));
         }

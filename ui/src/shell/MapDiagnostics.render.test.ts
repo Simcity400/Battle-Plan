@@ -26,7 +26,7 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     const { default: Diagnostics } = await vite.ssrLoadModule('/ui/src/shell/MapDiagnostics.tsx') as typeof import('./MapDiagnostics');
     const branch = { id: 'b1', sessionId: 's1', firstHour: 43800024, lastHour: 43800024 + 24 * 30, parentId: null, parentHour: null, sampleBoundary: 'hourly', gaps: [] };
     const metadata = { path: 'C:/recordings/GER 1936.battleplan', name: 'GER 1936.battleplan', format: 100, captureMode: 'full', campaignKey: 'c', branches: [branch],
-      countries: [], playerCountryId: null, contentVerified: true, partial: null, warnings: ['Provinces.attack not recorded (introduced at format 101)'], revision: '1' } as ReplayMetadata;
+      countries: [], playerCountryId: null, contentVerified: true, partial: null, warnings: ['Provinces.attack not recorded (introduced at format 101)'], buildWarnings: [], revision: '1' } as ReplayMetadata;
     const visible = (value: ReplayMetadata | null) => renderToStaticMarkup(createElement(Diagnostics, { native: null, metadata: value })).replace(/<[^>]*>/g, ' ');
     const complete = visible(metadata);
     assert.match(complete, /GER 1936 /, 'the recording is named without its file extension');

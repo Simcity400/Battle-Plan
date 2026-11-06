@@ -1,10 +1,11 @@
-use iced_x86::{Decoder, DecoderOptions, Instruction};
-use std::io;
+use iced_x86::{Decoder, DecoderOptions, Instruction, OpKind};
+use std::{io, sync::OnceLock, thread};
 
 pub const PREFERRED_IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
 const AMD64: u16 = 0x8664;
 const PE32_PLUS: u16 = 0x020b;
 const EXECUTABLE_SECTION: u32 = 0x2000_0000;
+const WRITABLE_SECTION: u32 = 0x8000_0000;
 const EXCEPTION_DIRECTORY: usize = 3;
 const SECURITY_DIRECTORY: usize = 4;
 
@@ -15,6 +16,26 @@ struct Section {
     raw_offset: usize,
     virtual_end: u32,
     executable: bool,
+    writable: bool,
+}
+
+/// One MSVC complete object locator with a virtual table that points at it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RttiClass {
+    pub locator: u32,
+    /// The subobject's offset in its complete object; 0 for the primary vtable.
+    pub offset: u32,
+    pub descriptor: u32,
+    pub vtable: u32,
+}
+
+/// A `lea r64, [rip + disp32]` found by its bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct RipLea {
+    pub instruction: u32,
+    pub target: u32,
+    /// The destination's general register number.
+    pub register: usize,
 }
 
 /// An owned file image; RVA reads require complete file backing in one section.
@@ -25,6 +46,8 @@ pub struct PeImage {
     functions: Vec<(u32, u32)>,
     executable_ranges: Vec<(u32, u32)>,
     image_size: u32,
+    leas: OnceLock<Vec<RipLea>>,
+    classes: OnceLock<Vec<RttiClass>>,
     pub base: u64,
 }
 
@@ -122,6 +145,7 @@ impl PeImage {
                 raw_offset,
                 virtual_end,
                 executable: file_u32(&bytes, add(entry, 36)?)? & EXECUTABLE_SECTION != 0,
+                writable: file_u32(&bytes, add(entry, 36)?)? & WRITABLE_SECTION != 0,
             });
         }
         sections.sort_unstable_by_key(|section| section.rva);
@@ -155,6 +179,8 @@ impl PeImage {
             functions: Vec::new(),
             executable_ranges,
             image_size,
+            leas: OnceLock::new(),
+            classes: OnceLock::new(),
             base,
         };
         let mut exception = None;
@@ -352,6 +378,339 @@ impl PeImage {
             })
     }
 
+    /// File-backed bytes of sections that are neither executable nor writable.
+    pub fn read_only_data(&self) -> impl Iterator<Item = &[u8]> {
+        self.sections
+            .iter()
+            .filter(|section| !section.executable && !section.writable)
+            .map(|section| {
+                &self.bytes[section.raw_offset..section.raw_offset + section.raw_size as usize]
+            })
+    }
+
+    /// Whether `len` bytes at `rva` are file-backed in one section that is neither
+    /// executable nor writable.
+    pub fn is_read_only(&self, rva: u32, len: usize) -> bool {
+        let Some(end) = u32::try_from(len).ok().and_then(|len| rva.checked_add(len)) else {
+            return false;
+        };
+        self.sections.iter().any(|section| {
+            !section.executable
+                && !section.writable
+                && rva >= section.rva
+                && end <= section.rva + section.raw_size
+        })
+    }
+
+    /// RVAs of every NUL-delimited string in non-executable data matching each of `anchors`,
+    /// in one pass over the data.
+    pub fn find_hashed_strings(&self, anchors: &[Hashed]) -> Vec<Vec<u32>> {
+        let mut found = vec![Vec::new(); anchors.len()];
+        for (rva, data) in self.data_sections() {
+            let mut start = 0;
+            for end in memchr::memchr_iter(0, data).chain(std::iter::once(data.len())) {
+                let text = &data[start..end];
+                for (anchor, found) in anchors.iter().zip(&mut found) {
+                    if text.len() == anchor.length && fnv1a(text) == anchor.fnv {
+                        found.push(rva + start as u32);
+                    }
+                }
+                start = end + 1;
+            }
+        }
+        found
+    }
+
+    /// Every class whose decorated type name is `anchor`, from [`Self::classes`].
+    pub fn classes_named(&self, anchor: Hashed) -> impl Iterator<Item = RttiClass> + '_ {
+        self.classes().iter().copied().filter(move |class| {
+            self.type_name(class.descriptor)
+                .is_ok_and(|name| anchor.matches(name.as_bytes()))
+        })
+    }
+
+    /// The RVA of each decoded instruction whose RIP-relative operand or near branch
+    /// lands on `target`. Displacement candidates are confirmed by decoding.
+    pub fn references_to(&self, target: u32) -> Vec<u32> {
+        self.references_to_each(&[target]).remove(0)
+    }
+
+    /// [`Self::references_to`] for each of `targets`, in one pass over the code.
+    pub fn references_to_each(&self, targets: &[u32]) -> Vec<Vec<u32>> {
+        let mut found = vec![Vec::new(); targets.len()];
+        let Some(landings) = Landings::new(targets) else {
+            return found;
+        };
+        let threads = std::thread::available_parallelism().map_or(1, |threads| threads.get());
+        std::thread::scope(|scope| {
+            let mut scans = Vec::new();
+            for section in self.sections.iter().filter(|section| section.executable) {
+                let code =
+                    &self.bytes[section.raw_offset..section.raw_offset + section.raw_size as usize];
+                let chunk = code.len().div_ceil(threads).max(1);
+                for start in (0..code.len()).step_by(chunk) {
+                    let landings = &landings;
+                    scans.push(scope.spawn(move || {
+                        self.scan_references(
+                            section,
+                            code,
+                            start..(start + chunk).min(code.len()),
+                            landings,
+                        )
+                    }));
+                }
+            }
+            for scan in scans {
+                let hits = scan
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                for (index, rva) in hits {
+                    found[index].push(rva);
+                }
+            }
+        });
+        for list in &mut found {
+            list.sort_unstable();
+            list.dedup();
+        }
+        found
+    }
+
+    /// References from displacements starting in `positions` of `code`.
+    fn scan_references(
+        &self,
+        section: &Section,
+        code: &[u8],
+        positions: std::ops::Range<usize>,
+        landings: &Landings,
+    ) -> Vec<(usize, u32)> {
+        let mut hits = Vec::new();
+        let origin = i64::from(section.rva) + 4;
+        let end = (positions.end + 3).min(code.len());
+        for (at, window) in (positions.start..).zip(code[positions.start..end].windows(4)) {
+            let displacement = i32::from_le_bytes(window.try_into().unwrap());
+            let lands = origin + at as i64 + i64::from(displacement);
+            for index in landings.at(lands) {
+                let target = landings.targets[index];
+                let end = at + 4 + (i64::from(target) - lands) as usize;
+                if let Some(start) = self.reference_start(section, code, at, end, target) {
+                    hits.push((index, section.rva + start as u32));
+                }
+            }
+        }
+        hits
+    }
+
+    /// The start of the instruction ending at `end` whose displacement at `at` lands on `target`.
+    fn reference_start(
+        &self,
+        section: &Section,
+        code: &[u8],
+        at: usize,
+        end: usize,
+        target: u32,
+    ) -> Option<usize> {
+        let target_va = self.base + u64::from(target);
+        for length in (5..=15).rev() {
+            let Some(start) = end.checked_sub(length).filter(|start| *start <= at) else {
+                continue;
+            };
+            let Some(bytes) = code.get(start..end) else {
+                continue;
+            };
+            let mut decoder = Decoder::with_ip(
+                64,
+                bytes,
+                self.base + u64::from(section.rva) + start as u64,
+                DecoderOptions::NONE,
+            );
+            let instruction = decoder.decode();
+            if instruction.is_invalid() || instruction.len() != length {
+                continue;
+            }
+            let lands = (instruction.is_ip_rel_memory_operand()
+                && instruction.ip_rel_memory_address() == target_va)
+                || (matches!(instruction.op0_kind(), OpKind::NearBranch64)
+                    && instruction.near_branch_target() == target_va);
+            if lands {
+                return Some(start);
+            }
+        }
+        None
+    }
+
+    /// Every `lea r64, [rip + disp32]` in executable sections, in address order, scanned once
+    /// and shared. Matches are byte patterns; callers confirm instruction boundaries.
+    pub fn rip_leas(&self) -> &[RipLea] {
+        self.leas.get_or_init(|| {
+            let threads = thread::available_parallelism().map_or(1, |count| count.get().min(8));
+            let mut found = Vec::new();
+            for section in self.sections.iter().filter(|section| section.executable) {
+                let code =
+                    &self.bytes[section.raw_offset..section.raw_offset + section.raw_size as usize];
+                let chunk = code.len().div_ceil(threads).max(1);
+                thread::scope(|scope| {
+                    let parts: Vec<_> = (0..code.len())
+                        .step_by(chunk)
+                        .map(|start| {
+                            scope.spawn(move || {
+                                rip_leas(code, section.rva, start, (start + chunk).min(code.len()))
+                            })
+                        })
+                        .collect();
+                    for part in parts {
+                        found.extend(
+                            part.join()
+                                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                        );
+                    }
+                });
+            }
+            found
+        })
+    }
+
+    /// The text at `rva` when it is a whole NUL-terminated string of exactly `len` bytes in
+    /// read-only data.
+    pub fn text_at(&self, rva: u32, len: usize) -> Option<&[u8]> {
+        let section = self.sections.iter().find(|section| {
+            !section.executable
+                && !section.writable
+                && rva >= section.rva
+                && rva < section.rva + section.raw_size
+        })?;
+        let data = &self.bytes[section.raw_offset..section.raw_offset + section.raw_size as usize];
+        let at = (rva - section.rva) as usize;
+        (at.checked_sub(1).is_none_or(|before| data[before] == 0) && data.get(at + len) == Some(&0))
+            .then(|| &data[at..at + len])
+            .filter(|text| !text.contains(&0))
+    }
+
+    /// Every MSVC complete object locator in read-only data with each vtable whose locator slot
+    /// points at it and whose first slot is code, in locator order; found once and shared.
+    pub fn classes(&self) -> &[RttiClass] {
+        self.classes.get_or_init(|| {
+            let read_only = || {
+                self.sections
+                    .iter()
+                    .filter(|section| !section.executable && !section.writable)
+                    .map(|section| {
+                        (
+                            section.rva,
+                            &self.bytes
+                                [section.raw_offset..section.raw_offset + section.raw_size as usize],
+                        )
+                    })
+            };
+            let mut locators = Vec::new();
+            for (rva, data) in read_only() {
+                for at in (0..data.len().saturating_sub(23)).step_by(4) {
+                    let word = |offset: usize| {
+                        u32::from_le_bytes(data[at + offset..at + offset + 4].try_into().unwrap())
+                    };
+                    // Signature 1 and the locator's own address last.
+                    if word(0) == 1 && word(20) == rva + at as u32 {
+                        locators.push((rva + at as u32, word(4), word(12)));
+                    }
+                }
+            }
+            let (Some(&(low, ..)), Some(&(high, ..))) = (locators.first(), locators.last()) else {
+                return Vec::new();
+            };
+            let (low, high) = (self.base + u64::from(low), self.base + u64::from(high));
+            let mut classes = Vec::new();
+            for (rva, data) in read_only() {
+                for at in (0..data.len().saturating_sub(15)).step_by(8) {
+                    let pointer = u64::from_le_bytes(data[at..at + 8].try_into().unwrap());
+                    if pointer < low || pointer > high {
+                        continue;
+                    }
+                    let locator = (pointer - self.base) as u32;
+                    let method = u64::from_le_bytes(data[at + 8..at + 16].try_into().unwrap());
+                    if let Ok(index) = locators.binary_search_by_key(&locator, |&(at, ..)| at)
+                        && self.is_code_pointer(method)
+                    {
+                        let (_, offset, descriptor) = locators[index];
+                        classes.push(RttiClass {
+                            locator,
+                            offset,
+                            descriptor,
+                            vtable: rva + at as u32 + 8,
+                        });
+                    }
+                }
+            }
+            classes.sort_unstable_by_key(|class| (class.locator, class.vtable));
+            classes
+        })
+    }
+
+    /// The type descriptor and member displacement of each class in a locator's hierarchy,
+    /// starting with the class itself.
+    pub fn locator_bases(&self, locator: u32) -> io::Result<Vec<(u32, u32)>> {
+        let hierarchy = self.u32(rtti(locator, 16)?)?;
+        let count = self.u32(rtti(hierarchy, 8)?)?;
+        let bases = self.u32(rtti(hierarchy, 12)?)?;
+        self.bytes(bases, count as usize * 4)?;
+        (0..count)
+            .map(|index| {
+                let descriptor = self.u32(bases + index * 4)?;
+                Ok((self.u32(descriptor)?, self.u32(rtti(descriptor, 8)?)?))
+            })
+            .collect()
+    }
+
+    /// The decorated name of an MSVC type descriptor.
+    pub fn type_name(&self, descriptor: u32) -> io::Result<&str> {
+        self.string(rtti(descriptor, 16)?)
+    }
+
+    /// The exception-directory extents holding `references`, in address order, each confirmed
+    /// to start an instruction at every reference it holds.
+    pub fn referencing_functions(
+        &self,
+        references: impl IntoIterator<Item = u32>,
+    ) -> io::Result<Vec<(u32, u32)>> {
+        let mut held = Vec::new();
+        for reference in references {
+            held.push((self.function(reference)?, reference));
+        }
+        held.sort_unstable();
+        held.dedup();
+        let mut extents: Vec<(u32, u32)> = Vec::new();
+        for group in held.chunk_by(|left, right| left.0 == right.0) {
+            let (start, end) = group[0].0;
+            let starts: Vec<_> = self
+                .instructions(start, end)?
+                .iter()
+                .map(|instruction| (instruction.ip() - self.base) as u32)
+                .collect();
+            if group
+                .iter()
+                .any(|&(_, reference)| starts.binary_search(&reference).is_err())
+            {
+                return Err(invalid("PE reference does not start an instruction"));
+            }
+            extents.push((start, end));
+        }
+        Ok(extents)
+    }
+
+    /// Whether `va` lands in file-backed executable code.
+    pub fn is_code_pointer(&self, va: u64) -> bool {
+        self.va_to_rva(va).is_ok_and(|rva| {
+            self.executable_ranges
+                .iter()
+                .any(|&(start, end)| (start..end).contains(&rva))
+        })
+    }
+
+    /// The decoded instructions of the exception-directory function containing `rva`.
+    pub fn function_instructions(&self, rva: u32) -> io::Result<Vec<Instruction>> {
+        let (start, end) = self.function(rva)?;
+        self.instructions(start, end)
+    }
+
     fn is_executable_range(&self, start: u32, end: u32) -> bool {
         self.executable_ranges
             .iter()
@@ -361,8 +720,69 @@ impl PeImage {
     }
 }
 
+/// Game text found by its length and FNV-1a hash, so the source never spells it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hashed {
+    pub length: usize,
+    pub fnv: u64,
+}
+
+impl Hashed {
+    pub fn matches(&self, bytes: &[u8]) -> bool {
+        bytes.len() == self.length && fnv1a(bytes) == self.fnv
+    }
+
+    pub fn prefixes(&self, bytes: &[u8]) -> bool {
+        bytes.len() >= self.length && fnv1a(&bytes[..self.length]) == self.fnv
+    }
+}
+
+/// Game text a locator starts from: named for messages, found by its hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub what: &'static str,
+    pub text: Hashed,
+}
+
+/// FNV-1a over `bytes`, as [`Hashed`] and the command class identities use it.
+pub fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// The RIP-relative `lea`s whose opcode lies in `code[start..end]`.
+fn rip_leas(code: &[u8], rva: u32, start: usize, end: usize) -> Vec<RipLea> {
+    let mut found = Vec::new();
+    for at in memchr::memchr_iter(0x8d, &code[start..end]).map(|at| start + at) {
+        if at == 0
+            || at + 6 > code.len()
+            || code[at - 1] & 0xfb != 0x48
+            || code[at + 1] & 0xc7 != 0x05
+        {
+            continue;
+        }
+        let displacement = i32::from_le_bytes(code[at + 2..at + 6].try_into().unwrap());
+        let Ok(target) = u32::try_from(i64::from(rva) + at as i64 + 6 + i64::from(displacement))
+        else {
+            continue;
+        };
+        found.push(RipLea {
+            instruction: rva + at as u32 - 1,
+            target,
+            register: usize::from((code[at - 1] & 4) << 1 | (code[at + 1] >> 3) & 7),
+        });
+    }
+    found
+}
+
+fn rtti(rva: u32, offset: u32) -> io::Result<u32> {
+    rva.checked_add(offset)
+        .ok_or_else(|| invalid("RTTI address overflows"))
 }
 
 fn add(left: usize, right: usize) -> io::Result<usize> {
@@ -392,4 +812,60 @@ fn file_u64(bytes: &[u8], offset: usize) -> io::Result<u64> {
     Ok(u64::from_le_bytes(
         file_bytes(bytes, offset, 8)?.try_into().unwrap(),
     ))
+}
+
+/// Where a displacement must land, measured from the end of its four bytes, to reach a target.
+struct Landings<'a> {
+    targets: &'a [u32],
+    /// Each landing and its target's index, in increasing landing order.
+    sorted: Vec<(i64, usize)>,
+    low: i64,
+    span: u64,
+    /// One bit per bucket of landings, rejecting almost every displacement at once.
+    buckets: Vec<u64>,
+}
+
+impl<'a> Landings<'a> {
+    // Immediates up to four bytes may follow the displacement.
+    const TAILS: [i64; 4] = [0, 1, 2, 4];
+    const BUCKET_BITS: u32 = 4;
+
+    fn new(targets: &'a [u32]) -> Option<Self> {
+        let mut sorted: Vec<(i64, usize)> = targets
+            .iter()
+            .enumerate()
+            .flat_map(|(index, &target)| Self::TAILS.map(|tail| (i64::from(target) - tail, index)))
+            .collect();
+        sorted.sort_unstable();
+        let low = sorted.first()?.0;
+        let span = (sorted.last()?.0 - low) as u64;
+        let mut buckets = vec![0; ((span >> Self::BUCKET_BITS) / 64 + 1) as usize];
+        for &(landing, _) in &sorted {
+            let bucket = ((landing - low) as u64 >> Self::BUCKET_BITS) as usize;
+            buckets[bucket / 64] |= 1 << (bucket % 64);
+        }
+        Some(Self {
+            targets,
+            sorted,
+            low,
+            span,
+            buckets,
+        })
+    }
+
+    /// The index of each target a displacement landing at `lands` reaches.
+    fn at(&self, lands: i64) -> impl Iterator<Item = usize> + '_ {
+        let offset = lands.wrapping_sub(self.low) as u64;
+        let bucket = (offset >> Self::BUCKET_BITS) as usize;
+        let possible = offset <= self.span && self.buckets[bucket / 64] & (1 << (bucket % 64)) != 0;
+        let first = if possible {
+            self.sorted.partition_point(|&(landing, _)| landing < lands)
+        } else {
+            self.sorted.len()
+        };
+        self.sorted[first..]
+            .iter()
+            .take_while(move |&&(landing, _)| landing == lands)
+            .map(|&(_, index)| index)
+    }
 }
