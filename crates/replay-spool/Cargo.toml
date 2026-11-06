@@ -1,0 +1,13 @@
+[package]
+name = "replay-spool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+replay-spool-derive.workspace = true

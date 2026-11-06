@@ -492,6 +492,7 @@ pub fn standing_warnings(
 
 /// A completion's art as the event feed shows it, chosen in preparation at its hour.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub enum CompletionArt {
     /// Its text and icon choice, and what choosing them noted, which a reply showing it names as
     /// its own.

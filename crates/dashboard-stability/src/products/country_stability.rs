@@ -92,7 +92,7 @@ pub struct FormulaBreakdown {
     pub clamp_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownLine {
     /// The child's position in the modifier tree (the tooltip's order).

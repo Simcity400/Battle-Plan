@@ -72,6 +72,7 @@ pub struct DivisionLogParams {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum DivisionLogKind {
     Created,
     Lost,
@@ -80,6 +81,7 @@ pub enum DivisionLogKind {
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionLogEntry {
     pub id: String,
     pub division: String,
@@ -173,6 +175,7 @@ type NamingOperands = (i32, i32, u8, u8, Vec<u8>, Vec<u8>);
 
 // Only the operands consumed by the production presentation builders survive.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct ArmyName {
     division: u64,
     name: Result<Option<Vec<u8>>, ()>,
@@ -249,8 +252,10 @@ impl ArmyName {
 }
 /// The shared template display naming at the observation, or why it was unavailable.
 #[derive(Clone, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct TemplateName(Result<TemplateNaming, String>);
 #[derive(Clone, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct Presentation {
     hour: i32,
     division: u64,
@@ -262,6 +267,7 @@ struct Presentation {
     icon: Option<(u32, i32, Vec<u8>)>,
 }
 #[derive(Clone, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct Event {
     row: DivisionLogEntry,
     presentation: Option<Presentation>,

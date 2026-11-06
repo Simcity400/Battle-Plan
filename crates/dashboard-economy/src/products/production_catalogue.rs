@@ -72,6 +72,7 @@ pub const TABLES: &[TableId] = &[
 ];
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Field {
     /// A licensee's record at a roster position: the licensor's holder.
     LicenceGiver(u32, u32),

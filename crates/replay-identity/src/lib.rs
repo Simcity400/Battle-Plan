@@ -133,6 +133,7 @@ impl std::fmt::Display for SampleBoundary {
 
 /// Which tables a recording holds. replay-data's `scope` module lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum CaptureMode {
     Full,
     Map,

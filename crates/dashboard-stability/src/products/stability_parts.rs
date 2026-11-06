@@ -114,14 +114,14 @@ pub struct Value {
 
 /// What an addend's part id is made of: the whole id, or a character line's id before the
 /// character its read recorded completes it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, replay_spool::Spooled)]
 enum Name {
     Id(String),
     Character(String),
 }
 
 /// One addend of a measure's parts at a read, in tree order, its character not named yet.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, replay_spool::Spooled)]
 pub struct Addend {
     name: Name,
     term: Option<String>,

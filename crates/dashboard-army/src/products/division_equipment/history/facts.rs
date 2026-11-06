@@ -17,10 +17,10 @@ use dashboard_text::{catalogue::Catalogue, metadata::slot_read};
 use dashboard_world::{Hold, Kept, Needs, Roster, Tagged, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, Start, State},
+    segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{display::stepped_format, format::FormatVersion, rows::TableId};
-use std::{collections::BTreeSet, io, mem::size_of, sync::Arc};
+use std::{collections::BTreeSet, io, sync::Arc};
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -87,6 +87,7 @@ pub fn needs() -> io::Result<Needs> {
 
 /// One projected item: an hour another engine answers, an hour answered, or the segment's
 /// engine at its end.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Projected {
     /// An hour before the segment's reads are its own: the engine of the segment before
     /// steps it.
@@ -98,22 +99,11 @@ pub(crate) enum Projected {
 }
 
 /// A projected item with its branch.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub(crate) projected: Projected,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        match &self.projected {
-            Projected::Lead(input) => size_of::<Input>() + input.heap(),
-            Projected::Hour(output) => size_of::<Output>() + output.heap(),
-            Projected::Handover(engine) => engine
-                .as_ref()
-                .map_or(0, |engine| size_of::<Engine>() + engine.heap()),
-        }
-    }
 }
 
 /// The fields a table's rows are kept by.

@@ -150,6 +150,7 @@ pub struct WarPairRun {
 /// Consecutive hours of the branch whose group tables were not observed.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct HourSpan {
     pub first_hour: i32,
     pub last_hour: i32,

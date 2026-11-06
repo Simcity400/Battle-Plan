@@ -45,6 +45,7 @@ struct QueryFacts {
 /// The roster last assigned: its groups (None where no sides were
 /// assigned) and their faction names.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Assigned {
     groups: Option<Vec<daily::Group>>,
     names: Vec<String>,

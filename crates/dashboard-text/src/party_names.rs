@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// What names a party: its tag and ideology group, or the keys `set_party_name` stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct PartyNaming {
     /// The ideology group token.
     pub token: String,

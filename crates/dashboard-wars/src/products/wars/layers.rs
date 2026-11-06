@@ -25,6 +25,7 @@ pub type Identity = (u32, u32);
 /// A failure as an hour's read words it, without the hour a table's read stamps into it: a walk
 /// words it again at each hour it reads.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct Failure {
     /// Where in `text` the read's hour stands, if a read stamped it.
     stamp: Option<u32>,
@@ -174,6 +175,7 @@ fn uncompressed(bytes: &[u8]) -> io::Result<Vec<u8>> {
 
 /// The countries and their links as an hour reads them, or why each is not read whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Roster {
     /// Countries in row order: slot, native id, tag.
     pub countries: Result<Vec<(u32, u32, Vec<u8>)>, Failure>,
@@ -263,6 +265,7 @@ impl Roster {
 /// What an hour reads alike for every viewpoint once its countries are read: the recording
 /// client's viewpoint, and why the owned occurrences or the war tables past them cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct State {
     pub recorded_view: Option<u32>,
     pub owned: Option<Failure>,
@@ -315,6 +318,7 @@ impl State {
 /// An active war relation as the groups read it: its endpoints' slots in row order, its start,
 /// and whether its first endpoint instigated it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Relation {
     pub first: u32,
     pub second: u32,
@@ -418,6 +422,7 @@ pub fn decode_names(bytes: &[u8]) -> io::Result<Vec<(u32, String)>> {
 /// A group's members as the blob holds them: its viewpoint's side, then the other, in native
 /// order with any repeat.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct Members {
     pub first: Vec<u32>,
     pub second: Vec<u32>,
@@ -447,6 +452,7 @@ impl Members {
 /// A group's representative relation (its slots, ascending) and the name the viewpoint gives it,
 /// or why it has none, each refusal kept without the hour a read words it with ([`Failure`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct Label {
     pub representative: Result<(u32, u32), Failure>,
     /// The name is the representative's refusal where it has none.
@@ -546,6 +552,7 @@ impl Label {
 
 /// One native group a viewpoint sees.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Group {
     pub members: Members,
     pub label: Label,
@@ -568,6 +575,7 @@ pub fn decode_list(bytes: &[u8]) -> io::Result<Vec<(u32, u32)>> {
 
 /// The at-war viewpoints' groups an hour hands on: every one's, those absent seeing none, or only
 /// those that changed, a viewpoint no longer at war with none.
+#[derive(replay_spool::Spooled)]
 pub enum Groups {
     Whole(Vec<(Identity, Vec<Group>)>),
     Changed(Vec<(Identity, Vec<Group>)>),
@@ -575,6 +583,7 @@ pub enum Groups {
 
 /// What an hour changed of the layers.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Layered {
     pub roster: Option<Roster>,
     pub state: Option<State>,

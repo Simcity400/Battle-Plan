@@ -8,7 +8,7 @@ use dashboard_world::{Hold, Needs, Roster, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{DeltaRow, full_mask};
 use replay_data::{
@@ -91,6 +91,7 @@ impl Named {
 /// A state's values at a read, as [`OccupiedValues`] holds them, each text
 /// by its id.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 struct StateValue {
     name: Option<u32>,
     name_missing: Option<u32>,
@@ -164,6 +165,7 @@ impl StateValue {
 
 /// A States row as the emit projects an occupied state's owner and name
 /// from it.
+#[derive(replay_spool::Spooled)]
 struct Shipped {
     owner: Option<u32>,
     /// Why the owner has no tag, when it has none.
@@ -177,6 +179,7 @@ struct Shipped {
 
 /// The countries' naming at an hour, as the emit reads it.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct Naming {
     stamp: [u8; 32],
     refused: Refusals,
@@ -186,6 +189,7 @@ struct Naming {
 /// One occupied country's collaboration with its occupier, as
 /// [`OccupationCollaboration`] shows it.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 struct Collab {
     tag: Option<u32>,
     raw: Option<i64>,
@@ -214,6 +218,7 @@ impl Collab {
 /// was read.
 type Progress = HashMap<(Identity, Identity), (i64, i32)>;
 
+#[derive(replay_spool::Spooled)]
 enum Collaboration {
     /// The table is unavailable: no progress is known.
     Unavailable,
@@ -222,6 +227,7 @@ enum Collaboration {
 }
 
 /// An occupier's means at a read, as [`OccupationTrendRun`] holds them.
+#[derive(replay_spool::Spooled)]
 struct Sample {
     identity: Identity,
     resistance: i64,
@@ -239,6 +245,7 @@ struct Sample {
 
 /// An occupier's run as its fact is published, encoded before its segment
 /// start is known.
+#[derive(replay_spool::Spooled)]
 struct Fact {
     bytes: Vec<u8>,
     starts: usize,
@@ -267,6 +274,7 @@ impl Fact {
     }
 }
 
+#[derive(replay_spool::Spooled)]
 struct Read {
     reset: bool,
     values: Vec<(u32, Option<StateValue>)>,
@@ -278,6 +286,7 @@ struct Read {
     own: catalogue::OwnRefusals,
 }
 
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -292,47 +301,6 @@ pub struct Hour {
     /// The bytes of the naming made since an hour last carried it: the first to carry it
     /// counts it.
     shared: usize,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // A read's progress goes to its hour alone; samples count the occupied countries they
-        // share. Refusals are not counted.
-        let progress = match &self.collaboration {
-            Some(Collaboration::Read(progress, _)) => {
-                progress.len() * size_of::<((Identity, Identity), (i64, i32))>()
-            }
-            _ => 0,
-        };
-        let states: usize = self
-            .states
-            .iter()
-            .filter_map(|(_, shipped)| shipped.as_ref()?.owner_refused.as_ref())
-            .map(|refused| {
-                size_of::<(String, String)>() + refused.0.capacity() + refused.1.capacity()
-            })
-            .sum();
-        let read = self.read.as_ref().map_or(0, |read| {
-            let samples: usize = read
-                .samples
-                .iter()
-                .map(|sample| {
-                    let collaboration = sample.collaboration.as_ref().map_or(0, |held| held.len());
-                    collaboration * size_of::<Collab>()
-                        + sample.occupied.len() * size_of::<Identity>()
-                        + sample.fact.as_ref().map_or(0, |fact| fact.bytes.capacity())
-                })
-                .sum();
-            read.values.capacity() * size_of::<(u32, Option<StateValue>)>()
-                + read.samples.capacity() * size_of::<Sample>()
-                + samples
-        });
-        self.shared
-            + progress
-            + self.states.capacity() * size_of::<(u32, Option<Shipped>)>()
-            + states
-            + read
-    }
 }
 
 #[cfg(test)]

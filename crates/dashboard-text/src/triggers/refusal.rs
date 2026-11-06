@@ -5,6 +5,7 @@ use std::{cell::RefCell, collections::BTreeSet, fmt};
 
 /// The unavailable operand. Global tables have no country/state scope.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Identity {
     Input {
         table: TableId,
@@ -16,6 +17,7 @@ pub enum Identity {
 
 /// An error's message can gain context without changing its source identities.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct Failure {
     message: String,
     identities: BTreeSet<Identity>,

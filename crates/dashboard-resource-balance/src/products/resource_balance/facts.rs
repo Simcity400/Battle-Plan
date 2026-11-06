@@ -9,7 +9,7 @@ use dashboard_series::hash::FastMap;
 use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -39,6 +39,7 @@ pub fn needs() -> Needs {
 /// `produced`, `adjustment`, `imported`, `to_export`, `exported`, `used`, `special_total` and
 /// `production_demand`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Pool {
     pub key: u128,
     pub resource: u32,
@@ -48,6 +49,7 @@ pub struct Pool {
 /// A ResourceExchanges row: its handle, the holder slots of its exporter and importer (none
 /// where no link resolves one), and its terms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Deal {
     pub id: u64,
     pub exporter: Option<u32>,
@@ -61,6 +63,7 @@ pub struct Deal {
 
 /// The tags the complete Countries and CountryLinks resolve, as the row census reads them.
 #[derive(Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Countries {
     /// Each UTF-8 tag a country holds, by tag, with its first holder by id the links resolve.
     pub tags: Vec<(Arc<str>, Option<(u32, u32)>)>,
@@ -79,6 +82,7 @@ impl Countries {
 /// One table's rows by holder slot: every slot holding rows (the others hold none) when
 /// `whole`, else the slots whose rows changed since this segment last sent them, an empty list
 /// where a slot holds none now. Nothing while the table is not `complete`.
+#[derive(replay_spool::Spooled)]
 pub struct Listed<T> {
     pub complete: bool,
     pub whole: bool,
@@ -101,6 +105,7 @@ impl<T> Listed<T> {
 pub type Names = Arc<[(u32, Arc<str>)]>;
 
 /// What the ordered emit reads of an hour that changes what the balance reads.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// The hour opens a segment: what it restates whole goes on where it equals what was held.
     pub restart: bool,
@@ -115,35 +120,12 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     /// None when the hour changes nothing the balance reads.
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        let countries = match &facts.countries {
-            Some(countries) if facts.charged => size_of::<Countries>() + countries.heap(),
-            _ => 0,
-        };
-        let names = match &facts.names {
-            Some(Some(names)) => names
-                .iter()
-                .map(|(_, token)| size_of::<(u32, Arc<str>)>() + token.len())
-                .sum(),
-            _ => 0,
-        };
-        size_of::<Facts>()
-            + countries
-            + names
-            + facts.pools.as_ref().map_or(0, Listed::heap)
-            + facts.deals.as_ref().map_or(0, Listed::heap)
-    }
 }
 
 /// A table's rows by walker slot and by holder slot, kept from the hour's changes.

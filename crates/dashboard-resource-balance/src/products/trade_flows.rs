@@ -171,6 +171,7 @@ pub struct PartialSpan {
 
 /// A flow's summed terms at a read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Terms {
     delivered: i64,
     factories: i32,

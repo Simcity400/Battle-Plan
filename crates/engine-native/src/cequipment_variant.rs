@@ -682,6 +682,7 @@ pub struct Organisation {
     pub bonuses: Vec<OrganisationBonus>,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct OrganisationBonus {
     pub key: u32,
     pub value_raw: i64,

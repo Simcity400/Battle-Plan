@@ -315,6 +315,7 @@ pub(super) fn holder_kind(row: &CountryPowerChangeRow) -> String {
 
 /// A command power holder, by the operands its allocation recorded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Holder {
     pub kind: String,
     pub amount: i128,

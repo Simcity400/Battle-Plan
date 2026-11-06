@@ -293,10 +293,7 @@ impl Emit {
                     self.refusing = Some(id);
                 }
                 if let Some(tally) = tally {
-                    self.tally = tally
-                        .into_iter()
-                        .map(|(reason, count)| (reason.to_owned(), count))
-                        .collect();
+                    self.tally = tally;
                 }
                 if whole {
                     let named: HashSet<&[u8]> =

@@ -44,6 +44,7 @@ fn within_columns(bits: &[u64], columns: usize) -> bool {
 
 /// A table's state this hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Status {
     /// Not recorded: its values this hour are unknown, never zero.
     NotRecorded,

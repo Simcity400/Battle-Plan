@@ -86,6 +86,7 @@ impl SpecialProjectsParams {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectDate {
     pub hour: i32,
     /// False means the event occurred by this observation, not at this hour.
@@ -94,6 +95,7 @@ pub struct ProjectDate {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectPerson {
     /// None when the recorded reference cannot establish an assignment.
     pub assigned: Option<bool>,
@@ -115,6 +117,7 @@ pub struct ProjectPerson {
 /// stack, visual mods included, so the choice is made when a reply is served.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectIconChoice {
     pub authored: Option<String>,
     pub token: String,
@@ -123,6 +126,7 @@ pub struct ProjectIconChoice {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectPresentation {
     pub name: String,
     pub specialization: Option<String>,
@@ -141,6 +145,7 @@ pub struct ProjectPresentation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum ProjectState {
     Running,
     Paused,
@@ -778,6 +783,7 @@ pub fn check_content(
 
 /// Episode inputs projected once from recorded rows, independent of selection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct ProjectFacts {
     local_id: u32,
     definition_id: u32,
@@ -831,6 +837,7 @@ impl ProjectFacts {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct Look {
     needs_scope: bool,
     program_reference: u64,

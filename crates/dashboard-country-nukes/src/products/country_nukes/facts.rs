@@ -10,7 +10,7 @@ use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -44,6 +44,7 @@ pub fn needs() -> Needs {
 /// A holder slot's stockpile as the top bar shows it: each type's whole amount by ordinal,
 /// ascending, and their total, unknown for a hole in the slot's native array.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Stock {
     pub counts: Vec<NukeCount>,
     pub total: Option<i32>,
@@ -58,6 +59,7 @@ impl Stock {
 /// The tags the complete Countries and CountryLinks resolve, as the row census resolves them:
 /// each tag's first holder by id the links resolve.
 #[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Countries {
     /// Each UTF-8 tag's canonical slot and id, by tag.
     pub tags: Vec<(Arc<str>, (u32, u32))>,
@@ -74,6 +76,7 @@ impl Countries {
 
 /// A read's holder stockpiles: every slot holding rows (the others hold none), or the slots
 /// whose rows changed since their last read. None where a slot holds no row, or two of one type.
+#[derive(replay_spool::Spooled)]
 pub struct Stocks {
     pub whole: bool,
     pub slots: Vec<(u32, Option<Arc<Stock>>)>,
@@ -81,6 +84,7 @@ pub struct Stocks {
 
 /// What a read counts, as the row census counts it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Census {
     /// Rows no link resolves, and each row repeating its holder's type.
     pub unreadable: usize,
@@ -99,6 +103,7 @@ impl Census {
 }
 
 /// What the ordered emit reads of an hour that changes what the stockpile reads.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Whether the Nukes table holds every row, and why not, where its status changed.
     pub complete: bool,
@@ -117,6 +122,7 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -124,38 +130,6 @@ pub struct Hour {
     pub read: bool,
     /// None when the hour changes nothing the stockpile reads.
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        // The projector and every hour until the countries change share them.
-        let countries = match &facts.countries {
-            Some(Some(countries)) if facts.charged => size_of::<Countries>() + countries.heap(),
-            _ => 0,
-        };
-        size_of::<Facts>()
-            + countries
-            + facts.reason.as_ref().map_or(0, String::capacity)
-            + facts.stocks.as_ref().map_or(0, |stocks| {
-                stocks.slots.capacity() * size_of::<(u32, Option<Arc<Stock>>)>()
-                    + stocks
-                        .slots
-                        .iter()
-                        .flat_map(|(_, stock)| stock)
-                        .map(|stock| stock.heap())
-                        .sum::<usize>()
-            })
-            + facts.census.as_ref().map_or(0, Census::heap)
-            + facts.tokens.capacity() * size_of::<(u32, String)>()
-            + facts
-                .tokens
-                .iter()
-                .map(|(_, spelling)| spelling.capacity())
-                .sum::<usize>()
-    }
 }
 
 /// A Nukes row: its holder slot, none where no link resolves its country, and its ordinal.

@@ -663,6 +663,7 @@ fn collect_icon_refusals(reply: &mut FactionDetailReply) {
 
 /// A goal token's texts at an hour; its artwork depends on content alone ([`finish_goal`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct GoalLabel {
     pub token: Option<String>,
     pub name: Option<String>,

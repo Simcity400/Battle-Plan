@@ -22,7 +22,7 @@ use replay::{
     columnar_frames::metrics,
     columns,
     container::Replay,
-    segments::{self, Item, Operator, Sink, Start},
+    segments::{self, Operator, Sink, Start},
 };
 use replay_data::{
     event_feed_rows::{
@@ -31,7 +31,7 @@ use replay_data::{
     format::FormatVersion,
     rows::{
         CountryCounterInputRow, CountryExperienceGainRow, CountryRow, NuclearStrikeRow,
-        RelationTupleRow, RowCodec, SliceReadRow, TABLE_COUNT, TableId, TableRows, TableSchema,
+        RelationTupleRow, SliceReadRow, TABLE_COUNT, TableId, TableRows, TableSchema,
         tables,
     },
     scope::CaptureMode,
@@ -40,7 +40,6 @@ use replay_frame::frame::{DecodedFrame, Metrics, TableView};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    mem::size_of,
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -157,6 +156,7 @@ pub fn needs() -> io::Result<Needs> {
 static WHOLE_HOUR: AtomicBool = AtomicBool::new(false);
 
 /// What a worker made of a pack.
+#[derive(replay_spool::Spooled)]
 enum Facts {
     /// The occurrences' notices and facts, in order.
     Drafted(Vec<Notice>, Vec<Draft>),
@@ -169,6 +169,7 @@ enum Facts {
     ),
 }
 
+#[derive(replay_spool::Spooled)]
 enum Native {
     /// Why the hour has no pack to observe.
     Missing(String),
@@ -177,6 +178,7 @@ enum Native {
 
 /// The hour's strikes: the read's notices, then their facts, or the strikes themselves when
 /// one is dated before the walk.
+#[derive(replay_spool::Spooled)]
 enum Nuclear {
     Drafted(Vec<Notice>, Vec<Draft>),
     Deferred(Vec<Notice>, Vec<NuclearStrikeRow>),
@@ -187,6 +189,7 @@ enum Nuclear {
 type Presented = HashMap<String, (EventFeedItem, Shown)>;
 
 /// One hour of a segment, as its worker prepared it.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -201,87 +204,6 @@ pub struct Hour {
     relations: bool,
     guarantees: Vec<(u32, u32, i32)>,
     nuclear: Nuclear,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let changes: usize = self.changes.iter().map(|(_, change)| change.heap()).sum();
-        // A pack goes to its supplying hour alone, which keeps it once the projector moves on.
-        let native = match &self.native {
-            Native::Missing(reason) => reason.capacity(),
-            Native::Packet(pack, Facts::Drafted(notices, drafts)) => {
-                size_of::<PackHeader>()
-                    + pack.failure.as_ref().map_or(0, Vec::capacity)
-                    + notices_heap(notices)
-                    + drafts_heap(drafts)
-            }
-            Native::Packet(pack, Facts::Deferred(row, proven, given)) => {
-                given.len() * size_of::<(String, (EventFeedItem, Shown))>()
-                    + given
-                        .iter()
-                        .map(|(id, (item, _))| {
-                            id.capacity()
-                                + [&item.token, &item.name, &item.icon, &item.description]
-                                    .into_iter()
-                                    .flatten()
-                                    .map(String::capacity)
-                                    .sum::<usize>()
-                        })
-                        .sum::<usize>()
-                    + size_of::<PackHeader>()
-                    + pack.failure.as_ref().map_or(0, Vec::capacity)
-                    + size_of::<EventFeedHistoryRow>()
-                    + replay_data::value::Value::heap_bytes(&**row)
-                    + proven
-                        .iter()
-                        .map(|((_, _, token, _), costs)| {
-                            size_of::<(ChargeKey, Vec<super::ScriptCost>)>()
-                                + token.capacity()
-                                + costs.capacity() * size_of::<super::ScriptCost>()
-                                + costs
-                                    .iter()
-                                    .map(|cost| cost.amount.capacity())
-                                    .sum::<usize>()
-                        })
-                        .sum::<usize>()
-            }
-        };
-        let nuclear = match &self.nuclear {
-            Nuclear::Drafted(notices, drafts) => notices_heap(notices) + drafts_heap(drafts),
-            Nuclear::Deferred(notices, strikes) => {
-                notices_heap(notices)
-                    + strikes.capacity() * size_of::<NuclearStrikeRow>()
-                    + strikes.iter().map(RowCodec::heap_bytes).sum::<usize>()
-            }
-        };
-        self.changes.capacity() * size_of::<(TableId, Arc<Change>)>()
-            + changes
-            + native
-            + self.guarantees.capacity() * size_of::<(u32, u32, i32)>()
-            + nuclear
-    }
-}
-
-/// The bytes `notices` own on the heap.
-fn notices_heap(notices: &Vec<Notice>) -> usize {
-    notices.capacity() * size_of::<Notice>()
-        + notices
-            .iter()
-            .map(|notice| {
-                notice.samples.capacity() * size_of::<String>()
-                    + [&notice.key.0, &notice.key.1, &notice.reason]
-                        .into_iter()
-                        .chain(&notice.key.2)
-                        .chain(&notice.samples)
-                        .map(String::capacity)
-                        .sum::<usize>()
-            })
-            .sum::<usize>()
-}
-
-/// The bytes `drafts` own on the heap.
-fn drafts_heap(drafts: &Vec<Draft>) -> usize {
-    drafts.capacity() * size_of::<Draft>() + drafts.iter().map(Draft::heap).sum::<usize>()
 }
 
 /// A segment's walk: its identity tables' changes, and the identity history and tags it names

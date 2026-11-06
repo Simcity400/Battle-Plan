@@ -11,7 +11,7 @@ use super::MEASURES;
 use dashboard_world::{Needs, Roster, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -48,7 +48,7 @@ pub type Values = [i64; MEASURES];
 pub type Sums = [i128; MEASURES];
 
 /// How a read reads the war rosters, for its refusals.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, replay_spool::Spooled)]
 pub enum Rosters {
     /// Not read: a record names no owner identity.
     Skipped,
@@ -60,7 +60,7 @@ pub enum Rosters {
 
 /// A read's refusal counts: records with no owner identity, records with no partner identity,
 /// and the rosters.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, replay_spool::Spooled)]
 pub struct Counts {
     pub orphans: u64,
     pub partners: u64,
@@ -68,7 +68,7 @@ pub struct Counts {
 }
 
 /// A read's changes since the segment last sent one; everything it holds when `whole`.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, replay_spool::Spooled)]
 pub struct Read {
     pub whole: bool,
     /// Owners whose dropped records are zero (true) or end (false).
@@ -84,6 +84,7 @@ pub struct Read {
 
 /// What an hour hands the emit.
 #[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Facts {
     /// A read that changed nothing the segment sent.
     Same,
@@ -93,31 +94,11 @@ pub enum Facts {
 }
 
 /// One hour of a segment: none where the row preparation read nothing.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub facts: Option<Facts>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        match &self.facts {
-            Some(Facts::Read(read)) => {
-                size_of::<Read>()
-                    + read.zeroable.capacity() * size_of::<(u32, bool)>()
-                    + read.records.capacity() * size_of::<((u32, u32), Option<Values>)>()
-                    + read.totals.capacity() * size_of::<(u32, Option<Sums>)>()
-                    + read.tags.capacity() * size_of::<(u32, Arc<str>)>()
-                    + read.tags.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-                    + read.counts.as_ref().map_or(0, |counts| match &counts.rosters {
-                        Rosters::Unavailable(reason) => reason.capacity(),
-                        _ => 0,
-                    })
-            }
-            Some(Facts::Refused(reason)) => reason.capacity(),
-            _ => 0,
-        }
-    }
 }
 
 /// The dirty sets a change of the kept rows marks.

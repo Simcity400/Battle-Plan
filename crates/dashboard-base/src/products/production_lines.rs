@@ -434,6 +434,7 @@ pub struct OrganisationStateRead {
 /// Stored MIO operands at a daily census; absent state remains unknown.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct OrganisationState {
     pub read_hour: Option<i32>,
     pub size: i32,
@@ -541,6 +542,7 @@ pub struct ProductionLineDetailReply {
 
 /// An organisation's naming operands at a read.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct RawOrganisation {
     pub first_hour: i32,
     pub token: String,
@@ -558,6 +560,7 @@ pub type IconAt = (i32, IconChoice);
 
 /// A demanded design's own observation, including explicit unavailable intervals.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(replay_spool::Spooled)]
 pub struct DesignRead {
     pub first_hour: i32,
     pub read_hour: Option<i32>,
@@ -805,6 +808,7 @@ pub fn recorded_language(replay: &Replay) -> Arc<str> {
 
 /// The country a scan reads, as one hour's countries and links name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 enum Country {
     /// No country holds the tag.
     Absent,

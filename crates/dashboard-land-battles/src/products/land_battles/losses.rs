@@ -4,6 +4,7 @@ use replay_data::{rows::LandCombatResultsRow, rows::LandSideLosses, rows::Record
 use std::mem::size_of;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct SideLossInputs {
     manpower: Option<i32>,
     equipment: Option<Vec<(u64, i64)>>,

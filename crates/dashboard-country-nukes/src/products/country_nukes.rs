@@ -65,6 +65,7 @@ pub struct NukeTypeInfo {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct NukeCount {
     pub ordinal: u32,
     pub value: i32,

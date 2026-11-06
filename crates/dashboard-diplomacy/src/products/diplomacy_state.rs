@@ -65,6 +65,7 @@ impl DiplomacyParams {
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct DiplomacyCountry {
     pub tag: String,
     pub slot: u32,

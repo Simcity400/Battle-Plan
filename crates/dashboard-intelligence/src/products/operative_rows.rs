@@ -178,6 +178,7 @@ impl CountryInputs {
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[derive(replay_spool::Spooled)]
 pub struct CountryIdentity {
     pub slot: u32,
     pub id: u32,

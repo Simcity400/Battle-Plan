@@ -13,7 +13,7 @@ use crate::products::subjects::holds;
 use dashboard_world::{Needs, Roster, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -48,6 +48,7 @@ pub fn needs() -> Needs {
 /// overlord, its level's id and scores, whether no level lies below or above, and the relation's
 /// ratio.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Sample {
     pub holder: (u32, u32),
     pub overlord: Option<Arc<str>>,
@@ -68,6 +69,7 @@ impl Sample {
 
 /// A tag's sample from this hour on, none where no row names it any more; `order` is the lowest
 /// raw subject id of its rows, the order the row scan first sees tags and levels in.
+#[derive(replay_spool::Spooled)]
 pub struct Change {
     pub tag: Arc<str>,
     pub order: u32,
@@ -79,6 +81,7 @@ pub struct Change {
 }
 
 /// What the ordered emit reads of an hour that changed something.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Whether every table read is complete, where that changed.
     pub recorded: Option<bool>,
@@ -93,30 +96,11 @@ pub struct Facts {
 }
 
 /// One hour of a segment: no facts where it changed nothing the samples read.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.facts.as_ref().map_or(0, |facts| {
-            size_of::<Facts>()
-                + facts.changes.capacity() * size_of::<Change>()
-                + facts
-                    .changes
-                    .iter()
-                    .flat_map(|change| &change.rows)
-                    .map(|(_, sample)| sample.heap())
-                    .sum::<usize>()
-                + facts
-                    .changes
-                    .iter()
-                    .map(|change| change.rows.capacity() * size_of::<(u32, Arc<Sample>)>())
-                    .sum::<usize>()
-        })
-    }
 }
 
 /// An Autonomy row: its subject's raw id, scores, level and whether a level lies below or above.

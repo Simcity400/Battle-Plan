@@ -21,6 +21,7 @@ mod log;
 pub use log::{FrameLog, LoggedFrames};
 mod provenance;
 mod source;
+mod spooled;
 pub use source::{
     CommandAllocation, CommandAllocations, DecodedSource, Division, DivisionName, DivisionNames,
     Divisions, Leader, Leaders, OperandStatus, Province, Provinces, RecordedSource, Rows,
@@ -61,6 +62,7 @@ pub use replay_data::rows::TABLE_COUNT;
 pub const TRUNCATED_KEYFRAME_REASON: &str = "truncated at keyframe: ";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Metrics {
     pub total_ns: u64,
     pub table_ns: [u64; TABLE_COUNT],
@@ -280,6 +282,7 @@ impl PartialEq for SharedView {
 impl Eq for SharedView {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RowChange {
     pub key: u128,
     pub fields: u64,
@@ -595,6 +598,7 @@ impl PartialEq<SharedView> for TableView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DecodedFrame {
     pub branch: BranchId,
     pub hour: Hour,
@@ -733,6 +737,7 @@ impl From<DecodedFrame> for FrameInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum TableUpdate {
     Snapshot(TableRows),
     Delta {
@@ -765,6 +770,7 @@ pub enum TableUpdate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Frame {
     pub branch: BranchId,
     pub hour: Hour,

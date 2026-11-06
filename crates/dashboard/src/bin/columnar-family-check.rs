@@ -256,6 +256,9 @@ struct Held {
     in_flight: i64,
     emit: i64,
     publish: i64,
+    /// Of what it publishes: its series writers' key state, and its seals.
+    keys: i64,
+    seal: i64,
     content: i64,
     emit_end: i64,
     end: i64,
@@ -263,7 +266,13 @@ struct Held {
 
 impl Held {
     fn at_peak(&self) -> i64 {
-        self.operator + self.in_flight + self.emit + self.publish + self.content
+        self.operator
+            + self.in_flight
+            + self.emit
+            + self.publish
+            + self.keys
+            + self.seal
+            + self.content
     }
 }
 
@@ -300,6 +309,8 @@ fn phase_memory(phase: &Phase) -> Value {
                 held.emit_end += charge.end;
             }
             Kind::Publish => held.publish += charge.at_peak,
+            Kind::Keys => held.keys += charge.at_peak,
+            Kind::Seal => held.seal += charge.at_peak,
             Kind::Content => held.content += charge.at_peak,
             _ => {}
         }
@@ -330,10 +341,17 @@ fn phase_memory(phase: &Phase) -> Value {
         })
     };
     let index = families.get("change runs").map(|held| {
+        let lane = |kind: Kind| at("change runs", kind);
         json!({
-            "openPagesBytes": held.operator,
-            "piecesBytes": held.in_flight,
+            // The walks' own, the builders' scratch among them, past what is named below.
+            "operatorBytes": held.operator,
+            "cursorBytes": lane(Kind::IndexCursors),
+            "spillBufferBytes": lane(Kind::IndexSpill),
+            "pieceDirectoryBytes": lane(Kind::IndexPieces),
+            "piecesInFlightBytes": held.in_flight,
             "directoryBytes": held.emit + held.publish + at("run", Kind::Index),
+            "walkerBytes": at("run", Kind::Walker),
+            "walkerTablesBytes": at("run", Kind::WalkerTables),
         })
     });
     json!({
@@ -369,6 +387,9 @@ fn phase_memory(phase: &Phase) -> Value {
             "operator": top(|held| held.operator),
             "outputInFlight": top(|held| held.in_flight),
             "emit": top(|held| held.emit),
+            "publish": top(|held| held.publish),
+            "keys": top(|held| held.keys),
+            "seal": top(|held| held.seal),
         },
         "families": ordered.iter().map(|(family, held)| json!({
             "family": family,
@@ -377,6 +398,8 @@ fn phase_memory(phase: &Phase) -> Value {
             "outputInFlightBytes": held.in_flight,
             "emitBytes": held.emit,
             "publishBytes": held.publish,
+            "keysBytes": held.keys,
+            "sealBytes": held.seal,
             "contentBytes": held.content,
             "emitEndBytes": held.emit_end,
             "endBytes": held.end,

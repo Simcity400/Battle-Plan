@@ -11,6 +11,7 @@ opaque_value!(Vec<Vec<u8>>);
 /// commander (kind 1/2) reserve-rate tree. Kept for older recordings' framing.
 /// Country owners are raw links; commander owners are full handles.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ReserveModifierBreakdownRow {
     pub kind: u8,
     pub owner: u64,
@@ -37,6 +38,7 @@ typed_codec!(ReserveModifierBreakdownRow, 72, |row| (row.kind as u128) << 64 | r
 /// stored text in the recording language. Rows exist only for the owners of
 /// the hour's reserves.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ReserveModifierTreeRow {
     pub kind: u8,
     pub owner: u64,
@@ -125,6 +127,7 @@ fn copy_printed(
 /// empty. `recorder derived` compares each witness with the derivation;
 /// consumers never display them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PowerBalanceModifierBreakdownRow {
     pub record: u32,
     pub sources: Vec<Vec<u8>>,
@@ -167,6 +170,7 @@ pub fn check_tree(nodes: &[ModifierBreakdownNode]) -> io::Result<()> {
 /// the selected adjuster occurrence. Order restores traversal order after
 /// accumulator/key identity sorting.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalModifierUse {
     pub combat: u64,
     pub side: u8,
@@ -197,6 +201,7 @@ opaque_value!(Vec<NavalModifierUse>);
 /// shown; the viewer formats contributions through its modifier definitions.
 /// The runtime accumulator identity and tree have no text-save counterpart.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalModifierBreakdownRow {
     pub accumulator: u64,
     pub key: u32,
@@ -221,6 +226,7 @@ typed_codec!(NavalModifierBreakdownRow, 96,
 /// interior and prints nothing, as the native walk does. Only leaves keep their display bytes; a
 /// key whose root is zero and prints nothing is absent.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalModifierKeyTree {
     pub key: u32,
     pub nodes: Vec<ModifierBreakdownNode>,
@@ -240,6 +246,7 @@ opaque_value!(Vec<NavalModifierKeyTree>);
 /// reached source without a row prints nothing and has a zero root for every key. Display
 /// bytes are native stored text in the recording language.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalModifierTreeRow {
     pub kind: u8,
     pub owner: u64,
@@ -261,6 +268,7 @@ typed_codec!(NavalModifierTreeRow, 104,
 /// identity the capture filed the source's [`NavalModifierTreeRow`] under.
 /// Production builds take no sample and record the table empty.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalModifierTreeSampleRow {
     pub combat: u64,
     pub side: u8,
@@ -307,6 +315,7 @@ fn check_naval_trees(kind: u8, trees: &[NavalModifierKeyTree]) -> io::Result<()>
 /// independent scalar terms available. Native display names require the
 /// recording language; runtime identities have no text-save counterpart.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AttritionModifierBreakdownRow {
     pub accumulator: u64,
     pub key: u32,

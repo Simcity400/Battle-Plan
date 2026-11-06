@@ -62,6 +62,7 @@ pub enum EventFeedCategory {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum EventFeedKind {
     WarStarted,
     WarDeclared,
@@ -269,7 +270,7 @@ pub struct EventFeedStrike {
     pub not_recorded: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedItem {
     pub token: Option<String>,
@@ -287,7 +288,7 @@ pub struct EventFeedItem {
 
 /// One authored event option: its native ordinal and in-game name, null
 /// when the name does not resolve.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedOption {
     pub ordinal: u32,
@@ -299,6 +300,7 @@ pub struct EventFeedOption {
 /// is the prepared fact (key, ordinal) this occurrence continues: a choice's
 /// dispatch, or a decision's selection or activation.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Occurrence {
     pub generation: u64,
     pub sequence: u64,
@@ -327,6 +329,7 @@ pub(crate) struct Occurrence {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum ScriptCurrency {
     PoliticalPower,
     CommandPower,
@@ -335,6 +338,7 @@ pub enum ScriptCurrency {
 /// One currency a decision execution was proven to charge.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct ScriptCost {
     pub currency: ScriptCurrency,
     /// The exact fixed5 balance change as a decimal string; negative when spent.
@@ -453,6 +457,7 @@ struct Feed {
 }
 /// A notice a capturing builder held back, for the builder it is merged into in order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct Notice {
     key: UnavailableKey,
     reason: String,
@@ -911,7 +916,7 @@ impl<'a> HourTexts<'a> {
 /// What presenting a fact's item gave besides the item: its notices, in order, the text
 /// refusals the catalogue noted meanwhile, and its event picture's sprite with how many of the
 /// notices come before the picture's. A query shows them with the item, drawing the picture.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, replay_spool::Spooled)]
 pub(crate) struct Shown {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     notices: Vec<Notice>,

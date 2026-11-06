@@ -1,10 +1,7 @@
 //! Which segment each family walks or emits next, what a run may start, and what became of
 //! each family.
 
-use super::{
-    Ended, Ending, Failure, Outcome, Settings, Stats, Waste, invalid,
-    lane::{Credit, Reserved, Taken},
-};
+use super::{Ended, Ending, Failure, Outcome, Stats, Waste, invalid};
 use crate::columnar_frames::{Reads, Recording, Segment};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -122,27 +119,20 @@ pub(super) struct Deferred {
     pub(super) lost: Vec<(usize, usize)>,
 }
 
-pub(super) enum Task<'c> {
+pub(super) enum Task {
     /// Measures what walking segment `at` reads.
     Measure { at: usize },
-    /// Emits `lane`'s chunks of segment `at`, reading the first back into `restore` when
-    /// it spilled.
-    Emit {
-        lane: usize,
-        at: usize,
-        restore: Option<Taken<'c>>,
-    },
+    /// Emits `lane`'s items of segment `at`.
+    Emit { lane: usize, at: usize },
     /// Walks `lanes` of segment `at`, beginning at `from`, as its share was measured.
     Walk {
         at: usize,
         from: usize,
         lanes: Vec<usize>,
-        reserved: Reserved<'c>,
     },
 }
 
-/// Every family's progress through every segment, what is held for the emits, and what
-/// became of each family.
+/// Every family's progress through every segment, and what became of each family.
 pub(super) struct Schedule {
     lanes: usize,
     segments: usize,
@@ -159,17 +149,11 @@ pub(super) struct Schedule {
     /// Each family's next segment to emit, and whether a worker emits it.
     next: Vec<usize>,
     emitting: Vec<bool>,
-    /// The bytes reading back the spilled chunk each family's emit stopped at takes.
-    restoring: Vec<Option<usize>>,
-    /// Each family's segments sealed and not yet emitted.
-    queued: Vec<usize>,
     /// Each segment's families running or sealed and not yet emitted.
     live: Vec<usize>,
     /// Segments with a family running or sealed and not yet emitted.
     held: usize,
-    /// Whether each family's items spill, and the most a walk of it projected, spilled or
-    /// not; none before one has sealed.
-    spills: Vec<bool>,
+    /// The most a walk of each family spooled; none before one has sealed.
     estimate: Vec<Option<usize>>,
     /// The most each segment's walks charged their tables.
     pub(super) tables: Vec<usize>,
@@ -191,9 +175,8 @@ pub(super) struct Schedule {
 }
 
 impl Schedule {
-    /// The schedule of `segments` segments for families whose items spill as `spills` says.
-    pub(super) fn new(segments: usize, spills: Vec<bool>) -> io::Result<Self> {
-        let lanes = spills.len();
+    /// The schedule of `segments` segments for `lanes` families.
+    pub(super) fn new(segments: usize, lanes: usize) -> io::Result<Self> {
         let cells = segments
             .checked_mul(lanes)
             .ok_or_else(engine_allocation::oom)?;
@@ -207,11 +190,8 @@ impl Schedule {
             begins: engine_allocation::collect_vec(0..segments)?,
             next: engine_allocation::filled(lanes, 0)?,
             emitting: engine_allocation::filled(lanes, false)?,
-            restoring: engine_allocation::filled(lanes, None)?,
-            queued: engine_allocation::filled(lanes, 0)?,
             live: engine_allocation::filled(segments, 0)?,
             held: 0,
-            spills,
             estimate: engine_allocation::filled(lanes, None)?,
             tables: engine_allocation::filled(segments, 0)?,
             running: 0,
@@ -306,69 +286,6 @@ impl Schedule {
         !self.arrived.is_empty() && self.arrived.remove(&(at, lane))
     }
 
-    /// The output a walk of `lanes` is taken to need, and whether that is known: for a
-    /// family whose items spill, a chunk, or the most a walk of it projected when less;
-    /// for another, that most, none before one has sealed.
-    fn need(&self, lanes: impl IntoIterator<Item = usize>, settings: &Settings) -> (usize, bool) {
-        lanes.into_iter().fold((0, true), |(need, known), lane| {
-            let estimate = self.estimate[lane];
-            let (bytes, measured) = if self.spills[lane] {
-                let chunk = settings.chunk_bytes;
-                (estimate.map_or(chunk, |bytes| bytes.min(chunk)), true)
-            } else {
-                (estimate.unwrap_or(0), estimate.is_some())
-            };
-            (need.saturating_add(bytes), known && measured)
-        })
-    }
-
-    /// Whether reading back `need` bytes for `lane`'s emit fits beside what is held and
-    /// reserved (`committed`): within the working allowance for the first segment some
-    /// family has not emitted (`base`), else within the output budget.
-    fn fits(
-        &self,
-        lane: usize,
-        need: usize,
-        base: usize,
-        settings: &Settings,
-        committed: usize,
-    ) -> bool {
-        let limit = if self.next[lane] == base {
-            settings.ceiling()
-        } else {
-            settings.output_bytes
-        };
-        committed.saturating_add(need) <= limit
-    }
-
-    /// Whether an emit waits to read back a chunk that does not fit.
-    fn starved(&self, base: usize, settings: &Settings, committed: usize) -> bool {
-        (0..self.lanes).any(|lane| {
-            self.restoring[lane]
-                .is_some_and(|need| !self.fits(lane, need, base, settings, committed))
-        })
-    }
-
-    /// Whether segment `at` may start, walking families that need `need` of the output
-    /// budget: within the window, and the first some family has not emitted, or, with that
-    /// need known, beside what is held and reserved (`committed`), with every family's slots
-    /// and no emit waiting for room to read back a chunk.
-    fn admits(
-        &self,
-        at: usize,
-        need: (usize, bool),
-        settings: &Settings,
-        committed: usize,
-    ) -> bool {
-        let base = self.base();
-        at < base.saturating_add(settings.window)
-            && (at == base
-                || (need.1
-                    && committed.saturating_add(need.0) <= settings.output_bytes
-                    && self.queued.iter().all(|&queued| queued < settings.slots)
-                    && !self.starved(base, settings, committed)))
-    }
-
     fn claim(&mut self, at: usize, lane: usize) {
         self.set(at, lane, Status::Running);
         self.live[at] += 1;
@@ -385,20 +302,17 @@ impl Schedule {
         }
     }
 
-    /// The next task: an emit that can go on, the family furthest behind first, taking what
-    /// reading back its spilled chunk needs; else, when `ahead`, a walk of the first segment
-    /// with a family to take, once what it reads is measured and it may start and `hold` takes
-    /// its share of the walkers' budget, taking every family it can; else a measure of a
-    /// segment in the window some family has yet to walk.
-    pub(super) fn pick<'c>(
+    /// The next task: an emit that can go on, the family furthest behind first; else, when
+    /// `ahead`, a walk of the first segment with a family to take, once what it reads is
+    /// measured and `hold` sizes the walker for it, taking every family it can; else a measure
+    /// of the first segment some family has yet to walk whose reads are unknown. Nothing but
+    /// work to do decides what starts.
+    pub(super) fn pick(
         &mut self,
         plan: &Plan,
-        settings: &Settings,
-        credit: &'c Credit,
         ahead: bool,
         hold: &mut dyn FnMut(Reads) -> bool,
-    ) -> io::Result<Option<Task<'c>>> {
-        let (committed, base) = (credit.committed(), self.base());
+    ) -> io::Result<Option<Task>> {
         let ready = (0..self.lanes)
             .filter(|&lane| {
                 !self.emitting[lane]
@@ -407,36 +321,28 @@ impl Schedule {
                         self.status(self.next[lane], lane),
                         Status::Sealed | Status::Refused | Status::Lost
                     )
-                    && self.restoring[lane]
-                        .is_none_or(|need| self.fits(lane, need, base, settings, committed))
             })
             .min_by_key(|&lane| self.next[lane]);
         if let Some(lane) = ready {
             self.emitting[lane] = true;
             self.running += 1;
-            let restore = self.restoring[lane].take().map(|need| credit.hold(need));
             return Ok(Some(Task::Emit {
                 lane,
                 at: self.next[lane],
-                restore,
             }));
         }
         if !ahead {
             return Ok(None);
         }
-        let window = base..self.segments.min(base.saturating_add(settings.window));
-        for at in window.clone() {
+        let unemitted = self.base()..self.segments;
+        for at in unemitted.clone() {
             if !(0..self.lanes).any(|lane| self.claimable(plan, at, lane)) {
                 continue;
             }
             let Measured::Known(reads) = self.reads[at] else {
                 break;
             };
-            let need = self.need(
-                (0..self.lanes).filter(|&lane| self.claimable(plan, at, lane)),
-                settings,
-            );
-            if !self.admits(at, need, settings, committed) || !hold(reads) {
+            if !hold(reads) {
                 break;
             }
             let lanes = engine_allocation::collect_vec(
@@ -451,10 +357,9 @@ impl Schedule {
                 at,
                 from: self.begins[at],
                 lanes,
-                reserved: credit.reserve(need.0),
             }));
         }
-        for at in window {
+        for at in unemitted {
             let unwalked = (0..self.lanes)
                 .any(|lane| matches!(self.status(at, lane), Status::Open | Status::Waiting));
             if unwalked && matches!(self.reads[at], Measured::Unknown) {
@@ -566,18 +471,6 @@ impl Schedule {
         self.running -= 1;
     }
 
-    /// With no task running and none to hand out, the family furthest behind whose emit
-    /// waits to read back a chunk that cannot fit, with that segment and what reading it
-    /// takes: nothing will make room for it.
-    pub(super) fn stuck(&self) -> Option<(usize, usize, usize)> {
-        if self.running > 0 {
-            return None;
-        }
-        (0..self.lanes)
-            .filter_map(|lane| Some((lane, self.next[lane], self.restoring[lane]?)))
-            .min_by_key(|&(_, at, _)| at)
-    }
-
     /// `lanes` of `at`, which a walk holds and cannot start there: those the segment before
     /// has handed on since, for the walk to take now, and those it lost, which are lost too;
     /// the rest wait for it, and those closed meanwhile are given back.
@@ -614,8 +507,8 @@ impl Schedule {
         Ok(deferred)
     }
 
-    /// Takes what each family of a walk projected, `(family, bytes)`, into the output a walk
-    /// of it is taken to need.
+    /// Takes what each family of a walk spooled, `(family, bytes)`, into the most a walk of it
+    /// spooled.
     pub(super) fn estimate(&mut self, projected: &[(usize, usize)]) {
         for &(lane, bytes) in projected {
             let estimate = &mut self.estimate[lane];
@@ -629,23 +522,22 @@ impl Schedule {
         self.stats.table_bytes = self.stats.table_bytes.max(bytes);
     }
 
-    /// The families of `next` a walk of the segment before goes on into: those it hands on
+    /// The families of `next` a walk of segment `at` goes on into: those it hands on
     /// (`handed`) that wait or are untaken, and every other it may take, once `next` is
-    /// measured and may start, `hold` takes its share of the walkers' budget, and going on
-    /// saves a restart (`hot`) or hands an operator on; and what that walk reserved.
-    pub(super) fn chain<'c>(
+    /// measured, `hold` sizes the walker for it, and going on hands an operator on, or saves
+    /// a restart (`hot`) while no emit waits, `at`'s among them: its worker takes that first.
+    pub(super) fn chain(
         &mut self,
         plan: &Plan,
-        settings: &Settings,
-        credit: &'c Credit,
-        next: usize,
+        (at, next): (usize, usize),
         handed: &[usize],
         hot: bool,
         hold: &mut dyn FnMut(Reads) -> bool,
-    ) -> io::Result<(Vec<usize>, Reserved<'c>)> {
+    ) -> io::Result<Vec<usize>> {
+        let goes = !handed.is_empty() || (hot && !self.emits_waiting(at));
         let reads = match self.reads(next) {
-            Some(reads) if hot || !handed.is_empty() => reads,
-            _ => return Ok((Vec::new(), credit.reserve(0))),
+            Some(reads) if goes => reads,
+            _ => return Ok(Vec::new()),
         };
         let mut lanes = Vec::new();
         for lane in 0..self.lanes {
@@ -659,19 +551,29 @@ impl Schedule {
                 lanes.push(lane);
             }
         }
-        let need = self.need(lanes.iter().copied(), settings);
-        if lanes.is_empty()
-            || !self.admits(next, need, settings, credit.committed())
-            || !hold(reads)
-        {
-            return Ok((Vec::new(), credit.reserve(0)));
+        if lanes.is_empty() || !hold(reads) {
+            return Ok(Vec::new());
         }
         for &lane in &lanes {
             self.claim(next, lane);
         }
         self.stats.walks += 1;
         self.stats.chained += 1;
-        Ok((lanes, credit.reserve(need.0)))
+        Ok(lanes)
+    }
+
+    /// Whether some family's emit can go on, or will once the walk of `at` seals.
+    fn emits_waiting(&self, at: usize) -> bool {
+        (0..self.lanes).any(|lane| {
+            let next = self.next[lane];
+            !self.emitting[lane]
+                && next < self.segments
+                && (next == at
+                    || matches!(
+                        self.status(next, lane),
+                        Status::Sealed | Status::Refused | Status::Lost
+                    ))
+        })
     }
 
     /// The families of `handed` (none of `chained`, so to be parked for `next`) whose walk of
@@ -692,7 +594,6 @@ impl Schedule {
     pub(super) fn sealed(&mut self, at: usize, lanes: &[usize]) {
         for &lane in lanes {
             self.set(at, lane, Status::Sealed);
-            self.queued[lane] += 1;
         }
     }
 
@@ -700,7 +601,6 @@ impl Schedule {
     /// or lost).
     pub(super) fn settle(&mut self, at: usize, lane: usize, status: Status) {
         self.set(at, lane, status);
-        self.queued[lane] += 1;
     }
 
     /// The segment after `at` in its branch, when `lane` waits there for the operator `at`
@@ -822,11 +722,6 @@ impl Schedule {
                 Status::Running => (Status::Abandoned, false),
                 Status::Sealed | Status::Refused | Status::Lost => {
                     debug_assert!(!(self.emitting[lane] && self.next[lane] == at));
-                    if self.next[lane] == at {
-                        // What reading its spilled chunk back would take is no longer asked.
-                        self.restoring[lane] = None;
-                    }
-                    self.queued[lane] -= 1;
                     self.release(at);
                     (Status::Closed, true)
                 }
@@ -931,15 +826,8 @@ impl Schedule {
         }
         self.next[lane] = at + 1;
         self.emitting[lane] = false;
-        self.queued[lane] -= 1;
         self.release(at);
         self.advance(plan, lane, gone)
-    }
-
-    /// `lane`'s emit stopped at a spilled chunk that reading back takes `need` bytes.
-    pub(super) fn restores(&mut self, lane: usize, need: usize) {
-        self.emitting[lane] = false;
-        self.restoring[lane] = Some(need);
     }
 
     /// `lane`'s emit of its next segment stopped short.

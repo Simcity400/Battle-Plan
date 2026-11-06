@@ -13,7 +13,7 @@ use dashboard_world::{Hold, Needs, Roster, Tagged, World};
 use installed_content_core::characters::BuiltTemplate;
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{CountryRow, ModifierDefinitionRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -84,6 +84,7 @@ pub fn needs() -> io::Result<Needs> {
 
 /// Why a recorded row cannot be held, as the feed names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub enum Refusal {
     Tag,
     IdeaHolder,
@@ -113,6 +114,7 @@ pub type Row = (u32, u32, Box<[u8]>);
 
 /// The seat and character an appointment records for its idea.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Role {
     pub seat: String,
     pub id: u32,
@@ -124,6 +126,7 @@ pub struct Role {
 
 /// An idea a country holds, with the appointment holding it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Holding {
     pub token: Arc<str>,
     pub role: Option<Arc<Role>>,
@@ -131,12 +134,14 @@ pub struct Holding {
 
 /// An appointed character's template as its row gives it, or that it has no row.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Template {
     Built(Result<BuiltTemplate, String>),
     Missing { complete: bool },
 }
 
 /// A country's holdings at an hour, read as the row scan observes it.
+#[derive(replay_spool::Spooled)]
 pub struct Read {
     pub tag: Arc<str>,
     /// Its holder's canonical slot and id.
@@ -186,6 +191,7 @@ impl Read {
 pub type Definitions = BTreeMap<String, ModifierDefinitionRow>;
 
 /// What the ordered emit reads of an hour that changes what a holding is read from.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Whether Countries, CountryLinks, ActiveIdeas and HiredAdvisors are complete.
     pub known: bool,
@@ -201,35 +207,12 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     /// None when the hour changes nothing read.
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        size_of::<Facts>()
-            + facts.reads.capacity() * size_of::<Read>()
-            + facts.reads.iter().map(Read::heap).sum::<usize>()
-            + facts.refused.capacity() * size_of::<(Refusal, Row)>()
-            + facts.refused.iter().map(|(_, row)| row.2.len()).sum::<usize>()
-            + facts.definitions.as_ref().map_or(0, |definitions| {
-                definitions
-                    .iter()
-                    .map(|(key, row)| {
-                        64 + key.len()
-                            + row.name_key.len()
-                            + row.postfix_key.len()
-                            + row.argument.len()
-                    })
-                    .sum::<usize>()
-            })
-    }
 }
 
 /// The fields of the tables read by fields whose change makes a holding read again.

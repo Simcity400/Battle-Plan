@@ -6,6 +6,7 @@ use super::*;
 /// A known zero target demands neither progress nor chance. Optional leaves
 /// preserve acquisition failures independently of existing mission rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalPatrolMissionInputRow {
     pub task_force: u64,
     pub target: Option<u64>,

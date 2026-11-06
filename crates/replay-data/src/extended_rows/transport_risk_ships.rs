@@ -4,6 +4,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TransportReceiverShips {
     pub task_force: u64,
     pub count: Option<i32>,
@@ -13,6 +14,7 @@ pub struct TransportReceiverShips {
 value_struct!(TransportReceiverShips { task_force: u64, count: Option<i32>, ships: Option<Vec<TransportRiskShip>> });
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TransportRiskShip {
     pub ship: Option<u64>,
     pub class: Option<u32>,

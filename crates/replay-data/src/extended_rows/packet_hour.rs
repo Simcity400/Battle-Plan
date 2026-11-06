@@ -35,6 +35,7 @@ pub const PACKET_HOUR_HOSTS: [TableId; 10] = [
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum PacketHour {
     /// Read with its hourly host row; costs no bytes.
     #[default]

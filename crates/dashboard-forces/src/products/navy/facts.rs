@@ -9,7 +9,7 @@ use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columns,
     container::Replay,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -45,6 +45,7 @@ pub fn needs() -> Needs {
 /// ship's model counter is missing or the sum leaves i64), whether the maximum's ordered sum
 /// overflows, and by class token ascending its ships and their hull HP.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Counts {
     pub ships: i64,
     pub hp: Option<i64>,
@@ -71,6 +72,7 @@ impl Counts {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -104,30 +106,6 @@ pub struct Hour {
     /// The class tokens the hour may name anew, in the order the row census first reads them:
     /// by the lowest ship id holding each among the ships it reads.
     pub seen: Vec<u32>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // Counts are Arcs the projector holds too.
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self
-                .live
-                .as_ref()
-                .map_or(0, |live| live.capacity() * size_of::<(u32, (u32, u32))>())
-            + self.undisplayable.as_ref().map_or(0, |tags| {
-                tags.iter().map(|tag| 24 + tag.capacity()).sum::<usize>()
-            })
-            + self.counts.capacity() * size_of::<(u8, u32, Arc<Counts>)>()
-            + self.spellings.capacity() * size_of::<(u32, Option<Arc<str>>)>()
-            + self.seen.capacity() * 4
-            + self
-                .spellings
-                .iter()
-                .filter_map(|(_, spelling)| spelling.as_ref())
-                .map(|spelling| spelling.len())
-                .sum::<usize>()
-    }
 }
 
 /// One ship as counted: its class token, task force, hull HP, maximum hull HP (none without a

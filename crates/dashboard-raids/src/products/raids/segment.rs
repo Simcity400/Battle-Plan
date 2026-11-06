@@ -88,6 +88,7 @@ impl Segmented for Segments {
 /// An hour the scan reads, as a segment's reader kept it: each table's view in [`TABLES`] order,
 /// the hour's metrics and its change facts, the provinces and states flagged changed only where
 /// the rows kept of them did.
+#[derive(replay_spool::Spooled)]
 pub struct Kept {
     pub(super) views: Box<[SharedView]>,
     pub(super) metrics: Box<Metrics>,

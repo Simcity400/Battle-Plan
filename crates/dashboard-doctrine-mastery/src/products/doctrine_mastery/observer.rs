@@ -131,6 +131,12 @@ impl Observer for DoctrineMasteryObserver {
         Some(Box::new(super::kept::Keeper::default()))
     }
 
+    fn unspool_operands(
+        input: &mut replay_spool::Reader<'_>,
+    ) -> io::Result<Box<dyn dashboard_keyed::block::Operands<Self>>> {
+        Ok(Box::new(<super::kept::Kept as replay_spool::Spooled>::unspool(input)?))
+    }
+
     fn fields() -> io::Result<Vec<TableFields>> {
         Ok(vec![
             TableFields::all(TableId::DoctrineCountries),

@@ -40,6 +40,7 @@ use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity, f
 /// Evaluations run, reused, and (in check mode) reused but run anyway,
 /// and of those, any that changed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ReuseCounts {
     pub evaluated: u64,
     pub reused: u64,
@@ -84,6 +85,7 @@ pub fn reusing<T>(f: impl FnOnce() -> T) -> T {
 
 /// What an evaluation read.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Key {
     /// A whole table's view at the hour: its allocation, which changes with
     /// any of its rows, status or refusal.
@@ -161,6 +163,7 @@ fn in_world(mut reads: Vec<TableRead>) -> Vec<TableRead> {
 /// a truncated table's missing count, an unavailable table's reason)
 /// always count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct TableRead {
     pub table: TableId,
     /// The fields read, as change-mask bits ([`TableId::field_name`]).
@@ -181,6 +184,7 @@ pub struct TableRead {
 /// `slot`, and those whose country it does not map. Which rows these are is
 /// a function of every slot `by` holds, which such a read also reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct Owner {
     pub slot: u32,
     pub shift: u32,
@@ -189,6 +193,7 @@ pub struct Owner {
 
 /// What maps a raw country to its canonical slot for an [`Owner`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Resolution {
     /// `CountryLinks`, as a row's own country reference resolves.
     Links,
@@ -690,6 +695,7 @@ fn ended(frame: &DecodedFrame, read: &TableRead, from: Hour, to: Hour) -> bool {
 /// The value an input read: a digest, or a table view's identity, which
 /// keeps the view's allocation reserved so no later view can share it.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 enum Value {
     Digest(u64),
     View(ViewIdentity),
@@ -699,6 +705,7 @@ enum Value {
 /// is a function of, a bit each (the last bit also for every entry past
 /// it); None when its key declares no dependence.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 struct Read {
     key: Key,
     value: Value,
@@ -707,6 +714,7 @@ struct Read {
 
 /// The reads of one evaluation, each key once, in first-read order.
 #[derive(Clone, Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Inputs {
     reads: Vec<Read>,
     /// Every table read the reads declare, each once.

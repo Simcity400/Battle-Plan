@@ -5,7 +5,6 @@ use super::{
 };
 use crate::products::yards::emit::tests::project;
 use dashboard_base::prepared::prepass;
-use replay::segments::Item as _;
 use replay_frame::frame::SharedView;
 use std::collections::BTreeSet;
 
@@ -413,7 +412,6 @@ fn check<V: View>(frames: &[DecodedFrame], restarts: &[usize]) -> usize {
     let mut held = None;
     for (hour, frame) in hours.iter().zip(frames) {
         if let Some(read) = &hour.read {
-            assert!(hour.heap() > 0);
             follow(&mut held, read);
         }
         assert!(

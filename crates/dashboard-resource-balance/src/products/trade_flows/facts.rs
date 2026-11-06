@@ -15,7 +15,7 @@ use dashboard_base::products::country_history::Identity;
 use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow, TableId};
 use std::{
@@ -50,6 +50,7 @@ pub(crate) type Group = Option<(Identity, Identity)>;
 pub(crate) type Holder = (Arc<str>, u32);
 
 /// What the ordered emit reads of an hour that changes what the flows read.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Whether the read can say who trades what: the countries, their links, the deals, the
     /// definitions and the tokens are all complete. An unknown read carries nothing else.
@@ -67,38 +68,12 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     /// None when the hour changes nothing the flows read.
     pub(crate) facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        size_of::<Facts>()
-            + facts.holders.capacity() * size_of::<(u32, Option<Holder>)>()
-            + facts
-                .holders
-                .iter()
-                .flat_map(|(_, holder)| holder)
-                .map(|(tag, _)| tag.len())
-                .sum::<usize>()
-            + facts.flows.capacity() * size_of::<(FlowKey, Option<Terms>)>()
-            + facts
-                .rejected
-                .as_ref()
-                .map_or(0, |rejected| rejected.capacity() * size_of::<(Group, u32)>())
-            + facts.names.capacity() * size_of::<(u32, String)>()
-            + facts
-                .names
-                .iter()
-                .map(|(_, token)| token.capacity())
-                .sum::<usize>()
-    }
 }
 
 /// Where a deal counts: toward a flow (by index), or left out.

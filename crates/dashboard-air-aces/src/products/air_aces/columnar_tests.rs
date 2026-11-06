@@ -220,7 +220,8 @@ fn projected(scenario: &Scenario, starts: &[i32]) -> (Vec<Hour>, Vec<DecodedFram
         observed.metrics = metrics;
         frames.push(observed);
     }
-    (out, frames)
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(out).unwrap(), frames)
 }
 
 /// The row recording of `frames`, a block per [`BLOCKS`] entry.

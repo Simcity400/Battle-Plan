@@ -10,7 +10,7 @@ use super::LeafKey;
 use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -49,6 +49,7 @@ pub fn needs() -> Needs {
 /// The hour's country join, as the row ledger reads it: each tag the links resolve, in tag
 /// order, until the first whose tag is refused.
 #[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Identities {
     /// Each resolved country (tag, "slot:id"), in tag order.
     pub countries: Vec<(String, String)>,
@@ -77,7 +78,7 @@ impl Identities {
 }
 
 /// A read with events: what its ordinals and dates check, the counts it notes and its sums.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, replay_spool::Spooled)]
 pub struct Read {
     /// The first and last event ordinal, and the earliest native date.
     pub first: u64,
@@ -106,6 +107,7 @@ impl Read {
 
 /// What one family's event table gave the hour.
 #[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Events {
     /// The table was not complete.
     Unread,
@@ -116,25 +118,13 @@ pub enum Events {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     /// The join, at a segment's first hour and where it changed.
     pub identities: Option<Arc<Identities>>,
     pub families: [Events; 2],
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // The join is an Arc the projector holds too.
-        self.families
-            .iter()
-            .map(|events| match events {
-                Events::Read(Some(read)) => size_of::<Read>() + read.heap(),
-                _ => 0,
-            })
-            .sum()
-    }
 }
 
 /// One segment's projection: every segment starts cold.

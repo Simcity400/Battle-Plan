@@ -3,6 +3,7 @@ use super::*;
 use crate::value::value_struct;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandEquipmentLoss {
     /// Full native equipment-variant handle; names resolve through recorded content.
     pub variant: u64,
@@ -15,6 +16,7 @@ value_struct!(LandEquipmentLoss {
 opaque_value!(Vec<LandEquipmentLoss>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandSideLosses {
     pub manpower: i32,
     pub equipment: Vec<LandEquipmentLoss>,
@@ -25,6 +27,7 @@ opaque_value!([LandSideLosses; 2]);
 /// Terminal supplemental observer operand; aggregate losses use `losses`.
 /// Kinds have the same meanings as CombatLogObserverKind.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandTerminalObserver {
     pub attacker: bool,
     pub kind: u8,
@@ -40,6 +43,7 @@ value_struct!(LandTerminalObserver {
 opaque_value!(Vec<LandTerminalObserver>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionManpowerContributor {
     pub country: u32,
     pub amount: i32,
@@ -50,6 +54,7 @@ value_struct!(DivisionManpowerContributor {
 });
 opaque_value!(Vec<DivisionManpowerContributor>);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionLandInputsRow {
     pub division: u64,
     /// Raw contributor references and signed amounts, in native order.
@@ -80,6 +85,7 @@ typed_codec!(
 );
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandResultSide {
     pub countries: Vec<u32>,
     pub secondary_countries: Vec<u32>,
@@ -93,6 +99,7 @@ opaque_value!([u8; 3]);
 opaque_value!([u8; 2]);
 opaque_value!([Vec<u8>; 2]);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandCombatResultsRow {
     /// Hook sequence, unique within the attachment. Join on combat, not id.
     pub id: u64,
@@ -154,6 +161,7 @@ typed_codec!(
 );
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DestroyedDivisionsRow {
     pub id: u64,
     pub division: u64,
@@ -194,6 +202,7 @@ typed_codec!(
 );
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandEventCoverageRow {
     pub id: u32,
     pub epoch: u64,

@@ -71,6 +71,7 @@ fn changed(changes: &FrameChanges) -> bool {
 }
 
 /// An hour as a segment's reader hands it on.
+#[derive(replay_spool::Spooled)]
 pub struct Read {
     /// Each source table as the hour holds it.
     pub(crate) sources: Sources,

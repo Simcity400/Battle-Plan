@@ -583,8 +583,8 @@ fn processing_a_segment_leaves_the_previous_batch_with_its_sealer() {
             .processed(segment(0), Made::Prepared, None, None)
             .unwrap()
     );
-    // Keep the job pending regardless of pressure on the shared series budget.
-    stage.handed = Some(publisher.hand(stage.cut().unwrap()));
+    // Keep the job pending: no sealer runs.
+    stage.handed = Some(publisher.hand(steady, Work::Batch(stage.cut().unwrap())));
     let handed = stage.handed;
     assert!(handed.is_some());
     assert!(
@@ -594,7 +594,7 @@ fn processing_a_segment_leaves_the_previous_batch_with_its_sealer() {
     );
     assert_eq!(stage.handed, handed);
     assert!(stage.writer.is_none());
-    assert_eq!(publisher.lock().jobs.len(), 1);
+    assert_eq!(publisher.lock().lines[&steady.id].work.len(), 1);
     assert!(publisher.committed(steady.id, BRANCH).is_none());
     stage.submit().unwrap();
     assert_eq!(publisher.progress()[&steady.id].processed, 2);

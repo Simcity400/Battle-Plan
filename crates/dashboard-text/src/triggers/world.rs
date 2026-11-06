@@ -737,6 +737,7 @@ fn recorded_template(character: &CharacterRow) -> Option<RecordedTemplate> {
 /// entered ([`super::Evaluator::leader_visible`]), read from its visibility
 /// inputs, its character's recorded template and the content alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum LeaderVisibility {
     /// Decided without the owner's scope.
     Decided(Eval),
@@ -852,6 +853,7 @@ fn required_row<T: TableSchema>(
 
 /// A recorded query of the hour's world ([`super::inputs`]): its method and arguments.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Query {
     TableStatus(replay_data::rows::TableId),
     TableFresh(replay_data::rows::TableId),

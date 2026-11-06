@@ -49,8 +49,8 @@ pub(super) fn observed(frames: &[DecodedFrame], starts: &[usize]) -> Vec<Hour<Se
             }
             let changes = FrameChanges::alone(frame, format);
             let dated = changes.slot_read[TableId::AirStatistics.index()];
-            let (facts, bytes) = reader.read(frame, &changes, &touched).unwrap();
-            Hour::new(frame.hour, dated, Some(facts), bytes)
+            let (facts, _) = reader.read(frame, &changes, &touched).unwrap();
+            Hour::new(frame.hour, dated, Some(facts))
         })
         .collect()
 }
@@ -402,8 +402,8 @@ fn cancellation_is_respected_before_any_content_or_page_read() {
 fn equal_daily_statistics_carry_the_actual_supplying_read() {
     let frames = [statistics(100, vec![stat(3, [0; 24])])];
     let mut hours = observed(&frames, &[]);
-    hours.push(Hour::new(101, false, None, 0));
-    hours.push(Hour::new(102, true, None, 0));
+    hours.push(Hour::new(101, false, None));
+    hours.push(Hour::new(102, true, None));
     let stored = publish_hours(hours, &[102], None).store();
     let (_, window) = stored.window(100, 102);
     assert_eq!(window.reads, [(100, 101, 100), (102, 102, 102)]);

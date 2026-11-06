@@ -73,6 +73,7 @@ pub struct OperativePlacementRun {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct PlacedOperative {
     pub id: String,
     pub name: Option<String>,
@@ -105,6 +106,7 @@ pub struct OperativePlacementReply {
 /// What a membership read gives the placements: each pair's operatives, or why none can be
 /// placed, with the warnings their names add and whether the read holds any membership.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct PlacementRead {
     resolved: Result<BTreeMap<PairKey, Vec<PlacedOperative>>, String>,
     warnings: Vec<String>,
@@ -189,6 +191,7 @@ fn recorded_operatives(frame: &DecodedFrame) -> Option<&[OperativeMembershipRow]
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct PairKey {
     owner: (u32, u32, String),
     target: (u32, u32, String),

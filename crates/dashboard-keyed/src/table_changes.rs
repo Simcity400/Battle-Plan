@@ -14,6 +14,7 @@ use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView};
 use std::{collections::BTreeSet, io, mem::size_of, sync::Arc};
 
 /// A table's change at an hour: its whole view, or its changed rows and deleted keys.
+#[derive(replay_spool::Spooled)]
 pub enum Change {
     Replace(SharedView),
     Patch {

@@ -971,6 +971,7 @@ fn same_operands(left: &RawVariant, right: &RawVariant) -> bool {
 /// What the variant catalogue reads of an hour besides a complete read's rows
 /// ([`VariantCatalogue::hour_of`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum VariantHour {
     /// The variant table was not read: names carry while it is complete.
     Carried { complete: bool },

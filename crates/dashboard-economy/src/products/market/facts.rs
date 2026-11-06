@@ -18,7 +18,7 @@ use dashboard_world::{Hold, Needs, Roster, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -135,6 +135,7 @@ fn refusal(state: &State, table: TableId, mode: CaptureMode, hour: i32) -> io::R
 /// variants it names, whether its owner has no identity (it shows nothing then), and how many
 /// of its holders have none.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Row {
     pub values: Vec<(Field, i128)>,
     pub variants: Vec<u64>,
@@ -158,6 +159,7 @@ impl Row {
 
 /// What an hour hands of a state table.
 #[derive(Debug)]
+#[derive(replay_spool::Spooled)]
 pub enum Table {
     /// The countries' identities stopped being read: nothing of it is observed.
     Skipped,
@@ -186,6 +188,7 @@ impl Table {
 
 /// An occurrence the ledger keeps, its parties resolved at the hour it was read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Occurrence {
     pub row: MarketEventRow,
     pub seller: Option<u32>,
@@ -194,6 +197,7 @@ pub struct Occurrence {
 
 /// What an hour hands of the occurrence table, where it changed.
 #[derive(Debug)]
+#[derive(replay_spool::Spooled)]
 pub enum Events {
     Refused(Refusal),
     /// Every row's id, and the rows of the ledger's kinds, in table order.
@@ -205,6 +209,7 @@ pub enum Events {
 
 /// What the ordered emit reads of an observed hour.
 #[derive(Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Whether the countries' identities are read, and why not, where that changed.
     pub identities: Option<Result<(), Refusal>>,
@@ -237,6 +242,7 @@ impl Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub hour: i32,
     /// Whether Countries and CountryLinks are complete.
@@ -250,12 +256,6 @@ pub struct Hour {
     /// None where the hour changes nothing the market reads.
     pub facts: Option<Box<Facts>>,
     bytes: usize,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.bytes
-    }
 }
 
 #[cfg(test)]

@@ -631,7 +631,8 @@ fn project(script: &[Rows], segment: usize) -> (Vec<Projected>, [(&'static str, 
             .unwrap();
         projected.push((out.pop().unwrap(), decoded));
     }
-    (projected, rebuilds.counts())
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(projected).unwrap(), rebuilds.counts())
 }
 
 /// The projector on a synthetic walk: the first hour hands every tag; a cosmetic tag or a

@@ -330,7 +330,8 @@ fn projected(hours: &[Tables], starts: &[i32]) -> (Vec<facts::Hour>, Vec<Decoded
             source(1, tables.hour, None).tables[TableId::Campaign.index()].clone();
         frames.push(frame);
     }
-    (out, frames)
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(out).unwrap(), frames)
 }
 
 fn naming_hours(last: i32) -> Vec<Tables> {

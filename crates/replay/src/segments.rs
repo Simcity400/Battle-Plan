@@ -5,15 +5,14 @@
 //! job carries: each hour goes to them as the walker's typed columns ([`crate::columns`]) and
 //! the hour's changes ([`State::changes`]), not rebuilt rows. A family whose operator cannot
 //! start where a segment starts ([`Operator::starts_at`]) goes on with the operator that
-//! walked the segment before it in its branch: that walk hands it on, or parks it in a store
-//! that spills what its budget does not hold ([`Scratch`]); a walker's tables are never
-//! parked. Each family's items reach its ordered emit in segment order, a chunk at a time, as
-//! a task of the same pool, so families emit alongside one another and the walks. No segment
-//! starts [`Settings::window`] segments or more past the first some family has not emitted,
-//! nor before it holds the share of the walkers' budget its reads need, and none but that
-//! first starts while the output it is taken to need, beside what is held and what walks
-//! reserved, would overdraw the output budget, nor while a family's slots are spent. No task
-//! waits for credit: one that cannot have it is not handed out. A walk's operators share a
+//! walked the segment before it in its branch: that walk hands it on, or parks it, written out
+//! to the spool when it can be; a walker's tables are never parked. Each item an operator
+//! projects is written to the spool as it comes ([`Item`]), a file of its family's for each
+//! segment, and its family's ordered emit reads them back in segment order, a chunk at a time,
+//! once the segment's walk filed them, as a task of the same pool, so families emit alongside
+//! one another and the walks. Nothing but work to do decides what starts: an emit that can go
+//! on first, then help for a walk under way, then the first segment some family has yet to
+//! walk. A walk's operators share a
 //! [`World`] built for the walk and advanced once an hour before them ([`run_in`]). A family
 //! goes on in a branch from where an earlier run of the recording, as it stood then, left it:
 //! no walk takes it to the segments before, and its operator takes up there what it carried
@@ -43,6 +42,7 @@ use std::{
     collections::BTreeMap,
     fmt, io,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    path::Path,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
@@ -56,15 +56,17 @@ use std::sync::Condvar;
 mod crew;
 mod lane;
 mod schedule;
+mod spool;
 mod store;
 #[cfg(test)]
 mod tests;
 
-pub use store::{Folder, Scratch, Spilled};
+pub use replay_spool::{Placeholder, Spooled};
 
 use crew::Board;
-use lane::{Context, Emitted, Erased, Kept, Reserved, Shared, Taken, Walking};
+use lane::{Context, Erased, Kept, Walking};
 use schedule::{Closing, Gone, Plan, Schedule, Status, Task};
+use spool::Folder;
 use store::{Parked, Store};
 
 /// What a walk's operators share, built for each walk ([`run_in`]) and advanced once an hour,
@@ -126,40 +128,11 @@ impl<T> Sink<T> for Vec<T> {
     }
 }
 
-/// An item a family's operators project for its ordered emit.
-pub trait Item: Send + Sized {
-    /// Whether [`Self::save`] writes them: a walk then holds a chunk of them at a time past
-    /// the output budget, spilling the rest. Others stay resident.
-    const SPILLS: bool = false;
+/// An item a family's operators project for its ordered emit: written to the spool as it is
+/// pushed and read back for the emit, exactly ([`Spooled`]).
+pub trait Item: Spooled + Send {}
 
-    /// The bytes it owns on the heap; the budget counts its own size with its chunk's.
-    fn heap(&self) -> usize;
-
-    /// Writes `items` whole, for the spool, when they spill.
-    fn save(items: &[Self], out: &mut Vec<u8>) -> io::Result<()> {
-        let _ = (items, out);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "These items are never spilled",
-        ))
-    }
-
-    /// The items [`Self::save`] wrote, holding no more than they did when saved: reading them
-    /// back is admitted for those bytes, and a run refuses a chunk that comes back larger.
-    fn load(bytes: &[u8]) -> io::Result<Vec<Self>> {
-        let _ = bytes;
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "These items are never spilled",
-        ))
-    }
-}
-
-impl Item for () {
-    fn heap(&self) -> usize {
-        0
-    }
-}
+impl<T: Spooled + Send> Item for T {}
 
 /// A family's work on a segment, and on the segments after it in its branch that it cannot
 /// start, reading the walk's world `W`.
@@ -306,7 +279,7 @@ pub enum Operation {
     Cross,
     Hour,
     End,
-    /// Writing out its items or its parked operator.
+    /// Writing out its items, by their codec, or its parked operator.
     Save,
     /// Reading them back.
     Load,
@@ -342,7 +315,7 @@ pub struct Outcome {
     /// ended or it failed. Short of every segment only when the run was cancelled: the rest
     /// are pending.
     pub settled: usize,
-    /// The most it projected in one walk of a segment, as the run estimates its walks' need.
+    /// The most it spooled in one walk of a segment.
     pub largest_output: Option<usize>,
 }
 
@@ -540,59 +513,18 @@ impl<'a, W: 'a> Lane<'a, W> {
     }
 }
 
-/// What a run may do and hold at once. These budget memory and speculation; none limits
-/// what a recording holds.
+/// How a run works: on how many workers. Nothing else bounds it: its items wait on disk.
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
     /// Workers, walking segments and running the families' emits alike.
     pub threads: usize,
-    /// Segments walked or waiting for emit, past and including the first some family has
-    /// not emitted.
-    pub window: usize,
-    /// Projected items held resident, by their bytes, with what walks reserved as they
-    /// started, before segments past the first some family has not emitted wait, and their
-    /// spilled chunks wait to be read back; chunks closed past it spill.
-    pub output_bytes: usize,
-    /// Projected bytes held resident past `output_bytes`, for the first segment some family
-    /// has not emitted, which starts whatever is held and reads its spilled chunks back, and
-    /// walks projecting past what they reserved; items that cannot spill fail the run past it.
-    pub working_bytes: usize,
-    /// Segments a family may hold sealed for its emit before segments past the first some
-    /// family has not emitted wait.
-    pub slots: usize,
-    /// Parked operators held resident; the furthest from their segment spill past it, each
-    /// held until written out: past it by one a worker at most.
-    pub carry_bytes: usize,
-    /// Projected bytes a chunk holds before it closes: what a walk reserves for a family
-    /// whose items spill.
-    pub chunk_bytes: usize,
-    /// The walkers' buffers at once, the run's own: a walk takes the share its segment's
-    /// reads need as it starts.
-    pub walker_bytes: usize,
 }
 
 impl Settings {
     pub fn new(threads: usize) -> Self {
-        let threads = threads.max(1);
-        // Room for every thread to walk while emits lag: a war segment of a long campaign
-        // projects over half a GiB, so a smaller budget walks one or two segments at a time.
-        let output_bytes = 8 << 30;
         Self {
-            threads,
-            window: threads.saturating_mul(4),
-            output_bytes,
-            // The largest segment the budget admits past the first also fits as the first.
-            working_bytes: output_bytes,
-            slots: threads.saturating_mul(4),
-            carry_bytes: 512 << 20,
-            chunk_bytes: 8 << 20,
-            walker_bytes: 8 << 30,
+            threads: threads.max(1),
         }
-    }
-
-    /// The most projected output held resident before items that cannot spill fail the run.
-    fn ceiling(&self) -> usize {
-        self.output_bytes.saturating_add(self.working_bytes)
     }
 }
 
@@ -607,10 +539,12 @@ pub struct Stats {
     pub deferred: usize,
     /// Segments walked or waiting for emit at once.
     pub segments: usize,
-    /// Projected bytes held resident at once, spilled chunks being read back included.
-    pub output_bytes: usize,
-    /// Parked operators' bytes held resident at once, those being parked and written out, not
-    /// yet spilled, included.
+    /// The most the spool held on disk at once, items and parked operators, and what it
+    /// wrote in all.
+    pub spool_bytes: u64,
+    pub spooled: u64,
+    /// Parked operators' bytes held resident at once, those being parked and written out
+    /// included.
     pub carry_bytes: usize,
     /// Bytes of parked operators being written out or read back at once.
     pub carry_scratch: usize,
@@ -618,8 +552,6 @@ pub struct Stats {
     /// Parked operators spilled, and read back.
     pub spilled: usize,
     pub loaded: usize,
-    /// Projected chunks spilled.
-    pub chunks_spilled: usize,
     /// Segments walked again, with no family, for the state a damaged restart holds.
     pub derived: usize,
     /// Segments whose own pages a measure read: each once, however many walks begin before
@@ -865,15 +797,14 @@ impl Drop for Unwinding<'_> {
 }
 
 /// A segment's walk: the families it carries, each with the operator the walk before handed
-/// on, if any, and what it reserved of the output budget.
-struct Job<'r, 'c, W> {
+/// on, if any.
+struct Job<'r, W> {
     at: usize,
     /// The segment its walk begins at, as its share was measured.
     from: usize,
     lanes: Vec<(usize, Option<Box<dyn Walking<W> + 'r>>)>,
     /// The state holds the tables the walk of the segment before, of the same run, left.
     hot: bool,
-    reserved: Reserved<'c>,
 }
 
 /// A family's operator in a walk: `cold` when it started at the walk's first hour.
@@ -981,21 +912,20 @@ fn width(costs: impl Iterator<Item = u64>) -> usize {
     usize::try_from(sum.div_ceil(most)).map_or(count, |width| width.min(count))
 }
 
-/// `operator`'s `hour`, on this worker.
+/// `operator`'s `hour` of segment `at`, on this worker.
 fn hour_on<W>(
     operator: &mut (dyn Walking<W> + '_),
+    at: usize,
     hour: &Hour<'_, W>,
-    shared: &Shared<'_>,
-    reserved: &Reserved<'_>,
+    folder: &Folder,
 ) -> Called {
     // Cleared while the run's own code it calls back into runs.
     let culprit = Cell::new(Some(0));
     let context = Context {
-        shared,
-        reserved,
+        folder,
         culprit: &culprit,
     };
-    match catch_unwind(AssertUnwindSafe(|| operator.hour(hour, &context))) {
+    match catch_unwind(AssertUnwindSafe(|| operator.hour(at, hour, &context))) {
         Ok(result) => Called::Returned(result.map_err(|error| Fault::of(Operation::Hour, error))),
         Err(payload) => Called::Panicked {
             family: culprit.get().is_some(),
@@ -1066,8 +996,9 @@ struct Run<'r, 'a, W> {
     lanes: &'r [Lane<'a, W>],
     worlds: &'r Worlds<'r, W>,
     signal: &'r Signal,
-    /// The walkers' budget, the run's alone: no walker waits for it.
+    /// What the walkers' buffers hold, counted: nothing limits it.
     budget: Arc<Budget>,
+    folder: &'r Folder,
     store: Store<'r, W>,
     /// What the families of walks given back after a panic did of their segment, by segment,
     /// for the walk of it handed out again.
@@ -1075,7 +1006,6 @@ struct Run<'r, 'a, W> {
     /// Where each family going on in a branch an earlier run left goes on, by segment then
     /// family: the ordinal it joins the walk at, and its carry.
     joins: BTreeMap<(usize, usize), (u32, Option<&'a [u8]>)>,
-    shared: Shared<'r>,
     #[cfg(test)]
     cancellation: &'r Cancellation,
 }
@@ -1113,13 +1043,8 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     }
                     // The emits take segments in order, so the earliest walk is helped first.
                     let front = self.signal.board.front();
-                    let picked = schedule.pick(
-                        &self.plan,
-                        &self.shared.settings,
-                        &self.shared.credit,
-                        front.is_none(),
-                        &mut |reads| walker.hold(reads),
-                    );
+                    let picked =
+                        schedule.pick(&self.plan, front.is_none(), &mut |reads| walker.hold(reads));
                     match picked {
                         Ok(Some(task)) => {
                             if matches!(task, Task::Emit { .. }) && walker.holds() {
@@ -1151,10 +1076,6 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                         self.signal.changed();
                         continue;
                     }
-                    if let Some((lane, at, need)) = schedule.stuck() {
-                        drop(schedule);
-                        return self.signal.fail(self.unrestorable(lane, at, need));
-                    }
                     drop(schedule);
                     self.help(seen);
                     schedule = self.signal.lock();
@@ -1162,13 +1083,10 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             };
             let done = match task {
                 Task::Measure { at } => self.measure(&mut walker, at),
-                Task::Emit { lane, at, restore } => self.emit(lane, at, restore),
-                Task::Walk {
-                    at,
-                    from,
-                    lanes,
-                    reserved,
-                } => self.walk(&mut walker, &mut state, at, from, lanes, reserved),
+                Task::Emit { lane, at } => self.emit(lane, at),
+                Task::Walk { at, from, lanes } => {
+                    self.walk(&mut walker, &mut state, at, from, lanes)
+                }
             };
             self.signal.lock().done();
             self.signal.changed();
@@ -1219,25 +1137,22 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         Ok(())
     }
 
-    /// Hands segment `at`'s items to `lane`'s emit, reading its spilled chunk back into
-    /// `restore`: the emit's refusal ends its branch, its other failures end its family.
-    fn emit(&self, lane: usize, at: usize, restore: Option<Taken<'_>>) -> io::Result<()> {
+    /// Hands segment `at`'s items to `lane`'s emit, read back from the spool: the emit's
+    /// refusal ends its branch, its other failures end its family.
+    fn emit(&self, lane: usize, at: usize) -> io::Result<()> {
         let _span = replay_frame::timeline::span("emit")
             .at(at)
             .lane(self.erased(lane).name());
-        let emitted = self
-            .erased(lane)
-            .emit(at, &self.segments[at], &self.shared, restore);
+        let emitted = self.erased(lane).emit(at, &self.segments[at]);
         let planned = *self.plan.get(at);
         let mut gone = Gone::default();
         {
             let mut schedule = self.signal.lock();
             let plan = &self.plan;
             match emitted {
-                Ok(Emitted::Ended(ending)) => {
+                Ok(ending) => {
                     schedule.emitted(plan, lane, at, planned.branch, ending, &mut gone)?;
                 }
-                Ok(Emitted::Spilled(need)) => schedule.restores(lane, need),
                 Err(Fault::Run(error)) => return Err(error),
                 // What an emit meets once the run is cancelled is no family's.
                 Err(fault) if self.signal.cancelled.load(Ordering::SeqCst) => {
@@ -1269,40 +1184,20 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         Ok(())
     }
 
-    /// The failure of a run whose `lane` cannot read back its spilled chunk of segment `at`,
-    /// `need` bytes, beside what is held, with nothing left to make room.
-    fn unrestorable(&self, lane: usize, at: usize, need: usize) -> io::Error {
-        let settings = &self.shared.settings;
-        io::Error::new(
-            io::ErrorKind::OutOfMemory,
-            format!(
-                "{}'s chunk of segment {at} takes {need} bytes to read back, past the output \
-                 budget of {} bytes and its working allowance of {} bytes beside the {} bytes \
-                 held",
-                self.erased(lane).name(),
-                settings.output_bytes,
-                settings.working_bytes,
-                self.shared.credit.held()
-            ),
-        )
-    }
-
     /// Segment `at`'s walk of `lanes` from `from`, and every walk it goes on into.
-    fn walk<'c>(
-        &'c self,
+    fn walk(
+        &self,
         walker: &mut Walker<'_>,
         state: &mut State,
         at: usize,
         from: usize,
         lanes: Vec<usize>,
-        reserved: Reserved<'c>,
     ) -> io::Result<()> {
         let mut job = Some(Job {
             at,
             from,
             lanes: engine_allocation::collect_vec(lanes.into_iter().map(|lane| (lane, None)))?,
             hot: false,
-            reserved,
         });
         while let Some(next) = job.take() {
             job = self.segment(walker, state, next)?;
@@ -1311,8 +1206,8 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     }
 
     /// Parks `operator` of `lane`, holding `bytes`, for segment `at`, and writes out, with no
-    /// lock held, the furthest parked operators past the continuation budget, which the store
-    /// takes out as it parks: a walk finding one being written leaves it until it lands, and
+    /// lock held, the parked operators that can be, which the store takes out as it parks: a
+    /// walk finding one being written leaves it until it lands, and
     /// none takes its segment meanwhile. A family whose parked operator failed as it was
     /// written out fails at that segment before any walk may take it again, or find it gone:
     /// until then it reads as being written, even to a walk holding the segment already.
@@ -1327,7 +1222,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         while !out.is_empty() {
             let cells = engine_allocation::collect_vec(out.iter().map(|&(cell, _, _)| cell))?;
             self.signal.lock().write(&cells);
-            let written = self.store.write(out, self.shared.scratch);
+            let written = self.store.write(out, self.folder);
             let mut gone = Gone::default();
             let mut victims = match written {
                 Ok(victims) => victims,
@@ -1350,8 +1245,8 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             self.signal.changed();
             self.drop_gone(gone);
             drop(victims);
-            // Those that cannot spill stay resident: others are written out in their place.
-            out = self.store.evict(self.lanes)?;
+            // Those that cannot spill stay resident.
+            out = self.store.evict()?;
         }
         Ok(())
     }
@@ -1359,7 +1254,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     /// What is parked for `lane` of segment `at`, if anything.
     fn parked(&self, at: usize, lane: usize) -> Result<Option<Parked<'r, W>>, Fault> {
         self.store
-            .take(at, lane, &self.segments[at], self.erased(lane))
+            .take(at, lane, &self.segments[at], self.erased(lane), self.folder)
     }
 
     /// A new operator of `lane` for segment `at`, when it can start there at `start`; one
@@ -1372,7 +1267,9 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         leads: bool,
     ) -> Result<Option<Box<dyn Walking<W> + 'r>>, Fault> {
         let erased = self.erased(lane);
-        let operator = caught(Operation::Make, || erased.fresh(&self.segments[at]))?;
+        let operator = caught(Operation::Make, || {
+            erased.fresh(lane, &self.segments[at], self.folder, None)
+        })?;
         if caught(Operation::Decide, || Ok(operator.starts_at(start)))? {
             return Ok(Some(operator));
         }
@@ -1401,7 +1298,9 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     ) -> Result<Attached<'r, W>, Fault> {
         let segment = &self.segments[at];
         let erased = self.erased(lane);
-        let mut operator = caught(Operation::Make, || erased.fresh(segment))?;
+        let mut operator = caught(Operation::Make, || {
+            erased.fresh(lane, segment, self.folder, None)
+        })?;
         if joins > segment.first {
             let kept = caught(Operation::Make, || {
                 carry.map(engine_allocation::copy_vec).transpose()
@@ -1566,7 +1465,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         (derived, rewalked): (usize, usize),
     ) -> io::Result<()> {
         for attached in walking.iter_mut().filter(|attached| !attached.walks()) {
-            attached.operator.discard(&self.shared.credit);
+            attached.operator.discard(self.folder);
         }
         let mut held = engine_allocation::vec(walking.len())?;
         {
@@ -1631,7 +1530,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 .map(|index| resumed.swap_remove(index).1)
         };
         if let Some(mut attached) = resumed {
-            attached.operator.discard(&self.shared.credit);
+            attached.operator.discard(self.folder);
         }
     }
 
@@ -1787,7 +1686,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         let Gone { cells, waste } = gone;
         for (lane, at, filed) in cells {
             if filed {
-                self.erased(lane).discard(at, &self.shared.credit);
+                self.erased(lane).discard(at);
             }
             self.forget(at, lane);
         }
@@ -1803,12 +1702,12 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     }
 
     /// [`Self::walk_segment`], recording the most the walk charged its tables however it ends.
-    fn segment<'c>(
-        &'c self,
+    fn segment(
+        &self,
         walker: &mut Walker<'_>,
         state: &mut State,
-        job: Job<'r, 'c, W>,
-    ) -> io::Result<Option<Job<'r, 'c, W>>> {
+        job: Job<'r, W>,
+    ) -> io::Result<Option<Job<'r, W>>> {
         let at = job.at;
         let mut span = replay_frame::timeline::span("walk").at(at);
         let _memory = labels::enter(Owner::RUN, Kind::Walker);
@@ -1828,19 +1727,18 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     /// with why a family's walk ended short, and hands on or parks the operators that cannot
     /// start the segment after in their branch: the walk it goes on into, when that segment
     /// may start now. `charged` takes the peak of each state it rebuilds.
-    fn walk_segment<'c>(
-        &'c self,
+    fn walk_segment(
+        &self,
         walker: &mut Walker<'_>,
         state: &mut State,
-        job: Job<'r, 'c, W>,
+        job: Job<'r, W>,
         charged: &mut usize,
-    ) -> io::Result<Option<Job<'r, 'c, W>>> {
+    ) -> io::Result<Option<Job<'r, W>>> {
         let Job {
             at,
             from,
             lanes,
             hot,
-            reserved,
         } = job;
         let segment = &self.segments[at];
         let planned = *self.plan.get(at);
@@ -1964,7 +1862,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             self.signal.changed();
         }
         for mut attached in closed {
-            attached.operator.discard(&self.shared.credit);
+            attached.operator.discard(self.folder);
         }
         self.drop_gone(gone);
         for lane in ready {
@@ -2032,8 +1930,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         }
         let culprit = Cell::new(None);
         let context = Context {
-            shared: &self.shared,
-            reserved: &reserved,
+            folder: self.folder,
             culprit: &culprit,
         };
         // Its hours go to the workers that help it while it has families to share.
@@ -2124,7 +2021,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             && hours >= attached.seen
                             && ordinal >= attached.joins
                     };
-                    let (world, shared, reserved) = (&world, &self.shared, &reserved);
+                    let (world, folder) = (&world, self.folder);
                     let hour_of = |attached: &Attached<'r, W>| {
                         let joining = ordinal == attached.joins && ordinal > segment.first;
                         Hour {
@@ -2168,15 +2065,14 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             let began = Instant::now();
                             let hour = hour_of(&**attached);
                             let operator = &mut *attached.operator;
-                            *called = Some(hour_on(operator, &hour, shared, reserved));
+                            *called = Some(hour_on(operator, at, &hour, folder));
                             attached.cost =
                                 u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
                         });
-                        let mut turns: Vec<&mut Turn<'_, 'r, W>> = engine_allocation::collect_vec(
-                            slots
-                                .iter_mut()
-                                .map(|slot| slot.get_mut().unwrap_or_else(PoisonError::into_inner)),
-                        )?;
+                        let mut turns: Vec<&mut Turn<'_, 'r, W>> =
+                            engine_allocation::collect_vec(slots.iter_mut().map(|slot| {
+                                slot.get_mut().unwrap_or_else(PoisonError::into_inner)
+                            }))?;
                         // The run's own panic outranks anything a family's hour returned.
                         for turn in &mut turns {
                             if let Some(Called::Panicked { family: false, .. }) = turn.called
@@ -2196,11 +2092,13 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                                 panicked = Some((turn.index, payload));
                             }
                         }
-                    } else if let Some((index, attached)) =
-                        walking.iter_mut().enumerate().find(|(_, attached)| due(&**attached))
+                    } else if let Some((index, attached)) = walking
+                        .iter_mut()
+                        .enumerate()
+                        .find(|(_, attached)| due(&**attached))
                     {
                         let hour = hour_of(&*attached);
-                        let called = hour_on(&mut *attached.operator, &hour, shared, reserved);
+                        let called = hour_on(&mut *attached.operator, at, &hour, folder);
                         if let Some(payload) = self.settle(attached, called, true, (when, hours))? {
                             panicked = Some((index, payload));
                         }
@@ -2286,7 +2184,9 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 continue;
             }
             let operator = &mut attached.operator;
-            let ended = marked(&culprit, index, Operation::End, || operator.end(&context));
+            let ended = marked(&culprit, index, Operation::End, || {
+                operator.end(at, &context)
+            });
             if let Some(fault) = attached.met(ended) {
                 attached.fate = Some(self.fate(fault, attached, last)?);
             }
@@ -2336,7 +2236,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         let mut projected = engine_allocation::vec(walking.len())?;
         for (index, attached) in walking.iter_mut().enumerate() {
             if !matches!(attached.fate, None | Some(Fate::Refused { .. })) {
-                attached.operator.discard(&self.shared.credit);
+                attached.operator.discard(self.folder);
                 continue;
             }
             let operator = &mut attached.operator;
@@ -2346,12 +2246,11 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 Ok(bytes) => projected.push((attached.lane, bytes)),
                 Err(fault) => {
                     let fate = self.fate(fault, attached, last)?;
-                    attached.operator.discard(&self.shared.credit);
+                    attached.operator.discard(self.folder);
                     attached.fate = Some(fate);
                 }
             }
         }
-        drop(reserved);
         let next = planned.after;
         // A walk going on into the segment after keeps its tables only once it walked this
         // one through, every table whole.
@@ -2368,7 +2267,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         let mut gone = Gone::default();
         let mut dropped: Vec<Attached<'r, W>> = engine_allocation::vec(walking.len())?;
         let mut kept: Vec<Attached<'r, W>> = engine_allocation::vec(walking.len())?;
-        let (chained, begins, reserved, next) = {
+        let (chained, begins, next) = {
             let mut schedule = self.signal.lock();
             // Faults its families met as it ended, the run stopped, are none of theirs.
             if self.stopped() {
@@ -2420,9 +2319,8 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 match attached.fate.take() {
                     None => unreachable!("a family dropped ended short"),
                     Some(Fate::Refused { hour, error, .. }) => {
-                        attached
-                            .operator
-                            .file(at, Some(Ending::Refused { hour, error }), None);
+                        let ending = Some(Ending::Refused { hour, error });
+                        attached.operator.file(at, ending, None, false, self.folder);
                         schedule.settle(at, lane, Status::Refused);
                         schedule.close(&self.plan, lane, Closing::Branch(at), &mut gone)?;
                     }
@@ -2449,14 +2347,16 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 let lanes = engine_allocation::collect_vec(kept.iter().map(|kept| kept.lane))?;
                 for attached in &mut kept {
                     let carried = attached.kept.take();
-                    attached.operator.file(at, None, carried);
+                    attached
+                        .operator
+                        .file(at, None, carried, false, self.folder);
                 }
                 schedule.sealed(at, &lanes);
                 drop(schedule);
                 self.signal.changed();
                 self.drop_gone(gone);
                 for mut attached in dropped.into_iter().chain(kept) {
-                    attached.operator.discard(&self.shared.credit);
+                    attached.operator.discard(self.folder);
                 }
                 return Ok(None);
             };
@@ -2465,15 +2365,9 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     .filter(|attached| attached.hands)
                     .map(|attached| attached.lane),
             )?;
-            let (chained, reserved) = schedule.chain(
-                &self.plan,
-                &self.shared.settings,
-                &self.shared.credit,
-                next,
-                &handed,
-                hot,
-                &mut |reads| walker.hold(reads),
-            )?;
+            let chained = schedule.chain(&self.plan, (at, next), &handed, hot, &mut |reads| {
+                walker.hold(reads)
+            })?;
             for lane in schedule.started_without(next, &handed, &chained)? {
                 let error = invalid(format!(
                     "{} went on into segment {next}, which started without it",
@@ -2490,7 +2384,9 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                         Status::Closed | Status::Abandoned | Status::Lost
                     );
                 let carried = attached.kept.take();
-                attached.operator.file(at, None, carried);
+                attached
+                    .operator
+                    .file(at, None, carried, attached.hands, self.folder);
             }
             // Every family but those to park is sealed now: a chained one goes on with its walk.
             let unparked = engine_allocation::collect_vec(
@@ -2500,12 +2396,12 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             )?;
             schedule.sealed(at, &unparked);
             // Where the walk it goes on into begins, as its share was measured.
-            (chained, schedule.begins(next), reserved, next)
+            (chained, schedule.begins(next), next)
         };
         self.signal.changed();
         self.drop_gone(gone);
         for mut attached in dropped {
-            attached.operator.discard(&self.shared.credit);
+            attached.operator.discard(self.folder);
         }
         let mut chain = engine_allocation::vec(chained.len())?;
         // Families whose operator parked for `next`, or that failed to park it.
@@ -2601,7 +2497,6 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             from: begins,
             lanes: chain,
             hot,
-            reserved,
         }))
     }
 }
@@ -2629,26 +2524,19 @@ fn failure_at(at: usize, fault: Fault) -> io::Result<Failure> {
 
 /// Walks every segment of `recording` on [`Settings::threads`] workers, each hour visiting
 /// the operators of `lanes` that walk it, and hands each lane's emit its items in segment
-/// order on those workers, spilling to `scratch` what the budgets do not hold: what became of
-/// each family. A family's own failure ends it alone; the run's own failure stops every worker
+/// order on those workers, spooled through the folder `spool`, which the run empties as it
+/// starts and removes once done: what became of each family. A family's own failure ends it alone; the run's own failure stops every worker
 /// and is returned, a panic outside any family's code going on once they have stopped; and
 /// `cancellation` stops them, leaving what was not emitted pending. Damage that leaves hours
 /// where no branch places them refuses the run before it starts.
 pub fn run(
     recording: &Recording,
     settings: &Settings,
-    scratch: &dyn Scratch,
+    spool: &Path,
     cancellation: &Cancellation,
     lanes: Vec<Lane<'_>>,
 ) -> io::Result<Ran> {
-    run_in(
-        recording,
-        settings,
-        scratch,
-        cancellation,
-        &worldless,
-        lanes,
-    )
+    run_in(recording, settings, spool, cancellation, &worldless, lanes)
 }
 
 /// The world of a run whose walks share none.
@@ -2661,7 +2549,7 @@ fn worldless(_: &Segment, _: &[usize]) -> io::Result<()> {
 pub fn run_in<W: World>(
     recording: &Recording,
     settings: &Settings,
-    scratch: &dyn Scratch,
+    spool: &Path,
     cancellation: &Cancellation,
     worlds: &Worlds<'_, W>,
     lanes: Vec<Lane<'_, W>>,
@@ -2690,13 +2578,7 @@ pub fn run_in<W: World>(
     if let Some(damage) = recording.unlocated() {
         return Err(damage);
     }
-    let settings = Settings {
-        threads: settings.threads.max(1),
-        window: settings.window.max(1),
-        slots: settings.slots.max(1),
-        chunk_bytes: settings.chunk_bytes.max(1),
-        ..*settings
-    };
+    let settings = Settings::new(settings.threads);
     let segments = recording.segments();
     if segments.is_empty() {
         return Ok(Ran {
@@ -2704,9 +2586,10 @@ pub fn run_in<W: World>(
             ..Ran::default()
         });
     }
-    let spills = engine_allocation::collect_vec(lanes.iter().map(|lane| lane.erased.spills()))?;
+    let names = engine_allocation::collect_vec(lanes.iter().map(|lane| lane.erased.name()))?;
+    let folder = Folder::open(spool, &names)?;
     let signal = Arc::new(Signal {
-        schedule: Mutex::new(Schedule::new(segments.len(), spills)?),
+        schedule: Mutex::new(Schedule::new(segments.len(), lanes.len())?),
         board: Board::default(),
         stopped: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
@@ -2740,11 +2623,11 @@ pub fn run_in<W: World>(
         lanes: &lanes,
         worlds,
         signal: &signal,
-        budget: Arc::new(Budget::new(settings.walker_bytes)),
-        store: Store::new(settings.carry_bytes),
+        budget: Arc::new(Budget::new(usize::MAX)),
+        folder: &folder,
+        store: Store::new(),
         resumed: Mutex::new(Vec::new()),
         joins,
-        shared: Shared::new(settings, scratch, &signal),
         #[cfg(test)]
         cancellation,
     };
@@ -2766,15 +2649,9 @@ pub fn run_in<W: World>(
     let cancelled = signal.cancelled.load(Ordering::SeqCst);
     if !cancelled {
         run.store.finish(&lanes)?;
-        debug_assert_eq!(
-            run.shared.credit.held(),
-            0,
-            "every projected item went to its emit or was dropped with its credit"
-        );
     }
-    stats.output_bytes = run.shared.credit.peak();
     stats.walker_bytes = run.budget.peak();
-    stats.chunks_spilled = run.shared.chunks_spilled.load(Ordering::SeqCst);
+    (stats.spool_bytes, stats.spooled) = folder.spooled();
     run.store.count(&mut stats);
     Ok(Ran {
         stats,

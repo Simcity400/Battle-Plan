@@ -386,6 +386,7 @@ impl RosterRead {
 }
 
 #[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct ScoreOperands {
     pub identity_known: bool,
     pub present: Arc<BTreeSet<String>>,

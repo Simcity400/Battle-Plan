@@ -10,6 +10,7 @@ use super::*;
 /// `max_factories` is the line's maximum factories, the count that average is clamped to; the
 /// per-factory values are retained in ProductionLineModifiers.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProductionLineRow {
     pub handle: u64,
     pub country: u32,
@@ -77,6 +78,7 @@ typed_codec!(ProductionLineRow, 64, |row| row.handle as u128, |key| Self { handl
 /// candidate first), or `GFX_idea_unknown`. Read with `IndustrialOrganisationHistory` in
 /// the lines' daily slot.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct IndustrialOrganisationRow {
     pub organisation: u64,
     pub country: u32,
@@ -101,6 +103,7 @@ typed_codec!(IndustrialOrganisationRow, 64, |row| row.organisation as u128, |key
 /// below the country; there is none per line.
 /// Read with `IndustrialOrganisations` in the lines' daily slot.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct IndustrialOrganisationHistoryRow {
     pub organisation: u64,
     pub variant: u64,
@@ -147,6 +150,7 @@ typed_codec!(IndustrialOrganisationHistoryRow, 128, |row| (row.organisation as u
 /// table is unavailable for the rest of the branch once a tick has gone
 /// unobserved, never partial.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProductionLineOutputRow {
     pub line: u64,
     pub ordinal: u32,
@@ -234,6 +238,7 @@ impl ProductionLineOutputRow {
 /// Design rows retain known subtotals even when their total is inexact. Spending
 /// and delivery failures, including overflow, never restore either exactness flag.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RocketProductionOutputRow {
     pub country: u32,
     pub variant: u64,
@@ -291,6 +296,7 @@ mod rocket_output_tests;
 /// An ended line is published until a written frame held its final totals.
 /// Lost observation withholds the table until a new branch.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ConstructionLineOutputRow {
     pub line: u64,
     pub railway: bool,
@@ -342,6 +348,7 @@ typed_codec!(ConstructionLineOutputRow, 64, |row| row.line as u128, |key| Self {
 /// Railway completion checks also admit the cancel byte; that path is
 /// removal rather than completion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ConstructionCompletion {
     pub hour: i32,
     pub cancelled: bool,
@@ -382,6 +389,7 @@ opaque_value!(Option<ConstructionCompletion>);
 /// consumers refuse. Only land divisions in orders groups are logged here;
 /// SunkShips and SunkConvoys record ships and convoys, and air stays unknown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CombatLogEquipmentRow {
     pub country: u32,
     pub group: u32,
@@ -408,6 +416,7 @@ typed_codec!(CombatLogEquipmentRow, 120, |row| (row.country as u128) << 88 | (ro
 /// kept (the prune detour was installed and enabled throughout and nothing
 /// overflowed or failed); 0 means a deleted log's last changes may be missing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CombatLogStateRow {
     pub viewing_country_raw: i32,
     pub prune_observed: u8,
@@ -426,6 +435,7 @@ typed_codec!(CombatLogStateRow, 0, |_row| 0, |_key| Self { viewing_country_raw: 
 /// deletes the exchange when the lend-lease ends, taking its totals with it, so its rows
 /// leave the table then; changes after its last read are not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LendLeaseEquipmentRow {
     pub giver: u32,
     pub exchange: u32,
@@ -439,6 +449,7 @@ typed_codec!(LendLeaseEquipmentRow, 104, |row| (row.giver as u128) << 72 | (row.
 
 /// Stockpiles: key country:ordinal (64 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StockpileRow {
     pub country: u32,
     pub ordinal: u32,
@@ -452,6 +463,7 @@ typed_codec!(StockpileRow, 64, |row| (row.country as u128) << 32 | row.ordinal a
 /// The daily table holds every division; the hourly `NewDivisionEquipment`
 /// holds, in the same rows, only divisions minted since that daily walk.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionEquipmentRow {
     pub division: u64,
     pub template: u64,
@@ -515,6 +527,7 @@ typed_codec!(DivisionEquipmentRow, 96, |row| (row.division as u128) << 32 | row.
 /// (read as the continent), and the empty-result object's inactive state
 /// remain unestablished.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantDefinitionRow {
     pub id: u64,
     pub equipment_token: u32,
@@ -547,6 +560,7 @@ typed_codec!(VariantDefinitionRow, 64, |row| row.id as u128, |key| Self { id: ke
 /// table without a row means the global requirements apply. Keyed by the raw
 /// country reference and the definition token.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryLocalSubunitRow {
     pub country: u32,
     pub token: u32,
@@ -558,6 +572,7 @@ typed_codec!(CountryLocalSubunitRow, 64, |row| (row.country as u128) << 32 | row
 
 /// One requirement of a differing clone: archetype lexer token and raw fixed5 amount.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LocalSubunitRequirement {
     pub archetype_token: u32,
     pub amount_raw: i64,
@@ -572,6 +587,7 @@ value_struct!(LocalSubunitRequirement {
 /// with repeats: the land-model conventional and fallback candidates.
 /// Key country:kind:ordinal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AvailableEquipmentVariantRow {
     pub country: u32,
     pub roster_kind: u8,
@@ -599,6 +615,7 @@ typed_codec!(AvailableEquipmentVariantRow, 66, |row| (row.country as u128) << 34
 /// sprite, transport restriction and own-fuel multiplier, none of which the
 /// clone rebuild applies.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryUnitBonusRow {
     pub country: u32,
     pub ordinal: u32,
@@ -618,6 +635,7 @@ typed_codec!(CountryUnitBonusRow, 64, |row| (row.country as u128) << 32 | row.or
 /// signed fixed5 combat width, the nonzero dense stats in selector order and
 /// the battalion grants in stored order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct UnitBonusTarget {
     /// False for an exact sub-unit target, true for a sub-unit category target.
     pub category: bool,
@@ -638,6 +656,7 @@ value_struct!(UnitBonusTarget {
 /// display-as-percentage bytes, and its sparse stats in stored order with
 /// zero amounts and repeated selectors.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct UnitBonusGrant {
     pub category_token: u32,
     pub add: u8,
@@ -653,6 +672,7 @@ value_struct!(UnitBonusGrant {
 
 /// A stat selector, in the executable's stat order, and its raw fixed5 value.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct UnitBonusStat {
     pub selector: u32,
     pub value_raw: i64,
@@ -665,6 +685,7 @@ value_struct!(UnitBonusStat {
 /// VariantModules: key variant:source_ordinal (96 bits), 3 payload mask bits.
 /// The module's name is content: `definition_token` spelled by `LexicalTokens`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantModuleRow {
     pub variant: u64,
     pub source_ordinal: u32,
@@ -677,6 +698,7 @@ typed_codec!(VariantModuleRow, 96, |row| (row.variant as u128) << 32 | row.sourc
 
 /// VariantStats: key variant (64 bits), 13 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantStatsRow {
     pub variant: u64,
     pub values: [i64; 10],
@@ -690,6 +712,7 @@ typed_codec!(VariantStatsRow, 64, |row| row.variant as u128, |key| Self { varian
 /// VariantUpgrades: key variant:source_ordinal (96 bits), 2 payload mask bits.
 /// The upgrade's name is content: `definition_token` spelled by `LexicalTokens`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantUpgradeRow {
     pub variant: u64,
     pub source_ordinal: u32,
@@ -701,6 +724,7 @@ typed_codec!(VariantUpgradeRow, 96, |row| (row.variant as u128) << 32 | row.sour
 
 /// ArmyUpgradeGroups: key army (64 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ArmyUpgradeGroupRow {
     pub country: u32,
     pub army: u64,
@@ -711,6 +735,7 @@ typed_codec!(ArmyUpgradeGroupRow, 64, |row| row.army as u128, |key| Self { army:
 
 /// ArmyUpgradeRequests: key army:ordinal (96 bits), 4 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ArmyUpgradeRequestRow {
     pub country: u32,
     pub army: u64,
@@ -724,6 +749,7 @@ typed_codec!(ArmyUpgradeRequestRow, 96, |row| (row.army as u128) << 32 | row.ord
 
 /// ArmyUpgradeDeliveries: key army:ordinal (96 bits), 5 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ArmyUpgradeDeliveryRow {
     pub country: u32,
     pub army: u64,
@@ -738,6 +764,7 @@ typed_codec!(ArmyUpgradeDeliveryRow, 96, |row| (row.army as u128) << 32 | row.or
 
 /// ArmyUpgradeProduced: key army:delivery_ordinal:ordinal (128 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ArmyUpgradeProducedRow {
     pub country: u32,
     pub army: u64,
@@ -812,6 +839,7 @@ opaque_value!(FuelAwardWindow);
 /// name reason (each a separate recipient), what the Fuel widget's receipt
 /// list and its history show.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FuelAwardDayRecipient {
     pub kind: u32,
     pub reference: u64,
@@ -839,6 +867,7 @@ value_struct!(FuelAwardDayRecipient { kind: u32, reference: u64, owner: u32, hos
 /// amounts and recipients, and the hourly source witness only the fresh-save
 /// oracle compared, are not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FuelAwardDay {
     pub country_instance: u32,
     /// First authenticated update after an observed reset or continuity gap.
@@ -887,6 +916,7 @@ opaque_value!(FuelAwardDay);
 /// the prefix and carry a reason, never zero. `CountryFuelConsumers` comes
 /// from the same read of each fuel status.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryFuelRow {
     pub country: u32,
     pub current_raw: i64,
@@ -927,6 +957,7 @@ typed_codec!(CountryFuelRow, 32, |row| row.country as u128, |key| Self { country
 /// the position the save writes. Requested and received fuel are fixed5.
 /// `CountryFuel` comes from the same read of each fuel status.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryFuelConsumerRow {
     pub country: u32,
     pub index: u32,
@@ -977,6 +1008,7 @@ typed_codec!(CountryFuelConsumerRow, 64, |row| (row.country as u128) << 32 | row
 /// No group field has a text-save counterpart; the oracle compares levels
 /// only with saved building inputs.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryFactoriesRow {
     pub country: u32,
     pub military_levels: i32,
@@ -1028,6 +1060,7 @@ typed_codec!(CountryFactoriesRow, 32, |row| row.country as u128, |key| Self { co
 
 /// ResourceDefinitions: key id (32 bits), 4 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResourceDefinitionRow {
     pub id: u32,
     pub token: u32,
@@ -1039,6 +1072,7 @@ typed_codec!(ResourceDefinitionRow, 32, |row| row.id as u128, |key| Self { id: k
 
 /// CountryResources: key country:resource (64 bits), 9 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryResourceRow {
     pub country: u32,
     pub resource: u32,
@@ -1057,6 +1091,7 @@ typed_codec!(CountryResourceRow, 64, |row| (row.country as u128) << 32 | row.res
 
 /// ResourceExchanges: key id (64 bits), 14 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResourceExchangeRow {
     pub id: u64,
     pub exporter: u32,
@@ -1079,6 +1114,7 @@ typed_codec!(ResourceExchangeRow, 64, |row| row.id as u128, |key| Self { id: key
 
 /// PurchaseContracts: key id (64 bits), 11 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PurchaseContractRow {
     pub id: u64,
     pub seller: u32,
@@ -1099,6 +1135,7 @@ typed_codec!(PurchaseContractRow, 64, |row| row.id as u128, |key| Self { id: key
 /// StateBuildings: key location:building_type (64 bits), 7 payload mask bits.
 /// ProvinceBuildings: key location:building_type (64 bits), 7 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct BuildingRow {
     pub location: u32,
     pub building_type: u32,
@@ -1116,6 +1153,7 @@ typed_codec!(BuildingRow, 64, |row| (row.location as u128) << 32 | row.building_
 
 /// StateBaseResources: key state:resource (64 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateBaseResourceRow {
     pub state: u32,
     pub resource: u32,
@@ -1127,6 +1165,7 @@ typed_codec!(StateBaseResourceRow, 64, |row| (row.state as u128) << 32 | row.res
 
 /// BuildingConstruction: key id (64 bits), 15 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct BuildingConstructionRow {
     pub id: u64,
     pub country: u32,
@@ -1150,6 +1189,7 @@ typed_codec!(BuildingConstructionRow, 64, |row| row.id as u128, |key| Self { id:
 
 /// RailwayConstruction: key id (64 bits), 15 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RailwayConstructionRow {
     pub id: u64,
     pub country: u32,
@@ -1206,6 +1246,7 @@ typed_codec!(RailwayConstructionRow, 64, |row| row.id as u128, |key| Self { id: 
 /// multiply that zero product. An uncontrolled state
 /// has no origin, so neither factor applies to it (`origin` is zero).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateResourceInputRow {
     pub local_manpower: Recorded<Option<i64>>,
     pub local_noncore_manpower: Recorded<Option<i64>>,
@@ -1242,6 +1283,7 @@ typed_codec!(StateResourceInputRow, 32, |row| row.state as u128,
 /// Sliced, with `StateResourceInputs`: every value equals the game's at
 /// every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateResourceRow {
     pub state: u32,
     pub resource: u32,
@@ -1270,6 +1312,7 @@ typed_codec!(StateResourceRow, 64, |row| (row.state as u128) << 32 | row.resourc
 /// equal the game's at every hour. Only controllers are walked;
 /// `SliceReads` holds the read hour of each country read, rows or none.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryBuildingResourceRow {
     pub country: u32,
     pub ordinal: u32,
@@ -1299,6 +1342,7 @@ typed_codec!(CountryBuildingResourceRow, 64, |row| (row.country as u128) << 32 |
 ///
 /// Hourly: the game refreshes origins in its hourly trade task.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResourceOriginRow {
     /// Zero-based position in this country's own or rights-holder origin list.
     pub ordinal: u32,
@@ -1322,6 +1366,7 @@ typed_codec!(ResourceOriginRow, 64, |row| (row.state as u128) << 32 | row.countr
 /// A resource right on a state: the state controller's origin gives `resource` (the
 /// one-based resource database index) to `holder`. Hourly.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResourceRightRow {
     /// Zero-based position in the origin's resource-rights list.
     pub ordinal: u32,
@@ -1338,6 +1383,7 @@ typed_codec!(ResourceRightRow, 64, |row| (row.state as u128) << 32 | row.resourc
 /// The country's effective `production_oil_factor`, fixed5, which scales the oil resource's
 /// building grants in the states it controls; a zero factor has no row. Hourly.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryOilFactorRow {
     pub country: u32,
     pub factor: i64,
@@ -1353,6 +1399,7 @@ typed_codec!(CountryOilFactorRow, 32, |row| row.country as u128,
 /// is set, which is when the resources map icon adds them; a zero amount has no row.
 /// Fixed5. Hourly.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateTemporaryResourceRow {
     pub state: u32,
     pub resource: u32,
@@ -1372,6 +1419,7 @@ typed_codec!(StateTemporaryResourceRow, 64, |row| (row.state as u128) << 32 | ro
 /// `TRADE_ROUTE_BAD_EFFICIENCY_THRESHOLD`; `convoys_assigned` and `convoys_required` are its
 /// convoy counts. Hourly.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ConvoyClientRow {
     /// Independent positions in the owner's and counterparty's directional lists.
     /// Imports/exports instead use ResourceExchanges' existing ordinals; None refuses
@@ -1401,6 +1449,7 @@ typed_codec!(ConvoyClientRow, 32, |row| row.handle as u128,
 /// efficiency there is below `TRADE_ROUTE_REGIONAL_BAD_EFFICIENCY_THRESHOLD`. Read for every
 /// country taking part in a bad naval route, in each sea region of its path. Hourly.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RegionalConvoyEfficiencyRow {
     pub country: u32,
     pub region: u32,
@@ -1424,6 +1473,7 @@ typed_codec!(RegionalConvoyEfficiencyRow, 64, |row| (row.country as u128) << 32 
 /// of whose routes a hooked route writer touched since the previous hour; an hour whose take
 /// of those marks does not certify the previous hour's read reads every owner.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TradeRouteRow {
     pub country: u32,
     pub class: u8,
@@ -1448,6 +1498,7 @@ typed_codec!(TradeRouteRow, 72, |row| (row.country as u128) << 40 | (row.class a
 /// only while the country is short. An essential archetype without a row has no stock. Hourly,
 /// every country.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StockpileArchetypeRow {
     pub canonical_slot: u32,
     pub archetype: u32,
@@ -1460,6 +1511,7 @@ typed_codec!(StockpileArchetypeRow, 64, |row| (row.canonical_slot as u128) << 32
 /// The licensor and origin are the licensed variant's own creator/origin links,
 /// recorded once in VariantDefinitions and joined by this handle.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProductionLicenseRow {
     pub country: u32,
     pub ordinal: u32,
@@ -1473,6 +1525,7 @@ typed_codec!(ProductionLicenseRow, 64, |row| (row.country as u128) << 32 | row.o
 /// and `giver` the licensor. The engine also keeps the same object in the
 /// giver's reverse array, which is never serialized and is not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProductionLicenseRecordRow {
     pub owner: u32,
     pub ordinal: u32,
@@ -1492,6 +1545,7 @@ typed_codec!(ProductionLicenseRecordRow, 64, |row| (row.owner as u128) << 32 | r
 
 /// DeploymentConveyors: key native conveyor handle (64 bits), 10 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DeploymentConveyorRow {
     pub handle: u64,
     pub country: u32,
@@ -1516,6 +1570,7 @@ typed_codec!(DeploymentConveyorRow, 64, |row| row.handle as u128, |key| Self { h
 /// DeploymentLines: key native line handle (64 bits), 16 payload mask bits. Each line
 /// owns exactly one military deployment, whose scalars are merged here.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DeploymentLineRow {
     pub handle: u64,
     pub conveyor: u64,
@@ -1551,6 +1606,7 @@ typed_codec!(DeploymentLineRow, 64, |row| row.handle as u128, |key| Self { handl
 
 /// DeploymentManpower: key line:side:ordinal (97 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DeploymentManpowerRow {
     pub line: u64,
     /// Available container zero, needed container one; both always exist.
@@ -1565,6 +1621,7 @@ typed_codec!(DeploymentManpowerRow, 97, |row| (row.line as u128) << 33 | (row.si
 
 /// DeploymentEquipment: key line:ordinal (96 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DeploymentEquipmentRow {
     pub line: u64,
     pub ordinal: u32,
@@ -1594,6 +1651,7 @@ opaque_value!(Vec<UnitBonusTarget>);
 /// Its category rows sum a section's archetypes and add incoming lend-lease,
 /// which is not recorded.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LogisticsEquipmentRow {
     pub country: u32,
     pub archetype: u32,
@@ -1680,6 +1738,7 @@ fn check_design_state(value: &Recorded<VariantDesignState>) -> io::Result<()> {
 /// Immutable applied-source snapshots shared by every design that holds them.
 /// Keys describe exact values and attribution; native pointers are not identities.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantBonusSnapshotRow {
     pub id: u64,
     pub source: VariantBonusSource,
@@ -1698,6 +1757,7 @@ opaque_value!(VariantBonusSource);
 /// The key joins ModifierDefinitions; an absent native accumulator key is a
 /// known zero. Failed owner/key reads retain a named scope and no value.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DesignCountryModifierRow {
     /// Raw creator-country reference, matching VariantDefinitions.creator_link.
     /// Several raw scopes may resolve to one native notification owner.
@@ -1721,6 +1781,7 @@ opaque_value!(Vec<Vec<u32>>);
 /// One demanded raw country scope. Independent columns keep consumption of a
 /// use from rewriting unchanged factors and equipment rosters.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DesignCountryTemplatesRow {
     pub country: u32,
     pub uses: Vec<i32>,
@@ -1752,6 +1813,7 @@ typed_codec!(DesignCountryTemplatesRow, 32, |row| row.country as u128,
 /// Process-wide observation used by selected-observer design reveal queries.
 /// Unavailable capture is a table refusal, never an assumed enabled switch.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DesignObserverContextRow {
     pub fog: u8,
 }
@@ -1815,6 +1877,7 @@ pub fn variant_bonus_snapshot_id(source: &VariantBonusSource) -> u64 {
 /// A design state at a native mutation boundary. The copied definition is a
 /// typed nested value so history survives deletion and repeated edits in an hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantSnapshotDefinition {
     pub id: u64,
     pub equipment_token: u32,
@@ -1882,6 +1945,7 @@ impl From<VariantSnapshotDefinition> for VariantDefinitionRow {
     }
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantSnapshotModule {
     pub ordinal: u32,
     pub slot: u32,
@@ -1895,6 +1959,7 @@ value_struct!(VariantSnapshotModule {
     active: u8
 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantSnapshotUpgrade {
     pub ordinal: u32,
     pub definition_token: i32,
@@ -1906,6 +1971,7 @@ value_struct!(VariantSnapshotUpgrade {
     level: u8
 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantSnapshot {
     pub definition: VariantSnapshotDefinition,
     pub modules: Vec<VariantSnapshotModule>,
@@ -1916,6 +1982,7 @@ value_struct!(VariantSnapshot { definition: VariantSnapshotDefinition, modules: 
 opaque_value!(Option<VariantSnapshot>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantSourceReferences {
     pub direct: Vec<u64>,
     pub named: Vec<u64>,
@@ -1925,6 +1992,7 @@ opaque_value!(Option<VariantSourceReferences>);
 
 /// Independently current registry liveness for demanded raw design authors.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DesignOrganisationLivenessRow {
     pub organisation: u64,
     pub live: bool,
@@ -1932,6 +2000,7 @@ pub struct DesignOrganisationLivenessRow {
 typed_codec!(DesignOrganisationLivenessRow, 64, |row| row.organisation as u128, |key| Self { organisation: key as u64, ..Default::default() },
     { 0 => (live): Bool }, |row| if row.organisation == 0 { Err(invalid("null design organisation liveness")) } else { Ok(()) });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantOrganisationChange {
     pub organisation: u64,
     pub live: bool,
@@ -1944,6 +2013,7 @@ opaque_value!(Option<VariantOrganisationChange>);
 
 /// A saved design edit that leaves its dependency population unchanged.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantIconChange {
     pub active: u8,
     pub kind: u32,
@@ -1951,6 +2021,7 @@ pub struct VariantIconChange {
 }
 value_struct!(VariantIconChange { active: u8, kind: u32, text: Vec<u8> });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantScalarChange {
     pub obsolete: Option<u8>,
     pub auto_upgraded: Option<u8>,
@@ -2031,6 +2102,7 @@ impl VariantScalarChange {
 /// a design stayed unchanged. Removal is an identity tombstone; preceding rows
 /// retain the last readable design state.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantChangeRow {
     pub sequence: u64,
     pub hour: i32,

@@ -6,8 +6,8 @@
 //! ordinal order, through the hour before the next page's first. A segment's walk
 //! ([`Builder`]) opens a strip's page at the strip's first change in the segment, from the
 //! walker's cells once that hour applied, and closes it once it holds [`Layout::runs`]
-//! changes, so pages are written once, in parallel, and stitched in segment order
-//! ([`Index::append`]). One value written to most of a block's rows is one change, naming the
+//! changes, so pages are written once, in parallel, each segment's to its own [`Disk`], and
+//! their directories stitched in segment order ([`Index::append`]). One value written to most of a block's rows is one change, naming the
 //! live rows it leaves. Per table the index keeps each change of its status, sample hour, slot
 //! count and truncated view, and per ordinal its hour and metrics.
 //!
@@ -75,6 +75,7 @@ impl Layout {
 /// Where a stored page lies: its stored bytes from `offset`, and its raw length. A page stored
 /// as raw bytes has `stored == raw`; any other was packed smaller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Location {
     pub offset: u64,
     pub stored: u32,
@@ -92,6 +93,7 @@ pub struct Page {
 
 /// A table's sample hour from an ordinal on: one hour, or each ordinal's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Sample {
     At(Option<i32>),
     Each,
@@ -109,6 +111,7 @@ impl Sample {
 
 /// What an indexed table held over a run, each from its ordinal on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Series {
     pub statuses: Vec<(u32, Status)>,
     pub samples: Vec<(u32, Sample)>,
@@ -126,6 +129,7 @@ pub(crate) fn at<T>(series: &[(u32, T)], ordinal: u32) -> Option<(usize, &T)> {
 
 /// One hour's metrics as its manifest keeps them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Metrics {
     pub total_ns: u64,
     pub pool_bytes: u64,
@@ -154,6 +158,17 @@ impl Pack for Raw {
 pub trait Store {
     /// Keeps `stored`, a page of `raw` raw bytes as [`Pack`] stored it.
     fn put(&mut self, stored: &[u8], raw: u32) -> io::Result<Location>;
+}
+
+/// What a segment's walk writes to: its pages, truncated views and dictionary chunks, as
+/// [`Store`] keeps them, each where it lies among the segment's bytes; and its open pages'
+/// bytes, kept apart until their pages close.
+pub trait Disk: Store + Send {
+    /// Keeps `bytes`: where they lie among those it kept.
+    fn keep(&mut self, bytes: &[u8]) -> io::Result<u64>;
+
+    /// Fills `into` with the bytes it kept from `at`.
+    fn kept(&mut self, at: u64, into: &mut [u8]) -> io::Result<()>;
 }
 
 /// Where a cursor reads pages.

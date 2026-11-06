@@ -22,7 +22,7 @@ use dashboard_base::prepared::{
 use dashboard_world::{Needs, World};
 use replay::{
     columnar_frames::{Limits, Recording, Segment, fixtures, schema},
-    segments::{self, Hour, Item, Manifest, Operator, Settings, Sink, Start, State},
+    segments::{self, Hour, Manifest, Operator, Settings, Sink, Start, State},
 };
 use replay_data::{format::FormatVersion, rows::TableId, scope::CaptureMode};
 use std::{
@@ -128,6 +128,7 @@ fn opened_every(runs: &[(u64, i32, u32)], restart_units: u32) -> (Recording, Vec
 /// What a walk shows of one hour of [`TABLES`]: each one's status, sample hour, and the slots
 /// it read and changed, with the hour's read bits.
 #[derive(Clone, Debug, PartialEq)]
+#[derive(replay_spool::Spooled)]
 struct Fact {
     branch: u64,
     hour: i32,
@@ -171,20 +172,6 @@ impl Fact {
                 .map(|table| state.changes(at(table)).map(|changes| changes.truncated))
                 .collect(),
         }
-    }
-}
-
-impl Item for Fact {
-    fn heap(&self) -> usize {
-        self.statuses.iter().map(String::capacity).sum::<usize>()
-            + self.read.capacity() * 8
-            + self
-                .changes
-                .iter()
-                .flatten()
-                .flatten()
-                .map(|slots| slots.capacity() * 4)
-                .sum::<usize>()
     }
 }
 
@@ -370,27 +357,23 @@ fn bind<'p>(
 }
 
 /// A run of `members` over `recording` as preparation runs them ([`walk_all`]), on `threads`
-/// workers with a window of `window`: every member's last batch is committed as it ends.
+/// workers: every member's last batch is committed as it ends.
 fn run(
     fixture: &Fixture,
     recording: &mut Recording,
     shape: &Shape,
     members: &mut [Box<dyn Member + '_>],
-    (threads, window): (usize, usize),
+    threads: usize,
     cancelled: &AtomicBool,
     commits: &Commits,
 ) -> Walks {
-    let scratch = segments::Folder::new(fixture.root.join("spill")).unwrap();
+    let spool = fixture.root.join("spool");
     let walk = Walk {
         shape,
         members,
         world: (FormatVersion::CURRENT, CaptureMode::Full),
-        settings: &Settings {
-            window,
-            slots: window,
-            ..Settings::new(threads)
-        },
-        scratch: &scratch,
+        settings: &Settings::new(threads),
+        spool: &spool,
         cancelled,
         measuring: true,
         commits,
@@ -434,7 +417,7 @@ fn one_walk_of_each_segment_serves_every_family_each_hour_once() {
     let shape = Shape::new(&recording).unwrap();
     let expected = reference(bytes);
     assert!(shape.len() > RUNS.len());
-    for settings in [(1, 1), (4, 2), (8, 16)] {
+    for threads in [1, 4, 8] {
         let fixture = Fixture::new();
         let cancelled = Arc::new(AtomicBool::new(false));
         let (alpha, beta) = (
@@ -449,7 +432,7 @@ fn one_walk_of_each_segment_serves_every_family_each_hour_once() {
             &mut recording,
             &shape,
             &mut members,
-            settings,
+            threads,
             &cancelled,
             &Commits::default(),
         );
@@ -581,7 +564,7 @@ fn a_family_goes_on_only_where_its_publication_left_work() {
             &mut recording,
             &shape,
             &mut members,
-            (4, 4),
+            4,
             &cancelled,
             &commits,
         );
@@ -602,7 +585,7 @@ fn a_family_goes_on_only_where_its_publication_left_work() {
             &mut recording,
             &shape,
             &mut members,
-            (4, 4),
+            4,
             &cancelled,
             &commits,
         )
@@ -622,7 +605,7 @@ fn a_family_goes_on_only_where_its_publication_left_work() {
         &mut grown,
         &shape,
         &mut members,
-        (4, 4),
+        4,
         &cancelled,
         &Commits::default(),
     )
@@ -669,7 +652,7 @@ fn a_refusal_ends_its_family_s_branch_there_by_name() {
             &mut recording,
             &shape,
             &mut members,
-            (4, 4),
+            4,
             &cancelled,
             &Commits::default(),
         );
@@ -774,7 +757,7 @@ fn a_failing_family_fails_alone() {
             &mut recording,
             &shape,
             &mut members,
-            (4, 4),
+            4,
             &cancelled,
             &Commits::default(),
         );
@@ -905,7 +888,7 @@ fn cancellation_stops_a_run_at_every_wait() {
             &mut recording,
             &shape,
             &mut members,
-            (4, 4),
+            4,
             &cancelled,
             &Commits::default(),
         )
@@ -1259,16 +1242,11 @@ fn a_land_owner_refusal_is_published_by_name() {
 
 /// What a tally's operator hands its emit of an hour: a digest of what the walk shows of it,
 /// and, for one going on through its branch, the hours its operator walked before it.
+#[derive(replay_spool::Spooled)]
 struct Tick {
     hour: i32,
     seen: u64,
     walked: Option<u64>,
-}
-
-impl Item for Tick {
-    fn heap(&self) -> usize {
-        0
-    }
 }
 
 impl Projected for Tick {
@@ -1511,7 +1489,7 @@ fn a_growing_branch_prepares_only_its_new_hours() {
             &mut recording,
             &shape,
             &mut members,
-            (2, 2),
+            2,
             &cancelled,
             &Commits::default(),
         )
@@ -1554,7 +1532,7 @@ fn a_growing_branch_prepares_only_its_new_hours() {
             &mut recording,
             &shape,
             &mut members,
-            (4, 4),
+            4,
             &cancelled,
             &Commits::default(),
         );
@@ -1611,12 +1589,8 @@ fn a_family_prepared_ahead_serves_the_last_hour_before_the_union_run() {
     assert_eq!(first, 1);
     assert_eq!(members[0].id(), FamilyId::new("delta"));
     let (cancelled, commits) = (AtomicBool::new(false), Commits::default());
-    let scratch = segments::Folder::new(fixture.root.join("spill")).unwrap();
-    let settings = Settings {
-        window: 4,
-        slots: 4,
-        ..Settings::new(4)
-    };
+    let spool = fixture.root.join("spool");
+    let settings = Settings::new(4);
     let (walks, kept, seen) = std::thread::scope(|scope| {
         let running = scope.spawn(|| {
             let walk = Walk {
@@ -1624,7 +1598,7 @@ fn a_family_prepared_ahead_serves_the_last_hour_before_the_union_run() {
                 members: &mut members,
                 world: (FormatVersion::CURRENT, CaptureMode::Full),
                 settings: &settings,
-                scratch: &scratch,
+                spool: &spool,
                 cancelled: &cancelled,
                 measuring: true,
                 commits: &commits,

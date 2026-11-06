@@ -8,7 +8,7 @@ use dashboard_world::{Needs, Roster, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -42,6 +42,7 @@ pub fn needs() -> Needs {
 /// The complete Countries and CountryLinks: each canonical slot's tag, as its last country by
 /// id the links resolve holds it, and every link (raw id, slot), by raw id.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Identity {
     pub tags: Vec<(u32, Arc<str>)>,
     pub links: Vec<(u32, u32)>,
@@ -76,6 +77,7 @@ impl Identity {
 
 /// The WorldTension row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Tension {
     pub total_raw: i64,
     pub source_count: i32,
@@ -83,6 +85,7 @@ pub struct Tension {
 
 /// A threat source's event as its row records it: every field but its current contribution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Source {
     pub country: u32,
     pub second_country: u32,
@@ -95,6 +98,7 @@ pub struct Source {
 /// read; their current contributions' sum, none past 64 bits; and whether the events they name
 /// changed since the last sent, which shares them otherwise.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Sources {
     pub rows: Arc<[Source]>,
     pub complete: bool,
@@ -105,6 +109,7 @@ pub struct Sources {
 /// What the ordered emit reads of an hour that changes what the tension reads. Each part is
 /// none where it did not change, and holds none while its tables are not complete.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     pub identity: Option<Option<Arc<Identity>>>,
     /// Whether this hour's item is the first to carry `identity`, which it is charged for.
@@ -118,6 +123,7 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -125,37 +131,6 @@ pub struct Hour {
     pub read: bool,
     /// None when the hour changes nothing the tension reads.
     pub facts: Option<Box<Facts>>,
-}
-
-fn sources_heap(sources: &Sources) -> usize {
-    sources.rows.len() * size_of::<Source>()
-        + sources
-            .rows
-            .iter()
-            .map(|row| row.reason.len())
-            .sum::<usize>()
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        let identity = match &facts.identity {
-            Some(Some(identity)) if facts.charged => identity.heap(),
-            _ => 0,
-        };
-        size_of::<Facts>()
-            + identity
-            + match &facts.aggregates {
-                Some(Some(aggregates)) => aggregates.len() * size_of::<(u32, i64)>(),
-                _ => 0,
-            }
-            + match &facts.sources {
-                Some(Some(sources)) if sources.regrouped => sources_heap(sources),
-                _ => 0,
-            }
-    }
 }
 
 /// One segment's projection: every segment starts cold.

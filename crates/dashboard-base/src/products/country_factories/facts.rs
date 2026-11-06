@@ -10,7 +10,7 @@ use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -44,6 +44,7 @@ pub type Values = Arc<[i32]>;
 /// The tags the complete Countries and CountryLinks resolve, as the row scan resolves them:
 /// each tag's first holder by id the links resolve.
 #[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Countries {
     /// Each UTF-8 tag's canonical slot and id, by tag.
     pub tags: Vec<(Arc<str>, (u32, u32))>,
@@ -59,6 +60,7 @@ impl Countries {
 /// A read's holder values: every slot holding rows (the others hold none), or the slots whose
 /// rows changed since their last read. None where a slot holds no row, two rows, or a total
 /// the game could not show.
+#[derive(replay_spool::Spooled)]
 pub struct Stocks {
     pub whole: bool,
     pub slots: Vec<(u32, Option<Values>)>,
@@ -66,6 +68,7 @@ pub struct Stocks {
 
 /// What an hour counts, as the row scan counts it at a read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Census {
     /// Rows no link resolves, each row repeating its holder, and each tag's row holding a
     /// total the game could not show: counted at reads only.
@@ -78,6 +81,7 @@ pub struct Census {
 }
 
 /// What the ordered emit reads of an hour that changes what the factories read.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Whether the CountryFactories table holds every row.
     pub complete: bool,
@@ -93,6 +97,7 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -100,30 +105,6 @@ pub struct Hour {
     pub read: bool,
     /// None when the hour changes nothing the factories read.
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        // The projector and every hour until the countries change share them.
-        let countries = match &facts.countries {
-            Some(Some(countries)) if facts.charged => size_of::<Countries>() + countries.heap(),
-            _ => 0,
-        };
-        size_of::<Facts>()
-            + countries
-            + facts.stocks.as_ref().map_or(0, |stocks| {
-                stocks.slots.capacity() * size_of::<(u32, Option<Values>)>()
-                    + stocks
-                        .slots
-                        .iter()
-                        .flat_map(|(_, values)| values)
-                        .map(|values| values.len() * 4 + 16)
-                        .sum::<usize>()
-            })
-    }
 }
 
 /// A CountryFactories row: its holder slot, none where no link resolves its country, and its

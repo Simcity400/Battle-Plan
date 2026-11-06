@@ -3,11 +3,13 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Label {
     /// The operand's spelling.
     pub(crate) key: String,
     pub(crate) operand: Operand,
-    /// Whether an hour handed to a branch carried it yet.
+    /// Whether an hour handed to a branch carried it yet: the walk's charging alone.
+    #[spool(skip)]
     carried: AtomicBool,
 }
 

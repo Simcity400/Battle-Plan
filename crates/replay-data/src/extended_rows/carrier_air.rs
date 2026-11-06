@@ -4,6 +4,7 @@ use super::*;
 /// order and repeated raw references; slot is authenticated against the corresponding
 /// country-indexed registration, never inferred from raw id.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AirBaseCountryOccurrence {
     pub country: u32,
     pub slot: u32,
@@ -18,6 +19,7 @@ value_struct!(AirBaseCountryOccurrence {
 /// Each optional field fails independently.
 /// A successfully read empty dense vector or empty name remains Some(empty).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AirBaseCarrierInputs {
     pub registered_countries: Option<Vec<AirBaseCountryOccurrence>>,
     /// Absent for a state base. Exact retained ship name bytes bound to a host base's
@@ -36,6 +38,7 @@ opaque_value!(Option<AirBaseCarrierInputs>);
 /// All ranges partition the registration's existing flattened wing vector in
 /// order; the consumer checks every range and the final consumed length.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CarrierAirPool {
     /// Signed grouping key, distinct from the content database index.
     pub type_index: i32,
@@ -63,6 +66,7 @@ value_struct!(CarrierAirPool {
 /// capacity refusal, not zero fuel or an empty pool inventory. The predecessor
 /// capacity/wing fields remain independently usable when this packet fails.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AirBaseRegistrationCarrierInputs {
     pub country: u32,
     pub fuel_demand_raw: Option<i64>,

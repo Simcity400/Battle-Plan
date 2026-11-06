@@ -12,7 +12,7 @@ use installed_content_province_area::province_area::ProvinceAreas;
 use replay::{
     columnar_frames::metrics,
     columns as walked,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -48,6 +48,7 @@ pub type Values = [Option<i64>; columns::COUNT];
 
 /// A held tag of the hour: every UTF-8 tag a country holds but the empty one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Held {
     pub tag: Arc<str>,
     /// Its first holder by id the links resolve, as (canonical slot, id).
@@ -60,6 +61,7 @@ pub struct Held {
 
 /// The countries the hour's complete Countries and CountryLinks resolve.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Lineage {
     /// Ascending by tag bytes.
     pub tags: Vec<Held>,
@@ -78,6 +80,7 @@ impl Lineage {
 
 /// A regional series' key: its holder's tag, its strategic region and why either is missing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct RegionKey {
     pub tag: Option<Arc<str>>,
     pub region: Option<u32>,
@@ -89,6 +92,7 @@ pub struct RegionKey {
 /// A regional series' sums: provinces, victory points and area, controlled then owned, and
 /// each rule's state shares by denominator; none where the read is not available.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct RegionValues {
     pub values: [Option<i64>; 6],
     pub states: [Option<BTreeMap<u32, u64>>; 2],
@@ -113,6 +117,7 @@ impl RegionValues {
 }
 
 /// The regional facts the hour changed.
+#[derive(replay_spool::Spooled)]
 pub struct Regional {
     /// Every series with rows is listed; the others hold none.
     pub whole: bool,
@@ -129,6 +134,7 @@ pub struct Regional {
 /// The owned-state counters by canonical slot: every slot's where `whole`, else the slots
 /// whose counters changed. A slot two rows name holds no count; one no row names is not held.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Counters {
     /// CountryCounterInputs and the countries are complete.
     pub complete: bool,
@@ -139,6 +145,7 @@ pub struct Counters {
 
 /// What the hour counts towards the family's warnings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Rates {
     /// Totals past the exact integer range.
     pub overflowed: u64,
@@ -148,6 +155,7 @@ pub struct Rates {
 
 /// What the ordered emit reads of an hour that changed what territory reads.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Everything is listed anew: the segment's first hour.
     pub whole: bool,
@@ -169,40 +177,12 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     /// None when the hour changes nothing territory reads.
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        size_of::<Facts>()
-            + match &facts.lineage {
-                Some(Some(lineage)) => size_of::<Lineage>() + lineage.heap(),
-                _ => 0,
-            }
-            + facts.values.capacity() * size_of::<(u32, Values)>()
-            + facts.owned.as_ref().map_or(0, |owned| {
-                owned.slots.capacity() * size_of::<(u32, Option<i64>, bool)>()
-            })
-            + facts.regional.as_ref().map_or(0, |regional| {
-                regional.keys.capacity() * size_of::<(u32, RegionKey)>()
-                    + regional.series.capacity() * size_of::<(u32, Option<Arc<RegionValues>>)>()
-                    + regional
-                        .series
-                        .iter()
-                        .flat_map(|(_, values)| values)
-                        .map(|values| size_of::<RegionValues>() + values.heap())
-                        .sum::<usize>()
-                    + (regional.missing_states.capacity() + regional.missing_provinces.capacity())
-                        * 4
-            })
-    }
 }
 
 /// A raw holder reference: null holds nothing; one no unambiguous tag names is unknown.

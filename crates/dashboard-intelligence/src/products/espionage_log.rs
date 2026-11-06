@@ -70,6 +70,7 @@ pub struct EspionageOperationType {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct EspionageOperativeName {
     pub id: String,
     pub name: Option<String>,
@@ -78,6 +79,7 @@ pub struct EspionageOperativeName {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct EspionageOperationRun {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -680,6 +682,7 @@ impl Census {
 
 /// An operations read of a complete table.
 #[derive(Clone, Debug, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct CensusRead {
     /// Each operation, in row order; none where two rows hold one handle.
     pub(crate) rows: Option<Vec<OperationRead>>,
@@ -689,6 +692,7 @@ pub(crate) struct CensusRead {
 
 /// An operation as read: its run at the read, its hours left to the hour observing it.
 #[derive(Clone, Debug, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct OperationRead {
     pub(crate) id: u64,
     owner: u32,

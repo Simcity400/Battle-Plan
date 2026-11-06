@@ -43,6 +43,8 @@ collector-naval-management = { path = "crates/collector-naval-management" }
 replay-columnar = { path = "crates/replay-columnar" }
 replay-frame = { path = "crates/replay-frame" }
 replay-derive = { path = "crates/replay-derive" }
+replay-spool = { path = "crates/replay-spool" }
+replay-spool-derive = { path = "crates/replay-spool-derive" }
 weather-period = { path = "crates/weather-period" }
 recorder-oracle-weather = { path = "crates/recorder-oracle-weather" }
 recorder-oracle-wars = { path = "crates/recorder-oracle-wars" }

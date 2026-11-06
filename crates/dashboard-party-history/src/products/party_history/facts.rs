@@ -14,7 +14,7 @@ use dashboard_base::products::idea_history::IdeaCharacter;
 use dashboard_world::{Needs, Roster, Tag, Tagged, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -66,6 +66,7 @@ pub fn needs() -> Needs {
 
 /// The ruling party's ideology group and naming operands.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Ruling {
     pub token: Arc<str>,
     /// Its naming and the selected original tag, or why it is unknown.
@@ -74,6 +75,7 @@ pub struct Ruling {
 
 /// A holder's parties as one hour reads them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Parties {
     /// Each valid ideology group token's popularity, in row order; none at a duplicate hour.
     pub values: Vec<(Arc<str>, i64)>,
@@ -87,6 +89,7 @@ pub struct Parties {
 
 /// The ruling party's first country leader, as the holder's appearance records it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Leader {
     /// Empty when the party has no leader.
     pub ideology: Arc<str>,
@@ -95,6 +98,7 @@ pub struct Leader {
 
 /// What one hour reads of a tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Observation {
     /// Its holder's canonical slot and raw id.
     pub identity: (u32, u32),
@@ -144,6 +148,7 @@ impl Observation {
 }
 
 /// What the ordered emit reads of an hour that changes a tag.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Every held tag is in `changed`: a tag held before and missing from it is held no more.
     pub whole: bool,
@@ -152,6 +157,7 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -159,23 +165,6 @@ pub struct Hour {
     pub unavailable: bool,
     /// None when the hour changes no tag.
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        size_of::<Facts>()
-            + facts.changed.capacity() * size_of::<(Arc<str>, Arc<Observation>)>()
-            + facts
-                .changed
-                .iter()
-                .map(|(tag, observation)| {
-                    tag.len() + size_of::<Observation>() + observation.heap()
-                })
-                .sum::<usize>()
-    }
 }
 
 /// Rows grouped by the holder slot their country's link resolves, kept by table slot.

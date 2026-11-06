@@ -206,7 +206,7 @@ pub struct AirAcePortraitReply {
 }
 
 /// One ace as a roster read gives it: its row, and what the read joins to it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, replay_spool::Spooled)]
 pub struct Sighting {
     row: AirAceRow,
     tag: Option<String>,

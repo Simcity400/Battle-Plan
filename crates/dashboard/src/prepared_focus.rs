@@ -60,6 +60,7 @@ pub(crate) const RESET: &str =
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "PreparedFocusTableRefusal")]
+#[derive(replay_spool::Spooled)]
 pub struct TableRefusal {
     pub table: String,
     pub reason: Option<String>,

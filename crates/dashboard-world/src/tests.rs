@@ -1,7 +1,7 @@
 use super::*;
 use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
-    segments::{Hour, Item, Operator, Sink, World as _},
+    segments::{Hour, Operator, Sink, World as _},
 };
 use replay_data::rows::{
     CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow,
@@ -467,13 +467,8 @@ fn the_world_kept_from_changes_holds_what_a_rebuild_holds() {
 }
 
 /// An hour of what an operator read of its world.
+#[derive(replay_spool::Spooled)]
 struct Read(Vec<u8>);
-
-impl Item for Read {
-    fn heap(&self) -> usize {
-        self.0.capacity()
-    }
-}
 
 /// Reads each country's tag, identity and states owned.
 struct Owning;

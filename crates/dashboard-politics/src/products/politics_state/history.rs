@@ -121,6 +121,7 @@ const PART_SLOT: u32 = u32::MAX;
 /// The parts of the political state read from their own tables.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum Part {
     Elections,
     Exiles,
@@ -190,6 +191,7 @@ impl Part {
 /// What one value of a holder is.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum Field {
     /// 1 when the game holds elections, 0 when it does not.
     ElectionsHeld,
@@ -657,7 +659,6 @@ pub struct PoliticsHistoryParams {
     #[ts(optional)]
     pub last_hour: Option<i32>,
 }
-
 
 /// Consecutive reads holding one value, as an exact decimal string.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]

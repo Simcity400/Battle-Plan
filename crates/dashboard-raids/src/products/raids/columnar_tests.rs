@@ -324,7 +324,8 @@ fn projected(starts: &[i32]) -> (Vec<Hour<Segments>>, Vec<DecodedFrame>) {
         observed.metrics = metrics;
         frames.push(observed);
     }
-    (out, frames)
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(out).unwrap(), frames)
 }
 
 fn identity() -> dashboard_series::Identity {

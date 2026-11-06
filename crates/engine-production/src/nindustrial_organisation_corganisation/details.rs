@@ -44,6 +44,7 @@ const POLICY_COST: usize = 0x48;
 const POLICY_DAYS: usize = 0x4c;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct State {
     pub research_bonus_raw: i64,
     pub task_capacity: i32,
@@ -63,6 +64,7 @@ pub struct State {
     pub source_location: Option<[u32; 2]>,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct Policy {
     pub token: u32,
     pub cost: i32,
@@ -80,6 +82,7 @@ pub struct CountryPolicies {
     pub cost_modifier_raw: Option<i64>,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Technology {
     pub country: u32,
     pub handle: u32,
@@ -87,17 +90,20 @@ pub struct Technology {
     pub token: u32,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Task {
     /// Every native task slot is retained, including empty slots.
     pub technology: Option<Technology>,
     pub line: Option<u64>,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Variable {
     pub name: Vec<u8>,
     pub value_raw: i64,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Variables {
     pub seed: Option<u32>,
     pub entries: Vec<Variable>,

@@ -26,7 +26,7 @@ use dashboard_base::products::{
 use dashboard_world::{Hold, Naming as Names, Needs, Roster, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -74,6 +74,7 @@ pub fn needs() -> Needs {
 
 /// A value handed on: a number, or a text the emit numbers in the order it first sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Val {
     Int(i128),
     Text(Arc<str>),
@@ -90,6 +91,7 @@ impl Val {
 
 /// A domain's values handed on: every value it holds where `whole`, else what changed since
 /// the segment last handed it on, none ending a value. In the order they were read.
+#[derive(replay_spool::Spooled)]
 pub struct Sent {
     pub domain: u8,
     pub whole: bool,
@@ -98,6 +100,7 @@ pub struct Sent {
 
 /// What the ordered emit reads of an hour that changes something.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// The tags of the holders party to a row read, where they changed in the segment.
     pub tags: Vec<(u32, Arc<str>)>,
@@ -111,6 +114,7 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -120,49 +124,6 @@ pub struct Hour {
     pub built: Vec<(u64, RawVariant)>,
     /// None when the hour changes nothing else.
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let built = self.built.capacity() * size_of::<(u64, RawVariant)>()
-            + self.built.iter().map(|(_, raw)| raw.heap()).sum::<usize>();
-        let Some(facts) = &self.facts else {
-            return built;
-        };
-        let entry = size_of::<(Field, Option<Val>)>();
-        built
-            + size_of::<Facts>()
-            + facts.tags.capacity() * size_of::<(u32, Arc<str>)>()
-            + facts.tags.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + facts.sent.capacity() * size_of::<Sent>()
-            + facts
-                .sent
-                .iter()
-                .map(|sent| {
-                    sent.values.capacity() * entry
-                        + sent
-                            .values
-                            .iter()
-                            .map(|(_, value)| value.as_ref().map_or(0, Val::heap))
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
-            + facts.names.capacity() * size_of::<(u64, RawOrganisation)>()
-            + facts
-                .names
-                .iter()
-                .map(|(_, raw)| {
-                    raw.token.capacity()
-                        + raw.name_key.capacity()
-                        + raw.icon.capacity()
-                        + raw.owner_tag.as_ref().map_or(0, String::capacity)
-                })
-                .sum::<usize>()
-            + facts.refusals.as_ref().map_or(0, |refusals| {
-                refusals.capacity() * size_of::<(String, u64)>()
-                    + refusals.iter().map(|(reason, _)| reason.capacity()).sum::<usize>()
-            })
-    }
 }
 
 /// Why `table` is not read complete this hour, as the row decoder names it, without the hour.

@@ -14,7 +14,7 @@ use replay::{
     columnar_frames::metrics,
     columns,
     container::Replay,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -23,7 +23,6 @@ use replay_data::{
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    mem::size_of,
     sync::Arc,
 };
 
@@ -61,6 +60,7 @@ pub fn needs() -> Needs {
 
 /// One country's army at a projected hour.
 #[derive(Clone, Debug, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub struct Country {
     /// Its tag's index in the projection ([`Hour::named`]).
     pub index: u32,
@@ -74,6 +74,7 @@ pub struct Country {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -98,22 +99,6 @@ pub struct Hour {
     /// Table reads the hour refused, by reason.
     pub invalid: Vec<(String, usize)>,
     pub aid: aid::Projection,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // Compositions are Arcs the projection holds too.
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self.live.as_ref().map_or(0, |live| live.capacity() * 4)
-            + self.countries.capacity() * size_of::<Country>()
-            + self
-                .invalid
-                .iter()
-                .map(|(reason, _)| size_of::<(String, usize)>() + reason.capacity())
-                .sum::<usize>()
-            + self.aid.heap()
-    }
 }
 
 /// One segment's projection: every segment starts cold.

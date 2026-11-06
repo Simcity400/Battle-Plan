@@ -143,7 +143,8 @@ fn projected(starts: &[i32]) -> (Vec<columnar::Hour>, Vec<DecodedFrame>) {
         frames.push(observed);
     }
     operator.end(&mut out).unwrap();
-    (out, frames)
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(out).unwrap(), frames)
 }
 
 /// The pages the emit publishes from `hours`, flushed and committed after each of `cuts`' hours,

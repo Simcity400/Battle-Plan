@@ -66,6 +66,7 @@ fn nesting_refusal(name: &str) -> String {
 
 /// A localisation context object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Object {
     /// Faction environment: copied event scope and faction.
     FactionEnvironment(Option<u64>),
@@ -93,7 +94,7 @@ pub enum Link {
 }
 
 /// What an event scope holds, as text reads it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, replay_spool::Spooled)]
 pub enum EventObject {
     Country(u32),
     /// A combat context retains only the combat object.
@@ -584,6 +585,7 @@ fn complete<T: TableSchema>(frame: &dyn replay_frame::frame::DecodedSource) -> b
 
 /// A recorded query of a scripted text's own hour reads ([`crate::triggers::inputs`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum TextQuery {
     CountryName(u32, bool),
     CountryTag(u32),

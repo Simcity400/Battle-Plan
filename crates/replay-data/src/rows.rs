@@ -30,6 +30,7 @@ pub const TABLE_COUNT: usize = TableId::ALL.len();
 /// whether it was written at that tick or after further engine work.
 /// `debug_current_ref_id` keeps its printed unsigned width; the rest keep signed i32.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ClockRow {
     pub hour: i32,
     pub play_time: u64,
@@ -55,11 +56,13 @@ pub struct ClockRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CampaignRow {
     pub id: Vec<u8>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryRow {
     /// Raw country link id, which need not equal its canonical array slot.
     pub id: u32,
@@ -94,6 +97,7 @@ thread_local! {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryLinkRow {
     /// Raw country reference used by provinces and other engine tables.
     pub id: u32,
@@ -101,6 +105,7 @@ pub struct CountryLinkRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProvinceRow {
     pub id: u32,
     pub state: u32,
@@ -157,6 +162,7 @@ impl ProvinceRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateRow {
     pub infrastructure: Recorded<Option<StateInfrastructure>>,
     pub id: u32,
@@ -202,6 +208,7 @@ pub struct StateRow {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateInfrastructure {
     pub building_type: u32,
     pub level: i32,
@@ -210,6 +217,7 @@ pub struct StateInfrastructure {
 crate::value::value_struct!(StateInfrastructure { building_type: u32, level: i32, maximum: i32 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionRow {
     /// Full native handle: type in the low 32 bits, id in the high 32 bits.
     pub id: u64,
@@ -258,6 +266,7 @@ impl DivisionRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WarRelationRow {
     /// Ordered country identities form the row key; this is not a full war id.
     pub first_country: u32,
@@ -275,6 +284,7 @@ pub struct WarRelationRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FactionRow {
     pub id: u64,
     /// Literal engine name bytes; an empty name is valid.
@@ -298,6 +308,7 @@ pub struct FactionRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FactionMemberRow {
     /// Raw country identity; a country has at most one faction membership.
     pub country: u32,
@@ -307,6 +318,7 @@ pub struct FactionMemberRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PlayerRow {
     pub ordinal: u32,
     /// Native signed session id; its raw u32 bits form the row key.
@@ -319,6 +331,7 @@ pub struct PlayerRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct HumanControllerRow {
     /// Raw country link id, independently authenticated from the player roster.
     pub country: u32,
@@ -327,6 +340,7 @@ pub struct HumanControllerRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandCombatRow {
     pub id: u64,
     pub province: u32,
@@ -343,6 +357,7 @@ pub struct LandCombatRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FleetRow {
     pub id: u64,
     pub owner: u32,
@@ -354,6 +369,7 @@ pub struct FleetRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TaskForceRow {
     pub id: u64,
     pub fleet: u64,
@@ -370,6 +386,7 @@ pub struct TaskForceRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ShipRow {
     /// Exact retained display cache; None is an independent acquisition refusal.
     pub name: Recorded<Option<Vec<u8>>>,
@@ -393,6 +410,7 @@ pub struct ShipRow {
 
 /// Ship name-member serialization operands, not a generated display name.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct ShipNamingOperands {
     pub kind: i32,
     pub order: i32,
@@ -424,6 +442,7 @@ impl ShipRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalCombatRow {
     pub id: u64,
     pub province: u32,
@@ -437,6 +456,7 @@ pub struct NavalCombatRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalCombatParticipantRow {
     /// All 64 handle bits, the side bit, and all 32 slot bits form the 97-bit key.
     pub combat: u64,
@@ -450,6 +470,7 @@ pub struct NavalCombatParticipantRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AirWingRow {
     pub id: u64,
     pub owner: u32,
@@ -565,6 +586,7 @@ impl AirWingRow {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AirWingRaidReference {
     pub raw: u64,
     pub resolves: bool,
@@ -582,6 +604,7 @@ pub struct AirWingFuelInputs {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ArmyOrderRow {
     /// All 64 owner handle bits and all 32 instance bits form the 96-bit row key.
     pub owner_group: u64,
@@ -717,6 +740,7 @@ pub(crate) mod checkpoint;
 /// Current producers default to a recorded native default; old decoders set
 /// NotRecorded explicitly. No absence tag is written to disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Recorded<T> {
     NotRecorded,
     Value(T),
@@ -750,10 +774,10 @@ macro_rules! define_tables {
     ($($table:ident = $id:literal => $variant:ident($row:ident)),+ $(,)?) => {
         $crate::checkpoint::rows::tables! { $($table => $row),+ }
         $crate::checkpoint::endpoint::tables! { $($table => $row),+ }
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, replay_spool::Spooled)]
         #[repr(u16)]
         pub enum TableId { $($table = $id),+ }
-        #[derive(Debug, Clone, PartialEq, Eq)]
+        #[derive(Debug, Clone, PartialEq, Eq, replay_spool::Spooled)]
         pub enum TableRows { $($table(Vec<$row>)),+ }
         /// Inspection borrows concrete rows; decoded storage never owns this enum.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1843,6 +1867,7 @@ pub enum Token {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DeltaRow {
     /// Layout of values; retained for nested fields and old insert masks.
     pub format: u16,
@@ -2429,6 +2454,7 @@ fn merge_typed<T: RowCodec, R: std::borrow::Borrow<T>>(
 /// The rows a later version of a table changed or added since an earlier
 /// one, and the keys it dropped ([`TableRows::changes_since`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RowChanges {
     rows: TableRows,
     deleted: Vec<u128>,

@@ -15,7 +15,7 @@ use crate::catalogue::Catalogue;
 use dashboard_world::{Country, Hold, Needs, Roster, Tag, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -70,6 +70,7 @@ const REASONS: [&str; 4] = [UNRESOLVED, NO_FOCUS_ROW, NO_TAG, INCOMPLETE_ORDER];
 /// A country's focus order as recorded: its completed focuses' tokens in order, its active and
 /// continuous focus (none when empty), and whether it is paused. Compared by recorded bytes.
 #[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Order {
     pub completed: Arc<[Arc<[u8]>]>,
     pub current: Option<Arc<[u8]>>,
@@ -80,6 +81,7 @@ pub struct Order {
 /// A tag's focus observation at an hour: its country's canonical slot and id, its raw progress
 /// and its order, shared while it is unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Observation {
     pub slot: u32,
     pub country_id: u32,
@@ -89,6 +91,7 @@ pub struct Observation {
 
 /// A focus the walk saw a tag's observation complete since the hour before: its place in the
 /// order, its token as replies show it, and its art.
+#[derive(replay_spool::Spooled)]
 pub struct Presented {
     pub tag: Arc<str>,
     pub position: usize,
@@ -97,11 +100,12 @@ pub struct Presented {
 }
 
 /// What the ordered emit reads of an hour that changes what the observation reads.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// The four tables' refusals, at a segment's first hour and where they changed.
     pub refusals: Option<Vec<TableRefusal>>,
     /// The hour's countries without an observation, by reason, where those counts changed.
-    pub tally: Option<Vec<(&'static str, u64)>>,
+    pub tally: Option<Vec<(String, u64)>>,
     /// Whether `tags` lists every tag observed this hour, the others observed by none.
     pub whole: bool,
     /// Each tag whose observation changed, none where it is no longer observed.
@@ -111,54 +115,12 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     /// None when the hour changes nothing the observation reads.
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        // Orders and tokens are the projector's, shared; an observation charges its list.
-        size_of::<Facts>()
-            + facts.refusals.as_ref().map_or(0, |refusals| {
-                refusals
-                    .iter()
-                    .map(|refusal| {
-                        size_of::<TableRefusal>()
-                            + refusal.table.capacity()
-                            + refusal.reason.as_ref().map_or(0, String::capacity)
-                            + refusal.missing_rows.as_ref().map_or(0, String::capacity)
-                    })
-                    .sum::<usize>()
-            })
-            + facts
-                .tally
-                .as_ref()
-                .map_or(0, |tally| tally.capacity() * size_of::<(&str, u64)>())
-            + facts.tags.capacity() * size_of::<(Arc<str>, Option<Observation>)>()
-            + facts
-                .tags
-                .iter()
-                .map(|(tag, observed)| {
-                    tag.len()
-                        + observed.as_ref().map_or(0, |observed| {
-                            size_of::<Order>()
-                                + observed.order.completed.len() * size_of::<Arc<[u8]>>()
-                        })
-                })
-                .sum::<usize>()
-            + facts.art.capacity() * size_of::<Presented>()
-            + facts
-                .art
-                .iter()
-                .map(|presented| presented.token.capacity() + presented.art.bytes())
-                .sum::<usize>()
-    }
 }
 
 /// A tag's observation that completed focuses since the hour before, from `from` in its order.
@@ -963,7 +925,7 @@ impl Operator<World> for Projector {
                 .chain([&INCOMPLETE_TABLES])
                 .zip(counts)
                 .filter(|&(_, count)| count != 0)
-                .map(|(&reason, count)| (reason, count))
+                .map(|(&reason, count)| (reason.to_owned(), count))
                 .collect()
         });
         whole |= opens;

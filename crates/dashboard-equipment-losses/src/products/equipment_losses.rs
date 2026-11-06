@@ -957,6 +957,7 @@ const VARIANT_TYPE: u32 = engine_native::cequipment_variant::REFERENCE_TYPE;
 const DESTRUCTION_TRUNCATED: &str = "Equipment destruction drain is truncated; branch unavailable";
 
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct DestructionInputs {
     supplemental: Option<String>,
     unresolved: BTreeSet<u32>,
@@ -1211,6 +1212,7 @@ fn destruction_amounts<'a>(
 /// Logging also requires feature 3 in the runtime mask recorded by
 /// SimulationFeatures. Missing inputs stay unknown.
 #[derive(Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 struct CoverageInputs {
     gate_known: bool,
     all: bool,

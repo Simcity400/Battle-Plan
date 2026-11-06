@@ -4,7 +4,7 @@ use dashboard_world::{Needs, Roster, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -36,6 +36,7 @@ pub type Values = [i64; 3];
 
 pub type Cell = (u32, u32);
 
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     pub whole: bool,
     pub cells: Vec<(Cell, Option<Values>)>,
@@ -43,6 +44,7 @@ pub struct Facts {
     pub tags: Vec<(u32, Option<Arc<str>>)>,
 }
 
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -50,23 +52,6 @@ pub struct Hour {
     pub read: bool,
     pub refusal: Option<Box<str>>,
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.refusal.as_ref().map_or(0, |reason| reason.len())
-            + self.facts.as_ref().map_or(0, |facts| {
-                size_of::<Facts>()
-                    + facts.cells.capacity() * size_of::<(Cell, Option<Values>)>()
-                    + facts.tags.capacity() * size_of::<(u32, Option<Arc<str>>)>()
-                    + facts
-                        .tags
-                        .iter()
-                        .flat_map(|(_, tag)| tag)
-                        .map(|tag| tag.len())
-                        .sum::<usize>()
-            })
-    }
 }
 
 #[derive(Clone, Copy)]

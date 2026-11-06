@@ -313,6 +313,7 @@ struct Scan {
 
 /// How a target's cipher threshold is known at a read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Threshold {
     Known(i64),
     /// The cipher defines were refused.
@@ -334,6 +335,7 @@ impl Threshold {
 
 /// What the hour's countries join to a Cryptology row.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Joined {
     key: (u32, u32),
     /// A tag the JSON contract cannot name keeps its bytes.
@@ -346,6 +348,7 @@ pub(crate) struct Joined {
 
 /// A Cryptology row as read: unjoined when a country link or country is not recorded.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct PairRead {
     row: CryptologyRow,
     joined: Option<Joined>,
@@ -371,6 +374,7 @@ impl PairRead {
 
 /// What the cipher scan reads of an hour.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) enum CipherRead {
     /// No hour was read.
     Unread,

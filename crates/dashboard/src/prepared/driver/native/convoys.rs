@@ -19,7 +19,7 @@ use replay::{
     columnar_frames::Segment,
     columns,
     container::Replay,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{
     format::FormatVersion,
@@ -29,7 +29,6 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, Metrics};
 use std::{
     io,
-    mem::size_of,
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -71,6 +70,7 @@ pub(crate) const TABLES: &[TableId] = &[
 ];
 
 /// One projected hour: the convoy tables it changed, as patches or whole views.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Hour {
     hour: i32,
     /// The hour is its segment's first: every table is handed on whole.
@@ -79,18 +79,6 @@ pub(crate) struct Hour {
     /// The tables the hour wrote any field of, or that stayed incomplete (the row decoder read
     /// those anew each hour): each counts as changed, as the walk's change facts had it.
     touched: Vec<TableId>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.changes.capacity() * size_of::<(TableId, Arc<Change>)>()
-            + self
-                .changes
-                .iter()
-                .map(|(_, change)| change.heap())
-                .sum::<usize>()
-            + self.touched.capacity() * size_of::<TableId>()
-    }
 }
 
 impl Projected for Hour {

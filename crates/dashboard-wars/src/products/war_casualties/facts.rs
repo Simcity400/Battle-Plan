@@ -9,10 +9,9 @@
 use super::{NAME_INPUTS, NAME_TABLES, SCAN_TABLES, joins};
 use dashboard_world::{Hold, Needs, World as Shared};
 use replay::{
-    columnar_frames::view_heap_bytes,
     columns,
     container::Replay,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{
     format::FormatVersion,
@@ -67,6 +66,7 @@ pub fn needs() -> io::Result<Needs> {
 }
 
 /// What the ordered emit reads of an hour that changes what the scan reads.
+#[derive(replay_spool::Spooled)]
 pub enum Facts {
     /// Every table the scan reads, and the hour's metrics.
     Whole {
@@ -83,36 +83,11 @@ pub enum Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub facts: Option<Box<Facts>>,
-}
-
-fn views_heap(views: &Vec<(TableId, SharedView)>) -> usize {
-    views.capacity() * size_of::<(TableId, SharedView)>()
-        + views
-            .iter()
-            .map(|(_, view)| view_heap_bytes(view))
-            .sum::<usize>()
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        size_of::<Facts>()
-            + match &**facts {
-                Facts::Whole { tables, .. } => views_heap(tables) + size_of::<Metrics>(),
-                Facts::Moved { relations, names } => {
-                    relations.capacity() * size_of::<(u32, [i64; 4])>()
-                        + names
-                            .as_ref()
-                            .map_or(0, |(views, _)| views_heap(views) + size_of::<Metrics>())
-                }
-            }
-    }
 }
 
 /// WarRelations' casualty counters: first and second casualties, then their unknown casualties.

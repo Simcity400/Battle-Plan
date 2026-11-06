@@ -20,7 +20,7 @@ use dashboard_world::{Hold, Needs, World as Shared};
 use replay::{
     columnar_frames::view_heap_bytes,
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{format::FormatVersion, rows::RowCodec as _};
 use replay_frame::frame::{SharedView, not_selected};
@@ -109,6 +109,7 @@ pub fn needs() -> io::Result<Needs> {
 }
 
 /// The war relations an hour joined, or the counters that changed since.
+#[derive(replay_spool::Spooled)]
 pub enum Relations {
     /// Every relation's lifetime and counters, in WarRelations row order; none when the hour's
     /// inputs could not be joined.
@@ -118,6 +119,7 @@ pub enum Relations {
 }
 
 /// What the ordered emit reads of an hour that changes what the wars read.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Every input table's view, at a segment's first hour.
     pub whole: Option<Vec<(TableId, SharedView)>>,
@@ -136,6 +138,7 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -143,29 +146,6 @@ pub struct Hour {
     /// after an hour not walked do not.
     pub follows: bool,
     pub facts: Option<Box<Facts>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        size_of::<Facts>()
-            + facts.whole.as_deref().map_or(0, |views| {
-                views.len() * size_of::<(TableId, SharedView)>()
-                    + views.iter().map(|(_, view)| view_heap_bytes(view)).sum::<usize>()
-            })
-            + facts.packet.as_ref().map_or(0, Vec::capacity)
-            + facts.parts.as_ref().map_or(0, |(parts, _)| parts.capacity())
-            + facts.layers.as_ref().map_or(0, |layers| layers.heap())
-            + match &facts.relations {
-                Some(Relations::Whole(list)) => {
-                    list.capacity() * size_of::<(WarRelationKey, [i64; 4])>()
-                }
-                Some(Relations::Values(list)) => list.capacity() * size_of::<(u32, [i64; 4])>(),
-                None => 0,
-            }
-    }
 }
 
 /// A relation the projector last joined: its lifetime, whether its row's endpoints are reversed

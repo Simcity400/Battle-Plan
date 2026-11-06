@@ -21,6 +21,7 @@ use std::{
 /// What an hour holds of a table the scan reads: what the hour before held, nothing (the table
 /// is not complete), or its rows read anew.
 #[derive(Clone, Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub enum Input<T> {
     #[default]
     Same,
@@ -30,6 +31,7 @@ pub enum Input<T> {
 
 /// A relation as the scan reads it: its countries (raw references), start, end and cancel byte.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Relation {
     pub overlord: u32,
     pub subject: u32,
@@ -47,6 +49,7 @@ impl Relation {
 /// What an hour holds of the tables the scan reads: the countries' keys in table order, each raw
 /// link's canonical slot, the relations in key order and each subject's level in key order.
 #[derive(Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Inputs {
     pub countries: Input<CountryKeys>,
     pub links: Input<HashMap<u32, u32>>,

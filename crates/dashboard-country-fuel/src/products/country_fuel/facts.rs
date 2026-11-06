@@ -9,7 +9,7 @@ use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -38,6 +38,7 @@ pub const TABLES: &[TableId] = &[
 
 /// What an hour shows of a tag's country, for the fuel update the hour governs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub enum Sample {
     /// The country owns a state.
     Owns(Identity),
@@ -50,6 +51,7 @@ pub enum Sample {
 }
 
 /// One tag at a projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Country {
     /// Its tag's index in the projection ([`Hour::named`]).
     pub(super) index: u32,
@@ -67,6 +69,7 @@ pub struct Country {
 
 /// What a read hour supplies of a tag's row: its read and current consumption, before the
 /// day's rules, and what the detail products read of it.
+#[derive(replay_spool::Spooled)]
 pub struct Supplied {
     pub(super) read: RawRead,
     pub(super) consumption: demand::RawConsumption,
@@ -77,6 +80,7 @@ pub struct Supplied {
 }
 
 /// A demand pack as the projection hands it on.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Handed {
     Whole(Arc<pack::Encoded>),
     /// The delta ([`pack::delta`]) from the pack the projection last supplied for the tag.
@@ -97,6 +101,7 @@ impl Supplied {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -175,26 +180,6 @@ fn read_heap(read: &RawRead) -> usize {
     match &read.day {
         Some(RawDay::Awards(_)) => size_of::<AwardSums>(),
         _ => 0,
-    }
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // Reasons are Arcs the projection's reasons hold too.
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self
-                .present
-                .as_ref()
-                .map_or(0, |present| present.capacity() * 4)
-            + self.countries.capacity() * size_of::<Country>()
-            + self
-                .countries
-                .iter()
-                .filter_map(|country| country.supplied.as_deref())
-                .map(|supplied| size_of::<Supplied>() + supplied.heap())
-                .sum::<usize>()
-            + self.unnamed.capacity() * size_of::<u32>()
     }
 }
 

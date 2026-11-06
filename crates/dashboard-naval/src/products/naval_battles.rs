@@ -140,6 +140,7 @@ fn count(label: &str, value: Option<u64>, at_least: bool, reason: &str) -> Battl
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct Quantities {
     ships: u64,
     convoys: u64,
@@ -166,6 +167,7 @@ impl Quantities {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct SideSample {
     countries: Vec<String>,
     countries_unknown: Option<String>,
@@ -264,6 +266,7 @@ fn deserialize_rows<'de, R: RowCodec, D: serde::Deserializer<'de>>(
 }
 
 #[derive(Clone, PartialEq)]
+#[derive(replay_spool::Spooled)]
 struct ResultInput {
     row: NavalResultRow,
     members: Option<Vec<NavalResultMemberRow>>,

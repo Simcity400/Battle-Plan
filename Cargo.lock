@@ -2629,6 +2629,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "rfd",
  "serde",
  "serde_json",
@@ -2671,6 +2672,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -2707,6 +2709,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -2744,6 +2747,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -2785,6 +2789,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -2840,6 +2845,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -2882,6 +2888,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -2910,6 +2917,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "test-unify",
@@ -2941,6 +2949,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -2976,6 +2985,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3008,6 +3018,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3041,6 +3052,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3077,6 +3089,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3115,6 +3128,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3150,6 +3164,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3180,6 +3195,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3215,6 +3231,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3252,6 +3269,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3336,6 +3354,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3373,6 +3392,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3407,6 +3427,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3442,6 +3463,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3475,6 +3497,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3506,6 +3529,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3540,6 +3564,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3577,6 +3602,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3650,6 +3676,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3689,6 +3716,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3724,6 +3752,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3760,6 +3789,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3792,6 +3822,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "shader-pipeline",
  "store",
  "test-unify",
@@ -3824,6 +3855,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3861,6 +3893,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3899,6 +3932,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3933,6 +3967,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -3955,6 +3990,7 @@ dependencies = [
  "replay",
  "replay-data",
  "replay-identity",
+ "replay-spool",
  "store",
  "test-unify",
  "zstd",
@@ -3988,6 +4024,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -4023,6 +4060,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -4058,6 +4096,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -4115,6 +4154,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -4152,6 +4192,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -4192,6 +4233,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -4229,6 +4271,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -4251,6 +4294,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -4275,6 +4319,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -4809,6 +4854,7 @@ name = "engine-fuel"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -4875,6 +4921,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -4894,6 +4941,7 @@ version = "0.1.0"
 dependencies = [
  "engine-deployment",
  "engine-native",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -4923,6 +4971,7 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-scripts",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -4984,6 +5033,7 @@ name = "engine-scripts"
 version = "0.1.0"
 dependencies = [
  "engine-native",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -5336,6 +5386,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "mlua",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "sha2",
@@ -5354,6 +5405,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -5381,6 +5433,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -9386,6 +9439,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "test-unify",
@@ -9400,6 +9454,7 @@ dependencies = [
  "blake3",
  "engine-allocation",
  "foldhash 0.2.0",
+ "replay-spool",
  "test-unify",
 ]
 
@@ -9420,6 +9475,7 @@ dependencies = [
  "engine-scripts",
  "replay-data",
  "replay-identity",
+ "replay-spool",
  "serde",
  "serde_json",
  "test-unify",
@@ -9515,6 +9571,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "replay-spool",
  "serde_json",
  "test-unify",
  "windows-sys 0.61.2",
@@ -9526,7 +9583,19 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "replay-identity",
+ "replay-spool",
 ]
+
+[[package]]
+name = "replay-spool"
+version = "0.1.0"
+dependencies = [
+ "replay-spool-derive",
+]
+
+[[package]]
+name = "replay-spool-derive"
+version = "0.1.0"
 
 [[package]]
 name = "reqwest"

@@ -12,7 +12,7 @@ use crate::{
 use dashboard_world::{Hold, Needs, Roster as Countries, Tagged, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -78,6 +78,7 @@ pub fn needs() -> Needs {
     }
 }
 
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub hour: i32,
     pub whole: bool,
@@ -115,16 +116,6 @@ impl Held for Inputs {
 impl Held for Roster {
     fn held(&self, bytes: &mut HeldBytes) {
         bytes.heap(&self.tags).heap(&self.owners);
-    }
-}
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let mut bytes = HeldBytes::default();
-        bytes
-            .heap(&self.built)
-            .heap(&self.inputs)
-            .heap(&self.roster);
-        bytes.total() as usize
     }
 }
 

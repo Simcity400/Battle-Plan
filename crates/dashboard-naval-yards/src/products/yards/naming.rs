@@ -3,6 +3,7 @@
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub enum Operand {
     ShipCache {
         handle: u64,
@@ -32,6 +33,7 @@ pub enum Operand {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct PortName {
     pub province: u32,
     pub override_name: Result<Vec<u8>, String>,
@@ -39,6 +41,7 @@ pub struct PortName {
     pub state: Result<StateName, String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct StateName {
     pub id: u32,
     pub custom: Vec<u8>,

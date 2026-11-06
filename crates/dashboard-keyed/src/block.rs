@@ -89,6 +89,15 @@ pub trait Operands<O: Observer>: Send {
         Ok(())
     }
     fn held(&self, bytes: &mut HeldBytes);
+    /// Writes them for a native segment's emit, which reads them back by
+    /// [`Observer::unspool_operands`].
+    fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        let _ = out;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "These operands are never spooled",
+        ))
+    }
 }
 
 /// Copies changed operands while the driver lends the current hour; never keeps source views.

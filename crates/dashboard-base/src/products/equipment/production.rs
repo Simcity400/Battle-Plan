@@ -37,6 +37,7 @@ pub(crate) type Entry = (u64, Purpose);
 /// the links resolve a holder, the canonical slot each raw link id names, and the resolved
 /// tags that are not UTF-8.
 #[derive(Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryHolders {
     pub holders: BTreeMap<String, Option<(u32, u32)>>,
     pub slots: Arc<HashMap<u32, u32>>,

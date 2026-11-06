@@ -100,6 +100,7 @@ pub(super) fn inherited_temps_failure() -> Failure {
 /// A variable store, as `ScriptVariables`
 /// keys it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Store {
     /// Global store (scope kind 0).
     Global,

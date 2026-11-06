@@ -14,6 +14,7 @@ use replay_frame::{
 use std::{io, mem::size_of};
 
 /// One table's hand, with the hour's last acquisition of it.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Hand {
     Same(Option<Hour>),
     Changed(RowChanges, Option<Hour>),

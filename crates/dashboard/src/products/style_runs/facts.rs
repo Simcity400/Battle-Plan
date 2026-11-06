@@ -14,14 +14,13 @@ use installed_content_country_names::country_names::{CountryNames, Operands};
 use installed_content_localisation::localisation::Localisation;
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
     collections::HashMap,
     io,
-    mem::size_of,
     sync::{
         Arc, LazyLock,
         atomic::{AtomicU64, Ordering},
@@ -121,6 +120,7 @@ static UNNAMED: LazyLock<Localisation> = LazyLock::new(Localisation::default);
 /// every overlord its name reaches, each once, and which of slot zero's names its reserved row
 /// has built when the chain reaches slot zero.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Naming {
     pub chain: Vec<(u32, Result<Operands, String>)>,
     pub built: Option<u8>,
@@ -128,6 +128,7 @@ pub struct Naming {
 
 /// A tag's facts at an hour, while a country holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Fact {
     /// The raw link id and canonical slot of its first country row, by id.
     pub holder: (u32, u32),
@@ -139,6 +140,7 @@ pub struct Fact {
 
 /// A tag's facts, None while no country holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Country {
     /// Its index in the projection ([`Hour::named`]).
     pub index: u32,
@@ -147,6 +149,7 @@ pub struct Country {
 
 /// One projected hour.
 #[derive(Clone)]
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -158,14 +161,6 @@ pub struct Hour {
     pub named: Vec<(u32, Arc<str>)>,
     /// Tags whose facts changed, ascending by index.
     pub countries: Vec<Country>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self.countries.capacity() * size_of::<Country>()
-    }
 }
 
 struct Named {

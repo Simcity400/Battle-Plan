@@ -457,6 +457,7 @@ impl Looked {
 
 /// Where a counted division is listed: its slot under each attribution and its template.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Placed {
     pub(crate) slots: [Option<u32>; 2],
     pub(crate) template: u64,

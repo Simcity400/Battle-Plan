@@ -88,6 +88,7 @@ pub use crate::modifier_accumulator::RequestedOperand as Modifier;
 /// Only reached operands are acquired. A skipped wing needs no fuel, ace,
 /// mission-cost or weather reads. `reached` certifies that native gate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AirInputs {
     pub reached: bool,
     pub mission_first: u32,

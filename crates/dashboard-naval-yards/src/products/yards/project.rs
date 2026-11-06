@@ -23,6 +23,7 @@ mod ship;
 
 /// A cell as a reader hands it on: a label by its operand, which only the branch numbers.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Spelled {
     Null,
     Integer(i128),
@@ -66,6 +67,7 @@ impl std::fmt::Debug for Label {
 
 /// A row's key: a number, or a refusal's reason.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Key {
     Number(u64),
     Token(Arc<Label>),
@@ -74,6 +76,7 @@ pub(crate) enum Key {
 /// A row as a reader hands it on: every cell after its key and whether it is held, or none
 /// where the hour removed it.
 #[derive(Debug)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Row {
     /// Its owner, by its number in the hour's owners.
     pub(crate) owner: u32,
@@ -96,6 +99,7 @@ impl Row {
 }
 
 /// The rows an hour changed, and the owners they are of; every row the view holds where whole.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Rows {
     pub(crate) owners: Arc<[String]>,
     pub(crate) whole: bool,

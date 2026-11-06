@@ -143,7 +143,7 @@ pub struct MilitaryAirReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash, replay_spool::Spooled)]
 pub struct LeafKey {
     pub(crate) country: Option<(String, String)>,
     pub(crate) dealt: bool,

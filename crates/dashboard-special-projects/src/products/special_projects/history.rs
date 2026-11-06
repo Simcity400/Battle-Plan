@@ -475,6 +475,7 @@ pub(super) fn cached(
 
 /// A scoped project name as one hour evaluated it: its text, and what it refused.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Name {
     pub(super) text: Option<String>,
     pub(super) warnings: Vec<String>,

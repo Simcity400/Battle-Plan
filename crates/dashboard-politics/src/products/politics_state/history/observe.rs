@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// A value as the operator hands it on: a number, or a content token the emit numbers.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Val {
     Int(i128),
     Token(Box<str>),

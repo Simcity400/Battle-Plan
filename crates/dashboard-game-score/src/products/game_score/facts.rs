@@ -10,10 +10,10 @@ use super::{ScoreContent, ScoreObserver};
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{format::FormatVersion, rows::TableId};
-use std::{io, mem::size_of};
+use std::io;
 
 /// The tables a projection reads: the score's, and slot zero's naming the hourly walk read too.
 pub const TABLES: &[TableId] = &[
@@ -127,6 +127,7 @@ pub type Country = (String, GameScoreValues, GameScoreIdentity);
 pub type Warning = (GameScoreMissingKind, String);
 
 /// What the ordered emit reads of an hour that changed the facts.
+#[derive(replay_spool::Spooled)]
 pub enum Facts {
     /// Every country was read again: the multipliers, every country in tag order and every
     /// warning with its count this hour.
@@ -144,77 +145,11 @@ pub enum Facts {
 }
 
 /// One hour of a segment: none where it changed nothing the facts read.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub facts: Option<Box<Facts>>,
-}
-
-fn amounts_heap(values: &GameScoreValues) -> usize {
-    values
-        .amounts()
-        .iter()
-        .filter_map(|amount| amount.missing.as_ref())
-        .map(|missing| missing.reason.capacity())
-        .sum()
-}
-
-fn identity_heap(identity: &GameScoreIdentity) -> usize {
-    let text = |text: &Option<String>| text.as_ref().map_or(0, String::capacity);
-    let missing = |missing: &Option<super::GameScoreMissing>| {
-        missing.as_ref().map_or(0, |missing| missing.reason.capacity())
-    };
-    text(&identity.name)
-        + missing(&identity.name_missing)
-        + missing(&identity.color_missing)
-        + missing(&identity.faction_missing)
-        + identity.faction.as_ref().map_or(0, |faction| {
-            faction.id.capacity() + text(&faction.name) + missing(&faction.name_missing)
-        })
-}
-
-fn countries_heap(countries: &[Country]) -> usize {
-    countries.len() * size_of::<Country>()
-        + countries
-            .iter()
-            .map(|(tag, values, identity)| {
-                tag.capacity() + amounts_heap(values) + identity_heap(identity)
-            })
-            .sum::<usize>()
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        match self.facts.as_deref() {
-            None => 0,
-            Some(Facts::Whole {
-                multipliers,
-                countries,
-                warnings,
-            }) => {
-                size_of::<Facts>()
-                    + amounts_heap(multipliers)
-                    + countries_heap(countries)
-                    + warnings.len() * size_of::<(Warning, u64)>()
-                    + warnings
-                        .iter()
-                        .map(|((_, reason), _)| reason.capacity())
-                        .sum::<usize>()
-            }
-            Some(Facts::Countries {
-                countries,
-                warnings,
-            }) => {
-                size_of::<Facts>()
-                    + countries_heap(countries)
-                    + warnings.len() * size_of::<(Warning, Option<u64>)>()
-                    + warnings
-                        .iter()
-                        .map(|((_, reason), _)| reason.capacity())
-                        .sum::<usize>()
-            }
-        }
-    }
 }
 
 /// One segment's projection: every segment starts cold.

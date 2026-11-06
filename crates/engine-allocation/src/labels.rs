@@ -37,10 +37,23 @@ pub enum Kind {
     Index = 9,
     /// The attribution's own tag on each allocation.
     Headers = 10,
+    /// What a series writer keeps of every key it defined: it grows with the publication.
+    Keys = 11,
+    /// Sealing a family's series segments and batches: scratch, and the stage written.
+    Seal = 12,
+    /// The change-run index's open pages: where each stands, and the cells its changes are
+    /// taken against.
+    IndexCursors = 13,
+    /// What the change-run index gathers for disk, and reads back from it, as its walks write.
+    IndexSpill = 14,
+    /// The change-run index's segment directories, until they are stitched.
+    IndexPieces = 15,
+    /// The walker's tables, as each hour applies and each restart restores them.
+    WalkerTables = 16,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 17] = [
         Kind::Unlabelled,
         Kind::Operator,
         Kind::Restore,
@@ -52,6 +65,12 @@ impl Kind {
         Kind::Executor,
         Kind::Index,
         Kind::Headers,
+        Kind::Keys,
+        Kind::Seal,
+        Kind::IndexCursors,
+        Kind::IndexSpill,
+        Kind::IndexPieces,
+        Kind::WalkerTables,
     ];
 
     pub fn name(self) -> &'static str {
@@ -67,6 +86,12 @@ impl Kind {
             Kind::Executor => "executor",
             Kind::Index => "index",
             Kind::Headers => "headers",
+            Kind::Keys => "keys",
+            Kind::Seal => "seal",
+            Kind::IndexCursors => "index cursors",
+            Kind::IndexSpill => "index spill",
+            Kind::IndexPieces => "index pieces",
+            Kind::WalkerTables => "walker tables",
         }
     }
 
@@ -212,7 +237,7 @@ mod on {
         },
     };
 
-    const KINDS: usize = 16;
+    const KINDS: usize = 32;
     const OWNERS: usize = 256;
     const LABELS: usize = OWNERS * KINDS;
     const OTHER: usize = OWNERS - 1;

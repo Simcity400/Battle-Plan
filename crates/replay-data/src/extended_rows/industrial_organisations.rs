@@ -63,6 +63,7 @@ opaque_value!(Vec<engine_scripts::cscript_flag::Row>);
 /// A failed details read withholds this table alone. IndustrialOrganisations
 /// and IndustrialOrganisationHistory retain their independent verdicts.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct IndustrialOrganisationDetailsRow {
     pub organisation: u64,
     pub country: u32,
@@ -95,6 +96,7 @@ typed_codec!(IndustrialOrganisationDetailsRow, 64, |row| row.organisation as u12
 /// signed fixed5, read in the same visit: the owner's term of every attach
 /// quote. `None` means its read failed: unknown, never zero; older formats did not record it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct IndustrialOrganisationPoliciesRow {
     pub country: u32,
     pub policies: Vec<IndustrialOrganisationPolicy>,

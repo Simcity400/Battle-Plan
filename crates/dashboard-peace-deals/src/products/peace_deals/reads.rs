@@ -26,6 +26,7 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 /// A keyed list as read again: whole, or the entries set and the keys gone, both ascending.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Rows<T> {
     Whole(Vec<T>),
     Edits { set: Vec<T>, gone: Vec<u64> },
@@ -142,6 +143,7 @@ fn none<T>(_: &T) -> usize {
 /// How the finalizer table reads: why it misses conferences (none when complete), and whether
 /// its rows can be read.
 #[derive(Clone, Default, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Finalizers {
     pub reason: Option<String>,
     pub readable: bool,
@@ -149,6 +151,7 @@ pub(super) struct Finalizers {
 
 /// A finalizer row read for the first time, with the names its actions' tokens have in the
 /// dictionary that hour.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Settled {
     pub row: PeaceSettlementRow,
     pub tokens: HashMap<u32, String>,
@@ -159,6 +162,7 @@ type Change<T> = Option<Option<T>>;
 
 /// What one hour's reads give otherwise than the reads before them.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub struct HourReads {
     pub(super) countries: Change<Arc<CountryTags>>,
     pub(super) owners: Change<Rows<(u32, u32)>>,

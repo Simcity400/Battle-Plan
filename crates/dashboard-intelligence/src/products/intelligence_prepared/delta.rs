@@ -5,6 +5,7 @@
 use std::{collections::HashMap, hash::Hash, mem::size_of};
 
 /// A list as read again: whole, or the positions whose entries changed.
+#[derive(replay_spool::Spooled)]
 pub enum Listed<T> {
     Whole(Vec<T>),
     Patched(Vec<(u32, T)>),
@@ -65,6 +66,7 @@ impl<T> Listed<T> {
 }
 
 /// A map as read again: the keys whose values changed, and those gone; whole replaces it.
+#[derive(replay_spool::Spooled)]
 pub struct Keyed<K, V> {
     pub whole: bool,
     pub set: Vec<(K, V)>,

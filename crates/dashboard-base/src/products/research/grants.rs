@@ -6,6 +6,7 @@ use replay_data::rows::ResearchModifierRow as R;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct GrantRestriction {
     pub token: String,
     pub name: Option<String>,
@@ -14,6 +15,7 @@ pub struct GrantRestriction {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct ResearchGrant {
     pub id: i32,
     pub ordinal: u32,
@@ -31,6 +33,7 @@ pub struct ResearchGrant {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct GrantInventory {
     pub next_id: Option<i32>,
     pub grants: Vec<ResearchGrant>,

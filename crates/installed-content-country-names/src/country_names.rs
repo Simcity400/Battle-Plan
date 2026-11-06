@@ -38,6 +38,7 @@ pub const TABLES: [TableId; 7] = [
 
 /// One country's naming operands. Suffixes carry their leading underscore.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Operands {
     pub tag: String,
     pub cosmetic: String,

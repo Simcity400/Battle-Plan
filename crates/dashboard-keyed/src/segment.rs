@@ -10,7 +10,7 @@ use replay::{
     columnar_frames::metrics,
     columns,
     container::TableFields,
-    segments::{self, Item, Sink},
+    segments::{self, Sink},
 };
 use replay_data::{
     format::FormatVersion,
@@ -28,7 +28,7 @@ pub trait Segmented: Sized + Send + Sync + 'static {
     const TABLES: &'static [TableId];
     const READ: TableId;
     /// What its reader hands its branch of one hour.
-    type Read: Send;
+    type Read: Send + replay_spool::Spooled;
 
     /// The fields of its tables it reads, whose changes make an hour read; a table it names none
     /// of, by all of them.
@@ -110,28 +110,17 @@ impl Touched {
 
 /// An hour as a segment's operator read it: whether the family's dating table was read there,
 /// and what its reader read, or nothing where no input changed.
+#[derive(replay_spool::Spooled)]
 pub struct Hour<S: Segmented> {
     pub hour: i32,
     pub dated: bool,
     pub read: Option<S::Read>,
-    bytes: usize,
 }
 
 impl<S: Segmented> Hour<S> {
-    /// An hour as an operator hands it on, holding `bytes`: what a test's own walk gives an emit.
-    pub fn new(hour: i32, dated: bool, read: Option<S::Read>, bytes: usize) -> Self {
-        Self {
-            hour,
-            dated,
-            read,
-            bytes,
-        }
-    }
-}
-
-impl<S: Segmented> Item for Hour<S> {
-    fn heap(&self) -> usize {
-        self.bytes
+    /// An hour as an operator hands it on: what a test's own walk gives an emit.
+    pub fn new(hour: i32, dated: bool, read: Option<S::Read>) -> Self {
+        Self { hour, dated, read }
     }
 }
 
@@ -313,7 +302,6 @@ impl<S: Segmented> segments::Operator<World> for Operator<S> {
                     hour: hour.hour,
                     dated: facts.slot_read[S::READ.index()],
                     read: None,
-                    bytes: 0,
                 });
             }
         }
@@ -332,13 +320,12 @@ impl<S: Segmented> segments::Operator<World> for Operator<S> {
         }
         let mut facts = FrameChanges::alone(lent.frame, self.format);
         facts.rows_changed = rows_changed;
-        let (read, bytes) = self.reader.read(lent.frame, &facts, &self.touched)?;
+        let (read, _) = self.reader.read(lent.frame, &facts, &self.touched)?;
         drop(lent);
         out.push(Hour {
             hour: hour.hour,
             dated: facts.slot_read[S::READ.index()],
             read: Some(read),
-            bytes,
         })
     }
 }

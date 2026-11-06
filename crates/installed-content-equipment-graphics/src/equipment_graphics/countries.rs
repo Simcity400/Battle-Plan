@@ -33,6 +33,7 @@ fn rows<T: TableSchema>(frame: &dyn DecodedSource) -> io::Result<(&[T::Row], boo
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ModelCountry {
     pub tag: String,
     pub cosmetic: String,

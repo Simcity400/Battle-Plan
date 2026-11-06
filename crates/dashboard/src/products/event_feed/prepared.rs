@@ -136,6 +136,7 @@ pub(crate) fn decode_fact(bytes: &[u8]) -> io::Result<Fact> {
 
 /// A fact encoded before its publication: its body, which publication prefixes with the opener
 /// it links ([`stored`]).
+#[derive(replay_spool::Spooled)]
 pub(super) struct Draft {
     hour: i32,
     read_hour: i32,

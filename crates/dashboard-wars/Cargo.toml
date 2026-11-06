@@ -28,6 +28,7 @@ dashboard-series.workspace = true
 dashboard-text.workspace = true
 dashboard-world.workspace = true
 foldhash = "0.2"
+replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 store = { path = "../store" }

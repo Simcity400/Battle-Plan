@@ -14,6 +14,7 @@ use std::{
 
 /// The tables production reads whose hour holds every row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Complete {
     pub countries: bool,
     pub links: bool,
@@ -27,6 +28,7 @@ pub(crate) struct Complete {
 /// Which of production's reads an hour dates: the line output's, Rocket output's and the
 /// variant census's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Reads {
     pub output: bool,
     pub rocket: bool,
@@ -41,6 +43,7 @@ impl Reads {
 
 /// What an hour changed of the rows production reads, beside the countries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Changed {
     /// A table production reads but Campaign, Countries and CountryLinks.
     pub others: bool,

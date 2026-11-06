@@ -1412,6 +1412,7 @@ impl Views {
 /// Hours a walk can take on its own: from its run's start or from a restart, through the
 /// hour before the run's next restart. Ordinals of the run, inclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Segment {
     pub run: u32,
     /// The page whose restart the walk starts from; None from the run's start.

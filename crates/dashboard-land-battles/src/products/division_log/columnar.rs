@@ -30,7 +30,7 @@ use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::{Views, frame_heap_bytes, metrics},
     columns::{self, Status},
-    segments::{self, Item, Operator, Sink, Start, State},
+    segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -122,6 +122,7 @@ type Signature = (u32, u32, u8, Option<u8>);
 /// presented from the restart's census names the hour that census is taken to have been
 /// built.
 #[derive(Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Projected {
     pub(super) event: Event,
     pub(super) candidate: Option<u64>,
@@ -130,6 +131,7 @@ pub(super) struct Projected {
 
 /// One projected hour.
 #[derive(Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -148,9 +150,10 @@ pub struct Hour {
     pub(super) names: Option<HashMap<u64, Option<TemplateName>>>,
 }
 
-impl Item for Hour {
+impl Hour {
+    /// What it holds on the heap while its operator is parked; events' rows and presentations
+    /// not counted.
     fn heap(&self) -> usize {
-        // What events' rows and presentations own is not counted.
         let names = self.names.as_ref().map_or(0, |names| {
             names.capacity() * size_of::<(u64, Option<TemplateName>)>()
         });

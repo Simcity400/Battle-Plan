@@ -145,6 +145,7 @@ pub struct UnitLeadersParams {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderPerson {
     pub character_id: u32,
     pub token: Option<String>,
@@ -157,6 +158,7 @@ pub struct LeaderPerson {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderRole {
     pub owner: Option<String>,
     pub category: i32,
@@ -169,6 +171,7 @@ pub struct LeaderRole {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderTraining {
     pub token: Option<String>,
     pub name: Option<String>,
@@ -178,6 +181,7 @@ pub struct LeaderTraining {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderTrainingFactor {
     pub token: Option<String>,
     pub name: Option<String>,
@@ -186,6 +190,7 @@ pub struct LeaderTrainingFactor {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderProgress {
     pub experience_raw: String,
     pub next_required_raw: Option<String>,
@@ -196,6 +201,7 @@ pub struct LeaderProgress {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderValues {
     pub person: u32,
     pub role: u32,
@@ -250,6 +256,7 @@ mod owner_projection {
 #[ts(
     type = "[number, number, number, number, number | null, [number, number, number, number], number[] | null, LeaderProgress | null]"
 )]
+#[derive(replay_spool::Spooled)]
 pub struct UnitLeaderRun {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -323,6 +330,7 @@ impl From<UnitLeaderRun> for WireLeaderRun {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum LeaderChangeDate {
     HeldBefore,
     Gained,
@@ -331,6 +339,7 @@ pub enum LeaderChangeDate {
 
 #[derive(Clone, Debug, PartialEq, Eq, TS)]
 #[ts(type = "[number, number, number]")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderTraitGain {
     pub hour: i32,
     pub token: u32,
@@ -361,6 +370,7 @@ impl<'de> Deserialize<'de> for LeaderTraitGain {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum LeaderFormationKind {
     Army,
     ArmyGroup,
@@ -369,6 +379,7 @@ pub enum LeaderFormationKind {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderCommand {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -381,6 +392,7 @@ pub struct LeaderCommand {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderCareer {
     pub reference: String,
     pub runs: Vec<UnitLeaderRun>,
@@ -434,6 +446,7 @@ pub struct LeaderCareer {
 /// battles counted then.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderAtHour {
     pub hour: i32,
     pub first_seen_hour: i32,
@@ -444,6 +457,7 @@ pub struct LeaderAtHour {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderTraitInfo {
     pub token: String,
     pub name: Option<String>,
@@ -453,6 +467,7 @@ pub struct LeaderTraitInfo {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderObservation {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -465,6 +480,7 @@ pub struct LeaderObservation {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderWithheld {
     pub reference: String,
     pub owner: Option<String>,
@@ -499,6 +515,7 @@ impl LeaderWithheld {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct UnitLeadersReply {
     pub branch_id: String,
     pub first_hour: i32,
@@ -1144,6 +1161,7 @@ impl<'a> HourWorld<'a> {
 /// A leader's [`LeaderVisibility`], valid while its key holds: the scan's
 /// identity epoch of the Characters and LexicalTokens tables it reads, and
 /// the leader's character and visibility inputs.
+#[derive(replay_spool::Spooled)]
 struct VisibilityRead {
     key: (Option<u64>, u32, u8, u8),
     visibility: LeaderVisibility,
@@ -1156,6 +1174,7 @@ struct VisibilityRead {
 /// every input it read reads the same value ([`dashboard_text::triggers::inputs`]):
 /// the verdict is a function of the owner, the role it decides and those
 /// reads.
+#[derive(replay_spool::Spooled)]
 struct Evaluation {
     owner: u32,
     visibility: LeaderVisibility,
@@ -1543,6 +1562,7 @@ pub fn check_content(
     Ok(findings)
 }
 
+#[derive(replay_spool::Spooled)]
 struct PersonRead {
     epoch: u64,
     character: Option<CharacterRow>,
@@ -1550,6 +1570,7 @@ struct PersonRead {
     person: u32,
 }
 
+#[derive(replay_spool::Spooled)]
 struct WithheldNameRead {
     epoch: u64,
     character_id: u32,
@@ -1650,6 +1671,7 @@ fn person(
     }
 }
 
+#[derive(replay_spool::Spooled)]
 struct LastRead {
     row: UnitLeaderRow,
     traits: Option<Vec<UnitLeaderTraitRow>>,
@@ -1812,6 +1834,7 @@ impl IdentityChanges {
 }
 
 #[derive(Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct LeaderState {
     reference: u64,
     career: LeaderCareer,
@@ -1882,6 +1905,7 @@ impl LeaderState {
 // Hourly writes share one allocation and adjacent cache lines. Materialize only
 // admitted careers after the scan, retaining the complete transfer history.
 #[derive(Clone, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct StoredRun {
     run: UnitLeaderRun,
     previous: Option<usize>,
@@ -1996,6 +2020,7 @@ fn scan_tables(career: bool) -> Vec<TableId> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct NavalSource {
     combat: u64,
     game_hour: i32,
@@ -2003,6 +2028,7 @@ struct NavalSource {
 
 #[derive(Default, Serialize, Deserialize)]
 #[allow(clippy::type_complexity)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Scan {
     reply: UnitLeadersReply,
     withheld_active: BTreeMap<u64, usize>,
@@ -2039,6 +2065,7 @@ pub(crate) struct Scan {
     pending_bytes: usize,
     #[cfg(test)]
     #[serde(skip)]
+    #[spool(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
     /// Whether visibility evaluations are reused while their inputs read the
     /// same; preparation sets it, the per-hour oracle evaluates every hour.

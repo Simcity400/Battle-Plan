@@ -12,6 +12,7 @@ pub type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<Words>>;
 
 /// Hashes word by word (the FxHash mix).
 #[derive(Clone, Copy, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Words(u64);
 
 const SEED: u64 = 0xf135_7aea_2e62_a9c5;

@@ -112,7 +112,8 @@ fn prepared(bytes: &[u8], tables: &[TableId], threads: usize) -> Vec<u8> {
         tables,
         LAYOUT,
         LEVEL,
-        &Settings::new(threads),
+        threads,
+        &std::env::temp_dir(),
         &AtomicBool::new(false),
         Vec::new(),
     )
@@ -384,7 +385,8 @@ fn two_sessions_native_recordings_are_indexed_whole_gaps_and_all() {
             &tables,
             LAYOUT,
             LEVEL,
-            &Settings::new(2),
+            2,
+            &std::env::temp_dir(),
             &AtomicBool::new(false),
             Vec::new(),
         )
@@ -545,7 +547,8 @@ fn native_recordings_not_holding_a_replay_whole_are_refused_by_name() {
         &[TableId::Countries],
         LAYOUT,
         LEVEL,
-        &Settings::new(1),
+        1,
+        &std::env::temp_dir(),
         &AtomicBool::new(false),
         Vec::new(),
     )
@@ -582,7 +585,8 @@ fn a_session_still_being_recorded_is_pending_not_missing() {
         &tables,
         LAYOUT,
         LEVEL,
-        &Settings::new(2),
+        2,
+        &std::env::temp_dir(),
         &AtomicBool::new(false),
         Vec::new(),
     )
@@ -638,7 +642,8 @@ fn a_pending_session_s_native_recording_landing_makes_the_index_stale_then_whole
             &tables,
             LAYOUT,
             LEVEL,
-            &Settings::new(2),
+            2,
+            &std::env::temp_dir(),
             &AtomicBool::new(false),
             Vec::new(),
         )
@@ -683,7 +688,8 @@ fn summary_of(whole: &Whole, tables: &[TableId]) -> Summary {
         tables,
         LAYOUT,
         LEVEL,
-        &Settings::new(1),
+        1,
+        &std::env::temp_dir(),
         &AtomicBool::new(false),
         Vec::new(),
     )
@@ -763,7 +769,8 @@ fn a_replay_none_of_whose_sessions_ended_is_indexed_with_every_session_pending()
         &tables,
         LAYOUT,
         LEVEL,
-        &Settings::new(1),
+        1,
+        &std::env::temp_dir(),
         &AtomicBool::new(false),
         Vec::new(),
     )
@@ -1031,7 +1038,8 @@ fn a_preparation_asked_to_stop_writes_no_index() {
         &TABLES,
         LAYOUT,
         LEVEL,
-        &Settings::new(2),
+        2,
+        &std::env::temp_dir(),
         &AtomicBool::new(true),
         Vec::new(),
     );

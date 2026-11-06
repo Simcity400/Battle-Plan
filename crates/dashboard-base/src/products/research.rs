@@ -1035,7 +1035,7 @@ pub(crate) struct Attribution<'a> {
 }
 
 /// A template occurrence's inventory fields the country step reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, replay_spool::Spooled)]
 pub(crate) struct Technology {
     pub(crate) classifier: u32,
     pub(crate) level: i32,
@@ -1524,7 +1524,7 @@ impl Reads for FrameReads<'_> {
 /// step reads: the holders by slot with the slot of each link, the owners by
 /// slot, and the read hours of each slot's owners (all of them, or the slots
 /// whose hours changed, None for a slot with none).
-#[derive(Default)]
+#[derive(Default, replay_spool::Spooled)]
 pub(crate) struct IndexChanges {
     countries: Option<(Arc<HashMap<u32, u32>>, CountryRows)>,
     owners: Option<BTreeMap<u32, Vec<u32>>>,

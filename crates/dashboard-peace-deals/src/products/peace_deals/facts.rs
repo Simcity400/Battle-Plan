@@ -11,7 +11,7 @@ use dashboard_text::metadata::slot_read;
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{
     format::FormatVersion,
@@ -95,6 +95,7 @@ pub fn needs() -> io::Result<Needs> {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -109,14 +110,6 @@ impl Hour {
     /// Whether the hour handed its reads on.
     pub fn observed(&self) -> bool {
         self.reads.is_some()
-    }
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.reads
-            .as_ref()
-            .map_or(0, |reads| size_of::<HourReads>() + reads.bytes())
     }
 }
 

@@ -54,6 +54,7 @@ pub struct OperativeRosterParams {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct OperativeRosterValues {
     pub name: Option<String>,
     pub unnamed: bool,
@@ -348,6 +349,7 @@ impl Held {
 /// An operative's values as read, before their strings are interned ([`Valued::intern`]), with
 /// what the read refused of them.
 #[derive(Clone, Debug, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Valued {
     values: OperativeRosterValues,
     /// In intern order: the name's missing reason, the portrait, its missing reason, the
@@ -775,6 +777,7 @@ const NAMING: [TableId; 5] = [
 
 /// What an hour tells the roster beside its reads.
 #[derive(Clone, Copy)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Flags {
     pub(crate) feature: Option<bool>,
     /// OperativeMemberships is complete, and was read.
@@ -821,6 +824,7 @@ impl RosterRead {
 
 /// A membership read's census: each roster slot's rows as read, in row order.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Members {
     /// What the read refused beside its rows: conflicting character links and unresolved
     /// roster countries.
@@ -832,6 +836,7 @@ pub(crate) struct Members {
 
 /// A membership row as the census reads it.
 #[derive(Clone, Debug, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Member {
     /// Refused: the census is incomplete.
     Refused { reason: String, identity: String },
@@ -916,7 +921,7 @@ impl Member {
 }
 
 /// What a membership read moves of an operative from day to day: its experience.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, replay_spool::Spooled)]
 pub(crate) struct Experience {
     raw: i64,
     ratio: Option<f64>,
@@ -991,6 +996,7 @@ fn same_but_experience(a: &OperativeRosterValues, b: &OperativeRosterValues) -> 
 
 /// An active or departed operative as read.
 #[derive(Clone, Debug, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct MemberHeld {
     id: u64,
     assignment: u32,

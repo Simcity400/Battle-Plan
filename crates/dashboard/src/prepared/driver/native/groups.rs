@@ -23,7 +23,7 @@ use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::{Segment, view_heap_bytes},
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::rows::{
     CapitulationRow, CountryRow, FactionRow, RowCodec, TABLE_COUNT, TableId, TableRows,
@@ -216,6 +216,7 @@ fn merge<R: RowCodec>(rows: &mut Vec<R>, set: Vec<R>, gone: &[u128]) {
 }
 
 /// What an hour hands on of a table whose rows the scan reads moved.
+#[derive(replay_spool::Spooled)]
 enum Handed {
     /// The table as the scan reads it.
     Whole(SharedView),
@@ -390,6 +391,7 @@ fn apply(
 }
 
 /// One hour of a branch's group tables.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Hour {
     hour: i32,
     /// The hour is its segment's first: its tables are all handed on, and its scan begins a
@@ -410,13 +412,6 @@ impl Hour {
             .enumerate()
             .filter(|&(position, _)| self.moved & 1 << position != 0)
             .map(|(_, &table)| table)
-    }
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.handed.capacity() * size_of::<(TableId, Handed)>()
-            + self.handed.iter().map(|(_, handed)| handed.bytes()).sum::<usize>()
     }
 }
 

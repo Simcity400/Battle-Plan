@@ -7,6 +7,7 @@ use std::{
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct GoalList {
     pub absent: bool,
     pub reason: Option<String>,

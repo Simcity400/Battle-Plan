@@ -23,6 +23,7 @@ pub struct FuelConsumptionRead {
 }
 /// A [`FuelConsumptionRead`] as exact integers; only replies format them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct RawConsumption {
     pub(super) first_hour: i32,
     pub(super) last_hour: i32,

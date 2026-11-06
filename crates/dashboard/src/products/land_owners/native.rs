@@ -17,7 +17,7 @@ use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::Localisation;
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -27,7 +27,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
-    mem::size_of,
     sync::Arc,
 };
 
@@ -121,6 +120,7 @@ pub(crate) fn needs(named: bool) -> io::Result<Needs> {
 /// A country that began claiming owned land: of an owning canonical slot's countries the links
 /// resolve, the first by id holding a tag, with its display tag's name at that hour.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Found {
     pub slot: u32,
     pub tag: Box<[u8]>,
@@ -131,23 +131,13 @@ pub(crate) struct Found {
 
 /// One hour of a segment.
 #[derive(Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Hour {
     pub hour: i32,
     /// Ascending by slot.
     pub found: Vec<Found>,
     /// What the hour read leaves some ownership unknown.
     pub incomplete: bool,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.found.capacity() * size_of::<Found>()
-            + self
-                .found
-                .iter()
-                .map(|found| found.tag.len() + found.name.capacity())
-                .sum::<usize>()
-    }
 }
 
 /// One segment's projection: every segment starts cold.

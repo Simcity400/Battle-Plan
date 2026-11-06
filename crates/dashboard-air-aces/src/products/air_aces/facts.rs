@@ -7,12 +7,9 @@
 //! is the operator's own, so segments walk at once.
 
 use super::{Sighting, duplicated, join};
-use dashboard_base::{
-    prepared::prepass::HeldBytes,
-    products::equipment::{
-        RawVariant, VariantHour,
-        columnar::{Naming, slots},
-    },
+use dashboard_base::products::equipment::{
+    RawVariant, VariantHour,
+    columnar::{Naming, slots},
 };
 use dashboard_text::{
     catalogue::Refusals,
@@ -21,7 +18,7 @@ use dashboard_text::{
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{
     format::FormatVersion,
@@ -31,8 +28,7 @@ use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use std::{
     collections::{HashMap, HashSet},
     io,
-    mem::size_of,
-};
+    };
 
 /// The tables the roster and the variant catalogue read.
 pub const TABLES: &[TableId] = &[
@@ -102,6 +98,7 @@ pub fn needs() -> io::Result<Needs> {
 }
 
 /// What an hour gives the roster.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Roster {
     /// AirAces held every row, unread.
     Unread,
@@ -116,6 +113,7 @@ pub(crate) enum Roster {
 
 /// A roster read: every ace when `whole`, else those it gives otherwise than the read before and
 /// those it no longer holds.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Read {
     pub(crate) whole: bool,
     /// In roster order, which first sightings are numbered by.
@@ -126,12 +124,14 @@ pub(crate) struct Read {
 
 /// What a segment's roster reads refused: of their fields, and of their wings' names.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Noted {
     pub(crate) roster: Refusals,
     pub(crate) wings: Refusals,
 }
 
 /// One hour as a segment's operator projected it.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub hour: i32,
     pub(crate) roster: Roster,
@@ -142,25 +142,6 @@ pub struct Hour {
     pub(crate) named: bool,
     /// What the hour refused first in its segment.
     pub(crate) noted: Option<Box<Noted>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let roster = match &self.roster {
-            Roster::Read(read) => {
-                size_of::<Read>()
-                    + read.seen.capacity() * size_of::<Sighting>()
-                    + read.seen.iter().map(Sighting::heap).sum::<usize>()
-                    + read.gone.capacity() * size_of::<u64>()
-            }
-            _ => 0,
-        };
-        let mut built = HeldBytes::default();
-        built.heap(&self.built);
-        roster
-            + built.total() as usize
-            + self.noted.as_ref().map_or(0, |_| size_of::<Noted>())
-    }
 }
 
 /// One segment's operator.

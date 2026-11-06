@@ -179,7 +179,8 @@ fn project_with_visits(frames: &[DecodedFrame], starts: &[i32]) -> (Vec<facts::H
         })
         .unwrap();
     }
-    (hours, base_visits + projector.base_visits)
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(hours).unwrap(), base_visits + projector.base_visits)
 }
 
 fn observe(prepared: &mut Publisher, replay: &Replay, frames: &[DecodedFrame]) {

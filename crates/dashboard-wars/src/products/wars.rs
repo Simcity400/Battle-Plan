@@ -60,6 +60,7 @@ pub struct WarsParams {
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct WarName {
     /// Exact plain text, or "Not recorded" with a reason.
     pub text: String,
@@ -143,6 +144,7 @@ pub struct WarTimeline {
     open_relations: HashMap<(WarRelationKey, bool), usize>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct WarRelationKey {
     pub first: (u32, u32),
     pub second: (u32, u32),

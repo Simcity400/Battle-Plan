@@ -325,7 +325,8 @@ fn projected() -> (Vec<observed::Hour>, Vec<observed::Hour>) {
         })
         .unwrap();
     }
-    (projector_hours, oracle_hours)
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(projector_hours).unwrap(), oracle_hours)
 }
 
 /// What the scan of `hours` logs over the branch.

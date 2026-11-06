@@ -108,6 +108,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryContext {
     pub country_tag: String,
     /// Native faction member order, including the leader at ordinal zero.
@@ -118,6 +119,7 @@ pub struct CountryContext {
 /// One hour's strict join. Positive native country references resolve through
 /// CountryLinks; no local viewing country or selected map object is involved.
 #[derive(Clone, Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Prepared {
     slots: BTreeMap<u32, u32>,
     contexts: BTreeMap<u32, CountryContext>,

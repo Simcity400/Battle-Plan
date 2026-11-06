@@ -18,7 +18,7 @@ use crate::products::equipment::{
 use dashboard_world::{Needs, Roster, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -62,6 +62,7 @@ const WATCHED: [TableId; 9] = [
 ];
 
 /// The countries and links of an hour as production compares them, and what they resolve.
+#[derive(replay_spool::Spooled)]
 struct Countries {
     /// Each country's id, canonical slot and tag, by id.
     rows: Vec<CountryRow>,
@@ -121,6 +122,7 @@ impl Countries {
 
 /// A keyed table's rows the hour changed: every live row where `whole`, else those it
 /// inserted or wrote and the keys it deleted.
+#[derive(replay_spool::Spooled)]
 struct Delta<R> {
     whole: bool,
     rows: Vec<(u128, R)>,
@@ -150,6 +152,7 @@ impl<R: RowCodec> Delta<R> {
 }
 
 /// What a complete variant read built ([`Naming::read`]).
+#[derive(replay_spool::Spooled)]
 struct Built {
     whole: bool,
     built: Vec<(u64, RawVariant)>,
@@ -157,6 +160,7 @@ struct Built {
 }
 
 /// What an hour hands its branch beside its flags.
+#[derive(replay_spool::Spooled)]
 struct Facts {
     /// The row walk observes the hour: something production watches changed, or a read is
     /// dated there.
@@ -180,6 +184,7 @@ struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -190,11 +195,11 @@ pub struct Hour {
     facts: Option<Box<Facts>>,
 }
 
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.facts
-            .as_ref()
-            .map_or(0, |facts| size_of::<Facts>() + facts.bytes)
+#[cfg(test)]
+impl Hour {
+    /// Whether it carries facts.
+    pub(crate) fn carries_facts(&self) -> bool {
+        self.facts.is_some()
     }
 }
 

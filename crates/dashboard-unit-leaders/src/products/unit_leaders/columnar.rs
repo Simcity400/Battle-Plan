@@ -5,7 +5,7 @@ use dashboard_world::{Needs, World};
 use replay::{
     columns,
     container::Replay,
-    segments::{self, Item, Operator, Sink, Start, State},
+    segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -19,7 +19,6 @@ use replay_frame::frame::{DecodedFrame, SharedView, TableView, not_selected};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    mem::size_of,
     sync::Arc,
 };
 
@@ -724,11 +723,13 @@ impl TableChanges for Changes {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 enum Join {
     Combat(u8, u64),
     Naval(u64),
 }
 
+#[derive(replay_spool::Spooled)]
 struct Side {
     leader: u64,
     join: Join,
@@ -760,6 +761,7 @@ fn changed_rows<'a, T: replay_data::rows::TableSchema>(
     }
 }
 
+#[derive(replay_spool::Spooled)]
 enum Match {
     Land {
         combat: u64,
@@ -783,6 +785,7 @@ enum Match {
     },
 }
 
+#[derive(replay_spool::Spooled)]
 struct CommandRead {
     leader: u64,
     formation: u64,
@@ -831,6 +834,7 @@ fn read_command(
 /// Where each roster leader's own reads are found: its handle, its character and the tokens
 /// naming it, its template and its training.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct Roster {
     /// The roster's leaders by handle, each at its state.
     members: HashMap<u64, usize>,
@@ -932,6 +936,7 @@ impl Roster {
 /// Which leaders' visibility evaluations read what: each distinct declared read with the
 /// leaders whose evaluation reads it, so a change checks again only those evaluations.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct Registry {
     readers: HashMap<TableRead, BTreeSet<usize>>,
     /// The distinct reads of each table.
@@ -1038,6 +1043,7 @@ const FLEETS: u8 = 1;
 const MISSIONS: u8 = 2;
 
 /// A formation bound to a visible leader, with the command read its binding extends.
+#[derive(replay_spool::Spooled)]
 struct Bound {
     leader: u64,
     formation: u64,
@@ -1055,6 +1061,7 @@ impl Bound {
 
 /// The formations bound to leaders as the last hour read them, by table and row key.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct Commands {
     bound: BTreeMap<(u8, u128), Bound>,
     /// The formations naming each leader, by handle, and the leader each formation names.
@@ -1337,6 +1344,7 @@ pub(super) struct CommandHour<'a> {
 }
 
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Work {
     pub(super) role_keys: Vec<String>,
     pub(super) person_warnings: HashMap<u32, Vec<String>>,
@@ -2096,6 +2104,7 @@ impl Work {
 
 /// What a segment's projection read and did, for measuring it.
 #[derive(Clone, Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Counts {
     pub hours: u64,
     /// Rows decoded by this projection, excluding the shared world's views, by table.
@@ -2170,6 +2179,7 @@ impl Counts {
     }
 }
 
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -2179,165 +2189,6 @@ pub struct Hour {
     work: Work,
     pub(super) refusals: catalogue::OwnRefusals,
     pub(super) admissions: Vec<(u64, LeaderRole, Option<(u32, u32)>)>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // Not counted: refusals, the combats' census (matches share it) and the name caches.
-        let (scan, work) = (&self.scan, &self.work);
-        let leaders: usize = scan
-            .leaders
-            .iter()
-            .map(|state| {
-                state.career.reference.capacity()
-                    + state.career.runs.capacity() * size_of::<UnitLeaderRun>()
-            })
-            .sum();
-        let runs: usize = scan
-            .stored_runs
-            .iter()
-            .filter_map(|stored| stored.run.value.progress.as_ref())
-            .map(progress_heap)
-            .sum();
-        let people: usize = scan
-            .reply
-            .people
-            .iter()
-            .map(|person| {
-                [&person.portrait_reference]
-                    .into_iter()
-                    .chain(&person.token)
-                    .chain(&person.name)
-                    .map(String::capacity)
-                    .sum::<usize>()
-            })
-            .sum();
-        let names: usize = scan
-            .people
-            .keys()
-            .chain(scan.trait_tokens.keys())
-            .chain(&scan.token_list)
-            .chain(scan.roles.keys())
-            .chain(&work.role_keys)
-            .map(String::capacity)
-            .sum();
-        let battles: usize = scan
-            .battle_hours
-            .values()
-            .map(|hours| hours.capacity() * size_of::<(i32, i32, bool, u8, u64, u8)>())
-            .sum();
-        let sides: usize = work
-            .matches
-            .iter()
-            .map(|matched| match matched {
-                Match::Sides { sides, .. } => sides.capacity() * size_of::<Side>(),
-                _ => 0,
-            })
-            .sum();
-        let warnings: usize = work
-            .person_warnings
-            .values()
-            .map(|warnings| {
-                warnings.capacity() * size_of::<String>()
-                    + warnings.iter().map(String::capacity).sum::<usize>()
-            })
-            .sum();
-        scan.leaders.capacity() * size_of::<LeaderState>()
-            + leaders
-            + scan.stored_runs.capacity() * size_of::<StoredRun>()
-            + runs
-            + scan.run_progress.capacity() * size_of::<(usize, Arc<[u8]>)>()
-            + scan
-                .run_progress
-                .values()
-                .map(|progress| progress.len())
-                .sum::<usize>()
-            + scan.reply.people.capacity() * size_of::<LeaderPerson>()
-            + people
-            + scan.reply.roles.capacity() * size_of::<LeaderRole>()
-            + scan.reply.roles.iter().map(role_heap).sum::<usize>()
-            + scan.people.capacity() * size_of::<(String, u32)>()
-            + scan.trait_tokens.capacity() * size_of::<(String, u32)>()
-            + scan.token_list.capacity() * size_of::<String>()
-            + scan.roles.capacity() * size_of::<(String, u32)>()
-            + work.role_keys.capacity() * size_of::<String>()
-            + names
-            + scan.battle_hours.capacity() * size_of::<(u64, Vec<(i32, i32, bool, u8, u64, u8)>)>()
-            + battles
-            + scan.battle_indices.capacity() * size_of::<((u64, u8, u64), usize)>()
-            + scan.outcomes.len() * size_of::<((u8, u64), Option<(i32, i32, u8)>)>()
-            + scan.naval_sources.len() * size_of::<(u64, NavalSource)>()
-            + work.matches.capacity() * size_of::<Match>()
-            + sides
-            + work.command_reads.capacity() * size_of::<CommandRead>()
-            + work
-                .command_reads
-                .iter()
-                .filter_map(|read| read.name.as_ref())
-                .map(String::capacity)
-                .sum::<usize>()
-            + work.invalidations.capacity() * size_of::<i32>()
-            + work.first_visible.capacity() * size_of::<(u64, (i32, [Option<i32>; 2], u8))>()
-            + work.person_warnings.capacity() * size_of::<(u32, Vec<String>)>()
-            + warnings
-            + self.counts.decoded.capacity() * size_of::<u64>()
-            + self.admissions.capacity() * size_of::<(u64, LeaderRole, Option<(u32, u32)>)>()
-            + self
-                .admissions
-                .iter()
-                .map(|(_, role, _)| role_heap(role))
-                .sum::<usize>()
-    }
-}
-
-/// The bytes a role's names own on the heap.
-fn role_heap(role: &LeaderRole) -> usize {
-    role.owner
-        .iter()
-        .chain(&role.rank)
-        .chain(role.attribute_names.iter().flatten())
-        .map(String::capacity)
-        .sum()
-}
-
-/// The bytes a run's progress owns on the heap.
-fn progress_heap(progress: &LeaderProgress) -> usize {
-    let training = progress.training.as_ref().map_or(0, |training| {
-        training.capacity() * size_of::<LeaderTraining>()
-            + training
-                .iter()
-                .map(|step| {
-                    [&step.experience_raw]
-                        .into_iter()
-                        .chain(&step.token)
-                        .chain(&step.name)
-                        .chain(&step.required_raw)
-                        .map(String::capacity)
-                        .sum::<usize>()
-                })
-                .sum::<usize>()
-    });
-    let factors = progress.factors.as_ref().map_or(0, |factors| {
-        factors.capacity() * size_of::<LeaderTrainingFactor>()
-            + factors
-                .iter()
-                .map(|factor| {
-                    [&factor.factor_raw]
-                        .into_iter()
-                        .chain(&factor.token)
-                        .chain(&factor.name)
-                        .map(String::capacity)
-                        .sum::<usize>()
-                })
-                .sum::<usize>()
-    });
-    progress.experience_raw.capacity()
-        + progress
-            .next_required_raw
-            .as_ref()
-            .map_or(0, String::capacity)
-        + training
-        + factors
 }
 
 pub struct Projector {

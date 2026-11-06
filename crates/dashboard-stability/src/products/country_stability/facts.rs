@@ -8,13 +8,12 @@
 use dashboard_world::{Needs, Roster, Tag, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{CountryCommandPowerRow, CountryStabilityInputRow, TableId};
 use std::{
     collections::{BTreeSet, HashMap},
     io,
-    mem::size_of,
     sync::Arc,
 };
 
@@ -37,6 +36,7 @@ pub fn needs() -> Needs {
 
 /// One country's measures at a projected hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Country {
     /// Its tag's index in the projection ([`Hour::named`]).
     pub index: u32,
@@ -49,6 +49,7 @@ pub struct Country {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -59,15 +60,6 @@ pub struct Hour {
     pub valid: Option<Vec<u32>>,
     /// Countries whose measures may have changed, at least every one that did.
     pub countries: Vec<Country>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self.valid.as_ref().map_or(0, |valid| valid.capacity() * 4)
-            + self.countries.capacity() * size_of::<Country>()
-    }
 }
 
 /// One segment's projection.

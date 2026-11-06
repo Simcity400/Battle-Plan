@@ -20,7 +20,7 @@ use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::{Views, metrics},
     columns,
-    segments::{self, Item, Manifest, Operator, Sink, Start, State},
+    segments::{self, Manifest, Operator, Sink, Start, State},
 };
 use replay_data::{
     cadence::STAGGER_PERIOD,
@@ -111,16 +111,11 @@ pub fn needs() -> io::Result<Needs> {
 }
 
 /// One projected hour, for the ordered emit.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub(super) projected: Projected,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.projected.heap()
-    }
 }
 
 /// The tables country naming is read from: rebuilt whole, only when tags or links change.

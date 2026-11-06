@@ -24,7 +24,7 @@ use dashboard_world::{Needs, World};
 use replay::{
     columnar_frames::metrics,
     columns::{self, Status},
-    segments::{self, Item, Operator, Sink, Start, State},
+    segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -40,7 +40,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
     io,
-    mem::size_of,
     sync::{Arc, LazyLock, atomic::AtomicBool},
 };
 
@@ -112,6 +111,7 @@ const SUNK_CONVOYS: usize = 13;
 const TOKENS: usize = 14;
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -133,122 +133,8 @@ pub struct Hour {
     pub(super) base: Option<Box<ShipBase>>,
 }
 
-/// The bytes a side sample's countries hold.
-fn side_heap(side: &SideSample) -> usize {
-    side.countries.capacity() * size_of::<String>()
-        + side
-            .countries
-            .iter()
-            .chain(&side.countries_unknown)
-            .map(String::capacity)
-            .sum::<usize>()
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let countries = match &self.countries {
-            Countries::Read(read) => size_of::<ProjectedCountries>() + read.heap_bytes(),
-            Countries::Incomplete | Countries::Same => 0,
-        };
-        let combats = match &self.combats {
-            Combats::Changed { samples, ended, .. } => {
-                samples.capacity() * size_of::<CombatSample>()
-                    + samples
-                        .iter()
-                        .flat_map(|sample| &sample.sides)
-                        .map(side_heap)
-                        .sum::<usize>()
-                    + ended.capacity() * size_of::<u64>()
-            }
-            Combats::Unavailable | Combats::Same => 0,
-        };
-        let sources = match &self.sources {
-            Sources::Rows(rows) => rows.capacity() * size_of::<NavalResultSourceRow>(),
-            Sources::Unavailable | Sources::Same => 0,
-        };
-        let results = match &self.results {
-            Results::Changed { inputs, ended, .. } => {
-                inputs.capacity() * size_of::<ResultInput>()
-                    + inputs.iter().map(ResultInput::heap_bytes).sum::<usize>()
-                    + ended.capacity() * size_of::<u64>()
-            }
-            Results::Unavailable | Results::Same => 0,
-        };
-        let tokens = self.tokens.as_ref().map_or(0, |rows| {
-            rows.capacity() * size_of::<(u32, Vec<u8>)>()
-                + rows
-                    .iter()
-                    .map(|(_, literal)| literal.capacity())
-                    .sum::<usize>()
-        });
-        let ships = match &self.ships {
-            ShipRead::Read { found, refused } => {
-                found.capacity() * size_of::<SunkShipEntry>()
-                    + found.iter().map(entry_heap).sum::<usize>()
-                    + refused.capacity() * size_of::<(String, usize)>()
-                    + refused
-                        .iter()
-                        .map(|(reason, _)| reason.capacity())
-                        .sum::<usize>()
-            }
-            ShipRead::Skipped { .. } => 0,
-        };
-        let convoys = match &self.convoys {
-            ConvoyRead::Read(rows) => rows.capacity() * size_of::<SunkConvoyRow>(),
-            ConvoyRead::Skipped { .. } | ConvoyRead::Confirmed => 0,
-        };
-        // Refusal sets are counted by none of their consumers; they hold a few names at most.
-        let fleets = self.fleets.as_ref().map_or(0, |(labels, _)| {
-            labels.capacity() * size_of::<FleetLabels>()
-                + labels
-                    .iter()
-                    .flat_map(|(_, _, sides, _)| sides)
-                    .map(|side| {
-                        side.names.capacity() * size_of::<String>()
-                            + side
-                                .names
-                                .iter()
-                                .chain(&side.unknown)
-                                .map(String::capacity)
-                                .sum::<usize>()
-                    })
-                    .sum::<usize>()
-        });
-        let sighting = self
-            .sighting
-            .as_ref()
-            .map_or(0, |(sighting, _)| sighting.heap());
-        let base = self
-            .base
-            .as_ref()
-            .map_or(0, |base| size_of::<ShipBase>() + base.heap_bytes());
-        countries
-            + combats
-            + sources
-            + results
-            + tokens
-            + ships
-            + convoys
-            + fleets
-            + sighting
-            + base
-    }
-}
-
-/// The bytes a sunk ship entry's texts hold.
-fn entry_heap(entry: &SunkShipEntry) -> usize {
-    [
-        &entry.ship_name,
-        &entry.attribution_name,
-        &entry.class_name,
-        &entry.attribution_class_name,
-    ]
-    .into_iter()
-    .map(Vec::capacity)
-    .sum()
-}
-
 /// The country tables link tags and country holders read.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Countries {
     /// Countries or CountryLinks not complete.
     Incomplete,
@@ -269,6 +155,7 @@ impl Countries {
 }
 
 /// The active combat census.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Combats {
     /// NavalCombats not complete.
     Unavailable,
@@ -284,12 +171,14 @@ pub(super) enum Combats {
 
 /// A combat's sides as its rows read this hour, before the floors its episode keeps.
 #[derive(Clone, PartialEq)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct CombatSample {
     pub(super) id: u64,
     pub(super) province: u32,
     pub(super) sides: [SideSample; 2],
 }
 
+#[derive(replay_spool::Spooled)]
 pub(super) enum Sources {
     /// NavalResultSources not complete.
     Unavailable,
@@ -299,6 +188,7 @@ pub(super) enum Sources {
 }
 
 /// The retained result census.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Results {
     /// NavalResults not complete.
     Unavailable,

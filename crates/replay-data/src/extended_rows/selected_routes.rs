@@ -7,6 +7,7 @@
 use super::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OrderedEnemyInputs {
     pub sample_hour: PacketHour,
     /// Authentic enemy-vector raw words, including repeats and zero.
@@ -21,6 +22,7 @@ opaque_value!(Option<OrderedEnemyInputs>);
 /// whose count differs) and its first land's native nonsea index is static map content, so neither
 /// is stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ControllerAreaNode {
     /// The area's representative, set by its area updates: the province costed by its state owner
     /// and used to order the route search's heap. None is a refusal.

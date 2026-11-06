@@ -5,6 +5,7 @@ use super::*;
 
 /// Every doctrine-array slot, including an unassigned slot and empty inventories.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DoctrineCountryRow {
     pub slot: u32,
     pub country: u32,
@@ -16,6 +17,7 @@ typed_codec!(DoctrineCountryRow, 32, |row| row.slot as u128,
  { 0 => (country): U32, 1 => (expiry_events): U64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DoctrineFolderRow {
     pub slot: u32,
     pub ordinal: u32,
@@ -28,6 +30,7 @@ typed_codec!(DoctrineFolderRow, 64, |row| ((row.slot as u128) << 32) | (row.ordi
  { 0 => (folder): U32, 1 => (grand_doctrine): OptionalU32, 2 => (completed_subdoctrines): U32List }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DoctrineTrackRow {
     pub slot: u32,
     pub folder: u32,
@@ -46,6 +49,7 @@ typed_codec!(DoctrineTrackRow, 96,
  { 0 => (sub_doctrine): OptionalU32, 1 => (rewards): I32, 2 => (mastery): I64, 3 => (mastery_bank): I64, 4 => (daily_mastery): I64, 5 => (effective_daily_mastery): I64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DoctrineLeaderMasteryRow {
     pub slot: u32,
     pub folder: u32,
@@ -61,6 +65,7 @@ typed_codec!(DoctrineLeaderMasteryRow, 128,
  { 0 => (leader): U64, 1 => (mastery): I64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DoctrineCostReductionRow {
     pub slot: u32,
     pub ordinal: u32,
@@ -74,6 +79,7 @@ typed_codec!(DoctrineCostReductionRow, 64, |row| ((row.slot as u128) << 32) | (r
  { 0 => (uses): I32, 1 => (name): Bytes, 2 => (cost_factor): I64, 3 => (folder): OptionalU32 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DoctrineTrackFilter {
     pub track: Option<u32>,
     pub folder: Option<u32>,
@@ -86,6 +92,7 @@ value_struct!(DoctrineTrackFilter { track: Option<u32>, folder: Option<u32>, gra
 opaque_value!(DoctrineTrackFilter);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DoctrineMasteryGrantRow {
     pub slot: u32,
     pub ordinal: u32,
@@ -110,6 +117,7 @@ typed_codec!(DoctrineMasteryGrantRow, 64, |row| ((row.slot as u128) << 32) | (ro
  { 0 => (name): Opaque, 1 => (relevant_tracks): Opaque, 2 => (daily_mastery): I64, 3 => (bonus): I64, 4 => (days_at_anchor): I32, 5 => (expiry_events_at_anchor): U64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DoctrineEquipmentBonusRow {
     pub slot: u32,
     pub ordinal: u32,

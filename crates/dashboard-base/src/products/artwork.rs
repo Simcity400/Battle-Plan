@@ -381,6 +381,7 @@ pub type ResolvedArt = (Artwork, Option<String>);
 /// reply draws the icon as it shows it ([`Context::event_focus_icons`]) and names why the art is
 /// refused ([`refusal`]).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct ChosenArt {
     pub art: Artwork,
     pub icon: Result<String, String>,

@@ -12,7 +12,7 @@ use dashboard_base::products::country_people::{
 use dashboard_world::{Country as Member, Needs, Roster, Tag, Tagged, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{
     AirWingRow, CountryCounterInputRow, CountryStabilityInputRow, DivisionLandInputsRow,
@@ -82,6 +82,7 @@ pub fn needs() -> Needs {
 
 /// One country's sent keys at a projected hour.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Country {
     /// Its tag's index in the projection ([`Hour::named`]).
     pub index: u32,
@@ -98,6 +99,7 @@ pub struct Country {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -107,32 +109,6 @@ pub struct Hour {
     pub valid: Option<Vec<u32>>,
     /// The countries whose keys changed since this segment last sent them.
     pub countries: Vec<Country>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // An Arc's counts sit before its text.
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self
-                .named
-                .iter()
-                .map(|(_, tag)| 2 * size_of::<usize>() + tag.len())
-                .sum::<usize>()
-            + self.valid.as_ref().map_or(0, |valid| valid.capacity() * 4)
-            + self.countries.capacity() * size_of::<Country>()
-            + self
-                .countries
-                .iter()
-                .map(|country| {
-                    country.values.heap()
-                        + country
-                            .roster
-                            .as_ref()
-                            .and_then(Option::as_ref)
-                            .map_or(0, |states| states.len() * 4)
-                })
-                .sum::<usize>()
-    }
 }
 
 /// A country's recorded operands of its counters row: its controlled states, recruitment

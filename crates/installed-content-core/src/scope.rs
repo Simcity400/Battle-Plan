@@ -23,6 +23,7 @@ use crate::fixed5::decimal_i32;
 
 /// The accepted scope keywords.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(replay_spool::Spooled)]
 pub enum Keyword {
     /// `root` (0x2C94).
     Root,
@@ -95,6 +96,7 @@ impl Keyword {
 
 /// One parsed scope target.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Scope {
     /// Step 1: a nonzero decimal prefix, a state id.
     State(i32),

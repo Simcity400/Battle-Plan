@@ -12,7 +12,7 @@ use dashboard_base::{
 use dashboard_core::test_fixtures::{CAMPAIGN, continuation_records, records};
 use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
-    segments::{self, Item, Operator, Start},
+    segments::{self, Operator, Start},
 };
 use replay_data::rows::{
     CampaignRow, CountryLinkRow, CountryRow, FleetRow, LexicalTokenRow, NavalCombatDetailsRow,
@@ -649,7 +649,6 @@ fn parity_seen(label: &str, walk: Walk<'_>, seen: &mut dyn FnMut(&columnar::Hour
     let mut emit = |items: &mut Vec<columnar::Hour>, writer: &mut store::Writer, reload: bool| {
         for hour in std::mem::take(items) {
             seen(&hour);
-            assert!(hour.heap() < 1 << 30, "{label}: an hour names its bytes");
             let (branch, at) = (hour.branch, hour.hour);
             let scan = projected.entry(branch).or_default();
             scan.configure(&source, branch, &content).unwrap();

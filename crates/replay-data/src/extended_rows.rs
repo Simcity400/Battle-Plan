@@ -6,6 +6,7 @@ use crate::value::value_struct;
 /// bytes shown by the generator, including its stored programmatic fallback for a null group;
 /// `group` is a content key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NameOperands {
     pub kind: i32,
     pub order: i32,

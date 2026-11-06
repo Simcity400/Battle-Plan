@@ -116,6 +116,19 @@ pub struct EquipmentModel<'a> {
     pub variant_name: &'a [u8],
 }
 
+// Loaded once a run, and handed through a preparation's spool as it is.
+impl replay_spool::Spooled for Content {
+    const RESIDENT: bool = true;
+
+    fn spool(&self, _: &mut replay_spool::Writer<'_>) -> std::io::Result<()> {
+        Err(replay_spool::invalid("Content is resident, never written"))
+    }
+
+    fn unspool(_: &mut replay_spool::Reader<'_>) -> std::io::Result<Self> {
+        Err(replay_spool::invalid("Content is resident, never read"))
+    }
+}
+
 /// Authored sub-units, and the content's equipment database as
 /// `installed_content_core::equipment` loads it, `duplicate_archetypes` copies included.
 #[derive(Clone, Debug, Default)]
@@ -663,6 +676,7 @@ pub struct Sources<'a> {
 }
 
 /// The hour's country links and local sub-unit overrides, as [`Sources`] reads them.
+#[derive(replay_spool::Spooled)]
 pub struct SourceIndex {
     links: BTreeMap<u32, u32>,
     /// (canonical country, token) -> the override's (archetype token, amount).

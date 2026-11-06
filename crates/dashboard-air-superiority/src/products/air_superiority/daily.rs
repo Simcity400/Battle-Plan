@@ -32,6 +32,7 @@ fn budget(size: usize, parts: &[DecodeBudget]) -> DecodeBudget {
 
 /// A side of a native roster other than a lone country, at its place.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Group {
     pub position: u32,
     pub factions: Vec<u64>,

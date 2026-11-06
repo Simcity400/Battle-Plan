@@ -13,13 +13,13 @@ use dashboard_world::{Needs, World};
 use replay::{
     columnar_frames::metrics,
     columns::{self, Status},
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
     rows::{
         LandCombatProgressRow, LandCombatResultsRow, LandCombatRow, LandCombatSideRow,
-        LandEventCoverageRow, RowCodec, TABLE_COUNT, TableId,
+        LandEventCoverageRow, TABLE_COUNT, TableId,
     },
 };
 use std::{
@@ -56,6 +56,7 @@ pub fn needs() -> Needs {
 
 /// A LandCombats row as the census reads it: each side's distinct units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Combat {
     pub id: u64,
     pub province: u32,
@@ -64,6 +65,7 @@ pub struct Combat {
 }
 
 /// The country tables, where the census's link tags read them.
+#[derive(replay_spool::Spooled)]
 pub enum Countries {
     /// Countries or CountryLinks is not complete.
     Incomplete,
@@ -73,6 +75,7 @@ pub enum Countries {
 }
 
 /// A table the census mirrors: its rows by key.
+#[derive(replay_spool::Spooled)]
 pub enum Table<T> {
     /// It does not hold every row.
     Incomplete,
@@ -106,6 +109,7 @@ impl<T> Table<T> {
 }
 
 /// The combats, as the census reads LandCombats.
+#[derive(replay_spool::Spooled)]
 pub enum Combats {
     /// Not read this hour.
     Unread,
@@ -125,6 +129,7 @@ pub enum Combats {
 
 /// The finalizers a complete LandCombatResults read holds, under a complete coverage row
 /// dated this hour: those ending in its interval, by id.
+#[derive(replay_spool::Spooled)]
 pub struct Results {
     pub from_hour: i32,
     pub to_hour: i32,
@@ -132,6 +137,7 @@ pub struct Results {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -147,64 +153,6 @@ pub struct Hour {
     pub progress_read: bool,
     pub progress: Table<(u64, [SideLossInputs; 2])>,
     pub results: Option<Box<Results>>,
-}
-
-/// The bytes a variant's operands hold beyond it.
-fn variant_heap(variant: &RawVariant) -> usize {
-    [&variant.token, &variant.display_name, &variant.suffix]
-        .into_iter()
-        .chain(&variant.name_tag)
-        .chain(&variant.type_tag)
-        .chain(&variant.design)
-        .map(String::capacity)
-        .sum::<usize>()
-        + variant.refusals.capacity() * size_of::<(String, String)>()
-        + variant
-            .refusals
-            .iter()
-            .map(|(label, reason)| label.capacity() + reason.capacity())
-            .sum::<usize>()
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let countries = match &self.countries {
-            Countries::Read(read) => {
-                size_of::<(CountryKeys, HashMap<u32, u32>)>()
-                    + read
-                        .0
-                        .iter()
-                        .map(|(_, _, tag)| 12 + tag.len())
-                        .sum::<usize>()
-                    + read.1.capacity() * 8 / 7 * (size_of::<(u32, u32)>() + 1)
-            }
-            Countries::Incomplete | Countries::Same => 0,
-        };
-        let combats = match &self.combats {
-            Combats::Whole(rows) => rows.capacity() * size_of::<Combat>(),
-            Combats::Changed { rows, deleted } => {
-                rows.capacity() * size_of::<Combat>() + deleted.capacity() * size_of::<u64>()
-            }
-            Combats::Unread | Combats::Incomplete | Combats::Same => 0,
-        };
-        countries
-            + combats
-            + self.variants.capacity() * size_of::<(u64, RawVariant)>()
-            + self
-                .variants
-                .iter()
-                .map(|(_, raw)| variant_heap(raw))
-                .sum::<usize>()
-            + self.sides.heap(RowCodec::heap_bytes)
-            + self
-                .progress
-                .heap(|(_, sides)| sides.iter().map(SideLossInputs::heap).sum())
-            + self.results.as_ref().map_or(0, |results| {
-                size_of::<Results>()
-                    + results.rows.capacity() * size_of::<LandCombatResultsRow>()
-                    + results.rows.iter().map(RowCodec::heap_bytes).sum::<usize>()
-            })
-    }
 }
 
 /// A LandCombats slot's combat as last read.

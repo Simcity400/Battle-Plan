@@ -3,10 +3,13 @@
 //! tables without walking the recording.
 //!
 //! One index holds a recording's native recordings, one per session ([`whole`]), their runs in
-//! turn, and names the sessions still being recorded, whose hours it holds none of yet. [`Preparation`] is one lane of a segment run of each: every segment's walk writes its
-//! strips' pages, packed with zstd on the walk's worker, and the lane's emit stitches them in
-//! segment order into one file: a magic, the pages, the index's directory packed, its
-//! [`Summary`], and a footer naming both. The summary names every native recording whole: its
+//! turn, and names the sessions still being recorded, whose hours it holds none of yet.
+//! [`Preparation`] is one lane of a segment run of each: every segment's walk writes its
+//! strips' pages, packed with zstd on the walk's worker, to a file of its own in the
+//! preparation's folder, its open pages' bytes to another until they close; the lane's emit
+//! takes each segment's directory in segment order, from the spool in that folder, and
+//! appends its file to one file, removing it: a magic,
+//! the pages, the index's directory packed, its [`Summary`], and a footer naming both. The summary names every native recording whole: its
 //! identity, its capture and each of its runs' hour digest chain. [`IndexFile`] reads pages by
 //! position, each checked against the pages' region and its packed frame before its bytes are
 //! held, and a run's dictionary chunks only when a cell names one of their strings, through a
@@ -27,28 +30,31 @@ use crate::{
     rows::TableId,
     scope::CaptureMode,
     segments::{
-        self, Cancellation, Chunk, Ending, Hour, Item, Lane, Loss, Operator, Settings, Sink, Start,
+        self, Cancellation, Chunk, Ending, Hour, Lane, Loss, Operator, Settings, Sink, Start,
     },
     spool::ControlRecord,
 };
-use engine_allocation::credit::MemoryBudget;
+use engine_allocation::{
+    credit::MemoryBudget,
+    labels::{self, Kind as Label},
+};
 pub use replay_columnar::runs::{Layout, beyond_memory};
 use replay_columnar::{
     leaf::{Int, Reader, Writer},
     manifest::{Manifest, Section, Status},
-    runs::{self, Builder, Cursor, Index, Location, PAGE_BYTES, Pack, Pages, Piece, Store},
+    runs::{self, Builder, Cursor, Disk, Index, Location, PAGE_BYTES, Pack, Pages, Piece, Store},
     state::{Column, Kind},
     walk::{Chunks, Dictionary, Packed},
 };
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
-    fs::File,
+    fs::{self, File, OpenOptions},
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, PoisonError, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use zstd::bulk::{Compressor, Decompressor};
@@ -64,6 +70,9 @@ const FOOTER: usize = 8 * 5 + MAGIC.len();
 pub const LEVEL: i32 = 3;
 /// The dictionary chunks an index's readers share once none holds them, by their raw bytes.
 const SHARED_STRINGS: usize = 16 << 20;
+/// What a walk's segment file gathers before it goes to disk, and what the emit copies at once.
+const LANDING_BYTES: usize = 256 << 10;
+const COPY_BYTES: usize = 1 << 20;
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -91,22 +100,281 @@ impl Pack for Zstd {
     }
 }
 
-impl Item for Piece {
-    fn heap(&self) -> usize {
-        self.heap_bytes()
+/// Fills `into` with `file`'s bytes from `offset`.
+#[cfg(windows)]
+fn read_at(file: &File, offset: u64, into: &mut [u8]) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    let mut done = 0;
+    while done < into.len() {
+        let read = file.seek_read(&mut into[done..], offset + done as u64)?;
+        if read == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        done += read;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_at(file: &File, offset: u64, into: &mut [u8]) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(into, offset)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn read_at(_: &File, _: u64, _: &mut [u8]) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+/// Writes `bytes` to `file` from `offset`.
+#[cfg(windows)]
+fn write_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    let mut done = 0;
+    while done < bytes.len() {
+        let wrote = file.seek_write(&bytes[done..], offset + done as u64)?;
+        if wrote == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        done += wrote;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(bytes, offset)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn write_at(_: &File, _: u64, _: &[u8]) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+/// A preparation's own folder, in the folder it was given: its walks' files, and its segment
+/// runs' spool. Removed with what it holds once dropped, which is what a stopped or failed
+/// preparation left there.
+struct Folder {
+    path: PathBuf,
+    next: AtomicU64,
+}
+
+impl Folder {
+    fn new(within: &Path) -> io::Result<Self> {
+        static FOLDERS: AtomicU64 = AtomicU64::new(0);
+        let path = within.join(format!(
+            ".change-runs-{}-{}.scratch",
+            std::process::id(),
+            FOLDERS.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(within)?;
+        fs::create_dir(&path)?;
+        Ok(Self {
+            path,
+            next: AtomicU64::new(0),
+        })
+    }
+
+    /// Where its segment runs spool their items: each run empties it as it starts and removes
+    /// it once done.
+    fn spool(&self) -> PathBuf {
+        self.path.join("spool")
+    }
+
+    /// Walk `at`'s file of the index's bytes.
+    fn pages(&self, at: u64) -> PathBuf {
+        self.path.join(format!("seg-{at}"))
+    }
+
+    /// A segment's walk's files: what it writes of the index, and its open pages' bytes.
+    fn landing(&self) -> io::Result<Landing> {
+        let at = self.next.fetch_add(1, Ordering::Relaxed);
+        Ok(Landing {
+            at,
+            pages: Temp::create(self.pages(at))?,
+            gathered: Vec::new(),
+            landed: 0,
+            open: Temp::create(self.path.join(format!("seg-{at}.open")))?,
+            kept: 0,
+        })
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+/// A file of a preparation's folder, removed once dropped unless [`Self::keep`] left it there.
+struct Temp(Option<(File, PathBuf)>);
+
+impl Temp {
+    fn create(path: PathBuf) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok(Self(Some((file, path))))
+    }
+
+    fn file(&self) -> io::Result<&File> {
+        self.0
+            .as_ref()
+            .map(|(file, _)| file)
+            .ok_or_else(|| io::Error::other("A preparation's file is closed"))
+    }
+
+    /// Closes it and leaves it to its folder.
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        if let Some((file, path)) = self.0.take() {
+            // Closed first: an open file cannot be removed everywhere.
+            drop(file);
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// Walk `at`'s files: its pages, views and dictionary chunks as they will lie in the index,
+/// `landed` bytes on disk and the rest gathered; and its open pages' bytes, `kept` of them.
+struct Landing {
+    at: u64,
+    pages: Temp,
+    gathered: Vec<u8>,
+    landed: u64,
+    open: Temp,
+    kept: u64,
+}
+
+impl Landing {
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.gathered.is_empty() {
+            write_at(self.pages.file()?, self.landed, &self.gathered)?;
+            self.landed += self.gathered.len() as u64;
+            self.gathered.clear();
+        }
+        Ok(())
+    }
+
+    /// The segment's walk wrote `piece`: its file whole, left to the folder for the emit, its
+    /// open pages' bytes let go.
+    fn land(mut self, piece: Piece) -> io::Result<Landed> {
+        self.flush()?;
+        let Self {
+            at,
+            pages,
+            landed,
+            open,
+            ..
+        } = self;
+        drop(open);
+        pages.keep();
+        Ok(Landed {
+            piece,
+            pages: at,
+            length: landed,
+        })
+    }
+}
+
+impl Store for Landing {
+    fn put(&mut self, stored: &[u8], raw: u32) -> io::Result<Location> {
+        let offset = self.landed + self.gathered.len() as u64;
+        let length = u32::try_from(stored.len()).map_err(|_| invalid("A page passes 4 GiB"))?;
+        if self.gathered.len() + stored.len() > LANDING_BYTES {
+            self.flush()?;
+        }
+        if stored.len() > LANDING_BYTES {
+            write_at(self.pages.file()?, self.landed, stored)?;
+            self.landed += stored.len() as u64;
+        } else {
+            let _memory = labels::kind(Label::IndexSpill);
+            engine_allocation::reserve(&mut self.gathered, stored.len())?;
+            self.gathered.extend_from_slice(stored);
+        }
+        Ok(Location {
+            offset,
+            stored: length,
+            raw,
+        })
+    }
+}
+
+impl Disk for Landing {
+    fn keep(&mut self, bytes: &[u8]) -> io::Result<u64> {
+        let at = self.kept;
+        write_at(self.open.file()?, at, bytes)?;
+        self.kept += bytes.len() as u64;
+        Ok(at)
+    }
+
+    fn kept(&mut self, at: u64, into: &mut [u8]) -> io::Result<()> {
+        if at
+            .checked_add(into.len() as u64)
+            .is_none_or(|end| end > self.kept)
+        {
+            return Err(invalid("An open page's bytes lie past those kept"));
+        }
+        read_at(self.open.file()?, at, into)
+    }
+}
+
+/// A segment's directory, and which walk's file of the preparation's folder holds the `length`
+/// bytes its locations name: the folder holds that file until the emit appends and removes it.
+#[derive(replay_spool::Spooled)]
+struct Landed {
+    piece: Piece,
+    pages: u64,
+    length: u64,
+}
+
+impl Landed {
+    /// Appends its file of `folder` to `out`, through `buffer`, then removes it.
+    fn append(
+        &self,
+        folder: &Folder,
+        out: &mut impl Write,
+        buffer: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let path = folder.pages(self.pages);
+        let file = File::open(&path)?;
+        if buffer.is_empty() {
+            let _memory = labels::kind(Label::IndexSpill);
+            *buffer = engine_allocation::filled(COPY_BYTES, 0_u8)?;
+        }
+        let mut at = 0;
+        while at < self.length {
+            let count = (self.length - at).min(buffer.len() as u64) as usize;
+            read_at(&file, at, &mut buffer[..count])?;
+            out.write_all(&buffer[..count])?;
+            at += count as u64;
+        }
+        // Closed first: an open file cannot be removed everywhere.
+        drop(file);
+        let _ = fs::remove_file(&path);
+        Ok(())
     }
 }
 
 /// One segment's walk writing its pages, its native recording's runs from the index's run
-/// `first`, until `stop` is set.
+/// `first`, to its files, until `stop` is set.
 struct Walk<'s> {
     builder: Builder,
     first: u32,
     stop: &'s AtomicBool,
+    landing: Option<Landing>,
 }
 
 impl Operator for Walk<'_> {
-    type Output = Piece;
+    type Output = Landed;
 
     fn start(&mut self, start: Start<'_>, _branch: u64, _first: i32) -> io::Result<()> {
         self.builder.start(match start {
@@ -115,52 +383,40 @@ impl Operator for Walk<'_> {
         })
     }
 
-    fn hour(&mut self, hour: &Hour<'_>, _out: &mut dyn Sink<Piece>) -> io::Result<()> {
+    fn hour(&mut self, hour: &Hour<'_>, _out: &mut dyn Sink<Landed>) -> io::Result<()> {
         if self.stop.load(Ordering::Relaxed) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "A change-run index's preparation was stopped",
             ));
         }
+        let landing = self
+            .landing
+            .as_mut()
+            .ok_or_else(|| invalid("A change-run index's walk has ended"))?;
         self.builder.hour(
             self.first + hour.run,
             hour.ordinal,
             hour.state,
             hour.manifest,
+            landing,
         )
     }
 
-    fn end(&mut self, out: &mut dyn Sink<Piece>) -> io::Result<()> {
-        out.push(self.builder.finish()?)
+    fn end(&mut self, out: &mut dyn Sink<Landed>) -> io::Result<()> {
+        let mut landing = self
+            .landing
+            .take()
+            .ok_or_else(|| invalid("A change-run index's walk has ended"))?;
+        let piece = self.builder.finish(&mut landing)?;
+        out.push(landing.land(piece)?)
     }
 }
 
-/// Pages written one after another to `out`, from the offset it stands at.
+/// Segments' files appended one after another to `out`, from the offset it stands at.
 struct Appended<W> {
     out: W,
     offset: u64,
-}
-
-impl<W: Write> Store for Appended<W> {
-    fn put(&mut self, stored: &[u8], raw: u32) -> io::Result<Location> {
-        self.out.write_all(stored)?;
-        let location = Location {
-            offset: self.offset,
-            stored: u32::try_from(stored.len()).map_err(|_| invalid("A page passes 4 GiB"))?,
-            raw,
-        };
-        self.offset += stored.len() as u64;
-        Ok(location)
-    }
-}
-
-/// A run's scratch that holds nothing: pieces stay resident and walks are never parked.
-struct Resident;
-
-impl segments::Scratch for Resident {
-    fn spill(&self, _: &[u8]) -> io::Result<Box<dyn segments::Spilled>> {
-        Err(io::Error::other("A change-run index's walk spills nothing"))
-    }
 }
 
 /// Why `runs` (branch, first hour, ordinals) do not hold exactly the hours `index`'s blocks
@@ -525,18 +781,22 @@ pub struct Preparation<W> {
     level: i32,
     store: Appended<W>,
     pack: Zstd,
+    folder: Folder,
+    /// What the emit copies a segment's file through.
+    copy: Vec<u8>,
 }
 
 impl<W: Write + Send> Preparation<W> {
     /// The index of `tables` of `whole`'s native recordings, of its campaign, their runs in
     /// turn, naming its pending sessions, laid out as `layout`, its pages packed at zstd
-    /// `level`, into `out`. Every readable run is indexed whole; an unreadable one holds no
-    /// hours.
+    /// `level`, into `out`, its walks' files in a folder of its own in `scratch`. Every
+    /// readable run is indexed whole; an unreadable one holds no hours.
     pub fn new(
         whole: &Whole,
         tables: &[TableId],
         layout: Layout,
         level: i32,
+        scratch: &Path,
         out: W,
     ) -> io::Result<Self> {
         let (recordings, campaign) = (&whole.recordings, &whole.campaign);
@@ -589,6 +849,8 @@ impl<W: Write + Send> Preparation<W> {
             level,
             store,
             pack: Zstd::new(level)?,
+            folder: Folder::new(scratch)?,
+            copy: Vec::new(),
         })
     }
 
@@ -605,10 +867,12 @@ impl<W: Write + Send> Preparation<W> {
             kinds,
             level,
             store,
-            pack,
+            folder,
+            copy,
             ..
         } = self;
         let (layout, level, tables, kinds) = (index.layout, *level, &*tables, &*kinds);
+        let folder: &'a Folder = folder;
         let job = job_priority::JobPriority::current();
         let make = move |_: &Segment| -> io::Result<Walk<'a>> {
             // Walks run on the executor's workers, which start at no job's priority.
@@ -617,11 +881,17 @@ impl<W: Write + Send> Preparation<W> {
                 builder: Builder::new(layout, tables, kinds.clone(), Box::new(Zstd::new(level)?))?,
                 first,
                 stop,
+                landing: Some(folder.landing()?),
             })
         };
-        let emit = move |chunk: Chunk<'_, Piece>| -> io::Result<()> {
-            for piece in chunk.items {
-                index.append(piece, &mut *store, &mut *pack)?;
+        // Only the directories are taken in, in segment order: each segment's bytes are its
+        // file's, appended whole.
+        let emit = move |chunk: Chunk<'_, Landed>| -> io::Result<()> {
+            for landed in chunk.items {
+                let at = store.offset;
+                landed.append(folder, &mut store.out, copy)?;
+                store.offset += landed.length;
+                index.append(landed.piece, at)?;
             }
             Ok(())
         };
@@ -635,7 +905,6 @@ impl<W: Write + Send> Preparation<W> {
                 "A change-run index finishes with other native recordings",
             ));
         }
-        self.index.finish(&mut self.store, &mut self.pack)?;
         let mut held = self.index.runs.iter();
         for (native, recording) in self.natives.iter_mut().zip(recordings) {
             native.chains = engine_allocation::vec(recording.run_count() as usize)?;
@@ -690,16 +959,19 @@ impl<W: Write + Send> Preparation<W> {
 }
 
 /// The index of `tables` of `whole` ([`whole`]): its native recordings, of one campaign, laid
-/// out as `layout` and packed at `level`, written to `out` by a segment run of each in turn as
-/// `settings` lets it, stopping once `stop` is set, and its pending sessions named: every
-/// recording applies every table indexed. Each run's statistics. An index stopped, or any
-/// segment of which reached its emit short or not at all, is refused and never finished.
+/// out as `layout` and packed at `level`, written to `out` by a segment run of each in turn on
+/// `threads` workers, its walks' files and the runs' spool in a folder of its own in `scratch`,
+/// stopping once `stop` is set, and its pending sessions named: every recording applies every
+/// table indexed. Each run's statistics. An index stopped, or any segment of which reached its
+/// emit short or not at all, is refused and never finished.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare<W: Write + Send>(
     whole: &Whole,
     tables: &[TableId],
     layout: Layout,
     level: i32,
-    settings: &Settings,
+    threads: usize,
+    scratch: &Path,
     stop: &AtomicBool,
     out: W,
 ) -> io::Result<(W, Vec<segments::Stats>)> {
@@ -710,13 +982,15 @@ pub fn prepare<W: Write + Send>(
         )
     };
     let recordings = &whole.recordings;
-    let mut preparation = Preparation::new(whole, tables, layout, level, out)?;
+    let mut preparation = Preparation::new(whole, tables, layout, level, scratch, out)?;
+    let settings = Settings::new(threads);
+    let spool = preparation.folder.spool();
     let mut stats = engine_allocation::vec(recordings.len())?;
     for (native, recording) in recordings.iter().enumerate() {
         let ran = segments::run(
             recording,
-            settings,
-            &Resident,
+            &settings,
+            &spool,
             &Cancellation::default(),
             vec![preparation.lane(native, stop)?],
         )?;
@@ -807,26 +1081,7 @@ impl Source {
                 into.copy_from_slice(held);
                 Ok(())
             }
-            #[cfg(windows)]
-            Self::File(file) => {
-                use std::os::windows::fs::FileExt;
-                let mut done = 0;
-                while done < into.len() {
-                    let read = file.seek_read(&mut into[done..], offset + done as u64)?;
-                    if read == 0 {
-                        return Err(io::ErrorKind::UnexpectedEof.into());
-                    }
-                    done += read;
-                }
-                Ok(())
-            }
-            #[cfg(unix)]
-            Self::File(file) => {
-                use std::os::unix::fs::FileExt;
-                file.read_exact_at(into, offset)
-            }
-            #[cfg(not(any(windows, unix)))]
-            Self::File(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::File(file) => read_at(file, offset, into),
         }
     }
 }

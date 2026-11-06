@@ -327,7 +327,8 @@ fn projected_blocks(frames: &[DecodedFrame], starts: &[i32], blocks: &[i32]) -> 
         })
         .unwrap();
     }
-    out
+    // As its emit is handed them: written to the spool and read back.
+    replay_spool::respool(out).unwrap()
 }
 
 fn identity() -> Identity {

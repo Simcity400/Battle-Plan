@@ -4,6 +4,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TransportAirRegion {
     pub region: u32,
     pub count: Option<i32>,
@@ -16,6 +17,7 @@ value_struct!(TransportAirRegion {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TransportAirMission {
     pub wing: u64,
     pub current_type: Option<u32>,

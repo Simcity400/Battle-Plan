@@ -18,6 +18,7 @@ use super::*;
 /// A complete hourly table certifies zero for country/region pairs with no
 /// events. Lost and first/recovery partial intervals remain unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AirLossEventRow {
     pub id: u64,
     pub game_hour: i32,
@@ -51,6 +52,7 @@ typed_codec!(AirLossEventRow, 64,
 /// Exact hourly daily-update roster predicate.
 /// Every canonical country is present; false is distinct from a missing witness.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AirDailyRosterRow {
     pub country: u32,
     pub eligible: bool,
@@ -63,6 +65,7 @@ typed_codec!(AirDailyRosterRow, 32,
 /// Stable source classes; executable caller addresses stay in engine.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(replay_spool::Spooled)]
 pub enum BuildingBombingDamageCause {
     #[default]
     Unknown = 0,
@@ -168,6 +171,7 @@ impl NativeValue for BuildingBombingDamageCause {
 /// zero events, an unavailable interval is unknown. Its first branch interval
 /// and every interval after a lost event are unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct BuildingBombingDamageRow {
     pub id: u64,
     pub game_hour: i32,

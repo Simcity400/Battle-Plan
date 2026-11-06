@@ -9,7 +9,7 @@ use dashboard_base::products::place_names::{FrameInputs, Inputs, StateInputs};
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::TableId;
 use std::{collections::HashMap, io, mem::size_of};
@@ -73,7 +73,7 @@ pub fn needs() -> io::Result<Needs> {
 }
 
 /// A province's inputs: its state, zero for none, and its ProvinceNames name.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, replay_spool::Spooled)]
 pub struct Province {
     pub state: u32,
     pub rename: Option<Box<[u8]>>,
@@ -87,6 +87,7 @@ impl Province {
 
 /// How the name tables hold their rows, as the readers word it, and slot zero's tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Tables {
     pub renames_complete: bool,
     pub renames_gap: String,
@@ -132,12 +133,14 @@ pub fn state_heap(state: &StateInputs) -> usize {
 
 /// A province or state whose inputs the hour sends: none where it has no row.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Change {
     Province(u32, Option<Province>),
     State(u32, Option<StateInputs>),
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -147,21 +150,6 @@ pub struct Hour {
     /// The tables' holds, when they changed since the segment last sent them.
     pub tables: Option<Tables>,
     pub changes: Vec<Change>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.tables.as_ref().map_or(0, Tables::heap)
-            + self.changes.capacity() * size_of::<Change>()
-            + self
-                .changes
-                .iter()
-                .map(|change| match change {
-                    Change::Province(_, province) => province.as_ref().map_or(0, Province::heap),
-                    Change::State(_, state) => state.as_ref().map_or(0, state_heap),
-                })
-                .sum::<usize>()
-    }
 }
 
 /// The fields each table's changes are read by.

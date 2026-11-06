@@ -5,6 +5,7 @@ use crate::triggers::Failure;
 use replay_data::rows::GlobalSavedEventTargetRow as Row;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Reader {
     CountrySelector,
     Context,

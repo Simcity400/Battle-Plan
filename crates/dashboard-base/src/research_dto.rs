@@ -104,7 +104,7 @@ pub struct ResearchDetails {
     pub modifiers: Option<ResearchModifiers>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchModifiers {
     pub components: Vec<ResearchModifier>,
@@ -114,7 +114,7 @@ pub struct ResearchModifiers {
     pub minimum_speed_raw: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchModifier {
     pub kind: String,
@@ -122,7 +122,7 @@ pub struct ResearchModifier {
     pub sources: Vec<ResearchModifierSource>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchModifierSource {
     pub token: Option<String>,
@@ -130,7 +130,7 @@ pub struct ResearchModifierSource {
     pub raw: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchBonus {
     pub id: i32,

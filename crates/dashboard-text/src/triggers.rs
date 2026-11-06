@@ -178,6 +178,7 @@ pub fn fold_token(key: &str) -> String {
 
 /// A three-valued result; `Unknown` names what could not be decided.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Eval {
     True,
     False,
@@ -271,6 +272,7 @@ impl Eval {
 
 /// What an event scope holds in THIS, ROOT, PREV or FROM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Scope {
     /// A canonical country slot.
     Country(u32),

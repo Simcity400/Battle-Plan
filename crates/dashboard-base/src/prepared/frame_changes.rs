@@ -11,6 +11,7 @@ use std::sync::Arc;
 /// keeps its allocation, so its read shows only in table_read/slot_read.
 /// Owners borrow rows, status and supplying dates from the same decoded frame.
 /// Boundary change flags are conservative, and never invent a read.
+#[derive(replay_spool::Spooled)]
 pub struct FrameChanges {
     pub rows_changed: [bool; TABLE_COUNT],
     pub table_read: [bool; TABLE_COUNT],
@@ -21,6 +22,7 @@ pub struct FrameChanges {
 
 /// An hour's recorded updates and the tables whose decoded rows are the
 /// previous hour's changed by exactly their delta.
+#[derive(replay_spool::Spooled)]
 pub struct RowUpdates {
     frame: Arc<RecordedFrame>,
     exact: [bool; TABLE_COUNT],

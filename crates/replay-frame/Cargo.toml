@@ -17,6 +17,7 @@ job-priority.workspace = true
 engine-allocation.workspace = true
 replay-data.workspace = true
 crc32fast = "1"
+replay-spool.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]

@@ -13,7 +13,7 @@ use crate::products::politics_state::Tags;
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::rows::TableId;
 use std::{
@@ -57,6 +57,7 @@ pub fn needs() -> Needs {
 
 /// A part's values handed on: every value it holds, or what changed since the segment last
 /// handed it on, none ending a value.
+#[derive(replay_spool::Spooled)]
 pub struct Sent {
     pub part: Part,
     pub whole: bool,
@@ -65,6 +66,7 @@ pub struct Sent {
 
 /// What the ordered emit reads of an hour that changes something.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Each holder's tag where it changed, every holder's at the segment's first hour.
     pub tags: Vec<(u32, Arc<str>)>,
@@ -77,6 +79,7 @@ pub struct Facts {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -91,41 +94,6 @@ fn field_heap(field: &Field) -> usize {
         | Field::BalanceTrending(balance)
         | Field::BalanceRecord(balance) => balance.capacity(),
         _ => 0,
-    }
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        let entry = size_of::<((u32, Field), Option<Val>)>();
-        size_of::<Facts>()
-            + facts.tags.capacity() * size_of::<(u32, Arc<str>)>()
-            + facts.tags.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + facts.parts.capacity() * size_of::<Sent>()
-            + facts
-                .parts
-                .iter()
-                .map(|sent| {
-                    sent.values.capacity() * entry
-                        + sent
-                            .values
-                            .iter()
-                            .map(|((_, field), value)| {
-                                field_heap(field) + value.as_ref().map_or(0, Val::heap)
-                            })
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
-            + match &facts.existence {
-                Some(Some(existence)) => existence.capacity() * (size_of::<(u32, bool)>() + 1),
-                _ => 0,
-            }
-            + facts.refusals.as_ref().map_or(0, |refusals| {
-                refusals.capacity() * size_of::<(String, u64)>()
-                    + refusals.iter().map(|(reason, _)| reason.capacity()).sum::<usize>()
-            })
     }
 }
 

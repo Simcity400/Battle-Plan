@@ -26,7 +26,7 @@ use dashboard_text::metadata::link_slot;
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::rows::{
     AutonomyRow, CountryAppearanceRow, CountryRow, IntelligenceAgencyRow, PoliticalPartyRow,
@@ -137,6 +137,7 @@ pub fn needs() -> io::Result<Needs> {
 
 /// One walked hour of a branch: its change facts, and what the observers read of it otherwise
 /// than the segment's hour before.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -167,17 +168,12 @@ pub struct Hour {
     held: usize,
 }
 
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.held
-    }
-}
-
 /// The read bit of OperativeMemberships and of Operations in [`Hour::reads`].
 pub const MEMBERSHIPS_READ: u8 = 1;
 pub const OPERATIONS_READ: u8 = 2;
 
 /// The cipher scan's read as read again.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum CipherDelta {
     Whole(CipherRead),
     Pairs {
@@ -188,6 +184,7 @@ pub(crate) enum CipherDelta {
 
 /// The agency scan's read as read again: its slots and acquired levels where built again, its
 /// roster at a membership read.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct AgencyDelta {
     complete: bool,
     refused: usize,
@@ -196,6 +193,7 @@ pub(crate) struct AgencyDelta {
     acquired: Option<AcquiredDelta>,
 }
 
+#[derive(replay_spool::Spooled)]
 pub(crate) enum AcquiredDelta {
     Whole(Result<Acquired, (io::ErrorKind, String)>),
     Slots {
@@ -205,6 +203,7 @@ pub(crate) enum AcquiredDelta {
 }
 
 /// The roster's census as read again.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum MembersDelta {
     Whole(Members),
     Slots {
@@ -215,6 +214,7 @@ pub(crate) enum MembersDelta {
 }
 
 /// A roster slot's members as read again.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum SlotPatch {
     Whole(Vec<Member>),
     /// Only their experience moved: by position, that of each member it moved.
@@ -223,6 +223,7 @@ pub(crate) enum SlotPatch {
 }
 
 /// The espionage log's operations census as read again.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum CensusDelta {
     Whole(CensusRead),
     Rows {

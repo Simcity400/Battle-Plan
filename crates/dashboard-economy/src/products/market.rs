@@ -75,6 +75,7 @@ pub const LEDGER_KINDS: [u8; 6] = [10, 11, 12, 20, 21, 34];
 pub const CHUNK: u64 = 512;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Field {
     /// 1 while the table at this position of the state tables is complete.
     Known(u8),
@@ -115,7 +116,6 @@ pub enum Field {
     /// 1 while a giver's agreement's receiver has no identity.
     LeaseUnidentified(u32, u64),
 }
-
 
 /// One occurrence as the ledger keeps it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -166,7 +166,6 @@ pub(crate) fn ledger_row(row: &MarketEventRow, seller: Option<u32>, buyer: Optio
         reason: reason.map(str::to_owned),
     }
 }
-
 
 // --- History ----------------------------------------------------------------
 
@@ -293,7 +292,6 @@ impl Product for MarketHistory {
 // --- Ledger -----------------------------------------------------------------
 
 pub struct MarketLedger;
-
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

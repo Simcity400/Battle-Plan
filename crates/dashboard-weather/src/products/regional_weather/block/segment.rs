@@ -19,6 +19,7 @@ use std::{collections::btree_map::Entry, io};
 type Scalars = [Option<i128>; 14];
 
 /// The regions' scalars at an hour.
+#[derive(replay_spool::Spooled)]
 enum Regions {
     /// Every region's, by id; none where the table is not complete.
     Whole {
@@ -35,6 +36,7 @@ pub(super) struct Keeper {
     temperature: Deriving,
 }
 
+#[derive(replay_spool::Spooled)]
 struct Kept {
     branch: u64,
     hour: i32,
@@ -126,7 +128,18 @@ fn unfollowed() -> io::Error {
     )
 }
 
+/// The operands [`Kept::spool`] wrote ([`dashboard_keyed::Observer::unspool_operands`]).
+pub(super) fn unspool(
+    input: &mut replay_spool::Reader<'_>,
+) -> io::Result<Box<dyn Operands<Observer>>> {
+    Ok(Box::new(<Kept as replay_spool::Spooled>::unspool(input)?))
+}
+
 impl Operands<Observer> for Kept {
+    fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        replay_spool::Spooled::spool(self, out)
+    }
+
     fn observe(&self, observer: &mut Observer, values: &mut Values) -> io::Result<bool> {
         observer.previous = Some((self.branch, self.hour));
         let temperature_known = observer

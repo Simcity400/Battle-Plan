@@ -23,6 +23,7 @@ replay-frame.workspace = true
 job-priority.workspace = true
 installed-content-core.workspace = true
 installed-content-settings.workspace = true
+replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 ts-rs = "11.1"

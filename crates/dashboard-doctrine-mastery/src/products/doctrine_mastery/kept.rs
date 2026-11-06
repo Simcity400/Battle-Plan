@@ -26,12 +26,14 @@ use std::{collections::HashSet, io};
 
 /// A doctrine slot's status: its country, and its observed expiry occurrences.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Status {
     pub country: u32,
     pub expiry: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Folder {
     pub folder: u32,
     pub grand: Option<u32>,
@@ -39,6 +41,7 @@ pub(super) struct Folder {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Track {
     pub sub: Option<u32>,
     pub rewards: i32,
@@ -50,6 +53,7 @@ pub(super) struct Track {
 
 /// A country's canonical slot and tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Country {
     pub slot: u32,
     pub tag: Box<[u8]>,
@@ -60,6 +64,7 @@ pub(super) type TrackKey = (u32, u32, u32);
 
 /// A table that is not complete: a copy of its view, and why the observer cannot read it.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Missing {
     pub view: SharedView,
     pub why: String,
@@ -73,6 +78,7 @@ impl Missing {
 }
 
 /// What an hour gave of one table, keyed as its rows are.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Part<K, F> {
     /// Nothing the observer reads changed.
     Same,
@@ -131,12 +137,14 @@ impl Missing {
 
 /// The dictionary's shape: its rows' print where it is complete.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub(super) enum Shape {
     Complete(u128),
     Missing(Box<Missing>),
 }
 
 /// What an hour gave of the dictionary.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Dictionary {
     /// Its shape where the hour restated or changed it.
     pub shape: Option<Shape>,
@@ -147,6 +155,7 @@ pub(super) struct Dictionary {
 }
 
 /// One hour the observer observes, as the keeper kept it.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Kept {
     pub status: Part<u32, Status>,
     pub folders: Part<FolderKey, Folder>,
@@ -510,6 +519,10 @@ impl native::Keeper<Observer> for Keeper {
 }
 
 impl Operands<Observer> for Kept {
+    fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        replay_spool::Spooled::spool(self, out)
+    }
+
     fn observe(&self, observer: &mut Observer, values: &mut Values) -> io::Result<bool> {
         observer.observe_kept(self, super::mirror::Publish::Whole(values))
     }

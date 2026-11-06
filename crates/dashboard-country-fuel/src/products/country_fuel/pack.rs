@@ -395,6 +395,7 @@ pub(super) fn take_recipients(bytes: &[u8]) -> io::Result<Vec<FuelAwardDayRecipi
 
 /// A read's demand pack as its elements' bytes, or why the replies refuse it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(super) enum Encoded {
     Refused(String),
     Pack {

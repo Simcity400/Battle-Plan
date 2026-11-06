@@ -79,6 +79,7 @@ pub struct HistoryKind {
 /// table going between two of them.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct KeptReason {
     pub text: Vec<String>,
     pub tables: Vec<String>,
@@ -326,6 +327,7 @@ fn operands_of(
 
 /// A design's naming operands, whichever read gave them: equal operands, one design.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 struct NamingOperands(Arc<RawVariant>);
 
 impl PartialEq for NamingOperands {

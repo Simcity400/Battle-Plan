@@ -33,6 +33,7 @@ pub const CHANNELS: [(&str, TableId); 8] = [
 /// What a lane holds; its measure in the family's publication is its position in [`Kind::ALL`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) enum Kind {
     Share,
     Association,
@@ -164,6 +165,7 @@ impl<'a> Supplying<'a> {
 }
 /// A selection lane's value: its token and name, or why the hour has none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct Choice {
     pub(in crate::products::faction_state) token: Option<String>,
     pub(in crate::products::faction_state) name: Option<String>,

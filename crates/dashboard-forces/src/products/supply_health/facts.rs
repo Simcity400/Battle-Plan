@@ -11,14 +11,14 @@ use dashboard_world::{Needs, Roster, Tag, Tagged, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     display::{Step, stepped_format},
     format::FormatVersion,
     rows::{TableId, compatibility::RECORDER_INPUTS_FORMAT},
 };
-use std::{collections::HashMap, io, mem::size_of, sync::Arc};
+use std::{collections::HashMap, io, sync::Arc};
 
 /// The tables a projection reads.
 pub const TABLES: &[TableId] = &[
@@ -52,6 +52,7 @@ const NO_COUNTRY: u32 = u32::MAX;
 
 /// A country's facts at an hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Country {
     /// Its index in the projection ([`Hour::named`]).
     pub index: u32,
@@ -63,6 +64,7 @@ pub struct Country {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -74,14 +76,6 @@ pub struct Hour {
     pub countries: Vec<Country>,
     /// Whether DivisionLandInputs is not unavailable.
     pub land_present: bool,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self.countries.capacity() * size_of::<Country>()
-    }
 }
 
 /// The columns a projection reads by name.

@@ -4,6 +4,7 @@ use super::*;
 
 /// Hourly owned war occurrences, including retired ones, in diplomacy vector order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WarOwnedRelationRow {
     pub owner: u32,
     pub ordinal: u32,
@@ -18,6 +19,7 @@ typed_codec!(WarOwnedRelationRow, 64, |row| (row.owner as u128) << 32 | row.ordi
 
 /// Hourly ordered goal handles and their naming operands; a null/stale handle keeps resolved=0.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WarRelationGoalRow {
     pub owner: u32,
     pub relation_ordinal: u32,
@@ -38,6 +40,7 @@ typed_codec!(WarRelationGoalRow, 128, |row| (row.owner as u128) << 96 | (row.rel
 
 /// Hourly representative score inputs and the cached subject predicate toward LocalPlayer.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WarOverviewCountryRow {
     pub country: u32,
     pub major: u8,
@@ -52,6 +55,7 @@ typed_codec!(WarOverviewCountryRow, 32, |row| row.country as u128, |key| Self { 
 
 /// The recorded default naming prefix, read from the running game; not a content key catalogue.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WarNameRuleRow {
     pub index: u32,
     pub prefix: Vec<u8>,
@@ -64,6 +68,7 @@ typed_codec!(WarNameRuleRow, 32, |row| row.index as u128, |key| Self { index: ke
 /// Both stored directional ledgers of each owned relation. The direction is
 /// relative to the relation's stored endpoints; ledger endpoints stay separate.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WarParticipationRow {
     pub war_first: u32,
     pub war_second: u32,
@@ -111,6 +116,7 @@ impl WarParticipationRow {
 /// First-credit history is keyed independently of scalar scores, so one new
 /// captured province never rewrites the ledger's previous membership.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WarCapturedProvinceRow {
     pub war_first: u32,
     pub war_second: u32,
@@ -127,6 +133,7 @@ typed_codec!(WarCapturedProvinceRow, 128, |row| (row.war_first as u128) << 96 | 
 /// native display gate. Complete-table absence certifies exact raw zero for
 /// those owners under the writer certificate; unavailable certifies nothing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WarLendLeaseHistoryRow {
     pub country: u32,
     pub target: u32,

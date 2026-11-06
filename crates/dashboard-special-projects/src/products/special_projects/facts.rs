@@ -28,7 +28,7 @@ use dashboard_world::{Hold, Needs, Roster, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -204,6 +204,7 @@ impl Binding {
 /// A project as an observation holds it: its facts (their progress zero), its presentation and
 /// person, and its progress apart, which changes without changing the rest.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Project {
     pub(super) facts: ProjectFacts,
     pub(super) look: Look,
@@ -212,6 +213,7 @@ pub struct Project {
 
 /// A country observed at the hour: its holder and what of it the hour sends.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Observed {
     pub(super) tag: Arc<str>,
     /// Its canonical slot and country id.
@@ -221,6 +223,7 @@ pub struct Observed {
 
 /// What an observation sends of a country.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub enum Seen {
     /// Its projects, none while Projects is not complete.
     Whole(Option<Vec<Project>>),
@@ -231,6 +234,7 @@ pub enum Seen {
 
 /// What the ordered emit reads of an hour that observed something.
 #[derive(Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// Every country the countries resolve was observed: one not among `countries` holds none.
     pub(super) full: bool,
@@ -253,6 +257,7 @@ pub struct Facts {
 /// and the spellings it changed, every one it holds where `whole`. A spelling that is not UTF-8
 /// is none, as the row reader takes it.
 #[derive(Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Dictionary {
     pub(super) digest: u128,
     pub(super) whole: bool,
@@ -260,6 +265,7 @@ pub struct Dictionary {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -273,69 +279,6 @@ pub struct Hour {
 
 /// A rough share of the heap a look's texts and refusals hold.
 const LOOK_BYTES: usize = 512;
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let dictionary = self.dictionary.as_ref().map_or(0, |dictionary| {
-            size_of::<Dictionary>()
-                + dictionary.tokens.capacity() * size_of::<(u32, Option<String>)>()
-                + dictionary
-                    .tokens
-                    .iter()
-                    .map(|(_, token)| token.as_ref().map_or(0, String::capacity))
-                    .sum::<usize>()
-        });
-        let Some(facts) = &self.facts else {
-            return dictionary;
-        };
-        size_of::<Facts>()
-            + facts.countries.capacity() * size_of::<Observed>()
-            + facts
-                .countries
-                .iter()
-                .map(|country| {
-                    country.tag.len()
-                        + match &country.seen {
-                            Seen::Whole(projects) => projects.as_ref().map_or(0, |projects| {
-                                projects.capacity() * (size_of::<Project>() + LOOK_BYTES)
-                            }),
-                            Seen::Progress(progress) => progress.capacity() * size_of::<i32>(),
-                        }
-                })
-                .sum::<usize>()
-            + facts
-                .named
-                .iter()
-                .map(|(tag, reasons)| {
-                    tag.len() + reasons.keys().map(|reason| reason.len() + 32).sum::<usize>()
-                })
-                .sum::<usize>()
-            + facts
-                .names
-                .iter()
-                .map(|((tag, _, _), name)| {
-                    tag.len()
-                        + name.as_ref().map_or(0, |name| {
-                            name.text.as_ref().map_or(0, String::len)
-                                + name.warnings.iter().map(String::len).sum::<usize>()
-                        })
-                        + 64
-                })
-                .sum::<usize>()
-            + facts
-                .provisional
-                .iter()
-                .map(|((tag, _, _), _, name)| {
-                    tag.len()
-                        + name.text.as_ref().map_or(0, String::len)
-                        + name.warnings.iter().map(String::len).sum::<usize>()
-                        + 64
-                })
-                .sum::<usize>()
-            + facts.own.as_ref().map_or(0, |_| LOOK_BYTES)
-            + dictionary
-    }
-}
 
 /// A project row's operands an observation reads, projected when the row was read.
 #[derive(Clone)]

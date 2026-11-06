@@ -382,6 +382,7 @@ fn goal_absent(frame: &DecodedFrame, faction: u64) -> bool {
 
 /// One hour's projection, for the ordered emit.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct Projected {
     /// Every membership reference joined: a retained owner survives only then.
     pub(in crate::products::faction_state) joined: bool,
@@ -509,6 +510,7 @@ impl ChannelOp {
 }
 /// What a faction no table of the hour names reads: it has no rows anywhere.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct Ghost {
     /// Why each of rules, programmes, minimums and doctrines is unavailable.
     pub(in crate::products::faction_state) selections: [String; 4],
@@ -548,6 +550,7 @@ fn ghost(frame: &DecodedFrame) -> Ghost {
     }
 }
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct Accounts {
     /// Every account of the hour's rows is projected; the emit adds each its catalogue holds.
     pub(in crate::products::faction_state) full: bool,
@@ -555,6 +558,7 @@ pub(in crate::products::faction_state) struct Accounts {
     /// Ascending by account.
     pub(in crate::products::faction_state) ops: Vec<AccountOp>,
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) enum AccountOp {
     Whole {
         account: u32,
@@ -571,6 +575,7 @@ impl AccountOp {
         }
     }
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) enum AccountRow {
     /// Its country's identity is unavailable.
     Unidentified,
@@ -582,6 +587,7 @@ pub(in crate::products::faction_state) enum AccountRow {
         owner: Owner,
     },
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) enum Owner {
     /// Membership inputs are unavailable and its country is no explicit member.
     Unjoined,
@@ -595,11 +601,13 @@ pub(in crate::products::faction_state) enum Owner {
     /// No membership and no supplying faction: the account's retained owner, if any.
     Retained,
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct UpgradeOp {
     pub(in crate::products::faction_state) group: u32,
     pub(in crate::products::faction_state) name: Choice,
     pub(in crate::products::faction_state) choice: Choice,
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct FactionOps {
     pub(in crate::products::faction_state) faction: u64,
     /// Whether each channel is known, when that changed; the emit reads it with the hour's reads.
@@ -607,6 +615,7 @@ pub(in crate::products::faction_state) struct FactionOps {
     /// In the order the faction's lanes are observed.
     pub(in crate::products::faction_state) channels: Vec<ChannelOp>,
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) enum ChannelOp {
     Selections {
         kind: Kind,
@@ -628,11 +637,13 @@ pub(in crate::products::faction_state) enum ChannelOp {
     /// Only progress changed since the faction's last whole goals: by ordinal.
     GoalProgress(Vec<(u32, i64)>),
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct ManpowerOp {
     pub(in crate::products::faction_state) total: i128,
     pub(in crate::products::faction_state) entries: Vec<ManpowerEntry>,
     pub(in crate::products::faction_state) failure: Option<String>,
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) enum ManpowerEntry {
     Unidentified {
         ordinal: u32,
@@ -647,12 +658,14 @@ pub(in crate::products::faction_state) enum ManpowerEntry {
         value: i32,
     },
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct GoalsOp {
     pub(in crate::products::faction_state) absent: bool,
     pub(in crate::products::faction_state) reason: Option<String>,
     /// Each held goal of the first three lists, in list order.
     pub(in crate::products::faction_state) entries: Vec<GoalEntry>,
 }
+#[derive(replay_spool::Spooled)]
 pub(in crate::products::faction_state) struct GoalEntry {
     pub(in crate::products::faction_state) kind: u8,
     pub(in crate::products::faction_state) ordinal: u32,

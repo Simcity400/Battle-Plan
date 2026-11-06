@@ -454,6 +454,7 @@ pub fn plain_text(text: &str) -> Result<String, String> {
 
 /// Issues by reason, with what each names.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Refusals(BTreeMap<String, BTreeSet<String>>);
 
 impl Refusals {
@@ -537,6 +538,7 @@ impl Refusals {
 /// A lazily read content input whose reader warnings a consumer's own lines
 /// carry once the consumer has used it ([`Catalogue::reader_warning_lines`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub enum Reader {
     /// Scripted localisation ([`Catalogue::scripted_content`]).
     Scripted,
@@ -551,6 +553,7 @@ pub enum Reader {
 /// saved state, so a family restored from a commit reports what the same
 /// family continued in memory would.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct OwnRefusals {
     texts: Refusals,
     readers: BTreeSet<Reader>,
@@ -851,6 +854,19 @@ pub fn display_text(bytes: &[u8]) -> Result<String, String> {
     plain_text(text)
         .map(|text| text.trim().to_owned())
         .map_err(|reason| format!("holds {reason}"))
+}
+
+// Loaded once a run, and handed through a preparation's spool as it is.
+impl replay_spool::Spooled for Catalogue {
+    const RESIDENT: bool = true;
+
+    fn spool(&self, _: &mut replay_spool::Writer<'_>) -> std::io::Result<()> {
+        Err(replay_spool::invalid("Content is resident, never written"))
+    }
+
+    fn unspool(_: &mut replay_spool::Reader<'_>) -> std::io::Result<Self> {
+        Err(replay_spool::invalid("Content is resident, never read"))
+    }
 }
 
 /// One source's shared content facts for one set of folders and one presentation.

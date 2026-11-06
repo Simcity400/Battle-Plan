@@ -454,7 +454,8 @@ fn project_with(models: &[Model], starts: &[i32], cat: Option<Arc<Catalogue>>) -
     if let Some(mut done) = projector.take() {
         done.end(&mut out).unwrap();
     }
-    out
+    // As its emit is handed them: written to the spool and read back.
+    replay_spool::respool(out).unwrap()
 }
 
 /// The hours segments led: each a prefix of its segment, before its reads are its own.

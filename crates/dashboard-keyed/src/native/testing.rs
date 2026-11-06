@@ -167,7 +167,8 @@ pub fn operate_segmented<S: Segmented>(
         })
         .unwrap();
     }
-    hours
+    // As the family's emit is handed them: written to the spool and read back.
+    replay_spool::respool(hours).unwrap()
 }
 
 fn identity() -> Identity {

@@ -548,13 +548,14 @@ fn run(
     // Each lane's batch seals and commits beside it while it goes on with the next.
     let sealers = members.len().min(threads);
     let walked = publisher.sealing(sealers, || {
-        let scratch = segments::Folder::new(store.folder().with_extension("spill"))?;
+        // Emptied as each run starts and removed as it ends.
+        let spool = store.folder().with_extension("spool");
         let walk = Walk {
             shape: &shape,
             members: &mut members,
             world: (replay.format, replay.capture_mode),
             settings: &settings,
-            scratch: &scratch,
+            spool: &spool,
             cancelled,
             measuring: options.measure,
             commits: &commits,
@@ -563,11 +564,7 @@ fn run(
                 accepted(&report(&failed, bytes));
             },
         };
-        let walked = walk_all(&mut recording, ahead, walk);
-        drop(scratch);
-        // Each spill went with its handle; the folder goes once empty.
-        let _ = std::fs::remove_dir(store.folder().with_extension("spill"));
-        walked
+        walk_all(&mut recording, ahead, walk)
     });
     let mut walked = match walked {
         Ok(walked) if !walked.ran.cancelled => walked,
@@ -632,7 +629,6 @@ fn run(
                     families: narrow,
                 }),
                 working: [started_with, loaded_with, ended_with],
-                walker_budget: settings.walker_bytes,
             })
         })
         .transpose()?;
@@ -788,7 +784,8 @@ pub(crate) struct Walk<'w, 'm> {
     /// The format and capture mode the walks' worlds read.
     pub world: (FormatVersion, CaptureMode),
     pub settings: &'w Settings,
-    pub scratch: &'w dyn segments::Scratch,
+    /// The folder the run's items wait in for their emits.
+    pub spool: &'w std::path::Path,
     pub cancelled: &'w AtomicBool,
     pub measuring: bool,
     pub commits: &'w Commits,
@@ -910,7 +907,7 @@ pub(crate) fn walk_all(
         members,
         world,
         settings,
-        scratch,
+        spool,
         cancelled,
         measuring,
         commits,
@@ -930,7 +927,7 @@ pub(crate) fn walk_all(
             members: narrow,
             world,
             settings,
-            scratch,
+            spool,
             cancelled,
             measuring,
             commits,
@@ -961,7 +958,7 @@ pub(crate) fn walk_all(
         members: union,
         world,
         settings,
-        scratch,
+        spool,
         cancelled,
         measuring,
         commits,
@@ -991,7 +988,7 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
         members,
         world: (format, mode),
         settings,
-        scratch,
+        spool,
         cancelled,
         measuring,
         commits,
@@ -1048,7 +1045,7 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
                 let union = Needs::union(visited.iter().map(|&lane| &needs[lane]));
                 World::new(&union, format, mode).map(|world| Walked::new(world, &walking))
             };
-            segments::run_in(recording, settings, scratch, &cancellation, &worlds, lanes)
+            segments::run_in(recording, settings, spool, &cancellation, &worlds, lanes)
         });
         while let Some(count) = commits.wait(seen) {
             seen = count;

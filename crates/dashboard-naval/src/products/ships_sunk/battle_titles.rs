@@ -773,6 +773,7 @@ impl Prepared {
     }
 }
 /// What an hour's new ships' titles read: their picks and the picked places' names.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Sighting {
     picks: Result<Vec<Result<(u32, Option<u32>), String>>, String>,
     requested: BTreeSet<u32>,

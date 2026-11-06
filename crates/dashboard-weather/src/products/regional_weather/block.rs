@@ -234,6 +234,12 @@ impl dashboard_keyed::Observer for Observer {
         Some(Box::new(segment::Keeper::default()))
     }
 
+    fn unspool_operands(
+        input: &mut replay_spool::Reader<'_>,
+    ) -> io::Result<Box<dyn dashboard_keyed::block::Operands<Self>>> {
+        segment::unspool(input)
+    }
+
     type Content = super::temperature::Resolved;
 
     fn content(

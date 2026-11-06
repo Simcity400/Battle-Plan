@@ -3,6 +3,7 @@ use super::*;
 /// Stable recording values, independent of the supported executable's addresses.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
+#[derive(replay_spool::Spooled)]
 pub enum EquipmentDestructionCause {
     #[default]
     Unknown = 0,
@@ -230,6 +231,7 @@ impl From<engine_events::equipment_destruction::Cause> for EquipmentDestructionC
 /// Coverage of the supplemental deletion, transfer and live-pool writer group.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(replay_spool::Spooled)]
 pub enum EquipmentDestructionCoverage {
     #[default]
     Complete = 0,
@@ -284,6 +286,7 @@ impl NativeValue for EquipmentDestructionCoverage {
 /// otherwise land. Convoy (bit 0) is naval; train and railway gun are land.
 /// Unresolved tokens/content leave the domain unknown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct EquipmentDestructionRow {
     pub country: u32,
     pub cause: EquipmentDestructionCause,
@@ -308,6 +311,7 @@ typed_codec!(EquipmentDestructionRow, 104,
 /// Its field is independent of the optional destruction cause.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(replay_spool::Spooled)]
 pub enum DivisionDeletionDisposition {
     #[default]
     Loss = 0,
@@ -390,6 +394,7 @@ impl NativeValue for Option<EquipmentDestructionCause> {
 /// A witness proves its event, not presence at an earlier census. A complete table
 /// certifies that no censused division disappeared without an event witness.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionEquipmentDeletionRow {
     /// Full native handle, joining Divisions.id.
     pub division_handle: u64,

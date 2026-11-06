@@ -6,6 +6,7 @@ use super::*;
 /// derives stack kind and settled route point from these and content;
 /// nothing of the map entity is recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TaskForceMapMotionRow {
     pub task_force: u64,
     pub target: u32,
@@ -36,6 +37,7 @@ opaque_value!(Option<[u64; 2]>);
 /// terrain. `modified_range` precedes playback's content distance scale
 /// and guarded half. Raw simulation bytes are not booleans.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FreshTaskForceCounterEta {
     pub sample_hour: PacketHour,
     pub base_speed: Option<i64>,
@@ -59,6 +61,7 @@ typed_codec!(TaskForceMapMotionRow, 64, |r| r.task_force as u128, |k| Self { tas
 /// raw fixed5. One row per pair a registered mine-laying mission needs;
 /// zero is kept.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalMineLevelRow {
     /// Canonical country slot.
     pub country: u32,
@@ -81,6 +84,7 @@ typed_codec!(NavalMineLevelRow, 64, |row| (row.country as u128) << 32 | row.regi
 /// setup resizing and save loading build them. This set is not proven
 /// complete: navy pointers held by other objects have not all been tracked.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalRegionAccessRow {
     pub country: u32,
     pub region: u32,
@@ -91,6 +95,7 @@ typed_codec!(NavalRegionAccessRow, 64, |row| (row.country as u128) << 32 | row.r
  { 0 => (mode): U8 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SunkShipEntry {
     pub ship_name: Vec<u8>,
     pub attribution_name: Vec<u8>,
@@ -115,6 +120,7 @@ value_struct!(SunkShipEntry {ship_name: Vec<u8>, attribution_name: Vec<u8>, clas
 
 /// SunkConvoys: key month:killer_country:owner_country (96 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SunkConvoyRow {
     pub month: i32,
     pub killer_country: u32,
@@ -127,6 +133,7 @@ typed_codec!(SunkConvoyRow, 96, |row| (row.month as u32 as u128) << 64 | (row.ki
 
 /// NavalResults: key id (64 bits), 10 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalResultRow {
     pub id: u64,
     pub province: u32,
@@ -155,6 +162,7 @@ typed_codec!(NavalResultRow, 64, |row| row.id as u128, |key| Self { id: key as u
 /// merge. A merge overwrites result dates. Skipped creation contributes
 /// no row; an incomplete interval is unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalResultSourceRow {
     pub id: u64,
     pub game_hour: i32,
@@ -179,6 +187,7 @@ typed_codec!(NavalResultSourceRow, 64, |row| row.id as u128,
 
 /// NavalResultMembers: key result:member (128 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalResultMemberRow {
     pub result: u64,
     pub member: u64,
@@ -191,6 +200,7 @@ typed_codec!(NavalResultMemberRow, 128, |row| (row.result as u128) << 64 | row.m
 
 /// NavalResultCountries: key result:list:country (104 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalResultCountryRow {
     pub result: u64,
     pub country: u32,
@@ -202,6 +212,7 @@ typed_codec!(NavalResultCountryRow, 104, |row| (row.result as u128) << 40 | (row
 
 /// SunkShips: key singleton zero (0 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SunkShipsRow {
     pub entries: Vec<SunkShipEntry>,
 }
@@ -213,6 +224,7 @@ typed_codec!(SunkShipsRow, 0, |_row| 0, |_key| Self { entries: Default::default(
 /// registry spillovers; icon rotation counts engaged entries of every
 /// class. A nonempty vector raises a sea province's retained naval-result marker.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalProvinceCombatRow {
     pub province: u32,
     pub combats: Vec<u64>,
@@ -233,6 +245,7 @@ typed_codec!(NavalProvinceCombatRow, 32, |row| row.province as u128, |key| Self 
 /// A naval combat's transfer handles in stored order, including zero and
 /// stale handles, walked for the spillover pass.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalCombatTransferRow {
     pub combat: u64,
     pub transfers: Vec<u64>,
@@ -243,6 +256,7 @@ typed_codec!(NavalCombatTransferRow, 64, |row| row.combat as u128, |key| Self { 
 /// A live transfer's live unit handles in stored order: nonzero references
 /// that resolve to a unit and are saved. Stale handles are left out.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalTransferUnitRow {
     pub transfer: u64,
     pub units: Vec<u64>,
@@ -259,6 +273,7 @@ typed_codec!(NavalTransferUnitRow, 64, |row| row.transfer as u128, |key| Self { 
 /// A task force with neither current nor accessible regions has no row, so a
 /// row is never empty. Resolve owner through CountryLinks.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TaskForceMissionRow {
     pub task_force: u64,
     pub owner: u32,
@@ -272,6 +287,7 @@ typed_codec!(TaskForceMissionRow, 64, |row| row.task_force as u128, |key| Self {
 /// combat window icons, plus the manager's snow ceiling (set at load),
 /// repeated on every row so it delta-encodes to nothing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WeatherRegionRow {
     pub id: u32,
     pub max_snow: i64,
@@ -312,6 +328,7 @@ typed_codec!(WeatherRegionRow, 32, |row| row.id as u128, |key| Self { id: key as
 /// Sampling current snow/mud planes each acquisition needs no startup/load
 /// witness, including attachment in the middle of a game.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WeatherDisplay {
     pub width: u32,
     pub height: u32,
@@ -331,6 +348,7 @@ opaque_value!(Option<WeatherDisplay>);
 /// update gate proves the direction from the hour; an independently failed
 /// held observation never becomes a calendar-derived value.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WeatherDaylight {
     pub updated: bool,
     pub held: Option<[i64; 3]>,
@@ -368,6 +386,7 @@ impl WeatherDaylight {
 /// ORs raw and custom mud before writing that byte. The province's day/night record is
 /// [`DayNightClock`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WeatherProvinceRow {
     pub id: u32,
     pub snow: i64,
@@ -408,6 +427,7 @@ typed_codec!(WeatherProvinceRow, 32, |row| row.id as u128, |key| Self { id: key 
 /// key and its raw fixed5 value, the sum of that key over the static modifiers the record
 /// holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProvinceModifierEntry {
     pub key: u32,
     pub value: i64,
@@ -426,6 +446,7 @@ value_struct!(ProvinceModifierEntry {
 /// moving division at war takes `attrition`, and `heat_attrition` and `winter_attrition`
 /// scaled by acclimatization and the country's and commander's thermal factors.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProvinceWeatherModifiers {
     pub entries: Vec<ProvinceModifierEntry>,
 }
@@ -467,6 +488,7 @@ opaque_value!(Option<ProvinceWeatherModifiers>);
 /// hour in field 4 alone; earlier formats none. Format-102 captures written before the anchored
 /// words share the version but not the layout, so their blocks read as malformed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProvinceTemperature {
     temperature: Recorded<i64>,
     drift: Recorded<i64>,
@@ -547,6 +569,7 @@ impl ProvinceTemperature {
 /// anchor be compared with its derivation; `witness` is [`crate::temperature::witness`] of every
 /// record's committed temperature read at the frame's hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemperaturePass {
     pub anchor: i32,
     pub cursor: i32,
@@ -563,6 +586,7 @@ opaque_value!(Option<TemperaturePass>);
 /// order-dependent checksum in those bytes, which decodes as no witness, so their derived
 /// temperatures are refused by name.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemperatureWitness(Option<u64>);
 
 impl TemperatureWitness {
@@ -632,6 +656,7 @@ impl crate::checkpoint::values::CheckpointValue for TemperatureWitness {
 /// row's clock in fields 6 and 7, which read as held; earlier formats none.
 /// The default is [`Self::UPDATED`], whose words are all zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DayNightClock {
     local_hour: Recorded<i32>,
     night_factor: Recorded<i64>,
@@ -726,6 +751,7 @@ mod tests;
 
 /// NavalSupremacy: key region:country (64 bits), 7 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalSupremacyRow {
     pub region: u32,
     pub region_slot: u32,

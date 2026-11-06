@@ -26,6 +26,7 @@ engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
 installed-content-core.workspace = true
+replay-spool.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
 installed-content-country-names.workspace = true
 installed-content-equipment-graphics.workspace = true

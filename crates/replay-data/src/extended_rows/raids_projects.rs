@@ -1,6 +1,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectState {
     pub current_offset: u32,
     pub state_enums: [u32; 4],
@@ -21,6 +22,7 @@ value_struct!(ProjectState {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectContext {
     pub province: i32,
     pub progress: i32,
@@ -35,6 +37,7 @@ pub struct ProjectContext {
 value_struct!(ProjectContext {province: i32, progress: i32, character_reference: u64, country_present: u8, country_reference: Option<u32>, scientist_present: u8, scientist_reference: Option<u32>, state_present: u8, state_reference: Option<u32>});
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidSource {
     pub kind: Option<u32>,
     pub kind_present: u8,
@@ -58,6 +61,7 @@ value_struct!(RaidSource {kind: Option<u32>, kind_present: u8, province: u32, sh
 /// `leader_country` is the captor of the resolved `leader_reference`,
 /// `None` when the reference does not resolve.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidScope {
     /// The target scope's province id.
     pub province: u32,
@@ -89,6 +93,7 @@ value_struct!(RaidScope {province: u32, state: u32, leader_reference: u64, leade
 /// Lost naming provenance requires the shared stored-text language rule; see
 /// the viewer's raid tooltip README for capture behavior and oracle limits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidTooltipOperandRow {
     pub raid: u64,
     pub ordinal: u32,
@@ -104,6 +109,7 @@ typed_codec!(RaidTooltipOperandRow, 96, |row| (row.raid as u128) << 32 | row.ord
 /// Lookup selects the first province match and reads its active-project
 /// token. Daily ProjectPrograms cannot supply this hover.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidFacilityRow {
     pub country: u32,
     pub ordinal: u32,
@@ -118,6 +124,7 @@ typed_codec!(RaidFacilityRow, 64, |row| (row.country as u128) << 32 | row.ordina
 
 /// ProjectPrograms: key id (32 bits), 8 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectProgramRow {
     pub id: u32,
     pub owner: u32,
@@ -134,6 +141,7 @@ pub struct ProjectProgramRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectFacilityOperand {
     pub kind: u32,
     pub scientist: u64,
@@ -155,6 +163,7 @@ value_struct!(ProjectFacilityOperand {
 opaque_value!(Option<Vec<ProjectFacilityOperand>>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectScientistAssignment {
     pub scientist: u64,
     pub target: i32,
@@ -173,6 +182,7 @@ typed_codec!(ProjectProgramRow, 32, |row| row.id as u128, |key| Self { id: key a
 
 /// Projects: key owner:local_id (64 bits), 15 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectRow {
     pub owner: u32,
     pub local_id: u32,
@@ -185,6 +195,7 @@ pub struct ProjectRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectVariable {
     pub name: Vec<u8>,
     pub value_raw: i64,
@@ -192,6 +203,7 @@ pub struct ProjectVariable {
 value_struct!(ProjectVariable { name: Vec<u8>, value_raw: i64 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectVariableStore {
     pub seed: u32,
     pub entries: Vec<ProjectVariable>,
@@ -199,6 +211,7 @@ pub struct ProjectVariableStore {
 value_struct!(ProjectVariableStore { seed: u32, entries: Vec<ProjectVariable> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectRuntime {
     pub pending_known: bool,
     pub pending_reward: Option<u32>,
@@ -212,6 +225,7 @@ typed_codec!(ProjectRow, 64, |row| (row.owner as u128) << 32 | row.local_id as u
 
 /// ProjectHistory: key owner:project:ordinal (96 bits), 12 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectHistoryRow {
     pub owner: u32,
     pub project: u32,
@@ -226,6 +240,7 @@ typed_codec!(ProjectHistoryRow, 96, |row| (row.owner as u128) << 64 | (row.proje
 
 /// ProjectBreakthroughs: key owner:specialization (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProjectBreakthroughRow {
     pub owner: u32,
     pub specialization: u32,
@@ -236,6 +251,7 @@ typed_codec!(ProjectBreakthroughRow, 64, |row| (row.owner as u128) << 32 | row.s
 
 /// Nukes: key country:nuke_type (64 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NukeRow {
     pub country: u32,
     pub nuke_type: u32,
@@ -252,6 +268,7 @@ typed_codec!(NukeRow, 64, |row| (row.country as u128) << 32 | row.nuke_type as u
 /// instead. `used_types` is the saved `fire_only_once` history. Both hold
 /// raid type lexer tokens in stored order; name them through `LexicalTokens`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidCountryRow {
     pub canonical_slot: u32,
     pub country: i32,
@@ -272,6 +289,7 @@ typed_codec!(RaidCountryRow, 32, |row| row.canonical_slot as u128, |key| Self { 
 /// the playing country (else observer country). Not saved: a save
 /// comparison cannot check it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidPlayerAllowedTypeRow {
     pub country: u32,
     pub allowed: Vec<u32>,
@@ -284,6 +302,7 @@ typed_codec!(RaidPlayerAllowedTypeRow, 32, |row| row.country as u128, |key| Self
 /// `show_for` holds the raw country handles an ended raid's result is shown
 /// to, saved as `show_for`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidRow {
     pub reference_type: u32,
     pub id: u32,
@@ -314,6 +333,7 @@ typed_codec!(RaidRow, 64, |row| (row.id as u128) << 32 | row.reference_type as u
 /// location scope, raid type definition's lexer token (name through
 /// `LexicalTokens`), and the stored `detected` byte.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidTargetRow {
     pub reference_type: u32,
     pub id: u32,
@@ -332,6 +352,7 @@ typed_codec!(RaidTargetRow, 64, |row| (row.id as u128) << 32 | row.reference_typ
 /// every country's persistent detection: byte `slot / 8`, bit `slot % 8`
 /// of canonical country `slot`; a slot past the end is undetected.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidTargetStatusRow {
     pub ordinal: u32,
     pub valid: u8,
@@ -347,6 +368,7 @@ typed_codec!(RaidTargetStatusRow, 32, |row| row.ordinal as u128,
 /// One stored target cooldown: disables an offer of this raid type (lexer
 /// token) against this scope. Remaining days feed `tooltip_raid_on_cooldown`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidCooldownRow {
     pub owner_slot: u32,
     pub ordinal: u32,
@@ -361,6 +383,7 @@ typed_codec!(RaidCooldownRow, 64, |row| (row.owner_slot as u128) << 32 | row.ord
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
+#[derive(replay_spool::Spooled)]
 pub enum RaidPathDispatcher {
     #[default]
     Land,
@@ -369,6 +392,7 @@ pub enum RaidPathDispatcher {
 
 /// The dispatcher is part of the key; failed searches stay in their own memo.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidPathDistanceRow {
     pub dispatcher: RaidPathDispatcher,
     pub source: u32,
@@ -407,6 +431,7 @@ typed_codec!(RaidPathDistanceRow, 65, |row| (row.dispatcher as u128) << 64 | (ro
 /// that table is daily, the game reads the stat every phase-4 hour, and its
 /// writers are not proven daily-only.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidSpeedInputRow {
     pub reference_type: u32,
     pub id: u32,
@@ -453,6 +478,7 @@ typed_codec!(RaidSpeedInputRow, 64, |row| (row.id as u128) << 32 | row.reference
 /// held at least `L` (about 9.2e8 units) of one archetype, and would surface
 /// as a reported difference.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidEquipmentRow {
     pub reference_type: u32,
     pub id: u32,
@@ -476,6 +502,7 @@ typed_codec!(RaidEquipmentRow, 64, |row| (row.id as u128) << 32 | row.reference_
 /// Hourly, every country, in the same country pass as `CountryCommandPower`: the game's
 /// offer cache re-checks every offer at least hourly.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidCountryInputRow {
     pub canonical_slot: u32,
     /// Uncapped signed whole-plane stockpile total for volunteer senders.
@@ -500,6 +527,7 @@ typed_codec!(RaidCountryInputRow, 32, |row| row.canonical_slot as u128, |key| Se
 /// country a hooked site list or capacity writer marked since the previous
 /// hour, so the lists and capacities equal the game's at every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidAirSiteRow {
     pub canonical_slot: u32,
     pub ordinal: u32,
@@ -518,6 +546,7 @@ typed_codec!(RaidAirSiteRow, 64, |row| (row.canonical_slot as u128) << 32 | row.
 ///
 /// Hourly, every country, in the same country pass as `RaidCountryInputs`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AceRangeInputRow {
     pub canonical_slot: u32,
     pub ace: u64,
@@ -575,6 +604,7 @@ impl AceRangeInputRow {
 /// present owner has zero weights/counters and observed zero spotting scale;
 /// an absent owner has no strategic-air object.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidAirScoreRow {
     pub country: u32,
     pub region: u32,
@@ -611,6 +641,7 @@ typed_codec!(RaidAirScoreRow, 64, |r| (r.country as u128) << 32 | r.region as u1
 /// clamp semantics. Operatives retain roster occurrences; the rating
 /// deduplicates their objects and stacks contributions.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidIntelInputRow {
     pub country: u32,
     pub strategic_present: u8,
@@ -620,6 +651,7 @@ pub struct RaidIntelInputRow {
     pub operatives: Vec<RaidCounterOperative>,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RaidCounterOperative {
     pub handle: u64,
     pub defense: i64,

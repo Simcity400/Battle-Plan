@@ -189,7 +189,6 @@ fn an_operator_reads_the_hours_its_family_observes_from_its_own_frame() {
             assert_eq!(hour.hour, frame.hour);
             assert!(hour.dated, "the ships are read every hour");
             let Some((ships, sampled, complete, written)) = &hour.read else {
-                assert_eq!(hour.heap(), 0);
                 continue;
             };
             read.push(hour.hour);
@@ -200,7 +199,6 @@ fn an_operator_reads_the_hours_its_family_observes_from_its_own_frame() {
             assert_eq!(ships, &expected, "{restarts:?} at {}", hour.hour);
             assert!(complete);
             assert_eq!(*sampled, (hour.hour >= 110).then_some(110), "at {}", hour.hour);
-            assert_eq!(hour.heap(), 1);
             // The ships give their rows whole where they are refused or come back, and where
             // a segment starts; else only the first ship's strength moves.
             let restated = [100, 105, 107].contains(&hour.hour)

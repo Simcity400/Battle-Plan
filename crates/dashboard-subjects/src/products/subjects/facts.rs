@@ -11,7 +11,7 @@ use dashboard_text::metadata::{CountryKeys, link_slots};
 use dashboard_world::{Needs, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -36,18 +36,11 @@ pub fn needs() -> Needs {
 }
 
 /// One hour of a segment: none where it changes nothing the scan reads.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub inputs: Option<Box<Inputs>>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.inputs
-            .as_ref()
-            .map_or(0, |inputs| std::mem::size_of::<Inputs>() + inputs.heap())
-    }
 }
 
 /// The fields of `table` named `names`, as change-mask bits.

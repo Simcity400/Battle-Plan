@@ -4,7 +4,7 @@ use crate::columnar_frames::{
     fixtures::{churned, every, recording},
 };
 use replay_columnar::envelope::{Extent, FOOTER_BYTES, UNIT_ORDINALS};
-use std::{collections::HashMap, mem::size_of, sync::atomic::AtomicUsize};
+use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicUsize};
 
 /// Bytes alive at once, as the values counting themselves into it hold them.
 struct Gauge {
@@ -13,7 +13,7 @@ struct Gauge {
     peak: AtomicUsize,
 }
 
-/// Every gauge, by id, for items read back from a spill to count themselves in again.
+/// Every gauge, by id, for items read back from the spool to count themselves in again.
 static GAUGES: Mutex<Vec<&'static Gauge>> = Mutex::new(Vec::new());
 
 impl Gauge {
@@ -54,15 +54,13 @@ impl Gauge {
 /// and the hours its operator saw before it since it started.
 type Saw = (u64, i32, u32, u32, bool, u64);
 
-/// An hour a probe saw, holding bytes counted alive in its gauge.
+/// An hour a probe saw, holding bytes counted alive in its gauge: written to the spool, its
+/// pad by its length.
 struct Seen {
     saw: Saw,
     pad: Vec<u8>,
     gauge: &'static Gauge,
 }
-
-/// A spilled [`Seen`]: its gauge, branch, hour, run, ordinal, start, hours before and pad.
-const SPILLED_SEEN: usize = 8 + 8 + 4 + 4 + 4 + 1 + 8 + 8;
 
 impl Seen {
     fn new(saw: Saw, pad: usize, gauge: &'static Gauge) -> Self {
@@ -87,47 +85,17 @@ fn read<const N: usize>(bytes: &[u8], at: &mut usize) -> [u8; N] {
     read
 }
 
-impl Item for Seen {
-    const SPILLS: bool = true;
-
-    fn heap(&self) -> usize {
-        self.pad.capacity()
+impl Spooled for Seen {
+    fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        self.gauge.id.spool(out)?;
+        self.saw.spool(out)?;
+        self.pad.len().spool(out)
     }
 
-    fn save(items: &[Self], out: &mut Vec<u8>) -> io::Result<()> {
-        for item in items {
-            let (branch, hour, run, ordinal, starts, walked) = item.saw;
-            out.extend_from_slice(&(item.gauge.id as u64).to_le_bytes());
-            out.extend_from_slice(&branch.to_le_bytes());
-            out.extend_from_slice(&hour.to_le_bytes());
-            out.extend_from_slice(&run.to_le_bytes());
-            out.extend_from_slice(&ordinal.to_le_bytes());
-            out.push(u8::from(starts));
-            out.extend_from_slice(&walked.to_le_bytes());
-            out.extend_from_slice(&(item.pad.len() as u64).to_le_bytes());
-        }
-        Ok(())
-    }
-
-    fn load(bytes: &[u8]) -> io::Result<Vec<Self>> {
-        assert_eq!(bytes.len() % SPILLED_SEEN, 0);
-        Ok(bytes
-            .chunks_exact(SPILLED_SEEN)
-            .map(|item| {
-                let at = &mut 0;
-                let gauge = Gauge::of(u64::from_le_bytes(read(item, at)) as usize);
-                let saw = (
-                    u64::from_le_bytes(read(item, at)),
-                    i32::from_le_bytes(read(item, at)),
-                    u32::from_le_bytes(read(item, at)),
-                    u32::from_le_bytes(read(item, at)),
-                    read::<1>(item, at)[0] != 0,
-                    u64::from_le_bytes(read(item, at)),
-                );
-                let pad = u64::from_le_bytes(read(item, at)) as usize;
-                Seen::new(saw, pad, gauge)
-            })
-            .collect())
+    fn unspool(input: &mut replay_spool::Reader<'_>) -> io::Result<Self> {
+        let gauge = Gauge::of(usize::unspool(input)?);
+        let saw = Saw::unspool(input)?;
+        Ok(Seen::new(saw, usize::unspool(input)?, gauge))
     }
 }
 
@@ -462,49 +430,15 @@ fn starts_and_crossings(saw: &[Saw]) -> (Vec<i32>, Vec<i32>) {
     (started, crossed)
 }
 
-/// Scratch in memory, counting its spills and what it holds.
-#[derive(Default)]
-struct Memory {
-    spills: AtomicUsize,
-    held: Arc<AtomicUsize>,
+fn settings(threads: usize) -> Settings {
+    Settings::new(threads)
 }
 
-struct Kept {
-    bytes: Vec<u8>,
-    held: Arc<AtomicUsize>,
-}
-
-impl Scratch for Memory {
-    fn spill(&self, bytes: &[u8]) -> io::Result<Box<dyn Spilled>> {
-        self.spills.fetch_add(1, Ordering::SeqCst);
-        self.held.fetch_add(bytes.len(), Ordering::SeqCst);
-        Ok(Box::new(Kept {
-            bytes: bytes.to_vec(),
-            held: Arc::clone(&self.held),
-        }))
-    }
-}
-
-impl Spilled for Kept {
-    fn read(&self, out: &mut Vec<u8>) -> io::Result<()> {
-        out.clear();
-        out.extend_from_slice(&self.bytes);
-        Ok(())
-    }
-}
-
-impl Drop for Kept {
-    fn drop(&mut self) {
-        self.held.fetch_sub(self.bytes.len(), Ordering::SeqCst);
-    }
-}
-
-fn settings(threads: usize, window: usize) -> Settings {
-    Settings {
-        window,
-        slots: window,
-        ..Settings::new(threads)
-    }
+/// A spool folder of the run's own: tests run at once, and a run empties its folder.
+fn spool() -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let next = NEXT.fetch_add(1, Ordering::SeqCst);
+    std::env::temp_dir().join(format!("segments-spool-{}-{next}", std::process::id()))
 }
 
 fn opened(runs: &[(u64, i32, u32)]) -> Recording {
@@ -524,8 +458,9 @@ fn alternating(branches: u64, rounds: u64) -> Vec<(u64, i32, u32)> {
 }
 
 /// Every segment reaches its family in order, each with every hour of its own once, its
-/// first starting it, while no more segments are held than the window allows: of two runs,
-/// and of six runs of twenty segments, three runs of one branch.
+/// first starting it, while no walk holds what it projected: only the items an emit is
+/// handed at once and each worker's item being written are alive. Of two runs, and of six
+/// runs of twenty segments, three runs of one branch.
 #[test]
 fn segments_reach_their_family_in_order_with_their_own_hours() {
     let few = [(4, 10, 3 * UNIT_ORDINALS + 5), (9, 50_000, 7)];
@@ -540,14 +475,14 @@ fn segments_reach_their_family_in_order_with_their_own_hours() {
     for runs in [&few[..], &many[..]] {
         let file = opened(runs);
         let saw = expected(&file, anywhere);
-        for (threads, window) in [(1, 1), (3, 1), (8, 2), (8, 64)] {
+        for threads in [1, 3, 8] {
             let probes = Probes::new(anywhere);
             let mut seen = Vec::new();
             let stats = whole(
                 run(
                     &file,
-                    &settings(threads, window),
-                    &Memory::default(),
+                    &settings(threads),
+                    &spool(),
                     &Cancellation::default(),
                     vec![probing("probe", &probes, &mut seen)],
                 )
@@ -560,10 +495,15 @@ fn segments_reach_their_family_in_order_with_their_own_hours() {
                 "each segment starts once"
             );
             assert_eq!(stats.walks, file.segments().len());
-            assert!(stats.segments <= window);
             assert_eq!((stats.deferred, stats.parked), (0, 0));
             assert_eq!(probes.items.now(), 0);
-            assert!(probes.items.peak() <= window * UNIT_ORDINALS as usize * probes.pad);
+            let segment = file
+                .segments()
+                .iter()
+                .map(|s| (s.last - s.first + 1) as usize)
+                .max();
+            assert!(probes.items.peak() <= (segment.unwrap() + threads) * probes.pad);
+            assert!(stats.spooled > 0 && stats.spool_bytes > 0);
         }
     }
     let file = opened(&many);
@@ -587,14 +527,14 @@ fn a_family_passing_a_branch_walks_and_emits_none_of_its_segments() {
     ] {
         let saw = expected(&file, starts);
         let second: Vec<Saw> = saw.iter().copied().filter(|saw| saw.0 == 2).collect();
-        for (threads, window) in [(1, 1), (4, 8)] {
+        for threads in [1, 4] {
             let alone = Probes::new(starts);
             let mut seen = Vec::new();
             let stats = whole(
                 run(
                     &file,
-                    &settings(threads, window),
-                    &Memory::default(),
+                    &settings(threads),
+                    &spool(),
                     &Cancellation::default(),
                     vec![probing("alone", &alone, &mut seen).passes(&[1])],
                 )
@@ -609,8 +549,8 @@ fn a_family_passing_a_branch_walks_and_emits_none_of_its_segments() {
             whole(
                 run(
                     &file,
-                    &settings(threads, window),
-                    &Memory::default(),
+                    &settings(threads),
+                    &spool(),
                     &Cancellation::default(),
                     vec![
                         probing("beside", &beside, &mut passing).passes(&[1]),
@@ -693,14 +633,14 @@ fn a_family_goes_on_from_its_carry_where_an_earlier_run_left_it() {
                 carry: carried.then_some(&carries[1][..]),
             },
         ];
-        for (threads, window) in [(1, 1), (4, 2)] {
+        for threads in [1, 4] {
             let probes = Probes::new(starts);
             let mut seen = Vec::new();
             let stats = whole(
                 run(
                     &file,
-                    &settings(threads, window),
-                    &Memory::default(),
+                    &settings(threads),
+                    &spool(),
                     &Cancellation::default(),
                     vec![probing("going on", &probes, &mut seen).resumes(&resumes)],
                 )
@@ -737,8 +677,8 @@ fn a_family_goes_on_from_its_carry_where_an_earlier_run_left_it() {
     }];
     let ran = run(
         &file,
-        &settings(2, 2),
-        &Memory::default(),
+        &settings(2),
+        &spool(),
         &Cancellation::default(),
         vec![probing("going on", &probes, &mut seen).resumes(&resumes)],
     )
@@ -755,8 +695,8 @@ fn a_family_goes_on_from_its_carry_where_an_earlier_run_left_it() {
     ];
     let error = run(
         &file,
-        &settings(1, 1),
-        &Memory::default(),
+        &settings(1),
+        &spool(),
         &Cancellation::default(),
         vec![probing("going on", &probes, &mut Vec::new()).resumes(&backwards)],
     )
@@ -767,13 +707,8 @@ fn a_family_goes_on_from_its_carry_where_an_earlier_run_left_it() {
 /// The dictionary size of the state each segment starts from.
 struct Started(Option<usize>);
 
+#[derive(replay_spool::Spooled)]
 struct Size(Option<usize>);
-
-impl Item for Size {
-    fn heap(&self) -> usize {
-        0
-    }
-}
 
 impl Operator for Started {
     type Output = Size;
@@ -812,8 +747,8 @@ fn operators_start_from_the_state_before_the_first_hour() {
     whole(
         run(
             &file,
-            &settings(2, 2),
-            &Memory::default(),
+            &settings(2),
+            &spool(),
             &Cancellation::default(),
             vec![lane],
         )
@@ -823,10 +758,8 @@ fn operators_start_from_the_state_before_the_first_hour() {
     assert_eq!(sizes, [Some(0), Some(ordinals), Some(2 * ordinals)]);
 }
 
-/// Walks of a recording read from its file take, as they start, the whole share of the
-/// walkers' budget their segment's reads need, its stored bytes too: under a budget admitting
-/// one walk at a time or any number, checking the digest chain or not, every hour reaches its
-/// family in order.
+/// Walks of a recording read from its file size their buffers for their segment's reads, its
+/// stored bytes too: checking the digest chain or not, every hour reaches its family in order.
 #[test]
 fn walks_of_a_file_read_within_their_segment_s_share() {
     let runs = [
@@ -840,17 +773,14 @@ fn walks_of_a_file_read_within_their_segment_s_share() {
         let mut file = Recording::open_path(&path, Limits::default()).unwrap();
         file.verify(verify);
         let saw = expected(&file, anywhere);
-        for walker_bytes in [1, usize::MAX] {
+        for threads in [1, 3] {
             let probes = Probes::new(anywhere);
             let mut seen = Vec::new();
             whole(
                 run(
                     &file,
-                    &Settings {
-                        walker_bytes,
-                        ..settings(3, 4)
-                    },
-                    &Memory::default(),
+                    &settings(threads),
+                    &spool(),
                     &Cancellation::default(),
                     vec![probing("probe", &probes, &mut seen)],
                 )
@@ -880,14 +810,14 @@ fn a_segment_its_family_cannot_start_goes_on_from_the_one_before() {
         })
         .collect();
     assert_eq!(starts, [true, false, true, true, true, false]);
-    for (threads, window) in [(1, 1), (1, 2), (4, 1), (4, 2)] {
+    for threads in [1, 4] {
         let probes = Probes::new(not_second);
         let mut seen = Vec::new();
         let stats = whole(
             run(
                 &file,
-                &settings(threads, window),
-                &Memory::default(),
+                &settings(threads),
+                &spool(),
                 &Cancellation::default(),
                 vec![probing("picky", &probes, &mut seen)],
             )
@@ -898,7 +828,8 @@ fn a_segment_its_family_cannot_start_goes_on_from_the_one_before() {
             (probes.started(), probes.crossed()),
             starts_and_crossings(&saw)
         );
-        assert!(stats.segments <= window);
+        // Each operator it parked was written out and read back.
+        assert_eq!((stats.spilled, stats.loaded), (stats.parked, stats.parked));
     }
 }
 
@@ -924,8 +855,8 @@ fn a_branch_s_later_run_its_family_cannot_start_goes_on_from_its_earlier_run() {
         whole(
             run(
                 &file,
-                &settings(threads, 2),
-                &Memory::default(),
+                &settings(threads),
+                &spool(),
                 &Cancellation::default(),
                 vec![probing("continuing", &probes, &mut seen)],
             )
@@ -940,16 +871,12 @@ fn a_branch_s_later_run_its_family_cannot_start_goes_on_from_its_earlier_run() {
 }
 
 /// Over branches in turn, a family going on through every segment of its branch and one
-/// starting everywhere: on one worker and a window of one, and on two workers and a window
-/// of two, each hour reaches each once, in order; each branch's operator starts once and
-/// crosses once into each of its later runs; no more segments are held than the window
-/// allows, nor projected items than the window's segments hold; and parked operators, never
-/// a walker's tables, stay within their budget, but for one a worker being parked, however
-/// many branches wait, spilled past it and going on as they were.
+/// starting everywhere: on one worker and on two, each hour reaches each once, in order; each
+/// branch's operator starts once and crosses once into each of its later runs; and every
+/// operator parked, never a walker's tables, is written out and read back, going on as it was.
 #[test]
-fn alternating_branches_go_on_within_the_window_and_the_continuation_budget() {
+fn alternating_branches_go_on_parked_on_disk() {
     let weight = 64;
-    let carried = size_of::<Probe<'static>>() + weight;
     for branches in [2, 5] {
         let file = opened(&alternating(branches, 4));
         let (cold, going) = (expected(&file, anywhere), expected(&file, branch_start));
@@ -958,67 +885,45 @@ fn alternating_branches_go_on_within_the_window_and_the_continuation_budget() {
             (started.len(), crossed.len()),
             (branches as usize, 3 * branches as usize)
         );
-        for (threads, window) in [(1, 1), (2, 2)] {
-            for carry_bytes in [0, usize::MAX] {
-                let anywhere_probes = Probes::new(anywhere);
-                let going_probes = Probes {
-                    weight,
-                    ..Probes::new(branch_start)
-                };
-                let scratch = Memory::default();
-                let (mut cold_seen, mut going_seen) = (Vec::new(), Vec::new());
-                let stats = whole(
-                    run(
-                        &file,
-                        &Settings {
-                            carry_bytes,
-                            ..settings(threads, window)
-                        },
-                        &scratch,
-                        &Cancellation::default(),
-                        vec![
-                            probing("cold", &anywhere_probes, &mut cold_seen),
-                            probing("going", &going_probes, &mut going_seen),
-                        ],
-                    )
-                    .unwrap(),
-                );
-                assert_eq!(cold_seen, cold);
-                assert_eq!(going_seen, going);
-                assert_eq!(
-                    (going_probes.started(), going_probes.crossed()),
-                    (started.clone(), crossed.clone())
-                );
-                assert_eq!(
-                    (anywhere_probes.started(), anywhere_probes.crossed()),
-                    starts_and_crossings(&cold)
-                );
-                assert!(stats.segments <= window);
-                let segment = UNIT_ORDINALS as usize * anywhere_probes.pad;
-                assert!(anywhere_probes.items.peak() <= window * segment);
-                assert!(going_probes.items.peak() <= window * segment);
-                assert!(stats.parked > 0);
-                if carry_bytes == 0 {
-                    // Each held only as it is parked, until it spills: one a worker at most.
-                    assert!((carried..=threads * carried).contains(&stats.carry_bytes));
-                    // Its walked hours and its weight's length, written and read back.
-                    assert!(stats.carry_scratch >= 16);
-                    assert_eq!((stats.spilled, stats.loaded), (stats.parked, stats.parked));
-                    assert_eq!(scratch.spills.load(Ordering::SeqCst), stats.spilled);
-                    // An operator per worker, and none parked.
-                    assert!(going_probes.operators.peak() <= threads * weight);
-                } else {
-                    assert_eq!((stats.spilled, stats.carry_scratch), (0, 0));
-                    // At most one parked per branch, each its operator alone.
-                    assert!(stats.carry_bytes <= branches as usize * carried);
-                    assert!(
-                        going_probes.operators.peak() <= (threads + branches as usize) * weight
-                    );
-                }
-                assert_eq!(scratch.held.load(Ordering::SeqCst), 0);
-                assert_eq!(going_probes.operators.now(), 0);
-                assert_eq!(going_probes.items.now(), 0);
+        for threads in [1, 2] {
+            let anywhere_probes = Probes::new(anywhere);
+            let going_probes = Probes {
+                weight,
+                ..Probes::new(branch_start)
+            };
+            let (mut cold_seen, mut going_seen) = (Vec::new(), Vec::new());
+            let stats = whole(
+                run(
+                    &file,
+                    &settings(threads),
+                    &spool(),
+                    &Cancellation::default(),
+                    vec![
+                        probing("cold", &anywhere_probes, &mut cold_seen),
+                        probing("going", &going_probes, &mut going_seen),
+                    ],
+                )
+                .unwrap(),
+            );
+            assert_eq!(cold_seen, cold);
+            assert_eq!(going_seen, going);
+            assert_eq!(
+                (going_probes.started(), going_probes.crossed()),
+                (started.clone(), crossed.clone())
+            );
+            assert_eq!(
+                (anywhere_probes.started(), anywhere_probes.crossed()),
+                starts_and_crossings(&cold)
+            );
+            assert_eq!((stats.spilled, stats.loaded), (stats.parked, stats.parked));
+            if stats.parked > 0 {
+                // Its walked hours and its weight's length, written and read back.
+                assert!(stats.carry_scratch >= 16);
             }
+            // An operator per worker at most, and those being parked.
+            assert!(going_probes.operators.peak() <= (threads + branches as usize) * weight);
+            assert_eq!(going_probes.operators.now(), 0);
+            assert_eq!(going_probes.items.now(), 0);
         }
     }
 }
@@ -1030,14 +935,14 @@ fn alternating_branches_go_on_within_the_window_and_the_continuation_budget() {
 fn a_restart_one_family_cannot_start_defers_that_family_alone() {
     let file = opened(&[(1, 0, 4 * UNIT_ORDINALS), (2, 9_000, 3 * UNIT_ORDINALS)]);
     let (cold, picky) = (expected(&file, anywhere), expected(&file, not_second));
-    for (threads, window) in [(1, 1), (1, 4), (4, 4)] {
+    for threads in [1, 4] {
         let (anywhere_probes, picky_probes) = (Probes::new(anywhere), Probes::new(not_second));
         let (mut cold_seen, mut picky_seen) = (Vec::new(), Vec::new());
         let stats = whole(
             run(
                 &file,
-                &settings(threads, window),
-                &Memory::default(),
+                &settings(threads),
+                &spool(),
                 &Cancellation::default(),
                 vec![
                     probing("cold", &anywhere_probes, &mut cold_seen),
@@ -1053,17 +958,16 @@ fn a_restart_one_family_cannot_start_defers_that_family_alone() {
         let segments = file.segments().len();
         assert!(stats.walks >= segments);
         assert!(stats.walks <= segments + stats.deferred);
-        assert!(stats.segments <= window);
     }
 }
 
-/// A family whose first emit is slow holds the window, not the walks within it nor the other
-/// family's emits: every segment the window admits is walked and emitted by the other family
-/// while the first waits, and none past it starts.
+/// A family whose first emit is slow holds that family alone, not the walks nor the other
+/// family's emits: segments go on being walked, and emitted by the other family, while the
+/// first waits.
 #[test]
 fn a_slow_emit_holds_its_family_not_the_walks_or_the_other_families() {
     let file = opened(&[(1, 0, 6 * UNIT_ORDINALS)]);
-    let window = 3;
+    let waits = 3;
     let saw = expected(&file, anywhere);
     let (slow, fast) = (Probes::new(anywhere), Probes::new(anywhere));
     let emitted = (Mutex::new(0_usize), Condvar::new());
@@ -1075,10 +979,10 @@ fn a_slow_emit_holds_its_family_not_the_walks_or_the_other_families() {
             if chunk.segment.first == 0 {
                 // Waits for other tasks, as no emit may: the run's second worker runs them.
                 let mut count = lock(&emitted.0);
-                while *count < window {
+                while *count < waits {
                     count = emitted.1.wait(count).unwrap();
                 }
-                assert_eq!(slow.started().len(), window);
+                assert!(slow.started().len() >= waits);
             }
             slow_seen.extend(chunk.items.iter().map(|item| item.saw));
             Ok(())
@@ -1099,681 +1003,15 @@ fn a_slow_emit_holds_its_family_not_the_walks_or_the_other_families() {
     let stats = whole(
         run(
             &file,
-            &settings(2, window),
-            &Memory::default(),
+            &settings(2),
+            &spool(),
             &Cancellation::default(),
             vec![slow_lane, fast_lane],
         )
         .unwrap(),
     );
-    assert_eq!(stats.segments, window);
+    assert!(stats.segments >= waits);
     assert_eq!((slow_seen, fast_seen), (saw.clone(), saw));
-}
-
-/// In run 1, at its walk's first hour, holding the walkers' only share: says so, then waits
-/// for run 0's emit and for every other worker to wait for work.
-struct Sharing<'t> {
-    run: u32,
-    held: &'t Flag,
-    emitted: &'t Flag,
-    cancellation: &'t Cancellation,
-    others: usize,
-}
-
-impl Operator for Sharing<'_> {
-    type Output = ();
-
-    fn hour(&mut self, hour: &Hour<'_>, _: &mut dyn Sink<()>) -> io::Result<()> {
-        if hour.starts && self.run == 1 {
-            self.held.set();
-            self.emitted.wait();
-            self.cancellation.wait_for_idle(self.others);
-        }
-        Ok(())
-    }
-}
-
-/// Under a walkers' budget admitting one walk at a time, on sixteen workers, no worker waits
-/// inside a walk for that share: while run 1's walk holds it, run 0's emit runs on another
-/// worker, and every other worker waits for work though runs 2 and 3 are ready to walk.
-#[test]
-fn a_one_walker_budget_leaves_the_other_workers_free_for_emits() {
-    let file = opened(&[(1, 0, 10), (2, 100, 10), (3, 200, 10), (4, 300, 10)]);
-    let threads = 16;
-    let (held, emitted, cancellation) = (Flag::default(), Flag::default(), Cancellation::default());
-    let mut runs = Vec::new();
-    let lane = Lane::new(
-        "sharing",
-        |segment: &Segment| {
-            Ok(Sharing {
-                run: segment.run,
-                held: &held,
-                emitted: &emitted,
-                cancellation: &cancellation,
-                others: threads - 1,
-            })
-        },
-        |chunk: Chunk<'_, ()>| {
-            if chunk.segment.run == 0 {
-                // Waits for another task, as no emit may: run 1's walk, on another worker.
-                held.wait();
-                emitted.set();
-            }
-            runs.push(chunk.segment.run);
-            Ok(())
-        },
-    );
-    let stats = whole(
-        run(
-            &file,
-            &Settings {
-                walker_bytes: 1,
-                ..settings(threads, threads)
-            },
-            &Memory::default(),
-            &cancellation,
-            vec![lane],
-        )
-        .unwrap(),
-    );
-    assert_eq!(runs, [0, 1, 2, 3]);
-    assert_eq!(stats.walks, 4);
-}
-
-/// With no output budget to spare, once a walk has sealed and so says what a segment needs,
-/// only the first segment some family has not emitted starts: while the first waits for its
-/// emit, the other workers find nothing to do. One segment is held at a time, however many
-/// workers, and every chunk spills, the first segment's too.
-#[test]
-fn a_spent_output_budget_admits_only_the_first_segment_not_emitted() {
-    let file = opened(&[(1, 0, 4 * UNIT_ORDINALS), (2, 9_000, 2 * UNIT_ORDINALS)]);
-    let saw = expected(&file, anywhere);
-    let first = file.segments()[0];
-    for threads in [1, 3] {
-        let cancellation = Cancellation::default();
-        let probes = Probes::new(anywhere);
-        let mut seen = Vec::new();
-        let lane = Lane::new(
-            "probe",
-            |segment: &Segment| probes.make(segment),
-            |chunk: Chunk<'_, Seen>| {
-                if *chunk.segment == first {
-                    cancellation.wait_for_idle(threads - 1);
-                    assert_eq!(probes.started(), [0]);
-                }
-                seen.extend(chunk.items.iter().map(|item| item.saw));
-                Ok(())
-            },
-        );
-        let stats = whole(
-            run(
-                &file,
-                &Settings {
-                    output_bytes: 0,
-                    ..settings(threads, 8)
-                },
-                &Memory::default(),
-                &cancellation,
-                vec![lane],
-            )
-            .unwrap(),
-        );
-        assert_eq!(seen, saw);
-        assert_eq!(stats.segments, 1);
-        assert_eq!(stats.walks, file.segments().len());
-        assert_eq!(stats.chunks_spilled, file.segments().len());
-        assert!(probes.items.peak() <= UNIT_ORDINALS as usize * probes.pad);
-        assert_eq!(probes.items.now(), 0);
-    }
-}
-
-/// A family holding all its slots holds the walks past the first segment it has not
-/// emitted: the other worker finds nothing to do.
-#[test]
-fn a_family_holding_its_slots_holds_the_walks() {
-    let file = opened(&[(1, 0, 4 * UNIT_ORDINALS)]);
-    let saw = expected(&file, anywhere);
-    let cancellation = Cancellation::default();
-    let probes = Probes::new(anywhere);
-    let mut seen = Vec::new();
-    let lane = Lane::new(
-        "probe",
-        |segment: &Segment| probes.make(segment),
-        |chunk: Chunk<'_, Seen>| {
-            if chunk.segment.first == 0 {
-                cancellation.wait_for_idle(1);
-                // Segment 0, and one the other worker started before it sealed.
-                assert!(probes.started().len() <= 2);
-            }
-            seen.extend(chunk.items.iter().map(|item| item.saw));
-            Ok(())
-        },
-    );
-    let stats = whole(
-        run(
-            &file,
-            &Settings {
-                slots: 1,
-                ..settings(2, 4)
-            },
-            &Memory::default(),
-            &cancellation,
-            vec![lane],
-        )
-        .unwrap(),
-    );
-    assert!(stats.segments <= 2);
-    assert_eq!(seen, saw);
-}
-
-/// The walks of two runs, each waiting at its first hour until the other's runs too, or
-/// every other worker waits for work; and the most seen at once.
-struct Together<'t> {
-    walking: AtomicUsize,
-    most: AtomicUsize,
-    threads: usize,
-    cancellation: &'t Cancellation,
-}
-
-impl Together<'_> {
-    fn meet(&self) {
-        let walking = self.walking.fetch_add(1, Ordering::SeqCst) + 1;
-        self.most.fetch_max(walking, Ordering::SeqCst);
-        self.cancellation.poke();
-        self.cancellation.wait_for_idle_until(|idle| {
-            let walking = self.walking.load(Ordering::SeqCst);
-            walking >= 2 || idle + walking >= self.threads
-        });
-    }
-}
-
-/// Projects a [`Seen`] of `pad` bytes each hour; `together`, meets it at its walk's first.
-struct Padding<'t> {
-    pad: usize,
-    items: &'static Gauge,
-    together: Option<&'t Together<'t>>,
-}
-
-impl Operator for Padding<'_> {
-    type Output = Seen;
-
-    fn hour(&mut self, hour: &Hour<'_>, out: &mut dyn Sink<Seen>) -> io::Result<()> {
-        if hour.starts
-            && let Some(together) = self.together
-        {
-            together.meet();
-        }
-        let saw = (
-            hour.branch,
-            hour.hour,
-            hour.run,
-            hour.ordinal,
-            hour.starts,
-            0,
-        );
-        out.push(Seen::new(saw, self.pad, self.items))
-    }
-}
-
-/// A segment projecting far past the output budget leaves the walks after it of a family
-/// whose items spill to start together, each taking a chunk of the budget, not what that
-/// segment projected.
-#[test]
-fn one_oversized_segment_leaves_later_spilling_walks_together() {
-    let file = opened(&[
-        (1, 0, 10),
-        (2, 100, 10),
-        (3, 200, 10),
-        (4, 300, 10),
-        (5, 400, 10),
-    ]);
-    let (threads, output_bytes) = (4, 64 << 10);
-    let cancellation = Cancellation::default();
-    let together = Together {
-        walking: AtomicUsize::new(0),
-        most: AtomicUsize::new(0),
-        threads,
-        cancellation: &cancellation,
-    };
-    let items = Gauge::new();
-    let mut hours = Vec::new();
-    let lane = Lane::new(
-        "padding",
-        |segment: &Segment| {
-            Ok(Padding {
-                pad: if segment.run == 0 { output_bytes } else { 8 },
-                items,
-                together: matches!(segment.run, 1 | 2).then_some(&together),
-            })
-        },
-        |chunk: Chunk<'_, Seen>| {
-            hours.extend(chunk.items.iter().map(|item| item.saw.1));
-            Ok(())
-        },
-    );
-    let stats = whole(
-        run(
-            &file,
-            &Settings {
-                output_bytes,
-                chunk_bytes: 1 << 10,
-                ..settings(threads, 8)
-            },
-            &Memory::default(),
-            &cancellation,
-            vec![lane],
-        )
-        .unwrap(),
-    );
-    let all: Vec<i32> = [0, 100, 200, 300, 400]
-        .into_iter()
-        .flat_map(|first| first..first + 10)
-        .collect();
-    assert_eq!(hours, all);
-    assert!(stats.chunks_spilled > 0);
-    assert_eq!(together.most.load(Ordering::SeqCst), 2);
-    assert_eq!(items.now(), 0);
-}
-
-/// Pushes `count` items of `pad` bytes at its segment's end.
-struct Tail {
-    count: usize,
-    pad: usize,
-    gauge: &'static Gauge,
-}
-
-impl Operator for Tail {
-    type Output = Seen;
-
-    fn hour(&mut self, _: &Hour<'_>, _: &mut dyn Sink<Seen>) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn end(&mut self, out: &mut dyn Sink<Seen>) -> io::Result<()> {
-        for at in 0..self.count {
-            out.push(Seen::new(
-                (0, at as i32, 0, 0, false, 0),
-                self.pad,
-                self.gauge,
-            ))?;
-        }
-        Ok(())
-    }
-}
-
-/// Chunks close at their size; past the output budget, those of every segment spill, the
-/// first some family has not emitted's too, and come back to the emit in order, each once
-/// what reading it back takes is held.
-#[test]
-fn chunks_close_at_their_size_and_spill_past_the_budget() {
-    let gauge = Gauge::new();
-    let signal = Signal {
-        schedule: Mutex::new(Schedule::new(2, vec![true]).unwrap()),
-        board: Board::default(),
-        stopped: AtomicBool::new(false),
-        cancelled: AtomicBool::new(false),
-    };
-    let scratch = Memory::default();
-    let settings = Settings {
-        output_bytes: 0,
-        chunk_bytes: 1,
-        ..Settings::new(1)
-    };
-    let shared = Shared::new(settings, &scratch, &signal);
-    let mut emitted = Vec::new();
-    let lane = Lane::new(
-        "tail",
-        |_: &Segment| -> io::Result<Tail> {
-            Ok(Tail {
-                count: 3,
-                pad: 16,
-                gauge,
-            })
-        },
-        |chunk: Chunk<'_, Seen>| {
-            let hours: Vec<i32> = chunk.items.iter().map(|item| item.saw.1).collect();
-            emitted.push((hours, chunk.last));
-            Ok(())
-        },
-    );
-    let segment = Segment {
-        run: 0,
-        restart: None,
-        first: 0,
-        last: 0,
-    };
-    let reserved = shared.credit.reserve(0);
-    let culprit = Cell::new(None);
-    for at in [0, 1] {
-        let mut walking = lane.erased.fresh(&segment).unwrap();
-        let context = Context {
-            shared: &shared,
-            reserved: &reserved,
-            culprit: &culprit,
-        };
-        walking.end(&context).unwrap();
-        assert!(walking.close(&context).unwrap() >= 3 * 16);
-        walking.file(at, None, None);
-    }
-    assert_eq!(scratch.spills.load(Ordering::SeqCst), 6);
-    assert_eq!(shared.chunks_spilled.load(Ordering::SeqCst), 6);
-    assert_eq!((gauge.now(), shared.credit.held()), (0, 0));
-    for at in [0, 1] {
-        // Each spilled chunk stops the emit until what reading it back takes is held for it.
-        let mut restore = None;
-        while let Emitted::Spilled(need) = lane.erased.emit(at, &segment, &shared, restore).unwrap()
-        {
-            assert!(need >= SPILLED_SEEN + 16);
-            restore = Some(shared.credit.hold(need));
-        }
-    }
-    drop(lane);
-    let chunks = [(vec![0], false), (vec![1], false), (vec![2], true)];
-    assert_eq!(emitted, [chunks.clone(), chunks].concat());
-    assert_eq!(shared.credit.held(), 0);
-    assert_eq!(gauge.now(), 0);
-    assert_eq!(scratch.held.load(Ordering::SeqCst), 0);
-}
-
-/// Sixteen families' emits on sixteen workers, each reading back the spilled chunks of the
-/// same segment, hold no more at once than the working allowance, their reading back counted
-/// in: the rest wait for room on no worker, and every hour reaches its family in order.
-#[test]
-fn sixteen_emits_reading_back_spilled_chunks_stay_within_the_allowance() {
-    let file = opened(&[(1, 0, 10)]);
-    let saw = expected(&file, anywhere);
-    let threads = 16;
-    let working_bytes = 4 << 10;
-    let cancellation = Cancellation::default();
-    let (inside, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
-    // The bytes of the chunks read back that emits hold at once.
-    let restored = Gauge::new();
-    let families: Vec<(String, Probes)> = (0..threads)
-        .map(|lane| {
-            let probes = Probes {
-                pad: 1 << 10,
-                ..Probes::new(anywhere)
-            };
-            (format!("probe {lane}"), probes)
-        })
-        .collect();
-    let mut seen: Vec<Vec<Saw>> = (0..threads).map(|_| Vec::new()).collect();
-    let (inside, most, cancellation_ref) = (&inside, &most, &cancellation);
-    let lanes = families
-        .iter()
-        .zip(seen.iter_mut())
-        .map(|((name, probes), seen)| {
-            Lane::new(
-                name,
-                move |segment: &Segment| probes.make(segment),
-                move |chunk: Chunk<'_, Seen>| {
-                    let bytes = chunk
-                        .items
-                        .iter()
-                        .fold(chunk.items.capacity() * size_of::<Seen>(), |bytes, item| {
-                            bytes + item.pad.capacity()
-                        });
-                    restored.add(bytes);
-                    most.fetch_max(inside.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
-                    cancellation_ref.poke();
-                    // Every worker emits or waits for work: no other chunk is being read back.
-                    cancellation_ref.wait_for_idle_until(|idle| {
-                        idle + inside.load(Ordering::SeqCst) >= threads
-                    });
-                    seen.extend(chunk.items.iter().map(|item| item.saw));
-                    inside.fetch_sub(1, Ordering::SeqCst);
-                    restored.sub(bytes);
-                    cancellation_ref.poke();
-                    Ok(())
-                },
-            )
-        })
-        .collect();
-    let stats = whole(
-        run(
-            &file,
-            &Settings {
-                output_bytes: 0,
-                working_bytes,
-                chunk_bytes: 1,
-                ..settings(threads, threads)
-            },
-            &Memory::default(),
-            &cancellation,
-            lanes,
-        )
-        .unwrap(),
-    );
-    for seen in &seen {
-        assert_eq!(*seen, saw);
-    }
-    assert_eq!(stats.chunks_spilled, threads * saw.len());
-    assert!(restored.peak() <= working_bytes, "{}", restored.peak());
-    // A walk's families push on several workers at once, each holding an item before it spills.
-    let pushing = threads * ((1 << 10) + 4 * size_of::<Seen>());
-    assert!(
-        stats.output_bytes <= working_bytes + pushing,
-        "{}",
-        stats.output_bytes
-    );
-    assert!(most.load(Ordering::SeqCst) < threads);
-    assert_eq!(restored.now(), 0);
-    for (_, probes) in &families {
-        assert_eq!(probes.items.now(), 0);
-    }
-}
-
-/// A spilled chunk that reading back would take past the output budget and its working
-/// allowance, with nothing left to make room, stops the run, its family named, rather than
-/// leaving it waiting.
-#[test]
-fn a_spilled_chunk_too_large_to_read_back_stops_the_run() {
-    let file = opened(&[(1, 0, 10)]);
-    for threads in [1, 3] {
-        let probes = Probes::new(anywhere);
-        let mut seen = Vec::new();
-        let error = run(
-            &file,
-            &Settings {
-                output_bytes: 0,
-                working_bytes: 0,
-                chunk_bytes: 1,
-                ..settings(threads, 2)
-            },
-            &Memory::default(),
-            &Cancellation::default(),
-            vec![probing("unread", &probes, &mut seen)],
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-        assert!(error.to_string().contains("unread"), "{error}");
-        assert!(seen.is_empty());
-        assert_eq!(probes.items.now(), 0);
-    }
-}
-
-/// An item whose codec reads back eight times the bytes it saved.
-struct Inflated {
-    pad: Vec<u8>,
-}
-
-impl Item for Inflated {
-    const SPILLS: bool = true;
-
-    fn heap(&self) -> usize {
-        self.pad.capacity()
-    }
-
-    fn save(items: &[Self], out: &mut Vec<u8>) -> io::Result<()> {
-        for item in items {
-            out.extend_from_slice(&(item.pad.len() as u64).to_le_bytes());
-        }
-        Ok(())
-    }
-
-    fn load(bytes: &[u8]) -> io::Result<Vec<Self>> {
-        Ok(bytes
-            .chunks_exact(8)
-            .map(|len| Inflated {
-                pad: vec![0; 8 * u64::from_le_bytes(len.try_into().unwrap()) as usize],
-            })
-            .collect())
-    }
-}
-
-/// Projects an [`Inflated`] of 64 bytes each hour.
-struct Inflating;
-
-impl Operator for Inflating {
-    type Output = Inflated;
-
-    fn hour(&mut self, _: &Hour<'_>, out: &mut dyn Sink<Inflated>) -> io::Result<()> {
-        out.push(Inflated { pad: vec![0; 64] })
-    }
-}
-
-/// A chunk read back larger than it was when it spilled stops the run, its family named,
-/// rather than holding bytes its admission never counted.
-#[test]
-fn a_chunk_read_back_larger_than_it_spilled_stops_the_run() {
-    let file = opened(&[(1, 0, 10)]);
-    for threads in [1, 3] {
-        let mut emitted = 0;
-        let lane = Lane::new(
-            "inflating",
-            |_: &Segment| -> io::Result<Inflating> { Ok(Inflating) },
-            |chunk: Chunk<'_, Inflated>| {
-                emitted += chunk.items.len();
-                Ok(())
-            },
-        );
-        let error = run(
-            &file,
-            &Settings {
-                output_bytes: 0,
-                working_bytes: usize::MAX,
-                chunk_bytes: 1,
-                ..settings(threads, 2)
-            },
-            &Memory::default(),
-            &Cancellation::default(),
-            vec![lane],
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("inflating"), "{error}");
-        assert_eq!(emitted, 0);
-    }
-}
-
-/// An item that cannot spill, holding bytes counted alive in its gauge.
-struct Pinned {
-    pad: Vec<u8>,
-    gauge: &'static Gauge,
-}
-
-impl Drop for Pinned {
-    fn drop(&mut self) {
-        self.gauge.sub(self.pad.len());
-    }
-}
-
-impl Item for Pinned {
-    fn heap(&self) -> usize {
-        self.pad.capacity()
-    }
-}
-
-/// Projects a [`Pinned`] of `pad` bytes each hour.
-struct Pinning {
-    pad: usize,
-    gauge: &'static Gauge,
-}
-
-impl Operator for Pinning {
-    type Output = Pinned;
-
-    fn hour(&mut self, _: &Hour<'_>, out: &mut dyn Sink<Pinned>) -> io::Result<()> {
-        self.gauge.add(self.pad);
-        out.push(Pinned {
-            pad: vec![0; self.pad],
-            gauge: self.gauge,
-        })
-    }
-}
-
-/// Items that cannot spill stay resident past the output budget within its working
-/// allowance, a segment at a time once the budget is spent, however many workers; past the
-/// allowance they stop the run, the family named, every item dropped.
-#[test]
-fn items_that_cannot_spill_past_the_working_allowance_stop_the_run() {
-    let file = opened(&[(1, 0, 3 * UNIT_ORDINALS)]);
-    let pad = 64;
-    let segment = UNIT_ORDINALS as usize * pad;
-    for threads in [1, 3] {
-        for working_bytes in [usize::MAX, segment / 2] {
-            let gauge = Gauge::new();
-            let mut emitted = 0;
-            let lane = Lane::new(
-                "pinned",
-                |_: &Segment| -> io::Result<Pinning> { Ok(Pinning { pad, gauge }) },
-                |chunk: Chunk<'_, Pinned>| {
-                    emitted += chunk.items.len();
-                    Ok(())
-                },
-            );
-            let ran = run(
-                &file,
-                &Settings {
-                    output_bytes: 0,
-                    working_bytes,
-                    ..settings(threads, 4)
-                },
-                &Memory::default(),
-                &Cancellation::default(),
-                vec![lane],
-            );
-            if working_bytes == usize::MAX {
-                let stats = whole(ran.unwrap());
-                assert_eq!(emitted, 3 * UNIT_ORDINALS as usize);
-                assert_eq!((stats.segments, stats.chunks_spilled), (1, 0));
-                assert!(gauge.peak() <= segment);
-            } else {
-                let error = ran.unwrap_err();
-                assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-                assert!(error.to_string().contains("pinned"), "{error}");
-                assert_eq!(emitted, 0);
-            }
-            assert_eq!(gauge.now(), 0);
-        }
-    }
-}
-
-/// Parked operators past the continuation budget that cannot be spilled stop the run, the
-/// family named, every operator dropped.
-#[test]
-fn parked_operators_that_cannot_spill_past_the_budget_stop_the_run() {
-    let file = opened(&alternating(3, 2));
-    let probes = Probes {
-        weight: 64,
-        spills: false,
-        ..Probes::new(branch_start)
-    };
-    let mut seen = Vec::new();
-    let error = run(
-        &file,
-        &Settings {
-            carry_bytes: 0,
-            ..settings(1, 1)
-        },
-        &Memory::default(),
-        &Cancellation::default(),
-        vec![probing("unspilled", &probes, &mut seen)],
-    )
-    .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-    assert!(error.to_string().contains("unspilled"), "{error}");
-    assert_eq!((probes.operators.now(), probes.items.now()), (0, 0));
 }
 
 /// Goes on through its branch, parked between its runs and spilled at once: in branch 1, as
@@ -1889,11 +1127,8 @@ fn family_code_runs_with_no_lock_of_the_run_held() {
     );
     let ran = run(
         &file,
-        &Settings {
-            carry_bytes: 0,
-            ..settings(2, 4)
-        },
-        &Memory::default(),
+        &settings(2),
+        &spool(),
         &cancellation,
         vec![carrying, concluding],
     )
@@ -1936,8 +1171,8 @@ fn a_family_deciding_otherwise_at_a_segment_s_start_fails_there() {
     );
     let ran = run(
         &file,
-        &settings(1, 2),
-        &Memory::default(),
+        &settings(1),
+        &spool(),
         &Cancellation::default(),
         vec![lane],
     )
@@ -1969,7 +1204,7 @@ fn a_family_refusing_an_hour_keeps_its_hours_before_and_ends_its_branch() {
             .into_iter()
             .filter(|saw| saw.0 != 1 || saw.1 < refused)
             .collect();
-        for (threads, window) in [(1, 1), (4, 4)] {
+        for threads in [1, 4] {
             let refusing = Probes {
                 trip: Some(Trip {
                     when: When::Hour,
@@ -1982,8 +1217,8 @@ fn a_family_refusing_an_hour_keeps_its_hours_before_and_ends_its_branch() {
             let (mut refusing_seen, mut other_seen) = (Vec::new(), Vec::new());
             let ran = run(
                 &file,
-                &settings(threads, window),
-                &Memory::default(),
+                &settings(threads),
+                &spool(),
                 &Cancellation::default(),
                 vec![
                     probing("refusing", &refusing, &mut refusing_seen),
@@ -2023,7 +1258,7 @@ fn an_emit_s_refusal_ends_its_branch_at_the_hour_it_names() {
     let file = opened(&[(1, 0, 3 * UNIT_ORDINALS), (2, 50_000, 2 * UNIT_ORDINALS)]);
     let refused = UNIT_ORDINALS as i32 + 7;
     let saw = expected(&file, anywhere);
-    for (threads, window) in [(1, 1), (3, 3)] {
+    for threads in [1, 3] {
         let probes = Probes::new(anywhere);
         let mut seen = Vec::new();
         let lane = Lane::new(
@@ -2041,8 +1276,8 @@ fn an_emit_s_refusal_ends_its_branch_at_the_hour_it_names() {
         );
         let ran = run(
             &file,
-            &settings(threads, window),
-            &Memory::default(),
+            &settings(threads),
+            &spool(),
             &Cancellation::default(),
             vec![lane],
         )
@@ -2083,8 +1318,8 @@ fn refused_at(hour: i32) -> io::Error {
 /// or whose emit panics or fails, fails alone from that segment on: every segment before it
 /// reached its emit whole, of both branches, and none after it does. Another family going on
 /// through its branch, walking the same segments, goes on whole, its walk begun again past
-/// the panic from where it was, under the share its walker held; its parked operators and
-/// spilled chunks, and the failed family's, are all given back.
+/// the panic from where it was; its parked operators and spooled items, and the failed
+/// family's, are all given back, the spool folder with them.
 #[test]
 fn a_family_failing_fails_alone_from_its_segment() {
     let file = opened(&alternating(2, 3));
@@ -2099,11 +1334,7 @@ fn a_family_failing_fails_alone_from_its_segment() {
     ];
     for (when, hour, operation) in trips {
         for how in [How::Panic, How::Fail] {
-            for (threads, window, output_bytes, carry_bytes) in [
-                (1, 1, usize::MAX, usize::MAX),
-                (2, 2, 0, 0),
-                (4, 4, usize::MAX, 0),
-            ] {
+            for threads in [1, 2, 4] {
                 for starts in [anywhere as fn(Start<'_>) -> bool, branch_start] {
                     // An operator going on through its branch does not start there.
                     if when == When::Start && !starts(Start::Run { continues: true }) {
@@ -2118,16 +1349,12 @@ fn a_family_failing_fails_alone_from_its_segment() {
                         weight: 32,
                         ..Probes::new(branch_start)
                     };
-                    let scratch = Memory::default();
+                    let folder = spool();
                     let (mut faulty_seen, mut steady_seen) = (Vec::new(), Vec::new());
                     let ran = run(
                         &file,
-                        &Settings {
-                            output_bytes,
-                            carry_bytes,
-                            ..settings(threads, window)
-                        },
-                        &scratch,
+                        &settings(threads),
+                        &folder,
                         &Cancellation::default(),
                         vec![
                             probing("faulty", &faulty, &mut faulty_seen),
@@ -2163,7 +1390,7 @@ fn a_family_failing_fails_alone_from_its_segment() {
                     for probes in [&faulty, &steady] {
                         assert_eq!((probes.items.now(), probes.operators.now()), (0, 0));
                     }
-                    assert_eq!(scratch.held.load(Ordering::SeqCst), 0);
+                    assert!(!folder.exists());
                 }
             }
         }
@@ -2244,7 +1471,7 @@ fn a_failure_overtaken_by_an_earlier_end_of_its_branch_is_not_the_family_s() {
     let (refused, failing) = (hours_of(&file, 0).0 + 1, hours_of(&file, 4).0 + 1);
     // Branch 2's segments.
     let other = [2, 3, 6, 7, 10, 11].map(|at| segments[at]);
-    for (threads, window, waits) in [(1, 1, false), (2, segments.len(), true)] {
+    for (threads, waits) in [(1, false), (2, true)] {
         let failed = Flag::default();
         let mut emitted = Vec::new();
         let lane = Lane::new(
@@ -2268,8 +1495,8 @@ fn a_failure_overtaken_by_an_earlier_end_of_its_branch_is_not_the_family_s() {
         );
         let ran = run(
             &file,
-            &settings(threads, window),
-            &Memory::default(),
+            &settings(threads),
+            &spool(),
             &Cancellation::default(),
             vec![lane],
         )
@@ -2317,14 +1544,7 @@ fn an_overtaken_failure_s_error_drops_with_no_lock_of_the_run_held() {
         |_: Chunk<'_, Seen>| Ok(()),
     );
     // Segment 4's walk fails first, its error pending; segment 0's then refuses branch 1.
-    let ran = run(
-        &file,
-        &settings(2, segments.len()),
-        &Memory::default(),
-        &cancellation,
-        vec![lane],
-    )
-    .unwrap();
+    let ran = run(&file, &settings(2), &spool(), &cancellation, vec![lane]).unwrap();
     assert!(ran.cancelled);
     assert!(ran.outcomes[0].failure.is_none(), "{:?}", ran.outcomes[0]);
 }
@@ -2365,14 +1585,14 @@ fn a_failed_write_out_fails_its_family_before_its_segment_can_be_taken() {
         |_: &Segment| Ok(Unwritten),
         |_: Chunk<'_, ()>| Ok(()),
     )];
-    let settings = settings(2, 4);
     let signal = Signal {
-        schedule: Mutex::new(Schedule::new(segments.len(), vec![false]).unwrap()),
+        schedule: Mutex::new(Schedule::new(segments.len(), 1).unwrap()),
         board: Board::default(),
         stopped: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
     };
-    let (scratch, cancellation) = (Memory::default(), Cancellation::default());
+    let (root, cancellation) = (spool(), Cancellation::default());
+    let folder = Folder::open(&root, &["unwritten"]).unwrap();
     let run = Run {
         recording: &file,
         segments,
@@ -2381,17 +1601,15 @@ fn a_failed_write_out_fails_its_family_before_its_segment_can_be_taken() {
         worlds: &worldless,
         signal: &signal,
         budget: Arc::new(Budget::new(usize::MAX)),
-        store: Store::new(0),
+        folder: &folder,
+        store: Store::new(),
         resumed: Mutex::new(Vec::new()),
         joins: std::collections::BTreeMap::new(),
-        shared: Shared::new(settings, &scratch, &signal),
         cancellation: &cancellation,
     };
     let claim = |schedule: &mut Schedule| {
         schedule
-            .pick(&run.plan, &settings, &run.shared.credit, true, &mut |_| {
-                true
-            })
+            .pick(&run.plan, true, &mut |_| true)
             .unwrap()
             .map(|task| match task {
                 Task::Walk { at, .. } => ("walk", at),
@@ -2407,145 +1625,18 @@ fn a_failed_write_out_fails_its_family_before_its_segment_can_be_taken() {
         schedule.done();
         schedule.sealed(0, &[0]);
     }
-    let operator = lanes[0].erased.fresh(&segments[1]).unwrap();
+    let operator = lanes[0]
+        .erased
+        .fresh(0, &segments[1], &folder, None)
+        .unwrap();
     let bytes = operator.carried().unwrap();
-    // Past a budget of nothing, it is written out at once, and its save fails.
+    // Parked, it is written out at once, and its save fails.
     run.park(1, 0, operator, bytes).unwrap();
     let mut schedule = signal.lock();
     assert_eq!(schedule.status(1, 0), Status::Closed);
     assert_eq!(claim(&mut *schedule), Some(("emit", 0)));
     schedule.done();
     let mut gone = Gone::default();
-    schedule
-        .emitted(&run.plan, 0, 0, 1, None, &mut gone)
-        .unwrap();
-    let failure = schedule.outcomes().remove(0).failure.unwrap();
-    assert_eq!(
-        (failure.at, failure.operation, failure.panicked),
-        (1, Operation::Save, false)
-    );
-    assert_eq!(failure.error.to_string(), "save failed");
-    drop(schedule);
-    run.drop_gone(gone);
-}
-
-/// Written out as its segment says: the one parked for segment 1 fails to be; any other says
-/// it is being written, `landed`, and waits until `took`.
-struct Hooked<'t> {
-    fails: bool,
-    landed: &'t Flag,
-    took: &'t Flag,
-}
-
-impl Operator for Hooked<'_> {
-    type Output = ();
-
-    fn hour(&mut self, _: &Hour<'_>, _: &mut dyn Sink<()>) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn save(&self, out: &mut Vec<u8>) -> io::Result<bool> {
-        if self.fails {
-            return Err(io::Error::other("save failed"));
-        }
-        self.landed.set();
-        self.took.wait();
-        out.push(0);
-        Ok(true)
-    }
-}
-
-/// A walk that holds a segment before the operator parked for it is written out, and asks
-/// for that operator after its save failed but before the failure is recorded, finds it
-/// being written, not gone: it gives its family back rather than finding nothing handed on,
-/// and the family's failure is the save's.
-#[test]
-fn a_walk_holding_a_segment_finds_its_failed_write_out_being_written() {
-    let file = opened(&[(1, 0, 3 * UNIT_ORDINALS)]);
-    let segments = file.segments();
-    let (landed, took) = (Flag::default(), Flag::default());
-    let lanes = vec![Lane::new(
-        "hooked",
-        |segment: &Segment| {
-            Ok(Hooked {
-                fails: *segment == segments[1],
-                landed: &landed,
-                took: &took,
-            })
-        },
-        |_: Chunk<'_, ()>| Ok(()),
-    )];
-    let settings = settings(2, 4);
-    let signal = Signal {
-        schedule: Mutex::new(Schedule::new(segments.len(), vec![true]).unwrap()),
-        board: Board::default(),
-        stopped: AtomicBool::new(false),
-        cancelled: AtomicBool::new(false),
-    };
-    let (scratch, cancellation) = (Memory::default(), Cancellation::default());
-    // The continuation budget holds one operator of 10 bytes.
-    let run = Run {
-        recording: &file,
-        segments,
-        plan: Plan::new(&file, segments).unwrap(),
-        lanes: &lanes,
-        worlds: &worldless,
-        signal: &signal,
-        budget: Arc::new(Budget::new(usize::MAX)),
-        store: Store::new(10),
-        resumed: Mutex::new(Vec::new()),
-        joins: std::collections::BTreeMap::new(),
-        shared: Shared::new(settings, &scratch, &signal),
-        cancellation: &cancellation,
-    };
-    let claim = |schedule: &mut Schedule| {
-        schedule
-            .pick(&run.plan, &settings, &run.shared.credit, true, &mut |_| {
-                true
-            })
-            .unwrap()
-            .map(|task| match task {
-                Task::Walk { at, .. } => ("walk", at),
-                Task::Emit { at, .. } => ("emit", at),
-                Task::Measure { at } => ("measure", at),
-            })
-    };
-    // Segment 0 is walked, and a walk takes segment 1, before segment 0 seals.
-    {
-        let mut schedule = signal.lock();
-        for at in [0, 1] {
-            schedule.measured(at, at, Some(Reads::default()), &[(at, Reads::default())]);
-            assert_eq!(claim(&mut *schedule), Some(("walk", at)));
-            schedule.done();
-        }
-        schedule.sealed(0, &[0]);
-    }
-    // The operator going on into segment 1 parks for it, within the budget.
-    let operator = lanes[0].erased.fresh(&segments[1]).unwrap();
-    run.park(1, 0, operator, 10).unwrap();
-    // A nearer one, past the budget, has both written out, the furthest first: segment 1's
-    // fails, and the walk holding segment 1 asks for its operator as the other is written.
-    let found = std::thread::scope(|scope| {
-        let walk = scope.spawn(|| {
-            landed.wait();
-            let found = run
-                .parked(1, 0)
-                .map(|parked| parked.map(|parked| matches!(parked, Parked::Writing)));
-            took.set();
-            found
-        });
-        let operator = lanes[0].erased.fresh(&segments[0]).unwrap();
-        run.park(0, 0, operator, 20).unwrap();
-        walk.join().unwrap()
-    });
-    assert!(matches!(found, Ok(Some(true))), "{found:?}");
-    // The walk gives its family back; once segment 0 is emitted, the failure is the save's.
-    let mut gone = Gone::default();
-    let mut schedule = signal.lock();
-    assert_eq!(schedule.status(1, 0), Status::Abandoned);
-    schedule.waits(&run.plan, 1, &[0], &mut gone).unwrap();
-    assert_eq!(claim(&mut *schedule), Some(("emit", 0)));
-    schedule.done();
     schedule
         .emitted(&run.plan, 0, 0, 1, None, &mut gone)
         .unwrap();
@@ -2597,7 +1688,7 @@ fn a_damaged_table_unit_loses_its_segment_to_that_table_s_readers_alone() {
             .filter(|saw| segment_of(&clean, saw) < 1)
             .collect::<Vec<Saw>>()
     };
-    for (threads, window) in [(1, 1), (3, 2)] {
+    for threads in [1, 3] {
         let (countries, tension, unnamed) = (
             Probes::new(anywhere),
             Probes::new(anywhere),
@@ -2607,8 +1698,8 @@ fn a_damaged_table_unit_loses_its_segment_to_that_table_s_readers_alone() {
             (Vec::new(), Vec::new(), Vec::new());
         let ran = run(
             &file,
-            &settings(threads, window),
-            &Memory::default(),
+            &settings(threads),
+            &spool(),
             &Cancellation::default(),
             vec![
                 probing("countries", &countries, &mut countries_seen).reads(&[TableId::Countries]),
@@ -2665,7 +1756,7 @@ fn a_panic_after_another_family_lost_a_table_fails_the_panicking_family_alone() 
             .collect::<Vec<Saw>>()
     };
     let (first, _) = hours_of(&clean, 1);
-    for (threads, window) in [(1, 1), (3, 2)] {
+    for threads in [1, 3] {
         let tension = Probes::new(anywhere);
         let panicking = Probes {
             trip: Some(Trip {
@@ -2678,8 +1769,8 @@ fn a_panic_after_another_family_lost_a_table_fails_the_panicking_family_alone() 
         let (mut tension_seen, mut panicking_seen) = (Vec::new(), Vec::new());
         let ran = run(
             &file,
-            &settings(threads, window),
-            &Memory::default(),
+            &settings(threads),
+            &spool(),
             &Cancellation::default(),
             vec![
                 probing("tension", &tension, &mut tension_seen)
@@ -2737,7 +1828,7 @@ fn a_damaged_manifest_unit_loses_its_segment_to_every_family() {
             .filter(|saw| !lost(segment_of(&file, saw)))
             .collect::<Vec<Saw>>()
     };
-    for (threads, window) in [(1, 1), (4, 4)] {
+    for threads in [1, 4] {
         let (resuming, ending, continuing) = (
             Probes::new(anywhere),
             Probes::new(anywhere),
@@ -2747,8 +1838,8 @@ fn a_damaged_manifest_unit_loses_its_segment_to_every_family() {
             (Vec::new(), Vec::new(), Vec::new());
         let ran = run(
             &file,
-            &settings(threads, window),
-            &Memory::default(),
+            &settings(threads),
+            &spool(),
             &Cancellation::default(),
             vec![
                 probing("resuming", &resuming, &mut resuming_seen).recovers(Recovery::Resumes),
@@ -2817,17 +1908,14 @@ fn a_damaged_restart_loses_no_hours() {
     let file = loaded(bytes);
     let clean = loaded(recording(&runs, every(&runs), 1, |_| {}).0);
     let (cold, going) = (expected(&clean, anywhere), expected(&clean, branch_start));
-    for (threads, window, walker_bytes) in [(1, 1, usize::MAX), (1, 1, 1), (2, 2, 1), (4, 4, 1)] {
+    for threads in [1, 2, 4] {
         let (anywhere_probes, going_probes) = (Probes::new(anywhere), Probes::new(branch_start));
         let (mut cold_seen, mut going_seen) = (Vec::new(), Vec::new());
         let stats = whole(
             run(
                 &file,
-                &Settings {
-                    walker_bytes,
-                    ..settings(threads, window)
-                },
-                &Memory::default(),
+                &settings(threads),
+                &spool(),
                 &Cancellation::default(),
                 vec![
                     probing("cold", &anywhere_probes, &mut cold_seen),
@@ -2837,10 +1925,9 @@ fn a_damaged_restart_loses_no_hours() {
             .unwrap(),
         );
         assert_eq!((cold_seen, going_seen), (cold.clone(), going.clone()));
-        if window == 1 {
-            // Its segment is never walked on from the one before: its start is made once.
-            assert_eq!(stats.derived, 1);
-        }
+        // Its start is made once at most, where its segment is not walked on from the one
+        // before.
+        assert!(stats.derived <= 1);
     }
 }
 
@@ -2879,7 +1966,7 @@ fn a_panic_in_a_walk_gone_on_past_a_damaged_restart_costs_the_others_nothing() {
         .filter(|saw| segment_of(&clean, saw) < 1)
         .collect();
     let (first, _) = hours_of(&clean, 1);
-    for (threads, window) in [(1, 1), (1, 2), (2, 3)] {
+    for threads in [1, 2] {
         let (cold_probes, going_probes) = (Probes::new(anywhere), Probes::new(branch_start));
         let panicking = Probes {
             trip: Some(Trip {
@@ -2893,8 +1980,8 @@ fn a_panic_in_a_walk_gone_on_past_a_damaged_restart_costs_the_others_nothing() {
             (Vec::new(), Vec::new(), Vec::new());
         let ran = run(
             &file,
-            &settings(threads, window),
-            &Memory::default(),
+            &settings(threads),
+            &spool(),
             &Cancellation::default(),
             vec![
                 probing("cold", &cold_probes, &mut cold_seen),
@@ -2915,7 +2002,7 @@ fn a_panic_in_a_walk_gone_on_past_a_damaged_restart_costs_the_others_nothing() {
             let outcome = &ran.outcomes[at];
             assert!(outcome.ended.is_empty() && outcome.failure.is_none());
         }
-        if (threads, window) == (1, 2) {
+        if threads == 1 {
             // The walk of the segment went on from the one before, past its restart.
             assert!(ran.stats.chained >= 1 && ran.stats.derived >= 1);
         }
@@ -2956,12 +2043,14 @@ impl Operator for Lump {
 }
 
 /// A walk gone on past a damaged restart, given back after a family's panic, holds nothing
-/// that family projected: segment 0's spilled chunk of a million bytes, which reading back
-/// fits beside the 90,000 the failing family projected of segment 1 only once those are given
-/// back, is read back, and the run goes on, the panic ending its family alone.
+/// that family projected: what it spooled of the segment is dropped with its fate, segment 0's
+/// million bytes reach their emit through the spool, and the run goes on, the panic ending
+/// its family alone.
 #[test]
 fn a_walk_given_back_after_a_panic_holds_nothing_of_the_failed_family() {
     let (file, _) = damaged_restarts(3, 1);
+    let going = Probes::new(branch_start);
+    let mut going_seen = Vec::new();
     let first = hours_of(&file, 1).0;
     let (large, small) = (Gauge::new(), Gauge::new());
     let lump =
@@ -2979,19 +2068,17 @@ fn a_walk_given_back_after_a_panic_holds_nothing_of_the_failed_family() {
                 |_: Chunk<'_, Seen>| Ok(()),
             )
         };
+    let folder = spool();
     let ran = run(
         &file,
-        &Settings {
-            output_bytes: 100_000,
-            working_bytes: 945_000,
-            chunk_bytes: 100_000,
-            ..settings(1, 2)
-        },
-        &Memory::default(),
+        &settings(1),
+        &folder,
         &Cancellation::default(),
         vec![
             lump("spilling", 0, 1_000_000, None, large),
             lump("failing", first + 1, 90_000, Some(first + 2), small),
+            // Goes on through its branch: the walk of segment 1 goes on from segment 0's.
+            probing("going", &going, &mut going_seen),
         ],
     )
     .unwrap();
@@ -3003,8 +2090,10 @@ fn a_walk_given_back_after_a_panic_holds_nothing_of_the_failed_family() {
         (1, Operation::Hour, true)
     );
     // The walk of segment 1 went on from segment 0's, past its restart.
-    assert!(ran.stats.chained >= 1 && ran.stats.chunks_spilled >= 1);
+    assert!(ran.stats.chained >= 1 && ran.stats.derived >= 1);
+    assert!(ran.stats.spooled > 1_000_000);
     assert_eq!((large.now(), small.now()), (0, 0));
+    assert!(!folder.exists());
 }
 
 /// Damaged restarts reuse the first intact restart and measure every segment once.
@@ -3018,8 +2107,8 @@ fn restarts_damaged_one_after_another_are_measured_once_each() {
     let stats = whole(
         run(
             &file,
-            &settings(1, 1),
-            &Memory::default(),
+            &settings(1),
+            &spool(),
             &Cancellation::default(),
             vec![probing("probe", &probes, &mut seen)],
         )
@@ -3060,13 +2149,13 @@ fn a_history_is_not_healed_by_healthy_segments_after_a_loss() {
     // Branch 1's segments after the lost one: run 0's last two, and run 2's.
     let later = [2, 3, 5];
     for recovery in [Recovery::Ends, Recovery::Resumes] {
-        for (threads, window) in [(1, 1), (3, 3)] {
+        for threads in [1, 3] {
             let probes = Probes::new(branch_start);
             let mut seen = Vec::new();
             let ran = run(
                 &file,
-                &settings(threads, window),
-                &Memory::default(),
+                &settings(threads),
+                &spool(),
                 &Cancellation::default(),
                 vec![probing("history", &probes, &mut seen).recovers(recovery)],
             )
@@ -3125,14 +2214,7 @@ fn cancelling_leaves_what_was_not_emitted_pending() {
             Ok(())
         },
     );
-    let ran = run(
-        &file,
-        &settings(1, 1),
-        &Memory::default(),
-        &cancellation,
-        vec![lane],
-    )
-    .unwrap();
+    let ran = run(&file, &settings(1), &spool(), &cancellation, vec![lane]).unwrap();
     assert!(ran.cancelled);
     let outcome = &ran.outcomes[0];
     assert_eq!(outcome.settled, 3);
@@ -3163,8 +2245,8 @@ fn damage_no_branch_places_never_reports_a_run_complete() {
     let mut seen = Vec::new();
     let refused = run(
         &file,
-        &settings(2, 2),
-        &Memory::default(),
+        &settings(2),
+        &spool(),
         &Cancellation::default(),
         vec![probing("probe", &probes, &mut seen)],
     )
@@ -3180,147 +2262,62 @@ fn damage_no_branch_places_never_reports_a_run_complete() {
     }
 }
 
-/// Scratch whose spill panics: the run's own code.
-struct Exploding;
-
-impl Scratch for Exploding {
-    fn spill(&self, _: &[u8]) -> io::Result<Box<dyn Spilled>> {
-        panic!("scratch panicked")
-    }
+/// A world whose advance panics at hour `at`: the run's own code.
+struct Panicking {
+    at: i32,
 }
 
-/// A panic in the run's own code, which a family's code called, is no family's: it stops
-/// the run and reaches the caller.
-#[test]
-fn a_panic_of_the_run_s_own_stops_it() {
-    let file = opened(&[(1, 0, 2 * UNIT_ORDINALS)]);
-    let probes = Probes::new(anywhere);
-    let mut seen = Vec::new();
-    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run(
-            &file,
-            &Settings {
-                output_bytes: 0,
-                ..settings(2, 2)
-            },
-            &Exploding,
-            &Cancellation::default(),
-            vec![probing("probe", &probes, &mut seen)],
-        )
-    }));
-    assert!(ran.is_err());
-}
-
-/// Scratch whose first spill fails and whose next panics.
-struct Faltering(AtomicUsize);
-
-impl Scratch for Faltering {
-    fn spill(&self, _: &[u8]) -> io::Result<Box<dyn Spilled>> {
-        match self.0.fetch_add(1, Ordering::SeqCst) {
-            0 => Err(io::Error::other("scratch full")),
-            _ => panic!("scratch panicked"),
-        }
-    }
-}
-
-/// The run's own panic in one family's hour is not lost to its failure another family's hour
-/// met first: the run panics.
-#[test]
-fn a_run_s_panic_outranks_its_failure_in_the_same_hour() {
-    let file = opened(&[(1, 0, 2 * UNIT_ORDINALS)]);
-    let (first, second) = (Probes::new(anywhere), Probes::new(anywhere));
-    let (mut first_seen, mut second_seen) = (Vec::new(), Vec::new());
-    let scratch = Faltering(AtomicUsize::new(0));
-    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run(
-            &file,
-            &Settings {
-                output_bytes: 0,
-                chunk_bytes: 1,
-                ..settings(1, 1)
-            },
-            &scratch,
-            &Cancellation::default(),
-            vec![
-                probing("first", &first, &mut first_seen),
-                probing("second", &second, &mut second_seen),
-            ],
-        )
-    }));
-    assert!(ran.is_err());
-    // Both families' hours ran: the first spill failed, the next panicked.
-    assert_eq!(scratch.0.load(Ordering::SeqCst), 2);
-}
-
-/// Scratch that cannot keep anything: the run's own failure.
-struct Full;
-
-impl Scratch for Full {
-    fn spill(&self, _: &[u8]) -> io::Result<Box<dyn Spilled>> {
-        Err(io::Error::other("scratch full"))
-    }
-}
-
-/// Pushes an hour's item, counted in its gauge, and unwraps what its push returned.
-struct Unwrapping(&'static Gauge);
-
-impl Operator for Unwrapping {
-    type Output = Seen;
-
-    fn hour(&mut self, hour: &Hour<'_>, out: &mut dyn Sink<Seen>) -> io::Result<()> {
-        let saw = (
-            hour.branch,
-            hour.hour,
-            hour.run,
-            hour.ordinal,
-            hour.starts,
-            0,
-        );
-        out.push(Seen::new(saw, 8, self.0)).unwrap();
+impl World for Panicking {
+    fn hour(&mut self, _: &State, manifest: &Manifest<'_>) -> io::Result<()> {
+        assert!(manifest.hour != self.at, "world panicked");
         Ok(())
     }
 }
 
-/// An operator that panics on what its push met, the scratch failing as its chunk spilled,
-/// does not hide that failure: it is the run's own, and stops the run, which returns it.
-#[test]
-fn a_panic_on_a_run_s_failure_its_push_met_stops_the_run() {
-    let file = opened(&[(1, 0, 2 * UNIT_ORDINALS)]);
-    let gauge = Gauge::new();
-    let lane = Lane::new(
-        "unwrapping",
-        move |_: &Segment| Ok(Unwrapping(gauge)),
-        |_: Chunk<'_, Seen>| Ok(()),
-    );
-    // Every chunk closes at its first item, and spills.
-    let error = run(
-        &file,
-        &Settings {
-            output_bytes: 0,
-            chunk_bytes: 1,
-            ..settings(1, 1)
-        },
-        &Full,
-        &Cancellation::default(),
-        vec![lane],
-    )
-    .unwrap_err();
-    assert_eq!(error.to_string(), "scratch full");
-    assert_eq!(gauge.now(), 0);
+/// Reads nothing of its world.
+struct Blind;
+
+impl Operator<Panicking> for Blind {
+    type Output = ();
+
+    fn hour(&mut self, _: &Hour<'_, Panicking>, _: &mut dyn Sink<()>) -> io::Result<()> {
+        Ok(())
+    }
 }
 
-/// An item of 8 bytes that cannot be written: its save panics.
+/// A panic in the run's own code is no family's: it stops the run and reaches the caller.
+#[test]
+fn a_panic_of_the_run_s_own_stops_it() {
+    let file = opened(&[(1, 0, 2 * UNIT_ORDINALS)]);
+    let at = hours_of(&file, 1).0 + 3;
+    let worlds = |_: &Segment, _: &[usize]| -> io::Result<Panicking> { Ok(Panicking { at }) };
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_in(
+            &file,
+            &settings(2),
+            &spool(),
+            &Cancellation::default(),
+            &worlds,
+            vec![Lane::new(
+                "blind",
+                |_: &Segment| Ok(Blind),
+                |_: Chunk<'_, ()>| Ok(()),
+            )],
+        )
+    }));
+    assert!(ran.is_err());
+}
+
+/// An item that cannot be written: its codec panics.
 struct Brittle;
 
-impl Item for Brittle {
-    const SPILLS: bool = true;
-
-    fn heap(&self) -> usize {
-        8
+impl Spooled for Brittle {
+    fn spool(&self, _: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        panic!("brittle codec panicked")
     }
 
-    fn save(_: &[Self], _: &mut Vec<u8>) -> io::Result<()> {
-        panic!("brittle save panicked")
+    fn unspool(_: &mut replay_spool::Reader<'_>) -> io::Result<Self> {
+        Ok(Brittle)
     }
 }
 
@@ -3335,25 +2332,20 @@ impl Operator for Breaking {
     }
 }
 
-/// An item whose save panics as its chunk spills, at an hour's push, fails its family as a
+/// An item whose codec panics as it is spooled, at an hour's push, fails its family as a
 /// save that panicked, not as the hour's.
 #[test]
-fn an_item_s_save_panicking_as_it_spills_fails_its_family_as_a_save() {
+fn an_item_s_codec_panicking_as_it_is_spooled_fails_its_family_as_a_save() {
     let file = opened(&[(1, 0, 2 * UNIT_ORDINALS)]);
     let lane = Lane::new(
         "breaking",
         |_: &Segment| Ok(Breaking),
         |_: Chunk<'_, Brittle>| Ok(()),
     );
-    // Every chunk closes at its first item, and spills.
     let ran = run(
         &file,
-        &Settings {
-            output_bytes: 0,
-            chunk_bytes: 1,
-            ..settings(1, 1)
-        },
-        &Memory::default(),
+        &settings(1),
+        &spool(),
         &Cancellation::default(),
         vec![lane],
     )
@@ -3363,32 +2355,51 @@ fn an_item_s_save_panicking_as_it_spills_fails_its_family_as_a_save() {
         (failure.at, failure.operation, failure.panicked),
         (0, Operation::Save, true)
     );
-    assert_eq!(failure.error.to_string(), "brittle save panicked");
+    assert_eq!(failure.error.to_string(), "brittle codec panicked");
+}
+
+/// An item whose codec meets the run's own failure ([`fatal`]), as a store refusing a write,
+/// counted in its gauge while alive.
+struct Doomed(&'static Gauge);
+
+impl Doomed {
+    fn new(gauge: &'static Gauge) -> Self {
+        gauge.add(1);
+        Self(gauge)
+    }
+}
+
+impl Drop for Doomed {
+    fn drop(&mut self) {
+        self.0.sub(1);
+    }
+}
+
+impl Spooled for Doomed {
+    fn spool(&self, _: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        Err(fatal(io::Error::other("store full")))
+    }
+
+    fn unspool(_: &mut replay_spool::Reader<'_>) -> io::Result<Self> {
+        unreachable!("never written")
+    }
 }
 
 /// Pushes an hour's item, counted in its gauge, going on past whatever its push met.
 struct Ignoring(&'static Gauge);
 
 impl Operator for Ignoring {
-    type Output = Seen;
+    type Output = Doomed;
 
-    fn hour(&mut self, hour: &Hour<'_>, out: &mut dyn Sink<Seen>) -> io::Result<()> {
-        let saw = (
-            hour.branch,
-            hour.hour,
-            hour.run,
-            hour.ordinal,
-            hour.starts,
-            0,
-        );
-        let _ = out.push(Seen::new(saw, 8, self.0));
+    fn hour(&mut self, _: &Hour<'_>, out: &mut dyn Sink<Doomed>) -> io::Result<()> {
+        let _ = out.push(Doomed::new(self.0));
         Ok(())
     }
 }
 
-/// An operator going on past what its push met, the scratch failing as its chunk spilled,
-/// does not hide that failure, though its walk of the segment is lost to damage before it
-/// ends: the failure is the run's own, and stops the run, which returns it.
+/// An operator going on past what its push met, the run's own failure as its item was
+/// spooled, does not hide that failure, though its walk of the segment is lost to damage
+/// before it ends: the failure is the run's own, and stops the run, which returns it.
 #[test]
 fn a_run_s_failure_a_push_met_stops_the_run_though_its_operator_goes_on() {
     // One segment of two pages, the second's manifests damaged.
@@ -3404,22 +2415,17 @@ fn a_run_s_failure_a_push_met_stops_the_run_though_its_operator_goes_on() {
     let lane = Lane::new(
         "ignoring",
         move |_: &Segment| Ok(Ignoring(gauge)),
-        |_: Chunk<'_, Seen>| Ok(()),
+        |_: Chunk<'_, Doomed>| Ok(()),
     );
-    // Every chunk closes at its first item, and spills.
     let error = run(
         &file,
-        &Settings {
-            output_bytes: 0,
-            chunk_bytes: 1,
-            ..settings(1, 1)
-        },
-        &Full,
+        &settings(1),
+        &spool(),
         &Cancellation::default(),
         vec![lane],
     )
     .unwrap_err();
-    assert_eq!(error.to_string(), "scratch full");
+    assert_eq!(error.to_string(), "store full");
     assert_eq!(gauge.now(), 0);
 }
 
@@ -3437,7 +2443,7 @@ fn an_error_a_family_s_code_says_is_the_run_s_stops_the_run() {
         (When::Emit, first),
     ];
     for (when, hour) in trips {
-        for (threads, window) in [(1, 1), (3, 3)] {
+        for threads in [1, 3] {
             let probes = Probes {
                 trip: Some(Trip {
                     when,
@@ -3449,8 +2455,8 @@ fn an_error_a_family_s_code_says_is_the_run_s_stops_the_run() {
             let mut seen = Vec::new();
             let error = run(
                 &file,
-                &settings(threads, window),
-                &Memory::default(),
+                &settings(threads),
+                &spool(),
                 &Cancellation::default(),
                 vec![probing("storing", &probes, &mut seen)],
             )
@@ -3482,8 +2488,8 @@ fn a_refusal_dating_the_run_s_own_error_stops_the_run() {
     );
     let error = run(
         &file,
-        &settings(1, 1),
-        &Memory::default(),
+        &settings(1),
+        &spool(),
         &Cancellation::default(),
         vec![lane],
     )
@@ -3492,37 +2498,6 @@ fn a_refusal_dating_the_run_s_own_error_stops_the_run() {
         (error.kind(), error.to_string()),
         (io::ErrorKind::InvalidData, "reference refused".to_owned())
     );
-}
-
-/// Cancelling a run whose other worker waits for the window to move stops it: the segments
-/// not emitted stay pending, every operator and item dropped.
-#[test]
-fn cancelling_a_run_waiting_for_its_window_stops_it() {
-    let file = opened(&[(1, 0, 3 * UNIT_ORDINALS)]);
-    let cancellation = Cancellation::default();
-    let probes = Probes::new(anywhere);
-    let lane = Lane::new(
-        "probe",
-        |segment: &Segment| probes.make(segment),
-        |_: Chunk<'_, Seen>| {
-            cancellation.wait_for_idle(1);
-            cancellation.cancel();
-            Ok(())
-        },
-    );
-    let ran = run(
-        &file,
-        &settings(2, 1),
-        &Memory::default(),
-        &cancellation,
-        vec![lane],
-    )
-    .unwrap();
-    assert!(ran.cancelled);
-    assert_eq!(ran.outcomes[0].settled, 1);
-    assert!(ran.outcomes[0].ended.is_empty() && ran.outcomes[0].failure.is_none());
-    assert_eq!((probes.operators.now(), probes.items.now()), (0, 0));
-    assert_eq!(probes.started(), [0]);
 }
 
 /// Cancels its run as its walk of the segment whose last hour is `last` ends, and says it was
@@ -3572,14 +2547,7 @@ fn a_fault_met_as_the_run_is_cancelled_is_no_family_s() {
             Ok(())
         },
     );
-    let ran = run(
-        &file,
-        &settings(1, 1),
-        &Memory::default(),
-        &cancellation,
-        vec![lane],
-    )
-    .unwrap();
+    let ran = run(&file, &settings(1), &spool(), &cancellation, vec![lane]).unwrap();
     assert!(ran.cancelled);
     let outcome = &ran.outcomes[0];
     assert!(
@@ -3604,7 +2572,8 @@ fn a_failure_pending_as_an_emit_cancels_the_run_stays_pending() {
             how: How::Panic,
             hour: first + 3,
         }),
-        ..Probes::new(anywhere)
+        // Goes on through its branch: segment 0's walk goes on into segment 1.
+        ..Probes::new(branch_start)
     };
     let cancellation = Cancellation::default();
     let lane = Lane::new(
@@ -3617,14 +2586,7 @@ fn a_failure_pending_as_an_emit_cancels_the_run_stays_pending() {
             Ok(())
         },
     );
-    let ran = run(
-        &file,
-        &settings(1, 2),
-        &Memory::default(),
-        &cancellation,
-        vec![lane],
-    )
-    .unwrap();
+    let ran = run(&file, &settings(1), &spool(), &cancellation, vec![lane]).unwrap();
     assert!(ran.cancelled);
     let outcome = &ran.outcomes[0];
     assert!(
@@ -3646,8 +2608,8 @@ fn a_cancelled_run_starts_nothing() {
     let mut seen = Vec::new();
     let ran = run(
         &file,
-        &settings(2, 2),
-        &Memory::default(),
+        &settings(2),
+        &spool(),
         &cancellation,
         vec![probing("probe", &probes, &mut seen)],
     )
@@ -3685,8 +2647,7 @@ enum Stop {
     Cancel,
 }
 
-/// In run 1, at its walk's first hour, holding the walkers' only share: says so, then waits
-/// until the run is stopped.
+/// In run 1, at its walk's first hour: says so, then waits until the run is stopped.
 struct Holding<'t> {
     run: u32,
     held: &'t Flag,
@@ -3705,10 +2666,10 @@ impl Operator for Holding<'_> {
     }
 }
 
-/// Four runs on three workers under a walkers' budget admitting one walk at a time: while
-/// run 1's walk holds it, and the third worker waits for work, run 0's emit, on the other,
-/// stops the run or fails its family. What the run returned.
-fn stopped_while_a_walk_holds_the_budget(stop: Stop) -> std::thread::Result<io::Result<Ran>> {
+/// Four runs on three workers: while run 1's walk waits, and the third worker waits for work
+/// once it walked the rest, run 0's emit, on the other, stops the run or fails its family.
+/// What the run returned.
+fn stopped_while_a_walk_waits(stop: Stop) -> std::thread::Result<io::Result<Ran>> {
     let file = opened(&[(1, 0, 10), (2, 100, 10), (3, 200, 10), (4, 300, 10)]);
     let (held, stopped, cancellation) = (Flag::default(), Flag::default(), Cancellation::default());
     let lane = Lane::new(
@@ -3739,38 +2700,25 @@ fn stopped_while_a_walk_holds_the_budget(stop: Stop) -> std::thread::Result<io::
         },
     );
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run(
-            &file,
-            &Settings {
-                walker_bytes: 1,
-                ..settings(3, 3)
-            },
-            &Memory::default(),
-            &cancellation,
-            vec![lane],
-        )
+        run(&file, &settings(3), &spool(), &cancellation, vec![lane])
     }))
 }
 
-/// The run's own failure while a walk holds the walkers' only share and a worker waits for
-/// work stops the run: the walk ends, the waiting worker leaves, and the failure is returned.
+/// The run's own failure while a walk waits and a worker waits for work stops the run: the
+/// walk ends, the waiting worker leaves, and the failure is returned.
 #[test]
-fn a_failure_of_the_run_s_own_while_a_walk_holds_the_walkers_budget_stops_the_run() {
-    let error = stopped_while_a_walk_holds_the_budget(Stop::Fail)
-        .unwrap()
-        .unwrap_err();
+fn a_failure_of_the_run_s_own_while_a_walk_waits_stops_the_run() {
+    let error = stopped_while_a_walk_waits(Stop::Fail).unwrap().unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
     assert_eq!(error.to_string(), "emit failed");
 }
 
-/// An emit's panic while a walk holds the walkers' only share ends its family alone from
-/// that segment on: the walk holding the share ends and gives back what it walked, the
-/// waiting worker leaves, and the run returns the family failed.
+/// An emit's panic while a walk waits ends its family alone from that segment on: the waiting
+/// walk ends and gives back what it walked, the waiting worker leaves, and the run returns
+/// the family failed.
 #[test]
-fn a_panic_while_a_walk_holds_the_walkers_budget_fails_its_family() {
-    let ran = stopped_while_a_walk_holds_the_budget(Stop::Panic)
-        .unwrap()
-        .unwrap();
+fn a_panic_while_a_walk_waits_fails_its_family() {
+    let ran = stopped_while_a_walk_waits(Stop::Panic).unwrap().unwrap();
     assert!(!ran.cancelled);
     let failure = ran.outcomes[0].failure.as_ref().unwrap();
     assert_eq!(
@@ -3780,36 +2728,12 @@ fn a_panic_while_a_walk_holds_the_walkers_budget_fails_its_family() {
     assert_eq!(ran.outcomes[0].settled, 4);
 }
 
-/// Cancelling while a walk holds the walkers' only share wakes the worker waiting for work:
-/// the run returns cancelled.
+/// Cancelling while a walk waits wakes the worker waiting for work: the run returns cancelled.
 #[test]
-fn cancelling_while_a_walk_holds_the_walkers_budget_stops_the_run() {
-    let ran = stopped_while_a_walk_holds_the_budget(Stop::Cancel)
-        .unwrap()
-        .unwrap();
+fn cancelling_while_a_walk_waits_stops_the_run() {
+    let ran = stopped_while_a_walk_waits(Stop::Cancel).unwrap().unwrap();
     assert!(ran.cancelled);
     assert!(ran.outcomes[0].ended.is_empty() && ran.outcomes[0].failure.is_none());
-}
-
-/// A folder reads back what it spilled, and removes each spill once dropped.
-#[test]
-fn a_folder_reads_back_its_spills_and_removes_them() {
-    let path = std::env::temp_dir().join(format!("segments-folder-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&path);
-    let folder = Folder::new(path.clone()).unwrap();
-    let (carried, empty) = (
-        folder.spill(b"carried").unwrap(),
-        folder.spill(b"").unwrap(),
-    );
-    let mut back = Vec::new();
-    carried.read(&mut back).unwrap();
-    assert_eq!(back, b"carried");
-    empty.read(&mut back).unwrap();
-    assert!(back.is_empty());
-    assert_eq!(std::fs::read_dir(&path).unwrap().count(), 2);
-    drop((carried, empty));
-    assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
-    std::fs::remove_dir(&path).unwrap();
 }
 
 /// A world keeping the hours it was advanced to, with the segment and lanes it was built for.
@@ -3827,16 +2751,11 @@ impl World for Hours {
 }
 
 /// What an operator read of its walk's world at an hour.
+#[derive(replay_spool::Spooled)]
 struct Read {
     segment: Segment,
     lanes: Vec<usize>,
     hours: usize,
-}
-
-impl Item for Read {
-    fn heap(&self) -> usize {
-        self.lanes.capacity() * size_of::<usize>()
-    }
 }
 
 struct Reading;
@@ -3894,8 +2813,8 @@ fn a_walk_s_lanes_share_one_world_built_for_the_walk() {
     let stats = whole(
         run_in(
             &file,
-            &settings(3, 4),
-            &Memory::default(),
+            &settings(3),
+            &spool(),
             &Cancellation::default(),
             &worlds,
             vec![reading("first", &mut first), reading("second", &mut second)],
@@ -3940,8 +2859,8 @@ fn a_lane_payload_policy_dates_emit_refusals_but_keeps_undated_family_failures()
         .refuses(|_| true);
         let ran = run(
             &file,
-            &settings(2, 2),
-            &Memory::default(),
+            &settings(2),
+            &spool(),
             &Cancellation::default(),
             vec![lane],
         )
@@ -3968,5 +2887,102 @@ fn a_lane_payload_policy_dates_emit_refusals_but_keeps_undated_family_failures()
                 }]
             ));
         }
+    }
+}
+
+/// A run empties its spool folder of what a run that stopped left, and removes it once done.
+#[test]
+fn a_run_empties_its_spool_as_it_starts_and_removes_it_as_it_ends() {
+    let file = opened(&[(1, 0, 2 * UNIT_ORDINALS)]);
+    let folder = spool();
+    std::fs::create_dir_all(folder.join("0-probe")).unwrap();
+    std::fs::write(
+        folder.join("0-probe").join("0"),
+        b"left by a run that stopped",
+    )
+    .unwrap();
+    let probes = Probes::new(anywhere);
+    let mut seen = Vec::new();
+    whole(
+        run(
+            &file,
+            &settings(2),
+            &folder,
+            &Cancellation::default(),
+            vec![probing("probe", &probes, &mut seen)],
+        )
+        .unwrap(),
+    );
+    assert_eq!(seen, expected(&file, anywhere));
+    assert!(!folder.exists());
+}
+
+/// What a sharing operator hands its emit of an hour: the allocation its walk holds throughout,
+/// and one of the hour's own.
+#[derive(replay_spool::Spooled)]
+struct Shares {
+    held: Arc<Vec<u32>>,
+    own: Arc<Vec<u32>>,
+}
+
+/// Holds one allocation from its walk's start, handed on with it through its branch.
+struct Holder {
+    held: Arc<Vec<u32>>,
+}
+
+impl Operator for Holder {
+    type Output = Shares;
+
+    fn starts_at(&self, start: Start<'_>) -> bool {
+        branch_start(start)
+    }
+
+    fn hour(&mut self, hour: &Hour<'_>, out: &mut dyn Sink<Shares>) -> io::Result<()> {
+        out.push(Shares {
+            held: Arc::clone(&self.held),
+            own: Arc::new(vec![hour.ordinal]),
+        })
+    }
+}
+
+/// Items sharing an allocation reach their emit sharing it, through the segments their
+/// operator goes on into too, and an item's own reaches it its own: what compared by address
+/// before the spool compares alike after it.
+#[test]
+fn items_sharing_an_allocation_reach_their_emit_sharing_it() {
+    let file = opened(&[(1, 0, 3 * UNIT_ORDINALS)]);
+    for threads in [1, 3] {
+        let mut held: Option<Arc<Vec<u32>>> = None;
+        let mut own: Vec<Arc<Vec<u32>>> = Vec::new();
+        let lane = Lane::new(
+            "sharing",
+            |_: &Segment| {
+                Ok(Holder {
+                    held: Arc::new(vec![7]),
+                })
+            },
+            |chunk: Chunk<'_, Shares>| {
+                for item in chunk.items {
+                    let first = held.get_or_insert_with(|| Arc::clone(&item.held));
+                    assert!(Arc::ptr_eq(first, &item.held));
+                    assert!(own.iter().all(|seen| !Arc::ptr_eq(seen, &item.own)));
+                    assert_eq!(item.own.len(), 1);
+                    own.push(item.own);
+                }
+                Ok(())
+            },
+        );
+        whole(
+            run(
+                &file,
+                &settings(threads),
+                &spool(),
+                &Cancellation::default(),
+                vec![lane],
+            )
+            .unwrap(),
+        );
+        assert_eq!(own.len(), 3 * UNIT_ORDINALS as usize);
+        assert_eq!(*held.unwrap(), [7]);
     }
 }

@@ -8,6 +8,7 @@ use super::*;
 /// hours cannot carry certified coverage, and incomplete counts never certify
 /// a partial country total.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionCensusRow {
     pub country: u32,
     pub grouped: u32,
@@ -26,6 +27,7 @@ typed_codec!(DivisionCensusRow, 32, |row| row.country as u128, |key| Self { coun
 /// or vertex province can be an id the game's province getter resolves as null (zero,
 /// outside the census or an empty slot), recorded as stored.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SupplyNodeRow {
     pub country: u32,
     pub index: u32,
@@ -52,6 +54,7 @@ typed_codec!(SupplyNodeRow, 64, |row| (row.country as u128) << 32 | row.index as
  { 0 => (province): U32, 1 => (kind): U32, 2 => (flag): U8, 3 => (available): I64, 4 => (consumed): I64, 5 => (parent): I32, 6 => (route_from): U16, 7 => (route_to): U16, 8 => (break_after): U8, 9 => (path): U32List }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TrainAllocation {
     /// Full equipment variant reference, joining VariantDefinitions.id.
     pub variant: u64,
@@ -77,6 +80,7 @@ value_struct!(TrainAllocation {
 /// from the previous run's end (from index 0 for the first run) and the run
 /// length as unsigned LEB128, followed by the run's bytes.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SparseBytes {
     pub len: u32,
     pub runs: Vec<ByteRun>,
@@ -84,6 +88,7 @@ pub struct SparseBytes {
 
 /// Consecutive nonzero native bytes starting at native index `start`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ByteRun {
     pub start: u32,
     pub bytes: Vec<u8>,
@@ -250,6 +255,7 @@ impl crate::value::Value for SparseBytes {
 /// not covered by a run is zero, which denies access like any zero byte,
 /// and an out-of-array index is denied.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TrainInventoryRow {
     pub country: u32,
     pub node_count: u32,
@@ -269,6 +275,7 @@ typed_codec!(TrainInventoryRow, 32, |row| row.country as u128,
 /// `has_child` is the native manage_child_sections byte, not a pointer.
 /// `front_valid` records inequality to the engine's invalid-reference sentinel.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ArmyOrderPlanRow {
     pub owner_group: u64,
     pub instance: u32,
@@ -329,6 +336,7 @@ typed_codec!(ArmyOrderPlanRow, 96, |row| (row.owner_group as u128) << 32 | row.i
 /// and can_execute. Only type3/4 have a pack; unreadable route bytes remain
 /// None. Type4 reaches preparation only for a known nonzero route byte.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OrderExecutionInputs {
     pub route_is_ok: Option<u8>,
     pub paradrop: Option<ParadropPreparationInputs>,
@@ -340,6 +348,7 @@ opaque_value!(Option<OrderExecutionInputs>);
 /// modifier/target refusal keeps this saved progress while withholding only the complete term
 /// group.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ParadropPreparationInputs {
     pub progress: i64,
     pub terms: Option<ParadropPreparationTerms>,
@@ -350,6 +359,7 @@ value_struct!(ParadropPreparationInputs { progress: i64, terms: Option<ParadropP
 /// stack. An absent relation/leader term means a known skip, whereas
 /// failure withholds the whole terms group.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ParadropPreparationTerms {
     pub target: u32,
     pub country_term: i64,
@@ -366,6 +376,7 @@ value_struct!(ParadropPreparationTerms { target: u32, country_term: i64, relatio
 /// Positive group_child_count reaches exactly min(count, group_child_count)
 /// ordered stored entries; sections None is a demanded-prefix refusal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OrderChildFrontInputs {
     pub area_province_count: i32,
     pub count: Option<u32>,
@@ -378,6 +389,7 @@ opaque_value!(Option<OrderChildFrontInputs>);
 /// Stored child-front operands. Order and duplicate groups are retained;
 /// signed spans are relative to the parent order's segment start.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OrderChildFront {
     pub group: u64,
     pub segment_start: i32,
@@ -396,6 +408,7 @@ mod order_children_tests;
 /// A group's raw colour and ordered primary and fallback root orders,
 /// as instance ids scoped to this group.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OrdersGroupPlanRow {
     pub group: u64,
     pub red: u32,
@@ -411,6 +424,7 @@ typed_codec!(OrdersGroupPlanRow, 64, |row| row.group as u128, |key| Self { group
  { 0 => (red): U32, 1 => (green): U32, 2 => (blue): U32, 3 => (alpha): U32, 4 => (primary_orders): U32List, 5 => (fallback_orders): U32List, 6 => (name): Bytes }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FrontRow {
     pub front: u64,
     pub section_ids: Vec<u32>,
@@ -439,6 +453,7 @@ typed_codec!(FrontRow, 64, |row| row.front as u128, |key| Self { front: key as u
 /// one `faction_ping_map_icon` per theatre on its first region for every
 /// faction member. All fields are stored.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FactionTheatreRow {
     /// Full native faction reference, as in Factions.
     pub faction: u64,
@@ -459,6 +474,7 @@ typed_codec!(FactionTheatreRow, 96, |row| (row.faction as u128) << 32 | row.ordi
  { 0 => (icon): Bytes, 1 => (regions): U32List, 2 => (country_count): U32, 3 => (hidden_for): U32List }, |_row| Ok(()));
 /// One terrain a retired [`DivisionEtaInputsRow`] route touched.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TerrainSpeed {
     pub terrain: i32,
     pub modifier: i64,
@@ -472,6 +488,7 @@ value_struct!(TerrainSpeed {
 /// (`RETIRED_INPUTS_FORMAT`). The row keeps its field framing so older
 /// recordings discard the table by name; no current writer emits it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionEtaInputsRow {
     pub division: u64,
     /// Latest full operand read; unchanged rows are carried between stagger slots.
@@ -588,6 +605,7 @@ impl crate::value::Value for StrategicAction {
 opaque_value!(StrategicAction);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionMovementRow {
     pub division: u64,
     pub source: u32,
@@ -664,6 +682,7 @@ typed_codec!(DivisionMovementRow, 64, |row| row.division as u128,
 /// modifiers are present only for a unit contributing at its exact owned primary root and current
 /// source province. Missing reached operands are refusals; a viewer must not infer zero from None.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionOrderTransportInputs {
     pub naval_weight: Option<i64>,
     pub paradrop_eligible: Option<u8>,
@@ -676,6 +695,7 @@ opaque_value!(Option<DivisionOrderTransportInputs>);
 /// commander accumulator. None is a known absent commander; a failed
 /// selector withholds the complete modifier pack.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ParadropTransportModifiers {
     pub country_term: i64,
     pub commander_term: Option<i64>,
@@ -689,6 +709,7 @@ mod order_execution_tests;
 /// A supply footer demand pair: the native signed count, exact, and its
 /// amount at the footer's display step ([`UnitSupplyInputs::STEP`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct UnitSupplyDemand {
     pub count: i32,
     pub value: i64,
@@ -703,6 +724,7 @@ value_struct!(UnitSupplyDemand {
 /// ([`UnitSupplyInputs::STEP`]). Nonpositive amounts and duplicate provinces
 /// affect totals and survive.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct UnitSupplyOrigin {
     pub province: i32,
     pub requested: i64,
@@ -739,6 +761,7 @@ value_struct!(UnitSupplyOrigin {
 /// member. These amounts cannot be recovered from the stored supply ratio or hub table.
 /// Format 101 and earlier recorded them exact and decode them unscaled.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct UnitSupplyInputs {
     pub asked: i64,
     pub received: i64,
@@ -776,6 +799,7 @@ opaque_value!(Option<UnitSupplyInputs>);
 /// ([`StoredFooter`]). DivisionStatus.supply was a provisional tombstone,
 /// whose empty payload reads as not recorded (`opaque_value!(T, restored)`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionSupplyFooter {
     pub asked: i64,
     pub received: i64,
@@ -1123,6 +1147,7 @@ impl From<DivisionSupplyFooter> for UnitSupplyInputs {
 
 /// Hourly, keyed by the full Divisions handle; native scalar widths are preserved.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionStatusRow {
     pub division: u64,
     pub maximum_hit_points: i64,
@@ -1426,6 +1451,7 @@ impl DivisionStatusRow {
 /// suppression word: the division designer's witness of its suppression row, which the panel
 /// does not show.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionPanelStatsRow {
     pub division: u64,
     pub panel_stats: [Option<i64>; 22],
@@ -1465,6 +1491,7 @@ typed_codec!(DivisionStatusRow, 64, |row| row.division as u128,
 /// Divisions handle. Each None is that field's own read refusal; the rest of the row
 /// stands.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionModelInputRow {
     pub division: u64,
     /// [`DivisionStatusRow::model_number`].
@@ -1491,6 +1518,7 @@ typed_codec!(DivisionModelInputRow, 64, |row| row.division as u128,
 /// makes the hour's read return no rows, truncated. Before format 102 the
 /// table held each owner's daily read, and those recordings refuse it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionRetreatBanRow {
     pub division: u64,
     /// Canonical slot of the roster owner the division was read under.
@@ -1510,6 +1538,7 @@ typed_codec!(DivisionRetreatBanRow, 64, |row| row.division as u128,
 
 /// One acclimatization entry: the category's lexer token and its raw weight.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionAcclimatization {
     pub category: u32,
     pub weight: i64,
@@ -1528,6 +1557,7 @@ value_struct!(DivisionAcclimatization {
 /// state conditions that follow (`forbid_camo_when`, `change_camo_when`) depend on where the model
 /// stands and stay with the consumer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionCamouflage {
     /// The category's lexer token; None when no category reaches the
     /// threshold, the weights are all zero or negative, or the winning
@@ -1544,6 +1574,7 @@ opaque_value!(Option<DivisionCamouflage>);
 /// 3D model is hourly in [`DivisionTemplateIconRow`]. Effective maxima are
 /// per-division.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionTemplateRow {
     pub template: u64,
     pub owner: u32,
@@ -1558,6 +1589,7 @@ typed_codec!(DivisionTemplateRow, 64, |row| row.template as u128,
 
 /// Country configuration is recorded even with an empty template roster.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryTemplateStateRow {
     pub garrison_priority: Recorded<Option<i32>>,
     pub country: u32,
@@ -1574,6 +1606,7 @@ typed_codec!(CountryTemplateStateRow, 32, |row| row.country as u128,
  { 0 => (selected_staff): U64, 1 => (lock_all): U8, 2 => (garrisons): Opaque, 3 => (next_hq_order): I32, 4 => (garrison_priority): OptionalI32 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct GarrisonTemplateSelection {
     /// None denotes the country default rather than an occupied-country group.
     pub occupied: Option<u32>,
@@ -1587,6 +1620,7 @@ opaque_value!(Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>);
 /// Template-bound HQ context. An absent deployment is a null native holder;
 /// target references remain complete even when they no longer resolve.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemplateHqContext {
     pub target: u64,
     pub deployed: u8,
@@ -1597,6 +1631,7 @@ pub struct TemplateHqContext {
 }
 value_struct!(TemplateHqContext {target:u64, deployed:u8, queued:u8, deployment:Option<HqDeployment>, equipment:Vec<HqEquipment>, required:Vec<HqRequirement>});
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct HqDeployment {
     pub country: u32,
     pub priority: i32,
@@ -1616,6 +1651,7 @@ value_struct!(HqDeployment {
     requisitioned: u8
 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct HqEquipment {
     pub variant: u64,
     pub amount: i64,
@@ -1625,6 +1661,7 @@ value_struct!(HqEquipment {
     amount: i64
 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct HqRequirement {
     pub token: u32,
     pub amount: i64,
@@ -1638,6 +1675,7 @@ opaque_value!(Option<std::sync::Arc<TemplateHqContext>>);
 /// One template (definition, count) entry. Token zero is a null-object
 /// definition.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemplateSubunit {
     pub token: u32,
     /// Nonzero for a country-local clone of the token's definition.
@@ -1654,6 +1692,7 @@ value_struct!(TemplateSubunit {
 /// One spatial cell, including an empty pointer and a null-object definition.
 /// Those are distinct native states even though neither contributes a battalion.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemplateCell {
     pub token: u32,
     pub local: u8,
@@ -1669,6 +1708,7 @@ value_struct!(TemplateCell {
 /// the complete cell array are retained independently, without imposing limits
 /// on a mod's authored grid or normalizing native empty cells away.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemplateGrid {
     pub columns: u32,
     pub rows: u32,
@@ -1687,6 +1727,7 @@ impl TemplateGrid {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemplateLayout {
     pub regiments: TemplateGrid,
     pub support: TemplateGrid,
@@ -1702,6 +1743,7 @@ value_struct!(TemplateLayout {
 /// their native values; consumers use the game's nonzero tests. Priority is
 /// the shared template priority used by recruitment and equipment allocation.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemplateSettings {
     /// Native country-roster position, used for first display-name matches.
     pub roster_ordinal: u32,
@@ -1748,6 +1790,7 @@ value_struct!(TemplateSettings {
 /// first occurs in the grid, with the number of cells holding it. A
 /// null-object cell is token zero.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TemplateGrids {
     pub regiments: Vec<TemplateSubunit>,
     pub support: Vec<TemplateSubunit>,
@@ -1818,6 +1861,7 @@ mod template_grid_tests {
 /// Hourly companion of LandCombats, keyed by its full native handle: each
 /// side's loss counters.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandCombatProgressRow {
     pub combat: u64,
     /// Retired: playback computes both sides' progress from the ordered LandCombats
@@ -1844,6 +1888,7 @@ typed_codec!(LandCombatProgressRow, 64, |row| row.combat as u128,
 
 /// PreferredTactics: key country (32 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PreferredTacticRow {
     pub country: u32,
     pub tactic_id: i32,
@@ -1859,6 +1904,7 @@ typed_codec!(PreferredTacticRow, 32, |row| row.country as u128, |key| Self { cou
 /// The unlock token compared by triggers belongs to the tactic definition
 /// rather than the country; playback derives it from content.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryTacticUnlockRow {
     /// Raw country reference.
     pub country: u32,
@@ -1870,6 +1916,7 @@ typed_codec!(CountryTacticUnlockRow, 32, |row| row.country as u128,
 
 /// ProvinceSupply: key province (32 bits), 5 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProvinceSupplyRow {
     pub province: u32,
     pub controller_index: u16,
@@ -1883,6 +1930,7 @@ typed_codec!(ProvinceSupplyRow, 32, |row| row.province as u128, |key| Self { pro
 
 /// HubMotorization: key owner:province:node_type:actor (128 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct HubMotorizationRow {
     pub owner: u32,
     pub actor: u32,
@@ -1897,6 +1945,7 @@ typed_codec!(HubMotorizationRow, 128, |row| (row.owner as u128) << 96 | (row.pro
 
 /// DisruptedSupply: key country:province:node_type (96 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DisruptedSupplyRow {
     pub country: u32,
     pub province: u32,
@@ -1908,6 +1957,7 @@ typed_codec!(DisruptedSupplyRow, 96, |row| (row.country as u128) << 64 | (row.pr
 
 /// ForeignHomebases: key country:ordinal (64 bits), 10 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ForeignHomebaseRow {
     pub country: u32,
     pub ordinal: u32,
@@ -1927,6 +1977,7 @@ typed_codec!(ForeignHomebaseRow, 64, |row| (row.country as u128) << 32 | row.ord
 
 /// Source rail-info cooldown and selected building, keyed by province.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RailCooldownRow {
     pub province: u32,
     pub cooldown_ticks: i32,
@@ -1944,6 +1995,7 @@ typed_codec!(RailCooldownRow, 32, |row| row.province as u128, |key| Self { provi
 
 /// RailEdges: key from:to (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RailEdgeRow {
     pub from: u32,
     pub to: u32,
@@ -1954,6 +2006,7 @@ typed_codec!(RailEdgeRow, 64, |row| (row.from as u128) << 32 | row.to as u128, |
 
 /// LandTheatres: key id (64 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandTheatreRow {
     pub id: u64,
     pub owner: u32,
@@ -1966,6 +2019,7 @@ typed_codec!(LandTheatreRow, 64, |row| row.id as u128, |key| Self { id: key as u
 
 /// LandTheatreGroups: key id (64 bits), 4 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandTheatreGroupRow {
     pub id: u64,
     pub theatre: u64,
@@ -1978,6 +2032,7 @@ typed_codec!(LandTheatreGroupRow, 64, |row| row.id as u128, |key| Self { id: key
 
 /// LandTheatreMembers: key theater_group:orders_group (128 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LandTheatreMemberRow {
     pub orders_group: u64,
     pub theater_group: u64,
@@ -2017,6 +2072,7 @@ typed_codec!(LandTheatreMemberRow, 128, |row| (row.theater_group as u128) << 64 
 /// The save writes only progress among the preparation operands, which the
 /// oracle compares. Unit selection lives in engine_native::invasion_preparations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct InvasionPreparationRow {
     pub owner_group: u64,
     pub instance: u32,
@@ -2046,6 +2102,7 @@ typed_codec!(InvasionPreparationRow, 96, |row| (row.owner_group as u128) << 32 |
 /// An empty complete table means no sent references; unavailable is distinct.
 /// Consumers resolve only live handles through the complete Divisions census.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SentVolunteerRow {
     pub country: u32,
     pub ordinal: u32,
@@ -2059,6 +2116,7 @@ typed_codec!(SentVolunteerRow, 64, |row| (row.country as u128) << 32 | row.ordin
 /// One position of the volunteer-host vector and its paired tally. The
 /// position is part of the key because the vector can hold a repeated host.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VolunteerHostRow {
     /// Raw country reference of the country that owns the vector.
     pub country: u32,
@@ -2079,6 +2137,7 @@ typed_codec!(VolunteerHostRow, 64, |row| (row.country as u128) << 32 | row.posit
 /// area's representative, which is the only member the save writer emits; `provinces` is the area's
 /// whole membership.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TheatreAreaRow {
     /// Full native theatre handle; join it to LandTheatres.
     pub theatre: u64,
@@ -2095,6 +2154,7 @@ typed_codec!(TheatreAreaRow, 96, |row| (row.theatre as u128) << 32 | row.ordinal
 ///
 /// One position of a volunteer theatre's stationed-unit vector.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StationedUnitRow {
     /// Full native theatre handle; join it to LandTheatres.
     pub theatre: u64,
@@ -2111,6 +2171,7 @@ typed_codec!(StationedUnitRow, 96, |row| (row.theatre as u128) << 32 | row.ordin
 /// reference field is the pointee's full native handle; zero preserves the engine's own
 /// null pointer and is never an invented identity.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OrdersGroupRow {
     pub handle: u64,
     /// Raw country reference, kept as read like every other raw alias.
@@ -2141,6 +2202,7 @@ typed_codec!(OrdersGroupRow, 64, |row| row.handle as u128, |key| Self { handle: 
 /// The ordinal is the native member-vector index, which is engine state and the
 /// order the save serializes; it is not a generated key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OrdersGroupMemberRow {
     pub group: u64,
     pub ordinal: u32,
@@ -2152,6 +2214,7 @@ typed_codec!(OrdersGroupMemberRow, 96, |row| (row.group as u128) << 32 | row.ord
 
 /// ArmyGroupMembers: key group:ordinal (96 bits), 1 payload mask bit.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ArmyGroupMemberRow {
     pub group: u64,
     pub ordinal: u32,

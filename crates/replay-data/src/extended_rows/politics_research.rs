@@ -6,6 +6,7 @@ use super::*;
 /// A country's owned war goals in native order. Recipient is the war goal's recipient reference;
 /// goal_type is the definition's lexer token (through its definition), not a database ordinal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OwnedWargoalRow {
     pub country: u32,
     pub ordinal: u32,
@@ -28,6 +29,7 @@ typed_codec!(OwnedWargoalRow, 64, |row| (row.country as u128) << 32 | row.ordina
 /// metadata and loaded define values as native values; kind tags live in the
 /// codec.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResearchModifierRow {
     pub country: u32,
     pub index: u32,
@@ -106,6 +108,7 @@ typed_codec!(ResearchModifierRow, 96, |row| (row.country as u128) << 64 | (row.i
 ///
 /// Inputs are native values for the exact slot technology.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResearchInputRow {
     pub country: u32,
     pub index: u32,
@@ -135,6 +138,7 @@ typed_codec!(ResearchInputRow, 64, |row| (row.country as u128) << 32 | row.index
 /// Applied-bonus attribution retains native values for the exact slot
 /// technology.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResearchAppliedBonusRow {
     pub country: u32,
     pub index: u32,
@@ -157,6 +161,7 @@ typed_codec!(ResearchAppliedBonusRow, 96, |row| (row.country as u128) << 64 | (r
 /// no known read. The recorder updates only the owners read at each hour, so
 /// unchanged rows of the sliced tables themselves stay unchanged.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SliceReadRow {
     /// `TableId` index of the sliced table.
     pub table: u32,
@@ -179,6 +184,7 @@ typed_codec!(SliceReadRow, 64, |row| (row.table as u128) << 32 | row.owner as u1
 /// recorded: the co-belligerent byte changes only the raid army search's
 /// edge cost, never whether it reaches its source. Absent pairs have no bit set.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RelationLinkRow {
     /// Raw reference of the country whose matrix holds the status.
     pub country: u32,
@@ -191,6 +197,7 @@ pub struct RelationLinkRow {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TransportSubjectAccess {
     pub sample_hour: PacketHour,
     pub complete_owner: bool,
@@ -223,6 +230,7 @@ typed_codec!(RelationLinkRow, 64, |row| (row.country as u128) << 32 | row.target
 /// An army may enter only when its location province is also in a conflict
 /// or its `Divisions.orders_group` is in `groups`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct BorderConflictRow {
     pub province: u32,
     pub groups: Vec<u64>,
@@ -248,6 +256,7 @@ typed_codec!(BorderConflictRow, 32, |row| row.province as u128,
 /// civil-war revolter whose list stays unrebuilt until its own declaration,
 /// and a country owning a retired war relation that could linger in a side list.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryWarRow {
     pub country: u32,
     pub can_occupy_non_war: u8,
@@ -261,6 +270,7 @@ typed_codec!(CountryWarRow, 32, |row| row.country as u128,
 
 /// Hourly companion of States. All states are present, including false flags.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateFlagRow {
     pub state: u32,
     /// Native byte, not normalized; zero is false and nonzero is true.
@@ -285,6 +295,7 @@ typed_codec!(StateFlagRow, 32, |row| row.state as u128,
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ScriptVariableEntry {
     pub name: Vec<u8>,
     pub value_raw: i64,
@@ -293,6 +304,7 @@ value_struct!(ScriptVariableEntry {name: Vec<u8>, value_raw: i64});
 
 /// Focus: key country (32 bits), 6 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FocusRow {
     pub country: u32,
     pub tree: Option<Vec<u8>>,
@@ -307,6 +319,7 @@ typed_codec!(FocusRow, 32, |row| row.country as u128, |key| Self { country: key 
 
 /// CompletedFocuses: key country:ordinal (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CompletedFocusRow {
     pub country: u32,
     pub ordinal: u32,
@@ -319,6 +332,7 @@ typed_codec!(CompletedFocusRow, 64, |row| (row.country as u128) << 32 | row.ordi
 /// mask bits. Refreshed one country slice per hour; the read hour is in
 /// SliceReads.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResearchTechnologyRow {
     pub country: u32,
     pub technology_handle: u32,
@@ -337,6 +351,7 @@ typed_codec!(ResearchTechnologyRow, 64, |row| (row.country as u128) << 32 | row.
 
 /// ResearchSlots: key country:index (64 bits), 6 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ResearchSlotRow {
     pub country: u32,
     pub index: u32,
@@ -357,6 +372,7 @@ typed_codec!(ResearchSlotRow, 64, |row| (row.country as u128) << 32 | row.index 
 /// replaces it; an incomplete read replaces only returned keys, and an empty
 /// read keeps it (sliced::replaces_whole).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TechnologyDefinitionRow {
     pub technology_handle: u32,
     /// Distinct stored template occurrence identity, even when handles coincide.
@@ -371,6 +387,7 @@ typed_codec!(TechnologyDefinitionRow, 32, |row| row.database_index as u32 as u12
 
 /// Politics: key country (32 bits), 9 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PoliticsRow {
     pub country: u32,
     pub last_election: i32,
@@ -400,6 +417,7 @@ typed_codec!(PoliticsRow, 32, |row| row.country as u128, |key| Self { country: k
 /// the ideology group's own name. Otherwise it localises the stored keys.
 /// Consumers resolve these through the recorded content stack.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PoliticalPartyRow {
     pub country: u32,
     pub id: u32,
@@ -425,6 +443,7 @@ typed_codec!(PoliticalPartyRow, 64, |row| (row.country as u128) << 32 | row.id a
 /// Read hourly because effects can change active ideas at any hour and triggers
 /// see those changes in that hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ActiveIdeaRow {
     pub country: u32,
     pub ordinal: u32,
@@ -436,6 +455,7 @@ typed_codec!(ActiveIdeaRow, 64, |row| (row.country as u128) << 32 | row.ordinal 
 /// Stored political-action roster order; remaining days are decremented
 /// rather than stored as an expiry date.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TimedIdeaRow {
     pub country: u32,
     pub ordinal: u32,
@@ -449,6 +469,7 @@ typed_codec!(TimedIdeaRow, 64, |row| (row.country as u128) << 32 | row.ordinal a
 /// Stored decision random-count roster order. An absent entry in a complete
 /// table means no stored count, not a read failure.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DecisionRandomItemRow {
     pub country: u32,
     pub ordinal: u32,
@@ -463,6 +484,7 @@ typed_codec!(DecisionRandomItemRow, 64, |row| (row.country as u128) << 32 | row.
 
 /// DecisionCounts: key country (32 bits), 6 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DecisionCountsRow {
     pub country: u32,
     pub taken: u32,
@@ -477,6 +499,7 @@ typed_codec!(DecisionCountsRow, 32, |row| row.country as u128, |key| Self { coun
 
 /// Decisions: key country:container:ordinal (72 bits), 8 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DecisionRow {
     pub country: u32,
     pub container: u8,
@@ -504,6 +527,7 @@ typed_codec!(DecisionRow, 72, |row| (row.country as u128) << 40 | (row.container
 
 /// DynamicModifiers: key country:ordinal (64 bits), 6 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DynamicModifierRow {
     pub country: u32,
     pub ordinal: u32,
@@ -519,6 +543,7 @@ typed_codec!(DynamicModifierRow, 64, |row| (row.country as u128) << 32 | row.ord
 
 /// TechSharingGroups: key id (32 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TechSharingGroupRow {
     pub id: u32,
     pub base_bonus: i64,
@@ -529,6 +554,7 @@ typed_codec!(TechSharingGroupRow, 32, |row| row.id as u128, |key| Self { id: key
 
 /// TechSharingMembers: key group:ordinal (64 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TechSharingMemberRow {
     pub group: u32,
     pub ordinal: u32,
@@ -543,6 +569,7 @@ typed_codec!(TechSharingMemberRow, 64, |row| (row.group as u128) << 32 | row.ord
 /// Balance-of-power presentation operands refresh with the hour; cadence.rs
 /// governs sampling.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PowerBalanceRow {
     pub ordinal: u32,
     pub value_raw: i64,
@@ -557,6 +584,7 @@ typed_codec!(PowerBalanceRow, 32, |row| row.ordinal as u128, |key| Self { ordina
 
 /// PowerBalanceMembers: key record:ordinal (64 bits), 7 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PowerBalanceMemberRow {
     pub record: u32,
     pub ordinal: u32,
@@ -573,6 +601,7 @@ typed_codec!(PowerBalanceMemberRow, 64, |row| (row.record as u128) << 32 | row.o
 
 /// PowerBalanceRanges: key record:ordinal (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PowerBalanceRangeRow {
     pub record: u32,
     pub ordinal: u32,
@@ -583,6 +612,7 @@ typed_codec!(PowerBalanceRangeRow, 64, |row| (row.record as u128) << 32 | row.or
 
 /// PowerBalanceOverrides: key record:ordinal (64 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PowerBalanceOverrideRow {
     pub record: u32,
     pub ordinal: u32,
@@ -598,6 +628,7 @@ typed_codec!(PowerBalanceOverrideRow, 64, |row| (row.record as u128) << 32 | row
 /// hourly boundaries. Every current country is present, even at zero or in its first
 /// incomplete interval.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryExperienceGainRow {
     pub country: u32,
     pub instance: u32,
@@ -617,6 +648,7 @@ typed_codec!(CountryExperienceGainRow, 64, |row| (row.country as u128) << 32 | r
 
 /// CountryExperience: key country (32 bits), 9 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryExperienceRow {
     pub country: u32,
     pub army_raw: i64,
@@ -634,6 +666,7 @@ typed_codec!(CountryExperienceRow, 32, |row| row.country as u128, |key| Self { c
 
 /// Each native occupation-data member; a null group law still proves membership.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OccupationGroupLaw {
     pub occupied: u32,
     /// Current id through the retained country pointer; None is a capture fault.
@@ -645,6 +678,7 @@ opaque_value!(Option<Vec<OccupationGroupLaw>>);
 
 /// OccupationSettings: key country (32 bits), with its native group-law inventory.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OccupationSettingsRow {
     pub country: u32,
     pub garrison_template: Option<u64>,
@@ -663,6 +697,7 @@ typed_codec!(OccupationSettingsRow, 32, |row| row.country as u128, |key| Self { 
 
 /// StateOccupationLaws: key controller:occupied:state (96 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateOccupationLawRow {
     pub controller: u32,
     pub occupied: u32,
@@ -677,6 +712,7 @@ typed_codec!(StateOccupationLawRow, 96, |row| (row.controller as u128) << 64 | (
 /// identity and archetype lookup takes the first ordered signed-ID match.
 /// No addresses persist.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct GarrisonEquipment {
     pub equipment_token: u32,
     pub archetype_token: u32,
@@ -696,6 +732,7 @@ value_struct!(GarrisonEquipment {
     weight_raw: i64
 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct GarrisonEquipmentInputs {
     pub rows: Vec<GarrisonEquipment>,
     /// A local acquisition refusal, rather than a fabricated empty pool.
@@ -706,6 +743,7 @@ opaque_value!(GarrisonEquipmentInputs);
 
 /// StateGarrisons: key controller:state (64 bits), appended strength operands.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateGarrisonRow {
     pub controller: u32,
     pub occupied: u32,
@@ -721,6 +759,7 @@ typed_codec!(StateGarrisonRow, 64, |row| (row.controller as u128) << 32 | row.st
 
 /// StateAssignedManpower: key controller:state:ordinal (96 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateAssignedManpowerRow {
     pub controller: u32,
     pub occupied: u32,
@@ -734,6 +773,7 @@ typed_codec!(StateAssignedManpowerRow, 96, |row| (row.controller as u128) << 64 
 
 /// CountryOccupationReserveManpower: key country:ordinal (64 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryOccupationReserveManpowerRow {
     pub country: u32,
     pub ordinal: u32,
@@ -746,6 +786,7 @@ typed_codec!(CountryOccupationReserveManpowerRow, 64, |row| (row.country as u128
 /// One native scripted target addition, in the state's stored order. Nonpositive country
 /// selectors apply to every country; localisation is the authored key, including empty.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OccupationAddedTarget {
     pub value: i64,
     pub controller: i32,
@@ -755,6 +796,7 @@ pub struct OccupationAddedTarget {
 value_struct!(OccupationAddedTarget { value: i64, controller: i32, occupied: i32, localisation: Vec<u8> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OccupationEffect {
     pub key: u32,
     pub value: i64,
@@ -773,6 +815,7 @@ value_struct!(OccupationEffectExtra {
 /// Runtime-only hover operands. Effects are the stored local accumulators, retaining
 /// their native key order and zeros; their eligibility has already been applied.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OccupationHover {
     pub exile_host: i32,
     pub legitimacy: i64,
@@ -791,6 +834,7 @@ opaque_value!(Recorded<Option<OccupationHover>>);
 /// Each section's four sources, in controller, state, relation and occupied-country order.
 /// A null relation is a recorded zero. Source labels are stored text in the recording language.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OccupationModifierSource {
     pub section: u8,
     pub source: u8,
@@ -810,6 +854,7 @@ opaque_value!(Recorded<Option<OccupationMap>>);
 /// Hourly occupied-state levels, speeds and hover operands. Unchanged columns carry through
 /// ordinary frame deltas; acquisition runs on the state worker, independently of construction.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateResistanceRow {
     pub state: u32,
     pub country: u32,
@@ -828,6 +873,7 @@ typed_codec!(StateResistanceRow, 32, |row| row.state as u128, |key| Self { state
 
 /// CountryCollaboration: key source:target (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryCollaborationRow {
     pub source: u32,
     pub target: u32,
@@ -838,6 +884,7 @@ typed_codec!(CountryCollaborationRow, 64, |row| (row.source as u128) << 32 | row
 
 /// Capitulation: key country (32 bits), 6 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CapitulationRow {
     pub country: u32,
     pub capitulated: u8,
@@ -863,6 +910,7 @@ typed_codec!(CapitulationRow, 32, |row| row.country as u128, |key| Self { countr
 
 /// Subjects: key overlord:subject (64 bits), 5 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SubjectRow {
     pub overlord: u32,
     pub subject: u32,
@@ -877,6 +925,7 @@ typed_codec!(SubjectRow, 64, |row| (row.overlord as u128) << 32 | row.subject as
 
 /// Autonomy: key subject (32 bits), 7 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct AutonomyRow {
     pub subject: u32,
     pub score: i64,
@@ -900,6 +949,7 @@ typed_codec!(AutonomyRow, 32, |row| row.subject as u128, |key| Self { subject: k
 /// Flags are read hourly: effects set or clear them between ticks, and triggers
 /// see the change in that hour. ActiveIdeas has the same requirement.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ScriptFlagRow {
     pub scope_kind: u8,
     pub scope_id: u32,
@@ -922,6 +972,7 @@ typed_codec!(ScriptFlagRow, 72, |row| (row.scope_kind as u128) << 64 | (row.scop
 /// effects can change them at any hour. Built-in game variables are computed on
 /// demand, not stored or recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ScriptVariablesRow {
     pub scope_kind: u8,
     pub scope_id: u32,
@@ -943,6 +994,7 @@ typed_codec!(ScriptVariablesRow, 40, |row| (row.scope_kind as u128) << 32 | row.
 /// character IDs stay recorded. Clearing a name deletes its record rather than
 /// retaining the previous target.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct GlobalSavedEventTargetRow {
     pub ordinal: u32,
     pub name: Vec<u8>,
@@ -1011,6 +1063,7 @@ typed_codec!(GlobalSavedEventTargetRow, 32, |row| row.ordinal as u128,
 /// as the game compares pointers. The party writer saves leaders in order
 /// without leader_id; the oracle takes that id from the leader's saved role.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PartyLeaderRow {
     pub country: u32,
     pub party: u32,
@@ -1036,6 +1089,7 @@ typed_codec!(PartyLeaderRow, 96, |row| (row.country as u128) << 64 | (row.party 
 /// enemy that lists the country, exists. `country` is the raw owner id.
 /// The save writes one `civil_war_target` per entry, in order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryCivilWarRow {
     pub country: u32,
     pub ordinal: u32,
@@ -1066,6 +1120,7 @@ typed_codec!(CountryCivilWarRow, 64, |row| (row.country as u128) << 32 | row.ord
 /// core and claim insertion and removal and both strategic-location appenders
 /// are hooked, so every list equals the game's at every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateCoreRow {
     pub state: u32,
     pub cores: Vec<u32>,
@@ -1110,6 +1165,7 @@ fn split(pair: u64) -> (u32, u32) {
 /// Sliced, with `StateResourceInputs`: every writer of the list is hooked,
 /// so it equals the game's at every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateDynamicModifierRow {
     pub state: u32,
     pub ordinal: u32,
@@ -1131,6 +1187,7 @@ typed_codec!(StateDynamicModifierRow, 64, |row| (row.state as u128) << 32 | row.
 /// consumers (displayed maximum command power minus allocated power) use
 /// the one record of each, joined by canonical slot at the same frame.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryCommandPowerRow {
     pub canonical_slot: u32,
     /// Stored fixed5 command power reserved by allocators.
@@ -1152,6 +1209,7 @@ typed_codec!(CountryCommandPowerRow, 32, |row| row.canonical_slot as u128, |key|
 
 /// PeaceConferences: key id (64 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PeaceConferenceRow {
     pub id: u64,
     pub ordinal: u32,
@@ -1163,6 +1221,7 @@ typed_codec!(PeaceConferenceRow, 64, |row| row.id as u128, |key| Self { id: key 
 
 /// LexicalTokens: key token (32 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LexicalTokenRow {
     pub token: u32,
     pub literal: Vec<u8>,
@@ -1180,6 +1239,7 @@ typed_codec!(LexicalTokenRow, 32, |row| row.token as u128, |key| Self { token: k
 /// process-wide feature eligibility callback read with the table (0 null,
 /// 1 the flags getter), the same on every row.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ModifierDefinitionRow {
     pub index: u32,
     pub token: u32,
@@ -1214,6 +1274,7 @@ typed_codec!(ModifierDefinitionRow, 32, |row| row.index as u128, |key| Self { in
 /// This row describes its SliceReads hour; the command-power row describes the
 /// frame hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryStabilityInputRow {
     pub country: u32,
     pub recruitment_ratio: Recorded<Option<i64>>,
@@ -1327,6 +1388,7 @@ typed_codec!(CountryStabilityInputRow, 32, |row| row.country as u128, |key| Self
 /// Sliced by country with CountryStabilityInputs; values describe the owner's
 /// SliceReads hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryStabilityLineRow {
     pub country: u32,
     pub line: u32,
@@ -1373,6 +1435,7 @@ typed_codec!(CountryStabilityLineRow, 96, |row| (row.country as u128) << 64 | (r
 /// `clamp(sum of source contributions, 0, 10_000_000) / 100`. The pre-clamp
 /// sum is the sum of ThreatSources.current_raw; nothing is derived here.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct WorldTensionRow {
     pub total_raw: i64,
     /// Native source count, independent of how many rows fitted the buffer.
@@ -1387,6 +1450,7 @@ typed_codec!(WorldTensionRow, 0, |_row| 0, |_key| Self { total_raw: Default::def
 /// The compacted vector has no engine ids, so ordinal is its only stored
 /// identity and its order is itself state.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ThreatSourceRow {
     pub ordinal: u32,
     /// Raw country reference; resolve through CountryLinks.
@@ -1406,6 +1470,7 @@ typed_codec!(ThreatSourceRow, 32, |row| row.ordinal as u128, |key| Self { ordina
 
 /// ThreatCountryAggregates: key canonical country slot (32 bits), 1 payload mask bit.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ThreatCountryAggregateRow {
     /// Canonical country slot resolved from the raw reference.
     pub country_slot: u32,
@@ -1419,6 +1484,7 @@ typed_codec!(ThreatCountryAggregateRow, 32, |row| row.country_slot as u128, |key
 /// The ordinal is the stored queue index, also used as the serialized key,
 /// so a null slot leaves a gap rather than shifting later rows.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct IncomingDiplomaticActionRow {
     pub country: u32,
     pub ordinal: u32,
@@ -1444,6 +1510,7 @@ typed_codec!(IncomingDiplomaticActionRow, 64, |row| (row.country as u128) << 32 
 /// which is exactly when the native relation-status serializer emits
 /// `cached_sum`. Country references stay raw engine references.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RelationOpinionRow {
     pub owner_country: u32,
     pub target_country: u32,
@@ -1460,6 +1527,7 @@ typed_codec!(RelationOpinionRow, 64, |row| (row.owner_country as u128) << 32 | r
 /// writes for that block. The ordinal completes the key because nothing in the engine
 /// forbids two relations of one type in one pair.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RelationTupleRow {
     pub owner_country: u32,
     pub target_country: u32,

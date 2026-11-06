@@ -23,6 +23,7 @@ mod scripted_tests;
 /// The event families, in the order of [`MapEventsRow::health`] and their payload tags.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
+#[derive(replay_spool::Spooled)]
 pub enum MapEventFamily {
     #[default]
     FakeDivisionRevealed = 0,
@@ -124,6 +125,7 @@ impl MapEventFault {
 
 /// A closed set of [`MapEventFault`] bits; unknown bits are malformed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventFaults(u16);
 
 impl MapEventFaults {
@@ -181,6 +183,7 @@ impl Value for MapEventFaults {
 /// One family's coverage of the interval. `missed` counts events the family
 /// refused (unreadable or without room) since its epoch began.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventFamilyHealth {
     pub installed: bool,
     pub enabled: bool,
@@ -236,6 +239,7 @@ impl Value for MapEventFamilyHealth {
 /// One entry of a unit's intel array: a country's canonical ordinal and its
 /// signed level, in native order with repetitions kept.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventIntelEntry {
     pub country: u32,
     pub level: i8,
@@ -250,6 +254,7 @@ value_struct!(MapEventIntelEntry {
 /// a viewer's visibility at, the unit's intel array and whether fog of war
 /// was on.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventUnitIntel {
     pub owner: u32,
     pub anchor_province: u32,
@@ -268,6 +273,7 @@ value_struct!(MapEventUnitIntel {
 /// A critical shore bombardment hit: the bombarded province. The game shows
 /// its text and its explosion entity to every viewer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventCriticalBombardment {
     pub province: u32,
 }
@@ -276,6 +282,7 @@ value_struct!(MapEventCriticalBombardment { province: u32 });
 /// A captured general: the general's country and the captor, as raw
 /// references, and the province the text stands on.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventGeneralCapture {
     pub owner: u32,
     pub captor: u32,
@@ -290,6 +297,7 @@ value_struct!(MapEventGeneralCapture {
 /// A completed paradrop: the landing province, the dropping country's raw
 /// reference, whether the landing took losses and whether fog of war was on.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventParadrop {
     pub province: u32,
     pub country: u32,
@@ -307,6 +315,7 @@ value_struct!(MapEventParadrop {
 /// its controller and its owner's overlord as raw references, and the
 /// activity's authored map text key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventResistance {
     pub province: u32,
     pub controller: u32,
@@ -323,6 +332,7 @@ value_struct!(MapEventResistance {
 /// The reason a building notification gives, which selects its text.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
+#[derive(replay_spool::Spooled)]
 pub enum MapEventBuildingReason {
     #[default]
     Bombed = 1,
@@ -371,6 +381,7 @@ impl Value for MapEventBuildingReason {
 /// controller as a raw reference and the notification's reason. A
 /// notification that lowers several levels is one event a level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventBuildingDamage {
     pub building_type: u32,
     pub province: u32,
@@ -385,6 +396,7 @@ value_struct!(MapEventBuildingDamage {
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum MapEventPayload {
     FakeDivisionRevealed(MapEventUnitIntel),
     RailwayGunOverrun(MapEventUnitIntel),
@@ -504,6 +516,7 @@ impl Value for MapEventPayload {
 /// One event: its place in the global sequence, the game hour it happened
 /// at and what happened.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEvent {
     pub sequence: u64,
     pub hour: i32,
@@ -523,6 +536,7 @@ value_struct!(MapEvent {
 /// other row starts with unknown coverage. Events are in sequence order;
 /// one an earlier interval left in flight can precede `first_sequence`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MapEventsRow {
     pub epoch: u64,
     pub from_hour: i32,

@@ -775,6 +775,7 @@ pub struct Characters {
 /// When alternatives disagree, a held role therefore belongs to the recorded
 /// character's template.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct BuiltTemplate {
     /// The template tag as lexer-token text.
     pub tag: String,

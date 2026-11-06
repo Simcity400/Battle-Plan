@@ -140,7 +140,7 @@ pub fn needs() -> Needs {
 }
 
 /// A part's names: its formula term, or its line and the character the line names.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, replay_spool::Spooled)]
 pub struct PartNames {
     pub term: Option<String>,
     pub line: Option<BreakdownLine>,
@@ -158,7 +158,7 @@ impl PartNames {
 /// A read's parts named by its own hour: each measure's parts by part id with their raw
 /// values, None where not all are known; the names of those whose names differ from what the
 /// segment handed on for them last; and the tree labels its lines refused.
-#[derive(Debug)]
+#[derive(Debug, replay_spool::Spooled)]
 pub struct Named {
     pub measures: [Option<Vec<(u32, i64)>>; 2],
     pub names: Vec<(u8, u32, Arc<PartNames>)>,
@@ -166,7 +166,7 @@ pub struct Named {
 }
 
 /// A read met after its hour: its addends, character lines left for the emit to name.
-#[derive(Debug)]
+#[derive(Debug, replay_spool::Spooled)]
 pub struct Unnamed {
     pub measures: [Option<Vec<Addend>>; 2],
     pub refused: Refusals,
@@ -174,6 +174,7 @@ pub struct Unnamed {
 
 /// A read's parts for its holder.
 #[derive(Debug)]
+#[derive(replay_spool::Spooled)]
 pub enum Parts {
     /// The parts the segment handed on last for the country, at a new read of the same rows.
     Same,
@@ -183,6 +184,7 @@ pub enum Parts {
 
 /// One country at a projected hour.
 #[derive(Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Country {
     /// Its tag's index in the projection ([`Hour::named`]).
     pub index: u32,
@@ -200,6 +202,7 @@ pub struct Country {
 
 /// The characters the hour recorded, as a character line names them.
 #[derive(Debug)]
+#[derive(replay_spool::Spooled)]
 pub enum Characters {
     /// Characters is not complete: no character is known at the hour.
     Unknown,
@@ -211,6 +214,7 @@ pub enum Characters {
 
 /// Every country's inputs read hour, by country id, where SliceReads dates them.
 #[derive(Debug)]
+#[derive(replay_spool::Spooled)]
 pub enum Reads {
     /// Every dated country; any other is dated no more.
     Every(Vec<(u32, i32)>),
@@ -219,6 +223,7 @@ pub enum Reads {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -282,50 +287,6 @@ impl Parts {
                         .sum::<usize>()
             }
         }
-    }
-}
-
-impl segments::Item for Hour {
-    fn heap(&self) -> usize {
-        let tags = |named: &Vec<(u32, Arc<str>)>| {
-            named.capacity() * size_of::<(u32, Arc<str>)>()
-                + named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-        };
-        tags(&self.named)
-            + tags(&self.ids)
-            + self.valid.as_ref().map_or(0, |valid| valid.capacity() * 4)
-            + match &self.reads {
-                Some(Reads::Every(every)) => every.capacity() * size_of::<(u32, i32)>(),
-                Some(Reads::Changed(changed)) => {
-                    changed.capacity() * size_of::<(u32, Option<i32>)>()
-                }
-                None => 0,
-            }
-            + match &self.characters {
-                Characters::Unknown => 0,
-                Characters::Every(every) => {
-                    every.capacity() * size_of::<(u32, Character)>()
-                        + every
-                            .iter()
-                            .map(|(_, character)| character_heap(character))
-                            .sum::<usize>()
-                }
-                Characters::Changed(changed) => {
-                    changed.capacity() * size_of::<(u32, Option<Character>)>()
-                        + changed
-                            .iter()
-                            .filter_map(|(_, character)| character.as_ref())
-                            .map(character_heap)
-                            .sum::<usize>()
-                }
-            }
-            + self.countries.capacity() * size_of::<Country>()
-            + self
-                .countries
-                .iter()
-                .filter_map(|country| country.parts.as_ref())
-                .map(Parts::heap)
-                .sum::<usize>()
     }
 }
 

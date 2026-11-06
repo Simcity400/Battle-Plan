@@ -142,6 +142,7 @@ pub enum FocusDatabase {
 /// technology). Missing pieces stay null rather than guessed.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct Artwork {
     pub token: String,
     pub name: Option<String>,

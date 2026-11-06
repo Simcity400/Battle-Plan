@@ -266,7 +266,8 @@ fn projected(hours: &[Tables], starts: &[i32]) -> (Vec<Hour>, Vec<DecodedFrame>)
             .unwrap();
         frames.push(frame);
     }
-    (out, frames)
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(out).unwrap(), frames)
 }
 
 /// The row frames' source, its blocks split at the gap.

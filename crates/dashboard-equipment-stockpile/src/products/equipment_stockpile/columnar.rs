@@ -11,7 +11,7 @@ use engine_native::cequipment_production_line::KIND_MILITARY;
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{
     format::FormatVersion,
@@ -65,6 +65,7 @@ const NUMERIC: [TableId; 3] = [
 ];
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -73,6 +74,7 @@ pub struct Hour {
 }
 
 /// What the ordered emit reads of an hour that is not quiet.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Facts {
     /// Whether the stock and line tables, and the logistics record, were read (`slot_read`).
     pub(crate) reads: [bool; 2],
@@ -94,6 +96,7 @@ pub(crate) struct Facts {
 }
 
 /// A definition's naming operands at a complete variant read.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Variant {
     pub(crate) id: u64,
     /// The operands but the hour they were read at, digested: equal operands, equal digests.
@@ -123,6 +126,7 @@ impl Variant {
 }
 
 /// The holders the complete Countries and CountryLinks resolve.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Holders {
     /// Each tag's canonical slot and country id, as `CountryReads` resolves them.
     pub(crate) identities: BTreeMap<String, (u32, u32)>,
@@ -138,6 +142,7 @@ impl Holders {
 }
 
 /// A table's totals for one holder slot, by key.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Totals<K, const N: usize> {
     /// Every key's: the slot's first read since the segment's last whole hour.
     Whole(Vec<(K, [Option<i64>; N])>),
@@ -148,6 +153,7 @@ pub(crate) enum Totals<K, const N: usize> {
 
 /// One holder slot's read: the totals of each table read and usable, as its step reads
 /// them.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Read {
     pub(crate) slot: u32,
     /// Each variant's stock.
@@ -195,45 +201,6 @@ impl Read {
                 .iter()
                 .map(|(_, spelling)| spelling.capacity())
                 .sum::<usize>()
-    }
-}
-
-fn variant_heap(raw: &RawVariant) -> usize {
-    [&raw.token, &raw.display_name, &raw.suffix]
-        .into_iter()
-        .chain(&raw.name_tag)
-        .chain(&raw.type_tag)
-        .chain(&raw.design)
-        .map(String::capacity)
-        .sum::<usize>()
-        + raw.refusals.capacity() * size_of::<(String, String)>()
-        + raw
-            .refusals
-            .iter()
-            .map(|(label, why)| label.capacity() + why.capacity())
-            .sum::<usize>()
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let Some(facts) = &self.facts else {
-            return 0;
-        };
-        // The projector and every whole hour until the holders change share them.
-        let holders = match &facts.holders {
-            Some(holders) if facts.charged => size_of::<Holders>() + holders.heap(),
-            _ => 0,
-        };
-        holders
-            + size_of::<Facts>()
-            + facts.variants.capacity() * size_of::<Variant>()
-            + facts
-                .variants
-                .iter()
-                .map(|variant| variant_heap(&variant.raw))
-                .sum::<usize>()
-            + facts.rows.capacity() * size_of::<Read>()
-            + facts.rows.iter().map(Read::heap).sum::<usize>()
     }
 }
 

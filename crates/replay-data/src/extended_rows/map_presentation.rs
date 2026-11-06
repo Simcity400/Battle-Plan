@@ -4,6 +4,7 @@ use super::*;
 /// map colour and the name operands the ruling party and subject tables lack.
 /// Components retain the current primary color's f32 bits without conversion.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryAppearanceRow {
     pub country: u32,
     /// Ordered raw subject roster; empty at zero count.
@@ -69,6 +70,7 @@ typed_codec!(CountryAppearanceRow, 32, |row| row.country as u128, |key| Self { c
 
 /// Hourly stack-icon inputs, keyed by the full Divisions handle.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ArmyIconInputRow {
     pub division: u64,
     /// Raw CanAdd gate byte; retained without boolean normalization.
@@ -81,6 +83,7 @@ typed_codec!(ArmyIconInputRow, 64, |row| row.division as u128, |key| Self { divi
 
 /// Additional hourly native counter operands. None only when decoding formats20..22.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ShipCounterInputs {
     pub roster_ordinal: u32,
     pub definition_valid: u8,
@@ -106,6 +109,7 @@ value_struct!(ShipCounterInputs {
 /// definition ordinal resolves through recorded Equipment content, including generated
 /// definitions; daily variant rows do not substitute here.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct HullVariantInputs {
     pub definition_index: Option<i32>,
     pub module_count: Option<i32>,
@@ -124,6 +128,7 @@ opaque_value!(Option<[i64; 5]>);
 
 /// Hourly entity-model and counter operands, keyed by the full Ships handle.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ShipModelRow {
     pub ship: u64,
     pub variant: u64,
@@ -155,6 +160,7 @@ typed_codec!(ShipModelRow, 64, |row| row.ship as u128, |key| Self { ship: key as
 
 /// Complete hourly province census, including empty ordered occupant arrays.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProvinceUnitOrderRow {
     pub province: u32,
     pub mixed: Vec<u64>,
@@ -164,6 +170,7 @@ typed_codec!(ProvinceUnitOrderRow,32,|r| r.province as u128,|k| Self { province:
  {0 => (mixed): U64List,1 => (naval): U64List},|_r| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CharacterPortrait {
     pub category: u32,
     pub size: u32,
@@ -175,6 +182,7 @@ value_struct!(CharacterPortrait {category:u32,size:u32,is_set:u8,kind:u32,identi
 /// Portraits for the full character roster, independently of the orders-group
 /// HQ leader census.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CharacterPortraitRow {
     pub character: u32,
     pub portraits: Vec<CharacterPortrait>,
@@ -228,6 +236,7 @@ typed_codec!(CharacterPortraitRow,32,|r| r.character as u128,|k| Self {character
 /// registered leader outside this HQ scope has no row; that does not prove an
 /// empty portrait.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderPortraitRow {
     pub leader: u64,
     pub character: u64,
@@ -248,6 +257,7 @@ typed_codec!(LeaderPortraitRow,64,|r| r.leader as u128,|k| Self {leader:k as u64
 /// received_supply_ratio is signed fixed5, read by the low-supply child of the
 /// port and at-sea counters.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalSearcher {
     /// A failed raw slot stays unknown without erasing earlier ordered entries.
     pub reference: Option<u64>,
@@ -259,6 +269,7 @@ pub struct NavalSearcher {
 value_struct!(NavalSearcher { reference: Option<u64>, resolves: Option<bool>, roster_owner: Option<u32> });
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalEngagementTarget {
     pub reference: u64,
     /// Native raw resolution only; no invented class, vtable or owner filter.
@@ -268,6 +279,7 @@ value_struct!(NavalEngagementTarget { reference: u64, resolves: Option<bool> });
 
 /// Ordered genuine port/strike mission inputs for a callback hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalPortMissionInputs {
     pub sample_hour: PacketHour,
     pub searching: Option<Vec<NavalSearcher>>,
@@ -284,6 +296,7 @@ opaque_value!(Option<NavalPortMissionInputs>);
 
 /// Hourly naval counter operands, including field-local optional supplements.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TaskForceCounterInputRow {
     pub task_force: u64,
     pub is_in_regions: u8,
@@ -325,6 +338,7 @@ typed_codec!(TaskForceCounterInputRow, 64, |r| r.task_force as u128, |k| Self { 
 /// in any of those combats (the unit-action query's combat branch). `reference_entry_count` is the
 /// stored count of the gun's own combat reference array, the save's `combat` list.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RailwayGunCounterInputRow {
     pub gun: u64,
     pub roster_owner: u32,
@@ -375,6 +389,7 @@ pub struct RailwayGunCounterInputRow {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RailwayGunEtaOperands {
     /// Raw fixed5 movement progress.
     pub numerator: i64,
@@ -393,6 +408,7 @@ opaque_value!(Option<RailwayGunEtaOperands>);
 /// group is `Some(0)`, independently of the railway assignee group already recorded by the counter
 /// prefix.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FreshRailwayCounterEta {
     pub sample_hour: PacketHour,
     pub maximum_speed: Option<i64>,
@@ -509,6 +525,7 @@ mod fresh_railway_eta_tests {
 /// component f32 bit patterns; `mission_region_count` is the stored count;
 /// `task_forces` is the ordered roster as full handles.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FleetCounterInputRow {
     pub fleet: u64,
     pub red: u32,
@@ -531,6 +548,7 @@ typed_codec!(FleetCounterInputRow, 64, |r| r.fleet as u128, |k| Self { fleet: k 
 /// second zero retains that independently proved truth. No absent word
 /// becomes zero. The enclosing recorded Option distinguishes an unknown OR from null.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ZeroSubjectInputs {
     pub relation_type: Option<u32>,
     pub parties: Option<[Option<u32>; 2]>,
@@ -541,6 +559,7 @@ opaque_value!(Option<ZeroSubjectInputs>);
 /// Immutable ordered full references. Cloning a replay row shares its payload;
 /// the collector replaces it only when the certified roster changes.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ManpowerReferences(Option<std::sync::Arc<Vec<u64>>>);
 
 impl ManpowerReferences {
@@ -609,6 +628,7 @@ opaque_value!(Option<ManpowerReferences>);
 /// controls, and first_division with its first saved division: the save keeps
 /// the roster order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryCounterInputRow {
     pub sent_expeditionaries: Recorded<Option<ManpowerReferences>>,
     pub country: u32,
@@ -751,6 +771,7 @@ impl CountryCounterInputRow {
 /// `country` is its holder navy's raw country word, copied without
 /// country-link resolution.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LaunchNavalBase {
     pub base_province: u32,
     pub country: u32,
@@ -763,6 +784,7 @@ value_struct!(LaunchNavalBase {
 /// Actual Country0's launch provider. NativeNull records a successfully read
 /// null manager slot, never an empty roster or an acquisition refusal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum LaunchNavalBases {
     #[default]
     Unavailable,
@@ -819,6 +841,7 @@ impl Value for LaunchNavalBases {
 /// owned_states None are independent refusals; Bases(empty) observes a list.
 /// Base and state IDs retain their exact bits; no persistent handle is inferred.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ReservedLaunchSources {
     pub sample_hour: PacketHour,
     pub naval_bases: LaunchNavalBases,
@@ -839,6 +862,7 @@ opaque_value!(Option<ReservedLaunchSources>);
 /// operand. A present subject with no type is native null; ordered optional parties retain the lazy
 /// OR reads.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ReverseZeroVisibilityInputs {
     pub target: Option<u32>,
     pub war: Option<[u8; 2]>,
@@ -863,6 +887,7 @@ opaque_value!(Option<ReverseZeroVisibilityInputs>);
 /// distinct from a present cell's native null or independently skipped reads.
 /// Consumers require `sample_hour.fresh_at` the queried branch frame's hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ReservedReverseVisibilityInputs {
     pub sample_hour: PacketHour,
     pub cells: Vec<Option<ReverseZeroVisibilityInputs>>,
@@ -879,6 +904,7 @@ opaque_value!(Option<ReservedReverseVisibilityInputs>);
 /// native null or refusal has no certificate. Consumers validate the signed
 /// native count domain and the complete sparse row section before lookup.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ReservedCountryIntelSample {
     pub sample_hour: i32,
     pub vector_count: u32,
@@ -929,6 +955,7 @@ opaque_value!(Option<ReservedCountryIntelSample>);
 /// Native country slot zero's naming operands and original tag getter.
 /// Slot zero is excluded from Countries and the positive-only link census.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ReservedCountryNamingRow {
     pub tag: Vec<u8>,
     pub name_tag: Vec<u8>,
@@ -1005,6 +1032,7 @@ typed_codec!(ReservedCountryNamingRow, 0, |_row| 0, |_key| Self::default(),
 /// Orders-group counter operands keyed by group handle; `withdrawing` is
 /// the raw saved byte tested for the HQ leader-en-route glyph.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OrdersGroupCounterInputRow {
     pub group: u64,
     pub withdrawing: u8,
@@ -1045,6 +1073,7 @@ typed_codec!(OrdersGroupCounterInputRow, 64, |r| r.group as u128, |k| Self { gro
 /// `tag_reference` is the positive original-country reference, else the
 /// country id; `tag` is its exact tag-string bytes.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LeaderPortraitPathRow {
     pub leader: u64,
     pub country: u32,
@@ -1069,6 +1098,7 @@ typed_codec!(LeaderPortraitPathRow, 64, |r| r.leader as u128, |k| Self { leader:
 /// Missing or partial LocalPlayer data is neither an observer nor a guessed
 /// participant.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LocalPlayerRow {
     pub country: u32,
     pub observer_country: u32,
@@ -1095,6 +1125,7 @@ typed_codec!(LocalPlayerRow, 0, |_row| 0, |_key| Self::default(),
 /// runtime. A singleton with key zero; a missing row is unavailable, never
 /// a zero mask.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct SimulationFeatureRow {
     pub dlc_mask: u32,
     /// The `human_ai` debug byte, ORed into every country's AI-control status.
@@ -1124,6 +1155,7 @@ typed_codec!(SimulationFeatureRow, 0, |_row| 0, |_key| Self::default(),
 /// and the anti-air reduction's denominator and maximum; and the attrition hover's
 /// out-of-supply multiplier.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MovementDefines {
     pub out_of_supply_speed: Option<i64>,
     pub retreat_speed: Option<i64>,
@@ -1165,6 +1197,7 @@ mod forward_visibility_tests;
 /// accumulator, which scales every foreign unit's visibility byte when the
 /// country is the viewer. Raw fixed5.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryVisibilityRow {
     pub country: u32,
     pub unit_modifier: i64,
@@ -1177,6 +1210,7 @@ typed_codec!(CountryVisibilityRow, 32, |row| row.country as u128,
 /// differ, with the owner's state modifier 0x4B, which the fog rebuild adds
 /// to the owner's occupied states. Raw fixed5.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateVisibilityRow {
     pub state: u32,
     /// Raw owner reference the modifier was read for.
@@ -1193,6 +1227,7 @@ typed_codec!(StateVisibilityRow, 32, |row| row.state as u128,
 /// singleton, and `priority_unit_name` its name; `custom_icon` and
 /// `custom_icon_nato` are the template's stored icon choice.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct DivisionTemplateIconRow {
     /// The composition origin selects the exile manpower channel.
     pub manpower_exile: Recorded<bool>,
@@ -1256,6 +1291,7 @@ typed_codec!(DivisionTemplateIconRow, 64, |row| row.template as u128,
 /// Sparse native province overrides. Absence from a complete current table means no
 /// override; bytes can be a localization key, not rendered text.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProvinceNameRow {
     pub province: u32,
     pub name: Vec<u8>,
@@ -1270,6 +1306,7 @@ typed_codec!(ProvinceNameRow, 32, |row| row.province as u128,
 /// `countries` is the base's own ordered list, tested against the viewer;
 /// a match adds the map icon's red prohibition overlay.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalBaseRow {
     pub province: u32,
     /// The holder's raw country reference.
@@ -1300,6 +1337,7 @@ typed_codec!(NavalBaseRow, 32, |row| row.province as u128, |key| Self { province
 /// frames sound this list. A merge keeps the battle sounding for the
 /// recording client, so the list is that client's.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct BattleSoundRow {
     pub ordinal: u32,
     /// Exact f32 bits of the battle's map x.
@@ -1324,6 +1362,7 @@ typed_codec!(BattleSoundRow, 32, |row| row.ordinal as u128, |key| Self { ordinal
 /// Lookup returns the first record whose province matches; `status` is
 /// its raw byte tested by the map's floating-harbour slot.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FloatingHarborDeploymentRow {
     pub country: u32,
     pub ordinal: u32,
@@ -1337,6 +1376,7 @@ typed_codec!(FloatingHarborDeploymentRow, 64, |row| (row.country as u128) << 32 
 /// program province where it is nonzero. Only program code sets it, so it is recorded as
 /// stored; the viewer draws the facility icon from it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct FacilityMapFlagRow {
     pub province: u32,
     pub flag: u8,
@@ -1350,6 +1390,7 @@ typed_codec!(FacilityMapFlagRow, 32, |row| row.province as u128, |key| Self { pr
 /// which can change by swap-removal, so it names a slot rather than a
 /// persistent group; `state` is the group's host state id.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RadarCoverageRow {
     /// Raw country reference; resolve through CountryLinks to a canonical slot.
     pub country: u32,

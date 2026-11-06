@@ -25,19 +25,8 @@ pub const PAGE_INTERVALS: usize = 256;
 
 // Root, node and heap pages of publications read and written; frontiers are small.
 static PAGES: Budget = Budget::new(128 << 20);
-// The rows every family's open writer appended before its batch publishes, apart from the pages
-// so that cached pages, which a writer cannot evict, never starve one.
-static WRITERS: Budget = Budget::new(8 << 30);
-
-/// The rows a family's open writers may hold before its batch ends and publishes them. Each
-/// publication seals and commits at a cost of its own, so a busy family publishes rarely.
-pub const SERIES_BATCH_BYTES: usize = 1 << 30;
-
-/// Whether open writers hold half of what every writer may: a family holding rows ends its
-/// batch, so the next appends of every family still fit.
-pub fn series_pressed() -> bool {
-    WRITERS.used() >= WRITERS.limit() / 2
-}
+// Counts the rows writers' segments hold until sealed; it admits every one.
+static WRITERS: Budget = Budget::new(usize::MAX);
 static CACHE: LazyLock<Cache<'static>> = LazyLock::new(|| Cache::new(&PAGES));
 
 fn cache() -> &'static Cache<'static> {
@@ -564,10 +553,15 @@ pub struct Cut {
 /// Cuts `step` of a family on a branch after `last`, its last publication there, which then
 /// names the step: the frontier's ledger pages, prepared hours, first hole and state contents
 /// are filled in, and the checkpoint the step's series segment holds is returned. The
-/// publication sequence counts the family's publications on the branch; its hours and its
-/// cursor must advance, an open tail's within its segment. A step that repeats or reverses
-/// hours, or does not follow `last`, is refused (`InvalidInput`) and `last` is left as it was.
-pub fn cut(last: &mut Option<Last>, step: Step<'_>) -> io::Result<(Cut, Vec<u8>)> {
+/// publication follows `previous`, the last the family's series writer cut there: a segment
+/// within the step's batch ([`seal`]), or `last`'s own. Its hours and its cursor must advance,
+/// an open tail's within its segment. A step that repeats or reverses hours, or does not follow
+/// `last`, is refused (`InvalidInput`) and `last` is left as it was.
+pub fn cut(
+    last: &mut Option<Last>,
+    step: Step<'_>,
+    previous: Option<series::Publication>,
+) -> io::Result<(Cut, Vec<u8>)> {
     let Step {
         mut frontier,
         intervals,
@@ -625,10 +619,14 @@ pub fn cut(last: &mut Option<Last>, step: Step<'_>) -> io::Result<(Cut, Vec<u8>)
     }
     frontier.state = state.as_deref().map(Content::of);
     frontier.carry = carry.as_deref().map(Content::of);
-    let (generation, sequence) = match before {
-        Some(before) => (
-            before.publication.generation.checked_add(1),
-            before.publication.segment.checked_add(1),
+    let generation = |publication: series::Publication| publication.generation;
+    if previous.map(generation) < before.map(|before| generation(before.publication)) {
+        return Err(refused("A family's series goes on before its last publication"));
+    }
+    let (generation, sequence) = match previous {
+        Some(previous) => (
+            previous.generation.checked_add(1),
+            previous.segment.checked_add(1),
         ),
         None => (Some(1), Some(1)),
     };
@@ -697,6 +695,24 @@ pub fn write(
         publication: cut.publication,
         frontier: cut.frontier,
     })
+}
+
+/// Seals `pending`, a series segment of `family` on `branch` cut within its batch, into
+/// `writer` and adds it to `tree`: the batch's root, which [`write`] writes last, names it.
+pub fn seal(
+    writer: &mut store::Writer,
+    family: &str,
+    branch: u64,
+    pending: &series::Pending<'_>,
+    tree: &mut series::Tree,
+) -> io::Result<()> {
+    let section = root_section(family, branch);
+    let mut io = StoreWrite {
+        writer,
+        section: &section,
+    };
+    let sealed = pending.seal(&mut io)?;
+    tree.append(&mut io, cache(), sealed)
 }
 
 fn span(first: i32, last: i32) -> u64 {

@@ -5,6 +5,7 @@ use super::*;
 use replay_frame::frame::ViewIdentity;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Membership {
     grouped: u32,
     ungrouped: u32,

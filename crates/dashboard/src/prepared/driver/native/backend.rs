@@ -353,12 +353,6 @@ struct Emit<'p, 's, N: Native> {
     complete: BTreeSet<u64>,
     ended: BTreeSet<u64>,
     short: BTreeSet<u64>,
-    /// Branches whose batch ends partway through a segment, whose state is not saved: no later
-    /// run goes on from there.
-    open: BTreeSet<u64>,
-    /// The segment and hour its series writers held their share at: published once a later
-    /// hour's items show that hour's are all kept.
-    full: Option<(usize, i32)>,
     /// What each branch's operator hands on past the segment processed last: saved past the
     /// last the recording holds, else None, and nothing goes on from a state saved there.
     carries: BTreeMap<u64, Option<Vec<u8>>>,
@@ -400,8 +394,6 @@ impl<'p, 's, N: Native> Bound<'p, 's, N> {
                 complete: BTreeSet::new(),
                 ended: BTreeSet::new(),
                 short: BTreeSet::new(),
-                open: BTreeSet::new(),
-                full: None,
                 carries: BTreeMap::new(),
                 spent: Spent::default(),
             },
@@ -612,19 +604,12 @@ impl<N: Native> Emit<'_, '_, N> {
         walking.watch();
         let at = walking.shape.at(chunk.segment).map_err(segments::fatal)?;
         let branch = walking.shape.get(at).branch;
-        if let Some((filled, full)) = self.full.take()
-            && filled == at
-            && !chunk.last
-            && chunk.items.first().is_some_and(|item| item.hour() > full)
-        {
-            self.partial(native, walking, at, full)?;
-        }
         let started = walking.measuring.then(cycles);
         if let Some(going) = self.going.remove(&branch) {
             let state = self.resume(native, going).map_err(resumed)?;
             self.states.insert(branch, state);
         }
-        let (mut refused, mut through) = (None, None);
+        let mut refused = None;
         for item in chunk.items {
             let hour = item.hour();
             if let Err(error) = self.observe(native, branch, item) {
@@ -634,7 +619,6 @@ impl<N: Native> Emit<'_, '_, N> {
                 refused = Some((hour, error));
                 break;
             }
-            through = Some(hour);
         }
         if let Some(started) = started {
             self.spent.emit += cycles().saturating_sub(started);
@@ -649,10 +633,6 @@ impl<N: Native> Emit<'_, '_, N> {
             return Err(segments::refused(hour, error));
         }
         if !chunk.last {
-            let held = self.stage.series_held();
-            if held >= roots::SERIES_BATCH_BYTES || (held > 0 && roots::series_pressed()) {
-                self.full = through.map(|hour| (at, hour));
-            }
             return Ok(());
         }
         let carry = match chunk.carry {
@@ -677,52 +657,6 @@ impl<N: Native> Emit<'_, '_, N> {
             },
         };
         self.processed(native, walking, at, made)
-    }
-
-    /// Records segment `at`'s hours through hour `through` as prepared, before its last chunk,
-    /// and publishes them: a family whose series writers hold their share publishes what they
-    /// hold rather than holding the segment whole. The segment's rest goes on from the hour after.
-    /// Its operator's carry there is unknown, so its state is not saved, as within its branch.
-    fn partial(
-        &mut self,
-        native: &N,
-        walking: &Walking<'_>,
-        at: usize,
-        through: i32,
-    ) -> io::Result<()> {
-        let _memory = labels::kind(Kind::Publish);
-        let started = walking.measuring.then(cycles);
-        let placed = *walking.shape.get(at);
-        let (first, first_hour) = self.unprocessed(&placed)?;
-        let last = u32::try_from(i64::from(through) - i64::from(placed.first_hour))
-            .ok()
-            .and_then(|past| placed.first.checked_add(past))
-            .filter(|&last| (first..placed.last).contains(&last))
-            .ok_or_else(|| io::Error::other("Hours outside what is left of their segment"))?;
-        let next = last + 1;
-        self.dirty.insert(placed.branch);
-        self.open.insert(placed.branch);
-        let hours = Hours {
-            branch: placed.branch,
-            run: placed.run,
-            first,
-            last,
-            first_hour,
-            last_hour: through,
-            ends_segment: false,
-            ends_branch: false,
-            proof: walking.shape.proof_through(walking.recording, at, last),
-        };
-        // Hours short of their segment's end always end the batch.
-        self.stage
-            .processed(hours, Made::Prepared, None, None)
-            .map_err(alone)?;
-        self.joins.insert(placed.branch, (placed.run, next));
-        self.queue(native, walking)?;
-        if let Some(started) = started {
-            self.spent.publish += cycles().saturating_sub(started);
-        }
-        Ok(())
     }
 
     /// The state of `going`'s branch, from what was saved with its committed publication.
@@ -781,11 +715,29 @@ impl<N: Native> Emit<'_, '_, N> {
             .map_err(alone)?;
         if ends {
             self.queue(native, walking)?;
+        } else {
+            self.seal(native, walking, placed.branch)?;
         }
         if let Some(started) = started {
             self.spent.publish += cycles().saturating_sub(started);
         }
         Ok(())
+    }
+
+    /// Publishes into `branch`'s series what its state kept through the segment it processed
+    /// last, which ended without ending the batch, and hands the segment off to be sealed at
+    /// once, so its rows never wait in memory for the batch's end.
+    fn seal(&mut self, native: &N, walking: &Walking<'_>, branch: u64) -> io::Result<()> {
+        // A family whose series this segment left empty, as one writing only pages, cuts nothing.
+        if !self.stage.series_holds(branch) {
+            return Ok(());
+        }
+        if let Some(state) = self.states.get_mut(&branch) {
+            native
+                .flush(state, &mut self.stage, branch, None, walking.cancelled)
+                .map_err(alone)?;
+        }
+        self.stage.seal(branch).map_err(alone)
     }
 
     /// The first ordinal and hour of segment `placed` the family has not recorded: past its first
@@ -801,8 +753,7 @@ impl<N: Native> Emit<'_, '_, N> {
     }
 
     /// Publishes every branch the batch touched, with the state each goes on with but where it
-    /// ended short or partway through a segment, and hands the batch off to be sealed and
-    /// committed while the lane goes on.
+    /// ended short, and hands the batch off to be sealed and committed while the lane goes on.
     fn queue(&mut self, native: &N, walking: &Walking<'_>) -> io::Result<()> {
         for branch in std::mem::take(&mut self.dirty) {
             let through = self
@@ -816,8 +767,7 @@ impl<N: Native> Emit<'_, '_, N> {
                     .flush(state, &mut self.stage, branch, through, walking.cancelled)
                     .map_err(alone)?;
             }
-            let unsaved = self.short.remove(&branch) | self.open.remove(&branch);
-            if !unsaved {
+            if !self.short.remove(&branch) {
                 let carry = self.carries.get(&branch);
                 let saved = match self.states.get_mut(&branch) {
                     Some(state) if carry.is_none_or(Option::is_some) => {

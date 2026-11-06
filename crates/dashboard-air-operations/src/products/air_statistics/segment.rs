@@ -77,6 +77,7 @@ impl Segmented for Segments {
 }
 
 /// What a segment's reader observed of an hour.
+#[derive(replay_spool::Spooled)]
 pub struct Facts {
     /// The segment's first hour: its names and units are numbered anew from here.
     pub(super) fresh: bool,
@@ -91,6 +92,7 @@ pub struct Facts {
     pub(super) bindings: Option<Bindings>,
 }
 
+#[derive(replay_spool::Spooled)]
 pub(super) enum Verdict {
     Accepted,
     Refused(Box<str>),
@@ -104,6 +106,7 @@ pub(super) enum Verdict {
 /// new, or whose first row is another, with its key; and those gone. Whole: every unit, with
 /// every field, the units it misses gone.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Values {
     pub(super) whole: bool,
     pub(super) changed: Vec<(u32, u32)>,
@@ -114,6 +117,7 @@ pub(super) struct Values {
 
 /// The countries a read bound, by raw reference: in place of the segment's read before's, or
 /// as changes to them.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Bindings {
     pub(super) replace: bool,
     pub(super) set: Vec<(u32, u32)>,

@@ -27,6 +27,7 @@ pub const VALUE: usize = 0x28;
 pub const REMAINING_DAYS: usize = 0x2a;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Row {
     pub token: u32,
     pub set_hour: i32,

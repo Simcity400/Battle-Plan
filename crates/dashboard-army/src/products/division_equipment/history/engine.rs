@@ -66,6 +66,7 @@ pub(crate) const COMPLETE: [TableId; 7] = [
 ];
 
 /// The rows a table gives an hour.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Rows<T> {
     /// What the hour before held.
     Same,
@@ -90,6 +91,7 @@ impl<T> Rows<T> {
 /// A pool or stockpile row as the walk gives it: its key (owner and ordinal), design and
 /// signed amount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Entry {
     pub(crate) key: u128,
     pub(crate) variant: u64,
@@ -98,6 +100,7 @@ pub(crate) struct Entry {
 
 /// What a lexical token change can change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Tokens {
     Same,
     /// Only new tokens: a spelling read before reads alike.
@@ -107,6 +110,7 @@ pub(crate) enum Tokens {
 
 /// The countries an hour's replies read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Countries {
     /// Countries and CountryLinks both hold every row.
     pub(crate) complete: bool,
@@ -131,6 +135,7 @@ impl Countries {
 }
 
 /// One hour as an engine reads it.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Input {
     pub(crate) hour: i32,
     /// The first hour of a walk, or one after an hour it did not walk: every table held this
@@ -190,6 +195,7 @@ impl Input {
 
 /// An operand a published value or name reads, given once by the engine's id for it.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Operand {
     /// An archetype's key; none for the unclassified.
     Kind(Option<Arc<str>>),
@@ -270,6 +276,7 @@ pub(crate) enum Field {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) enum Value {
     Number(i128),
     /// A naming, artwork or design operand.
@@ -290,6 +297,7 @@ pub(crate) struct Change {
 /// of the memory. A reply's changes are pushed together: each names its country and attribution
 /// only where they differ from the change before.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Changes {
     bytes: Vec<u8>,
     count: usize,
@@ -480,6 +488,7 @@ fn broken() -> io::Error {
 }
 
 /// One answered hour.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Output {
     pub(crate) hour: i32,
     /// The pool and stockpile reads every reply reads; none while the replies are not known.
@@ -508,6 +517,7 @@ impl Output {
 
 /// One supplying read, by the hour of its read: unknown before a cold start's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Supply {
     pub(crate) read: Option<i32>,
     pub(crate) known: bool,
@@ -565,6 +575,7 @@ impl Supply {
 
 /// The pool, stockpile and designs reads, and the designs as of the stockpile's read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Supplies {
     pub(crate) pool: Supply,
     pub(crate) stock: Supply,
@@ -647,6 +658,7 @@ type Row = (u32, u64, i64);
 /// A design's lookup in a designs read: the notes it made, its archetype's kind, and its
 /// naming operands when its definition was read.
 #[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 struct Look {
     notes: Vec<(u32, usize)>,
     kind: Option<u32>,
@@ -654,6 +666,7 @@ struct Look {
 }
 
 /// A stockpile read, its rows grouped by the links of its hour.
+#[derive(replay_spool::Spooled)]
 struct StockRead {
     /// Each slot's designs and amounts in design order, and how many rows no link places;
     /// none where the read's countries or links were not read whole.
@@ -663,6 +676,7 @@ struct StockRead {
 
 /// What a reply reads of the national stockpile.
 #[derive(Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 struct StockPart {
     /// Each classified kind's stock, by kind; none where it is withheld.
     totals: Option<Vec<(u32, i128)>>,
@@ -694,6 +708,7 @@ fn summed<K: Ord + Copy, V: Copy + std::ops::AddAssign>(list: &mut Vec<(K, V)>) 
 }
 
 /// A template's need, required manpower and naming operands at the hour.
+#[derive(replay_spool::Spooled)]
 struct Template {
     /// Each kind's amount by kind, a kind needed twice at its first.
     need: Result<Arc<[(u32, i64)]>, u32>,
@@ -706,6 +721,7 @@ struct Template {
 
 /// A listed type: its holding, and its need, capped holding and shortfall where compared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 struct TypeShare {
     kind: u32,
     held: i128,
@@ -717,6 +733,7 @@ struct TypeShare {
 /// A division's part of its replies: its pool compared with its template's need, and its
 /// refusals but those of its own numbers. Its lists are sorted, so two parts diff in a pass.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 struct Share {
     /// Each kind held or needed.
     types: Vec<TypeShare>,
@@ -840,6 +857,7 @@ impl Share {
 
 /// A division's own numbers: hit points, and maximum hit points and manpower where read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 struct Numbers {
     hp: i64,
     maximum: Option<i64>,
@@ -847,12 +865,14 @@ struct Numbers {
 }
 
 /// What a division added to its replies.
+#[derive(replay_spool::Spooled)]
 struct Added {
     placed: Placed,
     share: Share,
     numbers: Numbers,
 }
 
+#[derive(replay_spool::Spooled)]
 struct DivisionState {
     facts: Division,
     added: Option<Added>,
@@ -863,6 +883,7 @@ type Given = Option<Option<Value>>;
 
 /// A reply's sum over its divisions, and the values its reply gave last of it.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct Sums {
     divisions: u32,
     short: u32,
@@ -876,6 +897,7 @@ struct Sums {
 }
 
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct TypeSum {
     /// Divisions listing the type.
     refs: u32,
@@ -893,6 +915,7 @@ struct TypeSum {
 
 /// A design's holding under a type.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct VariantSum {
     /// Divisions holding it.
     divisions: u32,
@@ -902,6 +925,7 @@ struct VariantSum {
 }
 
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct TemplateSum {
     divisions: u32,
     unknown: u32,
@@ -920,6 +944,7 @@ struct TemplateSum {
 
 /// What an hour changed of a reply.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct Dirty {
     counts: bool,
     /// Every type's unknown count.
@@ -949,6 +974,7 @@ struct Touched {
 }
 
 /// The fixed refusals of a comparison and a stockpile part.
+#[derive(replay_spool::Spooled)]
 struct Fixed {
     manpower: u32,
     required: u32,
@@ -964,6 +990,7 @@ struct Fixed {
 
 /// A designs read: its countries' identity and whether it read its definitions and tokens whole,
 /// with the spellings of the tokens its definitions name; its definitions are kept by design.
+#[derive(replay_spool::Spooled)]
 struct Read {
     /// Its frame without its definitions and tokens, so the walk changes theirs in place.
     identity: DecodedFrame,
@@ -1024,6 +1051,7 @@ impl Read {
 /// Every design's definition at each designs read still looked up, by design: its versions,
 /// each with the hour of the read that first held it, none where the read did not define it.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 struct History {
     versions: FastMap<u64, Vec<(i32, Option<Arc<VariantDefinitionRow>>)>>,
     /// Designs holding more than one version.
@@ -1535,6 +1563,7 @@ fn shift_sums(
 }
 
 /// One branch's replies, kept from hour to hour.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Engine {
     cat: Option<Arc<Catalogue>>,
     content: Result<Arc<Content>, String>,

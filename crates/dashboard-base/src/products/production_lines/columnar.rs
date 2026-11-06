@@ -34,7 +34,7 @@ use replay::{
     columnar_frames::metrics,
     columns::{self, Status},
     container::Replay,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -135,6 +135,7 @@ const WORDS: usize = TABLE_COUNT.div_ceil(64);
 
 /// A flag for each table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Bits([u64; WORDS]);
 
 impl Bits {
@@ -169,6 +170,7 @@ impl Bits {
 /// The countries' identities as the fold reads them where they changed: each holder's tag, each
 /// tag's country, the countries their links resolve, and each row's slot, id and tag in table
 /// order. Empty where the tables they come from are not complete.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Identities {
     pub holders: BTreeMap<(u32, u32), Option<String>>,
     /// None unless Countries and CountryLinks are complete.
@@ -178,6 +180,7 @@ pub(super) struct Identities {
 }
 
 /// VariantStats' designs where the hour built it anew.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Designs {
     /// It is not complete.
     Incomplete,
@@ -191,6 +194,7 @@ pub(super) enum Designs {
 }
 
 /// An organisation as the fold reads it: its operands with its state, without it, and its name.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Organisation {
     pub raw: RawOrganisation,
     pub author: RawOrganisation,
@@ -198,6 +202,7 @@ pub(super) struct Organisation {
 }
 
 /// What the hour did to the organisations the fold names.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Organisations {
     /// They are not named this hour: none is held.
     Reset,
@@ -209,6 +214,7 @@ pub(super) enum Organisations {
 /// list by slot and key: every entry in `added` when `whole`; else those in place of one held
 /// under their key and slot, those under a key not held under their slot, and the slot and key
 /// of each one gone or moved to another slot.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Delta<E> {
     pub whole: bool,
     pub changed: Vec<E>,
@@ -229,6 +235,7 @@ impl<E: Entry> Delta<E> {
 
 /// A census's rows as deltas of the segment's census before: each line and output row with the
 /// canonical slot its link resolves, None where it resolves none.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Census {
     pub lines: Delta<(Option<u32>, ProductionLineRow)>,
     pub output: Delta<(Option<u32>, ProductionLineOutputRow)>,
@@ -401,6 +408,7 @@ struct Held {
 }
 
 /// The icon rule's country operands, and each equipment type token's spelling.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Icons {
     pub hour: Arc<Result<IconHour, String>>,
     pub tokens: Arc<BTreeMap<u32, String>>,
@@ -408,6 +416,7 @@ pub(super) struct Icons {
 
 /// The fold's input an hour changed, beside its flags.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Facts {
     pub identities: Option<Identities>,
     /// The definitions a variant read compares: every one since the last such read anew.
@@ -430,6 +439,7 @@ pub(super) struct Facts {
 }
 
 /// One hour of a segment, as the fold reads it.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub hour: i32,
     /// The tables read in their slot ([`slot_reads`]).
@@ -451,12 +461,6 @@ pub struct Hour {
     pub(super) raws: Vec<(u64, RawVariant)>,
     pub(super) facts: Option<Box<Facts>>,
     bytes: usize,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.bytes
-    }
 }
 
 fn string_bytes(text: &str) -> usize {

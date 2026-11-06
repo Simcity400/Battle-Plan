@@ -53,18 +53,21 @@ pub fn bonus_source_size(
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantStatEntry {
     pub index: u32,
     pub value: i64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantModuleMissionExclusion {
     pub module_token: u32,
     pub mask: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantMissionStats {
     pub mask: u32,
     pub stats: Vec<VariantStatEntry>,
@@ -73,6 +76,7 @@ pub struct VariantMissionStats {
 /// Each applied source, in native order; repeated sources remain repeated.
 /// The idea name is absent for a source without an idea (for example research).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantNamedBonus {
     pub owner: u32,
     pub handle: u32,
@@ -81,6 +85,7 @@ pub struct VariantNamedBonus {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantBonusSource {
     pub named: Option<VariantNamedBonus>,
     pub idea: Option<Vec<u8>>,
@@ -90,6 +95,7 @@ pub struct VariantBonusSource {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct VariantDesignState<S = VariantBonusSource> {
     pub parent: Option<u64>,
     pub max_version: u8,

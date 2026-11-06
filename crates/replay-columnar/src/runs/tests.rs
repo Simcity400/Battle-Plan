@@ -442,35 +442,69 @@ fn churned(runs: &[(u64, i32, u32)]) -> Vec<Run> {
         .collect()
 }
 
+/// A segment's walk's bytes in memory: what it stored, and its open pages' bytes.
+#[derive(Default)]
+struct Walked {
+    stored: Memory,
+    kept: Vec<u8>,
+}
+
+impl Store for Walked {
+    fn put(&mut self, stored: &[u8], raw: u32) -> io::Result<Location> {
+        self.stored.put(stored, raw)
+    }
+}
+
+impl Disk for Walked {
+    fn keep(&mut self, bytes: &[u8]) -> io::Result<u64> {
+        let at = self.kept.len() as u64;
+        self.kept.extend_from_slice(bytes);
+        Ok(at)
+    }
+
+    fn kept(&mut self, at: u64, into: &mut [u8]) -> io::Result<()> {
+        into.copy_from_slice(&self.kept[at as usize..][..into.len()]);
+        Ok(())
+    }
+}
+
+/// A segment's piece, and the bytes its walk stored.
+type Walk = (Piece, Vec<u8>);
+
 /// Run `run`'s pieces, a segment from each ordinal of `starts` through the hour before the
 /// next or `end`, walked from its run's start.
-fn pieces(layout: Layout, number: u32, run: &Run, starts: &[u32], end: Option<u32>) -> Vec<Piece> {
+fn pieces(layout: Layout, number: u32, run: &Run, starts: &[u32], end: Option<u32>) -> Vec<Walk> {
     let columns: Vec<usize> = schema().iter().map(Vec::len).collect();
     let mut state = State::new(schema()).unwrap();
-    let mut builder: Option<Builder> = None;
+    let mut builder: Option<(Builder, Walked)> = None;
     let mut pieces = Vec::new();
+    let done = |(mut builder, mut disk): (Builder, Walked)| -> Walk {
+        (builder.finish(&mut disk).unwrap(), disk.stored.0)
+    };
     for (ordinal, read) in (0..).zip(&run.reads) {
         if Some(ordinal) == end {
             break;
         }
         if starts.contains(&ordinal) {
-            if let Some(mut done) = builder.take() {
-                pieces.push(done.finish().unwrap());
+            if let Some(walked) = builder.take() {
+                pieces.push(done(walked));
             }
             let mut next = Builder::new(layout, &INDEXED, indexed_kinds(), Box::new(Raw)).unwrap();
             next.start(state.dictionary().len()).unwrap();
-            builder = Some(next);
+            builder = Some((next, Walked::default()));
         }
         let manifest = Manifest::read(&read.manifest, &columns).unwrap();
         state
             .apply(&manifest, |at| Ok(&read.sections[at][..]))
             .unwrap();
-        if let Some(builder) = &mut builder {
-            builder.hour(number, ordinal, &state, &manifest).unwrap();
+        if let Some((builder, disk)) = &mut builder {
+            builder
+                .hour(number, ordinal, &state, &manifest, disk)
+                .unwrap();
         }
     }
-    if let Some(mut done) = builder {
-        pieces.push(done.finish().unwrap());
+    if let Some(walked) = builder {
+        pieces.push(done(walked));
     }
     pieces
 }
@@ -509,17 +543,18 @@ impl Pages for Memory {
 fn stitched(
     layout: Layout,
     runs: &[Run],
-    mut pieces_of: impl FnMut(u32, &Run) -> Vec<Piece>,
+    mut pieces_of: impl FnMut(u32, &Run) -> Vec<Walk>,
 ) -> (Index, Memory) {
     let shapes: Vec<(u64, i32)> = runs.iter().map(|run| (run.branch, run.first)).collect();
     let mut index = Index::new(layout, &INDEXED, indexed_kinds(), &shapes).unwrap();
     let mut memory = Memory::default();
     for (number, run) in (0..).zip(runs) {
-        for piece in pieces_of(number, run) {
-            index.append(piece, &mut memory, &mut Raw).unwrap();
+        for (piece, bytes) in pieces_of(number, run) {
+            let at = memory.0.len() as u64;
+            memory.0.extend_from_slice(&bytes);
+            index.append(piece, at).unwrap();
         }
     }
-    index.finish(&mut memory, &mut Raw).unwrap();
     (index, memory)
 }
 
@@ -896,15 +931,16 @@ fn a_value_written_to_most_of_a_block_is_one_change() {
     let pieces = pieces(BROAD, 0, &runs[0], &[0], None);
     let (mut fills, mut cells) = (0, 0);
     let mut items = cell::Items::default();
-    for page in pieces[0].pages.iter().filter(|page| page.column == 6) {
+    let (piece, stored) = &pieces[0];
+    for page in piece.pages.iter().filter(|page| page.column == 6) {
         let start = page.location.offset as usize;
-        let bytes = &pieces[0].bytes[start..start + page.location.stored as usize];
+        let bytes = &stored[start..start + page.location.stored as usize];
         let mut velocity = Vec::new();
         let from = cell::base(
             bytes,
             Some(Kind::I16),
             (page.first, page.last),
-            extent(&pieces[0], page, BROAD),
+            extent(piece, page, BROAD),
             &mut velocity,
             &mut items,
             &mut |_| Ok(()),
@@ -963,7 +999,8 @@ fn growing_lists_and_steady_steps_are_written_as_what_changed() {
     let pieces = pieces(layout, 0, &runs[0], &[0], None);
     let mut items = cell::Items::default();
     for column in [0, 3] {
-        let pages: Vec<_> = pieces[0]
+        let (piece, stored) = &pieces[0];
+        let pages: Vec<_> = piece
             .pages
             .iter()
             .filter(|page| page.table == 0 && page.column == column)
@@ -971,7 +1008,7 @@ fn growing_lists_and_steady_steps_are_written_as_what_changed() {
         assert_eq!(pages.len(), 1, "column {column}");
         let page = pages[0];
         let start = page.location.offset as usize;
-        let bytes = &pieces[0].bytes[start..start + page.location.stored as usize];
+        let bytes = &stored[start..start + page.location.stored as usize];
         let kind = UNITS[column as usize];
         let mut velocity = Vec::new();
         let (mut steps, mut patches, mut others) = (0, 0, 0);
@@ -979,7 +1016,7 @@ fn growing_lists_and_steady_steps_are_written_as_what_changed() {
             bytes,
             Some(kind),
             (page.first, page.last),
-            extent(&pieces[0], page, layout),
+            extent(piece, page, layout),
             &mut velocity,
             &mut items,
             &mut |_| Ok(()),
@@ -1111,7 +1148,7 @@ fn segments_written_apart_stitch_into_the_index_one_walk_writes() {
     let serial = segmented(NARROW, &runs);
     let parallel = stitched(NARROW, &runs, |number, run| {
         let starts = segments(run.reads.len() as u32, SEGMENT);
-        let alone: Vec<Vec<Piece>> = std::thread::scope(|scope| {
+        let alone: Vec<Vec<Walk>> = std::thread::scope(|scope| {
             let walks: Vec<_> = starts
                 .iter()
                 .enumerate()

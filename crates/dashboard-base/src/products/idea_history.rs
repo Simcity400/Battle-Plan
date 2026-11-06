@@ -93,6 +93,7 @@ pub struct IdeaSpan {
 /// One recorded character: the holder of an advisor idea, or a country leader.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct IdeaCharacter {
     /// The recorded character id.
     pub id: u32,
@@ -105,7 +106,7 @@ pub struct IdeaCharacter {
 
 /// One modifier as the game stores it (installed_content_core::modifiers), before
 /// formatting: one line per modifier, its last value.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectLine {
     /// The modifier's case-folded key; formats are keyed the same way.
@@ -118,7 +119,7 @@ pub struct EffectLine {
 }
 
 /// Effects against one country, or to one equipment type.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectGroup {
     pub target: Option<String>,
@@ -130,7 +131,7 @@ pub struct EffectGroup {
     pub tooltips: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct TraitEffects {
     pub token: String,
@@ -148,7 +149,7 @@ pub struct TraitEffects {
 }
 
 /// What content and the recording say about one idea the country held.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS, replay_spool::Spooled)]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaInfo {
     pub token: String,

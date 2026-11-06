@@ -13,7 +13,7 @@ use replay::{
     columnar_frames::metrics,
     columns,
     container::Replay,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     display::stepped_format,
@@ -48,6 +48,7 @@ pub fn needs() -> Needs {
 
 /// What a wing's planes are counted under: a variant, or none the bank identifies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(replay_spool::Spooled)]
 pub enum Part {
     Variant(u64),
     Unidentified,
@@ -57,6 +58,7 @@ pub enum Part {
 /// (None where a wing's bank cannot split exactly) and wings by the parts they hold, both
 /// ascending.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Counts {
     pub planes: i64,
     pub wings: i64,
@@ -77,6 +79,7 @@ impl Counts {
 
 /// What the variant catalogue reads of an hour, as the row census's catalogue reads it.
 #[derive(Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Names {
     /// Names carry.
     Carried,
@@ -98,6 +101,7 @@ pub const REFUSED: u8 = 8;
 pub const REMAINDERS: u8 = 16;
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -118,29 +122,6 @@ pub struct Hour {
     /// complete, where they changed.
     pub undisplayable: Option<Vec<Vec<u8>>>,
     pub names: Names,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // Counts are Arcs the projector holds too.
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self
-                .live
-                .as_ref()
-                .map_or(0, |live| live.capacity() * size_of::<(u32, (u32, u32))>())
-            + self.counts.capacity() * size_of::<(u8, u32, Arc<Counts>)>()
-            + self.undisplayable.as_ref().map_or(0, |tags| {
-                tags.iter().map(|tag| 24 + tag.capacity()).sum::<usize>()
-            })
-            + match &self.names {
-                Names::Read { tokens, .. } => {
-                    tokens.capacity() * size_of::<(u64, Arc<str>)>()
-                        + tokens.iter().map(|(_, token)| token.len()).sum::<usize>()
-                }
-                _ => 0,
-            }
-    }
 }
 
 fn exact(value: i128) -> io::Result<i64> {

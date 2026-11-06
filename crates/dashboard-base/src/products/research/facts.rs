@@ -25,7 +25,7 @@ use dashboard_world::{Needs, Roster, Tag, Tagged, World};
 use engine_research::research_modifiers::grants::INVENTORY_INDEX;
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     cadence::STAGGER_PERIOD,
@@ -68,6 +68,7 @@ pub fn needs() -> Needs {
 const REACH: i32 = 2 * STAGGER_PERIOD;
 
 /// A slot's fresh read, as the country step reads it ([`super::FreshRead`]).
+#[derive(replay_spool::Spooled)]
 pub struct Fresh {
     /// Its slots' rows; none when the read is not this hour's, which the country step skips.
     pub(super) inputs: Vec<ResearchInputRow>,
@@ -82,7 +83,7 @@ pub struct Fresh {
 
 /// What a slot's bonus and modifier rows attribute to it: None where they were not read with
 /// it or do not attribute.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, replay_spool::Spooled)]
 pub struct Derived {
     pub(super) bonuses: Option<Arc<Vec<ResearchBonus>>>,
     pub(super) modifiers: Option<Arc<ResearchModifiers>>,
@@ -98,6 +99,7 @@ impl Derived {
 }
 
 /// The inventory a fresh read joins its assignments to, by template index, ascending.
+#[derive(replay_spool::Spooled)]
 pub enum Inventory {
     /// Its owner's whole part.
     Owner(Arc<[(u32, Technology)]>),
@@ -115,6 +117,7 @@ impl Inventory {
 }
 
 /// An hour's index step that changed something the country step reads.
+#[derive(replay_spool::Spooled)]
 pub struct Changed {
     /// The slots to observe, and whether the holders changed.
     pub(crate) dirty: BTreeSet<u32>,
@@ -125,6 +128,7 @@ pub struct Changed {
 }
 
 /// An hour's index step.
+#[derive(replay_spool::Spooled)]
 pub enum Index {
     /// A table the indexes read was not complete.
     Incomplete,
@@ -135,6 +139,7 @@ pub enum Index {
 
 /// What a grant inventory's rows hold.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub enum Content {
     /// Every name unlocalised.
     Inventory(GrantInventory),
@@ -194,6 +199,7 @@ impl Content {
 
 /// What a tag's grant inventory reads at an hour.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct Grant {
     /// Its holder's id and canonical slot, while the countries name one.
     pub identity: Option<(u32, u32)>,
@@ -233,6 +239,7 @@ pub(super) fn same_content(a: Option<&Arc<Content>>, b: Option<&Arc<Content>>) -
 }
 
 /// The grant facts an hour changed.
+#[derive(replay_spool::Spooled)]
 pub struct Grants {
     /// Whether ResearchModifiers held every row, where that changed.
     pub complete: Option<bool>,
@@ -243,6 +250,7 @@ pub struct Grants {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -303,12 +311,6 @@ fn index_heap(index: &Index) -> usize {
             .values()
             .map(|fresh| size_of::<Fresh>() + 16 + fresh.heap)
             .sum::<usize>()
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.heap
-    }
 }
 
 /// A row group of a table: the live rows it holds, one past the highest member any of them

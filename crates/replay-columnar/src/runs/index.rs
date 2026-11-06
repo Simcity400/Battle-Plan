@@ -1,8 +1,9 @@
 //! Pieces stitched in segment order: each run's ordinals, its tables' series and strips'
-//! directories, and its dictionary's chunks, with the directory's own bytes.
+//! directories, and its dictionary's chunks, with the directory's own bytes. A piece's bytes
+//! lie where its segment's were put; stitching takes in its directory alone.
 
 use super::{
-    Layout, Location, Metrics, Pack, Page, ROWS, Sample, Series, Store,
+    Layout, Location, Metrics, Page, ROWS, Sample, Series,
     build::{Closed, Piece},
 };
 use crate::{
@@ -14,12 +15,12 @@ use crate::{
 };
 use std::io;
 
-/// Strings a dictionary chunk holds at most.
-const CHUNK_STRINGS: usize = 4096;
 const MAGIC: &[u8; 8] = b"H4RUNIX1";
 
-/// Strings `first..first + count` of a run's dictionary, stored as one chunk.
+/// Strings `first..first + count` of a run's dictionary, stored as one chunk: a segment's
+/// strings are chunked apart from the next's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Chunk {
     pub first: u32,
     pub count: u32,
@@ -69,9 +70,6 @@ pub struct RunIndex {
     pub chunks: Vec<Chunk>,
     /// Strings the run's pieces appended.
     pub strings: u32,
-    /// Strings appended since the last chunk was stored, end to end.
-    pending: Vec<u8>,
-    ends: Vec<u32>,
 }
 
 impl RunIndex {
@@ -99,53 +97,6 @@ impl RunIndex {
         let start = (ordinal as usize).checked_mul(self.words)?;
         self.read.get(start..start + self.words)
     }
-
-    /// Stores the strings appended since the last chunk as chunks, the last one short only
-    /// when `all`.
-    fn store_strings(
-        &mut self,
-        store: &mut dyn Store,
-        pack: &mut dyn Pack,
-        all: bool,
-    ) -> io::Result<()> {
-        let mut stored = Vec::new();
-        let mut done = 0;
-        while self.ends.len() - done >= CHUNK_STRINGS || (all && done < self.ends.len()) {
-            let count = (self.ends.len() - done).min(CHUNK_STRINGS);
-            let mut writer = Writer::new();
-            writer.varint(count as u64)?;
-            let mut start = done
-                .checked_sub(1)
-                .map_or(0, |previous| self.ends[previous] as usize);
-            for &end in &self.ends[done..done + count] {
-                let end = end as usize;
-                writer.varint((end - start) as u64)?;
-                writer.raw(&self.pending[start..end])?;
-                start = end;
-            }
-            pack.pack(writer.bytes(), &mut stored)?;
-            let raw = u32::try_from(writer.bytes().len())
-                .map_err(|_| invalid("A dictionary chunk passes 4 GiB"))?;
-            let location = store.put(&stored, raw)?;
-            let first = self.strings - (self.ends.len() - done) as u32;
-            engine_allocation::reserve(&mut self.chunks, 1)?;
-            self.chunks.push(Chunk {
-                first,
-                count: count as u32,
-                location,
-            });
-            done += count;
-        }
-        if done > 0 {
-            let cut = self.ends[done - 1] as usize;
-            self.pending.drain(..cut);
-            self.ends.drain(..done);
-            for end in &mut self.ends {
-                *end -= cut as u32;
-            }
-        }
-        Ok(())
-    }
 }
 
 /// A recording's run index: the tables it holds, how they are laid out, and every run's.
@@ -158,13 +109,15 @@ pub struct Index {
     pub runs: Vec<RunIndex>,
 }
 
-/// The piece's page bytes at `location`, stored again in `store`.
-fn restore(piece: &[u8], location: Location, store: &mut dyn Store) -> io::Result<Location> {
-    let start = usize::try_from(location.offset).map_err(|_| engine_allocation::oom())?;
-    let bytes = piece
-        .get(start..start + location.stored as usize)
-        .ok_or_else(|| invalid("A piece's page lies past its bytes"))?;
-    store.put(bytes, location.raw)
+/// `location`, of bytes a piece names, where they lie once the piece's bytes lie from `at`.
+fn moved(location: Location, at: u64) -> io::Result<Location> {
+    Ok(Location {
+        offset: location
+            .offset
+            .checked_add(at)
+            .ok_or_else(|| invalid("A piece's bytes lie past the last offset"))?,
+        ..location
+    })
 }
 
 /// Takes in a piece's `series` after `held`'s: an entry equal to the one in force is dropped.
@@ -219,14 +172,9 @@ impl Index {
         })
     }
 
-    /// Takes in `piece`, the next of its run in segment order, its pages kept in `store`
-    /// and its strings' chunks packed by `pack`.
-    pub fn append(
-        &mut self,
-        piece: Piece,
-        store: &mut dyn Store,
-        pack: &mut dyn Pack,
-    ) -> io::Result<()> {
+    /// Takes in `piece`, the next of its run in segment order, whose segment's bytes lie from
+    /// `at`.
+    pub fn append(&mut self, piece: Piece, at: u64) -> io::Result<()> {
         let tables = self.tables.len();
         let run = self
             .runs
@@ -260,8 +208,7 @@ impl Index {
             extend(&mut held.slots, &series.slots)?;
             engine_allocation::reserve(&mut held.views, series.views.len())?;
             for &(ordinal, location) in &series.views {
-                held.views
-                    .push((ordinal, restore(&piece.bytes, location, store)?));
+                held.views.push((ordinal, moved(location, at)?));
             }
         }
         for closed in &piece.pages {
@@ -277,7 +224,7 @@ impl Index {
             let page = Page {
                 first,
                 last,
-                location: restore(&piece.bytes, location, store)?,
+                location: moved(location, at)?,
             };
             let strips = run
                 .strips
@@ -311,23 +258,24 @@ impl Index {
                 pages.push(page);
             }
         }
-        let base = run.pending.len() as u32;
-        engine_allocation::reserve(&mut run.pending, piece.strings.len())?;
-        run.pending.extend_from_slice(&piece.strings);
-        engine_allocation::reserve(&mut run.ends, piece.ends.len())?;
-        run.ends.extend(piece.ends.iter().map(|&end| base + end));
-        run.strings = run
-            .strings
-            .checked_add(piece.ends.len() as u32)
-            .ok_or_else(|| invalid("Dictionary ids exceed 32 bits"))?;
-        run.store_strings(store, pack, false)
-    }
-
-    /// Stores every run's strings not yet in a chunk: the index is whole.
-    pub fn finish(&mut self, store: &mut dyn Store, pack: &mut dyn Pack) -> io::Result<()> {
-        for run in &mut self.runs {
-            run.store_strings(store, pack, true)?;
+        let mut next = run.strings;
+        engine_allocation::reserve(&mut run.chunks, piece.chunks.len())?;
+        for chunk in &piece.chunks {
+            if chunk.first != next || chunk.count == 0 {
+                return Err(invalid("A piece's dictionary chunks do not follow its run's"));
+            }
+            next = next
+                .checked_add(chunk.count)
+                .ok_or_else(|| invalid("Dictionary ids exceed 32 bits"))?;
+            run.chunks.push(Chunk {
+                location: moved(chunk.location, at)?,
+                ..*chunk
+            });
         }
+        if next - run.strings != piece.strings {
+            return Err(invalid("A piece's dictionary chunks miss its strings"));
+        }
+        run.strings = next;
         Ok(())
     }
 
@@ -344,9 +292,6 @@ impl Index {
         writer.raw(&schema_digest(&self.kinds))?;
         writer.varint(self.runs.len() as u64)?;
         for run in &self.runs {
-            if !run.ends.is_empty() {
-                return Err(invalid("A run index is written before it is finished"));
-            }
             writer.varint(run.branch)?;
             writer.varint(run.first_hour.wire())?;
             writer.varint(run.hours.len() as u64)?;

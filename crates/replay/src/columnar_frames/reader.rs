@@ -1284,9 +1284,13 @@ impl<'r> Walker<'r> {
             self.decoder
                 .append(&recording.source, &table.extent, &mut self.arena)
                 .map_err(damaged)?;
+            let restoring = engine_allocation::labels::kind(
+                engine_allocation::labels::Kind::WalkerTables,
+            );
             state
                 .restore(table.table as usize, &self.arena)
                 .map_err(damaged)?;
+            drop(restoring);
             state
                 .text_ids(table.table as usize, |id| {
                     let at = declared.partition_point(|&(first, _)| first <= id);
@@ -1482,9 +1486,13 @@ impl<'r> Walker<'r> {
                     );
                 }
                 self.timings.manifest_ns += lap(&mut clock);
+                let applying = engine_allocation::labels::kind(
+                    engine_allocation::labels::Kind::WalkerTables,
+                );
                 state
                     .apply(&manifest, |index| Ok(sections[index]))
                     .map_err(damaged)?;
+                drop(applying);
                 self.timings.apply_ns += lap(&mut clock);
                 if !visit(state, &manifest, first, &self.lost)? {
                     return Ok(false);

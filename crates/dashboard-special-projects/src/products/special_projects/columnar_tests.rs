@@ -386,7 +386,8 @@ fn projected(binding: &Binding, frames: &[DecodedFrame], starts: &[i32]) -> Vec<
         })
         .unwrap();
     }
-    out
+    // As its emit is handed them: written to the spool and read back.
+    replay_spool::respool(out).unwrap()
 }
 
 fn identity() -> dashboard_series::Identity {

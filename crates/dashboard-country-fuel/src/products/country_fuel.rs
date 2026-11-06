@@ -181,6 +181,7 @@ pub struct FuelAwards {
 
 /// [`FuelAwardTotals`] as exact integers; only replies format them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct AwardSums {
     gains: [i128; 4],
     own_gain: i128,
@@ -386,6 +387,7 @@ fn fuel_label(
 /// Why a read's day is not shown.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum DayLeftOut {
     /// It overlaps a day already shown, so no update is counted twice.
     Overlaps,
@@ -428,6 +430,7 @@ pub struct FuelRead {
 
 /// A [`FuelRead`] as exact integers; only replies format them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct RawRead {
     country: u32,
     country_instance: Option<u32>,
@@ -445,6 +448,7 @@ struct RawRead {
 
 /// A [`FuelDay`]: the ring sums, or the applied updates that supersede them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 enum RawDay {
     Ring {
         gained: i64,

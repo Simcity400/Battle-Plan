@@ -100,6 +100,11 @@ fn chain(continues: bool, first_end: i32, carried: bool, hours: Span) -> Chain {
 }
 
 impl<'a> Pending<'a> {
+    /// The publication it was cut as.
+    pub fn publication(&self) -> Publication {
+        self.state.publication
+    }
+
     pub fn seal(&self, io: &mut impl PageWrite) -> io::Result<Sealed> {
         self.seal_counted(io).map(|(sealed, _)| sealed)
     }

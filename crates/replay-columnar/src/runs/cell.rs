@@ -438,63 +438,218 @@ fn put_middle(writer: &mut Writer, cell: Cell<'_>, front: usize, back: usize) ->
     }
 }
 
-/// The cells a column's open page last set, as its next changes are taken against: at each
-/// offset whether a present value is known and recorded, a scalar's bits or a list's items,
-/// and an integer's last difference.
+/// A column's cells at its own width, signed ones widened back as [`scalar`] takes them, or
+/// a list's or bytes' items as they are.
 #[derive(Default)]
-pub(super) struct Held {
-    known: Vec<bool>,
-    recorded: Vec<bool>,
-    values: Vec<u64>,
-    velocity: Vec<u64>,
-    items: Vec<Vec<u64>>,
-    scratch: Vec<u64>,
+enum Lane {
+    #[default]
+    None,
+    W8(Vec<u8>),
+    W16(Vec<u16>, bool),
+    W32(Vec<u32>, bool),
+    W64(Vec<u64>),
+    U32s(Vec<Box<[u32]>>),
+    U64s(Vec<Box<[u64]>>),
+    Bytes(Vec<Box<[u8]>>),
 }
 
-impl Held {
-    fn keep(&mut self, offset: u32, cell: Cell<'_>, recorded: bool) -> io::Result<()> {
-        let at = offset as usize;
-        if self.known.len() <= at {
-            engine_allocation::resize(&mut self.known, at + 1, false)?;
-            engine_allocation::resize(&mut self.recorded, at + 1, false)?;
-            engine_allocation::resize(&mut self.values, at + 1, 0)?;
-            engine_allocation::resize(&mut self.velocity, at + 1, 0)?;
-        }
-        self.known[at] = present(cell);
-        self.recorded[at] = recorded;
-        if let Some(bits) = scalar(cell) {
-            self.values[at] = bits;
-        } else if matches!(cell, Cell::U32List(_) | Cell::U64List(_) | Cell::Opaque(_)) {
-            if self.items.len() <= at {
-                engine_allocation::resize_default(&mut self.items, at + 1)?;
+impl Lane {
+    fn of(cell: Cell<'_>) -> Self {
+        match cell {
+            Cell::U8(_) | Cell::I8(_) | Cell::Bool(_) => Self::W8(Vec::new()),
+            Cell::U16(_) => Self::W16(Vec::new(), false),
+            Cell::I16(_) => Self::W16(Vec::new(), true),
+            Cell::U32(_) | Cell::Bytes(_) | Cell::OptionalU32(_) => Self::W32(Vec::new(), false),
+            Cell::I32(_) | Cell::OptionalI32(_) => Self::W32(Vec::new(), true),
+            Cell::U64(_) | Cell::I64(_) | Cell::OptionalU64(_) | Cell::OptionalI64(_) => {
+                Self::W64(Vec::new())
             }
-            widen(cell, &mut self.items[at])?;
+            Cell::U32List(_) => Self::U32s(Vec::new()),
+            Cell::U64List(_) => Self::U64s(Vec::new()),
+            Cell::Opaque(_) => Self::Bytes(Vec::new()),
+        }
+    }
+
+    fn resize(&mut self, slots: usize) -> io::Result<()> {
+        match self {
+            Self::None => Ok(()),
+            Self::W8(values) => engine_allocation::resize(values, slots, 0),
+            Self::W16(values, _) => engine_allocation::resize(values, slots, 0),
+            Self::W32(values, _) => engine_allocation::resize(values, slots, 0),
+            Self::W64(values) => engine_allocation::resize(values, slots, 0),
+            Self::U32s(items) => engine_allocation::resize_default(items, slots),
+            Self::U64s(items) => engine_allocation::resize_default(items, slots),
+            Self::Bytes(items) => engine_allocation::resize_default(items, slots),
+        }
+    }
+
+    /// The bits [`scalar`] takes of the cell at `at`; zero for a list.
+    fn bits(&self, at: usize) -> u64 {
+        match self {
+            Self::W8(values) => u64::from(values[at]),
+            Self::W16(values, false) => u64::from(values[at]),
+            Self::W16(values, true) => values[at] as i16 as i64 as u64,
+            Self::W32(values, false) => u64::from(values[at]),
+            Self::W32(values, true) => values[at] as i32 as i64 as u64,
+            Self::W64(values) => values[at],
+            _ => 0,
+        }
+    }
+
+    /// Keeps `cell` at `at`: nothing for a missing optional, whose bits are never read.
+    fn set(&mut self, at: usize, cell: Cell<'_>) -> io::Result<()> {
+        match (self, cell) {
+            (Self::U32s(held), Cell::U32List(items)) => {
+                if *held[at] != *items {
+                    held[at] = engine_allocation::copy_vec(items)?.into_boxed_slice();
+                }
+            }
+            (Self::U64s(held), Cell::U64List(items)) => {
+                if *held[at] != *items {
+                    held[at] = engine_allocation::copy_vec(items)?.into_boxed_slice();
+                }
+            }
+            (Self::Bytes(held), Cell::Opaque(bytes)) => {
+                if *held[at] != *bytes {
+                    held[at] = engine_allocation::copy_vec(bytes)?.into_boxed_slice();
+                }
+            }
+            (lane, cell) => {
+                let Some(bits) = scalar(cell) else {
+                    return Ok(());
+                };
+                match lane {
+                    Self::W8(values) => values[at] = bits as u8,
+                    Self::W16(values, _) => values[at] = bits as u16,
+                    Self::W32(values, _) => values[at] = bits as u32,
+                    Self::W64(values) => values[at] = bits,
+                    _ => return Err(invalid("A strip cell differs from its column's kind")),
+                }
+            }
         }
         Ok(())
     }
 
+    /// Whether the list or bytes at `at` hold `cell`'s items; none for a scalar.
+    fn holds_items(&self, at: usize, cell: Cell<'_>) -> Option<bool> {
+        Some(match (self, cell) {
+            (Self::U32s(held), Cell::U32List(items)) => *held[at] == *items,
+            (Self::U64s(held), Cell::U64List(items)) => *held[at] == *items,
+            (Self::Bytes(held), Cell::Opaque(bytes)) => *held[at] == *bytes,
+            (_, Cell::U32List(items)) => items.is_empty(),
+            (_, Cell::U64List(items)) => items.is_empty(),
+            (_, Cell::Opaque(bytes)) => bytes.is_empty(),
+            _ => return None,
+        })
+    }
+
+    /// The items held at `at`, widened, into `into`.
+    fn widen_items(&self, at: usize, into: &mut Vec<u64>) -> io::Result<()> {
+        into.clear();
+        match self {
+            Self::U32s(held) => {
+                engine_allocation::reserve(into, held[at].len())?;
+                into.extend(held[at].iter().map(|&item| u64::from(item)));
+            }
+            Self::U64s(held) => {
+                engine_allocation::reserve(into, held[at].len())?;
+                into.extend_from_slice(&held[at]);
+            }
+            Self::Bytes(held) => {
+                engine_allocation::reserve(into, held[at].len())?;
+                into.extend(held[at].iter().map(|&byte| u64::from(byte)));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+fn bit_of(words: &[u64], at: usize) -> bool {
+    words.get(at / 64).is_some_and(|word| word >> (at % 64) & 1 != 0)
+}
+
+fn put_bit(words: &mut [u64], at: usize, set: bool) {
+    let (word, bit) = (&mut words[at / 64], 1_u64 << (at % 64));
+    if set {
+        *word |= bit;
+    } else {
+        *word &= !bit;
+    }
+}
+
+/// The cells a column's open page last set, as its next changes are taken against: at each
+/// offset whether a present value is known and recorded, a bit each, the cell at its column's
+/// width, and an integer's last difference once one is taken.
+#[derive(Default)]
+pub(super) struct Held {
+    slots: usize,
+    known: Vec<u64>,
+    recorded: Vec<u64>,
+    lane: Lane,
+    /// Empty while every last difference is zero.
+    velocity: Vec<u64>,
+    scratch: Vec<u64>,
+    old: Vec<u64>,
+}
+
+impl Held {
+    /// Room for offsets through `at`.
+    fn grow(&mut self, at: usize, cell: Cell<'_>) -> io::Result<()> {
+        if at < self.slots {
+            return Ok(());
+        }
+        if matches!(self.lane, Lane::None) {
+            self.lane = Lane::of(cell);
+        }
+        let slots = at + 1;
+        let words = slots.div_ceil(64);
+        engine_allocation::resize(&mut self.known, words, 0)?;
+        engine_allocation::resize(&mut self.recorded, words, 0)?;
+        self.lane.resize(slots)?;
+        if !self.velocity.is_empty() {
+            engine_allocation::resize(&mut self.velocity, slots, 0)?;
+        }
+        self.slots = slots;
+        Ok(())
+    }
+
+    fn keep(&mut self, offset: u32, cell: Cell<'_>, recorded: bool) -> io::Result<()> {
+        let at = offset as usize;
+        self.grow(at, cell)?;
+        put_bit(&mut self.known, at, present(cell));
+        put_bit(&mut self.recorded, at, recorded);
+        self.lane.set(at, cell)
+    }
+
     fn known(&self, offset: u32) -> bool {
-        self.known.get(offset as usize).copied().unwrap_or(false)
+        (offset as usize) < self.slots && bit_of(&self.known, offset as usize)
+    }
+
+    fn velocity(&self, at: usize) -> u64 {
+        self.velocity.get(at).copied().unwrap_or(0)
+    }
+
+    fn set_velocity(&mut self, at: usize, step: u64) -> io::Result<()> {
+        if self.velocity.is_empty() {
+            if step == 0 {
+                return Ok(());
+            }
+            engine_allocation::resize(&mut self.velocity, self.slots, 0)?;
+        }
+        self.velocity[at] = step;
+        Ok(())
     }
 
     /// Whether `cell`, recorded or not, is the cell held at `offset`.
     fn holds(&self, offset: u32, cell: Cell<'_>, recorded: bool) -> bool {
         let at = offset as usize;
-        if !self.known(offset) || self.recorded[at] != recorded {
+        if !self.known(offset) || bit_of(&self.recorded, at) != recorded {
             return false;
         }
-        let items = || self.items.get(at).map_or(&[][..], Vec::as_slice);
-        match cell {
-            Cell::U32List(new) => {
-                items().len() == new.len()
-                    && items().iter().zip(new).all(|(&a, &b)| a == u64::from(b))
-            }
-            Cell::U64List(new) => items() == new,
-            Cell::Opaque(new) => {
-                items().len() == new.len()
-                    && items().iter().zip(new).all(|(&a, &b)| a == u64::from(b))
-            }
-            _ => scalar(cell) == Some(self.values[at]),
+        match self.lane.holds_items(at, cell) {
+            Some(holds) => holds,
+            None => scalar(cell) == Some(self.lane.bits(at)),
         }
     }
 }
@@ -534,6 +689,9 @@ pub(super) fn put_base(
             cells.push(present(cell(offset)?));
         }
         put_bits(writer, extent, |offset| cells[offset as usize])?;
+    }
+    if let Some(last) = extent.checked_sub(1) {
+        held.grow(last as usize, cell(0)?)?;
     }
     for offset in 0..extent {
         let cell = cell(offset)?;
@@ -658,15 +816,15 @@ impl Group {
         let known = held.known(offset);
         let step = match raw(cell) {
             Some(new) if known => {
-                let step = new.wrapping_sub(held.values[at]);
-                let stored = zigzag(step.wrapping_sub(held.velocity[at]) as i64);
+                let step = new.wrapping_sub(held.lane.bits(at));
+                let stored = zigzag(step.wrapping_sub(held.velocity(at)) as i64);
                 (varint_len(stored) <= whole_len(cell)).then_some((step, stored))
             }
             _ => None,
         };
         let patch = if known && step.is_none() && widen(cell, &mut held.scratch)? {
-            let new = &held.scratch;
-            let old = held.items.get(at).map_or(&[][..], Vec::as_slice);
+            held.lane.widen_items(at, &mut held.old)?;
+            let (new, old) = (&held.scratch, &held.old);
             let bytes = matches!(cell, Cell::Opaque(_));
             let (front, back) = kept(old, new);
             let size = varint_len(front as u64)
@@ -690,7 +848,7 @@ impl Group {
         match (step, patch) {
             (Some((step, stored)), _) => {
                 values.varint(stored)?;
-                held.velocity[at] = step;
+                held.set_velocity(at, step)?;
             }
             (None, Some((front, back))) => {
                 values.varint(front as u64)?;
@@ -747,6 +905,7 @@ impl Group {
 
 /// A page's raw bytes, in `into`'s allocation: its cells at its first ordinal `base`, then the
 /// length of its changes' headers `head`, the headers, then their `values`.
+#[cfg(test)]
 pub(super) fn assemble(
     base: &Writer,
     head: &Writer,

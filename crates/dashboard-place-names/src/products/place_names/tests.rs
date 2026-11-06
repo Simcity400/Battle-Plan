@@ -271,7 +271,8 @@ fn project(inputs: &[DecodedFrame], restarts: &BTreeSet<usize>) -> Vec<facts::Ho
         .unwrap();
     }
     projector.end(&mut hours).unwrap();
-    hours
+    // As its emit is handed them: written to the spool and read back.
+    replay_spool::respool(hours).unwrap()
 }
 
 fn identity() -> Identity {

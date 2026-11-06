@@ -12,6 +12,7 @@ doctest = false
 [dependencies]
 blake3.workspace = true
 engine-allocation.workspace = true
+replay-spool.workspace = true
 store = { path = "../store" }
 zstd = "0.13"
 

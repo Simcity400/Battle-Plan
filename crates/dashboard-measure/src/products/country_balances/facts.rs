@@ -8,13 +8,12 @@
 use dashboard_world::{Needs, Roster, Tag, Tagged, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::rows::{CountryRow, TableId};
 use std::{
     collections::{BTreeSet, HashMap},
     io,
-    mem::size_of,
     sync::Arc,
 };
 
@@ -34,6 +33,7 @@ pub type Held = ((u32, u32), [Option<i64>; 2]);
 
 /// One tag at a projected hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Country {
     /// Its tag's index in the projection ([`Hour::named`]).
     pub index: u32,
@@ -42,6 +42,7 @@ pub struct Country {
 }
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -51,14 +52,6 @@ pub struct Hour {
     pub whole: bool,
     /// Tags whose holder or balances may have changed, at least every one that did.
     pub countries: Vec<Country>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self.countries.capacity() * size_of::<Country>()
-    }
 }
 
 /// The Countries columns a projection reads.

@@ -20,7 +20,7 @@ use dashboard_text::metadata::{recorded_rows, slot_reads};
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{
     format::FormatVersion,
@@ -150,6 +150,7 @@ pub fn needs() -> io::Result<Needs> {
 pub(super) type Scored = (u32, u32, i64, i64);
 
 /// The pairs handed on, in pair order: by owner tag, then region.
+#[derive(replay_spool::Spooled)]
 pub(super) enum Pairs {
     /// Every pair.
     Whole(Vec<Scored>),
@@ -161,6 +162,7 @@ pub(super) enum Pairs {
 }
 
 /// An hour's score projection, where it differs from the one before or is whole.
+#[derive(replay_spool::Spooled)]
 pub(super) struct Scores {
     /// None where they equal the operands handed on last.
     pub operands: Option<ScoreOperands>,
@@ -170,6 +172,7 @@ pub(super) struct Scores {
 }
 
 /// What moved of the wings and theatres.
+#[derive(replay_spool::Spooled)]
 pub(super) struct AuxiliaryChange {
     /// The wing counts below are every region's: those held before are gone.
     pub whole: bool,
@@ -186,6 +189,7 @@ pub(super) struct AuxiliaryChange {
 }
 
 /// What an hour hands the fold ([`super::prepared::Prepared::observe_columnar`]).
+#[derive(replay_spool::Spooled)]
 pub(super) struct Air {
     /// Every part below is given: the hour starts its segment or follows a gap.
     pub whole: bool,
@@ -205,52 +209,12 @@ pub(super) struct Air {
 }
 
 /// One hour as a segment's operator projected it.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub hour: i32,
     pub(super) air: Air,
     /// The tag sets first handed on at this hour, which stay alive while it is queued.
     retained: usize,
-}
-
-fn strings(tags: &[String]) -> usize {
-    tags.len() * size_of::<String>() + tags.iter().map(String::capacity).sum::<usize>()
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let air = &self.air;
-        // The operands' tag sets are the operator's own, shared until they change.
-        let scores = air.scores.as_ref().map_or(0, |scores| {
-            size_of::<Scores>()
-                + match &scores.pairs {
-                    Pairs::Whole(whole) => whole.capacity() * size_of::<Scored>(),
-                    Pairs::Changed { changed, removed } => {
-                        changed.capacity() * size_of::<Scored>()
-                            + removed.capacity() * size_of::<(u32, u32)>()
-                    }
-                }
-                + scores.active.as_ref().map_or(0, |active| active.len() * 16)
-        });
-        let auxiliary = air.auxiliary.as_ref().map_or(0, |change| {
-            size_of::<AuxiliaryChange>()
-                + change.wings.capacity() * size_of::<(u32, u32)>()
-                + change.theatres.as_ref().map_or(0, |(theatres, names)| {
-                    theatres
-                        .iter()
-                        .map(|(id, regions)| id.capacity() + regions.len() * 8 + 48)
-                        .sum::<usize>()
-                        + names
-                            .iter()
-                            .map(|(id, name)| id.capacity() + name.capacity() + 48)
-                            .sum::<usize>()
-                })
-        });
-        let roster = air
-            .roster
-            .as_ref()
-            .map_or(0, |roster| size_of::<Assigned>() + roster.heap());
-        strings(&air.owners) + strings(&air.countries) + scores + auxiliary + roster + self.retained
-    }
 }
 
 /// The score identity the operator projects through: each recorded country's tag, the

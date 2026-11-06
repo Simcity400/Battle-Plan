@@ -18,7 +18,6 @@ use replay::{
     columnar_frames::{Limits, Recording},
     columnar_runs::{self, IndexFile, Layout, Snapshots, Whole},
     container::Parallel,
-    segments::Settings,
 };
 use replay_data::{format::FormatVersion, rows::TableId, scope::CaptureMode};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -297,12 +296,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Value::Null
     } else {
         let (cpu_before, started) = (cpu(), Instant::now());
+        let scratch = match path.parent() {
+            Some(folder) if !folder.as_os_str().is_empty() => folder.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
         let (out, stats) = columnar_runs::prepare(
             &whole,
             tables,
             Layout::RECORDING,
             options.level,
-            &Settings::new(options.threads),
+            options.threads,
+            &scratch,
             &AtomicBool::new(false),
             BufWriter::new(File::create(&path)?),
         )?;
@@ -317,7 +321,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "cpu_us_per_hour": cpu_ns as f64 / 1_000.0 / hours.max(1) as f64,
             "wall_us_per_hour": wall.as_secs_f64() * 1e6 / hours.max(1) as f64,
             "walks": stats.iter().map(|stats| stats.walks).sum::<usize>(),
-            "output_mb": stats.iter().map(|stats| stats.output_bytes).max().unwrap_or(0) as f64
+            "spool_mb": stats.iter().map(|stats| stats.spool_bytes).max().unwrap_or(0) as f64
                 / (1 << 20) as f64,
             "memory": peak_memory(),
         })

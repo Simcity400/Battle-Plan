@@ -5,6 +5,7 @@ use crate::value::value_struct;
 /// independent roots remain usable. Names are retained display bytes and need
 /// the recorded language, as for NavalModifierBreakdowns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProductionModifierTree {
     pub key: u32,
     pub nodes: Vec<ModifierBreakdownNode>,
@@ -18,6 +19,7 @@ opaque_value!([i64; 7]);
 /// Only countries with lines have rows. Definitions are live native values,
 /// not constants read from today's vanilla files.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryProductionModifiersRow {
     pub country: u32,
     pub power_raw: i64,
@@ -50,6 +52,7 @@ typed_codec!(CountryProductionModifiersRow, 32, |row| row.country as u128,
 /// to ProductionLines at the supplying read. Bonuses are the seven runtime
 /// production categories after token mapping; dirty remains explicit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct ProductionLineModifiersRow {
     pub line: u64,
     pub country: u32,

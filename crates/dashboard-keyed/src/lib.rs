@@ -143,6 +143,17 @@ pub trait Observer: Default + Serialize + DeserializeOwned + Send + 'static {
         None
     }
 
+    /// The operands its native keeper kept, as [`block::Operands::spool`] wrote them.
+    fn unspool_operands(
+        input: &mut replay_spool::Reader<'_>,
+    ) -> io::Result<Box<dyn block::Operands<Self>>> {
+        let _ = input;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "This observer keeps no operands",
+        ))
+    }
+
     /// The fields of [`Self::TABLES`] whose changes make an hour observed.
     fn fields() -> io::Result<Vec<TableFields>>;
 

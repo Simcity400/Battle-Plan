@@ -11,6 +11,7 @@ use std::{
 
 /// An aid party: a country identity, as its sender lists and host tallies name it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct Party {
     pub slot: u32,
     pub id: u32,
@@ -19,6 +20,7 @@ pub struct Party {
 
 /// One aid channel of a sender: complete when every listed reference was resolved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Channel {
     pub complete: bool,
     pub values: BTreeMap<Party, i64>,
@@ -41,6 +43,7 @@ impl Channel {
 /// A sender's projection: land volunteers, expeditionaries and the first matching native
 /// host tally, with the native occurrences they were read from.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Sender {
     pub party: Party,
     pub channels: [Channel; 3],
@@ -52,6 +55,7 @@ pub struct Sender {
 
 /// One hour of aid.
 #[derive(Clone, Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Projection {
     /// The parties present, when they may have changed.
     pub parties: Option<Vec<Party>>,

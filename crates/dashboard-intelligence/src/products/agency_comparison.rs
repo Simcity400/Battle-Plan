@@ -85,6 +85,7 @@ pub struct AgencyComparisonParams {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct AgencyUpgradeItem {
     /// This read's array position, preserving repeated definitions and all levels
     /// in the recorded upgrade list.
@@ -123,6 +124,7 @@ pub struct AgencyUpgrades {
 /// [`AgencyUpgrades`] as scanned. A run whose acquired list did not change
 /// shares the previous run's items instead of copying them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct ScannedUpgrades {
     read_hour: Option<i32>,
     unavailable: Option<String>,

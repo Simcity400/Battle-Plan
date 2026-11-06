@@ -26,6 +26,7 @@ fn reserved<T>(count: usize, owner: &'static str) -> io::Result<Vec<T>> {
 }
 
 /// What a segment's keeper derived of one hour's temperatures.
+#[derive(replay_spool::Spooled)]
 pub(in super::super) enum Derived {
     /// No temperature is shown, for this reason.
     Refused {

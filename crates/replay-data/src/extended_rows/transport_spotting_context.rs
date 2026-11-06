@@ -4,6 +4,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TransportRadarCounts {
     /// The radar gate tests equality to zero, not signed nonpositive.
     pub signed_count: i32,
@@ -13,6 +14,7 @@ pub struct TransportRadarCounts {
 value_struct!(TransportRadarCounts { signed_count: i32, counts: Option<Vec<i32>> });
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct TransportSpottingRegion {
     pub region_id: u32,
     pub runtime_slot: Option<i32>,
@@ -34,6 +36,7 @@ value_struct!(TransportSpottingRegion {
 /// The province the air-spotting calculation sampled in a region, in the retired spotting
 /// tables' layout.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum SpottingSample {
     /// Inline packets through format 101: the captured province, its id
     /// authenticated against the region; None is the capture's refusal.

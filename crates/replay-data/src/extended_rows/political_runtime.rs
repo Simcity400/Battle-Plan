@@ -4,6 +4,7 @@ use super::*;
 /// Shared runtime scalar family. Every Option is an independent read refusal.
 /// The packet is read in the same accepted pass as these six native reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct PoliticalRuntimeScalars {
     pub sample_hour: PacketHour,
     pub river_small: Option<i64>,

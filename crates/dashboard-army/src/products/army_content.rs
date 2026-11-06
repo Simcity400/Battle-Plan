@@ -78,6 +78,7 @@ pub fn unavailable(frame: &DecodedFrame, id: TableId) -> Option<String> {
 
 /// A country by its recorded identity: its canonical slot and country id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Holder {
     pub slot: u32,
     pub id: u32,
@@ -249,6 +250,7 @@ pub fn template_artwork(frame: &DecodedFrame, handle: u64) -> Result<TemplateArt
 
 /// A template icon's drawing operands ([`template_artwork`]).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct TemplateArtwork {
     pub priority_unit: u32,
     pub custom_icon: i32,

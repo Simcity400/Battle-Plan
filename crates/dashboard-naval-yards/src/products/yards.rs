@@ -91,11 +91,13 @@ pub fn find<T, K: Ord>(rows: Option<&[T]>, key: K, by: impl Fn(&T) -> K) -> Opti
 }
 
 /// Each source table as an hour holds it, which dates the hour's supplying reads.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Sources {
     hour: i32,
     tables: Vec<Source>,
 }
 
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Source {
     table: TableId,
     /// Why it does not hold its own complete rows: the refusal it publishes then.

@@ -47,6 +47,7 @@ blake3.workspace = true
 dashboard-core.workspace = true
 installed-content-save.workspace = true
 png.workspace = true
+replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }

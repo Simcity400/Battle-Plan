@@ -334,7 +334,8 @@ fn projected(starts: &[i32]) -> (Vec<facts::Hour>, Walked) {
     for tag in walked.measures.keys() {
         walked.warnings.insert(tag.clone(), scan.warnings(tag));
     }
-    (out, walked)
+    // As its emit is handed them: written to the spool and read back.
+    (replay_spool::respool(out).unwrap(), walked)
 }
 
 fn identity() -> dashboard_series::Identity {

@@ -56,6 +56,7 @@ const PARTS: [&str; 6] = ["army", "navy", "air", "industry", "land", "total"];
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum GameScoreMissingKind {
     Recording,
     Content,
@@ -63,12 +64,14 @@ pub enum GameScoreMissingKind {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct GameScoreMissing {
     pub kind: GameScoreMissingKind,
     pub reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct GameScoreAmount {
     /// Signed native fixed5.
     pub raw: Option<i64>,
@@ -113,6 +116,7 @@ impl GameScoreAmount {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct GameScoreValues {
     pub army: GameScoreAmount,
     pub navy: GameScoreAmount,
@@ -215,6 +219,7 @@ pub struct GameScoreRun<T> {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct GameScoreFaction {
     pub id: String,
     pub name: Option<String>,
@@ -224,6 +229,7 @@ pub struct GameScoreFaction {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct GameScoreIdentity {
     pub canonical_slot: Option<u32>,
     pub native_country: Option<u32>,

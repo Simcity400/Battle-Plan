@@ -125,6 +125,7 @@ pub type Place = (u64, Option<u64>);
 /// Keys and their values, none where a key holds none now, packed as the walk's items hold
 /// them: the measure with whether a state and a value follow, the state, the value zigzagged.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Values(Vec<u8>);
 
 impl Values {

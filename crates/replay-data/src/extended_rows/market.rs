@@ -2,6 +2,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MarketEquipment {
     pub variant: u64,
     pub amount_raw: i64,
@@ -11,6 +12,7 @@ value_struct!(MarketEquipment {
     amount_raw: i64
 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MarketPool {
     pub allow_zero: bool,
     pub items: Vec<MarketEquipment>,
@@ -22,7 +24,7 @@ opaque_value!(MarketPool);
 /// Only an actual write copies a value that still has another owner.
 macro_rules! shared_market_value {
     ($name:ident, $value:ty) => {
-        #[derive(Debug, Clone, PartialEq, Eq)]
+        #[derive(Debug, Clone, PartialEq, Eq, replay_spool::Spooled)]
         pub struct $name(std::sync::Arc<$value>);
         impl Default for $name {
             fn default() -> Self {
@@ -87,6 +89,7 @@ macro_rules! shared_market_value {
 }
 shared_market_value!(SharedMarketPool, MarketPool);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MarketPriceLevel {
     pub variant: u64,
     pub level: i32,
@@ -98,6 +101,7 @@ value_struct!(MarketPriceLevel {
 opaque_value!(Vec<MarketPriceLevel>);
 shared_market_value!(SharedMarketPriceLevels, Vec<MarketPriceLevel>);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MarketSubsidy {
     pub cic_raw: i64,
     pub archetype: u32,
@@ -112,6 +116,7 @@ shared_market_value!(SharedMarketSubsidies, Vec<MarketSubsidy>);
 /// Each domain is read only after its writer marks this holder. Unchanged
 /// holders are carried under complete writer coverage, including empty holders.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryMarketRow {
     pub country: u32,
     pub inventory: SharedMarketPool,
@@ -131,6 +136,7 @@ typed_codec!(CountryMarketRow, 32, |row| row.country as u128,
    5 => (auto_send_market_access): Bool, 6 => (auto_accept_purchase): Bool }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MarketVariable {
     pub name: Vec<u8>,
     pub amount_raw: i64,
@@ -139,6 +145,7 @@ value_struct!(MarketVariable {name:Vec<u8>,amount_raw:i64});
 opaque_value!(Vec<MarketVariable>);
 shared_market_value!(SharedMarketVariables, Vec<MarketVariable>);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MarketContractRuntime {
     pub route_equipment: SharedMarketPool,
     pub route_length: i32,
@@ -185,6 +192,7 @@ borrowed_market_list!(SharedMarketVariables, MarketVariable);
 /// Kind 0 is a pending request, kind 1 an accepted purchase contract.
 /// Ordered manifests, agreed prices and price levels are independent operands.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MarketContractTermsRow {
     pub runtime: MarketContractRuntime,
     pub variables: SharedMarketVariables,
@@ -215,6 +223,7 @@ typed_codec!(MarketContractTermsRow, 104,
 /// Current agreement state. Saved cumulative statistics may saturate and reset
 /// on an amendment; actual occurrence amounts remain in MarketEvents.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct LendLeaseAgreementRow {
     pub country: u32,
     pub id: u64,
@@ -258,6 +267,7 @@ typed_codec!(LendLeaseAgreementRow, 96,
 /// The occurrence row stream stays complete, including at encoding keyframes;
 /// only the named amount is unavailable. Its zero payload is not an amount.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MarketEventRow {
     pub id: u64,
     pub occurrence: u64,

@@ -11,13 +11,13 @@ use dashboard_world::{Needs, Roster, Tag, Tagged, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, State},
+    segments::{self, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
     rows::{CountryExperienceGainRow, CountryExperienceRow, TableId},
 };
-use std::{collections::HashMap, io, mem::size_of, sync::Arc};
+use std::{collections::HashMap, io, sync::Arc};
 
 /// The tables a projection reads.
 pub const TABLES: &[TableId] = &[
@@ -39,6 +39,7 @@ pub fn needs() -> Needs {
 pub type Amounts = [i64; 3];
 
 /// One projected hour.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -56,18 +57,6 @@ pub struct Hour {
     pub banked: Vec<(u32, Option<Amounts>)>,
     /// Slots' gross gains: None without exactly one row, or where it holds no complete interval.
     pub gained: Vec<(u32, Option<Amounts>)>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.named.capacity() * size_of::<(u32, Arc<str>)>()
-            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
-            + self.holders.as_ref().map_or(0, |holders| {
-                holders.capacity() * size_of::<((u32, u32), u32)>()
-            })
-            + (self.banked.capacity() + self.gained.capacity())
-                * size_of::<(u32, Option<Amounts>)>()
-    }
 }
 
 fn invalid(message: &'static str) -> io::Error {

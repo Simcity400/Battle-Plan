@@ -14,7 +14,7 @@ use dashboard_world::{Needs, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink, Start, State},
+    segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{
     cadence,
@@ -65,6 +65,7 @@ fn slice(hour: i32) -> u32 {
 }
 
 /// One identity read, shared with the emit; a country is its index into `countries`.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Ids {
     /// Ascending.
     pub(crate) countries: Vec<DiplomacyCountry>,
@@ -148,6 +149,7 @@ impl Ids {
 }
 
 /// An opinion owner's known pairs by target index, and its rows refusing them.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Values {
     /// Shared while the owner's targets do not change.
     pub(crate) targets: Arc<[u32]>,
@@ -192,6 +194,7 @@ impl Values {
 }
 
 /// A raw relation owner's rows, in key order.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct TupleRows {
     /// Each row's spelling; shared while no row's key, endpoints, start or spelling changes.
     pub(crate) identity: Arc<[Option<Arc<str>>]>,
@@ -241,6 +244,7 @@ impl TupleRows {
 }
 
 /// An incoming action and the country index of each of its roles, in [`Proposal::raw`]'s order.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Proposal {
     pub(crate) row: IncomingDiplomaticActionRow,
     pub(crate) roles: [Option<u32>; 5],
@@ -271,6 +275,7 @@ impl Proposal {
 
 /// The incoming queue, by row key, with each owner's handles and how many repeat one.
 #[derive(Clone, Default)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Queue {
     pub(crate) rows: BTreeMap<u128, Arc<Proposal>>,
     pub(crate) handles: BTreeMap<(u32, u64), usize>,
@@ -313,6 +318,7 @@ pub(crate) type Opinion = (u32, Option<i32>, Arc<Values>);
 pub(crate) type TupleOwner = (u32, i32, Arc<TupleRows>);
 
 /// The hour's opinion reads: the owners read now, and those only a baseline reads.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Opinions {
     pub(crate) current: Vec<Opinion>,
     pub(crate) baseline: Vec<Opinion>,
@@ -322,6 +328,7 @@ pub(crate) struct Opinions {
 
 /// The hour's relation reads: the countries read and their supplying reads, and the raw owners
 /// with their rows, now and for a baseline.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Tuples {
     pub(crate) countries: Vec<(u32, i32)>,
     pub(crate) baseline_countries: Vec<(u32, i32)>,
@@ -329,6 +336,7 @@ pub(crate) struct Tuples {
     pub(crate) baseline_owners: Vec<TupleOwner>,
 }
 
+#[derive(replay_spool::Spooled)]
 pub(crate) enum QueueRead {
     Unavailable,
     Carried,
@@ -336,6 +344,7 @@ pub(crate) enum QueueRead {
 }
 
 /// One hour of a segment.
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -351,21 +360,6 @@ pub struct Hour {
     /// The bytes of the identities, values, rows and queues made since an hour last carried
     /// them: the first to carry them counts them.
     shared: usize,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        let opinions = self.opinions.as_ref().map_or(0, |opinions| {
-            (opinions.current.capacity() + opinions.baseline.capacity()) * size_of::<Opinion>()
-        });
-        let tuples = self.tuples.as_ref().map_or(0, |tuples| {
-            (tuples.countries.capacity() + tuples.baseline_countries.capacity())
-                * size_of::<(u32, i32)>()
-                + (tuples.owners.capacity() + tuples.baseline_owners.capacity())
-                    * size_of::<TupleOwner>()
-        });
-        self.shared + opinions + tuples
-    }
 }
 
 /// `current` and `added`, whose indexes are not in `current`, in index order.

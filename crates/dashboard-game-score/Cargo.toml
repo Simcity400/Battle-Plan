@@ -26,6 +26,7 @@ dashboard-series.workspace = true
 dashboard-text.workspace = true
 dashboard-wars.workspace = true
 dashboard-world.workspace = true
+replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 store = { path = "../store", optional = true }

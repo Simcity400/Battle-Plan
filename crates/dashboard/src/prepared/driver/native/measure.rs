@@ -48,13 +48,14 @@ pub struct Run {
     pub chained: usize,
     pub deferred: usize,
     pub segments_held: usize,
-    pub output_bytes_held: usize,
+    /// The most its items and parked operators held on disk at once, and wrote in all.
+    pub spool_bytes_held: u64,
+    pub spooled_bytes: u64,
     pub carry_bytes_held: usize,
     pub carry_scratch_bytes_held: usize,
     pub parked: usize,
     pub spilled: usize,
     pub loaded: usize,
-    pub chunks_spilled: usize,
     pub derived: usize,
     pub measured: usize,
     pub rewalked: usize,
@@ -70,13 +71,13 @@ impl From<replay::segments::Stats> for Run {
             chained: stats.chained,
             deferred: stats.deferred,
             segments_held: stats.segments,
-            output_bytes_held: stats.output_bytes,
+            spool_bytes_held: stats.spool_bytes,
+            spooled_bytes: stats.spooled,
             carry_bytes_held: stats.carry_bytes,
             carry_scratch_bytes_held: stats.carry_scratch,
             parked: stats.parked,
             spilled: stats.spilled,
             loaded: stats.loaded,
-            chunks_spilled: stats.chunks_spilled,
             derived: stats.derived,
             measured: stats.measured,
             rewalked: stats.rewalked,
@@ -129,7 +130,7 @@ pub struct Measured {
     pub families: BTreeMap<&'static str, Phases>,
     /// What families counted over the run, by family and name, for those that count.
     pub counts: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
-    /// The most each family projected in one walk of a segment, as its run estimates it.
+    /// The most each family spooled in one walk of a segment.
     pub largest_output_bytes: BTreeMap<&'static str, usize>,
     /// The slowest family's serial lane.
     pub serial_us_per_hour: f64,
@@ -152,11 +153,9 @@ pub struct Resident {
     pub start_bytes: usize,
     /// What loading content added to it.
     pub content_bytes: usize,
-    /// Projected items at most, as the executor's credits count them, and parked operators.
-    pub output_bytes: usize,
+    /// Parked operators held resident at most: projected items wait on disk.
     pub carry_bytes: usize,
-    /// The walkers' buffers' budget, which their shares never pass, and the most they held.
-    pub walker_budget_bytes: usize,
+    /// The most the walkers' buffers held.
     pub walker_held_bytes: usize,
     /// The most one walk charged its tables.
     pub walk_table_bytes: usize,
@@ -230,7 +229,6 @@ pub(crate) struct Counted<'a> {
     pub tables: Vec<usize>,
     /// The working set as the preparation began, after content loaded, and as the run ended.
     pub working: [usize; 3],
-    pub walker_budget: usize,
     pub ahead: Option<Narrow>,
 }
 
@@ -321,9 +319,7 @@ impl Measured {
             resident: Resident {
                 start_bytes: counted.working[0],
                 content_bytes: counted.working[1].saturating_sub(counted.working[0]),
-                output_bytes: counted.stats.output_bytes,
                 carry_bytes: counted.stats.carry_bytes,
-                walker_budget_bytes: counted.walker_budget,
                 walker_held_bytes: walker_held,
                 walk_table_bytes: table_held,
                 run_end_bytes: counted.working[2].saturating_sub(counted.working[0]),

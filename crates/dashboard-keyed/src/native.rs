@@ -140,6 +140,40 @@ enum Held<O: Observer> {
     Operands(Box<dyn Operands<O>>),
 }
 
+impl<O: Observer> replay_spool::Spooled for Kept<O> {
+    fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
+        use replay_spool::Spooled as _;
+        match &self.held {
+            Held::Tables { hands, metrics } => {
+                out.tag(0)?;
+                hands.spool(out)?;
+                metrics.spool(out)?;
+            }
+            Held::Operands(operands) => {
+                out.tag(1)?;
+                Operands::spool(&**operands, out)?;
+            }
+        }
+        self.changes.spool(out)
+    }
+
+    fn unspool(input: &mut replay_spool::Reader<'_>) -> io::Result<Self> {
+        use replay_spool::Spooled;
+        let held = match input.tag()? {
+            0 => Held::Tables {
+                hands: Spooled::unspool(input)?,
+                metrics: Spooled::unspool(input)?,
+            },
+            1 => Held::Operands(O::unspool_operands(input)?),
+            _ => return Err(invalid("A spooled keyed hour of a kind it does not know")),
+        };
+        Ok(Self {
+            held,
+            changes: Spooled::unspool(input)?,
+        })
+    }
+}
+
 /// A segment's reader, or the observer's keeper.
 struct Keep<O: Observer> {
     format: FormatVersion,

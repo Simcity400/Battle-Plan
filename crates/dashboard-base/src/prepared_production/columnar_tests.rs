@@ -10,7 +10,7 @@ use crate::prepared::{
 use columnar::{Branch, Projector};
 use replay::{
     columnar_frames::synthetic::{Input as Written, Sample, Synthetic},
-    segments::{self, Item, Operator},
+    segments::{self, Operator},
 };
 use replay_data::{
     rows::{
@@ -716,7 +716,7 @@ fn quiet_hours_carry_nothing_but_their_flags() {
     for (offset, hour) in (0..).zip(&out) {
         let dated = offset == 0 || offset == read || offset == variants;
         assert_eq!(
-            hour.heap() != 0,
+            hour.carries_facts(),
             dated,
             "hour {offset} carries facts only where it is read or starts the walk"
         );

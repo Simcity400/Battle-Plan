@@ -21,6 +21,7 @@ use super::*;
 /// paths). `owner` is the gun row's `logical_owner` reference. `None` is that
 /// query's counted refusal; the other regions keep theirs.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct OwnerTransportSpeedRow {
     pub owner: u32,
     pub region: u32,
@@ -44,6 +45,7 @@ typed_codec!(OwnerTransportSpeedRow, 64, |row| (row.owner as u128) << 32 | row.r
 /// read, and `owner` the expeditionary owner if positive, else the roster owner,
 /// as DivisionRow holds them (raw). `terms: None` is a counted read refusal.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct MovementStateTermRow {
     pub state: u32,
     pub roster: u32,
@@ -64,6 +66,7 @@ typed_codec!(MovementStateTermRow, 96, |row| (row.state as u128) << 64 | (row.ro
 /// this key has a hostile final destination. Its refusal is independent of common
 /// terms, in [`StateMovementTerms::ATTACK_REFUSED`]; peaceful consumers ignore it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateMovementTerms {
     pub army_speed: Option<i64>,
     pub attack_speed: Option<i64>,
@@ -100,6 +103,7 @@ impl StateMovementTerms {
 /// ([`DivisionStatusRow::MOVE_NONCORE_AIR`] selects its air form). `None` is a
 /// counted read refusal.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CoreSupplyAccessRow {
     pub owner: u32,
     pub province: u32,
@@ -118,6 +122,7 @@ typed_codec!(CoreSupplyAccessRow, 64, |row| (row.owner as u128) << 32 | row.prov
 /// effective on playback with the recorded definitions. The outer `None` is a
 /// counted read refusal, the inner `None` an absent entry.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CountryUnitSpeedEntryRow {
     pub country: u32,
     pub key: u32,
@@ -135,6 +140,7 @@ typed_codec!(CountryUnitSpeedEntryRow, 64, |row| (row.country as u128) << 32 | r
 /// The outer `None` is a counted read refusal; the inner `None` is no relation or
 /// no entry.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RiverRelationRow {
     pub owner: u32,
     pub controller: u32,
@@ -148,6 +154,7 @@ typed_codec!(RiverRelationRow, 64, |row| (row.owner as u128) << 32 | row.control
 /// building; the enclosing row's absent optional state is unreached or
 /// unavailable. Recorded branch gates distinguish when it is demanded.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RailwayBuildingState {
     pub building: Option<RailwayBuildingHealth>,
 }
@@ -158,6 +165,7 @@ value_struct!(RailwayBuildingState {
 /// Native signed building values for directed departure health. Partial health
 /// is required only on the reached damaged branch; preserve its raw sentinels.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RailwayBuildingHealth {
     pub level: i16,
     pub healthy: i16,
@@ -174,6 +182,7 @@ value_struct!(RailwayBuildingHealth {
 /// in a domain is a counted capture refusal. Building-level None can also
 /// be outside both gates; Some(None) observes the null pointer.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct RailwaySelectionInputs {
     pub levels: Option<Vec<i32>>,
     pub pair_count: Option<i32>,

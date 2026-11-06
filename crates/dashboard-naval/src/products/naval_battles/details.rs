@@ -44,6 +44,7 @@ pub struct NavalBattleDetailsParams {
     pub battles: Vec<NavalBattleDetailRequest>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(replay_spool::Spooled)]
 pub struct NavalBattleFleetNames {
     pub names: Vec<String>,
     pub unknown: Option<String>,

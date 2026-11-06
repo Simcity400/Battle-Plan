@@ -100,6 +100,7 @@ pub(super) const LEXICAL: u16 = 1 << 8;
 
 /// A Countries row's identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct CensusRow {
     pub id: u32,
     pub slot: u32,
@@ -108,6 +109,7 @@ pub struct CensusRow {
 
 /// What the hour changed of the captures.
 #[derive(Clone, Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Captures {
     /// Rows the hour wrote other than by extending them to the hour; every row when whole.
     pub changed: Vec<PoliticsCaptureCoverageRow>,
@@ -120,6 +122,7 @@ pub struct Captures {
 
 /// A power or cost row and what its hour says of its item.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Dating {
     /// Its item's facts at its hour, encoded; None where no frame of its hour was read.
     pub dated: Option<DatedFacts>,
@@ -129,6 +132,7 @@ pub struct Dating {
 
 /// An item's facts at its hour, MessagePack, and their digest.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct DatedFacts {
     pub bytes: Arc<[u8]>,
     pub digest: [u8; 32],
@@ -150,6 +154,7 @@ impl Dating {
 }
 
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Power {
     pub row: CountryPowerChangeRow,
     pub dating: Dating,
@@ -159,6 +164,7 @@ pub struct Power {
 
 /// What a power row's facts make of it ([`rows::power_item`], [`rows::holder`]).
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Resolved {
     pub(super) item: [u8; 32],
     pub(super) holder: Option<rows::Holder>,
@@ -183,6 +189,7 @@ impl Power {
 }
 
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Cost {
     pub row: CountryPowerDailyCostRow,
     pub dating: Dating,
@@ -204,6 +211,7 @@ impl Cost {
 }
 
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Government {
     pub row: GovernmentChangeRow,
     /// Its ideologies' spellings at its hour.
@@ -212,6 +220,7 @@ pub struct Government {
 
 /// One projected hour.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -234,74 +243,6 @@ pub struct Hour {
     pub command: Vec<(u32, Option<i64>)>,
     /// `command` holds every live allocation: one held before that it omits left.
     pub command_whole: bool,
-}
-
-impl segments::Item for Hour {
-    fn heap(&self) -> usize {
-        use std::mem::size_of;
-        let dating = |dating: &Dating| {
-            dating.dated.as_ref().map_or(0, |dated| dated.bytes.len())
-                + dating.category.as_ref().map_or(0, |text| text.len())
-        };
-        let holder = |power: &Power| {
-            power
-                .resolved
-                .as_ref()
-                .and_then(|resolved| resolved.holder.as_ref())
-                .map_or(0, |holder| {
-                    holder.kind.capacity()
-                        + holder.token.as_ref().map_or(0, String::capacity)
-                        + holder.character.as_ref().map_or(0, |(script, saved)| {
-                            script.as_ref().map_or(0, String::capacity) + saved.capacity()
-                        })
-                })
-        };
-        let identity = |identity: &PowerIdentity| {
-            identity.item_key.capacity()
-                + identity.slot_key.capacity()
-                + identity.origin_key.capacity()
-        };
-        self.census.as_ref().map_or(0, |census| {
-            census.len() * size_of::<CensusRow>()
-                + census.iter().map(|row| row.tag.len()).sum::<usize>()
-        }) + self
-            .links
-            .as_ref()
-            .map_or(0, |links| links.len() * size_of::<(u32, u32)>())
-            + self.captures.changed.capacity() * size_of::<PoliticsCaptureCoverageRow>()
-            + self.captures.deleted.capacity() * size_of::<u32>()
-            + self.power.capacity() * size_of::<Power>()
-            + self
-                .power
-                .iter()
-                .map(|power| {
-                    dating(&power.dating) + identity(&power.row.identity) + holder(power)
-                })
-                .sum::<usize>()
-            + self.governments.capacity() * size_of::<Government>()
-            + self
-                .governments
-                .iter()
-                .map(|government| {
-                    government.row.origin_key.capacity()
-                        + government.tokens.0.as_ref().map_or(0, String::len)
-                        + government.tokens.1.as_ref().map_or(0, String::len)
-                })
-                .sum::<usize>()
-            + self.daily.capacity() * size_of::<CountryPowerDailyRow>()
-            + self.costs.capacity() * size_of::<Cost>()
-            + self
-                .costs
-                .iter()
-                .map(|cost| dating(&cost.dating) + identity(&cost.row.identity))
-                .sum::<usize>()
-            + self
-                .deleted
-                .iter()
-                .map(|keys| keys.capacity() * size_of::<u128>())
-                .sum::<usize>()
-            + self.command.capacity() * size_of::<(u32, Option<i64>)>()
-    }
 }
 
 /// Columns read in place.

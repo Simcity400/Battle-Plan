@@ -19,6 +19,7 @@ replay.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
+replay-spool.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 ts-rs = "11.1"

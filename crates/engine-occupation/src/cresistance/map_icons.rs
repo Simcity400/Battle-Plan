@@ -17,6 +17,7 @@ pub const DEFINITION_VTABLE_RVA: usize = 0x02a3_5550;
 pub const DEFINITION_NAME: usize = 0x10;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Markers {
     /// Present only when zero resistance and nonpositive compliance demand the
     /// cached target for the map's suppression predicate.

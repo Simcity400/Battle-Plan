@@ -257,6 +257,7 @@ struct Tracker {
 }
 
 /// One hour's sunk ships, as a columnar walk reads them.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum ShipRead {
     /// No slot read of the table's one row: whether it held exactly one row.
     Skipped { single: bool },
@@ -268,6 +269,7 @@ pub(crate) enum ShipRead {
 }
 
 /// One hour's sunk convoys as a walk of the recording's columns reads them.
+#[derive(replay_spool::Spooled)]
 pub(crate) enum ConvoyRead {
     /// No read of the complete rows: whether they were complete.
     Skipped { complete: bool },
@@ -279,6 +281,7 @@ pub(crate) enum ConvoyRead {
 
 /// The read compared last: its entries in order, counts taken and refused, and future dates.
 #[derive(Clone, Default)]
+#[derive(replay_spool::Spooled)]
 pub(crate) struct ShipBase {
     entries: Vec<SunkShipEntry>,
     counts: HashMap<RefusedShipKey, usize>,
@@ -1941,6 +1944,7 @@ impl ShipHistory {
 }
 
 /// A columnar walk's country tables, as the link tags and holders take them.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct ProjectedCountries {
     pub(crate) keys: dashboard_text::metadata::CountryKeys,
     pub(crate) links: HashMap<u32, u32>,

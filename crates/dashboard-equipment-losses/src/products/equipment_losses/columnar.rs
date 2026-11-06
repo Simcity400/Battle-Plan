@@ -8,7 +8,7 @@ use dashboard_world::{Needs, Roster, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{format::FormatVersion, rows::*};
 use replay_frame::frame::TableView;
@@ -45,12 +45,14 @@ pub const TABLES: &[TableId] = &[
     TableId::VariantChanges,
 ];
 
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub(super) input: Option<Input>,
 }
 
+#[derive(replay_spool::Spooled)]
 pub(super) struct Metadata {
     pub table: TableView,
     pub drain: Arc<DestructionInputs>,
@@ -85,6 +87,7 @@ impl Metadata {
 /// segment last handed on since its last identity change, which every current country took;
 /// an equal count changes no country.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Records {
     pub ships: Option<Vec<ShipRead>>,
     pub convoys: Vec<ConvoyRead>,
@@ -96,6 +99,7 @@ pub(super) struct Records {
 /// An hour's destruction drain, by country slot ascending: each country's amounts by cause and
 /// design, a pair repeating where its sum would overflow, or the error its rows hold.
 #[derive(Default)]
+#[derive(replay_spool::Spooled)]
 pub(super) struct Drains {
     /// Each country's slot and the end of its amounts.
     pub slots: Vec<(u32, u32)>,
@@ -126,6 +130,7 @@ impl Drains {
     }
 }
 
+#[derive(replay_spool::Spooled)]
 pub(super) struct Input {
     pub format: FormatVersion,
     pub identities: Option<Vec<((u32, u32), bool)>>,
@@ -157,39 +162,6 @@ pub(super) fn drain_heap(drain: &DestructionInputs) -> usize {
 /// The bytes `land` owns, itself and its `Arc` included.
 pub(super) fn land_heap(land: &CoverageInputs) -> usize {
     ARC + size_of::<CoverageInputs>() + btree_bytes::<u32, ()>(land.players.len())
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        self.input.as_ref().map_or(0, |input| {
-            let identities = input.identities.as_ref().map_or(0, |identities| {
-                identities.capacity() * size_of::<((u32, u32), bool)>()
-            });
-            let records: usize = input
-                .records
-                .iter()
-                .map(|(_, records)| records.heap())
-                .sum();
-            let unresolved: usize = input
-                .unresolved
-                .iter()
-                .map(|slots| btree_bytes::<u32, ()>(slots.len()))
-                .sum();
-            let variants: usize = input
-                .variants
-                .iter()
-                .map(|(_, variant)| variant.heap())
-                .sum();
-            input.shared
-                + identities
-                + input.memberships.capacity() * size_of::<(u32, Option<census::Membership>)>()
-                + input.records.capacity() * size_of::<(u32, Records)>()
-                + records
-                + unresolved
-                + input.variants.capacity() * size_of::<(u64, RawVariant)>()
-                + variants
-        })
-    }
 }
 
 impl Records {

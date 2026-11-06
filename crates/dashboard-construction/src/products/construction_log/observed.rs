@@ -11,6 +11,7 @@ use std::{mem::size_of, sync::Arc};
 
 /// A building's levels as its table holds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Building {
     pub location: u32,
     pub kind: u32,
@@ -20,6 +21,7 @@ pub struct Building {
 
 /// A building table this hour.
 #[derive(Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Buildings {
     /// It does not hold every row.
     #[default]
@@ -44,6 +46,7 @@ impl Buildings {
 
 /// A building line, its owner's tag resolved where the links resolve its country.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct BuildingLine {
     pub owner: Option<Arc<str>>,
     pub row: BuildingConstructionRow,
@@ -51,6 +54,7 @@ pub struct BuildingLine {
 
 /// A railway line, its owner resolved, and the states of its route's first and last provinces.
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct RailwayLine {
     pub owner: Option<Arc<str>>,
     pub from: Option<u32>,
@@ -59,6 +63,7 @@ pub struct RailwayLine {
 }
 
 #[derive(Clone, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct OutputLine {
     pub row: ConstructionLineOutputRow,
     pub owner: Option<Arc<str>>,
@@ -68,6 +73,7 @@ pub struct OutputLine {
 
 /// A queue at its slot's read.
 #[derive(Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub enum Queue<T> {
     /// Not read this hour.
     #[default]
@@ -93,6 +99,7 @@ impl<T> Queue<T> {
 
 /// The output table at its read.
 #[derive(Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub enum Output {
     #[default]
     NotRead,
@@ -110,6 +117,7 @@ impl Output {
 
 /// One hour of a branch.
 #[derive(Debug, Default)]
+#[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -123,38 +131,3 @@ pub struct Hour {
     pub types: Vec<(u32, Option<String>)>,
 }
 
-impl replay::segments::Item for Hour {
-    fn heap(&self) -> usize {
-        let tag = |owner: &Option<Arc<str>>| owner.as_ref().map_or(0, |tag| tag.len());
-        self.buildings.iter().map(Buildings::heap).sum::<usize>()
-            + self.queue.lines().len() * size_of::<BuildingLine>()
-            + self
-                .queue
-                .lines()
-                .iter()
-                .map(|line| tag(&line.owner))
-                .sum::<usize>()
-            + self
-                .railways
-                .lines()
-                .iter()
-                .map(|line| {
-                    size_of::<RailwayLine>() + tag(&line.owner) + line.row.route.capacity() * 4
-                })
-                .sum::<usize>()
-            + match &self.output {
-                Output::Read(rows) => {
-                    rows.capacity() * size_of::<OutputLine>()
-                        + rows.iter().map(|line| tag(&line.owner)).sum::<usize>()
-                }
-                Output::NotRead | Output::Unavailable(_) => 0,
-            }
-            + self
-                .types
-                .iter()
-                .map(|(_, token)| {
-                    size_of::<(u32, Option<String>)>() + token.as_ref().map_or(0, String::capacity)
-                })
-                .sum::<usize>()
-    }
-}

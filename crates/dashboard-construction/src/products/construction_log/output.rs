@@ -12,6 +12,7 @@ use ts_rs::TS;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub enum SpendingGap {
     NotRecorded,
     ReadFailed,

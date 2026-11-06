@@ -12,9 +12,9 @@ use crate::{
 use dashboard_base::prepared::{gates, roots::Published};
 use dashboard_world::{Hold, Needs, World};
 use replay::{
-    columnar_frames::{Segment, view_heap_bytes},
+    columnar_frames::Segment,
     columns,
-    segments::{self, Item, Operator, Sink},
+    segments::{self, Operator, Sink},
 };
 use replay_data::{
     format::FormatVersion,
@@ -23,7 +23,6 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView};
 use std::{
     io::{self, BufReader},
-    mem::size_of,
     sync::atomic::AtomicBool,
 };
 
@@ -69,6 +68,7 @@ fn holds() -> io::Result<[(TableId, Hold); 4]> {
 }
 
 /// One hour of a branch's identity tables.
+#[derive(replay_spool::Spooled)]
 pub(crate) struct Hour {
     hour: i32,
     /// The walk reads every table whole at this hour.
@@ -76,18 +76,6 @@ pub(crate) struct Hour {
     metrics: Metrics,
     /// The tables the hour may have changed, as the walk's world holds them.
     changes: Vec<(TableId, SharedView)>,
-}
-
-impl Item for Hour {
-    fn heap(&self) -> usize {
-        // Each view is its own once the world's next build copies it.
-        let views: usize = self
-            .changes
-            .iter()
-            .map(|(_, view)| view_heap_bytes(view))
-            .sum();
-        self.changes.capacity() * size_of::<(TableId, SharedView)>() + views
-    }
 }
 
 impl Projected for Hour {

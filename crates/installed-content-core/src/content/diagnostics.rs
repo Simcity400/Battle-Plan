@@ -7,6 +7,7 @@ use std::{
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct Notes {
     uncovered: BTreeMap<u32, BTreeSet<LayerPath>>,
     overlays: BTreeMap<String, BTreeSet<LayerPath>>,
@@ -16,6 +17,7 @@ struct Notes {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Diagnostics(Option<Arc<Notes>>);
 
 static EMPTY: Notes = Notes {

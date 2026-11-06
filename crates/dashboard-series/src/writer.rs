@@ -137,6 +137,36 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// The hierarchy with `node` added, any 16 complete siblings merged.
+    fn settled(
+        &self,
+        io: &mut impl PageWrite,
+        cache: &Cache<'_>,
+        node: NodeRef,
+    ) -> io::Result<Vec<NodeRef>> {
+        if node.first != self.sealed {
+            return Err(invalid("series segments must be published in order"));
+        }
+        let mut nodes = self.nodes.clone();
+        nodes.push(node);
+        hierarchy::settle(io, cache, &mut nodes)?;
+        Ok(nodes)
+    }
+
+    /// Adds the next sealed segment to the hierarchy without a root of its own: the root of a
+    /// later segment names it ([`Self::publish`]).
+    pub fn append(
+        &mut self,
+        io: &mut impl PageWrite,
+        cache: &Cache<'_>,
+        sealed: Sealed,
+    ) -> io::Result<()> {
+        let next = add(self.sealed, 1)?;
+        self.nodes = self.settled(io, cache, sealed.node)?;
+        self.sealed = next;
+        Ok(())
+    }
+
     /// Adds the next sealed segment to the hierarchy, merging any 16 complete
     /// siblings, and writes the publication's root.
     pub fn publish(
@@ -145,13 +175,8 @@ impl Tree {
         cache: &Cache<'_>,
         sealed: Sealed,
     ) -> io::Result<PageId> {
-        if sealed.node.first != self.sealed {
-            return Err(invalid("series segments must be published in order"));
-        }
         let next = add(self.sealed, 1)?;
-        let mut nodes = self.nodes.clone();
-        nodes.push(sealed.node);
-        hierarchy::settle(io, cache, &mut nodes)?;
+        let nodes = self.settled(io, cache, sealed.node)?;
         let root = hierarchy::write_root(
             io,
             &Root {
@@ -197,7 +222,36 @@ fn publishing() -> engine_allocation::labels::Scope {
     engine_allocation::labels::kind(engine_allocation::labels::Kind::Publish)
 }
 
+/// The state it keeps of every key it defined, which grows with the publication's history.
+#[inline]
+fn keying() -> engine_allocation::labels::Scope {
+    engine_allocation::labels::kind(engine_allocation::labels::Kind::Keys)
+}
+
 impl<'a> Writer<'a> {
+    /// Whether its open segment holds anything appended since it was last cut.
+    pub fn holds(&self) -> bool {
+        let c = &self.columns;
+        [
+            c.runs.len(),
+            c.evidence.len(),
+            c.domain_rows.len(),
+            c.events.len(),
+            c.keys.len(),
+            c.domains.len(),
+            c.definitions.len(),
+            c.metadata.len(),
+            c.heap.len(),
+        ]
+        .into_iter()
+        .any(|len| len != 0)
+    }
+
+    /// The publication it cut last; None before its first.
+    pub fn published(&self) -> Option<Publication> {
+        self.published
+    }
+
     /// The bytes its appended rows hold of its budget until it is cut.
     pub fn held_bytes(&self) -> usize {
         let columns = &self.columns;
@@ -342,6 +396,7 @@ impl<'a> Writer<'a> {
         if definition.key.id != self.keys.len() as u64 {
             return Err(invalid("series key definitions are not dense"));
         }
+        let _memory = keying();
         self.specs.insert(
             SpecKey {
                 schema: definition.key.spec.schema,
@@ -414,6 +469,7 @@ impl<'a> Writer<'a> {
         Ok(self.domain_ids.get(&id).map(|&index| index as usize))
     }
     fn admit_domain(&mut self) -> io::Result<()> {
+        let _memory = keying();
         u32::try_from(self.domains.len()).map_err(|_| invalid("series domain count"))?;
         engine_allocation::reserve(&mut self.domains, 1)?;
         engine_allocation::reserve_map(&mut self.domain_ids, 1)
@@ -494,8 +550,11 @@ impl<'a> Writer<'a> {
         }
         let next = add(id, 1)?;
         self.columns.definitions.reserve(1)?;
-        engine_allocation::reserve(&mut self.keys, 1)?;
-        engine_allocation::reserve_map(&mut self.specs, 1)?;
+        {
+            let _memory = keying();
+            engine_allocation::reserve(&mut self.keys, 1)?;
+            engine_allocation::reserve_map(&mut self.specs, 1)?;
+        }
         self.columns.definitions.put(Definition {
             key: KeyDefinition {
                 id,
@@ -913,6 +972,23 @@ impl<'a> Writer<'a> {
         self.sequences = state.next_event;
         self.heap = held;
         Ok(pending)
+    }
+
+    /// Closes the segment at hour `last` as the next publication, with no checkpoint: no root
+    /// names it until a later segment's does, and a reader pins it only as a prefix of that.
+    pub fn cut_through(&mut self, last: i32) -> io::Result<Pending<'a>> {
+        let (generation, segment) = match self.published {
+            Some(previous) => (add(previous.generation, 1)?, add(previous.segment, 1)?),
+            None => (1, 1),
+        };
+        let publication = Publication {
+            generation,
+            segment,
+            accepted: Span::new(self.first, last)?,
+            reached: last,
+            refusal: None,
+        };
+        self.cut(publication, Blob::EMPTY)
     }
 
     /// Adds the next sealed segment to the hierarchy, merging any 16 complete siblings, and

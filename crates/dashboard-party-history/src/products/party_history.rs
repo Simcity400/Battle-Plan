@@ -184,6 +184,7 @@ pub use dashboard_base::products::character_portraits::RecordedPortrait;
 
 /// A leader as scanned: the character and the portrait entry of its runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 pub struct ScannedLeader {
     pub character: IdeaCharacter,
     pub portrait: RecordedPortrait,

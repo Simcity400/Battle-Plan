@@ -33,6 +33,7 @@ impl FlagChoice {
 /// The candidates the game searches a country's flag file by, in order, and why they are not
 /// the whole chain.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(replay_spool::Spooled)]
 pub struct Chain {
     pub candidates: Vec<String>,
     /// As [`FlagChoice::refusal`].

@@ -15,6 +15,7 @@ use std::{collections::HashMap, io};
 
 /// A division as Divisions holds it, in the fields its readers read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct Division {
     pub id: u64,
     pub roster_owner: u32,

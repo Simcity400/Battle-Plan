@@ -11,7 +11,7 @@ use replay::{
     columnar_frames::{Limits, Recording},
     columnar_runs::{self, IndexFile, Layout},
     container::Replay,
-    segments::{self, Settings},
+    segments,
 };
 use replay_data::rows::TableId;
 use std::{
@@ -277,6 +277,7 @@ pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Prepared> 
         recording.select(tables());
     }
     let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let scratch = folder(source)?;
     let mut runs = Vec::new();
     publish(&target, |file| {
         let (out, stats) = columnar_runs::prepare(
@@ -284,7 +285,8 @@ pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Prepared> 
             tables(),
             Layout::RECORDING,
             columnar_runs::LEVEL,
-            &Settings::new(threads),
+            threads,
+            &scratch,
             cancelled,
             BufWriter::new(file),
         )?;

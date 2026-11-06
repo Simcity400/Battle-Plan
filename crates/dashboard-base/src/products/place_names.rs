@@ -90,6 +90,7 @@ pub struct StateNameRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct PlaceName {
     pub province_id: u32,
     pub hour: i32,
@@ -100,6 +101,7 @@ pub struct PlaceName {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct PlaceStateName {
     pub state_id: u32,
     pub hour: i32,
@@ -110,6 +112,7 @@ pub struct PlaceStateName {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[derive(replay_spool::Spooled)]
 pub struct PlaceNamesReply {
     pub places: Vec<PlaceName>,
     pub states: Vec<PlaceStateName>,
@@ -186,6 +189,7 @@ fn region_provinces(
 
 /// A state's recorded name inputs at an hour.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub struct StateInputs {
     pub custom: Vec<u8>,
     pub owner_name: Vec<u8>,
@@ -195,6 +199,7 @@ pub struct StateInputs {
 
 /// A state owner's original-or-own tag, as victory-point names read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
 pub enum Owner {
     /// The tag of the owner's canonical slot, slot zero's for no owner, or why it is unknown.
     Tag(Result<String, String>),

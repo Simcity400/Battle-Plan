@@ -1,102 +1,29 @@
-//! Operators parked for the segment they go on into, and the scratch they and projected
-//! chunks spill to.
+//! Operators parked for the segment they go on into, written out to the spool when they can
+//! be.
 
-use super::{Fault, Lane, Operation, Stats, caught, invalid, lane::Erased, lane::Walking, lock};
+use super::{
+    Fault, Lane, Operation, Stats, caught, invalid,
+    lane::{Erased, Walking},
+    lock,
+    spool::{Folder, Spilled},
+};
 use crate::columnar_frames::Segment;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::{self, Read, Write},
-    path::PathBuf,
+    io,
     sync::{
         Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
 };
-
-/// Where a run spills what its budgets do not hold resident: parked operators and projected
-/// chunks, each read back at most once.
-pub trait Scratch: Sync {
-    /// Keeps `bytes` until the handle drops.
-    fn spill(&self, bytes: &[u8]) -> io::Result<Box<dyn Spilled>>;
-}
-
-/// Bytes a [`Scratch`] keeps, freed when dropped.
-pub trait Spilled: Send {
-    /// Replaces `out` with the bytes spilled.
-    fn read(&self, out: &mut Vec<u8>) -> io::Result<()>;
-}
-
-/// Spills into files of a folder no one else writes in, one per spill, each removed when its
-/// handle drops.
-pub struct Folder {
-    path: PathBuf,
-    next: AtomicU64,
-}
-
-impl Folder {
-    /// Spills into `path`, created when missing.
-    pub fn new(path: impl Into<PathBuf>) -> io::Result<Self> {
-        let path = path.into();
-        std::fs::create_dir_all(&path)?;
-        Ok(Self {
-            path,
-            next: AtomicU64::new(0),
-        })
-    }
-}
-
-impl Scratch for Folder {
-    fn spill(&self, bytes: &[u8]) -> io::Result<Box<dyn Spilled>> {
-        let path = self.path.join(format!(
-            "{}.spill",
-            self.next.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        let spilled = File {
-            path,
-            length: bytes.len(),
-        };
-        file.write_all(bytes)?;
-        Ok(Box::new(spilled))
-    }
-}
-
-/// A spill in a [`Folder`].
-struct File {
-    path: PathBuf,
-    length: usize,
-}
-
-impl Spilled for File {
-    fn read(&self, out: &mut Vec<u8>) -> io::Result<()> {
-        out.clear();
-        engine_allocation::reserve_exact(out, self.length)?;
-        std::fs::File::open(&self.path)?
-            .take(self.length as u64 + 1)
-            .read_to_end(out)?;
-        if out.len() != self.length {
-            return Err(invalid("A spill reads back at another length"));
-        }
-        Ok(())
-    }
-}
-
-impl Drop for File {
-    fn drop(&mut self) {
-        // A spill no longer read back; a file left behind holds no state.
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
 
 /// A parked operator: resident with the bytes it holds, taken out to be written with those
 /// bytes still counted resident (and left so when that failed, until discarded), or spilled.
 enum Carry<'r, W> {
     Resident(Box<dyn Walking<W> + 'r>, usize),
     Writing(usize),
-    Spilled(Box<dyn Spilled>),
+    /// With the lineage its operator spooled in, which the one read back begins again.
+    Spilled(Spilled, u64),
 }
 
 /// A parked operator taken out to be written: its segment and family, the operator, and the
@@ -128,40 +55,17 @@ struct Shelf<'r, W> {
 }
 
 impl<'r, W> Shelf<'r, W> {
-    /// Takes out, to be written, the furthest resident carries from their segment that are not
-    /// pinned, for those left resident and not being written to fit `limit`. Past it with
-    /// none to take out, the run fails, naming the families that cannot spill.
-    fn evict(&mut self, limit: usize, lanes: &[Lane<'_, W>]) -> io::Result<Vec<Out<'r, W>>> {
-        let mut excess = (self.resident - self.writing).saturating_sub(limit);
-        if excess == 0 {
-            return Ok(Vec::new());
-        }
+    /// Takes out, to be written, every resident carry that is not pinned: a parked operator
+    /// that can be written out waits on disk.
+    fn evict(&mut self) -> io::Result<Vec<Out<'r, W>>> {
         let mut keys = Vec::new();
-        for (key, carry) in self.carries.iter().rev() {
-            if excess == 0 {
-                break;
-            }
-            if let Carry::Resident(_, bytes) = carry
+        for (key, carry) in &self.carries {
+            if let Carry::Resident(..) = carry
                 && !self.pinned.contains(key)
             {
                 engine_allocation::reserve(&mut keys, 1)?;
                 keys.push(*key);
-                excess = excess.saturating_sub(*bytes);
             }
-        }
-        if keys.is_empty() {
-            let pinned: BTreeSet<&str> = self
-                .pinned
-                .iter()
-                .map(|&(_, lane)| lanes[lane].erased.name())
-                .collect();
-            return Err(io::Error::new(
-                io::ErrorKind::OutOfMemory,
-                format!(
-                    "Operators parked for later segments exceed the continuation budget of \
-                     {limit} bytes, and these families cannot spill theirs: {pinned:?}"
-                ),
-            ));
         }
         // Allocated before any is taken out: an operator never drops while the store is held.
         let mut out = engine_allocation::vec(keys.len())?;
@@ -208,17 +112,16 @@ impl Drop for Counted<'_> {
     }
 }
 
-/// Operators parked for the segment they go on into: resident within a budget, the
-/// furthest from their segment spilled past it. No family's code runs while it is locked:
-/// operators are written out, read back and dropped once it is let go.
+/// Operators parked for the segment they go on into: written out to the spool, but those that
+/// cannot be, which stay resident. No family's code runs while it is locked: operators are
+/// written out, read back and dropped once it is let go.
 pub(super) struct Store<'r, W> {
     shelf: Mutex<Shelf<'r, W>>,
-    limit: usize,
     scratched: Scratched,
 }
 
 impl<'r, W> Store<'r, W> {
-    pub(super) fn new(limit: usize) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             shelf: Mutex::new(Shelf {
                 carries: BTreeMap::new(),
@@ -230,13 +133,12 @@ impl<'r, W> Store<'r, W> {
                 spilled: 0,
                 loaded: 0,
             }),
-            limit,
             scratched: Scratched::default(),
         }
     }
 
     /// Parks `operator` of family `lane`, holding `bytes`, for segment `at`, taking out at once
-    /// the parked operators to write out ([`Self::write`]) for the rest to fit the budget.
+    /// the parked operators to write out ([`Self::write`]).
     pub(super) fn park(
         &self,
         at: usize,
@@ -257,7 +159,7 @@ impl<'r, W> Store<'r, W> {
                 shelf.resident = shelf.resident.saturating_add(bytes);
                 shelf.peak = shelf.peak.max(shelf.resident);
                 shelf.parked += 1;
-                Ok(shelf.evict(self.limit, lanes))
+                Ok(shelf.evict())
             }
         };
         match parked {
@@ -272,13 +174,12 @@ impl<'r, W> Store<'r, W> {
         }
     }
 
-    /// Takes out the parked operators to write out for those left to fit the budget, as
-    /// [`Self::park`] does: none once they fit.
-    pub(super) fn evict(&self, lanes: &[Lane<'_, W>]) -> io::Result<Vec<Out<'r, W>>> {
-        lock(&self.shelf).evict(self.limit, lanes)
+    /// Takes out the parked operators to write out, as [`Self::park`] does.
+    pub(super) fn evict(&self) -> io::Result<Vec<Out<'r, W>>> {
+        lock(&self.shelf).evict()
     }
 
-    /// Writes out the operators taken out, `out`, spilling each to `scratch`, or keeping it
+    /// Writes out the operators taken out, `out`, spilling each to `folder`, or keeping it
     /// resident when it cannot be: the families whose operator failed as it was written, each
     /// with its segment, which fail. One whose family no longer walks that segment drops.
     /// One that failed stays out of reach as being written, to every walk, those holding its
@@ -287,7 +188,7 @@ impl<'r, W> Store<'r, W> {
     pub(super) fn write(
         &self,
         out: Vec<Out<'r, W>>,
-        scratch: &dyn Scratch,
+        folder: &Folder,
     ) -> io::Result<Vec<(usize, usize, Fault)>> {
         let mut failed = Vec::new();
         for (key, operator, bytes) in out {
@@ -296,8 +197,9 @@ impl<'r, W> Store<'r, W> {
             let _counted = self.scratched.hold(&raw);
             let written = match saved {
                 Ok(true) => {
+                    let lineage = operator.lineage();
                     drop(operator);
-                    Written::Spilled(scratch.spill(&raw)?)
+                    Written::Spilled(folder.spill(&raw)?, lineage)
                 }
                 Ok(false) => Written::Kept(operator),
                 // Its family's own failure: its operator goes, and the family with it.
@@ -329,8 +231,8 @@ impl<'r, W> Store<'r, W> {
         }
         shelf.writing -= bytes;
         match written {
-            Written::Spilled(spilled) => {
-                shelf.carries.insert(key, Carry::Spilled(spilled));
+            Written::Spilled(spilled, lineage) => {
+                shelf.carries.insert(key, Carry::Spilled(spilled, lineage));
                 shelf.resident -= bytes;
                 shelf.spilled += 1;
             }
@@ -356,7 +258,7 @@ impl<'r, W> Store<'r, W> {
                     shelf.resident -= bytes;
                     shelf.writing -= bytes;
                 }
-                Some(Carry::Spilled(_)) | None => {}
+                Some(Carry::Spilled(..)) | None => {}
             }
             carry
         };
@@ -371,6 +273,7 @@ impl<'r, W> Store<'r, W> {
         lane: usize,
         segment: &Segment,
         erased: &'r (dyn Erased<W> + 'r),
+        folder: &Folder,
     ) -> Result<Option<Parked<'r, W>>, Fault> {
         let spilled = {
             let mut held = lock(&self.shelf);
@@ -385,18 +288,21 @@ impl<'r, W> Store<'r, W> {
                     shelf.resident -= bytes;
                     return Ok(Some(Parked::Ready(operator)));
                 }
-                Some(Carry::Spilled(spilled)) => {
+                Some(Carry::Spilled(spilled, lineage)) => {
                     shelf.loaded += 1;
-                    spilled
+                    (spilled, lineage)
                 }
                 Some(Carry::Writing(_)) => unreachable!("a carry being written is left"),
             }
         };
+        let (spilled, lineage) = spilled;
         let mut raw = Vec::new();
         spilled.read(&mut raw)?;
         drop(spilled);
         let _counted = self.scratched.hold(&raw);
-        let mut operator = caught(Operation::Make, || erased.fresh(segment))?;
+        let mut operator = caught(Operation::Make, || {
+            erased.fresh(lane, segment, folder, Some(lineage))
+        })?;
         caught(Operation::Load, || operator.load(&raw))?;
         Ok(Some(Parked::Ready(operator)))
     }
@@ -426,7 +332,7 @@ impl<'r, W> Store<'r, W> {
 
 /// What writing out a parked operator left of it.
 enum Written<'r, W> {
-    Spilled(Box<dyn Spilled>),
+    Spilled(Spilled, u64),
     /// It cannot be spilled, and stays resident.
     Kept(Box<dyn Walking<W> + 'r>),
 }

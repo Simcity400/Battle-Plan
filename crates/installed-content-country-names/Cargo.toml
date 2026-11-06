@@ -14,6 +14,7 @@ replay-data.workspace = true
 replay-frame.workspace = true
 installed-content-core.workspace = true
 installed-content-localisation.workspace = true
+replay-spool.workspace = true
 [dev-dependencies]
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }
 

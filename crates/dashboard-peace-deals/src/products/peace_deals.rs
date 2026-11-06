@@ -435,6 +435,7 @@ type Tag = Arc<str>;
 /// Raw references are resolved once per frame, with aliases joined by slot,
 /// beside each tag's native (canonical slot, country id).
 #[derive(PartialEq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
 struct CountryTags {
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     tags: HashMap<u32, Tag>,

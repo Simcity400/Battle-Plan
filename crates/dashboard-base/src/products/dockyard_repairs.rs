@@ -45,6 +45,7 @@ struct PartKeys {
 pub mod facts;
 
 #[derive(Clone, PartialEq, Default, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Selection {
     pub readable: bool,
     pub allocated: i128,
@@ -53,6 +54,7 @@ pub struct Selection {
 }
 
 #[derive(Clone, PartialEq, Default, Debug)]
+#[derive(replay_spool::Spooled)]
 pub struct Inputs {
     pub count: Option<i32>,
     pub output: Option<i64>,
@@ -61,6 +63,7 @@ pub struct Inputs {
 
 /// The countries as the census joins them: each held tag with its found country, and every
 /// link naming a found country's slot, by raw id.
+#[derive(replay_spool::Spooled)]
 pub struct Roster {
     pub ok: bool,
     pub tags: Vec<(Vec<u8>, Option<Identity>)>,
