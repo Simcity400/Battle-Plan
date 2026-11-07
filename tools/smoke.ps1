@@ -947,6 +947,8 @@ if ($Action -eq 'Launch') {
     $previousForeground = [Hoi4ProbeInput]::GetForegroundWindow()
     # The game is the interactive application being tested, so its window is visible.
     $started = Start-Process -FilePath $gamePath -WorkingDirectory (Split-Path -Parent $gamePath) -ArgumentList $arguments -PassThru
+    # A child inherits a below-normal caller's class (a scheduled task's default); a player's game runs at normal.
+    $started.PriorityClass = [Diagnostics.ProcessPriorityClass]::Normal
     if (-not $Foreground) {
         # Keep the game behind whatever was active: it takes focus when its window appears and again when the map
         # loads. Watch until the map is up and the window has stayed in the background for a few seconds.

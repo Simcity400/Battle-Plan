@@ -330,6 +330,10 @@ pub struct Captured {
 pub(crate) struct HourCost {
     pub entry_ns: u64,
     pub buffer_wait_ns: u64,
+    /// Frames still free once this hour took its own.
+    pub free_frames: u8,
+    /// Wall any collector thread spent blocked on the allocator during this acquisition.
+    pub allocator_wait_ns: u64,
     pub setup_ns: u64,
     pub parallel_ns: u64,
     pub residual_ns: u64,
@@ -2352,6 +2356,7 @@ struct Dispatch<'a> {
     entry: Option<Clock<&'a [u8]>>,
     entry_ticks: i64,
     buffer_wait_ns: u64,
+    free_frames: u8,
     dispatched: i64,
 }
 
@@ -2508,6 +2513,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             .store(dispatched, Ordering::Relaxed);
         let mut buffer_wait_ns = 0;
         let index = shared.take_frame(&mut buffer_wait_ns);
+        let free_frames = shared.free.len() as u8;
         if let Some(index) = index {
             history_capture.frame(index);
             shared.completed[index].store(0, Ordering::Relaxed);
@@ -2523,6 +2529,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             entry,
             entry_ticks,
             buffer_wait_ns,
+            free_frames,
             dispatched,
         };
         let priority = CallbackPriority::raise();
@@ -2571,7 +2578,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         unsafe { std::mem::transmute(shared.trampoline) };
     let ticking = TICKING.replace(true);
     crate::tick_gate::enter(shared.tick_idle.as_ref());
+    shared.frame_priority.tick(Some(main_processor()));
     timing.original(|| unsafe { original(state, commands) });
+    shared.frame_priority.tick(None);
     crate::tick_gate::leave(shared.tick_idle.as_ref());
     TICKING.set(ticking);
     let original_end = qpc();
@@ -2583,6 +2592,16 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     }
     drop(timing);
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// The processor the game thread runs on; `None` with several processor groups, whose
+/// group-relative numbers the core table cannot place.
+fn main_processor() -> Option<u32> {
+    use windows_sys::Win32::System::Threading::{
+        GetActiveProcessorGroupCount, GetCurrentProcessorNumber,
+    };
+    // SAFETY: neither call has preconditions.
+    unsafe { (GetActiveProcessorGroupCount() == 1).then(|| GetCurrentProcessorNumber()) }
 }
 
 /// An observer boundary job on its way.
@@ -2695,10 +2714,12 @@ unsafe fn acquire_with_memory(
         entry,
         entry_ticks,
         buffer_wait_ns,
+        free_frames,
         dispatched,
     } = dispatch;
     reset_hour_joins();
     let growths_before = engine_allocation::growths();
+    let allocator_before = crate::private_heap::contention_ticks();
 
     if let Some(index) = index {
         let reset_begin = qpc();
@@ -6815,6 +6836,10 @@ unsafe fn acquire_with_memory(
             HourCost {
                 entry_ns: shared.ns(entry_ticks),
                 buffer_wait_ns,
+                free_frames,
+                allocator_wait_ns: shared.ns(
+                    crate::private_heap::contention_ticks().saturating_sub(allocator_before) as i64,
+                ),
                 setup_ns,
                 parallel_ns,
                 residual_ns,

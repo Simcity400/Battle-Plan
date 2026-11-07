@@ -4893,9 +4893,12 @@ fn spool_loop(
             return Err("collector allocation failed");
         }
         let span = phases.span(Phase::Observers);
-        shared
-            .prepare_clock_capture(&live)
-            .map_err(|_| "clock preparation allocation failed")?;
+        // A live read: between ticks only. A parked callback wakes this thread to prepare it.
+        if !crate::tick_gate::game_ticking() {
+            shared
+                .prepare_clock_capture(&live)
+                .map_err(|_| "clock preparation allocation failed")?;
+        }
         span.finish();
         verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
         priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
@@ -5478,11 +5481,15 @@ impl SizingShared {
     /// The spool prepares only its owned frame, then publishes it under a short monotonic merge.
     fn recycle_frame(&self, shared: &Shared, index: usize, work: &mut WorkerWork) {
         let mut proposal = *work.recycle_capacities(self, shared.frequency);
-        let live = unsafe { LiveMemory::new() };
-        let _ = proposal
-            .extended
-            .combat_progress
-            .presize(&live, shared.base);
+        // A live read: between ticks only. The sizing thread presizes combats every pass, so
+        // a frame returned during a tick still grows to the latest live demand.
+        if !crate::tick_gate::game_ticking() {
+            let live = unsafe { LiveMemory::new() };
+            let _ = proposal
+                .extended
+                .combat_progress
+                .presize(&live, shared.base);
+        }
         loop {
             {
                 let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -5614,6 +5621,8 @@ impl SizingThread {
             Some(_) => {}
             None => {
                 if let Some(state) = lock(&self.sizing.state).as_mut() {
+                    // Sizing reads live memory: inline on the spool thread it waits ticks out too.
+                    let _gated = crate::tick_gate::gated();
                     sizing_pass(
                         shared,
                         &self.sizing,
@@ -6536,10 +6545,17 @@ impl OwnPriority {
             || self.eco_qos != Some(false)
             || self.confined != Some(false)
         {
+            crate::tick_gate::copy_only(false);
             return;
         }
         pipeline.register(role);
         pipeline.refresh(crate::frame_priority::Caller::Worker);
+        // Only a thread its controller keeps at idle priority during ticks works through them.
+        crate::tick_gate::copy_only(
+            !matches!(role, crate::frame_priority::Role::Sizing)
+                && pipeline.registered(role)
+                && !pipeline.failed(),
+        );
     }
 
     pub(crate) fn reconciler(&mut self) -> bool {

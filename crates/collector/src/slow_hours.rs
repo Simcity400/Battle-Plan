@@ -7,7 +7,104 @@ use crate::{
 };
 
 const CAPACITY: usize = 64;
-const HISTOGRAM_FLOOR_MS: [u64; 9] = [0, 2, 4, 8, 16, 32, 64, 128, 256];
+const HISTOGRAM_FLOOR_MS: [u64; 12] = [0, 2, 4, 8, 16, 32, 50, 64, 100, 128, 256, 1000];
+/// The per-hour bound on the game-thread block.
+const BUDGET_NS: u64 = 50_000_000;
+const SLOTS: usize = replay_data::cadence::STAGGER_PERIOD as usize;
+
+/// Every hour over [`BUDGET_NS`], split by what held the game thread.
+#[derive(Clone, Copy)]
+struct OverBudget {
+    hours: u64,
+    with_buffer_wait: u64,
+    /// Over budget even without its buffer wait; the splits below count these.
+    acquisition: u64,
+    acquisition_max_ns: u64,
+    by_free_frames: [u64; crate::sampling::BUFFERS],
+    by_daily_slot: [u64; SLOTS],
+    by_dominant_segment: [u64; crate::sampling::SEGMENTS],
+    setup_over_parallel: u64,
+    by_slowest_join: [u64; acquisition_jobs::ROLE_COUNT],
+    no_slowest_join: u64,
+    force_full: u64,
+    /// Over budget with at least half the budget blocked on the allocator.
+    allocator_bound: u64,
+}
+
+impl Default for OverBudget {
+    fn default() -> Self {
+        Self {
+            hours: 0,
+            with_buffer_wait: 0,
+            acquisition: 0,
+            acquisition_max_ns: 0,
+            by_free_frames: [0; crate::sampling::BUFFERS],
+            by_daily_slot: [0; SLOTS],
+            by_dominant_segment: [0; crate::sampling::SEGMENTS],
+            setup_over_parallel: 0,
+            by_slowest_join: [0; acquisition_jobs::ROLE_COUNT],
+            no_slowest_join: 0,
+            force_full: 0,
+            allocator_bound: 0,
+        }
+    }
+}
+
+impl OverBudget {
+    fn record(&mut self, hour: i32, callback_ns: u64, cost: &HourCost) {
+        if callback_ns <= BUDGET_NS {
+            return;
+        }
+        self.hours += 1;
+        let free = usize::from(cost.free_frames).min(crate::sampling::BUFFERS - 1);
+        self.by_free_frames[free] += 1;
+        if cost.buffer_wait_ns != 0 {
+            self.with_buffer_wait += 1;
+        }
+        let acquisition_ns = callback_ns.saturating_sub(cost.buffer_wait_ns);
+        if acquisition_ns <= BUDGET_NS {
+            return;
+        }
+        self.acquisition += 1;
+        self.acquisition_max_ns = self.acquisition_max_ns.max(acquisition_ns);
+        self.by_daily_slot[hour.rem_euclid(SLOTS as i32) as usize] += 1;
+        if let Some(segment) = dominant_segment(cost) {
+            self.by_dominant_segment[segment] += 1;
+        }
+        if cost.setup_ns > cost.parallel_ns {
+            self.setup_over_parallel += 1;
+        }
+        match cost.slowest_join.and_then(|join| join.role) {
+            Some(role) => self.by_slowest_join[role] += 1,
+            None => self.no_slowest_join += 1,
+        }
+        if cost.force_full || cost.first_since_attach {
+            self.force_full += 1;
+        }
+        if cost.allocator_wait_ns >= BUDGET_NS / 2 {
+            self.allocator_bound += 1;
+        }
+    }
+
+    fn status(&self) -> impl serde::Serialize + '_ {
+        status!({
+            "budget_ns": BUDGET_NS,
+            "hours": self.hours,
+            "with_buffer_wait": self.with_buffer_wait,
+            "acquisition": self.acquisition,
+            "acquisition_max_ns": self.acquisition_max_ns,
+            "by_free_frames": self.by_free_frames.as_slice(),
+            "by_daily_slot": self.by_daily_slot.as_slice(),
+            "by_dominant_segment": self.by_dominant_segment.as_slice(),
+            "setup_over_parallel": self.setup_over_parallel,
+            "by_slowest_join": crate::status::map(self.by_slowest_join.iter().enumerate().filter(|(_, count)| **count != 0).map(|(role, count)| (DebugValue(acquisition_jobs::ROLES[role]), *count))),
+            "no_slowest_join": self.no_slowest_join,
+            "force_full": self.force_full,
+            "allocator_bound": self.allocator_bound,
+            "scope": "hours whose callback_ns exceeds budget_ns; by_free_frames counts every one by the frames still free once it took its own; acquisition counts those still over without their buffer wait, and the daily-slot, segment, setup, join, forced-full and allocator-bound (allocator_wait_ns at least half the budget) splits count only those",
+        })
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 struct Hour {
@@ -31,6 +128,8 @@ impl Hour {
             "callback_ns": self.callback_ns,
             "entry_ns": cost.entry_ns,
             "buffer_wait_ns": cost.buffer_wait_ns,
+            "free_frames": cost.free_frames,
+            "allocator_wait_ns": cost.allocator_wait_ns,
             "setup_ns": cost.setup_ns,
             "parallel_ns": cost.parallel_ns,
             "residual_ns": cost.residual_ns,
@@ -63,6 +162,27 @@ pub(crate) struct Recorder {
     len: usize,
     dominant_segment_counts: [u64; crate::sampling::SEGMENTS],
     no_dominant_segment: u64,
+    over_budget: OverBudget,
+}
+
+/// The game process's priority class now. Below normal, other programs' ordinary threads outrank
+/// every game and collector thread, so a busy machine stalls whole hours for seconds.
+fn process_priority_class() -> &'static str {
+    use windows_sys::Win32::System::Threading::{
+        ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess,
+        GetPriorityClass, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+        REALTIME_PRIORITY_CLASS,
+    };
+    // SAFETY: the current-process pseudo-handle needs no close.
+    match unsafe { GetPriorityClass(GetCurrentProcess()) } {
+        IDLE_PRIORITY_CLASS => "idle",
+        BELOW_NORMAL_PRIORITY_CLASS => "below_normal",
+        NORMAL_PRIORITY_CLASS => "normal",
+        ABOVE_NORMAL_PRIORITY_CLASS => "above_normal",
+        HIGH_PRIORITY_CLASS => "high",
+        REALTIME_PRIORITY_CLASS => "realtime",
+        _ => "unknown",
+    }
 }
 
 fn dominant_segment(cost: &HourCost) -> Option<usize> {
@@ -82,6 +202,7 @@ impl Default for Recorder {
             len: 0,
             dominant_segment_counts: [0; crate::sampling::SEGMENTS],
             no_dominant_segment: 0,
+            over_budget: OverBudget::default(),
         }
     }
 }
@@ -89,6 +210,7 @@ impl Default for Recorder {
 impl Recorder {
     /// A successful recorded hour, with no allocation and stable order on ties.
     pub(crate) fn record(&mut self, hour: i32, qpc: i64, callback_ns: u64, cost: HourCost) {
+        self.over_budget.record(hour, callback_ns, &cost);
         match dominant_segment(&cost) {
             Some(segment) => {
                 self.dominant_segment_counts[segment] =
@@ -132,6 +254,8 @@ impl Recorder {
             "slowest": sequence(self.slowest[..self.len].iter().map(move |hour| hour.status(qpc_frequency))),
             "dominant_segment_counts": self.dominant_segment_counts.as_slice(),
             "no_dominant_segment": self.no_dominant_segment,
+            "over_budget": self.over_budget.status(),
+            "process_priority_class": process_priority_class(),
             "retained_dominant_segment_counts": sequence(retained.into_iter()),
             "retained_no_dominant_segment": retained_without_segment,
             "segments_scope": crate::sampling::SEGMENTS_SCOPE,

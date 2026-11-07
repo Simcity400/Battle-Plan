@@ -5818,6 +5818,8 @@ mod tests {
             frame.hour_cost = crate::sampling::HourCost {
                 entry_ns: 100 + index as u64,
                 buffer_wait_ns: 200 + index as u64,
+                free_frames: 1,
+                allocator_wait_ns: 0,
                 setup_ns: ns / 4,
                 parallel_ns: ns / 2,
                 residual_ns: ns - ns / 4 - ns / 2,
@@ -5849,9 +5851,20 @@ mod tests {
         let tail = &status["callback_tail"];
         assert_eq!(
             tail["histogram_floor_ms"],
-            json!([0, 2, 4, 8, 16, 32, 64, 128, 256])
+            json!([0, 2, 4, 8, 16, 32, 50, 64, 100, 128, 256, 1000])
         );
-        assert_eq!(tail["histogram"], json!([2, 2, 4, 2, 2, 2, 2, 2, 3]));
+        assert_eq!(
+            tail["histogram"],
+            json!([2, 2, 4, 2, 2, 1, 1, 1, 1, 2, 3, 0])
+        );
+        // Over 50 ms: 64 ms - 1 ns and every longer sample; each waited 200 + index ns.
+        let over = &tail["over_budget"];
+        assert_eq!(over["hours"], 8);
+        assert_eq!(over["with_buffer_wait"], 8);
+        assert_eq!(over["acquisition"], 8);
+        assert_eq!(over["acquisition_max_ns"], 512_000_000 - 217);
+        assert_eq!(over["by_free_frames"][1], 8);
+        assert_eq!(over["force_full"], 1);
         assert_eq!(tail["capacity"], 64);
         assert_eq!(tail["qpc_frequency"], processor.session.qpc_frequency);
         assert_eq!(status["callback_work"]["calls"], samples.len());
@@ -5873,7 +5886,7 @@ mod tests {
             &json!({
                 "hour": -3, "qpc": 6_000_000_000_017_i64,
                 "daily_slot": (-3_i32).rem_euclid(replay_data::cadence::STAGGER_PERIOD),
-                "callback_ns": 512_000_000, "entry_ns": 117, "buffer_wait_ns": 217,
+                "callback_ns": 512_000_000, "entry_ns": 117, "buffer_wait_ns": 217, "free_frames": 1, "allocator_wait_ns": 0,
                 "setup_ns": 128_000_000, "parallel_ns": 256_000_000, "residual_ns": 128_000_000,
                 "segments_ns": vec![17; crate::sampling::SEGMENTS],
                 "slowest_join": {

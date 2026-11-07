@@ -12,7 +12,7 @@ use std::{
     ptr,
     sync::{
         OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 use windows_sys::Win32::{
@@ -22,9 +22,10 @@ use windows_sys::Win32::{
             HEAP_REALLOC_IN_PLACE_ONLY, HEAP_ZERO_MEMORY, HeapAlloc, HeapCreate, HeapDestroy,
             HeapFree, HeapReAlloc,
         },
+        Performance::QueryPerformanceFrequency,
         Threading::{
             AcquireSRWLockExclusive, GetCurrentProcessorNumber, ReleaseSRWLockExclusive, SRWLOCK,
-            SRWLOCK_INIT,
+            SRWLOCK_INIT, TryAcquireSRWLockExclusive,
         },
     },
 };
@@ -46,6 +47,84 @@ const SHARD_CLASS_BYTES: usize = 64 * 1024;
 /// Free bytes the depot keeps over every class; beyond it blocks go back to the heap.
 const DEPOT_BYTES: usize = 32 * 1024 * 1024;
 const _: () = assert!(SMALL_LIMIT <= SHARD_CLASS_BYTES / 2);
+
+/// Blocked lock acquisitions or slow heap calls: how many, and their QPC ticks.
+struct Contention {
+    count: AtomicU64,
+    ticks: AtomicU64,
+    max: AtomicU64,
+}
+
+impl Contention {
+    const fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            ticks: AtomicU64::new(0),
+            max: AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, ticks: i64) {
+        let ticks = ticks.max(0) as u64;
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.ticks.fetch_add(ticks, Ordering::Relaxed);
+        self.max.fetch_max(ticks, Ordering::Relaxed);
+    }
+
+    fn status(&self, frequency: u64) -> impl serde::Serialize {
+        let ns = |ticks: u64| (u128::from(ticks) * 1_000_000_000 / u128::from(frequency.max(1))) as u64;
+        crate::status::status!({
+            "count": self.count.load(Ordering::Relaxed),
+            "total_ns": ns(self.ticks.load(Ordering::Relaxed)),
+            "max_ns": ns(self.max.load(Ordering::Relaxed)),
+        })
+    }
+}
+
+static SHARD_WAITS: Contention = Contention::new();
+static DEPOT_WAITS: Contention = Contention::new();
+static SLOW_HEAP_CALLS: Contention = Contention::new();
+/// A heap call at least this long counts as slow: a millisecond of QPC ticks, set on first use.
+static SLOW_HEAP_TICKS: AtomicU64 = AtomicU64::new(0);
+
+fn qpc_frequency() -> u64 {
+    let mut frequency = 0;
+    unsafe { QueryPerformanceFrequency(&mut frequency) };
+    frequency.max(1) as u64
+}
+
+/// Takes `lock`, counting the wait when another thread holds it.
+fn acquire(lock: *mut SRWLOCK, waits: &Contention) {
+    if unsafe { TryAcquireSRWLockExclusive(lock) } {
+        return;
+    }
+    let begin = crate::clock::qpc();
+    unsafe { AcquireSRWLockExclusive(lock) };
+    waits.record(crate::clock::qpc() - begin);
+}
+
+/// Runs one heap call, counting it when it took a millisecond or more.
+fn heap_call<T>(call: impl FnOnce() -> T) -> T {
+    let begin = crate::clock::qpc();
+    let result = call();
+    let ticks = crate::clock::qpc() - begin;
+    let mut slow = SLOW_HEAP_TICKS.load(Ordering::Relaxed);
+    if slow == 0 {
+        slow = qpc_frequency() / 1000;
+        SLOW_HEAP_TICKS.store(slow, Ordering::Relaxed);
+    }
+    if ticks >= slow as i64 {
+        SLOW_HEAP_CALLS.record(ticks);
+    }
+    result
+}
+
+/// Every tick any thread has spent blocked on the allocator's locks or in a slow heap call.
+pub(crate) fn contention_ticks() -> u64 {
+    SHARD_WAITS.ticks.load(Ordering::Relaxed)
+        + DEPOT_WAITS.ticks.load(Ordering::Relaxed)
+        + SLOW_HEAP_CALLS.ticks.load(Ordering::Relaxed)
+}
 
 /// The class of a block of `size` bytes, or `None` for a large block.
 fn class(size: usize) -> Option<usize> {
@@ -136,7 +215,7 @@ impl Depot {
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut Stack) -> R) -> R {
-        unsafe { AcquireSRWLockExclusive(self.lock.get()) };
+        acquire(self.lock.get(), &DEPOT_WAITS);
         let result = f(unsafe { &mut *self.stack.get() });
         unsafe { ReleaseSRWLockExclusive(self.lock.get()) };
         result
@@ -223,7 +302,7 @@ impl Shard {
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut [List; CLASSES]) -> R) -> R {
-        unsafe { AcquireSRWLockExclusive(self.lock.get()) };
+        acquire(self.lock.get(), &SHARD_WAITS);
         let result = f(unsafe { &mut *self.lists.get() });
         unsafe { ReleaseSRWLockExclusive(self.lock.get()) };
         result
@@ -342,14 +421,14 @@ impl PrivateHeap {
         {
             let kept = self.shard().take(class, &self.depots);
             if kept.is_null() {
-                return unsafe { HeapAlloc(heap, flags, class_size(class)) }.cast();
+                return heap_call(|| unsafe { HeapAlloc(heap, flags, class_size(class)) }).cast();
             }
             if zeroed {
                 unsafe { kept.write_bytes(0, bytes) };
             }
             return kept;
         }
-        let raw = unsafe { HeapAlloc(heap, flags, bytes) }.cast::<u8>();
+        let raw = heap_call(|| unsafe { HeapAlloc(heap, flags, bytes) }).cast::<u8>();
         if raw.is_null() || align <= HEAP_ALIGNMENT {
             return raw;
         }
@@ -417,7 +496,7 @@ unsafe impl GlobalAlloc for PrivateHeap {
         } else {
             unsafe { pointer.cast::<*mut u8>().sub(1).read() }
         };
-        unsafe { HeapFree(self.heap(), 0, raw.cast()) };
+        heap_call(|| unsafe { HeapFree(self.heap(), 0, raw.cast()) });
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -433,16 +512,17 @@ unsafe impl GlobalAlloc for PrivateHeap {
                 _ => return unsafe { self.moved(pointer, layout, new_size) },
             }
             if new_size <= layout.size() || new_size < UNLOCKED_GROWTH {
-                return unsafe { HeapReAlloc(self.heap(), 0, pointer.cast(), new_size) }.cast();
+                return heap_call(|| unsafe { HeapReAlloc(self.heap(), 0, pointer.cast(), new_size) })
+                    .cast();
             }
-            let grown = unsafe {
+            let grown = heap_call(|| unsafe {
                 HeapReAlloc(
                     self.heap(),
                     HEAP_REALLOC_IN_PLACE_ONLY,
                     pointer.cast(),
                     new_size,
                 )
-            };
+            });
             if !grown.is_null() {
                 return grown.cast();
             }
@@ -521,9 +601,13 @@ impl serde::Serialize for Snapshot {
                     "depot": total.depot,
                 })
             });
+        let frequency = qpc_frequency();
         crate::status::status!({
             "classes": crate::status::sequence(classes),
-            "scope": "cumulative since attach, per small-block class summed over processor shards: allocations served from a shard's lists or the depot (hits) or by the heap (misses), frees kept (kept) or returned to the heap because the shard and the depot held their bounds (returned), and blocks kept now (cached), those in the depot among them (depot)",
+            "shard_lock_waits": SHARD_WAITS.status(frequency),
+            "depot_lock_waits": DEPOT_WAITS.status(frequency),
+            "slow_heap_calls": SLOW_HEAP_CALLS.status(frequency),
+            "scope": "cumulative since attach, per small-block class summed over processor shards: allocations served from a shard's lists or the depot (hits) or by the heap (misses), frees kept (kept) or returned to the heap because the shard and the depot held their bounds (returned), and blocks kept now (cached), those in the depot among them (depot); lock waits count acquisitions another thread held, slow heap calls those of a millisecond or more, on every collector thread",
         })
         .serialize(serializer)
     }

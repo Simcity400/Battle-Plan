@@ -161,6 +161,7 @@ pub(crate) fn capture(
                     }),
                     entry_ticks: 0,
                     buffer_wait_ns: 0,
+                    free_frames: 0,
                     dispatched: qpc(),
                 },
                 CountedMemory::new(Traced {

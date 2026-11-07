@@ -2801,6 +2801,7 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
                 entry: Some(clock(41, 7).borrowed()),
                 entry_ticks: 0,
                 buffer_wait_ns: 0,
+                free_frames: 0,
                 dispatched: 0,
             },
         );
